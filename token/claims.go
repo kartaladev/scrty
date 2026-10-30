@@ -14,9 +14,18 @@
 //
 // Expiry is always required, and every time comparison is made at the
 // resolution the configured clock reports: no skew is tolerated, and no
-// process-global setting in the underlying JOSE library can widen that. The
-// issuer and the audience are enforced exactly when the consumer configured
-// one.
+// process-global setting in the underlying JOSE library can widen that.
+//
+// A verifier checks the issuer and the audience of every token. NewVerifier
+// refuses to construct one that is given neither an issuer nor an explicit
+// waiver of the issuer check, and likewise for the audience, so two services
+// sharing a key source do not accept each other's tokens because one of them
+// left a claim unconfigured. A consumer that does not want a check waives it by
+// name, with WithoutVerifyIssuer or WithoutVerifyAudience, and accepts in
+// writing what that gives up. A generator verifies the tokens it issues, so
+// NewGenerator applies the same rule through WithIssuer or WithoutIssuer, and
+// WithAudience or WithoutAudience; a waived claim is then neither issued nor
+// checked.
 //
 // A token must be presented exactly as it was issued — one compact JWS, three
 // unpadded base64url segments, nothing around it — so one issued token has one

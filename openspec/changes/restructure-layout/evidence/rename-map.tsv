@@ -372,3 +372,16 @@ ident	github.com/kartaladev/scrty/httpsec.WithEnrolmentSessionTTL	github.com/kar
 # D16: storekit columns are built only by storekit.
 changed	-	github.com/kartaladev/scrty/internal/storekit.Column
 added	-	github.com/kartaladev/scrty/internal/storekit.RoleColumn
+# D18: verifiers and generators require an issuer and an audience, or a waiver.
+added	-	github.com/kartaladev/scrty/token.WithoutVerifyIssuer
+added	-	github.com/kartaladev/scrty/token.WithoutVerifyAudience
+added	-	github.com/kartaladev/scrty/token.WithoutIssuer
+added	-	github.com/kartaladev/scrty/token.WithoutAudience
+# D18: rows whose expectation the decision changes (D13 phase 6).
+test	github.com/kartaladev/scrty/token#TestNewVerifierValidation/a_key_source_alone_is_enough	github.com/kartaladev/scrty/token#TestNewVerifierValidation/a_key_source_alone_is_refused
+test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_unconfigured_issuer_does_not_reject_another_issuer	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/a_waived_issuer_does_not_reject_another_issuer
+test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_unconfigured_issuer_does_not_reject_an_absent_one	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/a_waived_issuer_does_not_reject_an_absent_one
+test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_unconfigured_audience_does_not_reject_an_audience	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/a_waived_audience_does_not_reject_an_audience
+test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_unconfigured_audience_does_not_reject_an_absent_one	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/a_waived_audience_does_not_reject_an_absent_one
+test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_issuer_configured_as_the_empty_string_is_still_enforced	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_issuer_configured_as_the_empty_string_is_refused_at_construction
+test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_audience_configured_as_the_empty_string_is_still_enforced	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_audience_configured_as_the_empty_string_is_refused_at_construction

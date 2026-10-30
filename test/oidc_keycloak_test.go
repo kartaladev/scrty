@@ -92,7 +92,7 @@ func TestKeycloak(t *testing.T) {
 	keys, err := signingkey.New(t.Context())
 	require.NoError(t, err)
 
-	tokens, err := token.NewGenerator(keys)
+	tokens, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience())
 	require.NoError(t, err)
 
 	chain, err := httpsec.New(httpsec.EnableOIDCLogin(manager, handoffs,

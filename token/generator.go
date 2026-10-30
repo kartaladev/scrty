@@ -16,6 +16,11 @@ import (
 
 // Generator issues tokens and verifies them with its own key source, issuer and
 // audience, so a service that issues can verify without a second construction.
+//
+// Because it verifies, it follows a Verifier's rule: NewGenerator refuses to
+// construct one that neither configures nor waives the issuer, and likewise
+// the audience. A configured claim goes into every token it issues and is
+// checked by its Verify; a waived claim is neither issued nor checked.
 type Generator interface {
 	// Generate returns a signed token for p, carrying id as its jti. It fails
 	// rather than issuing an unsigned token or one signed with an algorithm
@@ -30,19 +35,46 @@ type Generator interface {
 	Verifier
 }
 
-// Option configures a Generator. Every default NewGenerator applies has
-// an option here that replaces it.
+// Option configures a Generator. Every default NewGenerator applies has an
+// option here that replaces it. The issuer and the audience have no default:
+// each must be configured or explicitly waived.
 type Option func(*config)
 
 // WithIssuer sets the iss claim of issued tokens, and the issuer the generator
-// enforces when it verifies. Default: none, and iss is then neither set nor
-// checked.
+// enforces when it verifies. There is no default issuer: NewGenerator fails
+// with ErrConfig unless it is given either this option or WithoutIssuer, and
+// fails when it is given both. An empty iss is refused at construction with
+// ErrConfig; a generator meant to issue no issuer uses WithoutIssuer.
 func WithIssuer(iss string) Option { return Option(setIssuer(iss)) }
 
 // WithAudience sets the aud claim of issued tokens, and the audience the
-// generator enforces when it verifies. Default: none, and aud is then neither
-// set nor checked.
+// generator enforces when it verifies. There is no default audience:
+// NewGenerator fails with ErrConfig unless it is given either this option or
+// WithoutAudience, and fails when it is given both. An empty aud is refused at
+// construction with ErrConfig; a generator meant to issue no audience uses
+// WithoutAudience.
 func WithAudience(aud string) Option { return Option(setAudience(aud)) }
+
+// WithoutIssuer waives the issuer claim, which NewGenerator otherwise requires
+// through WithIssuer. It gives the claim up on both sides: issued tokens carry
+// no iss, and the generator's Verify accepts any token signed by a key in the
+// source whatever its issuer, including one that carries none.
+//
+// Waive it only when every token signed by a key in the source is meant for
+// this generator. Given together with WithIssuer, it fails construction with
+// ErrConfig.
+func WithoutIssuer() Option { return Option(waiveIssuer()) }
+
+// WithoutAudience waives the audience claim, which NewGenerator otherwise
+// requires through WithAudience. It gives the claim up on both sides: issued
+// tokens carry no aud, and the generator's Verify accepts any token signed by a
+// key in the source whatever its audience, including one that carries none, so
+// a token minted for another service that shares the key source verifies here.
+//
+// Waive it only when every token signed by a key in the source is meant for
+// this generator. Given together with WithAudience, it fails construction with
+// ErrConfig.
+func WithoutAudience() Option { return Option(waiveAudience()) }
 
 // WithTokenLifetime sets how long an issued token is valid. Default: 15 minutes.
 //
@@ -72,18 +104,22 @@ type generator struct{ cfg *config }
 
 // NewGenerator returns a Generator signing with keys.
 //
-// Defaults: no issuer; no audience; a 15-minute lifetime; RS256; the system
-// clock. Each is an Option naming its own default.
+// A decision on the issuer and on the audience is required: each is
+// configured, with WithIssuer and WithAudience, or waived by name, with
+// WithoutIssuer and WithoutAudience. There is no default that issues and checks
+// neither. Defaults: a 15-minute lifetime; RS256; the system clock. Each is an
+// Option naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
 //
-// Construction fails when no key source is supplied — including a non-nil
-// interface holding a nil pointer, which is what an unchecked constructor
-// error hands over — when the signing algorithm is one this library's key
-// sources cannot produce, when the lifetime is zero or less or is not a whole
-// number of seconds, and when a key source that reports its own key lifetime
-// and rotation interval could not keep a key published for as long as the
-// tokens would live.
+// Construction fails with ErrConfig when no key source is supplied —
+// including a non-nil interface holding a nil pointer, which is what an
+// unchecked constructor error hands over — when the signing algorithm is one
+// this library's key sources cannot produce, when the issuer or the audience
+// is neither configured nor waived, or is both, when the lifetime is zero or
+// less or is not a whole number of seconds, and when a key source that reports
+// its own key lifetime and rotation interval could not keep a key published for
+// as long as the tokens would live.
 func NewGenerator(keys signingkey.KeySource, opts ...Option) (Generator, error) {
 	cfg := newConfig()
 	cfg.keys = keys
@@ -96,6 +132,9 @@ func NewGenerator(keys signingkey.KeySource, opts ...Option) (Generator, error) 
 		}
 	}
 	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateClaims(generatorClaims); err != nil {
 		return nil, err
 	}
 	if err := cfg.validateLifetime(); err != nil {

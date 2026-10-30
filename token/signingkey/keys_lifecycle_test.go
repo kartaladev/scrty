@@ -486,14 +486,16 @@ func TestRestartedManager(t *testing.T) {
 					signingkey.WithClock(clockwork.NewFakeClockAt(old.CreatedAt)),
 				)
 				require.NoError(t, err)
-				issuer, err := token.NewGenerator(holder, token.WithClock(newClock()))
+				issuer, err := token.NewGenerator(holder, token.WithClock(newClock()),
+					token.WithoutIssuer(), token.WithoutAudience())
 				require.NoError(t, err)
 				issued, err := issuer.Generate(t.Context(), "jti-1",
 					&identity.Principal{ID: "u-1", Username: "alice"})
 				require.NoError(t, err)
 
 				verifier, err := token.NewVerifier(
-					token.WithVerifyKeySource(km), token.WithVerifyClock(newClock()))
+					token.WithVerifyKeySource(km), token.WithVerifyClock(newClock()),
+					token.WithoutVerifyIssuer(), token.WithoutVerifyAudience())
 				require.NoError(t, err)
 
 				_, err = verifier.Verify(t.Context(), issued)

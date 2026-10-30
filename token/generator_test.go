@@ -36,6 +36,7 @@ func TestGenerateClaims(t *testing.T) {
 			opts: func(clock *clockwork.FakeClock) []token.Option {
 				return []token.Option{
 					token.WithIssuer("https://auth.example"),
+					token.WithoutAudience(),
 					token.WithClock(clock),
 				}
 			},
@@ -63,6 +64,8 @@ func TestGenerateClaims(t *testing.T) {
 			algs: []signingkey.Alg{signingkey.ES256},
 			opts: func(clock *clockwork.FakeClock) []token.Option {
 				return []token.Option{
+					token.WithoutIssuer(),
+					token.WithoutAudience(),
 					token.WithSigningAlg(signingkey.ES256),
 					token.WithTokenLifetime(5 * time.Minute),
 					token.WithClock(clock),
@@ -86,6 +89,7 @@ func TestGenerateClaims(t *testing.T) {
 			name: "a configured audience is carried",
 			opts: func(clock *clockwork.FakeClock) []token.Option {
 				return []token.Option{
+					token.WithoutIssuer(),
 					token.WithAudience("api"),
 					token.WithClock(clock),
 				}
@@ -123,7 +127,7 @@ func TestAudienceRoundTrip(t *testing.T) {
 
 	keys := newKeySource(t)
 
-	gen, err := token.NewGenerator(keys, token.WithAudience("api"))
+	gen, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithAudience("api"))
 	require.NoError(t, err)
 
 	raw, err := gen.Generate(t.Context(), "s-1", alice())
@@ -132,6 +136,7 @@ func TestAudienceRoundTrip(t *testing.T) {
 	ver, err := token.NewVerifier(
 		token.WithVerifyKeySource(keys),
 		token.WithVerifyAudience("api"),
+		token.WithoutVerifyIssuer(),
 	)
 	require.NoError(t, err)
 
@@ -340,7 +345,11 @@ func TestNewGeneratorValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			gen, err := token.NewGenerator(tc.keys(t), tc.opts...)
+			// No row is about the issuer or the audience, so every row waives
+			// both and is refused, or constructed, for its own reason alone.
+			opts := append([]token.Option{token.WithoutIssuer(), token.WithoutAudience()}, tc.opts...)
+
+			gen, err := token.NewGenerator(tc.keys(t), opts...)
 			tc.assert(t, gen, err)
 		})
 	}
@@ -419,7 +428,11 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			gen, err := token.NewGenerator(newKeySource(t, tc.algs...), tc.opts...)
+			// No row is about the issuer or the audience, so every row waives
+			// both.
+			opts := append([]token.Option{token.WithoutIssuer(), token.WithoutAudience()}, tc.opts...)
+
+			gen, err := token.NewGenerator(newKeySource(t, tc.algs...), opts...)
 			require.NoError(t, err)
 
 			raw, err := gen.Generate(t.Context(), tc.id, tc.principal())
@@ -484,14 +497,17 @@ func TestConsumerSuppliedKeySource(t *testing.T) {
 
 	// A reporting key source would refuse this lifetime; one that cannot
 	// report has nothing to check it against.
-	gen, err := token.NewGenerator(external, token.WithTokenLifetime(30*24*time.Hour))
+	gen, err := token.NewGenerator(external,
+		token.WithoutIssuer(), token.WithoutAudience(),
+		token.WithTokenLifetime(30*24*time.Hour))
 	require.NoError(t, err)
 
 	raw, err := gen.Generate(t.Context(), "s-1", alice())
 	require.NoError(t, err)
 	assert.Equal(t, "consumer-owned-key-1", decodeHeader(t, raw)["kid"])
 
-	ver, err := token.NewVerifier(token.WithVerifyKeySource(external))
+	ver, err := token.NewVerifier(token.WithVerifyKeySource(external),
+		token.WithoutVerifyIssuer(), token.WithoutVerifyAudience())
 	require.NoError(t, err)
 
 	claims, err := ver.Verify(t.Context(), raw)
@@ -499,7 +515,9 @@ func TestConsumerSuppliedKeySource(t *testing.T) {
 	assert.Equal(t, "alice", claims.Subject())
 
 	// The algorithm is still pinned: this source holds no ES256 key.
-	esGen, err := token.NewGenerator(external, token.WithSigningAlg(signingkey.ES256))
+	esGen, err := token.NewGenerator(external,
+		token.WithoutIssuer(), token.WithoutAudience(),
+		token.WithSigningAlg(signingkey.ES256))
 	require.NoError(t, err)
 
 	_, err = esGen.Generate(t.Context(), "s-2", alice())
@@ -571,7 +589,7 @@ func TestGeneratorReturnedErrors(t *testing.T) {
 				t.Helper()
 
 				keys := newFailingSignerKeySource(t, errKeySourceFixture)
-				gen, err := token.NewGenerator(keys)
+				gen, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience())
 				require.NoError(t, err)
 
 				_, genErr := gen.Generate(t.Context(), "jti-1", &identity.Principal{Username: "alice"})

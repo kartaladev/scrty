@@ -37,7 +37,9 @@ type Verifier interface {
 }
 
 // VerifyOption configures a Verifier. Every default NewVerifier applies has an
-// option here that replaces it, except the key source, which has no default.
+// option here that replaces it. The key source, the issuer and the audience
+// have no default: the key source must be supplied, and the issuer and the
+// audience must each be configured or explicitly waived.
 type VerifyOption func(*config)
 
 // WithVerifyKeySource sets where verification keys come from. Required: there
@@ -47,20 +49,41 @@ func WithVerifyKeySource(keys signingkey.KeySource) VerifyOption {
 	return func(c *config) { c.keys = keys }
 }
 
-// WithVerifyIssuer enforces iss. Default: none, and iss is then not checked.
-// When set, a token whose issuer is absent or different is rejected.
-//
-// Enforcement depends on this option having been given, never on the
-// configured value being non-empty.
+// WithVerifyIssuer enforces iss: a token whose issuer is absent or different is
+// rejected. There is no default issuer: NewVerifier fails with ErrConfig unless
+// it is given either this option or WithoutVerifyIssuer, and fails when it is
+// given both. An empty iss is refused at construction with ErrConfig; a
+// verifier meant to accept any issuer uses WithoutVerifyIssuer.
 func WithVerifyIssuer(iss string) VerifyOption { return VerifyOption(setIssuer(iss)) }
 
-// WithVerifyAudience enforces aud. Default: none, and aud is then not checked.
-// When set, a token whose audience is absent or does not contain it is
-// rejected.
-//
-// Enforcement depends on this option having been given, never on the
-// configured value being non-empty.
+// WithVerifyAudience enforces aud: a token whose audience is absent or does not
+// contain it is rejected. There is no default audience: NewVerifier fails with
+// ErrConfig unless it is given either this option or WithoutVerifyAudience, and
+// fails when it is given both. An empty aud is refused at construction with
+// ErrConfig; a verifier meant to accept any audience uses
+// WithoutVerifyAudience.
 func WithVerifyAudience(aud string) VerifyOption { return VerifyOption(setAudience(aud)) }
+
+// WithoutVerifyIssuer waives the issuer check, which NewVerifier otherwise
+// requires through WithVerifyIssuer. It gives that check up entirely: any token
+// signed by a key in the source is accepted whatever its issuer, including a
+// token that carries none.
+//
+// Waive it only when every token signed by a key in the source is meant for
+// this verifier. Given together with WithVerifyIssuer, it fails construction
+// with ErrConfig.
+func WithoutVerifyIssuer() VerifyOption { return VerifyOption(waiveIssuer()) }
+
+// WithoutVerifyAudience waives the audience check, which NewVerifier otherwise
+// requires through WithVerifyAudience. It gives that check up entirely: any
+// token signed by a key in the source is accepted whatever its audience,
+// including a token that carries none, so a token minted for another service
+// that shares the key source verifies here.
+//
+// Waive it only when every token signed by a key in the source is meant for
+// this verifier. Given together with WithVerifyAudience, it fails construction
+// with ErrConfig.
+func WithoutVerifyAudience() VerifyOption { return VerifyOption(waiveAudience()) }
 
 // WithVerifyMaxTokenSize sets the largest token, in bytes, that Verify will
 // look at. Default: 8192, which is generous for a compact JWS carrying an
@@ -87,15 +110,19 @@ type verifier struct{ cfg *config }
 
 // NewVerifier returns a Verifier.
 //
-// WithVerifyKeySource is required. Defaults: no issuer enforced; no audience
-// enforced; the system clock; an 8192-byte maximum token size. Each is a
-// VerifyOption naming its own default.
+// WithVerifyKeySource is required. So is a decision on the issuer and on the
+// audience: each is enforced, with WithVerifyIssuer and WithVerifyAudience, or
+// waived by name, with WithoutVerifyIssuer and WithoutVerifyAudience. There is
+// no default that checks neither. Defaults: the system clock; an 8192-byte
+// maximum token size. Each is a VerifyOption naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
-// Construction fails when no key source is supplied, when the clock is nil,
-// and when the maximum token size is not positive. A port given as a non-nil
-// interface holding a nil pointer — what an unchecked constructor error hands
-// over — counts as absent.
+// Construction fails with ErrConfig when no key source is supplied, when the
+// clock is nil, when the maximum token size is not positive, when the issuer
+// or the audience is neither configured nor waived, and when either is both
+// configured and waived. A port given as a non-nil interface holding a nil
+// pointer — what an unchecked constructor error hands over — counts as
+// absent.
 func NewVerifier(opts ...VerifyOption) (Verifier, error) {
 	cfg := newConfig()
 	for _, opt := range opts {
@@ -107,6 +134,9 @@ func NewVerifier(opts ...VerifyOption) (Verifier, error) {
 		}
 	}
 	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateClaims(verifierClaims); err != nil {
 		return nil, err
 	}
 

@@ -54,9 +54,16 @@ type config struct {
 	parseOpts []jwt.ParseOption
 
 	// hasIssuer and hasAudience record that the consumer configured the claim,
-	// so enforcement never depends on the configured value being non-empty.
+	// so a claim configured as the empty string is refused at construction
+	// rather than mistaken for one never configured.
 	hasIssuer   bool
 	hasAudience bool
+
+	// issuerWaived and audienceWaived record that the consumer waived the
+	// claim by name. Both constructors require each claim to be either
+	// configured or waived, and never both.
+	issuerWaived   bool
+	audienceWaived bool
 }
 
 func newConfig() *config {
@@ -88,6 +95,68 @@ func setAudience(aud string) func(*config) {
 
 func setClock(clk clock.Clock) func(*config) {
 	return func(c *config) { c.clock = clk }
+}
+
+func waiveIssuer() func(*config) {
+	return func(c *config) { c.issuerWaived = true }
+}
+
+func waiveAudience() func(*config) {
+	return func(c *config) { c.audienceWaived = true }
+}
+
+// claimOptions names the options that configure and waive one claim on one
+// constructor, so a refusal tells the consumer which of its own options fix the
+// wiring.
+type claimOptions struct {
+	claim, configure, waive string
+}
+
+var (
+	verifierClaims = [2]claimOptions{
+		{claim: "issuer", configure: "WithVerifyIssuer", waive: "WithoutVerifyIssuer"},
+		{claim: "audience", configure: "WithVerifyAudience", waive: "WithoutVerifyAudience"},
+	}
+	generatorClaims = [2]claimOptions{
+		{claim: "issuer", configure: "WithIssuer", waive: "WithoutIssuer"},
+		{claim: "audience", configure: "WithAudience", waive: "WithoutAudience"},
+	}
+)
+
+// validateClaims refuses a configuration that neither configures nor waives
+// the issuer or the audience, one that both configures and waives the same
+// claim, and one that configures a claim as the empty string. A generator and
+// a verifier share the rule and differ only in the option names, given issuer
+// first, then audience.
+func (c *config) validateClaims(names [2]claimOptions) error {
+	if err := requireCheckOrWaiver(names[0], c.hasIssuer, c.issuer, c.issuerWaived); err != nil {
+		return err
+	}
+
+	return requireCheckOrWaiver(names[1], c.hasAudience, c.audience, c.audienceWaived)
+}
+
+// requireCheckOrWaiver reports a claim that is neither configured nor waived,
+// or both, or configured as the empty string, naming the two options so the
+// error says how to fix the wiring.
+//
+// An empty value is refused rather than enforced: two services that each pass
+// a setting left unset would mint and accept the same empty claim, and so
+// accept each other's tokens.
+func requireCheckOrWaiver(names claimOptions, configured bool, value string, waived bool) error {
+	switch {
+	case configured && waived:
+		return fmt.Errorf("%w: the %s is both configured (%s) and waived (%s)",
+			ErrConfig, names.claim, names.configure, names.waive)
+	case configured && value == "":
+		return fmt.Errorf("%w: the %s given to %s is empty: configure a non-empty %s, or waive it with %s",
+			ErrConfig, names.claim, names.configure, names.claim, names.waive)
+	case !configured && !waived:
+		return fmt.Errorf("%w: an %s is required: configure it with %s, or waive it with %s",
+			ErrConfig, names.claim, names.configure, names.waive)
+	default:
+		return nil
+	}
 }
 
 // validateOptions builds the validation rules every verification runs.
