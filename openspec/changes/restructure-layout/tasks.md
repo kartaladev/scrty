@@ -146,12 +146,12 @@ The naming sweep of 2026-10-31 found names that do not say what they bound, star
 
 `storekit.Column`'s exported name reaches the SQL text, and the `WithUserRoles` godoc contradicts `default-identity-store` (`design.md` D16). One lane, Sonnet, owning `internal/storekit`, `store/sqlstore/identity.go`, `store/pgxstore/identity.go` and `identity/ports.go`. It runs in parallel with 15 and 16.1.
 
-- [ ] 12.1 Make `storekit.Column`'s fields unexported, and add `storekit.RoleColumn(value any) Column` (D16). Red step:
+- [x] 12.1 Make `storekit.Column`'s fields unexported, and add `storekit.RoleColumn(value any) Column` (D16). Red step:
   - `TestColumnExportsNoField` in `internal/storekit` asserts through `reflect` that `Column` has no exported field, which is the guarantee D16 makes. See it fail on `Name`.
   - A `TestUpdateUserQuery` case builds the role column with `RoleColumn` and asserts the exact SQL text and arguments. Declare `RoleColumn` as a stub returning the zero `Column`, and see the case fail.
 
   Then unexport the fields, implement `RoleColumn`, and change the `sqlstore` and `pgxstore` callers from a struct literal to `RoleColumn`. Verify: the failing lines are recorded; `go test -count=1 -race ./internal/storekit/` passes; `go test ./...` passes in the core module and `store/pgxstore`; the identity-store conformance suites under `test/` pass in CI; `rg 'storekit\.Column\{' -g '!.claude/.legacy'` finds nothing.
-- [ ] 12.2 Rewrite the `identity.WithUserRoles` godoc (D16): on `Update`, a list with no usable role name leaves every stored grant and the primary role untouched; on `Provision`, it creates a user with no roles. Documentation only. Verify: `go doc ./identity WithUserRoles` reads as `default-identity-store`'s "A role list that names nothing leaves grants untouched" requires, and `gofmt -l identity` is clean.
+- [x] 12.2 Rewrite the `identity.WithUserRoles` godoc (D16): on `Update`, a list with no usable role name leaves every stored grant and the primary role untouched; on `Provision`, it creates a user with no roles. Documentation only. Verify: `go doc ./identity WithUserRoles` reads as `default-identity-store`'s "A role list that names nothing leaves grants untouched" requires, and `gofmt -l identity` is clean.
 - [ ] 12.3 Gate: `make check`; `evidence/check.sh all`, with the `Column` fields as `changed` rows and `RoleColumn` as an `added` row (D13, phase 6; the main session extends `check.sh` to accept both kinds first); `openspec validate restructure-layout --strict`; push; CI green. Then a Sonnet review against D16. Verify: as 11.5.
 
 ## 13. A user-store outage is unavailable, not a failed login (D19)

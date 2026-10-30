@@ -369,3 +369,6 @@ ident	github.com/kartaladev/scrty/oidc.MaxLogoutTokenMaxAge	github.com/kartalade
 ident	github.com/kartaladev/scrty/notify.WithQueueSize	github.com/kartaladev/scrty/notify.WithQueueMaxMessages
 ident	github.com/kartaladev/scrty/notify.QueuedSender.QueueSize	github.com/kartaladev/scrty/notify.QueuedSender.QueueMaxMessages
 ident	github.com/kartaladev/scrty/httpsec.WithEnrolmentSessionTTL	github.com/kartaladev/scrty/httpsec.WithEnrolmentSessionLifetime
+# D16: storekit columns are built only by storekit.
+changed	-	github.com/kartaladev/scrty/internal/storekit.Column
+added	-	github.com/kartaladev/scrty/internal/storekit.RoleColumn

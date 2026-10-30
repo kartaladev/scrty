@@ -1,11 +1,13 @@
 package storekit_test
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -868,9 +870,17 @@ func TestUpdateUserQuery(t *testing.T) {
 	changedAt := now.Add(-time.Hour)
 	userID := "user-1"
 
+	// columns are the users columns the named fields write, the only way a
+	// caller outside the package makes one.
+	columns := func(opts ...identity.UserOption) []storekit.Column {
+		return storekit.UserColumns(identity.ApplyUserOptions(opts...), "org-1",
+			func(time.Time) any { return changedAt })
+	}
+
 	type testCase struct {
 		name   string
 		set    []storekit.Column
+		userID any // the bound identifier; userID when nil
 		assert func(t *testing.T, query string, args []any)
 	}
 
@@ -884,7 +894,7 @@ func TestUpdateUserQuery(t *testing.T) {
 		},
 		{
 			name: "one column precedes updated_at",
-			set:  []storekit.Column{{Name: "name", Value: "Ada"}},
+			set:  columns(identity.WithUserName("Ada")),
 			assert: func(t *testing.T, query string, args []any) {
 				assert.Equal(t, "UPDATE users SET name = $1, updated_at = $2 WHERE id = $3", query)
 				assert.Equal(t, []any{"Ada", now, userID}, args)
@@ -892,12 +902,12 @@ func TestUpdateUserQuery(t *testing.T) {
 		},
 		{
 			name: "four columns bind in the order given",
-			set: []storekit.Column{
-				{Name: "name", Value: "Ada"},
-				{Name: "password", Value: []byte("hash")},
-				{Name: "organization_id", Value: "org-1"},
-				{Name: "password_changed_at", Value: changedAt},
-			},
+			set: columns(
+				identity.WithUserName("Ada"),
+				identity.WithUserPassword([]byte("hash")),
+				identity.WithUserOrganization(nil),
+				identity.WithUserPasswordChangedAt(changedAt),
+			),
 			assert: func(t *testing.T, query string, args []any) {
 				assert.Equal(t,
 					"UPDATE users SET name = $1, password = $2, organization_id = $3, "+
@@ -905,59 +915,89 @@ func TestUpdateUserQuery(t *testing.T) {
 				assert.Equal(t, []any{"Ada", []byte("hash"), "org-1", changedAt, now, userID}, args)
 			},
 		},
+		{
+			name:   "role column",
+			set:    []storekit.Column{storekit.RoleColumn("admin")},
+			userID: 7,
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET role = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, []any{"admin", now, 7}, args)
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			query, args := storekit.UpdateUserQuery(tc.set, now, userID)
+			query, args := storekit.UpdateUserQuery(tc.set, now, cmp.Or(tc.userID, any(userID)))
 			tc.assert(t, query, args)
 		})
 	}
 }
 
+func TestColumnExportsNoField(t *testing.T) {
+	t.Parallel()
+
+	typ := reflect.TypeOf(storekit.Column{})
+	for i := range typ.NumField() {
+		if f := typ.Field(i); f.IsExported() {
+			t.Errorf("storekit.Column exports %s, so a caller can put any text into the SQL", f.Name)
+		}
+	}
+}
+
 func TestUserColumns(t *testing.T) {
-	changedAt := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	changedAt := now.Add(-time.Hour)
 	const org = "org-1"
 	const marker = "ts-marker"
 	ts := func(time.Time) any { return marker }
 
+	// The columns hide their names, so each case reads them through the
+	// UPDATE they write: the SET list before updated_at, and the bound values.
 	type testCase struct {
 		name   string
 		opts   []identity.UserOption
-		assert func(t *testing.T, got []storekit.Column)
+		assert func(t *testing.T, query string, args []any)
 	}
 
 	cases := []testCase{
 		{
-			name:   "nothing named writes no column",
-			assert: func(t *testing.T, got []storekit.Column) { assert.Empty(t, got) },
+			name: "nothing named writes no column",
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET updated_at = $1 WHERE id = $2", query)
+				assert.Equal(t, []any{now, "u"}, args)
+			},
 		},
 		{
 			name: "the name alone",
 			opts: []identity.UserOption{identity.WithUserName("Ada")},
-			assert: func(t *testing.T, got []storekit.Column) {
-				assert.Equal(t, []storekit.Column{{Name: "name", Value: "Ada"}}, got)
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET name = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, []any{"Ada", now, "u"}, args)
 			},
 		},
 		{
 			name: "the password alone, nil written as empty",
 			opts: []identity.UserOption{identity.WithUserPassword(nil)},
-			assert: func(t *testing.T, got []storekit.Column) {
-				assert.Equal(t, []storekit.Column{{Name: "password", Value: []byte{}}}, got)
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET password = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, []any{[]byte{}, now, "u"}, args)
 			},
 		},
 		{
 			name: "the organization alone binds org",
 			opts: []identity.UserOption{identity.WithUserOrganization(nil)},
-			assert: func(t *testing.T, got []storekit.Column) {
-				assert.Equal(t, []storekit.Column{{Name: "organization_id", Value: org}}, got)
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET organization_id = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, []any{org, now, "u"}, args)
 			},
 		},
 		{
 			name: "the password-changed-at time alone goes through ts",
 			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(changedAt)},
-			assert: func(t *testing.T, got []storekit.Column) {
-				assert.Equal(t, []storekit.Column{{Name: "password_changed_at", Value: marker}}, got)
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET password_changed_at = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, []any{marker, now, "u"}, args)
 			},
 		},
 		{
@@ -970,25 +1010,28 @@ func TestUserColumns(t *testing.T) {
 				identity.WithUserRoles("admin"),
 				identity.WithUserName("Ada"),
 			},
-			assert: func(t *testing.T, got []storekit.Column) {
-				assert.Equal(t, []storekit.Column{
-					{Name: "name", Value: "Ada"},
-					{Name: "password", Value: []byte("hash")},
-					{Name: "organization_id", Value: org},
-					{Name: "password_changed_at", Value: marker},
-				}, got)
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t,
+					"UPDATE users SET name = $1, password = $2, organization_id = $3, "+
+						"password_changed_at = $4, updated_at = $5 WHERE id = $6", query)
+				assert.Equal(t, []any{"Ada", []byte("hash"), org, marker, now, "u"}, args)
 			},
 		},
 		{
-			name:   "the email has no column",
-			opts:   []identity.UserOption{identity.WithUserEmail("ada@example.com")},
-			assert: func(t *testing.T, got []storekit.Column) { assert.Empty(t, got) },
+			name: "the email has no column",
+			opts: []identity.UserOption{identity.WithUserEmail("ada@example.com")},
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET updated_at = $1 WHERE id = $2", query)
+				assert.Equal(t, []any{now, "u"}, args)
+			},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.assert(t, storekit.UserColumns(identity.ApplyUserOptions(tc.opts...), org, ts))
+			set := storekit.UserColumns(identity.ApplyUserOptions(tc.opts...), org, ts)
+			query, args := storekit.UpdateUserQuery(set, now, "u")
+			tc.assert(t, query, args)
 		})
 	}
 }

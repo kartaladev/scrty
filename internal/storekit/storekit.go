@@ -350,11 +350,16 @@ func ValidSQLState(code string) bool {
 	return true
 }
 
-// Column is one users column an update writes, and the value it binds.
+// Column is one users column an update writes, and the value it binds. Its
+// name is unexported: a Column comes only from UserColumns or RoleColumn, so
+// the column names that reach the SQL text are the ones this package fixes.
 type Column struct {
-	Name  string
-	Value any
+	name  string
+	value any
 }
+
+// RoleColumn is the users column holding the primary role, bound to value.
+func RoleColumn(value any) Column { return Column{name: "role", value: value} }
 
 // UserColumns is the users columns an update writes for the fields u names,
 // in a fixed order. Column names come only from this allow-list, never from
@@ -367,16 +372,16 @@ type Column struct {
 func UserColumns(u *identity.UserChange, org any, ts func(time.Time) any) []Column {
 	var set []Column
 	if u.IsSet(identity.FieldName) {
-		set = append(set, Column{"name", u.Name})
+		set = append(set, Column{name: "name", value: u.Name})
 	}
 	if u.IsSet(identity.FieldPassword) {
-		set = append(set, Column{"password", OrEmpty(u.Password)})
+		set = append(set, Column{name: "password", value: OrEmpty(u.Password)})
 	}
 	if u.IsSet(identity.FieldOrganization) {
-		set = append(set, Column{"organization_id", org})
+		set = append(set, Column{name: "organization_id", value: org})
 	}
 	if u.IsSet(identity.FieldPasswordChangedAt) {
-		set = append(set, Column{"password_changed_at", ts(u.PasswordChangedAt)})
+		set = append(set, Column{name: "password_changed_at", value: ts(u.PasswordChangedAt)})
 	}
 
 	return set
@@ -384,16 +389,16 @@ func UserColumns(u *identity.UserChange, org any, ts func(time.Time) any) []Colu
 
 // UpdateUserQuery is the partial UPDATE of user userID writing set and
 // updated_at, with its arguments. userID is bound as given, in the form the
-// adapter's driver takes. Each Column.Name is written into the SQL text as it
-// is, so it must come from UserColumns or be a fixed column name.
+// adapter's driver takes. Each column name is written into the SQL text as it
+// is, and a Column carries only names this package fixes.
 func UpdateUserQuery(set []Column, now time.Time, userID any) (string, []any) {
 	var b strings.Builder
 	args := make([]any, 0, len(set)+2)
 
 	b.WriteString("UPDATE users SET ")
 	for _, c := range set {
-		args = append(args, c.Value)
-		b.WriteString(c.Name + " = $" + strconv.Itoa(len(args)) + ", ")
+		args = append(args, c.value)
+		b.WriteString(c.name + " = $" + strconv.Itoa(len(args)) + ", ")
 	}
 	args = append(args, now)
 	b.WriteString("updated_at = $" + strconv.Itoa(len(args)))

@@ -77,8 +77,11 @@ func WithUserEmail(email string) UserOption {
 
 // WithUserRoles names the role names, the first of which is the primary role.
 //
-// Naming no roles at all still counts as naming the field, which is what lets
-// Update tell "leave the grants alone" apart from "these are the grants now".
+// Naming no roles at all still counts as naming the field. On Update, naming
+// no usable role name (an empty list, or only empty names) leaves every stored
+// grant and the primary role untouched, so a claim a mapper filtered down to
+// nothing cannot strip a user's access. On Provision, it creates a user with no
+// roles.
 func WithUserRoles(roles ...string) UserOption {
 	return func(u *UserChange) { u.Roles = roles; u.mark(FieldRoles) }
 }

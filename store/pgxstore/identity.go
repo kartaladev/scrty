@@ -388,7 +388,7 @@ func (s *IdentityStore) Update(
 
 		set := storekit.UserColumns(u, org, func(t time.Time) any { return nullTs(t) })
 		if len(roles) > 0 {
-			set = append(set, storekit.Column{Name: "role", Value: roles[0]})
+			set = append(set, storekit.RoleColumn(roles[0]))
 		}
 		if len(set) > 0 {
 			query, args := storekit.UpdateUserQuery(set, now, uuidArg(userID))
