@@ -52,16 +52,19 @@ func WithVerifyKeySource(keys signingkey.KeySource) VerifyOption {
 // WithVerifyIssuer enforces iss: a token whose issuer is absent or different is
 // rejected. There is no default issuer: NewVerifier fails with ErrConfig unless
 // it is given either this option or WithoutVerifyIssuer, and fails when it is
-// given both. An empty iss is refused at construction with ErrConfig; a
-// verifier meant to accept any issuer uses WithoutVerifyIssuer.
+// given both. An empty or blank iss (one made only of white space) is refused
+// at construction with ErrConfig; any other value is enforced exactly as given,
+// white space around it included. A verifier meant to accept any issuer uses
+// WithoutVerifyIssuer.
 func WithVerifyIssuer(iss string) VerifyOption { return VerifyOption(setIssuer(iss)) }
 
 // WithVerifyAudience enforces aud: a token whose audience is absent or does not
 // contain it is rejected. There is no default audience: NewVerifier fails with
 // ErrConfig unless it is given either this option or WithoutVerifyAudience, and
-// fails when it is given both. An empty aud is refused at construction with
-// ErrConfig; a verifier meant to accept any audience uses
-// WithoutVerifyAudience.
+// fails when it is given both. An empty or blank aud (one made only of white
+// space) is refused at construction with ErrConfig; any other value is enforced
+// exactly as given, white space around it included. A verifier meant to accept
+// any audience uses WithoutVerifyAudience.
 func WithVerifyAudience(aud string) VerifyOption { return VerifyOption(setAudience(aud)) }
 
 // WithoutVerifyIssuer waives the issuer check, which NewVerifier otherwise
@@ -119,8 +122,10 @@ type verifier struct{ cfg *config }
 // A nil option is skipped, so a consumer may build the slice conditionally.
 // Construction fails with ErrConfig when no key source is supplied, when the
 // clock is nil, when the maximum token size is not positive, when the issuer
-// or the audience is neither configured nor waived, and when either is both
-// configured and waived. A port given as a non-nil interface holding a nil
+// or the audience is neither configured nor waived, when either is both
+// configured and waived, and when either is configured empty or blank (the
+// empty string, or white space alone; the refusal names the waiver to use
+// instead). A port given as a non-nil interface holding a nil
 // pointer — what an unchecked constructor error hands over — counts as
 // absent.
 func NewVerifier(opts ...VerifyOption) (Verifier, error) {

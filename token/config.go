@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
@@ -54,8 +55,8 @@ type config struct {
 	parseOpts []jwt.ParseOption
 
 	// hasIssuer and hasAudience record that the consumer configured the claim,
-	// so a claim configured as the empty string is refused at construction
-	// rather than mistaken for one never configured.
+	// so a claim configured as the empty string, or as white space alone, is
+	// refused at construction rather than mistaken for one never configured.
 	hasIssuer   bool
 	hasAudience bool
 
@@ -125,9 +126,9 @@ var (
 
 // validateClaims refuses a configuration that neither configures nor waives
 // the issuer or the audience, one that both configures and waives the same
-// claim, and one that configures a claim as the empty string. A generator and
-// a verifier share the rule and differ only in the option names, given issuer
-// first, then audience.
+// claim, and one that configures a claim as the empty string or as white space
+// alone. A generator and a verifier share the rule and differ only in the
+// option names, given issuer first, then audience.
 func (c *config) validateClaims(names [2]claimOptions) error {
 	if err := requireCheckOrWaiver(names[0], c.hasIssuer, c.issuer, c.issuerWaived); err != nil {
 		return err
@@ -137,19 +138,22 @@ func (c *config) validateClaims(names [2]claimOptions) error {
 }
 
 // requireCheckOrWaiver reports a claim that is neither configured nor waived,
-// or both, or configured as the empty string, naming the two options so the
-// error says how to fix the wiring.
+// or both, or configured as the empty string or as white space alone, naming
+// the two options so the error says how to fix the wiring.
 //
-// An empty value is refused rather than enforced: two services that each pass
-// a setting left unset would mint and accept the same empty claim, and so
-// accept each other's tokens.
+// An empty or blank value is refused rather than enforced: two services that
+// each pass a setting left unset would mint and accept the same empty claim,
+// and so accept each other's tokens, and a setting that holds only a stray
+// space or newline is the same mistake. A value that merely has white space
+// around other text is the consumer's own string, and is enforced exactly as
+// given, never trimmed.
 func requireCheckOrWaiver(names claimOptions, configured bool, value string, waived bool) error {
 	switch {
 	case configured && waived:
 		return fmt.Errorf("%w: the %s is both configured (%s) and waived (%s)",
 			ErrConfig, names.claim, names.configure, names.waive)
-	case configured && value == "":
-		return fmt.Errorf("%w: the %s given to %s is empty: configure a non-empty %s, or waive it with %s",
+	case configured && strings.TrimSpace(value) == "":
+		return fmt.Errorf("%w: the %s given to %s is empty or blank: configure a non-blank %s, or waive it with %s",
 			ErrConfig, names.claim, names.configure, names.claim, names.waive)
 	case !configured && !waived:
 		return fmt.Errorf("%w: an %s is required: configure it with %s, or waive it with %s",

@@ -43,16 +43,19 @@ type Option func(*config)
 // WithIssuer sets the iss claim of issued tokens, and the issuer the generator
 // enforces when it verifies. There is no default issuer: NewGenerator fails
 // with ErrConfig unless it is given either this option or WithoutIssuer, and
-// fails when it is given both. An empty iss is refused at construction with
-// ErrConfig; a generator meant to issue no issuer uses WithoutIssuer.
+// fails when it is given both. An empty or blank iss (one made only of white
+// space) is refused at construction with ErrConfig; any other value is minted
+// and enforced exactly as given, white space around it included. A generator
+// meant to issue no issuer uses WithoutIssuer.
 func WithIssuer(iss string) Option { return Option(setIssuer(iss)) }
 
 // WithAudience sets the aud claim of issued tokens, and the audience the
 // generator enforces when it verifies. There is no default audience:
 // NewGenerator fails with ErrConfig unless it is given either this option or
-// WithoutAudience, and fails when it is given both. An empty aud is refused at
-// construction with ErrConfig; a generator meant to issue no audience uses
-// WithoutAudience.
+// WithoutAudience, and fails when it is given both. An empty or blank aud (one
+// made only of white space) is refused at construction with ErrConfig; any
+// other value is minted and enforced exactly as given, white space around it
+// included. A generator meant to issue no audience uses WithoutAudience.
 func WithAudience(aud string) Option { return Option(setAudience(aud)) }
 
 // WithoutIssuer waives the issuer claim, which NewGenerator otherwise requires
@@ -116,7 +119,9 @@ type generator struct{ cfg *config }
 // including a non-nil interface holding a nil pointer, which is what an
 // unchecked constructor error hands over — when the signing algorithm is one
 // this library's key sources cannot produce, when the issuer or the audience
-// is neither configured nor waived, or is both, when the lifetime is zero or
+// is neither configured nor waived, or is both, when either is configured
+// empty or blank (the empty string, or white space alone; the refusal names
+// the waiver to use instead), when the lifetime is zero or
 // less or is not a whole number of seconds, and when a key source that reports
 // its own key lifetime and rotation interval could not keep a key published for
 // as long as the tokens would live.

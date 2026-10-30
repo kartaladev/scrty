@@ -35,6 +35,17 @@ func TestNewGeneratorRequiresIssuerAndAudience(t *testing.T) {
 		assert.Nil(t, gen)
 	}
 
+	// refusedNaming is a refusal at construction whose message names the waiver
+	// that fixes the wiring, so the consumer is told which option to reach for.
+	refusedNaming := func(waiver string) func(t *testing.T, keys *signingkey.Keys, gen token.Generator, err error) {
+		return func(t *testing.T, keys *signingkey.Keys, gen token.Generator, err error) {
+			t.Helper()
+
+			refusedAtConstruction(t, keys, gen, err)
+			assert.ErrorContains(t, err, waiver)
+		}
+	}
+
 	cases := []testCase{
 		{
 			name:    "neither issuer nor waiver",
@@ -65,12 +76,71 @@ func TestNewGeneratorRequiresIssuerAndAudience(t *testing.T) {
 		{
 			name:    "an empty issuer is not a configuration",
 			options: []token.Option{token.WithIssuer(""), token.WithAudience("service-b")},
-			assert:  refusedAtConstruction,
+			assert:  refusedNaming("WithoutIssuer"),
 		},
 		{
 			name:    "an empty audience is not a configuration",
 			options: []token.Option{token.WithIssuer(issuer), token.WithAudience("")},
-			assert:  refusedAtConstruction,
+			assert:  refusedNaming("WithoutAudience"),
+		},
+		{
+			name:    "a blank issuer is not a configuration",
+			options: []token.Option{token.WithIssuer(" "), token.WithAudience("service-b")},
+			assert:  refusedNaming("WithoutIssuer"),
+		},
+		{
+			name:    "a blank audience is not a configuration",
+			options: []token.Option{token.WithIssuer(issuer), token.WithAudience("\t")},
+			assert:  refusedNaming("WithoutAudience"),
+		},
+		{
+			// The surrounding white space is the consumer's string: it is minted
+			// and enforced as given, so a generator configured with the trimmed
+			// form is a different audience.
+			name:    "an audience with surrounding white space is minted and enforced as given",
+			options: []token.Option{token.WithIssuer(issuer), token.WithAudience(" svc ")},
+			assert: func(t *testing.T, keys *signingkey.Keys, gen token.Generator, err error) {
+				require.NoError(t, err)
+
+				raw, err := gen.Generate(t.Context(), "s-1", alice())
+				require.NoError(t, err)
+
+				payload := segment(t, raw, 1)
+				require.Equal(t, []any{" svc "}, payload["aud"])
+
+				claims, err := gen.Verify(t.Context(), raw)
+				accepted(t, claims, err)
+
+				trimmed, err := token.NewGenerator(keys,
+					token.WithIssuer(issuer), token.WithAudience("svc"))
+				require.NoError(t, err)
+
+				claims, err = trimmed.Verify(t.Context(), raw)
+				rejected(t, claims, err)
+			},
+		},
+		{
+			name:    "an issuer with surrounding white space is minted and enforced as given",
+			options: []token.Option{token.WithIssuer(" " + issuer + " "), token.WithAudience("service-b")},
+			assert: func(t *testing.T, keys *signingkey.Keys, gen token.Generator, err error) {
+				require.NoError(t, err)
+
+				raw, err := gen.Generate(t.Context(), "s-1", alice())
+				require.NoError(t, err)
+
+				payload := segment(t, raw, 1)
+				require.Equal(t, " "+issuer+" ", payload["iss"])
+
+				claims, err := gen.Verify(t.Context(), raw)
+				accepted(t, claims, err)
+
+				trimmed, err := token.NewGenerator(keys,
+					token.WithIssuer(issuer), token.WithAudience("service-b"))
+				require.NoError(t, err)
+
+				claims, err = trimmed.Verify(t.Context(), raw)
+				rejected(t, claims, err)
+			},
 		},
 		{
 			// Two services whose issuer and audience come from settings left

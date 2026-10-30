@@ -36,6 +36,17 @@ func TestNewVerifierRequiresIssuerAndAudience(t *testing.T) {
 		assert.Nil(t, claims)
 	}
 
+	// refusedNaming is a refusal at construction whose message names the waiver
+	// that fixes the wiring, so the consumer is told which option to reach for.
+	refusedNaming := func(waiver string) func(t *testing.T, claims *token.Claims, err error) {
+		return func(t *testing.T, claims *token.Claims, err error) {
+			t.Helper()
+
+			refusedAtConstruction(t, claims, err)
+			assert.ErrorContains(t, err, waiver)
+		}
+	}
+
 	cases := []testCase{
 		{
 			name:     "neither issuer nor waiver",
@@ -71,13 +82,49 @@ func TestNewVerifierRequiresIssuerAndAudience(t *testing.T) {
 			name:     "an empty issuer is not a configuration",
 			generate: []token.Option{token.WithIssuer(issuer), token.WithAudience("api")},
 			verify:   []token.VerifyOption{token.WithVerifyIssuer(""), token.WithVerifyAudience("api")},
-			assert:   refusedAtConstruction,
+			assert:   refusedNaming("WithoutVerifyIssuer"),
 		},
 		{
 			name:     "an empty audience is not a configuration",
 			generate: []token.Option{token.WithIssuer(issuer), token.WithAudience("api")},
 			verify:   []token.VerifyOption{token.WithVerifyIssuer(issuer), token.WithVerifyAudience("")},
-			assert:   refusedAtConstruction,
+			assert:   refusedNaming("WithoutVerifyAudience"),
+		},
+		{
+			name:     "a blank issuer is not a configuration",
+			generate: []token.Option{token.WithIssuer(issuer), token.WithAudience("api")},
+			verify:   []token.VerifyOption{token.WithVerifyIssuer(" "), token.WithVerifyAudience("api")},
+			assert:   refusedNaming("WithoutVerifyIssuer"),
+		},
+		{
+			name:     "a blank audience is not a configuration",
+			generate: []token.Option{token.WithIssuer(issuer), token.WithAudience("api")},
+			verify:   []token.VerifyOption{token.WithVerifyIssuer(issuer), token.WithVerifyAudience("\n ")},
+			assert:   refusedNaming("WithoutVerifyAudience"),
+		},
+		{
+			name:     "an audience with surrounding white space is enforced as given",
+			generate: []token.Option{token.WithIssuer(issuer), token.WithAudience(" svc ")},
+			verify:   []token.VerifyOption{token.WithVerifyIssuer(issuer), token.WithVerifyAudience(" svc ")},
+			assert:   accepted,
+		},
+		{
+			name:     "an audience with surrounding white space is not matched by its trimmed form",
+			generate: []token.Option{token.WithIssuer(issuer), token.WithAudience(" svc ")},
+			verify:   []token.VerifyOption{token.WithVerifyIssuer(issuer), token.WithVerifyAudience("svc")},
+			assert:   rejected,
+		},
+		{
+			name:     "an issuer with surrounding white space is enforced as given",
+			generate: []token.Option{token.WithIssuer(" " + issuer + " "), token.WithAudience("api")},
+			verify:   []token.VerifyOption{token.WithVerifyIssuer(" " + issuer + " "), token.WithVerifyAudience("api")},
+			assert:   accepted,
+		},
+		{
+			name:     "an issuer with surrounding white space is not matched by its trimmed form",
+			generate: []token.Option{token.WithIssuer(" " + issuer + " "), token.WithAudience("api")},
+			verify:   []token.VerifyOption{token.WithVerifyIssuer(issuer), token.WithVerifyAudience("api")},
+			assert:   rejected,
 		},
 		{
 			name:     "waived issuer accepts any iss",
