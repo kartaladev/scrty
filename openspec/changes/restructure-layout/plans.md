@@ -93,14 +93,18 @@
 | main session | 11.4–11.5 | evidence, gate | main session | the review above |
 | S1 | 12.1–12.2 | `internal/storekit`, `store/sqlstore/identity.go`, `store/pgxstore/identity.go`, `identity/ports.go` | Sonnet: the constructor, its test and the godoc text are given | Sonnet |
 | U1 | 13.1–13.3 | `authenticate`, `httpsec/basic*.go`, `httpsec/login*.go`, `httpsec/errors*.go` | Opus: changes what a refusal means across two packages, and a wrong mapping would pass most tests | Opus |
+| U3 | 13.5 | `authenticate/password*.go`, `httpsec/password_outage_test.go`, `httpsec/basic.go`, `httpsec/recovery.go` | Opus: refusal semantics under cancellation | Opus (one review of U1–U3) |
+| U2 | 13.4 | `recovery/recover*.go`, `httpsec/login_options.go` | Opus: same reason as U1, and it touches a security refusal path | Opus (one review of U1–U2) |
 | K1 | 14.1–14.2 | `httpsec/apikey*.go` | Opus: refusal logic written for the first time | Opus |
 | V1 | 15.1–15.3 | `token/**` | Opus: token verification logic | Opus |
+| V3 | 15.5 | `token/**` | Opus: verification refusal logic | Opus (one review of V1–V3) |
+| V2 | 15.4 | `token/**`, `test/oidc/idp_test.go`, `test/oidc_keycloak_test.go`, README | Opus: same reason, and it extends V1's construction rule | Opus (one review of V1–V2) |
 | L1 | 16.1 | `ratelimit` (memory), `test/ratelimittest` | Opus: concurrency, and the interface L2 and L3 compile against | Opus (one review of L1–L3) |
 | L2 | 16.2 | `internal/pglimiter`, `internal/unavailable`, `store/sqlstore/limiter*.go`, `store/pgxstore/limiter*.go`, `ratelimit/redisstore`, the test module's limiter suites | Opus: atomic writes in SQL and Lua | Opus (one review of L1–L3) |
 | L3 | 16.3 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
-| main session | 12.3, 13.4, 14.3, 15.4, 16.4, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| main session | 12.3, 13.6, 14.3, 15.6, 16.4, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
-The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then K1 (after U1) and L2 (after L1) in parallel; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
+The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
 ---
 
@@ -630,10 +634,33 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 3: Implement.** In both endpoints, an authentication error matching `authenticate.ErrUnavailable` returns at once with that error. It does not record, count or clear anything, and sets no challenge header.
 - [ ] **Step 4: Verify.** `go test -count=1 -race ./httpsec/...`. Expected: PASS. `httpsecconformance` is left to CI.
 
-### Task 44: Group-13 gate (task 13.4, main session)
+### Task 43a: Recovery's password proof does not count an outage (task 13.4, U2, after Task 43)
+
+**Files:** Modify `recovery/recover.go` (the password-proof refusal near `r.refuse(ctx, v.user, err, true)`) and its tests; `httpsec/recovery.go` (`countsAgainstRecoverySource`, where the endpoint counts unmarked failures against the source) and `httpsec/recovery_test.go`; `httpsec/recovery_options.go` and `httpsec/login_options.go` (godoc).
+
+**Interfaces:**
+- Consumes: `authenticate.ErrUnavailable` (Task 41).
+- Produces: no new API. A password check returning an error that matches `authenticate.ErrUnavailable` makes `Recover` return that error without counting anything against the user or the source.
+
+- [ ] **Step 1: Write** a table case `"an unavailable user store is not a failed proof"` in the recovery tests. A password check returns `authenticate.ErrUnavailable`. Assert `ErrorIs(err, authenticate.ErrUnavailable)`, and that the user limiter and the source guard record no failure (mock expectations or counters, as the existing recovery tests observe counting). Where an HTTP-level recovery test exists, also assert 503.
+- [ ] **Step 2: Run** it. Expected: FAIL, because the outage is counted. Record the lines.
+- [ ] **Step 3: Implement.** Return an `ErrUnavailable` error from the password proof before `refuse` counts it.
+- [ ] **Step 4: Godoc.** `EnableFormLogin`'s step-4 text says an unavailable user store is refused with 503 and counted nowhere.
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./recovery/... ./httpsec/...` passes; `cd test && go test -count=1 -run 'Recover' .` with Docker.
+
+### Task 43b: Fold the U-lane review (task 13.5, U3, after Task 43a)
+
+**Files:** `authenticate/password.go` and its tests, `httpsec/password_outage_test.go`, `httpsec/basic.go` (godoc reflow), `httpsec/recovery.go` (godoc of `countsAgainstRecoverySource`).
+
+- [ ] **Step 1: Write** the cancelled-context cases: the loader fails with the request context's own error after it was cancelled. Expect `ErrAuthenticationFailed`, not `ErrUnavailable`, at the provider; at the endpoints expect 401, one source charge and one recorded failure. Tighten the load-failure case to `assert.Same`/`Equal(t, authenticate.ErrUnavailable, err)`.
+- [ ] **Step 2: Run.** Expected: FAIL with `ErrUnavailable` returned. Record the lines.
+- [ ] **Step 3: Implement.** In the provider, when `ctx.Err() != nil` and `errors.Is(loadErr, ctx.Err())`, take the uniform-failure path. Fix the two godoc items.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...`.
+
+### Task 44: Group-13 gate (task 13.6, main session)
 
 - [ ] **Step 1:** Add an `added` row for `ErrUnavailable`, and list Task 41's changed case for the assertion review. Run `evidence/check.sh all && make check && openspec validate restructure-layout --strict`.
-- [ ] **Step 2:** An Opus review of the U1 diff against D19 and the `authentication`, `http-error-propagation` and `http-security-chain` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
+- [ ] **Step 2:** An Opus review of the U1 and U2 diffs against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
 
 ### Task 45: API key owners (tasks 14.1–14.2, K1, after Task 44)
 
@@ -687,9 +714,39 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 2:** Rewrite the package doc and the godoc of `NewVerifier`, `WithVerifyIssuer` and `WithVerifyAudience`. Construction now refuses an unconfigured issuer or audience. Each waiver says what it gives up: any token signed by a key in the source is accepted whatever its issuer, or audience.
 - [ ] **Step 3: Verify.** `go test -count=1 -race ./token/...` passes; `rg -n 'NewVerifier\(' -g '!.claude/.legacy' -g '!openspec/**'` shows both claims configured or waived at every call; `go doc -all ./token | rg 'exactly when the consumer configured'` finds nothing.
 
-### Task 49: Group-15 gate (task 15.4, main session)
+### Task 48a: The generator follows the same rule (task 15.4, V2, after Task 48)
 
-- [ ] As Task 44, with the waivers as `added` rows, Task 48's changed tests listed for the assertion review, an Opus review against D18 and the `token-issuance` delta, and the commit `fix(token)!: a verifier requires an issuer and an audience, or a waiver`.
+**Files:** Modify `token/generator.go` and `token/config.go`, `token/generator_test.go` and the other `token/**` tests that call `NewGenerator`, `test/oidc/idp_test.go`, `test/oidc_keycloak_test.go`, and README examples that build a generator. Create `token/generator_claims_required_test.go`.
+
+**Interfaces:**
+- Consumes: Task 47's waived-claim configuration and its construction check.
+- Produces: `func WithoutIssuer() Option` and `func WithoutAudience() Option`. `NewGenerator` returns an error wrapping `ErrConfig` when, for either claim, it has neither `WithIssuer`/`WithAudience` nor the waiver, or has both. A waived claim is neither minted nor checked by the generator's own `Verify`.
+
+- [ ] **Step 1: Declare** both waivers as no-ops.
+- [ ] **Step 2: Write** `TestNewGeneratorRequiresIssuerAndAudience`, a table built on a real `signingkey.Keys`:
+  - `"neither issuer nor waiver"` → `ErrConfig`;
+  - `"neither audience nor waiver"` → `ErrConfig`;
+  - `"issuer and its waiver"` → `ErrConfig`;
+  - `"audience and its waiver"` → `ErrConfig`;
+  - `"two services sharing a key source"`: generator B (`WithAudience("service-b")`, `WithIssuer("https://b.example")`) rejects a token from generator A (`WithAudience("service-a")`, same issuer) with `ErrInvalid`;
+  - `"waived on purpose"`: a generator with both waivers issues a token with no `iss` and no `aud`, and verifies it.
+- [ ] **Step 3: Run.** `go test -count=1 -run TestNewGeneratorRequiresIssuerAndAudience ./token/`. Expected: FAIL on the four construction rows. Record the lines.
+- [ ] **Step 4: Implement** the check in `NewGenerator`, reusing Task 47's claim rule.
+- [ ] **Step 5: Update callers.** Each `NewGenerator` call lacking a claim gains the configured value where the test is about it, otherwise the waiver: the token tests, the two test-module IdP helpers, README. Change no other assertion. Update `NewGenerator`'s godoc defaults sentence ("no issuer; no audience" becomes a refusal), and the `Generator` godoc.
+- [ ] **Step 6: Verify.** `go test -count=1 -race ./token/...`; `go build ./... && go vet ./...` in every module; `cd test && go test -count=1 ./oidc/` with Docker; `rg -n 'NewGenerator\(' -g '!.claude/**' -g '!openspec/**'` shows both claims configured or waived at every call.
+
+### Task 48b: Empty claims are refused (task 15.5, V3, after Task 48a)
+
+**Files:** `token/config.go`, `token/verifier_claims_required_test.go`, `token/generator_claims_required_test.go`, `token/verifier_test.go` (the rows pinning an enforced empty value), and the godoc of the four configure options.
+
+- [ ] **Step 1: Write** the refusal rows for `WithIssuer("")`, `WithAudience("")`, `WithVerifyIssuer("")` and `WithVerifyAudience("")`, each expecting `ErrConfig`. Add the row in which a generator that waived both claims verifies a token carrying `iss` `https://other.example` and `aud` `other`.
+- [ ] **Step 2: Run.** Expected: FAIL on the empty rows. Record the lines.
+- [ ] **Step 3: Implement** the refusal in `validateClaims`. Turn the base "configured as the empty string is still enforced" rows into refusal rows. Each configure option's godoc says an empty value is refused and names the waiver.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./token/...`; `go vet ./...` in every module.
+
+### Task 49: Group-15 gate (task 15.6, main session)
+
+- [ ] As Task 44, with the four waivers as `added` rows, the changed tests of Tasks 48 and 48a listed for the assertion review, an Opus review of V1 and V2 against D18 and the `token-issuance` delta, and the commit `fix(token)!: verifiers and generators require an issuer and an audience, or a waiver`.
 
 ### Task 50: `Charger` and the in-memory charge (task 16.1, L1)
 
@@ -706,7 +763,7 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 1: Write** the conformance cases in the suite, run for any `Charger`:
   - `"concurrent charges stop at the limit"`: 64 goroutines released by one barrier charge one key against a limit of 5, and exactly 5 report `exceeded=false`;
   - `"refund returns the allowance"`: 4 charges, a 5th, refund the 5th, and the next charge is below the limit;
-  - `"refund removes only its own failure"`: 2 charges at the same instant on a fixed clock, refund one, and the next 3 charges succeed, the 4th does not, under a limit of 5;
+  - `"refund removes only its own failure"`: 2 charges at the same instant on a fixed clock, refund one, and the next 4 charges succeed, the 5th does not, under a limit of 5;
   - `"refund after the window removes nothing"`.
 - [ ] **Step 2: Run them against a broken `Charger`** in `broken_test.go`, whose `Charge` calls `Exceeded`, yields (`runtime.Gosched()`), then `RecordFailure`. Expected: the concurrent case FAILS. Record the lines.
 - [ ] **Step 3: Run them against `*MemoryLimiter`** with stub methods returning zero values. Expected: FAIL. Record the lines.

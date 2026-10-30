@@ -24,3 +24,14 @@ The library SHALL count failed saved-code presentations per user reference, whet
 #### Scenario: A valid code spends no allowance
 - **WHEN** a valid code is presented for `u-1` and four wrong codes follow within 15 minutes
 - **THEN** a fifth wrong code is still looked up
+
+## ADDED Requirements
+
+### Requirement: An unavailable user store is not a failed recovery proof
+When a recovery's password proof receives the authentication capability's unavailable error, the recovery SHALL be refused with that error, which the public status mapping answers with 503. It SHALL NOT be counted against the user's recovery limit or against the request's source, because no proof was refused.
+
+#### Scenario: Outage during a recovery's password proof
+- **WHEN** the user store returns a connection error while a recovery for `u-1` checks its password proof
+- **THEN** the recovery is refused with the unavailable error and answered 503
+- **AND** nothing is counted against `u-1`'s recovery limit or the source
+

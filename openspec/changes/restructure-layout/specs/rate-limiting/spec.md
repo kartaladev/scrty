@@ -19,7 +19,7 @@ Every limiter scrty ships SHALL offer a charge and a refund. A charge SHALL, in 
 
 #### Scenario: Suite covers charging
 - **WHEN** the conformance suite runs against the in-memory limiter and each shared limiter
-- **THEN** the concurrent-charge and refund scenarios pass, and each fails against a limiter whose charge checks and records in two separate steps
+- **THEN** the concurrent-charge and refund scenarios pass; the concurrent-charge scenario fails against a limiter whose charge checks and records in two separate steps, and each refund scenario fails against a limiter whose refund removes the wrong failures
 
 ### Requirement: A flow that must hold its limit under concurrency charges first
 A flow whose limit must hold under concurrent attempts SHALL charge its limiter before the guarded work and refund the charge when the attempt succeeds. The source guards SHALL keep their separate check and record, and their documented burst bound.
