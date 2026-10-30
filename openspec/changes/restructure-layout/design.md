@@ -28,7 +28,7 @@ See `proposal.md` (Why) for the motivation. The facts below shaped the approach.
 - **Each dispatch fits one lane's file ownership.** Phases that touch callers across packages run in one lane; phases confined to one package run in parallel.
 
 **Non-Goals:**
-- **No default changes and no behaviour changes.** Every option and port keeps its default. A renamed option's godoc still names the default it replaces. `library-design`'s requirement to state the default and the override does not arise, because no decision here introduces or changes behaviour.
+- **No default changes and no behaviour changes, outside D16–D20.** Every option and port keeps its default through the moves and renames. A renamed option's godoc still names the default it replaces. D16–D20 are the exception: the security review of 2026-10-31 proved each one's defect with a failing test (D15–D20's context below), and the user folded the fixes into this change on 2026-10-31. Each of those decisions states its default and the consumer's override, as `library-design` requires.
 - **No change to the test module's own layout.** `test/` keeps its sub-packages (`test/pgxstore`, `test/sqlstore`, …) and file layout. Only its imports and the names it references change, apart from D14's HTTP client helpers.
 - **No consolidation of generated mocks.** Each one stays `<source>_mock_test.go`, produced by its `//go:generate` directive, as `use-mockgen` requires.
 - **None of `idiomatic-api-shape`'s or `key-port-context`'s items** (see `proposal.md`, Not in this change).
@@ -111,13 +111,14 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 | `policy` today | `lockout` |
 |---|---|
 | `AccountLockoutPolicy`, `NewAccountLockoutPolicy`, `LockoutOption` | `Policy`, `New`, `Option` |
-| `WithLockoutCap`, `…CapRetention`, `…Ceiling`, `…Clock`, `…Threshold`, `…Wait`, `…Window`, `…Logger`, `…Observer` | `WithCap`, `WithCapRetention`, `WithCeiling`, `WithClock`, `WithThreshold`, `WithWait`, `WithWindow`, `WithLogger`, `WithObserver` |
+| `WithLockoutCap`, `…CapRetention`, `…Ceiling`, `…Clock`, `…Threshold`, `…Wait`, `…Window`, `…Logger`, `…Observer` | `WithFailureStreakLimit`, `WithFailureStreakRetention`, `WithWindowFailureLimit`, `WithClock`, `WithWaitThreshold`, `WithWait`, `WithFailureWindow`, `WithLogger`, `WithObserver` (the bound names as D15 sets them) |
 | `WithSlidingLockout`, `WithAttemptStore` | `WithSliding`, `WithAttemptStore` |
 | `LockoutError`, `LockoutObserver`, `LockoutReport`, `LockoutReportKind` | `Error`, `Observer`, `Report`, `ReportKind` |
-| `LockoutAtCeiling`, `LockoutCleared`, `LockoutHeld`, `LockoutLocked`, `LockoutReleased` | `ReportAtCeiling`, `ReportCleared`, `ReportHeld`, `ReportLocked`, `ReportReleased` |
-| `NISTLockoutCap`, `LockoutExpiryTask` | `NISTCap`, `ExpiryTask` |
+| `LockoutAtCeiling`, `LockoutCleared`, `LockoutHeld`, `LockoutLocked`, `LockoutReleased` | `ReportAtWindowFailureLimit`, `ReportCleared`, `ReportHeld`, `ReportLocked`, `ReportReleased` |
+| `NISTLockoutCap`, `LockoutExpiryTask` | `NISTFailureStreakLimit`, `ExpiryTask` |
 | `AttemptStore` | stays `policy.AttemptStore` (see above) |
-| `AttemptReaper`, `FailureStreak`, `FailureStreakStore`, `MemoryAttemptStore`, `NewMemoryAttemptStore`, `MemoryAttemptOption`, `WithAttemptStoreCapacity`, `ErrAccountLocked`, `ErrAccountHeld`, `ErrAttemptStoreFull`, `ErrReapUnsupported`, `ErrRetainSinceRequired` | same names in `lockout` |
+| `WithAttemptStoreCapacity` | `WithAttemptStoreMaxIdentifiers` (D15) |
+| `AttemptReaper`, `FailureStreak`, `FailureStreakStore`, `MemoryAttemptStore`, `NewMemoryAttemptStore`, `MemoryAttemptOption`, `ErrAccountLocked`, `ErrAccountHeld`, `ErrAttemptStoreFull`, `ErrReapUnsupported`, `ErrRetainSinceRequired` | same names in `lockout` |
 
 **Alternative considered:** leave the group in `policy`. That keeps 21 files and the `Lockout…` prefix stutter on every name.
 
@@ -355,7 +356,7 @@ The option renames:
 | `recovery` | `WithCodeLimiter`, `WithCodeLimiterFactory`, `WithCodeStore`, `WithLowThreshold`, `WithSetSize` | `WithCodesLimiter`, `WithCodesLimiterFactory`, `WithCodesStore`, `WithCodesLowThreshold`, `WithCodesSetSize` |
 | `seal` | `WithEncryptionKey`, `WithRetiredEncryptionKey` | `WithKeyringEncryptionKey`, `WithKeyringRetiredEncryptionKey` |
 | `token` | `GenerateOption`; `VerifyOption` | `Option`; `VerifyOption` (the functions as in D9) |
-| `passkey` | `WithPasskeyLimit` | `WithLimit` (matches `ErrLimitReached`) |
+| `passkey` | `WithPasskeyLimit` | `WithPerUserLimit` (matches `ErrPerUserLimitReached`; D15 revises the earlier `WithLimit`) |
 | `redisstore` | `WithLimiterClock`, `WithUnavailableProbeInterval` | `WithClock`, `WithProbeInterval` (the same `<Thing>` as the SQL limiters) |
 | `httpsec` | `WithAllowedOrigins`, `WithAllowedRedirects`, `WithBindingCookieName` (magic link) | `WithMagicLinkAllowedOrigins`, `WithMagicLinkAllowedRedirects`, `WithMagicLinkBindingCookieName` |
 | `httpsec` | `WithBackchannelLogoutPath`, `WithBackchannelLogoutScope`, `WithCallbackSuccess`, `WithHandoffCountRefusals`, `WithHandoffLimiter`, `WithHandoffRateLimit`, `WithHandoffRedeemer` | `WithOIDC…` with the same `<Thing>` |
@@ -372,7 +373,7 @@ An error string keeps the `"<package>: "` form under the new package name:
 - `"pgx: …"` → `"pgxstore: …"`, `"gorm: …"` → `"gormstore: …"`, `"scrtyredis: …"` → `"redisstore: …"`, `"storeerr: …"` → `"store: …"`;
 - the lockout messages → `"lockout: …"`.
 
-An identifier that an error string names follows its rename too: lockout's `"WithLockoutCap must be positive"` becomes `"WithCap must be positive"`, and `(policy.FailureStreakStore)` becomes `(lockout.FailureStreakStore)`. A message names only things a consumer can find.
+An identifier that an error string names follows its rename too: lockout's `"WithLockoutCap must be positive"` becomes `"WithFailureStreakLimit must be positive"`, and `(policy.FailureStreakStore)` becomes `(lockout.FailureStreakStore)`. A message names only things a consumer can find.
 
 **A message that stands for another package's sentinel starts with that sentinel's text**, as Go's `%w` wrapping prints it. Only a package's own messages take its own prefix. This is already the convention in the tree: `redisstore` and `pglimiter` report `ratelimit.ErrConfig` as `"ratelimit: invalid configuration: …"`. So:
 - lockout's own sentinels and failures read `"lockout: …"` (`ErrAccountHeld`, `"lockout: record a failed attempt"`);
@@ -408,6 +409,9 @@ This is the one place where a test assertion may change: only the package prefix
   4. **Helpers.** The `storekit` de-duplication (D5), in one lane over the three backends.
 
   Each phase ends with the D13 checks before the next one starts.
+- **Two more phases, after the review fixes of groups 8–10:**
+  5. **Bound names.** D15's renames, in a single lane, for the same reason as phase 2. They run before any security fix, so the fixes are written against the final names.
+  6. **Security fixes.** D16–D20, each test-first from the red test that proved its claim (D15–D20's context). Lanes are split by file ownership in `tasks.md`; D17 follows D19, because it returns D19's unavailable error.
 
 ### D13. Proof that nothing broke
 
@@ -426,6 +430,14 @@ These checks run before phase 1 starts, and again after each phase:
 6. **Assertion review.** Outside D7 and D14, a test diff touches only import paths, identifiers, file placement and D11 prefixes. D14 changes how three test helpers build their HTTP clients and adds the tests that pin it, and changes no existing assertion. A reviewer compares every D7 case's assertions with its original function's.
 7. **Gates.** `make check` (gofmt, vet, lint, race tests, `go generate` drift and the layout checks) passes locally where it can, and in CI with the Docker suites.
 
+**Phase 5** runs checks 1–7 unchanged: D15's renames are rows of the rename map like any other.
+
+**Phase 6** changes behaviour, so the no-change checks apply to it only as far as they still can:
+- **Test inventory.** Every old name still exists and passes, except the cases D16–D20 name as changing. Each new test is listed with the decision it proves.
+- **API inventory.** New identifiers (the waiver options, `ErrUnavailable`, `WithAPIKeyOwners`, the limiter's charge and refund, `storekit`'s column constructors) are `added` rows of the map, each naming its decision. Nothing is removed apart from `storekit.Column`'s exported fields, which become `changed` rows (D16).
+- **Assertion review.** A test diff changes an existing assertion only where its decision says so: verifier tests gain an issuer and an audience, or a waiver (D18); the password authenticator's load-failure case expects the unavailable error (D19). A reviewer checks each changed assertion against its decision.
+- **Coverage and gates** as in checks 4 and 7.
+
 ### D14. The test module's HTTP clients own their transport
 
 Three test-module helpers send through `http.DefaultTransport`: `httpClient` in `test/oidc`, `keycloakBrowser`, and the SMTP helper's message-API reads, which use `http.DefaultClient`. `httptest.Server.Close` calls `CloseIdleConnections` on `http.DefaultTransport`, and that closes every idle connection the transport holds, not only those to the closing server. In a package whose tests run in parallel, one test's server shutdown can therefore close a connection another test has just taken from the pool, and that request fails with `http: CloseIdleConnections called`.
@@ -441,6 +453,149 @@ CI saw this once, on 2026-10-29: `TestTestIdentityProviderMalformedTokens/no_sub
 - **Stop running the subtests in parallel.** It removes the trigger from one test only, and D7 keeps every test's parallelism as it was.
 - **Retry a failed request.** It would also hide a real connection failure a test should see.
 
+### Context for D15–D20: the security review of 2026-10-31
+
+A security review of PR #27 made nine claims. Each was tested in a disposable export of the tree before any decision was taken (`defect-claims`), and the main session reran every red step:
+
+| Claim | Proof | Outcome |
+|---|---|---|
+| An empty role list on `Update` keeps every grant | The identity-store conformance cases "an empty role list leaves the stored grants untouched" and "a list of only empty names leaves the stored grants untouched" pass on all three backends; `default-identity-store` requires it | Intended. Only the `WithUserRoles` godoc misleads (D16) |
+| An API key keeps working for an inactive owner | `TestAPIKey_RefusesKeyOfInactiveOwner` failed: "handler ran for a key issued to a disabled user" | `REPRODUCED` (D17) |
+| `token.NewVerifier` checks no issuer or audience by default | `TestVerifier_RefusesTokenForAnotherAudienceWhenNoneConfigured` failed: a token minted for `service-a` verified at a verifier with no audience | Documented default, against the standards (D18) |
+| A user-store outage counts as a failed login | `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` failed: three outage requests recorded three failures, and the correct password was then refused, "held after 3 consecutive failures" | `REPRODUCED` (D19) |
+| The net/http adapter has no trusted-proxy client address | `TestNetHTTPClientAttribution` failed (401 for a valid key behind a proxy, and for a socket peer) | Documented; `trusted-proxy-client-ip` owns it |
+| `storekit.Column.Name` reaches the SQL text unchecked | `TestUpdateUserQuery_DoesNotWriteAForeignColumnNameIntoTheSQL` failed: the query contained `role = 'admin'` and `DROP TABLE` verbatim. Every caller passes a literal today | `REPRODUCED` as a hazard this change created (D16) |
+| Recovery codes check the limit, then record later | `TestCodes_ConcurrentWrongCodesStayWithinLimit` failed 100 of 100 runs under `-race`: 20 lookups against a limit of 5 | `REPRODUCED` (D20) |
+| A full in-memory limiter refuses every new source | `TestMemoryLimiter_Full` already pins it | Documented fail-closed bound |
+| API key verification leaks key-ID existence by timing | `TestVerify_DigestWorkIsUniform` showed no digest on a miss, but benchmarks put the miss path slower (201 ns) than a wrong secret (155 ns), from building log attributes; both answer the same 401 | Not reproduced as claimed |
+
+Every red test above becomes its decision's first failing test.
+
+### D15. Names say what they bound
+
+`lockout.WithCap(100)` does not say that it limits consecutive failed logins, in a package that also has a threshold, a ceiling, a window, waits and a store capacity. A sweep of every package's exported API on 2026-10-31 found the same fault elsewhere: a bare quantity word (Cap, Limit, Window, Lifetime, Size, Period) where the package has more than one thing it could bound.
+
+**The lockout family takes the noun it already uses.** The package calls the consecutive count a `FailureStreak`, stores it in a `FailureStreakStore` and refuses a held identifier with `ErrAccountHeld`. Naming the limit after the streak gives option, constant, accessor, record and store one word. Its godoc maps the word to NIST SP 800-63B-4 §3.2.2, which limits "consecutive failed authentication attempts". The user chose this family on 2026-10-31 over NIST's own phrase, which would add a second noun, and over a name for the effect (`WithHoldAfter`), which says less about what is counted.
+
+| Package | Today | New |
+|---|---|---|
+| `lockout` | `WithCap`, `NISTCap`, `WithCapRetention`, `(*Policy).Cap`, `(*Policy).CapRetention` | `WithFailureStreakLimit`, `NISTFailureStreakLimit`, `WithFailureStreakRetention`, `FailureStreakLimit`, `FailureStreakRetention` |
+| `lockout` | `WithCeiling`, `ReportAtCeiling` | `WithWindowFailureLimit`, `ReportAtWindowFailureLimit` |
+| `lockout` | `WithThreshold`, `(*Policy).Threshold` | `WithWaitThreshold`, `WaitThreshold` |
+| `lockout` | `WithWindow`, `(*Policy).Window` | `WithFailureWindow`, `FailureWindow` |
+| `lockout` | `WithAttemptStoreCapacity` | `WithAttemptStoreMaxIdentifiers` |
+| `passkey` | `WithLimit`, `ErrLimitReached` | `WithPerUserLimit`, `ErrPerUserLimitReached` |
+| `recovery` | `WithDelay`, `WithCompletionWindow`, `WithSessionLifetime`, `Count` | `WithHoldDelay`, `WithHoldCompletionWindow`, `WithPendingSessionLifetime`, `RemainingCodes` |
+| `token` | `WithLifetime` | `WithTokenLifetime` |
+| `signingkey` | `WithLifetime`, `WithLogSampleWindow` | `WithKeyLifetime`, `WithLogInterval` |
+| `onetime` | `WithTTL`, `(*Tokens).TTL` | `WithTokenTTL`, `TokenTTL` |
+| `policy` | `(*IdleTimeout).Thresholds` | `Deadlines` |
+| `mfa` | `WithPeriod` | `WithTimeStep` |
+| `oidc` | `MaxLogoutTokenMaxAge` | `LongestLogoutTokenMaxAge` |
+| `notify` | `WithQueueSize`, `(*QueuedSender).QueueSize` | `WithQueueMaxMessages`, `QueueMaxMessages` |
+| `httpsec` | `WithEnrolmentSessionTTL` | `WithEnrolmentSessionLifetime` |
+
+`passkey.WithPerUserLimit` revises D10's earlier choice of `WithLimit`: the package also has a registration-challenge limit, so the bare word no longer says which. `token.WithLifetime` and `signingkey.WithLifetime` shared a name for two different lifetimes, a token's validity and a key's publication.
+
+**Vocabulary rules,** added to D10's naming rules so the fault does not return:
+- **Limit** names a count per subject (per user, per source, per window); **`Max<Entity>`** names a container's size or a bound on a duration. Cap, Ceiling and Capacity are not used.
+- **Timeout** is how long to wait for something: a response, an operation, activity. It also keeps the two session deadlines OWASP's Session Management Cheat Sheet calls the idle and absolute timeouts, so `session.WithIdleTimeout`, `session.WithAbsoluteTimeout` and `policy.WithIdleAbsoluteTimeout` keep their names. **Lifetime** is how long one issued key, token or session lives from its creation. **TTL** is how long a one-time artifact (a challenge, a code, a flow, a handoff) stays redeemable.
+- Every log sampler's window is a **`…LogInterval`**.
+
+**Considered and kept:** byte lengths named `Size`, `Length`, `Limit` and `Bytes` each carry a noun (`seal.KeySize`, `WithLoginBodyLimit`, `WithMaxResponseBytes`), and the issuance limits (`WithIssuedCodeLimit`, `WithIssuanceLimit`, `WithMFAChallengeLimit`) each name what they issue. Neither is ambiguous alone, and renaming them would only churn.
+
+**Default and override:** names only. Every option keeps its default, and its godoc still names it.
+
+### D16. Column names reach SQL only from `storekit`, and `WithUserRoles` says what an empty list does
+
+**Columns.** D5 made `storekit.Column` a shared type with an exported `Name`, which `UpdateUserQuery` writes into the statement text. A comment was the only thing keeping caller input out of it. `Column`'s fields become unexported. A column is built only by `storekit`: `UserColumns` for the fields of a `UserChange`, and a new `RoleColumn(value)` for the primary role, which `sqlstore` and `pgxstore` add today with a struct literal. A name is then fixed when `storekit` compiles, and no backend can pass another. This is preferred to an allow-list checked when the query is built, which would add an error path to every update for a mistake the compiler can refuse.
+
+**Godoc.** The `identity.WithUserRoles` godoc says that naming no roles "lets Update tell 'leave the grants alone' apart from 'these are the grants now'", which reads as "an empty list clears the grants". `default-identity-store` requires the opposite, and the conformance suite pins it: on `Update`, a list with no usable role leaves every grant untouched, so a filtered claim can never strip a user's access; on `Provision`, it creates a user with no roles. The godoc says that, in those words.
+
+**Default and override:** none changes. `storekit` is internal.
+
+### D17. API key authentication can require an active owner
+
+A key's principal is "the consumer's own reference for the machine caller", stored and returned unchanged (`api-keys`, "Keys are bound to a service principal"). It need not name a user, so the library cannot load it by default without interpreting consumer data (`library-design` rule 5). The established design had no owner check either. But a consumer whose keys do belong to users has no way to stop them when the user is deactivated, short of revoking each key.
+
+**Decision.**
+- **Default:** no lookup, as today. The godoc of `EnableAPIKey` says that deactivating a user then stops none of the keys issued for that reference, and names the option.
+- **Override:** `httpsec.WithAPIKeyOwners(identity.UserLoader)`. After a key verifies, its principal reference is loaded with `LoadByUserID`. A user that is not found or not active is refused exactly as a wrong key is, and counted against the source. A loader failure of any other kind returns D19's `authenticate.ErrUnavailable`, answered 503, and is not counted against the source, because the caller's key was not refused.
+- A nil loader is a configuration error.
+
+**Departure from the established design,** which had no such check: recorded here, justified by `TestAPIKey_RefusesKeyOfInactiveOwner`.
+
+### D18. A verifier requires an issuer and an audience, or an explicit waiver
+
+`token.NewVerifier` checks the issuer and the audience only when configured, and `token-issuance` says so. Two services that share a key source then accept each other's tokens, which the red test shows. The standards require both checks of a token's recipient:
+- RFC 8725 §3.9: the relying party "MUST validate the audience value", and §3.8 the issuer;
+- RFC 9068 §4: a resource server's issuer "MUST exactly match", and it "MUST validate" `aud`;
+- OpenID Connect Core §3.1.3.7: both, for an ID token.
+
+Microsoft.IdentityModel's `TokenValidationParameters` validates both by default. The user asked on 2026-10-31 for the common security practice, so the verifier follows it.
+
+**Decision.**
+- **Default:** `NewVerifier` fails with `token.ErrConfig` unless it has `WithVerifyIssuer` or `WithoutVerifyIssuer()`, and `WithVerifyAudience` or `WithoutVerifyAudience()`.
+- **Override:** each waiver. Its godoc states what it gives up: any token signed by a key in the source is accepted whatever its issuer, or whatever its audience.
+- Configuring and waiving the same check is a configuration error.
+- Verification itself is unchanged once configured.
+- The library builds no verifier of its own. `httpsec` and `authenticate` take one from the consumer, so the change reaches consumers through their own construction.
+
+**Departure from the established design and from `token-issuance`,** which both skip an unconfigured check: recorded here, justified by `TestVerifier_RefusesTokenForAnotherAudienceWhenNoneConfigured` and the standards above. The tests that build a verifier with neither gain both, or a waiver where the test is about something else.
+
+### D19. A user-store outage is unavailable, not a failed credential
+
+The password authenticator returns the uniform failure for a user it could not load, as `authentication` requires, and form login and Basic record every uniform failure against the username and the source. An outage therefore counts as a guess. With a consecutive-failure limit (D15) it holds real accounts, and a hold never expires. The established design also recorded outage failures, but had no hold, so an outage there locked an account only until its window passed.
+
+OWASP's Authentication Cheat Sheet asks for one generic answer to a wrong user, a wrong password and a locked or disabled account. It does not cover a system error, and an outage is the same for every account, so it reveals nothing about one. NIST SP 800-63B-4 §3.2.2 counts failed authentication attempts; an attempt whose authenticator was never checked has not failed.
+
+**Decision.**
+- `authenticate.ErrUnavailable` is a new sentinel. The password authenticator returns it, without the driver's text, for a load failure other than "not found". It no longer matches `ErrAuthenticationFailed`.
+- It still spends the dummy password work, so timing does not change. The error-level log record stays.
+- Form login and Basic authentication refuse with it. They record no failure for the username, count none against the source, clear nothing, and set no `WWW-Authenticate` challenge.
+- The public status table maps it to 503.
+- D17's owner check uses it the same way.
+- **Default and override:** 503 is the default answer through the default error response. A consumer error handler, which already replaces the default, can answer as it likes. There is no option to count outages as failures: that is the defect.
+
+**Departure from the established design and from `authentication`'s "User store unavailable" scenario,** recorded here, justified by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure`. `TestPasswordAuthenticatorDoesNotRevealWhyItFailed`'s load-failure case changes to expect the unavailable error. `TestStatusForErrorCoversEverySentinel` gains its row.
+
+### D20. Limiters charge and refund atomically, and saved recovery codes use it
+
+`recovery.Codes` asks the limiter whether a user is over the limit, looks the code up, and records a failure afterwards. Every presentation in a concurrent burst passes the check before any is recorded. The `ratelimit` guards document the same bound and accept it. Recovery does not document it, and `account-recovery` says a user at the limit is refused. The established design had no recovery codes. scrty's TOTP already avoids the bound by charging the attempt first, in one conditional write, and refunding it on success.
+
+**Decision.** The `ratelimit.Limiter` port gains two methods:
+
+```go
+// Charge records one failure for key and reports exceeded=false, or
+// reports exceeded=true and records nothing, in one indivisible step.
+Charge(ctx context.Context, key string) (r Receipt, exceeded bool, err error)
+
+// Refund removes the failure r recorded, if it is still in the window.
+Refund(ctx context.Context, r Receipt) error
+```
+
+A `Receipt` is a value carrying the key and the stamp the charge recorded, so a refund removes that failure and no other. An error from `Charge` is treated as a refusal, as `Exceeded`'s is.
+
+- **Implementations:**
+  - the in-memory limiter does it under its existing lock;
+  - `internal/pglimiter`, shared by `sqlstore` and `pgxstore`, uses one conditional `UPDATE … RETURNING` on the key's `rate_limit_buckets` row (one row per key, with its stamps), so no migration is needed;
+  - `redisstore` uses one Lua script, which Redis runs atomically;
+  - the `internal/unavailable` decorator passes both through, and charges its local fallback when it has degraded to one.
+- **Conformance:** the suite gains a concurrent-charge case and a refund case. Each is seen to fail against a limiter whose charge checks and records in two steps.
+- **Callers:** `recovery.Codes` charges before it looks the code up, on a context whose cancellation is stripped, as recording is today, and refunds on a valid code. The source guards keep their check and record.
+- **Default and override:** the port has no consumers yet. A consumer limiter must implement both methods atomically, which the port's godoc states as the line its guarantee needs (`library-design` rule 4). `WithCodesLimiter` and `WithCodesLimiterFactory` still replace recovery's limiter.
+
+**Alternatives considered:**
+- **Count attempts in the recovery code store,** as TOTP's enrolment store does. Atomic too, but it moves counting out of the limiter, which `account-recovery`'s "Consumer limiter" scenario requires recovery to use.
+- **Document the burst bound.** Codes carry 128 bits, so a burst gains nothing practical. But it leaves the spec's promise false.
+
+## Review claims not acted on
+
+- **An empty role list on `Update`.** Intended and specified (`default-identity-store`, "A role list that names nothing leaves grants untouched"). D16 fixes the godoc only.
+- **The net/http client address behind a proxy.** Documented behaviour (`httpRequest.ClientIP` reads no forwarding header) and pinned by `TestHTTPRequestClientIP`. `trusted-proxy-client-ip` adds the resolver. A socket peer with no address stays refused, as `rate-limiting`'s "Unattributable sources are refused, not pooled" requires.
+- **A full in-memory limiter.** Its fail-closed refusal of new sources is `rate-limiting`'s "A full in-memory limiter refuses new keys and keeps counting held ones". `WithMemoryLimiterMaxKeys` raises the bound, and a shared limiter removes it.
+- **API key timing.** The claimed oracle did not hold. A miss is slower than a wrong secret, because the miss path builds log attributes before the logger drops them. The store's own hit and miss also differ. Every refusal is the same 401, and the source guard allows 20 failures a minute. Making the timing uniform would need a dummy lookup and padding, a design change no test calls for.
+
 ## Risks / Trade-offs
 
 - **gopls misses a mention it cannot resolve** (prose, strings, `%T`, `reflect`). → The text sweep in D12, and a reviewer search for every old name in the D8–D10 tables.
@@ -452,6 +607,11 @@ CI saw this once, on 2026-10-29: `TestTestIdentityProviderMalformedTokens/no_sub
 - **The main spec names the security policy before it exists.** The "Supported Go releases" text matches `release-readiness`'s, word for word, and names "the security policy", which `release-readiness` writes. If this change is archived first, the main spec names that policy before it exists. → Accepted: the two changes land in order, and 1.27 is the only release either names today.
 - **Other branches in flight conflict with the moves.** → The order in `proposal.md`. The moves start from a `main` that has `fix/stabilize-intermittent-tests` merged, and no other change is implemented until this one is merged.
 - **Longer import paths** (`authenticate/passkey/webauthn`). → Accepted, in exchange for the concept grouping. Package names stay short.
+- **The security fixes widen a PR that was a pure refactor.** Its review can no longer rest on "nothing changed". → Phase 6 runs after every rename. Each fix is its own lane and commit with its own red test, and is reviewed against its own decision (D13, phase 6).
+- **A 503 tells an attacker the user store is down** (D19). → Accepted: an outage is the same for every account, and the operator learns of it anyway. One edge remains. If a single account's row fails to load (corrupt data) while others load, that account answers 503 where others answer 401, which reveals that it exists. → Accepted and stated in `ErrUnavailable`'s godoc. Such a row is already an incident the error-level log reports.
+- **A consumer limiter written against the old port stops compiling** (D20). → There are no consumers yet. The port's godoc states the atomicity it requires, and the conformance suite is how a consumer proves it.
+- **Charging before the lookup spends allowance on a request that then fails for another reason** (D20). → The charge is refunded only on a valid code, so an outage during the lookup costs the user one attempt. This is the fail-closed direction `rate-limiting` already takes.
+- **Renames collide with the names other active changes were written against** (D15). → Migration Plan step 4 already checks `idiomatic-api-shape` and `key-port-context` against the names that actually land.
 
 ## Migration Plan
 
@@ -529,3 +689,26 @@ The sentinel-prefix convention in D11 is reasoned from scrty's own code: `rateli
 
 **Researched (accessed 2026-10-25):**
 - [golang.org/x/exp/cmd/apidiff](https://pkg.go.dev/golang.org/x/exp/cmd/apidiff): "determines whether two versions of a package are compatible". The page does not document its flags; the invocation is to be confirmed when the change is implemented.
+
+### Bound names (D15)
+
+**Researched (accessed 2026-10-31):**
+- [NIST SP 800-63B-4, §3.2.2 Rate Limiting (Throttling)](https://pages.nist.gov/800-63-4/sp800-63b.html): the verifier "SHALL limit consecutive failed authentication attempts" on one account to no more than 100. This is the quantity `WithFailureStreakLimit` bounds, and the value of `NISTFailureStreakLimit`.
+- [Effective Go: Names](https://go.dev/doc/effective_go#names): exported names are read with their package qualifier, and "long names don't automatically make things more readable". Each new name adds only the noun its package leaves ambiguous.
+- [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): names the two session deadlines "Idle Timeout" and "Absolute Timeout", which is why the session timeouts keep their word.
+
+### Security review fixes (D16–D20)
+
+**Researched (accessed 2026-10-31):**
+- [RFC 8725, JSON Web Token Best Current Practices, §3.8–3.9](https://www.rfc-editor.org/rfc/rfc8725.html): the relying party "MUST validate the audience value" and must reject a JWT whose issuer is invalid (D18).
+- [RFC 9068, JWT Profile for OAuth 2.0 Access Tokens, §4](https://www.rfc-editor.org/rfc/rfc9068.html): a resource server's issuer "MUST exactly match" and it "MUST validate" `aud` (D18).
+- [OpenID Connect Core 1.0, §3.1.3.7 ID Token Validation](https://openid.net/specs/openid-connect-core-1_0.html): the issuer "MUST exactly match" and the client "MUST validate" the audience (D18).
+- [Microsoft.IdentityModel `TokenValidationParameters.ValidateAudience`](https://learn.microsoft.com/en-us/dotnet/api/microsoft.identitymodel.tokens.tokenvalidationparameters.validateaudience) and [`ValidateIssuer`](https://learn.microsoft.com/en-us/dotnet/api/microsoft.identitymodel.tokens.tokenvalidationparameters.validateissuer): both default to `true`, as established practice in a major token library (D18).
+- [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html): one generic answer for a wrong user, a wrong password, and a locked or disabled account. It does not address system errors, and it warns that lockout can be used to deny service to other users' accounts (D19).
+- [NIST SP 800-63B-4, §3.2.2](https://pages.nist.gov/800-63-4/sp800-63b.html): the limit counts failed authentication attempts (D19, D20).
+
+**Primary documentation:**
+- [Redis: scripting with Lua](https://redis.io/docs/latest/develop/interact/programmability/eval-intro/): a script runs atomically, which `redisstore`'s charge relies on (D20).
+- [PostgreSQL: UPDATE](https://www.postgresql.org/docs/current/sql-update.html) and [explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html): a row-level lock held by `UPDATE` serialises concurrent writers to one row, which `pglimiter`'s conditional charge relies on (D20).
+
+D16 and D17 are reasoned from scrty's own settled specs (`default-identity-store`, `api-keys`) and the established design.

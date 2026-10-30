@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Regroup scrty into concept directories, consolidate files into feature families with table-driven tests, and apply the decided renames, without changing any behaviour.
+**Goal:** Regroup scrty into concept directories, consolidate files into feature families with table-driven tests, and apply the decided renames, without changing any behaviour. Then name every bound after what it bounds, and fix the four behaviours and one hazard that the 2026-10-31 security review proved.
 
 **Architecture:** There are four sequential phases (moves, renames, file families, shared helpers). Each one ends with the same evidence gate, `evidence/check.sh`. It compares tests, API, declarations and coverage against a baseline through `evidence/rename-map.tsv`.
 - Moves and renames touch callers in every package, so they run in a single lane.
@@ -10,11 +10,11 @@
 
 **Tech Stack:** Go 1.27 workspace (`go.work` lists 9 modules; `tools` sits outside it, by design), gopls v0.24 for moves and renames, `golang.org/x/exp/cmd/apidiff`, testify, mockgen v0.6 (`--typed`), GitHub Actions with testcontainers.
 
-**Spec:** `openspec/changes/restructure-layout/proposal.md`, `design.md` (decisions D1–D14), `specs/module-layout/spec.md`, `specs/test-provisioning/spec.md` and `tasks.md`. Step numbers below cite `tasks.md` task numbers.
+**Spec:** `openspec/changes/restructure-layout/proposal.md`, `design.md` (decisions D1–D20), the deltas under `specs/` (`module-layout`, `test-provisioning`, `token-issuance`, `authentication`, `http-error-propagation`, `http-security-chain`, `api-keys`, `rate-limiting`, `account-recovery`) and `tasks.md`. Step numbers below cite `tasks.md` task numbers.
 
 ## Global Constraints
 
-- **No behaviour change.** Every option and port keeps its default. A renamed option's godoc still names the default it replaces.
+- **No behaviour change, outside groups 12–16.** Every option and port keeps its default. A renamed option's godoc still names the default it replaces. Groups 12–16 (D16–D20) change exactly what their decisions and deltas state, and each states its default and the consumer's override.
 - **No feature is removed.** Every exported identifier, option, port, endpoint, sentinel, `Example` function and test has a successor. Every baseline top-level declaration, exported or not, maps to a declaration that exists. The only allowed absences are the D5 copies, each mapped to its `storekit` successor. `evidence/check.sh decls` enforces this at every gate.
 - **`policy.AttemptStore` stays in `policy`** (D3), and **`txKey` stays in each backend** (D5).
 - **Godoc describes the code, not its history.** No comment or godoc says that something was moved, renamed, merged or split, or names a former package, path or identifier ("formerly", "moved from", "was `Manager`", "see the old …"). A comment that already explains the code keeps its wording, apart from the names that changed. History belongs in the commit message and in this change's artifacts.
@@ -35,7 +35,7 @@
 - **`.claude/.legacy` is never read, cited or copied.** Exclude it from every search.
 - **Mocks** stay `<source>_mock_test.go`, produced by their `//go:generate` directive. Regenerate them; never edit them by hand.
 - **Table tests** follow `.claude/skills/table-test`: an `assert` closure, a `ctx` modifier for context-sensitive components, and `t.Context()`. Parallelism is never added: a case calls `t.Parallel()` only if its original function did.
-- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. There are three exceptions: a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores; the second PR review's reproduced defects, which the user folded into this change as group 9 (2026-10-29); and the test module's shared HTTP transport (D14), which the user folded in as group 10 (2026-10-30).
+- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. There are three exceptions: a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores; the second PR review's reproduced defects, which the user folded into this change as group 9 (2026-10-29); the test module's shared HTTP transport (D14), which the user folded in as group 10 (2026-10-30); and the security review's proven claims (D16–D20), which the user folded in as groups 12–16 (2026-10-31).
 - **Only the main session** edits `openspec/` files, including `evidence/`. Agents never edit them.
 
 ## Review Focus
@@ -45,6 +45,15 @@
 3. **A `//go:generate` directive points at a source file that was merged away.** The directive must move with its interface. Tasks 4.1–4.6 verify that `go generate ./... && git status --porcelain` reports nothing beyond the task's own diff.
 4. **A renamed type changes observable text through `%T` or `reflect`** (a log attribute, an error string). Task 3.1 lists every production `%T` and `reflect.TypeOf` use and either shows it emits no renamed name, or pins the new text in that package's test.
 5. **A merged helper loses an identity that was separate on purpose.** Each backend's `txKey` is what keeps one backend from seeing another's transaction, and `gorm/tx_test.go` uses its own `foreignTxKey`, so a shared key would pass every test. Task 17 keeps `txKey` out of the move, and its verification checks that `type txKey struct{}` is still declared in each of the three backends. The reviewer reads every merged declaration's godoc for a "this package alone" guarantee.
+
+
+**Review Focus for groups 11–16:**
+
+6. **A framework adapter answers its own status for `ErrUnavailable`.** If `ginsec` or `fibersec` map errors without `StatusForError`, an outage could still answer 401 or 500 there. Task 42 adds a case per adapter asserting 503.
+7. **A degraded shared limiter charges nothing.** With `internal/unavailable` in a degrade mode, a charge during an outage must hit the local fallback, or every recovery code during an outage is unthrottled. Task 51 adds the degraded-path charge case.
+8. **A refund removes another request's failure.** Two concurrent charges with equal stamps, then one refund, must leave exactly one failure. Task 50's conformance case charges twice, refunds once, and asserts one failure remains.
+9. **A renamed option still appears in README or `Example` code.** Task 37's sweep covers README; `go vet` covers `Example` names.
+10. **A verifier waiver is passed together with its configured check.** Task 47's table asserts `ErrConfig` for both pairs.
 
 ---
 
@@ -80,8 +89,18 @@
 | T1 | 10.1 | `test/oidc/idp_test.go` | Sonnet: the helper change and its red test are given | Sonnet (combined T1/T2 review) |
 | T2 | 10.2 | `test/testutils.go`, `test/oidc_keycloak_test.go`, `test/testutils_http_test.go` | Sonnet: same reason | Sonnet (combined T1/T2 review) |
 | main session | 10.3 | gate | main session | the review above |
+| N1 | 11.1–11.3 | renames, workspace-wide | Sonnet: every diff is fixed by D15's table and applied by gopls | Sonnet |
+| main session | 11.4–11.5 | evidence, gate | main session | the review above |
+| S1 | 12.1–12.2 | `internal/storekit`, `store/sqlstore/identity.go`, `store/pgxstore/identity.go`, `identity/ports.go` | Sonnet: the constructor, its test and the godoc text are given | Sonnet |
+| U1 | 13.1–13.3 | `authenticate`, `httpsec/basic*.go`, `httpsec/login*.go`, `httpsec/errors*.go` | Opus: changes what a refusal means across two packages, and a wrong mapping would pass most tests | Opus |
+| K1 | 14.1–14.2 | `httpsec/apikey*.go` | Opus: refusal logic written for the first time | Opus |
+| V1 | 15.1–15.3 | `token/**` | Opus: token verification logic | Opus |
+| L1 | 16.1 | `ratelimit` (memory), `test/ratelimittest` | Opus: concurrency, and the interface L2 and L3 compile against | Opus (one review of L1–L3) |
+| L2 | 16.2 | `internal/pglimiter`, `internal/unavailable`, `store/sqlstore/limiter*.go`, `store/pgxstore/limiter*.go`, `ratelimit/redisstore`, the test module's limiter suites | Opus: atomic writes in SQL and Lua | Opus (one review of L1–L3) |
+| L3 | 16.3 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
+| main session | 12.3, 13.4, 14.3, 15.4, 16.4, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
-The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
+The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then K1 (after U1) and L2 (after L1) in parallel; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
 ---
 
@@ -512,3 +531,222 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 1:** `make check`, `evidence/check.sh all` against the group-1 baseline, and `openspec validate restructure-layout --strict`. Expected: pass, 0 unaccounted (the new tests and helpers appear only as additions), valid.
 - [ ] **Step 2:** A Sonnet reviewer reads the T1 and T2 diffs against D14 and the `test-provisioning` delta, with the recorded red-step lines. Expected: a clean report.
 - [ ] **Step 3:** Commit (`test: give the test module's HTTP clients a transport of their own`), push, and confirm CI green on the new head, including the Docker suites.
+
+### Task 35: Lockout bound names (task 11.1, N1)
+
+**Files:** every file that references a renamed identifier, across all modules (gopls finds them). Declarations live in `policy/lockout/lockout_options.go`, `policy/lockout/lockout.go`, `policy/lockout/attempts.go` and the report-kind file.
+
+**Interfaces:**
+- Produces, in `lockout`: `WithFailureStreakLimit(n int) Option`, `const NISTFailureStreakLimit = 100`, `WithFailureStreakRetention(d time.Duration) Option`, `(*Policy).FailureStreakLimit() int`, `(*Policy).FailureStreakRetention() time.Duration`, `WithWindowFailureLimit(n int) Option`, `ReportAtWindowFailureLimit ReportKind`, `WithWaitThreshold(n int) Option`, `(*Policy).WaitThreshold() int`, `WithFailureWindow(d time.Duration) Option`, `(*Policy).FailureWindow() time.Duration`, `WithAttemptStoreMaxIdentifiers(n int) MemoryAttemptOption`. Signatures are unchanged; only names change.
+
+- [ ] **Step 1:** For each pair in D15's `lockout` rows, run `gopls rename -w <file>:#<offset> <NewName>` from the workspace root, so every module is updated.
+- [ ] **Step 2:** Change the error strings that name a renamed option to the new name (`"WithFailureStreakLimit must be positive"`, and the same pattern for each), and update the tests that assert those exact texts.
+- [ ] **Step 3:** In the godoc of `WithFailureStreakLimit` and `NISTFailureStreakLimit`, name the quantity as NIST SP 800-63B-4 §3.2.2 does: "consecutive failed authentication attempts". Keep each option's "The default is …" sentence.
+- [ ] **Step 4: Verify.** `go build ./... && go vet ./...` in the core module and every nested module; `go test -count=1 -race ./policy/... ./httpsec/...`; `cd test && go vet ./... && go test -list . ./httpsecconformance/...` lists the same names as before. Expected: all pass, and the list is unchanged.
+
+### Task 36: The other bound names (task 11.2, N1)
+
+**Files:** as Task 35, for the packages in D15's other rows.
+
+**Interfaces:**
+- Produces: `passkey.WithPerUserLimit`, `passkey.ErrPerUserLimitReached`, `recovery.WithHoldDelay`, `recovery.WithHoldCompletionWindow`, `recovery.WithPendingSessionLifetime`, `recovery.RemainingCodes`, `token.WithTokenLifetime`, `signingkey.WithKeyLifetime`, `signingkey.WithLogInterval`, `onetime.WithTokenTTL`, `(*onetime.Tokens).TokenTTL`, `(*policy.IdleTimeout).Deadlines`, `mfa.WithTimeStep`, `oidc.LongestLogoutTokenMaxAge`, `notify.WithQueueMaxMessages`, `(*notify.QueuedSender).QueueMaxMessages`, `httpsec.WithEnrolmentSessionLifetime`. Signatures are unchanged.
+- Untouched: `session.WithIdleTimeout`, `session.WithAbsoluteTimeout`, `session.WithAbsoluteLifetime`, `session.WithMaxAbsoluteLifetime`, `policy.WithIdleAbsoluteTimeout`.
+
+- [ ] **Step 1:** Rename each with `gopls rename`, as in Task 35. `signingkey.WithLogSampleWindow` → `WithLogInterval`: confirm with `go doc ./token/signingkey` that no other `WithLogInterval` exists in the package first.
+- [ ] **Step 2:** Update the error strings and log messages that name a renamed identifier, and the tests asserting them.
+- [ ] **Step 3: Verify.** As Task 35, with `go test -count=1 -race ./...` in the core module. Expected: all pass.
+
+### Task 37: Text sweep for the bound names (task 11.3, N1)
+
+- [ ] **Step 1:** For every old name of Tasks 35–36, run `rg -n '\b<old>\b' -g '!.claude/.legacy'` over the whole repository.
+- [ ] **Step 2:** Fix each hit in Go comments, godoc, README, strings and `%T`/`reflect` output. Leave D13-frozen test function names. List every hit under `openspec/` in the report, unedited.
+- [ ] **Step 3: Verify.** Rerun Step 1. Expected: only frozen test names and the hits under `openspec/` that were reported.
+
+### Task 38: Rename map and group-11 gate (tasks 11.4–11.5, main session)
+
+- [ ] **Step 1:** Add an `ident` row per rename to `evidence/rename-map.tsv`. Where a row already maps a baseline name to an interim name (`WithLockoutCap` → `WithCap`, `NISTLockoutCap` → `NISTCap`, `LockoutAtCeiling` → `ReportAtCeiling`, `WithPasskeyLimit` → `WithLimit`), change its new column to the D15 name.
+- [ ] **Step 2:** `evidence/check.sh all && make check && openspec validate restructure-layout --strict`. Expected: 0 unaccounted, pass, valid.
+- [ ] **Step 3:** A Sonnet reviewer checks the N1 diff against D15: every row landed, nothing else was renamed, and godoc still names each default. Expected: clean.
+- [ ] **Step 4:** Commit (`refactor!: name every bound after what it bounds`), push, and confirm CI green, including the Docker suites.
+
+### Task 39: `storekit` column constructors and the `WithUserRoles` godoc (tasks 12.1–12.2, S1)
+
+**Files:**
+- Modify: `internal/storekit/storekit.go` (`Column`, `UserColumns`, `UpdateUserQuery`), `internal/storekit/storekit_test.go`, `store/sqlstore/identity.go` and `store/pgxstore/identity.go` (the role column literal), `identity/ports.go` (`WithUserRoles` godoc).
+
+**Interfaces:**
+- Produces: `type Column struct{ name string; value any }`, with no exported field; `func RoleColumn(value any) Column`, whose column name is `role`. `UserColumns` and `UpdateUserQuery` keep their signatures.
+
+- [ ] **Step 1: Stub** `func RoleColumn(value any) Column { return Column{} }`.
+- [ ] **Step 2: Write the failing tests.**
+  - `TestColumnExportsNoField`: `typ := reflect.TypeFor[Column]()`; for each field, `assert.False(t, typ.Field(i).IsExported(), "storekit.Column exports %s, so a caller can put any text into the SQL", typ.Field(i).Name)`.
+  - A `TestUpdateUserQuery` case `"role column"`: `UpdateUserQuery([]Column{RoleColumn("admin")}, now, 7)` returns exactly `"UPDATE users SET role = $1, updated_at = $2 WHERE id = $3"` and the args `[]any{"admin", now, 7}`.
+- [ ] **Step 3: Run.** `go test -count=1 -run 'TestColumnExportsNoField|TestUpdateUserQuery' ./internal/storekit/`. Expected: FAIL on `Name` exported, and on the role-column text. Record the lines.
+- [ ] **Step 4: Implement** the unexported fields and `RoleColumn`. Change both backends' `storekit.Column{Name: "role", …}` to `storekit.RoleColumn(…)`.
+- [ ] **Step 5: Rewrite** the `WithUserRoles` godoc: the first name is the primary role; on `Update`, naming no usable role leaves every stored grant and the primary role untouched, so a filtered claim cannot strip a user's access; on `Provision`, it creates a user with no roles.
+- [ ] **Step 6: Verify.** Step 3's command passes; `go test -count=1 -race ./internal/storekit/`; `go test ./...` in the core module and `store/pgxstore`; `rg 'storekit\.Column\{' -g '!.claude/.legacy'` finds nothing; `go doc ./identity WithUserRoles` reads as Step 5.
+
+### Task 40: Group-12 gate (task 12.3, main session)
+
+- [ ] **Step 1:** Extend `evidence/check.py` to accept `added` and `changed` rows (D13, phase 6). Add `changed` rows for `Column.Name`/`Column.Value` and an `added` row for `RoleColumn`.
+- [ ] **Step 2:** `evidence/check.sh all && make check && openspec validate restructure-layout --strict`. Expected: 0 unaccounted.
+- [ ] **Step 3:** A Sonnet review against D16. Then commit (`fix: build SQL column names only inside storekit`), push, and CI green including the identity-store conformance suites.
+
+### Task 41: `authenticate.ErrUnavailable` (task 13.1, U1)
+
+**Files:** Modify `authenticate/authenticate.go` (sentinels), `authenticate/password.go`, and the password authenticator's test file.
+
+**Interfaces:**
+- Produces: `var ErrUnavailable = errors.New("authenticate: the user store is unavailable")`. The password authenticator returns an error for which `errors.Is(err, ErrUnavailable)` is true and `errors.Is(err, ErrAuthenticationFailed)` is false, whenever `LoadByUsername` fails with an error that is not `identity.ErrUserNotFound`. Its message carries no driver text.
+
+- [ ] **Step 1: Declare** `ErrUnavailable` only.
+- [ ] **Step 2: Change** the load-failure case of `TestPasswordAuthenticatorDoesNotRevealWhyItFailed` to assert `ErrorIs(err, ErrUnavailable)`, `NotErrorIs(err, ErrAuthenticationFailed)`, and that `err.Error()` does not contain the loader's error text. Add the case `"a load failure spends the unknown-user password work"`: the encoder double records one `Match` against the dummy hash, exactly as the unknown-username case does.
+- [ ] **Step 3: Run.** `go test -count=1 -run TestPasswordAuthenticatorDoesNotRevealWhyItFailed ./authenticate/`. Expected: FAIL, because `ErrAuthenticationFailed` is returned. Record the lines.
+- [ ] **Step 4: Implement** the return in `password.go`, after the dummy `Match` and the error-level log record.
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./authenticate/...`. Expected: PASS, with the log assertion unchanged.
+
+### Task 42: 503 for `ErrUnavailable` (task 13.2, U1)
+
+**Files:** Modify `httpsec/errors.go` (the public status table) and `httpsec/errors_test.go`. Test only: `httpsec/ginsec` and `httpsec/fibersec` (Review Focus 6).
+
+- [ ] **Step 1: Write** a `StatusForError` table case `"user store unavailable"`: `fmt.Errorf("login: %w", authenticate.ErrUnavailable)` → `http.StatusServiceUnavailable`. Add one case in each adapter's error-response test, asserting a guard that returns `ErrUnavailable` answers 503.
+- [ ] **Step 2: Run.** `go test -count=1 -run 'TestStatusForError' ./httpsec/`. Expected: FAIL with 500, and `TestStatusForErrorCoversEverySentinel` fails on the unregistered sentinel. Record the lines.
+- [ ] **Step 3: Implement** the row: `authenticate.ErrUnavailable` → 503, placed before the `ErrAuthenticationFailed` row.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./httpsec/` and the adapters' tests (`cd httpsec/ginsec && go test ./...`, likewise `fibersec`). Expected: PASS.
+
+### Task 43: Form login and Basic do not count an outage (task 13.3, U1)
+
+**Files:** Modify `httpsec/basic.go` and `httpsec/login.go`. Create `httpsec/password_outage_test.go`.
+
+**Interfaces:**
+- Consumes: `authenticate.ErrUnavailable` (Task 41); `lockout.WithFailureStreakLimit` (Task 35).
+
+- [ ] **Step 1: Write** `TestPasswordLoginStoreOutageIsNotACredentialFailure`, a table over `"basic"` and `"form login"`. Each row:
+  - uses a mock `identity.UserLoader` that returns a connection error for three requests, then the real user;
+  - uses `lockout.New(lockout.WithWaitThreshold(2), lockout.WithWait(time.Nanosecond, time.Nanosecond), lockout.WithFailureStreakLimit(3))`, with the policy's attempt view as the endpoint's store;
+  - asserts each outage response is 503; `FailureCount` for the username is 0; the source guard's limiter received no `RecordFailure` (mock expectation); and a final request with the correct password succeeds.
+  - The Basic row also asserts no `WWW-Authenticate` header on the outage responses.
+- [ ] **Step 2: Run.** `go test -count=1 -run TestPasswordLoginStoreOutageIsNotACredentialFailure ./httpsec/`. Expected: FAIL. Record the lines.
+- [ ] **Step 3: Implement.** In both endpoints, an authentication error matching `authenticate.ErrUnavailable` returns at once with that error. It does not record, count or clear anything, and sets no challenge header.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./httpsec/...`. Expected: PASS. `httpsecconformance` is left to CI.
+
+### Task 44: Group-13 gate (task 13.4, main session)
+
+- [ ] **Step 1:** Add an `added` row for `ErrUnavailable`, and list Task 41's changed case for the assertion review. Run `evidence/check.sh all && make check && openspec validate restructure-layout --strict`.
+- [ ] **Step 2:** An Opus review of the U1 diff against D19 and the `authentication`, `http-error-propagation` and `http-security-chain` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
+
+### Task 45: API key owners (tasks 14.1–14.2, K1, after Task 44)
+
+**Files:** Modify `httpsec/apikey.go`. Test in `httpsec/apikey_test.go`, or `httpsec/apikey_owner_test.go` if the existing table's setup differs.
+
+**Interfaces:**
+- Consumes: `authenticate.ErrUnavailable`; `identity.UserLoader.LoadByUserID`.
+- Produces: `func WithAPIKeyOwners(users identity.UserLoader) APIKeyOption`. A nil `users` makes `New` fail with an error wrapping the chain's configuration sentinel.
+
+- [ ] **Step 1: Declare** `WithAPIKeyOwners` as a no-op that rejects nothing.
+- [ ] **Step 2: Write** `TestAPIKeyOwners`, a table over:
+  - `"no loader looks nothing up"`: authenticated; the loader mock has no expectation;
+  - `"inactive owner"`: 401, the same error as a wrong key, and one `RecordFailure` on the source limiter;
+  - `"missing owner"`: `ErrUserNotFound`, then the same as inactive;
+  - `"active owner"`: authenticated, principal `Kind` is service, with the key's reference;
+  - `"loader outage"`: `errors.Is(err, authenticate.ErrUnavailable)`, 503, no `RecordFailure`;
+  - `"nil loader"`: `New` returns an error.
+- [ ] **Step 3: Run.** `go test -count=1 -run TestAPIKeyOwners ./httpsec/`. Expected: FAIL on the inactive, missing, outage and nil rows. Record the lines.
+- [ ] **Step 4: Implement** the lookup after `Verify` succeeds and before the stateless phase.
+- [ ] **Step 5: Godoc.** `EnableAPIKey` says that without `WithAPIKeyOwners` no owner is looked up, so deactivating a user stops none of that reference's keys. `WithAPIKeyOwners` names the default it replaces ("no lookup").
+- [ ] **Step 6: Verify.** `go test -count=1 -race ./httpsec/...`. Expected: PASS.
+
+### Task 46: Group-14 gate (task 14.3, main session)
+
+- [ ] As Task 44, with `WithAPIKeyOwners` as an `added` row, an Opus review against D17 and the `api-keys` delta, and the commit `feat(httpsec): an API key can require an active owner`.
+
+### Task 47: Verifier construction requires issuer and audience (task 15.1, V1)
+
+**Files:** Modify `token/verifier.go` and `token/config.go`. Create `token/verifier_claims_required_test.go`.
+
+**Interfaces:**
+- Produces: `func WithoutVerifyIssuer() VerifyOption` and `func WithoutVerifyAudience() VerifyOption`. `NewVerifier` returns an error wrapping `ErrConfig` when, for either claim, the verifier has neither the `WithVerify…` option nor the waiver, or has both.
+
+- [ ] **Step 1: Declare** both waivers as no-ops.
+- [ ] **Step 2: Write** `TestNewVerifierRequiresIssuerAndAudience`, a table built on a real `signingkey.Keys`:
+  - `"neither issuer nor waiver"` → `ErrorIs(err, ErrConfig)`;
+  - `"neither audience nor waiver"` → `ErrConfig`;
+  - `"issuer and its waiver"` → `ErrConfig`;
+  - `"audience and its waiver"` → `ErrConfig`;
+  - `"waived issuer accepts any iss"`: verifies a token with `iss` `https://other.example`;
+  - `"token for another service"`: a generator with `WithAudience("service-a")`, a verifier with `WithVerifyAudience("service-b")` and `WithoutVerifyIssuer()`, gives `ErrorIs(err, ErrInvalid)`.
+- [ ] **Step 3: Run.** `go test -count=1 -run TestNewVerifierRequiresIssuerAndAudience ./token/`. Expected: FAIL on the four construction rows. Record the lines.
+- [ ] **Step 4: Implement** the construction checks.
+- [ ] **Step 5: Verify.** Step 3's command passes. The rest of `./token/` is now expected to fail until Task 48.
+
+### Task 48: Existing verifier tests and the `token` docs (tasks 15.2–15.3, V1)
+
+**Files:** Modify `token/verifier_test.go`, `token/generator_test.go`, `token/signingkey/keys_lifecycle_test.go`, `token/doc.go`, and the godoc in `token/verifier.go`.
+
+- [ ] **Step 1:** In each failing test (the 11 in `token` and `TestRestartedManager`), add the configured claim where the test is about it, and otherwise `WithoutVerifyIssuer()` and `WithoutVerifyAudience()`. Change no assertion.
+- [ ] **Step 2:** Rewrite the package doc and the godoc of `NewVerifier`, `WithVerifyIssuer` and `WithVerifyAudience`. Construction now refuses an unconfigured issuer or audience. Each waiver says what it gives up: any token signed by a key in the source is accepted whatever its issuer, or audience.
+- [ ] **Step 3: Verify.** `go test -count=1 -race ./token/...` passes; `rg -n 'NewVerifier\(' -g '!.claude/.legacy' -g '!openspec/**'` shows both claims configured or waived at every call; `go doc -all ./token | rg 'exactly when the consumer configured'` finds nothing.
+
+### Task 49: Group-15 gate (task 15.4, main session)
+
+- [ ] As Task 44, with the waivers as `added` rows, Task 48's changed tests listed for the assertion review, an Opus review against D18 and the `token-issuance` delta, and the commit `fix(token)!: a verifier requires an issuer and an audience, or a waiver`.
+
+### Task 50: `Charger` and the in-memory charge (task 16.1, L1)
+
+**Files:** Create `ratelimit/charge.go`. Modify `ratelimit/memory.go`, `test/ratelimittest/suite.go`, `test/ratelimittest/broken_test.go` and `test/ratelimittest/memory_test.go`.
+
+**Interfaces:**
+- Produces, in `ratelimit`:
+  - `type Receipt struct{ key string; stamp time.Time }`, with no exported field, built by `func NewReceipt(key string, stamp time.Time) Receipt` and read through `(Receipt).Key() string` and `(Receipt).Stamp() time.Time`, so the shared limiters in other packages can issue and redeem one;
+  - `type Charger interface { Charge(ctx context.Context, key string) (r Receipt, exceeded bool, err error); Refund(ctx context.Context, r Receipt) error }`;
+  - `*MemoryLimiter` implements `Charger`.
+- `Charge` on an at-limit key returns `exceeded=true` and records nothing. On an error it returns `exceeded=true` with the error, matching `Exceeded`'s fail-closed habit.
+- `Refund` removes one stamp equal to `r.stamp` from `r.key`, if one is still in the window. A zero `Receipt` is a no-op.
+
+- [ ] **Step 1: Write** the conformance cases in the suite, run for any `Charger`:
+  - `"concurrent charges stop at the limit"`: 64 goroutines released by one barrier charge one key against a limit of 5, and exactly 5 report `exceeded=false`;
+  - `"refund returns the allowance"`: 4 charges, a 5th, refund the 5th, and the next charge is below the limit;
+  - `"refund removes only its own failure"`: 2 charges at the same instant on a fixed clock, refund one, and the next 3 charges succeed, the 4th does not, under a limit of 5;
+  - `"refund after the window removes nothing"`.
+- [ ] **Step 2: Run them against a broken `Charger`** in `broken_test.go`, whose `Charge` calls `Exceeded`, yields (`runtime.Gosched()`), then `RecordFailure`. Expected: the concurrent case FAILS. Record the lines.
+- [ ] **Step 3: Run them against `*MemoryLimiter`** with stub methods returning zero values. Expected: FAIL. Record the lines.
+- [ ] **Step 4: Implement** both methods under the limiter's existing lock.
+- [ ] **Step 5: Verify.** `go test -count=50 -race -run Charge ./ratelimit/... ` and `cd test && go test -count=1 -race ./ratelimittest/`. Expected: PASS, while the broken `Charger` still fails the concurrent case.
+
+### Task 51: Atomic charge on the shared limiters (task 16.2, L2, after Task 50)
+
+**Files:** Modify `internal/pglimiter` (backend and statements), `store/sqlstore/limiter.go` and `store/pgxstore/limiter.go` (their runners), `ratelimit/redisstore/limiter.go` (a Lua script), `internal/unavailable/wrap.go`, and the test module's shared-limiter suites.
+
+**Interfaces:**
+- Consumes: `ratelimit.Charger`, `ratelimit.Receipt`, `ratelimit.NewReceipt` and its accessors (Task 50).
+- Produces: `Charger` on the `pglimiter` backend, the `redisstore` limiter, and the `unavailable` decorator.
+
+- [ ] **Step 1: Stub** `Charge`/`Refund` on each, returning zero values, and run Task 50's conformance cases against each. Expected: FAIL. Record the lines.
+- [ ] **Step 2: `pglimiter`.** One statement charges: `UPDATE rate_limit_buckets SET stamps = <in-window stamps> || $now … WHERE namespace = $1 AND key = $2 AND cardinality(<in-window stamps>) < $limit RETURNING …`. For a key with no row, use `INSERT … ON CONFLICT DO UPDATE … WHERE` with the same condition. Time comes from the database, as the limiter's existing statements take it. Refund removes one element equal to the receipt's stamp with `array_remove` limited to one occurrence. No migration.
+- [ ] **Step 3: `redisstore`.** One `EVAL` script trims the window, compares the count with the limit, and adds the stamp only below it. Refund is one script removing one member equal to the stamp.
+- [ ] **Step 4: `unavailable`.** Pass both through while the backend answers. When degraded to a local fallback, charge and refund the fallback; when failing closed, `Charge` returns `exceeded=true` with the unavailable error. Add a test for each degraded mode (Review Focus 7).
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./...` in the core module, `ratelimit/redisstore`, `store/sqlstore` and `store/pgxstore`; `cd test && go test -count=1 -race ./ratelimittest/ ./sqlstore/ ./pgxstore/` with Docker; `git diff --stat store/migrate` empty.
+
+### Task 52: Widen the port, and recovery charges first (task 16.3, L3, after Tasks 51 and 45)
+
+**Files:** Modify `ratelimit/limiter.go`, `recovery/codes.go`, `test/ratelimittest/doubles_test.go` and `test/pg_ratelimit_fault_test.go`. Regenerate every `limiter_mock_test.go` with `go generate`. Create `recovery/codes_burst_test.go`.
+
+**Interfaces:**
+- Produces: `type Limiter interface { Exceeded(…); RecordFailure(…); Charger }`, whose godoc states that `Charge` must be atomic and that the conformance suite proves it.
+- `recovery.Codes` charges with `context.WithoutCancel(ctx)` before `Match`, refunds after a valid match, and no longer calls `Exceeded` or `RecordFailure` on the presentation path.
+
+- [ ] **Step 1: Widen** `Limiter`, regenerate the mocks, and add both methods to the two hand-written doubles. Verify `go build ./...` and `go vet ./...` in every module.
+- [ ] **Step 2: Write** `TestCodes_ConcurrentWrongCodesStayWithinLimit` in the `table-test` form. A test-local decorator over the memory limiter holds every caller at a barrier after its limit decision; a counting decorator over the memory code store counts `Match`. 20 distinct, well-formed wrong codes go through `Confirm` under the default 5 per 15 minutes, asserting `LessOrEqual(t, matches, 5)`. Add case `"a valid code spends no allowance"`: one valid code, then 4 wrong ones, and a 5th wrong code is still looked up.
+- [ ] **Step 3: Run.** `go test -count=20 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/`. Expected: FAIL every run, with `"20" is not less than or equal to "5"`. Record the lines.
+- [ ] **Step 4: Implement** `Codes`' charge-before-match and refund-on-success.
+- [ ] **Step 5: Verify.** `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run; `go test -count=1 -race ./...` in the core and every nested module; `go generate ./... && git status --porcelain` shows only this task's files.
+
+### Task 53: Group-16 gate (task 16.4, main session)
+
+- [ ] As Task 44, with `Receipt`, `NewReceipt`, its accessors, `Charger` and each limiter's two methods as `added` rows. An Opus review of L1–L3 against D20 and the `rate-limiting` and `account-recovery` deltas covers refund precision, the decorator's degraded paths, and the conditional statement under PostgreSQL's default isolation. Commit `fix(recovery)!: saved codes hold their limit under concurrency`.
+
+### Task 54: Active changes and the whole-branch gate (tasks 17.1–17.2, main session)
+
+- [ ] **Step 1:** Update the old names Task 37 reported, and the artifacts of `idiomatic-api-shape`, `key-port-context` and `trusted-proxy-client-ip` that name a renamed identifier or a changed default. Run `openspec validate --all --strict`. Expected: valid.
+- [ ] **Step 2:** `make check && evidence/check.sh all && openspec validate restructure-layout --strict`, push, and confirm CI green, including the Docker suites.
+- [ ] **Step 3:** One Opus whole-branch review against every requirement in the change's nine deltas. Every claimed defect carries a failing test or `UNREPRODUCED`. Expected: clean.

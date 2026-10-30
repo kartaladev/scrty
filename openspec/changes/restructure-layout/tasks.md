@@ -1,6 +1,6 @@
 # Tasks
 
-Test-first applies to every task that adds or changes behaviour that a test can observe: the new layout requirement (group 2) and the table conversions (group 4). Moves and renames that the existing tests already cover are exempt, as `golang-tdd.md` allows. They are verified instead by the D13 checks at the end of each group.
+Test-first applies to every task that adds or changes behaviour that a test can observe: the new layout requirement (group 2), the table conversions (group 4), and the security fixes (groups 12–16), each of which starts from the red test that proved its claim. Moves and renames that the existing tests already cover are exempt, as `golang-tdd.md` allows. They are verified instead by the D13 checks at the end of each group.
 
 ## 1. Baseline and evidence
 
@@ -132,7 +132,106 @@ A one-off CI failure on PR #27 (2026-10-29) traced to the test module's HTTP cli
 - [x] 10.2 Give the root test package's two clients a transport of their own (D14): one unexported helper in `test/testutils.go` builds a cloned transport closed at `t.Cleanup`. `keycloakBrowser` (`test/oidc_keycloak_test.go`) uses it, and so does a new unexported `smtpAPIClient(t)`, which the SMTP helper stores in an unexported `SMTPConn` field for `SMTPConn.get` to use in place of `http.DefaultClient`. Red step: a table test `TestHTTPClientsKeepTheirConnectionsWhenAnotherServerCloses` in `test/testutils_http_test.go`, one case per constructor, with 10.1's assertion, and `TestHTTPClientsReleaseTheirConnectionsWhenTheirTestEnds`, the same table over 10.1's cleanup check. Declare `smtpAPIClient` first returning `http.DefaultClient`, and see every case fail. Verify: `cd test && go test -count=1 -race -run 'TestHTTPClientsKeepTheirConnectionsWhenAnotherServerCloses|TestHTTPClientsReleaseTheirConnectionsWhenTheirTestEnds' .` passes; `rg -n 'http\.Default(Client|Transport)' test --glob '*.go'` finds only the two clone sources; `go vet ./...` in `test` is clean.
 - [x] 10.3 Gate: `make check`, `evidence/check.sh all` against the group-1 baseline, `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then a Sonnet review of 10.1–10.2 against D14 and the `test-provisioning` delta. Verify: no unmapped difference, a valid change, a green CI run and a clean review.
 
+## 11. Names that say what they bound (D15)
+
+The naming sweep of 2026-10-31 found names that do not say what they bound, starting with `lockout.WithCap` (`design.md` D15). The renames are mechanical and the existing tests cover them, so they are exempt from test-first, as the file header says, and are verified by the D13 checks (phase 5). One lane, because a workspace-wide rename touches callers in every package; it runs before groups 12–16 so that every fix is written against the final names.
+
+- [ ] 11.1 Rename the lockout family with `gopls rename` across the `go.work` workspace (D15 table, `lockout` rows; D3's table already shows the results): `WithCap`, `NISTCap`, `WithCapRetention`, `Cap`, `CapRetention`, `WithCeiling`, `ReportAtCeiling`, `WithThreshold`, `Threshold`, `WithWindow`, `Window`, `WithAttemptStoreCapacity`. Error strings that name an option follow it (D11: `"WithFailureStreakLimit must be positive"`). The godoc of `WithFailureStreakLimit` and `NISTFailureStreakLimit` names the quantity in NIST SP 800-63B-4 §3.2.2's words, "consecutive failed authentication attempts". Verify: `go build ./...` and `go vet ./...` in the core module and every nested module; `go test -count=1 -race ./policy/... ./httpsec/...`; and in the test module `go vet ./...` and `go test -list . ./httpsecconformance/...` lists the same tests as before.
+- [ ] 11.2 Rename the rest of D15's table the same way: `passkey` (`WithLimit`, `ErrLimitReached`), `recovery` (`WithDelay`, `WithCompletionWindow`, `WithSessionLifetime`, `Count`), `token.WithLifetime`, `signingkey` (`WithLifetime`, `WithLogSampleWindow`), `onetime` (`WithTTL`, `TTL`), `policy.(*IdleTimeout).Thresholds`, `mfa.WithPeriod`, `oidc.MaxLogoutTokenMaxAge`, `notify` (`WithQueueSize`, `QueueSize`) and `httpsec.WithEnrolmentSessionTTL`. Leave the session timeouts and `policy.WithIdleAbsoluteTimeout` as they are (D15, vocabulary rules). Verify: as 11.1, over every module, with `go test -count=1 -race ./...` in the core module.
+- [ ] 11.3 Text sweep (D12): `rg` for every old name of 11.1–11.2 outside `.claude/.legacy`, in godoc, comments, README, strings, `%T` output and test-case names that are not D13-frozen function names. The agent fixes the Go and README hits and reports the hits under `openspec/`, which the main session updates (`subagent-delegation.md`). Verify: the sweep finds no old name outside the frozen test-function names and the change's own history in `design.md` and `evidence/`.
+- [ ] 11.4 Main session: add an `ident` row to `evidence/rename-map.tsv` for every rename of 11.1–11.2, mapping each baseline identifier to its final name. Where this change already renamed one (`WithLockoutCap` → `WithCap`), change the existing row's new name rather than adding a second row. Verify: `evidence/check.sh all` against the group-1 baseline reports no unmapped difference.
+- [ ] 11.5 Gate: `make check`, `evidence/check.sh all`, `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then a Sonnet review of the group-11 diff against D15: every rename in the table landed, nothing outside it was renamed, and every option's godoc still names its default. Verify: no unmapped difference, a valid change, a green CI run and a clean review.
+
+## 12. Column constructors and the `WithUserRoles` godoc (D16)
+
+`storekit.Column`'s exported name reaches the SQL text, and the `WithUserRoles` godoc contradicts `default-identity-store` (`design.md` D16). One lane, Sonnet, owning `internal/storekit`, `store/sqlstore/identity.go`, `store/pgxstore/identity.go` and `identity/ports.go`. It runs in parallel with 15 and 16.1.
+
+- [ ] 12.1 Make `storekit.Column`'s fields unexported, and add `storekit.RoleColumn(value any) Column` (D16). Red step:
+  - `TestColumnExportsNoField` in `internal/storekit` asserts through `reflect` that `Column` has no exported field, which is the guarantee D16 makes. See it fail on `Name`.
+  - A `TestUpdateUserQuery` case builds the role column with `RoleColumn` and asserts the exact SQL text and arguments. Declare `RoleColumn` as a stub returning the zero `Column`, and see the case fail.
+
+  Then unexport the fields, implement `RoleColumn`, and change the `sqlstore` and `pgxstore` callers from a struct literal to `RoleColumn`. Verify: the failing lines are recorded; `go test -count=1 -race ./internal/storekit/` passes; `go test ./...` passes in the core module and `store/pgxstore`; the identity-store conformance suites under `test/` pass in CI; `rg 'storekit\.Column\{' -g '!.claude/.legacy'` finds nothing.
+- [ ] 12.2 Rewrite the `identity.WithUserRoles` godoc (D16): on `Update`, a list with no usable role name leaves every stored grant and the primary role untouched; on `Provision`, it creates a user with no roles. Documentation only. Verify: `go doc ./identity WithUserRoles` reads as `default-identity-store`'s "A role list that names nothing leaves grants untouched" requires, and `gofmt -l identity` is clean.
+- [ ] 12.3 Gate: `make check`; `evidence/check.sh all`, with the `Column` fields as `changed` rows and `RoleColumn` as an `added` row (D13, phase 6; the main session extends `check.sh` to accept both kinds first); `openspec validate restructure-layout --strict`; push; CI green. Then a Sonnet review against D16. Verify: as 11.5.
+
+## 13. A user-store outage is unavailable, not a failed login (D19)
+
+Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md`, Context for D15–D20). One lane, Opus, because the change crosses `authenticate` and `httpsec` and changes what a refusal means. It owns `authenticate` (errors, the password authenticator and their tests), `httpsec/basic*.go`, `httpsec/login*.go` and `httpsec/errors*.go`. It runs in parallel with 15 and 16.1–16.2.
+
+- [ ] 13.1 Add `authenticate.ErrUnavailable` and return it from the password authenticator for a load failure other than "not found" (D19). Red step: change the load-failure case of `TestPasswordAuthenticatorDoesNotRevealWhyItFailed` to expect `ErrUnavailable`, not `ErrAuthenticationFailed`, with no driver text in the message. Add a case asserting the encoder spends the same password work as for an unknown username, counted through the encoder double. Declare the sentinel first, and see both cases fail on the current code. Verify: the failing lines are recorded; `go test -count=1 -race ./authenticate/...` passes; the error-level log record is still asserted.
+- [ ] 13.2 Map `ErrUnavailable` to 503 in the public status table (D19). Red step: a `StatusForError` table case for a wrapped `ErrUnavailable` expects 503 and fails on 500; `TestStatusForErrorCoversEverySentinel` fails until the row exists. Verify: `go test -count=1 -race -run 'TestStatusForError' ./httpsec/` passes.
+- [ ] 13.3 Form login and Basic authentication refuse an unavailable outcome without recording, counting or clearing anything, and Basic sets no `WWW-Authenticate` for it (D19). Red step: port the export's `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` into `httpsec`, following `table-test` and `use-mockgen`, as a table over Basic and form login. Each row asserts: 503; no failure recorded for the username; none counted against the source; and, after the store recovers, a correct password succeeds under `lockout.WithFailureStreakLimit(3)`. Basic rows also assert no `WWW-Authenticate`. See every row fail on the current code. Verify: `go test -count=1 -race ./httpsec/...` passes; the test module's `httpsecconformance` suite passes in CI.
+- [ ] 13.4 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.3 against D19 and the `authentication`, `http-error-propagation` and `http-security-chain` deltas. Verify: as 11.5.
+
+## 14. API key authentication can require an active owner (D17)
+
+Proven by `TestAPIKey_RefusesKeyOfInactiveOwner`. One lane, Opus, because it is refusal logic written for the first time. It owns `httpsec/apikey*.go`. It starts after group 13, because it returns 13's `ErrUnavailable`.
+
+- [ ] 14.1 Add `httpsec.WithAPIKeyOwners(identity.UserLoader)` (D17). Red step: a table test in `httpsec` over the `api-keys` delta's scenarios:
+  - with no loader, a key authenticates and the loader mock expects no call;
+  - an inactive owner and a missing owner are refused exactly as a wrong key is, and counted against the source;
+  - an active owner authenticates as the key's service principal;
+  - a loader connection error is refused with `ErrUnavailable`, answered 503, and not counted;
+  - `WithAPIKeyOwners(nil)` is a configuration error from `New`.
+
+  Declare the option as a no-op first, and see the inactive, missing, outage and nil rows fail. Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/...` passes.
+- [ ] 14.2 State the default in `EnableAPIKey`'s godoc (D17): without `WithAPIKeyOwners`, deactivating a user stops none of the keys issued for that user's reference. Verify: `go doc ./httpsec EnableAPIKey` says so and names the option.
+- [ ] 14.3 Gate: as 12.3, with `WithAPIKeyOwners` as an `added` row. Then an Opus review of 14.1–14.2 against D17 and the `api-keys` delta. Verify: as 11.5.
+
+## 15. A verifier requires an issuer and an audience (D18)
+
+Proven by `TestVerifier_RefusesTokenForAnotherAudienceWhenNoneConfigured`. One lane, Opus, because it is verification logic. It owns `token/**`, including `token/signingkey/keys_lifecycle_test.go`. It runs in parallel with 12, 13 and 16.
+
+- [ ] 15.1 Require an issuer and an audience at construction, each waivable (D18). Red step: port the export's test into `token` as a table over the `token-issuance` delta:
+  - a verifier with neither issuer nor waiver, and one with neither audience nor waiver, fail with `ErrConfig`;
+  - configuring and waiving the same check fails with `ErrConfig`;
+  - a waived check accepts any value;
+  - a token minted for `service-a` is rejected by a verifier configured for `service-b`.
+
+  Declare `WithoutVerifyIssuer` and `WithoutVerifyAudience` as no-ops first, and see the construction rows fail. Verify: the failing lines are recorded, and `go test -count=1 -race -run <the new test> ./token/` passes.
+- [ ] 15.2 Give every existing test that builds a verifier without an issuer or an audience, and without the matching waiver, what it now needs (D18, D13 phase 6). These are the 11 tests in `token` and `TestRestartedManager` in `token/signingkey` that the export's blast-radius run listed. A test about the issuer or audience gets the configured value; any other gets the waiver for the claim it does not exercise. No other assertion changes. Verify: `go test -count=1 -race ./token/...` passes, and `rg -n 'NewVerifier\(' -g '!.claude/.legacy' -g '!openspec/**'` shows every call configures or waives both.
+- [ ] 15.3 Rewrite the `token` package doc and the godoc of `NewVerifier`, `WithVerifyIssuer` and `WithVerifyAudience` (D18): the defaults are now refusals, and each waiver states what it gives up. Verify: `go doc -all ./token` no longer says the issuer or audience is "enforced exactly when the consumer configured one".
+- [ ] 15.4 Gate: as 12.3, with the two waivers as `added` rows and 15.2's changed tests listed for the assertion review. Then an Opus review of 15.1–15.3 against D18 and the `token-issuance` delta. Verify: as 11.5.
+
+## 16. Limiters charge and refund atomically (D20)
+
+Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 100 runs. Concurrency, so Opus. It is one lane in three sequential dispatches, so that the tree compiles after each one. The port is widened only in 16.3, once every implementation exists. The lane owns:
+- `ratelimit/**`, including `ratelimit/redisstore`;
+- `internal/pglimiter` and `internal/unavailable`;
+- `store/sqlstore/limiter*.go` and `store/pgxstore/limiter*.go`;
+- `recovery/codes*.go`;
+- `test/ratelimittest`, `test/pg_ratelimit_fault_test.go`, and the test module's limiter suites;
+- in 16.3, every generated `limiter_mock_test.go`.
+
+- [ ] 16.1 Add `ratelimit.Receipt` and an interface `ratelimit.Charger` with D20's `Charge` and `Refund`, implement them on the in-memory limiter, and add the conformance cases (D20). Red step:
+  - In `test/ratelimittest`, add the conformance cases: 64 goroutines charge one key against a limit of 5, and exactly five succeed; a refund returns the allowance; a refund after the window removes nothing.
+  - Run them against a deliberately broken `Charger` that checks and records in two steps, and see the concurrent case fail.
+  - Then run them against the in-memory limiter with stub methods, and see them fail.
+
+  Verify: the failing lines are recorded; `go test -count=1 -race ./ratelimit/...` passes, run with `-count=50` for the concurrent case; the test module's in-memory limiter suite passes.
+- [ ] 16.2 Implement `Charger` on `internal/pglimiter` (with the `sqlstore` and `pgxstore` runners), on `redisstore`, and through the `internal/unavailable` decorator (D20). Each shared limiter runs 16.1's conformance cases, and each is first seen to fail against a stub. `pglimiter` charges with one conditional `UPDATE … RETURNING` on the key's row and needs no migration. `redisstore` charges with one Lua script. The decorator passes both methods through, and charges its local fallback when degraded. Verify: `go test -count=1 -race ./...` in the core module and in `ratelimit/redisstore`, `store/sqlstore` and `store/pgxstore`; the Docker-backed limiter suites in the test module pass in CI; `git diff --stat store/migrate` is empty.
+- [ ] 16.3 Widen `ratelimit.Limiter` to embed `Charger`, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
+  - the failing lines are recorded;
+  - `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run;
+  - `go test -count=1 -race ./...` passes in the core module and every nested module;
+  - `go generate ./...` leaves no drift.
+- [ ] 16.4 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows. Then an Opus review of 16.1–16.3 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
+  - refund precision under concurrent charges;
+  - the decorator's degraded path;
+  - the conditional `UPDATE` under PostgreSQL's default isolation.
+
+  Verify: as 11.5.
+
+## 17. Whole-branch gate
+
+- [ ] 17.1 Main session: update the old names that 11.3 reported under `openspec/`. Update the artifacts of the active changes that name a renamed identifier or a changed default:
+  - `idiomatic-api-shape` and `key-port-context`, checked against the names that actually landed (Migration Plan step 4);
+  - `trusted-proxy-client-ip`, whose resolver D15's vocabulary now names.
+
+  Verify: `openspec validate --all --strict` is valid, and `rg` finds no old name in an active change's artifacts outside their own history.
+- [ ] 17.2 Final gate: `make check`, `evidence/check.sh all` against the group-1 baseline, `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then one Opus whole-branch review against every spec requirement the change covers, including the seven security deltas. Each claimed defect needs a failing test or is labelled `UNREPRODUCED`. Verify: no unmapped difference, a valid change, a green CI run and a clean review.
+
 ## Workflow follow-up
 
-- Archive the change with `/opsx:archive` once the branch is merged, which syncs the `module-layout` and `test-provisioning` deltas into the main specs.
+- Archive the change with `/opsx:archive` once the branch is merged, which syncs the `module-layout`, `test-provisioning`, `token-issuance`, `authentication`, `http-error-propagation`, `http-security-chain`, `api-keys`, `rate-limiting` and `account-recovery` deltas into the main specs.
 - Open the pull request only when the user asks for it.
