@@ -111,7 +111,7 @@ func TestSenderFailureRecords(t *testing.T) {
 				require.NoError(t, err)
 
 				require.NoError(t, s.Send(t.Context(), testMessage()))
-				require.NoError(t, s.Close(context.WithoutCancel(t.Context())))
+				require.NoError(t, s.Shutdown(context.WithoutCancel(t.Context())))
 
 				return &buf
 			},
@@ -141,7 +141,7 @@ func TestSenderFailureRecords(t *testing.T) {
 				require.NoError(t, err)
 
 				require.NoError(t, s.Send(t.Context(), testMessage()))
-				require.NoError(t, s.Close(context.WithoutCancel(t.Context())))
+				require.NoError(t, s.Shutdown(context.WithoutCancel(t.Context())))
 
 				return &buf
 			},

@@ -111,7 +111,7 @@ func TestNewMagicLinkManager(t *testing.T) {
 
 				q, err := notify.NewQueuedSender(smtp(t))
 				require.NoError(t, err)
-				t.Cleanup(func() { _ = q.Close(context.WithoutCancel(t.Context())) })
+				t.Cleanup(func() { _ = q.Shutdown(context.WithoutCancel(t.Context())) })
 
 				return q
 			},

@@ -24,8 +24,8 @@ import (
 // Start launches housekeeping, which sweeps expired sessions one
 // WithMemoryStoreHousekeepingInterval after the previous sweep finished, waiting on the
 // store's clock (WithMemoryStoreClock). The interval defaults to one minute.
-// Stop ends it. Both are idempotent, and housekeeping also ends when the
-// context given to Start does.
+// Only Shutdown ends it, and Shutdown is terminal for housekeeping alone: a
+// shut-down store keeps saving, loading and deleting sessions.
 //
 // # Limits, stated
 //
@@ -34,8 +34,8 @@ import (
 // not see each other's. A consumer that needs either supplies a durable store
 // through WithStore, and nothing else about the manager changes.
 //
-// Without Start, expired sessions stay in memory until something deletes
-// them — DeleteExpired, DeleteByUser, or a later Start. They are never served:
+// Without Start, or after Shutdown, expired sessions stay in memory until
+// something deletes them — DeleteExpired or DeleteByUser. They are never served:
 // Load judges expiry on every read, so a record that is still held is already
 // unreachable. What is lost is the memory it occupies, not safety. Loading
 // does not delete what it refuses, deliberately: a read that deleted other
@@ -57,12 +57,16 @@ type MemoryStore struct {
 	// store. Like byDigest it is written wherever records is.
 	byFamily map[id.ID]map[string]struct{}
 
-	// lifecycle guards the housekeeping run below. It is separate from mu so
-	// that Stop can wait for a sweep to finish while that sweep takes mu.
+	// lifecycle guards the housekeeping state below. It is separate from mu,
+	// and never held while waiting, so that Shutdown can wait for a sweep that
+	// takes mu, and Start and Shutdown never wait on each other.
 	lifecycle sync.Mutex
-	cancel    context.CancelFunc
-	runDone   <-chan struct{}
-	wg        sync.WaitGroup
+	shutdown  bool
+	// cancel ends the housekeeping run, and done is closed once it has
+	// ended. Both stay set after Shutdown, so a later Shutdown waits again.
+	// They are nil until Start.
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // NewMemoryStore returns the default store: housekeeping every minute
@@ -104,13 +108,22 @@ func (s *MemoryStore) Len() int {
 	return len(s.records)
 }
 
-// Start launches housekeeping, which calls DeleteExpired one interval after the
-// previous call finished until Stop is called or ctx ends.
+// ErrAlreadyStarted is what Start returns for a store whose housekeeping is
+// already running.
+var ErrAlreadyStarted = errors.New("session: already started")
+
+// ErrAlreadyShutdown is what Start returns for a store that has been shut
+// down.
+var ErrAlreadyShutdown = errors.New("session: already shut down")
+
+// Start launches housekeeping, which calls DeleteExpired one interval after
+// the previous call finished until Shutdown is called.
 //
-// It is idempotent: starting a store whose housekeeping is running launches
-// nothing and returns nil. Starting again after the context of a previous run
-// ended launches fresh housekeeping, which is how a consumer whose request-scoped
-// context ended by mistake gets housekeeping back without a new store.
+// Housekeeping carries the values of ctx, such as trace and log fields, but
+// not its cancellation or deadline: only Shutdown stops it, so a
+// request-scoped context passed here, or one already cancelled, does not end
+// it. A second Start returns ErrAlreadyStarted, and a Start after Shutdown
+// returns ErrAlreadyShutdown; neither launches anything.
 //
 // Housekeeping is optional. Without it nothing is ever served that has
 // expired, because Load judges expiry on every read; what is lost is the
@@ -125,61 +138,30 @@ func (s *MemoryStore) Start(ctx context.Context) error {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 
-	if s.runningLocked() {
-		return nil
+	switch {
+	case s.shutdown:
+		return ErrAlreadyShutdown
+	case s.cancel != nil:
+		return ErrAlreadyStarted
 	}
-	// A previous run whose context was cancelled is over, or is ending.
-	// Reaping it leaves the WaitGroup at zero, so the loop launched below is
-	// the only one a later Stop waits for.
-	s.reapLocked()
 
-	loopCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-	s.runDone = loopCtx.Done()
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	s.cancel, s.done = cancel, done
 
-	s.wg.Add(1)
-	go s.housekeep(loopCtx)
+	go s.housekeep(runCtx, done)
 
 	return nil
 }
 
-// runningLocked reports whether the loop last launched is still live, which is
-// true until that run's context is cancelled. Callers hold s.lifecycle.
-func (s *MemoryStore) runningLocked() bool {
-	if s.runDone == nil {
-		return false
-	}
-	select {
-	case <-s.runDone:
-		return false
-	default:
-		return true
-	}
-}
-
-// reapLocked ends the run last launched, if there is one, and returns only
-// once its loop has ended. Callers hold s.lifecycle.
-//
-// Waiting under the lifecycle lock is safe, and is what makes concurrent Start
-// and Stop race-free: the loop never takes this lock, so it cannot be blocked
-// on it while the wait is in progress.
-func (s *MemoryStore) reapLocked() {
-	if s.cancel == nil {
-		return
-	}
-
-	s.cancel()
-	s.wg.Wait()
-	s.cancel, s.runDone = nil, nil
-}
-
 // housekeep sweeps expired sessions one interval after the previous sweep
-// finished, waiting on the store's clock, until ctx ends.
+// finished, waiting on the store's clock, until ctx ends, and closes done
+// once it has returned.
 //
 // It ends with return, never with break: a break inside the select would leave
 // the select but not the for.
-func (s *MemoryStore) housekeep(ctx context.Context) {
-	defer s.wg.Done()
+func (s *MemoryStore) housekeep(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
 
 	for {
 		select {
@@ -193,19 +175,48 @@ func (s *MemoryStore) housekeep(ctx context.Context) {
 	}
 }
 
-// Stop ends housekeeping and returns only once it has ended, so no sweep is in
-// progress when Stop returns.
+// Shutdown ends housekeeping and waits for it to end, so no sweep is in
+// progress when it returns nil. It waits no longer than ctx allows: if ctx is
+// done first, it returns ctx's error, and the sweep in progress finishes on
+// its own. When housekeeping has already ended, it returns nil even for a ctx
+// that is already done.
 //
-// It is idempotent, and returns at once for a store that was never started.
-// Unlike a cancelled context, Stop is not terminal: a later Start launches
-// housekeeping again.
-func (s *MemoryStore) Stop() error {
+// It is terminal for housekeeping only. Housekeeping never runs again, and a
+// later Start returns ErrAlreadyShutdown, but the store keeps saving, loading
+// and deleting sessions, so requests still being drained are served.
+//
+// It is idempotent. A later Shutdown waits again under its own context, and
+// returns nil once housekeeping has ended. Shutting down a store that was
+// never started marks it shut down and returns nil.
+//
+// Call it from outside housekeeping. Shutdown called from within a sweep, by
+// a clock or a wrapper the sweep calls into, cannot wait for itself: it waits
+// until its own ctx ends and returns that ctx's error.
+func (s *MemoryStore) Shutdown(ctx context.Context) error {
 	s.lifecycle.Lock()
-	defer s.lifecycle.Unlock()
+	s.shutdown = true
+	cancel, done := s.cancel, s.done
+	s.lifecycle.Unlock()
 
-	s.reapLocked()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
 
-	return nil
+	// Completion is checked first, so a run that has ended wins over a ctx
+	// that is already done, whichever case the select below would pick.
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Create inserts sess. An identifier that is already stored is refused rather

@@ -77,18 +77,44 @@ func currentKid(t *testing.T, km *signingkey.Keys, alg signingkey.Alg) string {
 	return kid
 }
 
-// stopAndVerify stops km at the end of the test and reports any goroutine it
-// left behind. It snapshots the goroutines running now, so it must be called
-// before the manager is started — which is also when the manager has started
-// none of its own.
-func stopAndVerify(t *testing.T, km *signingkey.Keys) {
+// shutdownAndVerify shuts km down at the end of the test and reports any
+// goroutine it left behind. It snapshots the goroutines running now, so it
+// must be called before the manager is started — which is also when the
+// manager has started none of its own.
+//
+// The work a manager starts outlives the test's context, which is cancelled
+// before cleanups run, so the shutdown is what ends it.
+func shutdownAndVerify(t *testing.T, km *signingkey.Keys) {
 	t.Helper()
 
 	ignore := goleak.IgnoreCurrent()
 	t.Cleanup(func() {
-		require.NoError(t, km.Stop())
+		shutdownWithin(t, km, parkTimeout, "the manager's work should end once shut down")
 		goleak.VerifyNone(t, ignore)
 	})
+}
+
+// shutdownWithin shuts km down under a context bounded by bound, and fails the
+// test if Shutdown returns an error or does not return at all. A Shutdown that
+// cannot return is the failure being tested for, so it must show up as a
+// failed assertion rather than as a hung package. It is safe in a cleanup.
+func shutdownWithin(t *testing.T, km *signingkey.Keys, bound time.Duration, why string) {
+	t.Helper()
+
+	// t.Context is already cancelled when a cleanup runs; the shutdown keeps
+	// its values but not that cancellation.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), bound)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- km.Shutdown(ctx) }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(bound + time.Second):
+		t.Fatalf("Shutdown did not return within %s: %s", bound, why)
+	}
 }
 
 // logRecorder captures what the manager logs through a real slog handler, so a

@@ -37,17 +37,19 @@ type Keys struct {
 	order   []string             // kids, in the order they were held
 	current map[Alg]string       // alg -> kid
 
-	// lifecycle guards the background work. No loop ever takes it, which is
-	// what lets Stop hold it across the wait for the loops to end.
+	// lifecycle guards the fields below it. It is held only to read or change
+	// them, never across a wait, so a Shutdown waiting for the work blocks no
+	// other Start or Shutdown.
 	lifecycle sync.Mutex
-	// cancel ends the run last launched, and is nil when there is none left to
-	// reap; runDone is that run's context's Done channel, so Start can tell a
-	// live run from one whose context has been cancelled. stopped is the only
-	// state Stop leaves behind, because it is the one a later Start honours.
-	cancel  context.CancelFunc
-	runDone <-chan struct{}
-	stopped bool
-	wg      sync.WaitGroup
+	// started and shutdown record the two one-way transitions of the
+	// lifecycle. cancel ends the work's context and done is closed once the
+	// work has ended; both are nil until Start launches the work. wg counts the
+	// loops still running.
+	started  bool
+	shutdown bool
+	cancel   context.CancelFunc
+	done     <-chan struct{}
+	wg       sync.WaitGroup
 
 	algs           []Alg
 	lifetime       time.Duration
@@ -559,8 +561,8 @@ func WithClock(clk clock.Timed) Option {
 //
 // Records are written from the background loops, under the rules
 // WithErrorHook describes: a handler that blocks holds up the loop that is
-// writing, and one that calls Start or Stop deadlocks the manager. A handler
-// that panics takes the loop down with it.
+// writing, and one that calls Shutdown waits on itself until its context
+// ends. A handler that panics takes the loop down with it.
 func WithLogger(logger *slog.Logger) Option {
 	return func(km *Keys) { km.logger = logger }
 }
@@ -583,12 +585,14 @@ func WithLogger(logger *slog.Logger) Option {
 //     as long as it blocks, and one that never returns stops it.
 //   - It must not panic. There is no recover between the hook and the loop, so
 //     a panic ends that loop and takes the process with it.
-//   - It must not call Start or Stop. Stop waits for the loop the hook is
-//     running on, and Start waits for the same lock Stop holds while it waits,
-//     so either one called from the hook wedges the manager: the loops stop
-//     running, every later Stop blocks, and the process goes on serving with a
-//     key that never rotates. To shut down from a hook, hand the error to a
-//     goroutine or a channel of the consumer's own and call Stop from there.
+//   - It should not call Shutdown. Shutdown waits for the work to end, and
+//     the work includes the loop the hook is running on, so a Shutdown called
+//     from the hook cannot see it end: it returns only when its own context
+//     ends, with that context's error, holding the loop up until then. The
+//     shutdown still takes effect, and the work ends once the hook returns.
+//     To shut down from a hook without that wait, hand the error to a
+//     goroutine or a channel of the consumer's own and call Shutdown from
+//     there.
 //
 // Everything that reads the manager is safe from the hook, which is what a
 // hook needs in order to decide how bad an outage has become: Signer,

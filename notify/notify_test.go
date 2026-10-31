@@ -14,7 +14,7 @@ func TestNotifySentinels(t *testing.T) {
 	sentinels := []error{
 		notify.ErrUnsafeHeaderValue,
 		notify.ErrQueueFull,
-		notify.ErrSenderClosed,
+		notify.ErrAlreadyShutdown,
 	}
 
 	for i, a := range sentinels {

@@ -2,26 +2,29 @@ package signingkey
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
+// ErrAlreadyStarted is returned by Start on a manager whose background work has
+// already been launched.
+var ErrAlreadyStarted = errors.New("signingkey: already started")
+
+// ErrAlreadyShutdown is returned by Start on a manager that has been shut down.
+// Shutdown is terminal: the background work of a shut-down manager never runs
+// again.
+var ErrAlreadyShutdown = errors.New("signingkey: already shut down")
+
 // Start launches the rotation, reload and housekeeping loops.
 //
-// It is idempotent: starting a manager whose loops are running launches nothing
-// and returns nil, and so does starting a manager that has been stopped — a
-// stopped manager stays stopped, so a late Start cannot resurrect background
-// work the consumer has shut down.
+// The loops run under a context derived from ctx that keeps its values, such
+// as trace and log fields, but not its cancellation or deadline: cancelling ctx
+// does not end them, so a request-scoped context passed by mistake cannot stop
+// rotation. Only Shutdown ends the work.
 //
-// The loops end when ctx is cancelled or Stop is called. Whichever happens
-// first, Stop is what waits for them; cancelling ctx alone ends the work but
-// does not block until it has ended.
-//
-// Cancelling ctx is not terminal. Stop was never called, so the manager is not
-// stopped, and a Start under a fresh context launches the loops again — which
-// is the only way a consumer whose request-scoped context ended by mistake can
-// get rotation back without constructing a new manager. Such a Start first
-// waits for the cancelled run's loops to finish, an in-flight store write
-// included, exactly as Stop does.
+// A manager is started at most once. Starting a manager whose loops have been
+// launched returns ErrAlreadyStarted, and starting one that has been shut down
+// returns ErrAlreadyShutdown; neither launches anything.
 //
 // Start returns before the loops have begun waiting on the clock: each calls
 // the clock's After from its own goroutine. A caller driving a controlled clock
@@ -32,13 +35,13 @@ func (km *Keys) Start(ctx context.Context) error {
 	km.lifecycle.Lock()
 	defer km.lifecycle.Unlock()
 
-	if km.stopped || km.runningLocked() {
-		return nil
+	switch {
+	case km.shutdown:
+		return ErrAlreadyShutdown
+	case km.started:
+		return ErrAlreadyStarted
 	}
-	// A previous run whose context was cancelled is over, or is ending. Reaping
-	// it leaves the WaitGroup at zero, so the loops launched below are the only
-	// ones a later Stop waits for.
-	km.reapLocked()
+	km.started = true
 
 	loops := []struct {
 		every time.Duration
@@ -49,47 +52,25 @@ func (km *Keys) Start(ctx context.Context) error {
 		{km.housekeepEvery, km.housekeep},
 	}
 
-	loopCtx, cancel := context.WithCancel(ctx)
+	workCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	km.cancel = cancel
-	km.runDone = loopCtx.Done()
+
+	done := make(chan struct{})
+	km.done = done
 
 	km.wg.Add(len(loops))
 	for _, loop := range loops {
-		go km.loop(loopCtx, loop.every, loop.step)
+		go km.loop(workCtx, loop.every, loop.step)
 	}
+	// Turning the WaitGroup into a channel lets Shutdown wait for the work
+	// inside a select on its own context. This goroutine is part of the work:
+	// it ends the moment the last loop has.
+	go func() {
+		km.wg.Wait()
+		close(done)
+	}()
 
 	return nil
-}
-
-// runningLocked reports whether the loops of the last run launched are still
-// live, which is true until that run's context is cancelled. Callers hold
-// km.lifecycle.
-func (km *Keys) runningLocked() bool {
-	if km.runDone == nil {
-		return false
-	}
-	select {
-	case <-km.runDone:
-		return false
-	default:
-		return true
-	}
-}
-
-// reapLocked ends the run last launched, if there is one, and returns only once
-// its loops have ended. Callers hold km.lifecycle.
-//
-// Waiting under the lifecycle lock is safe, and is what makes concurrent Start
-// and Stop race-free: no loop ever takes this lock, so none of them can be
-// blocked on it while the wait is in progress.
-func (km *Keys) reapLocked() {
-	if km.cancel == nil {
-		return
-	}
-
-	km.cancel()
-	km.wg.Wait()
-	km.cancel, km.runDone = nil, nil
 }
 
 // loop runs step one interval after the previous step finished, until the
@@ -102,10 +83,9 @@ func (km *Keys) reapLocked() {
 // the select but not the for.
 func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context.Context)) {
 	defer km.wg.Done()
-	// Flushing here rather than in Stop accounts for the suppressed failures
-	// on every shutdown path, including a caller who only cancels the context.
-	// It runs before wg.Done, so a Stop that is waiting still returns after
-	// the last record has been written.
+	// Flushing as the loop ends accounts for the failures the sampler still
+	// holds back. It runs before wg.Done, so a Shutdown that sees the work end
+	// returns after the last record has been written.
 	defer km.sampler.Flush()
 
 	for {
@@ -118,18 +98,52 @@ func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context
 	}
 }
 
-// Stop ends the background work and returns only once it has ended, an
-// in-flight key generation and store write included — so no store write lands
-// after Stop returns.
+// Shutdown ends the background work and waits for it to end, an in-flight key
+// generation and store write included, so no store write lands after a
+// Shutdown that returned nil. It waits no longer than ctx allows: it returns
+// nil once the work has ended, or ctx's error if ctx is done first. When the
+// work has already ended, it returns nil even if ctx is done.
 //
-// It is idempotent, and returns at once for a manager that was never started. A
-// stopped manager stays stopped: a later Start launches nothing.
-func (km *Keys) Stop() error {
+// Shutdown is terminal. The background work never runs again, and a later
+// Start returns ErrAlreadyShutdown. A later Shutdown waits again under its own
+// context, so a caller whose first wait ran out may call it again to wait for
+// the rest. Shutting down a manager that was never started returns nil at
+// once.
+//
+// Shutdown ends the background work only. A shut-down manager keeps serving
+// Signer, VerificationKeys and JWKS from the keys it holds; it no longer
+// rotates, reloads or sweeps them.
+//
+// Do not call Shutdown from inside the work, such as from the error hook
+// (WithErrorHook) or a logger's handler (WithLogger). It would wait for the
+// loop it is running on, so it can only return when its own ctx ends, with
+// that context's error. Call it from outside the work.
+func (km *Keys) Shutdown(ctx context.Context) error {
 	km.lifecycle.Lock()
-	defer km.lifecycle.Unlock()
+	km.shutdown = true
+	if km.cancel != nil {
+		km.cancel()
+	}
+	done := km.done
+	km.lifecycle.Unlock()
 
-	km.stopped = true
-	km.reapLocked()
+	if done == nil {
+		return nil // never started: there is no work to wait for
+	}
 
-	return nil
+	// Completion is checked on its own first, so that work which has already
+	// ended wins over a ctx that is already done, rather than leaving the
+	// result to whichever ready case select happens to pick.
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

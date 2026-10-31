@@ -131,6 +131,7 @@ This applies to `signingkey.Keys`, `session.MemoryStore`, `sweep.Sweeper` and `n
   The OpenTelemetry reference below supports the terminal state, not its "every method becomes a no-op" rule. A session store that stopped saving at shutdown would lose sessions while requests are still being drained.
 - **Shutdown from inside the component's own work** cannot wait for itself. A purge, an error hook of `Keys`, or a wrapped sender that calls Shutdown waits until its own context ends, and returns that context's error. Each `Shutdown`'s godoc says so, and says to call it from outside the work.
 - **Renames:** `Keys.Stop()`, `MemoryStore.Stop()` and `QueuedSender.Close(ctx)` become `Shutdown(ctx)`. `notify.ErrSenderClosed` becomes `notify.ErrAlreadyShutdown`.
+- **`Sweeper` lets gocron cancel the running purge.** Each run's context is a child gocron derives from the sweeper's run context, and gocron's own shutdown cancels it before waiting. The sweeper's cancel runs only after gocron's shutdown returns: cancelling first lets a purge see the cancellation before gocron has stopped the job's timer, which breaks the stop-timeout wait.
 - **`sweep`'s `WithStopTimeout` stays.** It is gocron's own bound on a cancelled purge (default 10 seconds), and Shutdown returns when either that timeout or its own context ends first, as it does today.
 
 **Default and override:** start-up and shutdown need no configuration. The consumer controls how long Shutdown waits through its context, and `sweep` keeps `WithStopTimeout` as the override for gocron's wait.

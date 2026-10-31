@@ -770,7 +770,7 @@ func TestDuplicateAlgsAreRefused(t *testing.T) {
 		require.ErrorIs(t, err, signingkey.ErrConfig)
 		return // refused, which is what this test asks for
 	}
-	t.Cleanup(func() { _ = km.Stop() })
+	shutdownAndVerify(t, km)
 
 	assert.Len(t, km.SupportedAlgs(), 1,
 		"one algorithm named three times is one algorithm")
@@ -933,7 +933,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 		signingkey.WithRotateInterval(6*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	published, err := km.VerificationKeys()
 	require.NoError(t, err)
@@ -1030,7 +1030,7 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	}
 
 	close(store.release)
-	require.NoError(t, km.Stop())
+	require.NoError(t, km.Shutdown(t.Context()))
 	goleak.VerifyNone(t, ignore)
 }
 

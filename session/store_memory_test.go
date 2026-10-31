@@ -1,13 +1,16 @@
-// The goroutine-exit test here is not parallel: goleak counts goroutines
-// process-wide. It and the default-clock row of the controlled-clock table are
-// the only tests that wait on real time, because they assert on the system
-// clock a consumer actually ships with. The other tests drive housekeeping
+// The goroutine-exit and lifecycle tests here are not parallel: goleak counts
+// goroutines process-wide. The goroutine-exit test and the default-clock row
+// of the controlled-clock table wait on real time, because they assert on the
+// system clock a consumer actually ships with, and the bounded-shutdown
+// lifecycle case waits briefly for its shutdown context to expire. The other
+// tests drive housekeeping
 // either through a synctest bubble or through a clockwork fake given to the
 // store, never both in one test.
 package session_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -77,7 +80,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 			_, err := store.Load(t.Context(), liveID)
 			assert.NoError(t, err, "housekeeping swept a live session")
 
-			require.NoError(t, store.Stop())
+			require.NoError(t, store.Shutdown(t.Context()))
 		})
 	})
 
@@ -98,59 +101,16 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 			synctest.Wait()
 			assert.Equal(t, 1, store.Len(), "the default interval is longer than a minute")
 
-			require.NoError(t, store.Stop())
+			require.NoError(t, store.Shutdown(t.Context()))
 		})
-	})
-
-	t.Run("Start and Stop are idempotent", func(t *testing.T) {
-		t.Parallel()
-
-		synctest.Test(t, func(t *testing.T) {
-			store := must.Must(session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute)))
-			seedForHousekeeping(t, store)
-
-			require.NoError(t, store.Start(t.Context()))
-			require.NoError(t, store.Start(t.Context()), "Start is idempotent")
-
-			time.Sleep(90 * time.Second)
-			synctest.Wait()
-			assert.Equal(t, 1, store.Len())
-
-			require.NoError(t, store.Stop())
-			require.NoError(t, store.Stop(), "Stop is idempotent")
-
-			// Nothing may keep running after Stop: put another expired record
-			// in and let more than an interval pass.
-			now := time.Now()
-			require.NoError(t, store.Create(t.Context(), &session.Session{
-				ID:                "after-stop",
-				FamilyID:          storedFamily,
-				FamilyCreatedAt:   createdAt,
-				UserID:            testUser,
-				CreatedAt:         now,
-				IdleExpiresAt:     now.Add(-time.Second),
-				AbsoluteExpiresAt: now.Add(time.Hour),
-			}))
-
-			time.Sleep(2 * time.Minute)
-			synctest.Wait()
-			assert.Equal(t, 2, store.Len(), "housekeeping kept running after Stop")
-		})
-	})
-
-	t.Run("Stop without Start is not an error", func(t *testing.T) {
-		t.Parallel()
-
-		store := must.Must(session.NewMemoryStore())
-		assert.NoError(t, store.Stop())
 	})
 }
 
-// TestHousekeepingExitsWithItsContext runs on the system clock, because a
-// goroutine that outlives its context is exactly what a faked clock cannot
-// show.
+// TestHousekeepingExitsAtShutdown runs on the system clock, because a
+// goroutine that outlives Shutdown is exactly what a faked clock cannot show.
+// It also cancels the start context first, which must not be what ends it.
 // Standalone: it is not parallel, so goleak counts only its own goroutines.
-func TestHousekeepingExitsWithItsContext(t *testing.T) {
+func TestHousekeepingExitsAtShutdown(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -167,18 +127,19 @@ func TestHousekeepingExitsWithItsContext(t *testing.T) {
 		AbsoluteExpiresAt: now.Add(time.Hour),
 	}))
 	require.NoError(t, store.Start(ctx))
+	cancel()
 
 	require.Eventually(t, func() bool { return store.Len() == 0 },
 		5*time.Second, time.Millisecond, "housekeeping on the system clock never swept")
 
-	cancel()
+	require.NoError(t, store.Shutdown(t.Context()))
 	goleak.VerifyNone(t, ignore)
 
-	// A record that expires after the context ended stays: the loop is gone,
-	// not merely idle.
+	// A record that expires after Shutdown stays: the loop is gone, not
+	// merely idle.
 	stale := time.Now()
 	require.NoError(t, store.Create(t.Context(), &session.Session{
-		ID:                "after-cancel",
+		ID:                "after-shutdown",
 		FamilyID:          storedFamily,
 		FamilyCreatedAt:   createdAt,
 		UserID:            testUser,
@@ -187,9 +148,284 @@ func TestHousekeepingExitsWithItsContext(t *testing.T) {
 		AbsoluteExpiresAt: stale.Add(time.Hour),
 	}))
 	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, 1, store.Len(), "housekeeping kept running after its context ended")
+	assert.Equal(t, 1, store.Len(), "housekeeping kept running after Shutdown")
+}
 
-	require.NoError(t, store.Stop())
+// lifecycleInterval is the housekeeping interval of the lifecycle tests.
+const lifecycleInterval = 10 * time.Second
+
+// gatedClock is a controlled clock on which one sweep can be held in
+// progress. Only a sweep reads Now on a store the test does not load from, so
+// once armed, the next Now is a sweep starting: it signals entered and blocks
+// until release is closed. Nothing about the store changes: it is slowed from
+// its clock, the one dependency a consumer supplies.
+type gatedClock struct {
+	*clockwork.FakeClock
+
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newGatedClock() *gatedClock {
+	return &gatedClock{
+		FakeClock: clockwork.NewFakeClockAt(createdAt),
+		entered:   make(chan struct{}, 1),
+		release:   make(chan struct{}),
+	}
+}
+
+func (c *gatedClock) Now() time.Time {
+	if c.armed.CompareAndSwap(true, false) {
+		c.entered <- struct{}{}
+		<-c.release
+	}
+
+	return c.FakeClock.Now()
+}
+
+// lifecycleFixture is one lifecycle case's store, its clock, and the
+// goroutines that were running before the case began.
+type lifecycleFixture struct {
+	store  *session.MemoryStore
+	clk    *gatedClock
+	ignore goleak.Option
+}
+
+// noHousekeeping asserts that the store's housekeeping is gone, not merely
+// idle: no goroutine of the case is left, and advancing past two intervals
+// sweeps nothing.
+func (fx lifecycleFixture) noHousekeeping(t *testing.T) {
+	t.Helper()
+
+	goleak.VerifyNone(t, fx.ignore)
+	fx.clk.Advance(2 * lifecycleInterval)
+	assert.Equal(t, 2, fx.store.Len(), "housekeeping swept a store that is not running it")
+}
+
+// sweepsOnce advances one interval and asserts that housekeeping swept the
+// expired session and waited again.
+func (fx lifecycleFixture) sweepsOnce(t *testing.T, why string) {
+	t.Helper()
+
+	fx.clk.Advance(lifecycleInterval)
+	blockUntil(t, fx.clk.FakeClock, 1, why)
+	assert.Equal(t, 1, fx.store.Len(), "the expired session is still held")
+}
+
+// shutdownWithin calls Shutdown with no deadline of its own, bounded by the
+// test so that a Shutdown that never returns fails rather than hangs.
+func shutdownWithin(t *testing.T, store *session.MemoryStore) error {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+	defer cancel()
+
+	return store.Shutdown(ctx)
+}
+
+// TestMemoryStore_Lifecycle pins the sessions lifecycle scenarios on a
+// controlled clock: housekeeping is detached from the start context, a second
+// start and a start after shutdown are refused, and Shutdown is terminal,
+// idempotent and bounded by its own context.
+// Not parallel: goleak counts goroutines process-wide, so each case checks
+// only its own while no other test runs.
+func TestMemoryStore_Lifecycle(t *testing.T) {
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, fx lifecycleFixture)
+	}
+
+	cases := []testCase{
+		{
+			name: "a start context cancelled after start leaves housekeeping running",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				ctx, cancel := context.WithCancel(t.Context())
+				require.NoError(t, fx.store.Start(ctx))
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				cancel()
+
+				fx.sweepsOnce(t, "housekeeping ended with its start context")
+			},
+		},
+		{
+			name: "an already-cancelled start context still launches housekeeping",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				require.NoError(t, fx.store.Start(ctx))
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				fx.sweepsOnce(t, "housekeeping ended with its already-cancelled start context")
+			},
+		},
+		{
+			name: "a second start is refused and both shutdowns return nil",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				require.NoError(t, fx.store.Start(t.Context()))
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyStarted)
+				require.NoError(t, fx.store.Shutdown(t.Context()))
+				require.NoError(t, fx.store.Shutdown(t.Context()))
+
+				fx.noHousekeeping(t)
+			},
+		},
+		{
+			name: "a start after shutdown is refused",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				require.NoError(t, fx.store.Start(t.Context()))
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+				require.NoError(t, fx.store.Shutdown(t.Context()))
+
+				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyShutdown)
+
+				fx.noHousekeeping(t)
+			},
+		},
+		{
+			name: "a start after a shutdown of a store never started is refused",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				require.NoError(t, fx.store.Shutdown(t.Context()))
+
+				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyShutdown)
+
+				fx.noHousekeeping(t)
+			},
+		},
+		{
+			name: "a shutdown is bounded by its context, and a later one waits again",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				require.NoError(t, fx.store.Start(t.Context()))
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				fx.clk.armed.Store(true)
+				fx.clk.Advance(lifecycleInterval)
+				select {
+				case <-fx.clk.entered:
+				case <-time.After(5 * time.Second):
+					require.FailNow(t, "housekeeping never began its sweep")
+				}
+				release := sync.OnceFunc(func() { close(fx.clk.release) })
+				t.Cleanup(release)
+
+				bounded, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				result := make(chan error, 1)
+				go func() { result <- fx.store.Shutdown(bounded) }()
+
+				select {
+				case err := <-result:
+					require.ErrorIs(t, err, context.DeadlineExceeded,
+						"a shutdown outlasted by a sweep did not return its context's error")
+				case <-time.After(5 * time.Second):
+					release()
+					require.NoError(t, <-result, "the shutdown left waiting failed once the sweep ended")
+					require.FailNow(t, "a shutdown waited past its context for a sweep in progress")
+				}
+				require.Equal(t, 2, fx.store.Len(), "the held sweep finished before it was released")
+
+				release()
+				require.NoError(t, shutdownWithin(t, fx.store), "a later shutdown did not wait for the sweep")
+				assert.Equal(t, 1, fx.store.Len(), "a later shutdown returned before the sweep it waited for ended")
+			},
+		},
+		{
+			name: "completion wins over a shutdown context already done",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				require.NoError(t, fx.store.Start(t.Context()))
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+				require.NoError(t, fx.store.Shutdown(t.Context()))
+				goleak.VerifyNone(t, fx.ignore)
+
+				done, cancel := context.WithCancel(t.Context())
+				cancel()
+
+				assert.NoError(t, fx.store.Shutdown(done), "a shutdown of ended work reported its context's error")
+			},
+		},
+		{
+			name: "concurrent starts and shutdowns launch housekeeping at most once",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				var (
+					wg      sync.WaitGroup
+					started atomic.Int32
+				)
+				for range 8 {
+					wg.Go(func() {
+						err := fx.store.Start(t.Context())
+						switch {
+						case err == nil:
+							started.Add(1)
+						case errors.Is(err, session.ErrAlreadyStarted), errors.Is(err, session.ErrAlreadyShutdown):
+						default:
+							assert.Fail(t, "Start returned an unexpected error", "%v", err)
+						}
+					})
+					wg.Go(func() { assert.NoError(t, shutdownWithin(t, fx.store)) })
+				}
+				wg.Wait()
+
+				assert.LessOrEqual(t, started.Load(), int32(1), "more than one start launched housekeeping")
+				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyShutdown)
+
+				fx.noHousekeeping(t)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := lifecycleFixture{clk: newGatedClock(), ignore: goleak.IgnoreCurrent()}
+			fx.store = must.Must(session.NewMemoryStore(
+				session.WithMemoryStoreClock(fx.clk),
+				session.WithMemoryStoreHousekeepingInterval(lifecycleInterval),
+			))
+			require.NoError(t, fx.store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
+			require.NoError(t, fx.store.Create(t.Context(), sessionExpiringAt("live", createdAt.Add(time.Hour))))
+			t.Cleanup(func() {
+				assert.NoError(t, shutdownWithin(t, fx.store))
+				goleak.VerifyNone(t, fx.ignore)
+			})
+
+			tc.assert(t, fx)
+		})
+	}
+}
+
+// TestMemoryStore_ServesAfterShutdown pins sessions "Store serves after
+// shutdown": Shutdown ends housekeeping only, so the store keeps saving,
+// loading and deleting sessions, and sweeps nothing on its own.
+// Standalone: it drives one store through shutdown and then serves from it.
+func TestMemoryStore_ServesAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	store := must.Must(session.NewMemoryStore(
+		session.WithMemoryStoreClock(clk),
+		session.WithMemoryStoreHousekeepingInterval(lifecycleInterval),
+	))
+	require.NoError(t, store.Create(t.Context(), storedSession("served")))
+	require.NoError(t, store.Start(t.Context()))
+	blockUntil(t, clk, 1, "housekeeping never waited on the store's clock")
+	require.NoError(t, store.Shutdown(t.Context()))
+
+	saved := storedSession("served")
+	saved.Data = map[string]string{"k": "after-shutdown"}
+	require.NoError(t, store.Save(t.Context(), saved), "a shut-down store refused a save")
+	loaded, err := store.Load(t.Context(), "served")
+	require.NoError(t, err, "a shut-down store refused a load")
+	assert.Equal(t, "after-shutdown", loaded.Data["k"])
+
+	require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
+	clk.Advance(2 * lifecycleInterval)
+	assert.Equal(t, 2, store.Len(), "housekeeping swept after shutdown")
+
+	require.NoError(t, store.Delete(t.Context(), "served"))
+	_, err = store.Load(t.Context(), "served")
+	require.ErrorIs(t, err, session.ErrNotFound, "a shut-down store did not delete")
 }
 
 // countingClock is a controlled clock that counts how often a loop waited on
@@ -307,7 +543,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("live", createdAt.Add(time.Hour))))
 				require.NoError(t, store.Start(t.Context()))
-				t.Cleanup(func() { _ = store.Stop() })
+				t.Cleanup(func() { assert.NoError(t, shutdownWithin(t, store)) })
 
 				blockUntil(t, clk, 1, "housekeeping never waited on the store's clock")
 				require.Equal(t, 2, store.Len(), "housekeeping swept before its first interval")
@@ -338,7 +574,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				require.Equal(t, createdAt.Add(30*time.Minute), s.IdleExpiresAt, "the manager did not read the shared clock")
 
 				require.NoError(t, store.Start(t.Context()))
-				t.Cleanup(func() { _ = store.Stop() })
+				t.Cleanup(func() { assert.NoError(t, shutdownWithin(t, store)) })
 				blockUntil(t, clk, 1, "housekeeping never waited on the store's clock")
 
 				clk.Advance(31 * time.Minute)
@@ -357,36 +593,6 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			},
 		},
 		{
-			name: "a restart counts the stopped loop's waiter and sweeps once",
-			assert: func(t *testing.T) {
-				clk := &countingClock{FakeClock: clockwork.NewFakeClockAt(createdAt)}
-				store := must.Must(session.NewMemoryStore(
-					session.WithMemoryStoreClock(clk),
-					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
-				))
-				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
-
-				require.NoError(t, store.Start(t.Context()))
-				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
-				require.NoError(t, store.Stop())
-				require.NoError(t, store.Start(t.Context()))
-				t.Cleanup(func() { _ = store.Stop() })
-
-				// The stopped loop's After stays registered on the fake after
-				// the loop has returned, so the restarted loop has parked only
-				// once two waiters are held: the stale one and its own.
-				blockUntil(t, clk.FakeClock, 2, "the restarted loop never waited on the store's clock")
-				require.Equal(t, int32(2), clk.waits.Load())
-
-				clk.Advance(10 * time.Second)
-				blockUntil(t, clk.FakeClock, 1, "the restarted loop did not wait again after its sweep")
-
-				assert.Zero(t, store.Len(), "the restarted loop did not sweep")
-				assert.Equal(t, int32(3), clk.waits.Load(),
-					"one sweep, by the restarted loop alone, is one wait more")
-			},
-		},
-		{
 			// Pins time-source "A long jump runs once": the loop waits for one
 			// interval and does not catch up on the intervals a jump skipped.
 			// Each pass of the loop waits once, so the wait count, read once
@@ -399,7 +605,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
 				))
 				require.NoError(t, store.Start(t.Context()))
-				t.Cleanup(func() { _ = store.Stop() })
+				t.Cleanup(func() { assert.NoError(t, shutdownWithin(t, store)) })
 				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
 
 				clk.Advance(50 * time.Second)
@@ -425,7 +631,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
 				))
 				require.NoError(t, store.Start(t.Context()))
-				t.Cleanup(func() { _ = store.Stop() })
+				t.Cleanup(func() { assert.NoError(t, shutdownWithin(t, store)) })
 				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
 
 				clk.Advance(10 * time.Second)
@@ -458,7 +664,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				now := time.Now()
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expired", now.Add(-time.Second))))
 				require.NoError(t, store.Start(t.Context()))
-				t.Cleanup(func() { _ = store.Stop() })
+				t.Cleanup(func() { assert.NoError(t, shutdownWithin(t, store)) })
 
 				require.Eventually(t, func() bool { return store.Len() == 0 }, 2*time.Second, 5*time.Millisecond,
 					"housekeeping on the system clock never swept")

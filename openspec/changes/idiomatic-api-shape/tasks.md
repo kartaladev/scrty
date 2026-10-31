@@ -35,7 +35,7 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
 
 ## 4. One lifecycle (D4)
 
-- [ ] 4.1 Red: write the `signing-keys` scenarios:
+- [x] 4.1 Red: write the `signing-keys` scenarios:
   - "Double start" (the second start fails);
   - "Cancelled start context";
   - "Start after shutdown";
@@ -45,9 +45,9 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
   - a shutdown whose context is already done, on a manager whose work has ended, returns nil (design D4, completion wins).
 
   Run them and confirm each fails for the scenario's reason. Pin "Keys served after shutdown" as the header describes. Then replace `Keys.Stop()` with `Shutdown(ctx)`, detach the work's context, and add `ErrAlreadyStarted` and `ErrAlreadyShutdown`. The godoc of `Start` loses the restart paragraph, and the godoc of `Shutdown` warns against calling it from an error hook. Verify: every `signing-keys` lifecycle scenario passes under `-race`, and `goleak` finds no goroutine left behind.
-- [ ] 4.2 Red: write the `sessions` scenarios "Cancelled start context", "Double start and stop" and "Start after shutdown", and a shutdown bounded by its context during a slow sweep, followed by a later shutdown that waits again. Run them and confirm they fail. Pin "Store serves after shutdown". Then apply the same lifecycle to `session.MemoryStore`, and remove the restart paragraph from its godoc. Verify: as in 4.1.
-- [ ] 4.3 Red: write the `expiry-sweeping` scenarios "Cancelled start context", "Shutdown cancels a running purge" and "Consumer bounds the shutdown". Run them and confirm "Cancelled start context" fails. Pin "Purge outlasts the stop timeout". Then detach `Sweeper`'s run context, keeping `WithStopTimeout` and the shared shutdown result. Verify: every "starts and stops cleanly" scenario passes under `-race`.
-- [ ] 4.4 Red: write the `email-notification` scenarios "Close drains" (with the shut-down error), "Shutdown bounded by its context", "Shutdown twice" and "Sends racing shutdown" (under `-race`). Run them and confirm they fail; a racing case that passes on the current code is pinned as the header describes. Then replace `QueuedSender.Close` with `Shutdown`, and `ErrSenderClosed` with `ErrAlreadyShutdown`. `notify` declares no `ErrAlreadyStarted`. Verify: every queued-sender scenario passes.
+- [x] 4.2 Red: write the `sessions` scenarios "Cancelled start context", "Double start and stop" and "Start after shutdown", and a shutdown bounded by its context during a slow sweep, followed by a later shutdown that waits again. Run them and confirm they fail. Pin "Store serves after shutdown". Then apply the same lifecycle to `session.MemoryStore`, and remove the restart paragraph from its godoc. Verify: as in 4.1.
+- [x] 4.3 Red: write the `expiry-sweeping` scenarios "Cancelled start context", "Shutdown cancels a running purge" and "Consumer bounds the shutdown". Run them and confirm "Cancelled start context" fails. Pin "Purge outlasts the stop timeout". Then detach `Sweeper`'s run context, keeping `WithStopTimeout` and the shared shutdown result. Verify: every "starts and stops cleanly" scenario passes under `-race`.
+- [x] 4.4 Red: write the `email-notification` scenarios "Close drains" (with the shut-down error), "Shutdown bounded by its context", "Shutdown twice" and "Sends racing shutdown" (under `-race`). Run them and confirm they fail; a racing case that passes on the current code is pinned as the header describes. Then replace `QueuedSender.Close` with `Shutdown`, and `ErrSenderClosed` with `ErrAlreadyShutdown`. `notify` declares no `ErrAlreadyStarted`. Verify: every queued-sender scenario passes.
 - [ ] 4.5 Red: write a test that `Start` with a nil context returns the configuration error and starts nothing, for `Keys` and `session.MemoryStore`, and that `Shutdown` with a nil context returns the configuration error and changes nothing, for `Keys`, `session.MemoryStore` and `QueuedSender`. Run them and confirm they fail. Then implement the refusal. `Sweeper` already refuses both, and its existing tests stay as they are. Verify: the tests pass.
 
 ## 5. Guards declare their authorizer (D5)

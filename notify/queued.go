@@ -19,8 +19,8 @@ import (
 // an address that has an account than for one that does not, which is exactly
 // what the flow is built not to reveal.
 //
-// Messages live only in memory. A crash, or a shutdown that skips Close, loses
-// whatever is still queued. A consumer who needs delivery to survive that
+// Messages live only in memory. A crash, or a process that ends without
+// Shutdown, loses whatever is still queued. A consumer who needs delivery to survive that
 // supplies a Sender backed by a durable queue instead.
 type QueuedSender struct {
 	inner   Sender
@@ -30,15 +30,20 @@ type QueuedSender struct {
 	timeout time.Duration
 	logger  *slog.Logger
 
-	wg sync.WaitGroup
+	// drained is closed once every worker has returned, which happens only
+	// after Shutdown closes the queue and the workers have emptied it. Every
+	// Shutdown call waits on it, so a later call waits for the same drain.
+	drained chan struct{}
 
-	// mu guards closed and the queue channel together: a send holds it for
-	// reading while it writes to the channel, and Close holds it for writing
-	// while it flips the flag and closes the channel, so no send can write to
-	// a channel Close is closing. The flag is a plain bool because it is never
-	// read outside that lock.
-	mu     sync.RWMutex
-	closed bool
+	// mu guards shutdown and the queue channel together: a send holds it for
+	// reading while it writes to the channel, and Shutdown holds it for
+	// writing while it flips the flag and closes the channel. A send therefore
+	// either lands in the queue before it is closed, and the drain delivers
+	// it, or sees the flag and is refused; it is never accepted and then
+	// dropped, and it never writes to a closed channel. The flag is a plain
+	// bool because it is never read outside that lock.
+	mu       sync.RWMutex
+	shutdown bool
 }
 
 // queued is one message and the detached context it travels with. The context
@@ -57,7 +62,9 @@ type queued struct {
 // ErrConfig, on an absent inner sender — a nil interface or one holding a nil
 // pointer — or a worker count, queue size or send timeout of zero or less.
 //
-// The workers run until Close, which the consumer calls at shutdown.
+// The workers start here, and there is no Start. They run detached from any
+// caller's context until Shutdown, which the consumer calls when the process
+// stops.
 func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) {
 	cfg := queuedConfig{
 		workers: defaultQueueWorkers,
@@ -98,13 +105,21 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 		size:    cfg.size,
 		timeout: cfg.timeout,
 		logger:  cfg.logger,
+		drained: make(chan struct{}),
 	}
 
-	s.wg.Add(cfg.workers)
+	var wg sync.WaitGroup
 
 	for range cfg.workers {
-		go s.work()
+		wg.Go(s.work)
 	}
+
+	// One watcher turns the workers' end into a channel every Shutdown can
+	// select on. It ends with the workers.
+	go func() {
+		wg.Wait()
+		close(s.drained)
+	}()
 
 	return s, nil
 }
@@ -211,15 +226,17 @@ func (s *QueuedSender) SendTimeout() time.Duration { return s.timeout }
 // A full queue drops the message, logs at error and returns ErrQueueFull. It
 // never waits for space: waiting would put delivery time back into the
 // caller's response, and it would be longest exactly when the system is most
-// loaded. A send after Close returns ErrSenderClosed.
+// loaded. A send after Shutdown has begun returns ErrAlreadyShutdown; a send
+// that returned nil is delivered by the drain, however close it raced the
+// shutdown.
 func (s *QueuedSender) Send(ctx context.Context, msg Message) error {
-	// The read lock is what stops a send from writing to a channel Close is
-	// closing; Close takes the write lock to close it.
+	// The read lock is what stops a send from writing to a channel Shutdown
+	// is closing; Shutdown takes the write lock to close it.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.closed {
-		return ErrSenderClosed
+	if s.shutdown {
+		return ErrAlreadyShutdown
 	}
 
 	select {
@@ -235,8 +252,6 @@ func (s *QueuedSender) Send(ctx context.Context, msg Message) error {
 
 // work is one worker's loop. It ends when the queue is closed and drained.
 func (s *QueuedSender) work() {
-	defer s.wg.Done()
-
 	for q := range s.queue {
 		s.deliver(q)
 	}
@@ -274,37 +289,45 @@ func (s *QueuedSender) deliver(q queued) {
 	}
 }
 
-// Close stops intake and waits for what is already queued to be delivered,
-// waiting no longer than ctx allows. It returns ctx's error if the drain has
-// not finished by then; the workers carry on with what is left.
+// Shutdown stops intake and waits for what is already queued to be
+// delivered, waiting no longer than ctx allows. It returns nil once the drain
+// has finished, or ctx's error if ctx ends first; the workers then carry on
+// with what is left, and nothing cancels a delivery already under way.
 //
-// Call it at shutdown, with a context that gives the drain a realistic amount
-// of time — the caller's request context is the wrong one, since it is usually
-// already over. Calling it twice is safe and the second call returns nil. A
-// send after Close returns ErrSenderClosed, and messages still queued when the
-// process ends are lost.
-func (s *QueuedSender) Close(ctx context.Context) error {
+// Shutdown is terminal: every later Send returns ErrAlreadyShutdown, and there
+// is no way to start the workers again. It is safe to call more than once and
+// from several goroutines. Each call waits for the same drain under its own
+// context, so a later call returns nil once the drain has finished, even after
+// an earlier call gave up. When the drain has already finished, Shutdown
+// returns nil whatever the state of ctx.
+//
+// Call it when the process stops, with a context that gives the drain a
+// realistic amount of time; a request's context is the wrong one, since it is
+// usually already over. Messages still queued when the process ends are lost.
+//
+// Call it from outside the wrapped sender. A wrapped sender that calls
+// Shutdown is waiting for a drain that includes its own delivery, so the call
+// cannot finish: it waits until its ctx ends and returns ctx's error.
+func (s *QueuedSender) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	if !s.shutdown {
+		s.shutdown = true
 
-		return nil
+		close(s.queue)
 	}
-
-	s.closed = true
-
-	close(s.queue)
 	s.mu.Unlock()
 
-	done := make(chan struct{})
-
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
+	// Completion wins a tie: a drain that has already finished is reported
+	// as finished even when ctx is done too, rather than leaving the answer
+	// to which select case Go happens to pick.
+	select {
+	case <-s.drained:
+		return nil
+	default:
+	}
 
 	select {
-	case <-done:
+	case <-s.drained:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

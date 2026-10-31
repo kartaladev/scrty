@@ -38,7 +38,7 @@ func TestRotationAtTheConfiguredInterval(t *testing.T) {
 		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	k1 := currentKid(t, km, signingkey.RS256)
 	require.NoError(t, km.Start(t.Context()))
@@ -154,7 +154,7 @@ func TestRotationFailureIsObservable(t *testing.T) {
 
 			km, err := signingkey.New(t.Context(), opts...)
 			require.NoError(t, err)
-			stopAndVerify(t, km)
+			shutdownAndVerify(t, km)
 
 			previous := currentKid(t, km, signingkey.EdDSA)
 			require.NoError(t, km.Start(t.Context()))
@@ -193,7 +193,7 @@ func TestRotation_IsNotUndoneByAFutureDatedStoredKey(t *testing.T) {
 		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 	require.NoError(t, km.Start(t.Context()))
 
 	for range 48 {
@@ -208,15 +208,16 @@ func TestRotation_IsNotUndoneByAFutureDatedStoredKey(t *testing.T) {
 }
 
 // TestErrorHookMayReadTheManagerBack pins the half of WithErrorHook's contract
-// a consumer can act on. The hook runs on the loop goroutine, so it must not
-// call Start or Stop — that is documented, not enforceable — but reading the
+// a consumer can act on. The hook runs on the loop goroutine, so a Shutdown it
+// calls cannot wait for the work to end — that is documented, not enforceable,
+// and covered in TestKeys_Lifecycle — but reading the
 // manager back is safe, which is what a hook needs in order to decide whether
 // an outage has cost it its keys.
 //
 // The manager therefore must not hold the keyring lock across the hook, and
 // nothing else in the suite observes that: a hook that only counts failures is
-// happy either way. The loop must also go on reporting afterwards, and Stop
-// must still return.
+// happy either way. The loop must also go on reporting afterwards, and
+// Shutdown must still return.
 // Standalone: its hook reads the manager back on the loop goroutine.
 func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
@@ -270,16 +271,9 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	assert.GreaterOrEqual(t, reads.Load(), int32(attempts),
 		"every call to the hook could read the manager back")
 
-	// Stop is what the hook may not call; the consumer's own goroutine still
-	// can, and it has to return.
-	stopped := make(chan error, 1)
-	go func() { stopped <- km.Stop() }()
-	select {
-	case stopErr := <-stopped:
-		require.NoError(t, stopErr)
-	case <-time.After(30 * time.Second):
-		t.Fatal("Stop never returned after the error hook had read the manager back")
-	}
+	// Shutdown is what the hook should not call; the consumer's own goroutine
+	// still can, and it has to return.
+	shutdownWithin(t, km, 30*time.Second, "the error hook had read the manager back")
 
 	goleak.VerifyNone(t, ignore)
 }
@@ -342,7 +336,7 @@ func TestFailureLogsAreSampled(t *testing.T) {
 				signingkey.WithKeyLifetime(24*time.Hour),
 			)
 			require.NoError(t, err)
-			stopAndVerify(t, km)
+			shutdownAndVerify(t, km)
 
 			require.NoError(t, km.Start(t.Context()))
 
@@ -362,9 +356,9 @@ func TestFailureLogsAreSampled(t *testing.T) {
 
 			tc.assert(t, recorder, report)
 
-			require.NoError(t, km.Stop())
+			require.NoError(t, km.Shutdown(t.Context()))
 			records := recorder.records(t)
-			require.Len(t, records, 3, "stopping accounts for what was still suppressed")
+			require.Len(t, records, 3, "shutting down accounts for what was still suppressed")
 			assert.Equal(t, float64(afterward), records[2]["suppressed"])
 			assert.Equal(t, tc.verb, records[2]["op"],
 				"the flushed record names the operation it stands for")
@@ -482,7 +476,7 @@ func TestSigningKeyStoreFailureRecords(t *testing.T) {
 				signingkey.WithKeyLifetime(24*time.Hour),
 			)
 			require.NoError(t, err)
-			stopAndVerify(t, km)
+			shutdownAndVerify(t, km)
 
 			require.NoError(t, km.Start(t.Context()))
 
@@ -544,7 +538,7 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 		"both replicas start on the one stored key")
 
 	require.NoError(t, replicaA.Start(t.Context()))
-	stopAndVerify(t, replicaA)
+	shutdownAndVerify(t, replicaA)
 
 	advance(t, clk, time.Minute, loopCount)
 	k2 := currentKid(t, replicaA, signingkey.EdDSA)
@@ -554,7 +548,7 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 	// Replica B starts only now, so its reload is due exactly one reload
 	// interval after the rotation it has to pick up — not part of it.
 	require.NoError(t, replicaB.Start(t.Context()))
-	stopAndVerify(t, replicaB)
+	shutdownAndVerify(t, replicaB)
 	require.Equal(t, k1, currentKid(t, replicaB, signingkey.EdDSA),
 		"replica B has not reloaded yet")
 
@@ -594,7 +588,7 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	require.Equal(t, held.Kid, currentKid(t, km, signingkey.RS256))
 
@@ -639,7 +633,7 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	held := currentKid(t, km, signingkey.EdDSA)
 	token := signWithCurrent(t, km, "issued before the outage")
@@ -687,7 +681,7 @@ func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
 		signingkey.WithKeyLifetime(48*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 	held := currentKid(t, km, signingkey.RS256)
 	require.NoError(t, km.Start(t.Context()))
 
@@ -716,7 +710,7 @@ func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
 		signingkey.WithKeyLifetime(48*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 	require.NoError(t, km.Start(t.Context()))
 
 	// A replica whose clock runs 90 seconds fast stores a key, so at the first
@@ -792,7 +786,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 				signingkey.WithKeyLifetime(24*time.Hour),
 			)
 			require.NoError(t, err)
-			stopAndVerify(t, km)
+			shutdownAndVerify(t, km)
 			require.Equal(t, current, currentKid(t, km, signingkey.RS256),
 				"construction gives the tie to the key the store lists later")
 
@@ -844,7 +838,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 		signingkey.WithHousekeepingInterval(time.Second),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	require.Equal(t, []signingkey.Alg{signingkey.RS256}, km.SupportedAlgs())
 
@@ -965,7 +959,7 @@ func TestHousekeeping(t *testing.T) {
 				signingkey.WithRotateInterval(6*time.Hour),
 			)
 			require.NoError(t, err)
-			stopAndVerify(t, km)
+			shutdownAndVerify(t, km)
 
 			expired, current := seed[0].Kid, seed[len(seed)-1].Kid
 			require.Equal(t, current, currentKid(t, km, signingkey.RS256))
@@ -1001,7 +995,7 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 		signingkey.WithKeyLifetime(2*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	require.NoError(t, km.Start(t.Context()))
 
@@ -1052,7 +1046,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 		signingkey.WithRotateInterval(6*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 
 	require.Equal(t, newest.Kid, currentKid(t, km, signingkey.RS256))
 	require.NoError(t, km.Start(t.Context()))
@@ -1101,7 +1095,7 @@ func TestHousekeep_RetiresFarFutureKey(t *testing.T) {
 		signingkey.WithRotateInterval(6*time.Hour),
 	)
 	require.NoError(t, err)
-	stopAndVerify(t, km)
+	shutdownAndVerify(t, km)
 	require.True(t, publishes(km, ahead.Kid), "the non-current key is published to begin with")
 	require.NoError(t, km.Start(t.Context()))
 
