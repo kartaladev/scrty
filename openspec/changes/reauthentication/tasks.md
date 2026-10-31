@@ -68,7 +68,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 6. The re-authentication endpoints (`reauthentication`, `sessions`, `account-recovery`, `passkey-authentication`)
 
-- [ ] 6.1 Wiring:
+- [x] 6.1 Wiring:
   - `EnableReauthentication(opts...)` with every `ReauthenticationOption` in D6 and their defaults;
   - `OrderReauthentication = 655`;
   - `DefaultReauthenticationPrefix = "/reauth"`;
@@ -76,7 +76,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - every construction error in D6, as `ErrConfig`, each naming its cause.
 
   ("Re-proof endpoints exist only when re-authentication is enabled" scenarios "Off by default", "Consumer prefix"; "Re-authentication wiring mistakes fail at construction", every scenario; "Re-proof challenges are their own and bound to the session" scenario "Zero lifetime".) Verify with `go test -race -run 'TestEnableReauthentication|TestChainOrder' ./httpsec/`
-- [ ] 6.2 Admission, the factor policy, and `GET <prefix>/methods` with its default JSON body and replaceable responder:
+- [x] 6.2 Admission, the factor policy, and `GET <prefix>/methods` with its default JSON body and replaceable responder:
   - the decision is shared by every endpoint;
   - a lookup failure refuses;
   - non-full sessions are refused by their gates and, if reordered, by the endpoint as authentication required.
