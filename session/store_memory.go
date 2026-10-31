@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -57,11 +58,11 @@ type MemoryStore struct {
 	// store. Like byDigest it is written wherever records is.
 	byFamily map[id.ID]map[string]struct{}
 
-	// lifecycle guards the housekeeping state below. It is separate from mu,
+	// lifecycleMu guards the housekeeping state below. It is separate from mu,
 	// and never held while waiting, so that Shutdown can wait for a sweep that
 	// takes mu, and Start and Shutdown never wait on each other.
-	lifecycle sync.Mutex
-	shutdown  bool
+	lifecycleMu sync.Mutex
+	shutdown    bool
 	// cancel ends the housekeeping run, and done is closed once it has
 	// ended. Both stay set after Shutdown, so a later Shutdown waits again.
 	// They are nil until Start.
@@ -142,8 +143,8 @@ func (s *MemoryStore) Start(ctx context.Context) error {
 		return fmt.Errorf("%w: Start needs a non-nil context", ErrConfig)
 	}
 
-	s.lifecycle.Lock()
-	defer s.lifecycle.Unlock()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 
 	switch {
 	case s.shutdown:
@@ -207,30 +208,18 @@ func (s *MemoryStore) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("%w: Shutdown needs a non-nil context", ErrConfig)
 	}
 
-	s.lifecycle.Lock()
+	s.lifecycleMu.Lock()
 	s.shutdown = true
 	cancel, done := s.cancel, s.done
-	s.lifecycle.Unlock()
+	s.lifecycleMu.Unlock()
 
 	if cancel == nil {
 		return nil
 	}
 	cancel()
 
-	// Completion is checked first, so a run that has ended wins over a ctx
-	// that is already done, whichever case the select below would pick.
-	select {
-	case <-done:
-		return nil
-	default:
-	}
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// A run that has ended wins over a ctx that is already done.
+	return lifecycle.Await(ctx, done)
 }
 
 // Create inserts sess. An identifier that is already stored is refused rather

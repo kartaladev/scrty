@@ -14,6 +14,7 @@ import (
 	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/lifecycle"
 )
 
 // JobPrefix starts the name of every job a Sweeper schedules: the job for the
@@ -419,18 +420,13 @@ func (s *Sweeper) Shutdown(ctx context.Context) error {
 	s.beginShutdownLocked(ctx)
 	s.mu.Unlock()
 
-	// Prefer a finished shutdown over a ctx that is already done.
-	select {
-	case <-s.shutdownDone:
-		return s.shutdownResult()
-	default:
+	// A finished shutdown wins over a ctx that is already done, and then
+	// reports its shared result.
+	if err := lifecycle.Await(ctx, s.shutdownDone); err != nil {
+		return fmt.Errorf("sweep: shutting down: %w", err)
 	}
-	select {
-	case <-s.shutdownDone:
-		return s.shutdownResult()
-	case <-ctx.Done():
-		return fmt.Errorf("sweep: shutting down: %w", ctx.Err())
-	}
+
+	return s.shutdownResult()
 }
 
 // beginShutdownLocked moves the sweeper to stateShutdown and starts the one

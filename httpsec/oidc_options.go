@@ -101,7 +101,7 @@ func EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option {
 
 	return func(c *config) error {
 		if d.RelyingParty == nil {
-			return newConfigError("%s needs an OIDC manager: it holds the providers every "+
+			return newConfigError("%s needs OIDCDeps.RelyingParty: it holds the providers every "+
 				"endpoint serves", option)
 		}
 
@@ -158,7 +158,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 		}
 	} else {
 		if i.handoffs == nil {
-			return newConfigError("%s needs a handoff manager to convey a login with, unless "+
+			return newConfigError("%s needs OIDCDeps.Handoff to convey a login with, unless "+
 				"WithOIDCCallbackSuccess conveys it instead", option)
 		}
 
@@ -218,9 +218,9 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 // silently ignored.
 func (i *oidcInterceptor) checkConveyance(option string) error {
 	if i.handoffs != nil {
-		return newConfigError("%s was given both a handoff manager and WithOIDCCallbackSuccess, "+
+		return newConfigError("%s was given both OIDCDeps.Handoff and WithOIDCCallbackSuccess, "+
 			"which replaces the handoff conveyance and issues no code for it to redeem; "+
-			"pass nil for the handoff manager", option)
+			"pass nil for OIDCDeps.Handoff", option)
 	}
 
 	redemptionOnly := []struct {

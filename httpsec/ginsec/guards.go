@@ -9,7 +9,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/guardauth"
 )
 
 // Guards builds the per-endpoint authorization a consumer puts in front of one
@@ -72,19 +72,16 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 		opt(g)
 	}
 
-	if nilcheck.IsNil(az) {
-		if !g.chainAuthorizer {
-			return nil, fmt.Errorf(
-				"%w: ginsec: NewGuards needs an authorizer, or WithChainAuthorizer to rely on the chain's",
-				httpsec.ErrConfig)
-		}
-
-		// Stored as no fallback at all, so the guard refuses rather than
-		// calling a method on a nil value.
-		az = nil
+	// A nil az, typed or not, comes back as no fallback at all, so the guard
+	// refuses rather than calling a method on a nil value.
+	fallback, ok := guardauth.Fallback(az, g.chainAuthorizer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"%w: ginsec: NewGuards needs an authorizer, or WithChainAuthorizer to rely on the chain's",
+			httpsec.ErrConfig)
 	}
 
-	g.authorizer = az
+	g.authorizer = fallback
 
 	return g, nil
 }
@@ -148,15 +145,7 @@ func (g *Guards) refuse(gc *gin.Context, err error) {
 // and the one the guard was built with is the fallback for a guard used outside
 // a chain. When there is neither, the guard refuses.
 func (g *Guards) authorizerFor(ctx context.Context) (authorize.Authorizer, bool) {
-	if az, ok := authorize.AuthorizerFromContext(ctx); ok {
-		return az, true
-	}
-
-	if !nilcheck.IsNil(g.authorizer) {
-		return g.authorizer, true
-	}
-
-	return nil, false
+	return guardauth.For(ctx, g.authorizer)
 }
 
 // judgement is what one guard asks about a request once the caller and the

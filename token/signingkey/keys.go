@@ -37,10 +37,10 @@ type Keys struct {
 	order   []string             // kids, in the order they were held
 	current map[Alg]string       // alg -> kid
 
-	// lifecycle guards the fields below it. It is held only to read or change
+	// lifecycleMu guards the fields below it. It is held only to read or change
 	// them, never across a wait, so a Shutdown waiting for the work blocks no
 	// other Start or Shutdown.
-	lifecycle sync.Mutex
+	lifecycleMu sync.Mutex
 	// started and shutdown record the two one-way transitions of the
 	// lifecycle. cancel ends the work's context and done is closed once the
 	// work has ended; both are nil until Start launches the work. wg counts the
@@ -468,8 +468,9 @@ func (km *Keys) JWKS() ([]byte, error) {
 	return doc, nil
 }
 
-// ErrConfig is wrapped by every error New returns for a wiring
-// mistake, so a consumer can tell a contradictory configuration from a store
+// ErrConfig is wrapped by every error New returns for a wiring mistake, and by
+// the error Keys.Start and Keys.Shutdown return when they are given a nil
+// context, so a consumer can tell a contradictory configuration from a store
 // failure without matching on message text.
 var ErrConfig = errors.New("signingkey: invalid configuration")
 

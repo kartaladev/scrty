@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/lifecycle"
 )
 
 // ErrAlreadyStarted is returned by Start on a manager whose background work has
@@ -40,8 +42,8 @@ func (km *Keys) Start(ctx context.Context) error {
 		return fmt.Errorf("%w: Start needs a non-nil context", ErrConfig)
 	}
 
-	km.lifecycle.Lock()
-	defer km.lifecycle.Unlock()
+	km.lifecycleMu.Lock()
+	defer km.lifecycleMu.Unlock()
 
 	switch {
 	case km.shutdown:
@@ -134,31 +136,18 @@ func (km *Keys) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("%w: Shutdown needs a non-nil context", ErrConfig)
 	}
 
-	km.lifecycle.Lock()
+	km.lifecycleMu.Lock()
 	km.shutdown = true
 	if km.cancel != nil {
 		km.cancel()
 	}
 	done := km.done
-	km.lifecycle.Unlock()
+	km.lifecycleMu.Unlock()
 
 	if done == nil {
 		return nil // never started: there is no work to wait for
 	}
 
-	// Completion is checked on its own first, so that work which has already
-	// ended wins over a ctx that is already done, rather than leaving the
-	// result to whichever ready case select happens to pick.
-	select {
-	case <-done:
-		return nil
-	default:
-	}
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// Work that has already ended wins over a ctx that is already done.
+	return lifecycle.Await(ctx, done)
 }

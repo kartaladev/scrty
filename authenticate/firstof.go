@@ -154,7 +154,9 @@ func (m *FirstOf) FlushRefusalLogs() error {
 	var errs []error
 	for _, d := range m.delegates {
 		if f, ok := d.(logsample.Flusher); ok {
-			errs = append(errs, f.FlushRefusalLogs())
+			if err := f.FlushRefusalLogs(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 

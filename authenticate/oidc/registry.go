@@ -174,9 +174,12 @@ func (r *Registry) Lookup(name string) (Provider, bool) {
 // returned slice is the caller's own.
 func (r *Registry) Names() []string { return slices.Clone(r.names) }
 
+// resolveProvider fills the defaults into p and returns a copy that shares no
+// slice with p or with the package defaults. The defaults are read from their
+// unexported backing values and copied once, by cloneProvider.
 func resolveProvider(p Provider) Provider {
 	if p.Scopes == nil {
-		p.Scopes = DefaultScopes()
+		p.Scopes = defaultScopes[:]
 	}
 	if p.SigningAlgs == nil {
 		p.SigningAlgs = defaultSigningAlgs

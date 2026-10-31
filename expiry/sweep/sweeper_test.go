@@ -933,11 +933,30 @@ func TestSweeper_SecondShutdownWaitsForTheFirst(t *testing.T) {
 
 				ctx, cancel := context.WithCancel(t.Context())
 				cancel()
-				require.ErrorIs(t, h.sweeper.Shutdown(ctx), context.Canceled)
+				err := h.sweeper.Shutdown(ctx)
+				require.ErrorIs(t, err, context.Canceled)
+				assert.ErrorContains(t, err, "sweep: shutting down")
 				assertPending(t, first, "first Shutdown returned while the run was still in progress")
 
 				p.Release()
 				require.NoError(t, recv(t, first))
+			},
+		},
+		{
+			name: "a finished shutdown wins over a context that is already done",
+			assert: func(t *testing.T, h *harness, p *probe) {
+				first := shutdownAsync(context.WithoutCancel(t.Context()), h)
+				recv(t, p.cancelled)
+				p.Release()
+				require.NoError(t, recv(t, first))
+
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				// A single call could pass by luck if completion lost the tie
+				// only some of the time, so repeat it.
+				for range 100 {
+					require.NoError(t, h.sweeper.Shutdown(ctx))
+				}
 			},
 		},
 	}
@@ -1153,7 +1172,9 @@ func TestSweeper_DetachedStart(t *testing.T) {
 
 				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 				defer cancel()
-				require.ErrorIs(t, h.sweeper.Shutdown(ctx), context.DeadlineExceeded)
+				err := h.sweeper.Shutdown(ctx)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.ErrorContains(t, err, "sweep: shutting down")
 
 				// The shutdown carries on; once the purge returns, a later call
 				// gets its result.

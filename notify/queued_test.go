@@ -603,6 +603,115 @@ func TestQueuedSender_ShutdownFromInsideWrappedSender(t *testing.T) {
 	})
 }
 
+// blockingHandler is a slog handler that parks the goroutine logging a
+// matching record until the test releases it, standing in for a slow or
+// re-entrant log handler.
+type blockingHandler struct {
+	match   string
+	entered chan struct{}
+	once    sync.Once
+	release chan struct{}
+}
+
+func (h *blockingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *blockingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != h.match {
+		return nil
+	}
+
+	h.once.Do(func() { close(h.entered) })
+	<-h.release
+
+	return nil
+}
+
+func (h *blockingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *blockingHandler) WithGroup(string) slog.Handler { return h }
+
+// TestQueuedSender_ShutdownNotHeldByASlowLogger shows a Send that is logging a
+// dropped message does not hold Shutdown past its context: the drop is
+// decided under the lock and logged after it is released.
+//
+// It runs on real time rather than in a synctest bubble, because a goroutine
+// blocked on a mutex is not durably blocked, so a bubble would never advance
+// its clock to end Shutdown's context. It is not parallel, so goleak sees only
+// its own goroutines.
+func TestQueuedSender_ShutdownNotHeldByASlowLogger(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	handler := &blockingHandler{
+		match:   "notify: send queue is full, message dropped",
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	inner := &blockingSender{release: make(chan struct{})}
+
+	s, err := notify.NewQueuedSender(inner,
+		notify.WithQueueWorkers(1),
+		notify.WithQueueMaxMessages(1),
+		notify.WithQueueLogger(slog.New(handler)),
+	)
+	require.NoError(t, err)
+
+	sendDone := make(chan error, 1)
+	shutdownDone := make(chan error, 1)
+
+	// Everything the test parks is released before goleak looks, whether the
+	// assertions passed or not, so a failing run reports instead of hanging.
+	defer func() {
+		close(handler.release)
+		close(inner.release)
+
+		select {
+		case err := <-sendDone:
+			assert.ErrorIs(t, err, notify.ErrQueueFull, "the parked Send reports the drop")
+		case <-time.After(5 * time.Second):
+			t.Error("the parked Send did not return after the handler was released")
+		}
+
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+
+		assert.NoError(t, s.Shutdown(ctx), "the drain finishes once the worker is released")
+	}()
+
+	// One message occupies the single worker.
+	require.NoError(t, s.Send(t.Context(), testMessage()))
+	require.Eventually(t, func() bool { return inner.inflight.Load() == 1 },
+		time.Second, time.Millisecond, "the worker takes the first message")
+
+	// One fills the queue of 1.
+	require.NoError(t, s.Send(t.Context(), testMessage()))
+
+	// The next is dropped, and its Send parks in the handler logging the drop.
+	go func() { sendDone <- s.Send(context.WithoutCancel(t.Context()), testMessage()) }()
+
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the dropped Send never reached the log handler")
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 100*time.Millisecond)
+		defer cancel()
+
+		shutdownDone <- s.Shutdown(ctx)
+	}()
+
+	select {
+	case err := <-shutdownDone:
+		require.ErrorIs(t, err, context.DeadlineExceeded,
+			"Shutdown gives up when its context ends, the worker still being busy")
+	case <-time.After(time.Second):
+		require.FailNow(t, "Shutdown did not return within 1s of a 100ms context: "+
+			"it is held by the Send logging a drop")
+	}
+}
+
 func TestQueuedSenderRecoversPanic(t *testing.T) {
 	t.Parallel()
 

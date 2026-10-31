@@ -77,7 +77,8 @@ var (
 )
 
 // ErrConfig is wrapped by every error a constructor in this package returns
-// for a wiring mistake, so a consumer can tell a contradictory configuration
+// for a wiring mistake, and by the error QueuedSender.Shutdown returns when it
+// is given a nil context, so a consumer can tell a contradictory configuration
 // from a failure at send time without matching on message text.
 var ErrConfig = errors.New("notify: invalid configuration")
 

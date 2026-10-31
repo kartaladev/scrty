@@ -2,12 +2,14 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -230,8 +232,23 @@ func (s *QueuedSender) SendTimeout() time.Duration { return s.timeout }
 // that returned nil is delivered by the drain, however close it raced the
 // shutdown.
 func (s *QueuedSender) Send(ctx context.Context, msg Message) error {
-	// The read lock is what stops a send from writing to a channel Shutdown
-	// is closing; Shutdown takes the write lock to close it.
+	err := s.enqueue(ctx, msg)
+
+	// The drop is logged after the lock is released, so a slow or re-entrant
+	// log handler cannot hold Shutdown past its context.
+	if errors.Is(err, ErrQueueFull) {
+		s.logger.LogAttrs(ctx, slog.LevelError, "notify: send queue is full, message dropped",
+			slog.Int("queue_size", s.size))
+	}
+
+	return err
+}
+
+// enqueue decides a send under the read lock: refused after Shutdown, queued,
+// or dropped for a full queue. The read lock is what stops a send from writing
+// to a channel Shutdown is closing; Shutdown takes the write lock to close it.
+// It does nothing else while holding the lock.
+func (s *QueuedSender) enqueue(ctx context.Context, msg Message) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -243,9 +260,6 @@ func (s *QueuedSender) Send(ctx context.Context, msg Message) error {
 	case s.queue <- queued{msg: msg, ctx: context.WithoutCancel(ctx)}:
 		return nil
 	default:
-		s.logger.LogAttrs(ctx, slog.LevelError, "notify: send queue is full, message dropped",
-			slog.Int("queue_size", s.size))
-
 		return ErrQueueFull
 	}
 }
@@ -324,19 +338,6 @@ func (s *QueuedSender) Shutdown(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
-	// Completion wins a tie: a drain that has already finished is reported
-	// as finished even when ctx is done too, rather than leaving the answer
-	// to which select case Go happens to pick.
-	select {
-	case <-s.drained:
-		return nil
-	default:
-	}
-
-	select {
-	case <-s.drained:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	// A drain that has already finished wins over a ctx that is already done.
+	return lifecycle.Await(ctx, s.drained)
 }
