@@ -322,8 +322,10 @@ func (c *Codes) logFailure(ctx context.Context, msg, reason string, err error) {
 
 // causedByCaller reports whether err is the caller's own context ending, rather
 // than a dependency failing on its own: ctx has ended, and err is or wraps
-// ctx's error or its cause. A cancellation or deadline a dependency met on a
-// context of its own does not count, since the caller was still waiting.
+// ctx's error or its cause. It compares the state of the caller's context, not
+// only the error's identity: a cancellation or deadline a dependency met on a
+// context of its own does not count while ctx is still live, since the caller
+// was still waiting.
 func causedByCaller(ctx context.Context, err error) bool {
 	ctxErr := ctx.Err()
 

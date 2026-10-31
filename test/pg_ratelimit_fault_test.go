@@ -499,6 +499,40 @@ const (
 	heldRowBound   = 750 * time.Millisecond
 )
 
+// heldRowDropWait is how long the held-row test waits for the server to
+// drop the session that waited on the row; a loaded host can take a while to
+// run the lock timeout.
+const heldRowDropWait = 5 * time.Second
+
+// logPGActivity logs the sessions of the test database, as the server
+// reports them, so a failure shows what the server was still doing.
+func logPGActivity(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), pgTestTimeout)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `SELECT pid, state, wait_event_type, wait_event, query
+FROM pg_stat_activity WHERE datname = current_database()`)
+	if err != nil {
+		t.Logf("reading pg_stat_activity: %v", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var pid int
+		var state, waitType, waitEvent, query sql.NullString
+		if err := rows.Scan(&pid, &state, &waitType, &waitEvent, &query); err != nil {
+			t.Logf("scanning pg_stat_activity: %v", err)
+			return
+		}
+		t.Logf("pg_stat_activity: pid=%d state=%q wait_event_type=%q wait_event=%q query=%q",
+			pid, state.String, waitType.String, waitEvent.String, query.String)
+	}
+	if err := rows.Err(); err != nil {
+		t.Logf("reading pg_stat_activity: %v", err)
+	}
+}
+
 // runPGHeldRow pins that a record, a charge and a refund each give up on a
 // row another session holds within the operation timeout, and that the server
 // stops waiting for the row too, by the statement's own lock timeout.
@@ -582,12 +616,15 @@ func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 
 			// The condition runs on a goroutine of its own, so it reports a
 			// failed query as "not yet" rather than failing the test there.
-			assert.Eventually(t, func() bool {
+			dropped := assert.Eventually(t, func() bool {
 				var waiting int
 				err := conn.DB.QueryRowContext(t.Context(),
 					`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting)
 				return err == nil && waiting == 0
-			}, time.Second, 20*time.Millisecond, "the server still has a session waiting on the held row")
+			}, heldRowDropWait, 20*time.Millisecond, "the server still has a session waiting on the held row")
+			if !dropped {
+				logPGActivity(t, conn.DB)
+			}
 		})
 	}
 }

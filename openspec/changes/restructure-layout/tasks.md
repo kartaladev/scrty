@@ -292,14 +292,19 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
   - `internal/unavailable`: in fallback mode, a charge whose caller's context has ended while the breaker is open is refused with the "charge abandoned" error, and the local count records nothing.
 
   Each passes on the current code; invert the branch it pins, see it fail, and edit it back. Verify: the failing lines are recorded, and `go test -count=1 -race ./internal/unavailable/` and the `ratelimit/redisstore` module pass.
-- [ ] 16.6 Fold the group-16 review (D20). Tests and their harnesses only:
+- [x] 16.6 Fold the group-16 review (D20). Tests and their harnesses only:
   - the PostgreSQL conformance harnesses of `sqlstore` and `pgx` give the limiter an operation timeout of 30 seconds instead of 5, because 64 charges on one key serialize on its row and, under a loaded CI runner, the queue outlasts 5 seconds (the review reproduced 13 and 31 of 64 charges failing at 5.0s with `DeadlineExceeded`). The concurrent case keeps `NoError`, and its failure message counts the errors and names the timeout;
   - `TestPGLimiter_HeldRow` waits up to 5 seconds for the server to drop the waiting session, and logs `pg_stat_activity` when it fails; the `lock-timeout-off` variant still fails it;
   - the `TestCodes` case "a good code has its charge refunded, by the charge's receipt" cancels the context in its `Match` mock, so the refund's stripped cancellation is pinned. Mutate `recovery/codes.go`'s refund to pass `ctx`, see it fail, and edit it back;
   - `causedByCaller`'s godoc in `recovery/codes.go` says that a deadline a dependency met on its own context does not count while the caller's context is still live.
 
   Verify: the failing lines are recorded; `go test -count=1 -race ./recovery/` passes; `cd test && go test -count=5 -race -run 'Limiter_Conformance/concurrent|TestPGLimiter_HeldRow' .` passes while the core module's `go test -race ./...` runs beside it.
-- [ ] 16.7 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows, and the charge-first `TestCodes` cases listed for the assertion review. Then an Opus review of 16.1–16.5 (done) and a Sonnet review of 16.6 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
+- [ ] 16.7 Make the PostgreSQL limiter tests hold under the full parallel `make check` (D13, phase 6; `make check` is also CI's gate). Three of five full runs after group 16 landed failed, each on a different timing-sensitive case: the concurrent charge on `sqlstore` and on `pgx` (`backend unavailable` at the operation timeout), `TestPGLimiter_HeldRow`, and the warm-up `Exceeded` of `TestPGLimiter_Unavailable/pgx` (`backend unavailable` within `pgOutageTimeout`, 2 seconds, while the server was running). Each passed alone. For every PostgreSQL limiter test whose outcome depends on wall-clock time under load, choose one, and say why:
+  - a wait that tolerates a loaded host without weakening what the test proves, such as a readiness check on a plain connection before a limiter's first call;
+  - or a move into `make test-isolated`, beside `TestPGLimiter_PruneUnderRecords`, with the same skip under `go test ./...` and the same environment switch.
+
+  Every broken variant the changed tests catch is still caught. Verify: three consecutive full `make check` runs are green; `make test-isolated` is green; each changed test's broken-variant check still fails its variant.
+- [ ] 16.8 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows, and the charge-first `TestCodes` cases listed for the assertion review. Then an Opus review of 16.1–16.5 (done), and a Sonnet review of 16.6 and 16.7 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
   - refund precision under concurrent charges;
   - the decorator's degraded path;
   - the conditional `UPDATE` under PostgreSQL's default isolation.

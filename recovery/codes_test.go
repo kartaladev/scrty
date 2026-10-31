@@ -460,10 +460,16 @@ func TestCodes(t *testing.T) {
 				store := NewMockCodeStore(ctrl)
 				gomock.InOrder(
 					limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil),
-					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).Return(true, nil),
+					// The client hangs up as the code matches: the request's
+					// context ends before the refund is made.
+					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).
+						DoAndReturn(func(ctx context.Context, _ identity.UserID, _ []byte) (bool, error) {
+							ctx.Value(hangUpKey{}).(context.CancelFunc)()
+							return true, nil
+						}),
 					limiter.EXPECT().Refund(gomock.Any(), receipt).
 						DoAndReturn(func(ctx context.Context, _ ratelimit.Receipt) error {
-							assert.NoError(t, ctx.Err())
+							assert.NoError(t, ctx.Err(), "the refund inherited the request's cancellation")
 							return nil
 						}),
 				)
@@ -472,9 +478,10 @@ func TestCodes(t *testing.T) {
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				// The client hangs up once the code has matched: the refund is
-				// still made.
+				// still made, on a context that no longer carries the hang-up.
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
+				ctx = context.WithValue(ctx, hangUpKey{}, cancel)
 
 				hash, err := c.Check(ctx, "u-1", wrongCode)
 				require.NoError(t, err)

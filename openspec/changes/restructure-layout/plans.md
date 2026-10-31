@@ -116,7 +116,8 @@
 | L3 | 16.4 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
 | L4 | 16.5 | the files of Task 52a | Sonnet: test additions whose rows are given | Opus, inside the 16.6 group review |
 | L5 | 16.6 | the files of Task 52b | Sonnet: test-harness changes whose values the review gives | Sonnet |
-| main session | 12.3, 13.12, 14.4, 15.7, 16.7, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| L6 | 16.7 | the files of Task 52c | Opus: which waits may tolerate load without hiding a defect is a judgement the review cannot fix in advance | Sonnet, inside the 16.8 review |
+| main session | 12.3, 13.12, 14.4, 15.7, 16.8, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
 The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3. K1 then runs in its own worktree off the U commit, in parallel with U5 on the branch: both compile in `httpsec` but own disjoint files. L3 runs on the branch after K1 lands. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
@@ -946,7 +947,16 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 4:** The `causedByCaller` godoc sentence.
 - [ ] **Step 5: Verify** as task 16.6 lists. Expected: PASS, under load.
 
-### Task 53: Group-16 gate (task 16.7, main session)
+### Task 52c: The PostgreSQL limiter tests hold under the full run (task 16.7, L6, after Task 52b)
+
+**Files:** the test module's PostgreSQL limiter tests (`test/pg_ratelimit_*_test.go`, their harness helpers), `test/ratelimittest` if a case's wait changes, and the `Makefile`'s `test-isolated` target if a test moves there.
+
+- [ ] **Step 1:** List every PostgreSQL limiter test whose outcome depends on wall-clock time under load: the concurrent charge, `TestPGLimiter_HeldRow`, the warm-ups of `TestPGLimiter_Unavailable`, and any other found by reading the timeouts each passes.
+- [ ] **Step 2:** For each, apply one remedy from task 16.7 and record why in a comment above the test. A move to `test-isolated` follows `TestPGLimiter_PruneUnderRecords`'s skip and environment switch.
+- [ ] **Step 3:** Run each changed test's broken-variant check. Expected: every variant still caught.
+- [ ] **Step 4: Verify.** `make check` three times in a row, then `make test-isolated`. Expected: all green.
+
+### Task 53: Group-16 gate (task 16.8, main session)
 
 - [ ] As Task 44, with `Receipt`, `NewReceipt`, its accessors, `Charger` and each limiter's two methods as `added` rows. An Opus review of L1–L3 and L2b against D20 and the `rate-limiting` and `account-recovery` deltas covers refund precision, the decorator's degraded paths, and the conditional statement under PostgreSQL's default isolation. Commit `fix(recovery)!: saved codes hold their limit under concurrency`.
 

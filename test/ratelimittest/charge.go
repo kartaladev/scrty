@@ -47,10 +47,24 @@ func chargeCases() []testCase {
 				close(start)
 				done.Wait()
 
+				failed := 0
+				var firstErr error
+				for _, o := range outcomes {
+					if o.err != nil {
+						failed++
+						if firstErr == nil {
+							firstErr = o.err
+						}
+					}
+				}
+				require.NoError(t, firstErr,
+					"%d of %d concurrent charges returned an error; on a "+
+						"serialized row that usually means the backend's "+
+						"operation timeout ran out before the charge's turn",
+					failed, callers)
 				accepted := 0
 				var receipt ratelimit.Receipt
 				for _, o := range outcomes {
-					require.NoError(t, o.err)
 					if !o.exceeded {
 						accepted++
 						receipt = o.receipt
