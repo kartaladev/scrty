@@ -31,12 +31,12 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 3. The core recency guard (`reauthentication`)
 
-- [ ] 3.1 Guard options:
+- [x] 3.1 Guard options:
   - `WithRecentAuthenticationWindow`, `WithGuardClock` and `WithAuthenticationTime`, with `DefaultRecentAuthenticationWindow = 15 * time.Minute` and the system clock as defaults;
   - `NewGuards` fails with `ErrConfig` for a zero or negative window, a nil or typed-nil clock, and a nil authentication-time func, each message naming the option.
 
   (D2; "The recency window has a default, a guards-wide override and a per-route override" scenario "Zero guards-wide window"; "The recency guard reads time from a replaceable time source" scenario "Absent time source"; "The authentication time comes from the session unless the consumer supplies it" scenario "Absent consumer source".) Verify with `go test -race -run 'TestNewGuards' ./httpsec/`
-- [ ] 3.2 `RequireRecentAuthentication()` and `RequireAuthenticationWithin(d)` as judges on `g.guard`:
+- [x] 3.2 `RequireRecentAuthentication()` and `RequireAuthenticationWithin(d)` as judges on `g.guard`:
   - authentication time from `SessionFromContext`, or from the consumer func when given;
   - freshness via `AuthenticatedWithin`;
   - refusal `&ReauthenticationRequiredError{Window: d}`;
@@ -44,7 +44,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - a nil receiver panics like the other builders.
 
   One table test covers every scenario of these requirements through net/http with a controlled clock: "A recency guard refuses a session that authenticated too long ago", "An absent authentication time is never recent", "Only an authentication makes a session fresh again", "The recency window has a default, a guards-wide override and a per-route override", "The recency guard reads time from a replaceable time source", "The authentication time comes from the session unless the consumer supplies it", and "The reauthentication-required refusal names the window it needed". The re-authentication case "A re-authentication makes it fresh" is driven here by a rotated session carrying a new authentication time (D2). Verify with `go test -race -run 'TestRecencyGuard|TestGuardsFailClosed|TestGuardsWiringPanics' ./httpsec/`
-- [ ] 3.3 Godoc on every new option and method:
+- [x] 3.3 Godoc on every new option and method:
   - the default it replaces;
   - stacking inside privilege guards;
   - passing the chain's clock to `WithGuardClock`;
@@ -54,7 +54,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 4. Adapter recency guards (`framework-adapters`)
 
-- [ ] 4.1 `ginsec`: the same three options, two methods, validation and wiring panics, refusing through the gin error-channel path; godoc as in 3.3 (D8; ADDED "Adapter recency guards match the core recency guard" scenarios "gin stale session", "Fresh session on every adapter" for gin, "Per-route window on gin", "gin per-route window of zero"). Verify with `go test -race ./...` in `httpsec/ginsec`
+- [x] 4.1 `ginsec`: the same three options, two methods, validation and wiring panics, refusing through the gin error-channel path; godoc as in 3.3 (D8; ADDED "Adapter recency guards match the core recency guard" scenarios "gin stale session", "Fresh session on every adapter" for gin, "Per-route window on gin", "gin per-route window of zero"). Verify with `go test -race ./...` in `httpsec/ginsec`
 - [ ] 4.2 `fibersec`: the same, returning the refusal to fiber's error handler with its window; no error-handler option; godoc as in 3.3 (D8; scenarios "fiber stale session", "Fresh session on every adapter" for fiber, "fiber guards with an absent time source"). Verify with `go test -race ./...` in `httpsec/fibersec`
 
 ## 5. The MFA endpoints serve only a pending session (`multi-factor-auth`)
