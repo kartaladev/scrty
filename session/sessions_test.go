@@ -1530,18 +1530,6 @@ func TestManagerRotate(t *testing.T) {
 				assert.Equal(t, old.ID, reloaded.ID)
 			},
 		},
-		{
-			name:  "a handle already rotated away cannot be rotated again",
-			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
-			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
-				require.NoError(t, err)
-				require.NotNil(t, got)
-
-				again, againErr := m.Rotate(t.Context(), old)
-				require.ErrorIs(t, againErr, session.ErrNotFound)
-				assert.Nil(t, again)
-			},
-		},
 	}
 
 	for _, tc := range cases {
@@ -1565,9 +1553,178 @@ func TestManagerRotate(t *testing.T) {
 	}
 }
 
+// rotationFixture is one manager on a fake clock, a session created through
+// it at 09:00:00, and the counts that show whether a later call wrote to the
+// store or revoked anything.
+type rotationFixture struct {
+	m      *session.Sessions
+	clk    *clockwork.FakeClock
+	store  *mutationCountingStore
+	old    *session.Session
+	reused *atomic.Int32
+}
+
+// TestManagerRotateInFlightWindow pins which refusal a strict rotation of a
+// handle that is no longer stored receives. Within the in-flight window of a
+// rotation through the same manager it lost a race, so it is a renewal
+// conflict that writes and revokes nothing; anywhere else the session is
+// simply not there.
+func TestManagerRotateInFlightWindow(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// act drives the fixture and returns the error of the call the case
+		// is about, with the successor of any rotation it made first.
+		act    func(t *testing.T, f *rotationFixture) (successor *session.Session, err error)
+		assert func(t *testing.T, f *rotationFixture, successor *session.Session, err error)
+	}
+
+	// rotateThenAgainAt rotates the fixture's session at 09:00:00, then
+	// rotates the old handle again after.
+	rotateThenAgainAt := func(after time.Duration) func(t *testing.T, f *rotationFixture) (*session.Session, error) {
+		return func(t *testing.T, f *rotationFixture) (*session.Session, error) {
+			successor, err := f.m.Rotate(t.Context(), f.old)
+			require.NoError(t, err)
+
+			f.clk.Advance(after)
+			f.store.reset()
+
+			again, err := f.m.Rotate(t.Context(), f.old)
+			assert.Nil(t, again)
+
+			return successor, err
+		}
+	}
+
+	// successorStillLoads asserts that nothing revoked the winner's family.
+	successorStillLoads := func(t *testing.T, f *rotationFixture, successor *session.Session) {
+		t.Helper()
+
+		loaded, err := f.m.Load(t.Context(), successor.ID)
+		require.NoError(t, err, "the successor's family must not be revoked")
+		assert.Equal(t, successor.ID, loaded.ID)
+		assert.Zero(t, f.reused.Load(), "no reuse may be reported")
+	}
+
+	cases := []testCase{
+		{
+			name: "rotated again inside the in-flight window is a renewal conflict",
+			act:  rotateThenAgainAt(10 * time.Second),
+			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Zero(t, f.store.writes(), "the loser writes nothing to the store")
+				successorStillLoads(t, f, successor)
+			},
+		},
+		{
+			name: "rotated again after the in-flight window is not found",
+			act:  rotateThenAgainAt(31 * time.Second),
+			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Zero(t, f.store.writes())
+				successorStillLoads(t, f, successor)
+			},
+		},
+		{
+			name: "a never-rotated session whose family was revoked is not found",
+			act: func(t *testing.T, f *rotationFixture) (*session.Session, error) {
+				_, err := f.m.RevokeFamily(t.Context(), f.old.FamilyID)
+				require.NoError(t, err)
+
+				got, err := f.m.Rotate(t.Context(), f.old)
+				assert.Nil(t, got)
+
+				return nil, err
+			},
+			assert: func(t *testing.T, _ *rotationFixture, _ *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+			},
+		},
+		{
+			name: "the old identifier stops loading at once",
+			act: func(t *testing.T, f *rotationFixture) (*session.Session, error) {
+				successor, err := f.m.Rotate(t.Context(), f.old)
+				require.NoError(t, err)
+
+				_, err = f.m.Load(t.Context(), f.old.ID)
+
+				return successor, err
+			},
+			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+				successorStillLoads(t, f, successor)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &rotationFixture{clk: clockwork.NewFakeClockAt(createdAt), reused: &atomic.Int32{}}
+			f.store = &mutationCountingStore{
+				Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
+			}
+			f.m = managerFor(t, session.WithStore(f.store), session.WithClock(f.clk),
+				session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.reused.Add(1) }))
+
+			old, err := f.m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+			f.old = old
+
+			successor, err := tc.act(t, f)
+			tc.assert(t, f, successor, err)
+		})
+	}
+}
+
+// mutationCountingStore counts every write that could store a session or
+// remove one, so a case can pin that a refused rotation touched nothing.
+type mutationCountingStore struct {
+	session.Store
+
+	n atomic.Int32
+}
+
+func (s *mutationCountingStore) reset()        { s.n.Store(0) }
+func (s *mutationCountingStore) writes() int32 { return s.n.Load() }
+
+func (s *mutationCountingStore) Create(ctx context.Context, sess *session.Session) error {
+	s.n.Add(1)
+
+	return s.Store.Create(ctx, sess)
+}
+
+func (s *mutationCountingStore) Save(ctx context.Context, sess *session.Session) error {
+	s.n.Add(1)
+
+	return s.Store.Save(ctx, sess)
+}
+
+func (s *mutationCountingStore) Supersede(ctx context.Context, op session.Supersession) error {
+	s.n.Add(1)
+
+	return s.Store.Supersede(ctx, op)
+}
+
+func (s *mutationCountingStore) Delete(ctx context.Context, id string) error {
+	s.n.Add(1)
+
+	return s.Store.Delete(ctx, id)
+}
+
+func (s *mutationCountingStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	s.n.Add(1)
+
+	return s.Store.DeleteFamily(ctx, family)
+}
+
 // TestManagerRotateConcurrent pins that rotation cannot be made to hand out
-// two live handles for one session by racing it: exactly one caller wins, and
-// the handle they all started from is gone either way.
+// two live handles for one session by racing it: exactly one caller wins,
+// every other is told it lost a concurrent rotation (ErrRenewalConflict), the
+// family keeps exactly one live head, and the handle they all started from is
+// gone either way.
 // Standalone: it rotates one session from many goroutines.
 func TestManagerRotateConcurrent(t *testing.T) {
 	t.Parallel()
@@ -1584,6 +1741,7 @@ func TestManagerRotateConcurrent(t *testing.T) {
 		wg    sync.WaitGroup
 		mu    sync.Mutex
 		ids   []string
+		errs  []error
 		start = make(chan struct{})
 	)
 
@@ -1594,16 +1752,29 @@ func TestManagerRotateConcurrent(t *testing.T) {
 			<-start
 
 			rotated, rotErr := m.Rotate(ctx, s)
+
+			mu.Lock()
+			defer mu.Unlock()
 			if rotErr == nil {
-				mu.Lock()
 				ids = append(ids, rotated.ID)
-				mu.Unlock()
+			} else {
+				errs = append(errs, rotErr)
 			}
 		}()
 	}
 
 	close(start)
 	wg.Wait()
+
+	require.Len(t, ids, 1, "exactly one rotation succeeds")
+	for _, rotErr := range errs {
+		assert.ErrorIs(t, rotErr, session.ErrRenewalConflict, "every loser lost a concurrent rotation")
+	}
+
+	// The user signed in once, so their live sessions are that one family.
+	heads, err := m.CountActiveByUser(ctx, testUser)
+	require.NoError(t, err)
+	assert.Equal(t, 1, heads, "the family holds exactly one live head")
 
 	live := 0
 	for _, id := range ids {

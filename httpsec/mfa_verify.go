@@ -515,13 +515,17 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 
 // rotationRefusal is what a failed strict rotation is refused with at the
 // endpoint. A session a concurrent renewal superseded inside its window is a
-// lost race, refused with ErrSessionRenewalConflict (409) so the client
-// retries with the credential it now holds. One presented after the window
-// has ended, as reuse or as needing renewal, and one that has vanished from
-// the store since the endpoint loaded it (its family revoked meanwhile), are
-// sessions the caller no longer holds, refused with ErrAuthenticationRequired
-// (401); the manager's error stays reachable, so reuse remains identifiable.
-// Anything else, a store failure, comes back as the manager worded it.
+// lost race, and so is one a concurrent strict rotation through the same
+// session manager rotated away first (two valid codes, or two re-proofs, from
+// one session at once): both are refused with ErrSessionRenewalConflict (409)
+// so the client carries on with the credential the winner was handed. One
+// presented after the window has ended, as reuse or as needing renewal, and
+// one that has vanished from the store since the endpoint loaded it (its
+// family revoked meanwhile, or rotated away by another server sharing the
+// store), are sessions the caller no longer holds, refused with
+// ErrAuthenticationRequired (401); the manager's error stays reachable, so
+// reuse remains identifiable. Anything else, a store failure, comes back as
+// the manager worded it.
 func rotationRefusal(err error) error {
 	switch {
 	case errors.Is(err, session.ErrRenewalConflict):

@@ -1112,49 +1112,151 @@ func TestMFAVerifyThrottleAcrossMethods(t *testing.T) {
 // 409 the client retries with the credential it now holds; after the window
 // it is reuse, a 401. A session that vanished from the store between the
 // endpoint's load and the rotation, its family revoked in between, is a
-// session the caller no longer holds: a 401 too. None is a server fault.
+// session the caller no longer holds: a 401 too. Two valid codes posted at
+// once by one pending session are one success and one lost race, a 409 that
+// leaves the winner's credential working. None is a server fault.
 //
-// Its own table: each row races a renewal against the verification before the
-// request, which no other verify table sets up.
+// Its own table: each row races a rotation against the verification, which no
+// other verify table sets up.
 func TestMFAVerifyRotationRefusals(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name  string
-		after time.Duration
+		name string
+		// wire sets up the harness's method and limiter before the chain is
+		// built.
+		wire func(h *mfaHarness)
+		// act races the rotation and returns the chain it served through with
+		// the refused request's outcome.
+		act    func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served)
+		assert func(t *testing.T, h *mfaHarness, c *httpsec.Chain, out served)
+	}
 
-		// vanishes deletes the session from the store once the endpoint holds
-		// it, before the rotation.
-		vanishes bool
-		assert   func(t *testing.T, out served)
+	verifiesOnce := func(h *mfaHarness) {
+		h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+	}
+
+	// supersededBefore races a renewal (or, with vanishes, a deletion) of the
+	// session ahead of a verification that still holds it as it was, after
+	// moving the clock on by after. It also pins that a refused rotation
+	// leaves the session the caller holds as it was.
+	supersededBefore := func(after time.Duration, vanishes bool) func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served) {
+		return func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served) {
+			if vanishes {
+				require.NoError(t, h.sessions.Delete(t.Context(), s.ID))
+			} else {
+				racing := *s
+				_, _, err := h.sessions.RotateWithGrace(t.Context(), &racing, 30*time.Second)
+				require.NoError(t, err)
+			}
+
+			h.clock.Advance(after)
+
+			was := *s
+			c := h.chain(t, s)
+			out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
+
+			// A refused rotation leaves the session the caller holds as it
+			// was: the second factor is not recorded on it.
+			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
+			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
+			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
+
+			return c, out
+		}
 	}
 
 	cases := []testCase{
 		{
-			name:     "the session vanished before the rotation",
-			vanishes: true,
-			assert: func(t *testing.T, out served) {
+			name: "the session vanished before the rotation",
+			wire: verifiesOnce,
+			act:  supersededBefore(0, true),
+			assert: func(t *testing.T, _ *mfaHarness, _ *httpsec.Chain, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				require.ErrorIs(t, out.err, session.ErrNotFound)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 			},
 		},
 		{
-			name:  "inside the renewal's window",
-			after: 10 * time.Second,
-			assert: func(t *testing.T, out served) {
+			name: "inside the renewal's window",
+			wire: verifiesOnce,
+			act:  supersededBefore(10*time.Second, false),
+			assert: func(t *testing.T, _ *mfaHarness, _ *httpsec.Chain, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
 				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
 				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
 			},
 		},
 		{
-			name:  "after the renewal's window",
-			after: 31 * time.Second,
-			assert: func(t *testing.T, out served) {
+			name: "after the renewal's window",
+			wire: verifiesOnce,
+			act:  supersededBefore(31*time.Second, false),
+			assert: func(t *testing.T, _ *mfaHarness, _ *httpsec.Chain, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				require.ErrorIs(t, out.err, session.ErrReused)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			// "Two valid codes at once": both requests hold the pending
+			// session before either rotates it. The loser's strict rotation
+			// finds the handle the winner just rotated away and is a lost
+			// race, not a sign-out.
+			name: "two valid codes at once: one succeeds, the other is a renewal conflict",
+			wire: func(h *mfaHarness) {
+				h.channel(factor.AuthenticatorApp).recordsNoFailure()
+				h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).Times(2)
+
+				// Both verifications are held until both have arrived, so
+				// both requests loaded the session before either rotates it.
+				var arrived sync.WaitGroup
+				arrived.Add(2)
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Times(2).
+					DoAndReturn(func(context.Context, identity.UserID, []byte) error {
+						arrived.Done()
+						arrived.Wait()
+
+						return nil
+					})
+			},
+			act: func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served) {
+				c := h.bearerChain(t)
+
+				var (
+					wg   sync.WaitGroup
+					outs [2]served
+				)
+				for i := range outs {
+					wg.Go(func() {
+						outs[i] = serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
+							testMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
+					})
+				}
+				wg.Wait()
+
+				// The one that lost is the one returned.
+				if outs[0].err == nil {
+					require.Error(t, outs[1].err, "exactly one wins")
+
+					return c, outs[1]
+				}
+
+				require.NoError(t, outs[1].err, "exactly one wins")
+
+				return c, outs[0]
+			},
+			assert: func(t *testing.T, h *mfaHarness, c *httpsec.Chain, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the loser is not signed out")
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+
+				// The winner's credential authenticates the next request.
+				next := serve(t, c, bearerRequestTo(t.Context(), http.MethodGet, "/invoices",
+					mfaTokenFor(h.rotatedID(t)), ""))
+				require.NoError(t, next.err, "the winner's credential still works")
+				assert.True(t, next.handlerRan)
+				assert.Equal(t, session.MFASatisfied, h.stored(t, h.rotatedID(t)).MFA)
 			},
 		},
 	}
@@ -1164,30 +1266,12 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 			t.Parallel()
 
 			h := newMFAHarness(t)
-			h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+			tc.wire(h)
 
 			s := h.pendingSession(t, factor.Password)
 
-			// A renewal of the same session, racing the verification: the
-			// verification still holds the session as it was before.
-			if tc.vanishes {
-				require.NoError(t, h.sessions.Delete(t.Context(), s.ID))
-			} else {
-				racing := *s
-				_, _, err := h.sessions.RotateWithGrace(t.Context(), &racing, 30*time.Second)
-				require.NoError(t, err)
-			}
-
-			h.clock.Advance(tc.after)
-
-			was := *s
-			tc.assert(t, serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath)))
-
-			// A refused rotation leaves the session the caller holds as it
-			// was: the second factor is not recorded on it.
-			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
-			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
-			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
+			c, out := tc.act(t, h, s)
+			tc.assert(t, h, c, out)
 		})
 	}
 }
