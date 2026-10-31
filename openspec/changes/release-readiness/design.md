@@ -151,7 +151,11 @@ None of the decisions below is library behaviour a consumer configures. They gov
 - **The decision.** By default the generator writes `Principal.ID` as `sub`, and the JWT authenticator builds the principal with that identifier. This departs from the established design, which carries the username. The departure exists because `sub` is meant to be stable and never reassigned, and a public claim cannot change after the first tag without breaking live tokens and external verifiers.
 - **Default and override.** The default is the user identifier. A consumer whose own systems read the username sets `token.WithUsernameSubject()` on the generator and `authenticate.WithJWTUsernameSubject()` on the authenticator. The two components cannot see each other, so a mismatch cannot fail at construction; both options' godoc says they must agree.
 - **Refusal.** Issuing for a principal whose chosen subject is empty fails, instead of minting a token no one can resolve.
-- **Risk.** Under the default, a bearer principal carries an identifier and no username. The first task audits every use of `Principal.Username` on the bearer path with gopls before the change, and reports any consumer of the name.
+- **Two bearer paths, two effects.**
+  - The standalone `authenticate.JWTAuthenticator` builds its principal from the claims alone. Under the default it carries the identifier and no username.
+  - The `httpsec` chain's session-backed bearer interceptor reloads the user and builds the principal from the reloaded details (`PrincipalFromDetails`), so `Username` stays filled. Today it reloads by username, keyed on `sub` (`lookupByUsername` in `httpsec/bearer.go`). Under the default it reloads by the session's user reference instead (`lookupBySessionUser`), and refuses a token whose `sub` is not that reference. Under the username option it keeps the lookup by username. Either way the user must still own the session, as now.
+  - Anything reading `Principal.Username` behind the chain, such as a password re-proof, therefore keeps working.
+- **Risk.** A reader of `Principal.Username` behind the standalone authenticator sees an empty name under the default. The first task audits every such reader with gopls before the change, and reports any consumer of the name.
 - **User's choice, 2026-10-31:** an option, defaulting to the identifier.
 
 ### 12. Housekeeping deletes the keys it retires for age
