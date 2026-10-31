@@ -134,6 +134,13 @@ type reauthInterceptor struct {
 	challengeCap   int
 	challengeStore onetime.Store
 
+	// challenges holds one re-proof challenge manager per challenge method of
+	// the MFA slot, keyed by name, and sweeps spaces each one's inline sweeps
+	// of its expired challenges; both are built once every option has been
+	// applied (settle).
+	challenges map[string]*onetime.Tokens
+	sweeps     map[string]*sweepClock
+
 	// secondFactorOnly refuses the password to every user
 	// (RequireSecondFactorForReauthentication).
 	secondFactorOnly bool
@@ -186,7 +193,11 @@ func (i *reauthInterceptor) Intercept(ex *Exchange, next Next) error {
 		}
 	case http.MethodPost:
 		switch path := r.Path(); {
-		case underPrefix(path, p.begin), underPrefix(path, p.verify), path == p.password:
+		case underPrefix(path, p.begin):
+			return i.begin(ex)
+		case underPrefix(path, p.verify):
+			return i.verify(ex)
+		case path == p.password:
 			return i.reprove(ex)
 		}
 	}
@@ -194,10 +205,9 @@ func (i *reauthInterceptor) Intercept(ex *Exchange, next Next) error {
 	return next(ex)
 }
 
-// reprove answers the begin, verify and password endpoints. Each admits the
-// session first, as every endpoint does; carrying a re-proof out is not served
-// yet, so an admitted request is refused rather than passed to the
-// application.
+// reprove answers the password endpoint. It admits the session first, as
+// every endpoint does; carrying a password re-proof out is not served yet, so
+// an admitted request is refused rather than passed to the application.
 func (i *reauthInterceptor) reprove(ex *Exchange) error {
 	if _, err := i.admit(ex); err != nil {
 		return err

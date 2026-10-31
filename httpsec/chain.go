@@ -505,7 +505,12 @@ const mfaChallengeTaskPrefix = "mfa-challenges:"
 //     order given. Its pending challenges are issued to a signed-in user who
 //     still owes a second factor. A method with no challenge step, such as
 //     TOTP, keeps no pending state and contributes no task.
-//  2. The tasks of the recovery.Recoverer that EnableAccountRecovery builds:
+//  2. "reauth-challenges:<method>" for each of those challenge methods when
+//     EnableReauthentication is given, in the same order. Its re-proof
+//     challenges are issued to a signed-in user proving themselves again,
+//     under a purpose of their own, in the store given to
+//     WithReauthenticationChallengeStore or a default in-memory one.
+//  3. The tasks of the recovery.Recoverer that EnableAccountRecovery builds:
 //     "recovery-issued-codes" when issued codes are enabled, and
 //     "recovery-finish-tokens" and "recovery-cancel-tokens" when the core may
 //     hold a recovery. See recovery.Recoverer.ExpiryTasks.
@@ -518,8 +523,8 @@ const mfaChallengeTaskPrefix = "mfa-challenges:"
 // The tasks run over the very managers that serve the chain's requests, so a
 // sweep reaches the state those requests issued, whether it lives in the
 // default in-memory stores or in the stores given to WithMFAChallengeStore,
-// WithRecoveryCore's recovery.WithIssuedCodeStore or
-// recovery.WithHoldTokenStore. Each purges through its own manager, which
+// WithReauthenticationChallengeStore, WithRecoveryCore's
+// recovery.WithIssuedCodeStore or recovery.WithHoldTokenStore. Each purges through its own manager, which
 // removes only tokens that are expired and older than that manager's issuance
 // window, so a sweep never frees the challenge limit or the issued-code limit.
 // The sweep EnableMFA's begin runs inline, at most once per issuance window per
@@ -542,6 +547,12 @@ func (c *Chain) ExpiryTasks() []expiry.Task {
 
 	for _, r := range c.registrations {
 		if i, ok := r.interceptor.(*mfaInterceptor); ok {
+			tasks = append(tasks, i.expiryTasks()...)
+		}
+	}
+
+	for _, r := range c.registrations {
+		if i, ok := r.interceptor.(*reauthInterceptor); ok {
 			tasks = append(tasks, i.expiryTasks()...)
 		}
 	}

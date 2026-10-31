@@ -165,6 +165,10 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 		return err
 	}
 
+	if err := i.buildChallenges(c, option); err != nil {
+		return err
+	}
+
 	if c.sessionBearer {
 		return checkTokenGenerator(c, option, "WithReauthenticationTokens", i.tokens)
 	}
@@ -173,6 +177,51 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 		return newConfigError("%s needs a token generator (WithReauthenticationTokens): a "+
 			"re-proof rotates the session, which ends the credential the caller arrived with, so "+
 			"the response has to hand back one naming the rotated session", option)
+	}
+
+	return nil
+}
+
+// buildChallenges builds one re-proof challenge manager per challenge method
+// of the MFA slot, all over one store, told apart from each other and from the
+// login challenges by their purposes. The default store is an in-memory one on
+// the chain's clock, so expiry means the same on both sides; a store the
+// consumer gave (WithReauthenticationChallengeStore) keeps its own clock.
+func (i *reauthInterceptor) buildChallenges(c *config, option string) error {
+	i.challenges = make(map[string]*onetime.Tokens)
+	i.sweeps = make(map[string]*sweepClock)
+
+	if i.mfa == nil {
+		return nil
+	}
+
+	store := i.challengeStore
+
+	for _, m := range i.mfa.methods {
+		if !isChallengeMethod(m) {
+			continue
+		}
+
+		if store == nil {
+			def, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
+			if err != nil {
+				return newConfigError("%s could not build the re-proof challenge store: %s", option, err)
+			}
+
+			store = def
+		}
+
+		mgr, err := onetime.New(reauthChallengePurpose(m.Name()),
+			onetime.WithTokenTTL(i.challengeTTL),
+			onetime.WithStore(store),
+			onetime.WithClock(c.clock),
+			onetime.WithLogger(c.logger))
+		if err != nil {
+			return newConfigError("%s could not build the re-proof challenges of %q: %s", option, m.Name(), err)
+		}
+
+		i.challenges[m.Name()] = mgr
+		i.sweeps[m.Name()] = &sweepClock{}
 	}
 
 	return nil
