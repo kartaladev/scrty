@@ -51,10 +51,15 @@ var ErrMFARequirementLookupMissing = errors.New(
 var ErrMFARequirementUnsatisfiable = errors.New(
 	"policy: the mfa requirement policy requires a second factor of everyone and has no method to satisfy it")
 
-// mfaRequirementPolicy enforces a per-user or deployment-wide requirement to
-// use a second factor. Every field is fixed at construction, so it is safe for
-// concurrent use.
-type mfaRequirementPolicy struct {
+// MFARequirement is the MFA requirement policy: it enforces a per-user or
+// deployment-wide requirement to use a second factor. It is a Policy, a
+// Challenger, a logsample.Flusher, a LoginAdmission and a
+// FederatedAssuranceUser.
+//
+// Build it with NewMFARequirement; the zero value is not usable, because it
+// has no requirement lookup, no exemption rule and no phase source. Every field
+// is fixed at construction, so it is safe for concurrent use.
+type MFARequirement struct {
 	required       identity.MFARequirementLookup
 	methods        []MFAMethodLookup
 	requiredForAll bool
@@ -190,8 +195,8 @@ func NewMFARequirement(
 	required identity.MFARequirementLookup,
 	methods []MFAMethodLookup,
 	opts ...MFARequirementOption,
-) (Policy, error) {
-	p := &mfaRequirementPolicy{
+) (*MFARequirement, error) {
+	p := &MFARequirement{
 		required:    required,
 		exempt:      factor.Kind.MFAExempt,
 		phaseOf:     phaseOfContext,
@@ -256,10 +261,10 @@ func NewMFARequirement(
 }
 
 // Name identifies the policy in logs and in an engine's configuration errors.
-func (p *mfaRequirementPolicy) Name() string { return "mfa-requirement" }
+func (p *MFARequirement) Name() string { return "mfa-requirement" }
 
 // Phases reports the three phases the requirement is enforced in.
-func (p *mfaRequirementPolicy) Phases() []Phase {
+func (p *MFARequirement) Phases() []Phase {
 	return []Phase{PostAuthentication, PerRequest, StatelessAuthentication}
 }
 
@@ -276,7 +281,7 @@ func (p *mfaRequirementPolicy) Phases() []Phase {
 // it never raises that kind, and does not declare it.
 //
 // A fresh slice every call, for the reason Challenger states.
-func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
+func (p *MFARequirement) Challenges() []ChallengeKind {
 	if p.enrolment == nil {
 		return []ChallengeKind{ChallengeMFA}
 	}
@@ -286,7 +291,7 @@ func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
 
 // Evaluate answers for one request, in the order NewMFARequirement
 // documents. It reads the Input and never writes to it.
-func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision {
+func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 	// A login carrying the library's proof that its second factor was met at
 	// the first factor is not judged by the exemption rule: the proof is
 	// honoured in step 8 and the rule is never called for it. Its phase is
@@ -444,7 +449,7 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 
 // isRequired answers step 2. With a requirement for everyone the lookup is not
 // consulted at all, which is what lets that mode be configured without one.
-func (p *mfaRequirementPolicy) isRequired(ctx context.Context, in *Input) (bool, error) {
+func (p *MFARequirement) isRequired(ctx context.Context, in *Input) (bool, error) {
 	if p.requiredForAll {
 		return true, nil
 	}
@@ -458,7 +463,7 @@ func (p *mfaRequirementPolicy) isRequired(ctx context.Context, in *Input) (bool,
 // that channel holds both factors, so challenging on it would prove nothing the
 // first factor had not already proved. A lookup failure on any method is an
 // error, never a shorter list.
-func (p *mfaRequirementPolicy) hasUsableEnrolment(ctx context.Context, in *Input) (bool, error) {
+func (p *MFARequirement) hasUsableEnrolment(ctx context.Context, in *Input) (bool, error) {
 	usable, err := UsableMFAMethods(ctx, p.methods, in.User, in.FirstFactor)
 	if err != nil {
 		return false, err
@@ -471,7 +476,7 @@ func (p *mfaRequirementPolicy) hasUsableEnrolment(ctx context.Context, in *Input
 // factor here, and records it. The record is keyed by user, first factor and
 // phase, so one user retrying does not hide another, and a flood from one entry
 // point does not hide a second.
-func (p *mfaRequirementPolicy) denyRequired(ctx context.Context, in *Input, phase string) Decision {
+func (p *MFARequirement) denyRequired(ctx context.Context, in *Input, phase string) Decision {
 	p.sampled(ctx, slog.LevelWarn, msgMFARequired,
 		strings.Join([]string{sampleMFARequired, string(in.User), string(in.FirstFactor), phase},
 			mfaKeySeparator),
@@ -484,7 +489,7 @@ func (p *mfaRequirementPolicy) denyRequired(ctx context.Context, in *Input, phas
 
 // denyEnrolment refuses a required user who has nothing usable to be challenged
 // on, and records it.
-func (p *mfaRequirementPolicy) denyEnrolment(ctx context.Context, in *Input, phase string) Decision {
+func (p *MFARequirement) denyEnrolment(ctx context.Context, in *Input, phase string) Decision {
 	p.sampled(ctx, slog.LevelWarn, msgMFAEnrollmentRequired,
 		strings.Join([]string{sampleMFAEnrollment, string(in.User), phase}, mfaKeySeparator),
 		slog.String("user", string(in.User)),
@@ -497,7 +502,7 @@ func (p *mfaRequirementPolicy) denyEnrolment(ctx context.Context, in *Input, pha
 // denyAssurance refuses, in refuse mode, a required user's federated login
 // whose provider assurance is not met, and records it. The record names the
 // provider and never the values it asserted.
-func (p *mfaRequirementPolicy) denyAssurance(ctx context.Context, in *Input, phase string) Decision {
+func (p *MFARequirement) denyAssurance(ctx context.Context, in *Input, phase string) Decision {
 	provider := in.FederatedAssurance.Provider()
 	p.sampled(ctx, slog.LevelWarn, msgFederatedAssuranceNotMet,
 		strings.Join([]string{sampleAssuranceNotMet, string(in.User), provider, phase}, mfaKeySeparator),
@@ -512,7 +517,7 @@ func (p *mfaRequirementPolicy) denyAssurance(ctx context.Context, in *Input, pha
 // reportSourceFailure writes about an assurance decision that could not be
 // made, under the rules reportLookupFailure follows: a request that has ended
 // is written at debug level, and an outage under one key for every user.
-func (p *mfaRequirementPolicy) reportSourceFailure(ctx context.Context, in *Input, err error) {
+func (p *MFARequirement) reportSourceFailure(ctx context.Context, in *Input, err error) {
 	attrs := append([]slog.Attr{
 		slog.String("user", string(in.User)),
 		slog.String("provider", in.FederatedAssurance.Provider()),
@@ -535,7 +540,7 @@ func (p *mfaRequirementPolicy) reportSourceFailure(ctx context.Context, in *Inpu
 // needs. Everything else is written at error level under one key shared by every
 // user, because the lookup is either reachable or it is not, and keying it per
 // user would turn one outage into one record per user in the window.
-func (p *mfaRequirementPolicy) reportLookupFailure(ctx context.Context, in *Input, err error) {
+func (p *MFARequirement) reportLookupFailure(ctx context.Context, in *Input, err error) {
 	attrs := append([]slog.Attr{slog.String("user", string(in.User))},
 		diag.Failure("requirement-lookup", err)...)
 
@@ -561,7 +566,7 @@ func phaseName(phase Phase, known bool) string {
 
 // sampled writes one record unless the sampler is holding this key's window
 // open, in which case the event is counted and reported later.
-func (p *mfaRequirementPolicy) sampled(
+func (p *MFARequirement) sampled(
 	ctx context.Context, level slog.Level, msg, key string, attrs ...slog.Attr,
 ) {
 	write, suppressed := p.sampler.Allow(key, p.clock.Now())
@@ -573,7 +578,7 @@ func (p *mfaRequirementPolicy) sampled(
 }
 
 // reportSuppressed accounts for counts the sampler is about to discard.
-func (p *mfaRequirementPolicy) reportSuppressed(key string, suppressed int) {
+func (p *MFARequirement) reportSuppressed(key string, suppressed int) {
 	p.logger.LogAttrs(context.Background(), slog.LevelWarn, msgRequirementSuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
@@ -581,7 +586,7 @@ func (p *mfaRequirementPolicy) reportSuppressed(key string, suppressed int) {
 
 // FlushRefusalLogs reports every record held back but not yet counted, then
 // forgets every key. It reports no error.
-func (p *mfaRequirementPolicy) FlushRefusalLogs() error {
+func (p *MFARequirement) FlushRefusalLogs() error {
 	p.sampler.Flush()
 
 	return nil
@@ -625,13 +630,14 @@ const (
 )
 
 var (
-	_ Policy            = (*mfaRequirementPolicy)(nil)
-	_ RefusalLogFlusher = (*mfaRequirementPolicy)(nil)
+	_ Policy            = (*MFARequirement)(nil)
+	_ Challenger        = (*MFARequirement)(nil)
+	_ logsample.Flusher = (*MFARequirement)(nil)
 )
 
 // The requirement policy answers LoginAdmission, so a component judging a
 // login ahead of time asks the policy that will evaluate it.
-var _ LoginAdmission = (*mfaRequirementPolicy)(nil)
+var _ LoginAdmission = (*MFARequirement)(nil)
 
 // errTextAdmissionLookup is the fixed text a failed requirement lookup is
 // returned under, so the lookup's own text never reaches the caller's output.
@@ -656,7 +662,7 @@ const errTextAdmissionLookup = "policy: whether this user must use a second fact
 // required user's federated login, which only a met assurance would admit, is
 // answered false. That fails safe for the way-back check, which then asks the
 // user to keep another way back in.
-func (p *mfaRequirementPolicy) AdmitsWithoutLocalSecondFactor(
+func (p *MFARequirement) AdmitsWithoutLocalSecondFactor(
 	ctx context.Context,
 	user identity.UserID,
 	kind factor.Kind,

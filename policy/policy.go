@@ -412,7 +412,7 @@ func unnamed(kind string, value int) string {
 // check, asks it rather than repeating the policy's rules, so the two cannot
 // disagree.
 //
-// The requirement policy NewMFARequirement returns implements it, and
+// MFARequirement, the policy NewMFARequirement returns, implements it, and
 // answers for itself alone: the challenge policy under
 // WithMFAFederatedChallengeWhenUnmet(true) may still challenge a federated login
 // this answer admits.

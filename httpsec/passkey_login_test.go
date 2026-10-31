@@ -1712,7 +1712,7 @@ func TestPasswordless_RefusalLogsFollowPasskeyInterval(t *testing.T) {
 			name: "a chain flush reports what the passwordless sampler held back",
 			drive: func(t *testing.T, d *pwlDeployment) {
 				unknownUser(t, d)
-				d.chain.FlushRefusalLogs()
+				require.NoError(t, d.chain.FlushRefusalLogs())
 			},
 			assert: func(t *testing.T, logs string) {
 				assert.Equal(t, 1, strings.Count(logs, unknownMsg))

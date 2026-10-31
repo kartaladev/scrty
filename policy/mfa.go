@@ -16,7 +16,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
-//go:generate mockgen -source=mfa.go -package=policy_test -destination=mfa_mock_test.go -typed -exclude_interfaces=MFAOption,RefusalLogFlusher
+//go:generate mockgen -source=mfa.go -package=policy_test -destination=mfa_mock_test.go -typed -exclude_interfaces=MFAOption
 //go:generate mockgen -destination=requirementlookup_mock_test.go -package=policy_test -typed github.com/kartaladev/scrty/identity MFARequirementLookup
 
 // ErrSecondFactorSameChannel is the reason the second-factor challenge policy
@@ -70,22 +70,6 @@ type MFAMethodLookup interface {
 	Channel() factor.Channel
 }
 
-// RefusalLogFlusher reports every refusal a policy has suppressed but not yet
-// counted in a written record.
-//
-// Sampling keeps a burst of refusals from burying every other record, but the
-// count of what was held back is only written when the same refusal recurs. A
-// consumer flushes at shutdown, or before reading the logs of an incident, so a
-// burst that stopped is still accounted for rather than silently discarded.
-//
-// The constructors here return Policy, so a consumer reaches this with a type
-// assertion. The error is part of the contract for implementations whose
-// reporter can fail; the policies in this package only write a log record, and
-// always report none.
-type RefusalLogFlusher interface {
-	FlushRefusalLogs() error
-}
-
 // SameChannelMode is what the second-factor challenge policy does with a login
 // whose only enrolled second factor would arrive on the first factor's channel.
 //
@@ -126,13 +110,13 @@ func (m SameChannelMode) String() string {
 // constructor under one name. A consumer implements nothing: the options are
 // the values this package returns.
 type MFAOption interface {
-	applyMFA(*mfaPolicy)
+	applyMFA(*MFA)
 }
 
 // mfaOption adapts a plain function into an MFAOption.
-type mfaOption func(*mfaPolicy)
+type mfaOption func(*MFA)
 
-func (f mfaOption) applyMFA(p *mfaPolicy) { f(p) }
+func (f mfaOption) applyMFA(p *MFA) { f(p) }
 
 // MFAExemptionOption is returned by WithMFAExemption. It is accepted by both
 // NewMFA and NewMFARequirement, so a deployment states its
@@ -141,9 +125,9 @@ type MFAExemptionOption struct {
 	exempt func(factor.Kind) bool
 }
 
-func (o MFAExemptionOption) applyMFA(p *mfaPolicy) { p.exempt = o.exempt }
+func (o MFAExemptionOption) applyMFA(p *MFA) { p.exempt = o.exempt }
 
-func (o MFAExemptionOption) applyMFARequirement(p *mfaRequirementPolicy) { p.exempt = o.exempt }
+func (o MFAExemptionOption) applyMFARequirement(p *MFARequirement) { p.exempt = o.exempt }
 
 // WithMFAExemption replaces the rule that decides which first factors are
 // exempt from a second factor. The default is factor.Kind.MFAExempt, which
@@ -177,7 +161,7 @@ func WithMFAExemption(exempt func(factor.Kind) bool) MFAExemptionOption {
 //
 // A mode naming neither constant is a configuration error.
 func WithMFASameChannelEnrolment(mode SameChannelMode) MFAOption {
-	return mfaOption(func(p *mfaPolicy) { p.sameChannel = mode })
+	return mfaOption(func(p *MFA) { p.sameChannel = mode })
 }
 
 // WithMFALogger replaces where the policy writes its same-channel
@@ -191,7 +175,7 @@ func WithMFASameChannelEnrolment(mode SameChannelMode) MFAOption {
 // the caller does not want to choose this policy's logger — and refusing it
 // would make configuring logging mandatory.
 func WithMFALogger(l *slog.Logger) MFAOption {
-	return mfaOption(func(p *mfaPolicy) {
+	return mfaOption(func(p *MFA) {
 		if l != nil {
 			p.logger = l
 		}
@@ -203,7 +187,7 @@ func WithMFALogger(l *slog.Logger) MFAOption {
 // DefaultLogInterval, one minute.
 //
 // Every written record says how many events it stands for, and
-// RefusalLogFlusher reports what is still pending, so suppressing a record
+// FlushRefusalLogs reports what is still pending, so suppressing a record
 // never loses the count. An interval of zero or less writes every record, for a
 // consumer whose own handler samples.
 //
@@ -211,7 +195,7 @@ func WithMFALogger(l *slog.Logger) MFAOption {
 // keeps its own window under WithMFARequirementLogInterval, so one subsystem's
 // flood cannot silence another's.
 func WithMFALogInterval(d time.Duration) MFAOption {
-	return mfaOption(func(p *mfaPolicy) { p.logInterval = d })
+	return mfaOption(func(p *MFA) { p.logInterval = d })
 }
 
 // WithMFAClock replaces the time source the policy samples its records
@@ -223,7 +207,7 @@ func WithMFALogInterval(d time.Duration) MFAOption {
 // boundary without waiting for one. A nil clock, typed nil included, is a
 // configuration error.
 func WithMFAClock(clk clock.Clock) MFAOption {
-	return mfaOption(func(p *mfaPolicy) { p.clock = clk })
+	return mfaOption(func(p *MFA) { p.clock = clk })
 }
 
 // WithMFAFederatedChallengeWhenUnmet replaces what the policy does with a login
@@ -257,13 +241,17 @@ func WithMFAClock(clk clock.Clock) MFAOption {
 // enrolled user would be challenged while the configuration reads as if the
 // provider's assurance counted.
 func WithMFAFederatedChallengeWhenUnmet(on bool) MFAOption {
-	return mfaOption(func(p *mfaPolicy) { p.challengeUnmetFederated = on })
+	return mfaOption(func(p *MFA) { p.challengeUnmetFederated = on })
 }
 
-// mfaPolicy challenges a login whose user is enrolled on a usable second
-// factor. Every field is fixed at construction, so it is safe for concurrent
-// use.
-type mfaPolicy struct {
+// MFA is the second-factor challenge policy: it challenges a login whose user
+// is enrolled on a usable second factor. It is a Policy, a Challenger and a
+// logsample.Flusher.
+//
+// Build it with NewMFA; the zero value is not usable, because it has no
+// methods and no exemption rule, and would panic on its first Evaluate. Every
+// field is fixed at construction, so it is safe for concurrent use.
+type MFA struct {
 	methods                 []MFAMethodLookup
 	sameChannel             SameChannelMode
 	exempt                  func(factor.Kind) bool
@@ -340,8 +328,8 @@ type mfaPolicy struct {
 // challenge (WithMFAFederatedChallengeWhenUnmet), slog.Default
 // (WithMFALogger), clock.System() (WithMFAClock) and
 // DefaultLogInterval for its sampled records (WithMFALogInterval).
-func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (Policy, error) {
-	p := &mfaPolicy{
+func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (*MFA, error) {
+	p := &MFA{
 		sameChannel: SameChannelRefuse,
 		exempt:      factor.Kind.MFAExempt,
 		logger:      slog.Default(),
@@ -391,24 +379,24 @@ func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 }
 
 // Name identifies the policy in logs and in an engine's configuration errors.
-func (p *mfaPolicy) Name() string { return "second-factor-challenge" }
+func (p *MFA) Name() string { return "second-factor-challenge" }
 
 // Phases reports that the policy runs at the moment a login has succeeded and
 // may still be turned into a challenge.
-func (p *mfaPolicy) Phases() []Phase { return []Phase{PostAuthentication} }
+func (p *MFA) Phases() []Phase { return []Phase{PostAuthentication} }
 
 // Challenges reports that this policy can ask for a second factor, so a chain
 // that composes it can refuse to assemble when nothing would enforce one.
 //
 // A fresh slice every call: what a caller does with it is their business, and
 // this policy keeps no state a caller could reach through it.
-func (p *mfaPolicy) Challenges() []ChallengeKind { return []ChallengeKind{ChallengeMFA} }
+func (p *MFA) Challenges() []ChallengeKind { return []ChallengeKind{ChallengeMFA} }
 
 // Evaluate answers for one login, in the order NewMFA documents.
 //
 // It reads the Input and never writes to it: an allow here records no satisfied
 // second factor, because none happened.
-func (p *mfaPolicy) Evaluate(ctx context.Context, in *Input) Decision {
+func (p *MFA) Evaluate(ctx context.Context, in *Input) Decision {
 	// The library's proof is checked apart from the exemption rule: a
 	// user-verified passkey login met the second factor, it was not excused
 	// from one, so a replaced rule must not be able to hide it.
@@ -467,7 +455,7 @@ func (p *mfaPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 // enrolledOnAny reports whether user is enrolled on any configured method,
 // whatever its channel. It is asked only once UsableMFAMethods found none, so a
 // true here means every enrolment is on the first factor's own channel.
-func (p *mfaPolicy) enrolledOnAny(ctx context.Context, user identity.UserID) (bool, error) {
+func (p *MFA) enrolledOnAny(ctx context.Context, user identity.UserID) (bool, error) {
 	for _, m := range p.methods {
 		enrolled, err := m.Enrolled(ctx, user)
 		if err != nil || enrolled {
@@ -501,7 +489,7 @@ func denyUnreadableEnrolment(err error) Decision {
 // is refused — is worth knowing about; neither may happen silently. The records
 // are sampled, so a deployment where this is the normal case pays one record per
 // window rather than one per login.
-func (p *mfaPolicy) decideSameChannel(ctx context.Context, in *Input, channel factor.Channel) Decision {
+func (p *MFA) decideSameChannel(ctx context.Context, in *Input, channel factor.Channel) Decision {
 	attrs := []slog.Attr{
 		slog.String("user", string(in.User)),
 		slog.String("first_factor", string(in.FirstFactor)),
@@ -529,7 +517,7 @@ func (p *mfaPolicy) decideSameChannel(ctx context.Context, in *Input, channel fa
 
 // sampled writes one record unless the sampler is holding this key's window
 // open, in which case the event is counted and reported later.
-func (p *mfaPolicy) sampled(ctx context.Context, level slog.Level, msg, key string, attrs ...slog.Attr) {
+func (p *MFA) sampled(ctx context.Context, level slog.Level, msg, key string, attrs ...slog.Attr) {
 	write, suppressed := p.sampler.Allow(key, p.clock.Now())
 	if !write {
 		return
@@ -540,7 +528,7 @@ func (p *mfaPolicy) sampled(ctx context.Context, level slog.Level, msg, key stri
 
 // reportSuppressed accounts for counts the sampler is about to discard, so a
 // burst that stops before its window elapses is still reported in full.
-func (p *mfaPolicy) reportSuppressed(key string, suppressed int) {
+func (p *MFA) reportSuppressed(key string, suppressed int) {
 	p.logger.LogAttrs(context.Background(), slog.LevelWarn, msgMFASuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
@@ -551,7 +539,7 @@ func (p *mfaPolicy) reportSuppressed(key string, suppressed int) {
 //
 // It reports no error: this policy's reporter only writes a log record, which
 // cannot fail in a way it could report.
-func (p *mfaPolicy) FlushRefusalLogs() error {
+func (p *MFA) FlushRefusalLogs() error {
 	p.sampler.Flush()
 
 	return nil
@@ -577,8 +565,9 @@ const (
 const mfaKeySeparator = ":"
 
 var (
-	_ Policy            = (*mfaPolicy)(nil)
-	_ RefusalLogFlusher = (*mfaPolicy)(nil)
+	_ Policy            = (*MFA)(nil)
+	_ Challenger        = (*MFA)(nil)
+	_ logsample.Flusher = (*MFA)(nil)
 )
 
 // UsableMFAMethods reports which of methods user can use as a second factor

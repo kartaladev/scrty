@@ -1708,7 +1708,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 
 			require.NotPanics(t, func() {
 				for _, c := range chains {
-					c.FlushRefusalLogs()
+					assert.NoError(t, c.FlushRefusalLogs())
 				}
 			})
 
@@ -1834,7 +1834,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 
 	before := len(logs.records())
 
-	require.NotPanics(t, func() { c.FlushRefusalLogs() })
+	require.NotPanics(t, func() { assert.NoError(t, c.FlushRefusalLogs()) })
 
 	flushed := logs.records()[before:]
 
@@ -1850,6 +1850,150 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 		"the OIDC handoff manager was not reached by the one flush")
 	assert.Equal(t, []int64{2}, summaries(t, flushed, summaryMFAPolicy, "", ""),
 		"the registered policy was not reached by the one flush")
+}
+
+// errAuthnFlush and errPolicyFlush are what a consumer's authenticator and a
+// consumer's policy return from a flush whose reporter failed.
+var (
+	errAuthnFlush  = errors.New("chain_test: authenticator flush failed")
+	errPolicyFlush = errors.New("chain_test: policy flush failed")
+)
+
+// failingFlushAuthenticator is a consumer's authenticator whose refusal-log
+// flush fails. Authentication itself is the embedded authenticator's.
+type failingFlushAuthenticator struct {
+	authenticate.Authenticator
+	flushes atomic.Int32
+}
+
+func (a *failingFlushAuthenticator) FlushRefusalLogs() error {
+	a.flushes.Add(1)
+
+	return errAuthnFlush
+}
+
+var _ logsample.Flusher = (*failingFlushAuthenticator)(nil)
+
+// failingFlushPolicy is a consumer's policy whose refusal-log flush fails.
+type failingFlushPolicy struct {
+	silentPolicy
+	flushes atomic.Int32
+}
+
+func (p *failingFlushPolicy) FlushRefusalLogs() error {
+	p.flushes.Add(1)
+
+	return errPolicyFlush
+}
+
+var _ logsample.Flusher = (*failingFlushPolicy)(nil)
+
+// TestChain_FlushRefusalLogs_JoinsErrors pins design D2, that every flusher is
+// still called and the errors joined: a consumer's authenticator and a
+// consumer's policy whose flushes fail do not stop the chain flushing
+// everything else it reaches, including the API key guard that follows the
+// failing form login in flush order, and both errors reach the caller, joined. It stands alone rather than as a row of
+// TestFlushRefusalLogsReachesComponents, whose rows assert the summary records
+// a flush wrote, not the error it returned.
+func TestChain_FlushRefusalLogs_JoinsErrors(t *testing.T) {
+	t.Parallel()
+
+	logs := &capturingHandler{}
+	log := slog.New(logs)
+
+	authn := &failingFlushAuthenticator{Authenticator: NewMockAuthenticator(gomock.NewController(t))}
+	loginDeps := newAuthHarness(t).formLoginDeps()
+	loginDeps.Authenticator = authn
+
+	p := &failingFlushPolicy{}
+	engine, err := policy.NewEngine(p)
+	require.NoError(t, err)
+
+	keys := newAPIKeyHarness(t)
+
+	c, err := httpsec.New(
+		httpsec.WithLogger(log),
+		httpsec.WithPolicyEngine(engine),
+		httpsec.EnableFormLogin(loginDeps),
+		httpsec.EnableAPIKey(keys.keys, httpsec.WithAPIKeyLimiter(exceededLimiter(t))),
+	)
+	require.NoError(t, err)
+
+	// Three requests from one source are throttled by the API key guard, which
+	// is flushed after the failing form login, and holds two suppressed.
+	for range 3 {
+		out := keys.withKey(t, c, flushSource, keys.valid)
+		require.Error(t, out.err)
+	}
+
+	// A request with no client address is refused by the chain itself, under
+	// the chain's own sampler, which then holds two suppressed refusals.
+	for range 3 {
+		out := keys.withKey(t, c, "", keys.valid)
+		require.Error(t, out.err)
+	}
+
+	before := len(logs.records())
+
+	err = c.FlushRefusalLogs()
+
+	require.ErrorIs(t, err, errAuthnFlush, "the authenticator's flush error did not reach the caller")
+	require.ErrorIs(t, err, errPolicyFlush, "the policy's flush error did not reach the caller")
+	assert.Equal(t, int32(1), authn.flushes.Load(), "the authenticator was not flushed once")
+	assert.Equal(t, int32(1), p.flushes.Load(), "the policy was not flushed once")
+	assert.Equal(t, []int64{2},
+		summaries(t, logs.records()[before:], summaryChain, "key", "api-key|no-client-address"),
+		"the chain's own sampler was not flushed")
+	assert.Equal(t, []int64{2}, guardSummaries(t, logs.records()[before:], "api-key"),
+		"the API key guard, flushed after the failing authenticator, was not flushed")
+}
+
+// errBrokerFlush is the failure a consumer's identity broker reports from its
+// own refusal-log flush.
+var errBrokerFlush = errors.New("chain_test: broker flush failure fixture")
+
+// failingFlushBroker is a consumer's identity broker whose refusal-log flush
+// fails.
+type failingFlushBroker struct {
+	*MockIdentityBroker
+}
+
+func (failingFlushBroker) FlushRefusalLogs() error { return errBrokerFlush }
+
+var _ logsample.Flusher = failingFlushBroker{}
+
+// TestChain_FlushRefusalLogs_OIDCFlushesHandoffAfterBrokerError pins design D2
+// for the OIDC interceptor: when the relying party returns the error of a
+// consumer's broker flush, the handoff manager is still flushed, and the
+// caller receives the broker's error.
+func TestChain_FlushRefusalLogs_OIDCFlushesHandoffAfterBrokerError(t *testing.T) {
+	t.Parallel()
+
+	logs := &capturingHandler{}
+	log := slog.New(logs)
+
+	m, err := oidc.NewRelyingParty(flushOIDCRegistry(t),
+		failingFlushBroker{NewMockIdentityBroker(gomock.NewController(t))},
+		oidc.WithLogger(log))
+	require.NoError(t, err)
+
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(),
+		NewMockUserLoader(gomock.NewController(t)), oidc.WithHandoffLogger(log))
+	require.NoError(t, err)
+
+	for range 3 {
+		_, err := handoffs.Redeem(t.Context(), "not-a-code")
+		require.ErrorIs(t, err, oidc.ErrInvalidHandoff)
+	}
+
+	c := oidcChain(t, log, m, handoffs)
+	before := len(logs.records())
+
+	err = c.FlushRefusalLogs()
+
+	require.ErrorIs(t, err, errBrokerFlush, "the broker's flush error did not reach the caller")
+	assert.Equal(t, []int64{2}, summaries(t, logs.records()[before:], summaryHandoff, "", ""),
+		"the handoff manager was not flushed after the broker's flush failed")
 }
 
 // errFlushFlowFault is a flow-store failure, which the OIDC manager samples
@@ -2393,7 +2537,7 @@ func TestRefusalLogReporter(t *testing.T) {
 				attempt(flushSource)
 			}
 
-			c.FlushRefusalLogs()
+			require.NoError(t, c.FlushRefusalLogs())
 
 			tc.assert(t, h.records(), calls.received())
 		})

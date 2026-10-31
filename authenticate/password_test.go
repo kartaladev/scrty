@@ -846,9 +846,7 @@ func TestRefusalLogsAreBoundedAndCarryNoPassword(t *testing.T) {
 			assert.NotContains(t, buf.String(), presentedPassword,
 				"a refusal log carried the presented password")
 
-			flusher, ok := auth.(authenticate.RefusalLogFlusher)
-			require.True(t, ok, "the provider offers no way to report what it suppressed")
-			require.NoError(t, flusher.FlushRefusalLogs())
+			require.NoError(t, auth.FlushRefusalLogs())
 
 			assert.Contains(t, buf.String(), `"suppressed":49`,
 				"the suppressed count was dropped rather than reported")
@@ -1164,9 +1162,7 @@ func TestPasswordAuthenticatorLoggerDefaults(t *testing.T) {
 			authenticate.WithPasswordLogger(debugLogger(buf)))
 		require.NoError(t, err)
 
-		flusher, ok := auth.(authenticate.RefusalLogFlusher)
-		require.True(t, ok)
-		require.NoError(t, flusher.FlushRefusalLogs())
+		require.NoError(t, auth.FlushRefusalLogs())
 		assert.Empty(t, buf.String())
 	})
 }
@@ -1174,7 +1170,7 @@ func TestPasswordAuthenticatorLoggerDefaults(t *testing.T) {
 // refusingAuthenticator returns a provider whose user loader always fails with
 // loadErr, logging to the buffer it returns. Nothing is hashed: these cases
 // count records, and a real encoder would only make them slow.
-func refusingAuthenticator(t *testing.T, loadErr error, opts ...authenticate.PasswordOption) (authenticate.Authenticator, *bytes.Buffer) {
+func refusingAuthenticator(t *testing.T, loadErr error, opts ...authenticate.PasswordOption) (*authenticate.UsernamePasswordAuthenticator, *bytes.Buffer) {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -1655,10 +1651,7 @@ func TestPasswordAuthenticator_VerifyDecoy(t *testing.T) {
 			a, err := authenticate.NewUsernamePasswordAuthenticator(users, authenticate.WithPasswordEncoder(enc))
 			require.NoError(t, err)
 
-			v, ok := a.(authenticate.DecoyVerifier)
-			require.True(t, ok, "the password provider must implement DecoyVerifier")
-
-			tc.assert(t, v.VerifyDecoy(t.Context(), tc.creds))
+			tc.assert(t, a.VerifyDecoy(t.Context(), tc.creds))
 		})
 	}
 }
@@ -1671,13 +1664,13 @@ func TestPasswordProvider_TypedNilCredentialsRefusedWithoutPanic(t *testing.T) {
 
 	type testCase struct {
 		name string
-		run  func(t *testing.T, p authenticate.Authenticator)
+		run  func(t *testing.T, p *authenticate.UsernamePasswordAuthenticator)
 	}
 
 	cases := []testCase{
 		{
 			name: "Authenticate reports unsupported credentials",
-			run: func(t *testing.T, p authenticate.Authenticator) {
+			run: func(t *testing.T, p *authenticate.UsernamePasswordAuthenticator) {
 				t.Helper()
 
 				got, err := p.Authenticate(t.Context(), typedNil)
@@ -1688,13 +1681,10 @@ func TestPasswordProvider_TypedNilCredentialsRefusedWithoutPanic(t *testing.T) {
 		},
 		{
 			name: "VerifyDecoy declines them without hashing",
-			run: func(t *testing.T, p authenticate.Authenticator) {
+			run: func(t *testing.T, p *authenticate.UsernamePasswordAuthenticator) {
 				t.Helper()
 
-				v, ok := p.(authenticate.DecoyVerifier)
-				require.True(t, ok, "the password provider must implement DecoyVerifier")
-
-				assert.False(t, v.VerifyDecoy(t.Context(), typedNil))
+				assert.False(t, p.VerifyDecoy(t.Context(), typedNil))
 			},
 		},
 	}

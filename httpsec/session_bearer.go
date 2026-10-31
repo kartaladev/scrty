@@ -87,10 +87,12 @@ func (c *config) wireSessionBearer() error {
 }
 
 // flushRefusalLogs reports what the source guard is holding back.
-func (b *sessionBearer) flushRefusalLogs() {
+func (b *sessionBearer) flushRefusalLogs() error {
 	if b.guard != nil {
 		b.guard.Flush()
 	}
+
+	return nil
 }
 
 // wire takes the settings the chain resolved, once every option has been

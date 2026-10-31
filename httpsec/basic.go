@@ -79,15 +79,18 @@ func (b *basicAuth) wire(c *Chain) {
 
 // flushRefusalLogs reports what the source guard and the authenticator are
 // holding back; an authenticator that keeps no refusal logs of its own has
-// nothing to report.
-func (b *basicAuth) flushRefusalLogs() {
+// nothing to report. The authenticator may be a consumer's, whose flush can
+// fail, so its error is returned for Chain.FlushRefusalLogs to join.
+func (b *basicAuth) flushRefusalLogs() error {
 	if b.guard != nil {
 		b.guard.Flush()
 	}
 
-	if f, ok := b.authn.(authenticate.RefusalLogFlusher); ok {
-		_ = f.FlushRefusalLogs() // documented never to fail: its reporter only logs
+	if f, ok := b.authn.(logsample.Flusher); ok {
+		return f.FlushRefusalLogs()
 	}
+
+	return nil
 }
 
 // Intercept authenticates a Basic credential and establishes no session.

@@ -77,9 +77,12 @@ func WithKeyringRetiredEncryptionKey(id string, key []byte) KeyringOption {
 	return func(c *keyringConfig) { c.retired = append(c.retired, k) }
 }
 
-// keyring is the default Keyring: fixed at construction and read-only after,
-// so it needs no lock.
-type keyring struct {
+// StaticKeyring is the default Keyring: fixed at construction and read-only
+// after, so it needs no lock and is safe for concurrent use.
+//
+// Build it with NewKeyring; the zero value is not usable, because it holds no
+// active key.
+type StaticKeyring struct {
 	activeID string
 	keys     map[string][]byte
 }
@@ -95,7 +98,7 @@ type keyring struct {
 // retired key equal to the active key records a rotation that never happened.
 // The error names the offending key by its role and, when the id itself is
 // well formed, by its id; it never contains key bytes.
-func NewKeyring(opts ...KeyringOption) (Keyring, error) {
+func NewKeyring(opts ...KeyringOption) (*StaticKeyring, error) {
 	var cfg keyringConfig
 	for _, opt := range opts {
 		if opt == nil {
@@ -109,7 +112,7 @@ func NewKeyring(opts ...KeyringOption) (Keyring, error) {
 			ErrConfig, len(cfg.active))
 	}
 
-	kr := &keyring{activeID: cfg.active[0].id, keys: make(map[string][]byte, 1+len(cfg.retired))}
+	kr := &StaticKeyring{activeID: cfg.active[0].id, keys: make(map[string][]byte, 1+len(cfg.retired))}
 	if err := kr.add("the active key", cfg.active[0]); err != nil {
 		return nil, err
 	}
@@ -124,7 +127,7 @@ func NewKeyring(opts ...KeyringOption) (Keyring, error) {
 
 // add validates k, which role names in an error, against the rules and the
 // keys already added, and adds it.
-func (r *keyring) add(role string, k namedKey) error {
+func (r *StaticKeyring) add(role string, k namedKey) error {
 	if !validKeyID(k.id) {
 		return fmt.Errorf("%w: the id of %s must be 1 to %d of A-Z, a-z, 0-9, '.', '_' or '-'",
 			ErrConfig, role, maxKeyIDLen)
@@ -148,13 +151,13 @@ func (r *keyring) add(role string, k namedKey) error {
 }
 
 // Active returns the active key's id and a copy of its bytes.
-func (r *keyring) Active() (string, []byte, error) {
+func (r *StaticKeyring) Active() (string, []byte, error) {
 	return r.activeID, bytes.Clone(r.keys[r.activeID]), nil
 }
 
 // ByID returns a copy of the bytes of the key named id, or ErrUnknownKeyID.
 // The error does not repeat id, which comes from a stored value.
-func (r *keyring) ByID(id string) ([]byte, error) {
+func (r *StaticKeyring) ByID(id string) ([]byte, error) {
 	key, ok := r.keys[id]
 	if !ok {
 		return nil, ErrUnknownKeyID
@@ -180,3 +183,5 @@ func validKeyID(id string) bool {
 
 	return true
 }
+
+var _ Keyring = (*StaticKeyring)(nil)

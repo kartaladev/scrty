@@ -28,6 +28,25 @@ import (
 	"time"
 )
 
+// Flusher is implemented by a component that samples its refusal records and
+// can report every refusal it has suppressed but not yet counted in a written
+// record.
+//
+// Sampling keeps a burst of refusals from burying every other record, but the
+// count of what was held back is only written when the same refusal recurs. A
+// consumer flushes at shutdown, or before reading the logs of an incident, so a
+// burst that stopped is still accounted for rather than silently discarded.
+//
+// It is an optional interface: a component that accepts a consumer's value,
+// such as an authenticator, a policy or an identity broker, flushes it when the
+// value has this method, and skips it otherwise. FlushRefusalLogs returns an
+// error for an implementation whose reporter can fail. The library's leaf
+// components only write log records, and return nil; a composite such as an
+// engine or a chain returns the errors a consumer's flusher gave it, joined.
+type Flusher interface {
+	FlushRefusalLogs() error
+}
+
 // Sampler writes at most one record per key per fixed window, anchored to the first
 // event it sees. A nil *Sampler, or one with a window of zero or less, writes every
 // event. It is safe for concurrent use.

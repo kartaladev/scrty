@@ -1020,7 +1020,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				logs := recoveryLogs(t, h)
 				before := len(logs.records())
 
-				h.chain.FlushRefusalLogs()
+				require.NoError(t, h.chain.FlushRefusalLogs())
 
 				flushed := logs.records()[before:]
 				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery"))
@@ -1060,7 +1060,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				written := throttledRecords(recoveryLogs(t, h).records())
 				assert.Len(t, written, 2, "one record per recovery guard: the window is the recovery interval")
 
-				h.chain.FlushRefusalLogs()
+				require.NoError(t, h.chain.FlushRefusalLogs())
 
 				flushed := recoveryLogs(t, h).records()
 				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery"))

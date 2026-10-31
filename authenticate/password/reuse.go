@@ -338,9 +338,9 @@ func defaultMatchers(own Encoder) ([]Encoder, error) {
 		skip bool
 		make func() (Encoder, error)
 	}{
-		{skip: isType[*argon2idEncoder](own), make: func() (Encoder, error) { return NewArgon2idEncoder() }},
-		{skip: isType[*bcryptEncoder](own), make: func() (Encoder, error) { return NewBcryptEncoder() }},
-		{skip: isType[*scryptEncoder](own), make: func() (Encoder, error) { return NewScryptEncoder() }},
+		{skip: isType[*Argon2idEncoder](own), make: func() (Encoder, error) { return NewArgon2idEncoder() }},
+		{skip: isType[*BcryptEncoder](own), make: func() (Encoder, error) { return NewBcryptEncoder() }},
+		{skip: isType[*ScryptEncoder](own), make: func() (Encoder, error) { return NewScryptEncoder() }},
 	}
 
 	matchers := make([]Encoder, 0, len(builders))

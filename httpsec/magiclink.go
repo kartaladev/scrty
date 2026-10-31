@@ -360,10 +360,12 @@ func (i *magicLinkInterceptor) readRequest(r Request) (address, next string) {
 }
 
 // flushRefusalLogs reports what the redemption source guard is holding back.
-func (i *magicLinkInterceptor) flushRefusalLogs() {
+func (i *magicLinkInterceptor) flushRefusalLogs() error {
 	if i.guard != nil {
 		i.guard.Flush()
 	}
+
+	return nil
 }
 
 // consume answers a POST to the consume path.

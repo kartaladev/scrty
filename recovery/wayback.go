@@ -52,8 +52,8 @@ type WayBackDeps struct {
 	// OIDC identities and wants them counted wires the MFA requirement policy's
 	// own answer, so the check and the login cannot disagree:
 	//
-	//	adm := requirementPolicy.(policy.LoginAdmission)
-	//	deps.Admits = adm.AdmitsWithoutLocalSecondFactor
+	//	requirement, err := policy.NewMFARequirement(...)
+	//	deps.Admits = requirement.AdmitsWithoutLocalSecondFactor
 	//
 	// That answer is yes in FederatedAssuranceExempt mode, for a kind the
 	// policy's exemption rule marks, and for a user not required to use a

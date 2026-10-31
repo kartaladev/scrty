@@ -36,19 +36,23 @@ const maxRecordCost = 16
 // 72-byte shape, closes the whole family.
 var ErrContainsNUL = errors.New("password: password contains a NUL byte")
 
-type bcryptEncoder struct {
+// BcryptEncoder is the bcrypt Encoder. It also implements Recognizer.
+//
+// Build it with NewBcryptEncoder; the zero value is not usable, because its
+// parameters are set and validated only by the constructor.
+type BcryptEncoder struct {
 	cost int
 }
 
 // BcryptOption configures the bcrypt encoder.
-type BcryptOption func(*bcryptEncoder)
+type BcryptOption func(*BcryptEncoder)
 
 // WithBcryptCost sets the cost. Default: 10, which is also the floor; the
 // ceiling is 16, a limit with no override (a stored record is held to it too).
 //
 // Each step doubles the work, so raising it is the only dial bcrypt offers.
 func WithBcryptCost(cost int) BcryptOption {
-	return func(e *bcryptEncoder) { e.cost = cost }
+	return func(e *BcryptEncoder) { e.cost = cost }
 }
 
 // NewBcryptEncoder returns a bcrypt encoder with a default cost of 10.
@@ -56,8 +60,8 @@ func WithBcryptCost(cost int) BcryptOption {
 // Prefer NewArgon2idEncoder, which is scrty's default: bcrypt is memory-cheap by
 // comparison, so it resists parallel cracking less well. This exists for
 // consumers with stored bcrypt hashes to verify, or a policy that requires it.
-func NewBcryptEncoder(opts ...BcryptOption) (Encoder, error) {
-	e := &bcryptEncoder{cost: defaultBcryptCost}
+func NewBcryptEncoder(opts ...BcryptOption) (*BcryptEncoder, error) {
+	e := &BcryptEncoder{cost: defaultBcryptCost}
 
 	for _, opt := range opts {
 		if opt != nil {
@@ -89,7 +93,7 @@ func NewBcryptEncoder(opts ...BcryptOption) (Encoder, error) {
 //
 // A password longer than 72 bytes is refused with [ErrTooLong], and one
 // containing a NUL byte with [ErrContainsNUL].
-func (e *bcryptEncoder) Encode(input string) ([]byte, error) {
+func (e *BcryptEncoder) Encode(input string) ([]byte, error) {
 	if len(input) > bcryptMaxInput {
 		return nil, fmt.Errorf("%w: %d bytes; bcrypt hashes at most %d",
 			ErrTooLong, len(input), bcryptMaxInput)
@@ -123,7 +127,7 @@ func (e *bcryptEncoder) Encode(input string) ([]byte, error) {
 // first 72 bytes verifies as that password. Refusing the input in Encode is not
 // enough, because a hash written before that check existed — or by another tool
 // — is still on the other side of this comparison.
-func (e *bcryptEncoder) Match(input string, encoded []byte) bool {
+func (e *BcryptEncoder) Match(input string, encoded []byte) bool {
 	if len(input) > bcryptMaxInput || strings.IndexByte(input, 0) >= 0 {
 		return false
 	}
@@ -137,7 +141,7 @@ func (e *bcryptEncoder) Match(input string, encoded []byte) bool {
 	return bcrypt.CompareHashAndPassword(encoded, []byte(input)) == nil
 }
 
-var _ Encoder = (*bcryptEncoder)(nil)
+var _ Encoder = (*BcryptEncoder)(nil)
 
 // Recognizes reports whether encoded is a bcrypt record whose cost Match would
 // run: one bcrypt can parse, with a salt in bcrypt's alphabet, at a cost no higher than the ceiling. It derives
@@ -146,7 +150,7 @@ var _ Encoder = (*bcryptEncoder)(nil)
 // It speaks only of the record. Match also refuses, unread, an input over 72
 // bytes or containing a NUL byte; that depends on the password the caller
 // presented, not on the stored hash, and is bcrypt's stated length exception.
-func (e *bcryptEncoder) Recognizes(encoded []byte) bool {
+func (e *BcryptEncoder) Recognizes(encoded []byte) bool {
 	cost, err := bcrypt.Cost(encoded)
 	if err != nil || cost > maxRecordCost {
 		return false
@@ -179,4 +183,4 @@ func bcryptAlphabet(c byte) bool {
 	return c == '.' || c == '/' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 }
 
-var _ Recognizer = (*bcryptEncoder)(nil)
+var _ Recognizer = (*BcryptEncoder)(nil)

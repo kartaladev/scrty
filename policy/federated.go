@@ -65,11 +65,11 @@ type FederatedAssuranceSourceOption struct {
 	src FederatedAssuranceSource
 }
 
-func (o FederatedAssuranceSourceOption) applyMFA(p *mfaPolicy) {
+func (o FederatedAssuranceSourceOption) applyMFA(p *MFA) {
 	p.federated = federatedSource{src: o.src, set: true}
 }
 
-func (o FederatedAssuranceSourceOption) applyMFARequirement(p *mfaRequirementPolicy) {
+func (o FederatedAssuranceSourceOption) applyMFARequirement(p *MFARequirement) {
 	p.federated = federatedSource{src: o.src, set: true}
 }
 
@@ -150,7 +150,7 @@ type FederatedAssuranceUser interface {
 // FederatedAssuranceExempt mode, nor when the exemption rule
 // (WithMFAExemption) exempts the oidc kind, since both allow a federated login
 // before any assurance is consulted.
-func (p *mfaRequirementPolicy) NeedsFederatedAssuranceSource() bool {
+func (p *MFARequirement) NeedsFederatedAssuranceSource() bool {
 	if p.federatedMode == FederatedAssuranceExempt || p.exempt(factor.OIDC) {
 		return false
 	}
@@ -158,4 +158,4 @@ func (p *mfaRequirementPolicy) NeedsFederatedAssuranceSource() bool {
 	return nilcheck.IsNil(p.federated.src)
 }
 
-var _ FederatedAssuranceUser = (*mfaRequirementPolicy)(nil)
+var _ FederatedAssuranceUser = (*MFARequirement)(nil)

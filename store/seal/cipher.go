@@ -38,8 +38,11 @@ type Cipher interface {
 	ActiveKeyID() (string, error)
 }
 
-// aeadCipher is the default Cipher.
-type aeadCipher struct {
+// AEADCipher is the default Cipher: AES-256-GCM over the keys of a Keyring.
+//
+// Build it with NewAEADCipher; the zero value is not usable, because it has no
+// keyring. It is safe for concurrent use when its Keyring is.
+type AEADCipher struct {
 	kr Keyring
 }
 
@@ -78,16 +81,16 @@ type aeadCipher struct {
 // past that, the chance of a repeated nonce, which breaks GCM's
 // confidentiality and integrity for that key, is no longer negligible. Rotate
 // the active key well before a key has sealed that many values.
-func NewAEADCipher(kr Keyring) (Cipher, error) {
+func NewAEADCipher(kr Keyring) (*AEADCipher, error) {
 	if nilcheck.IsNil(kr) {
 		return nil, fmt.Errorf("%w: the cipher has no keyring", ErrConfig)
 	}
 
-	return &aeadCipher{kr: kr}, nil
+	return &AEADCipher{kr: kr}, nil
 }
 
 // Seal encrypts plaintext under the active key and returns the envelope.
-func (c *aeadCipher) Seal(plaintext, aad []byte) ([]byte, error) {
+func (c *AEADCipher) Seal(plaintext, aad []byte) ([]byte, error) {
 	id, key, err := c.active()
 	if err != nil {
 		return nil, err
@@ -107,7 +110,7 @@ func (c *aeadCipher) Seal(plaintext, aad []byte) ([]byte, error) {
 }
 
 // Open decrypts an envelope, reporting the id of the key that opened it.
-func (c *aeadCipher) Open(sealed, aad []byte) ([]byte, string, error) {
+func (c *AEADCipher) Open(sealed, aad []byte) ([]byte, string, error) {
 	id, header, body, ok := decodeEnvelope(sealed)
 	if !ok {
 		return nil, "", ErrDecryptionFailed
@@ -136,7 +139,7 @@ func (c *aeadCipher) Open(sealed, aad []byte) ([]byte, string, error) {
 }
 
 // ActiveKeyID returns the id of the keyring's active key.
-func (c *aeadCipher) ActiveKeyID() (string, error) {
+func (c *AEADCipher) ActiveKeyID() (string, error) {
 	id, _, err := c.active()
 
 	return id, err
@@ -145,7 +148,9 @@ func (c *aeadCipher) ActiveKeyID() (string, error) {
 // active asks the keyring for its active key, and refuses an id the envelope
 // cannot carry. It is the one place a keyring's active key is checked, so
 // Seal and ActiveKeyID can never disagree about it.
-func (c *aeadCipher) active() (string, []byte, error) {
+var _ Cipher = (*AEADCipher)(nil)
+
+func (c *AEADCipher) active() (string, []byte, error) {
 	id, key, err := c.kr.Active()
 	if err != nil {
 		return "", nil, diag.Wrap(err, "seal: the keyring could not provide the active key")

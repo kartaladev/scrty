@@ -247,7 +247,7 @@ func TestSigningKeyStore_Store(t *testing.T) {
 			if tc.cipher != nil {
 				c = tc.cipher(ctrl)
 			}
-			inner := signingkey.NewMemoryKeyStore()
+			var inner signingkey.KeyStore = signingkey.NewMemoryKeyStore()
 			if tc.inner != nil {
 				inner = tc.inner(ctrl)
 			}
@@ -482,7 +482,7 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 			if tc.cipher != nil {
 				c = tc.cipher(ctrl)
 			}
-			inner := signingkey.NewMemoryKeyStore()
+			var inner signingkey.KeyStore = signingkey.NewMemoryKeyStore()
 			if tc.inner != nil {
 				inner = tc.inner(ctrl)
 			}

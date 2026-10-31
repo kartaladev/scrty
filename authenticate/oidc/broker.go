@@ -257,8 +257,8 @@ func (b *Broker) reportSuppressed(key string, suppressed int) {
 // FlushRefusalLogs reports every refusal record the broker's sampler has
 // suppressed but not yet counted, then forgets every key, so the next
 // refusal of a reason already reported is written again rather than held
-// back. It always returns nil; the signature matches the shape
-// authenticate.RefusalLogFlusher and policy.RefusalLogFlusher already use.
+// back. It always returns nil; the signature is logsample.Flusher's, the
+// optional interface every refusal-log flusher shares.
 //
 // It is safe to call at shutdown, including while logins are still in
 // flight, and safe to call more than once: a second flush with nothing new

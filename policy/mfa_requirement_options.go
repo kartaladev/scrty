@@ -69,7 +69,7 @@ func (m FederatedAssuranceMode) String() string {
 // challenge policy has its own WithMFAFederatedChallengeWhenUnmet. A value that
 // names no mode is a configuration error at construction.
 func WithMFARequirementFederatedAssurance(mode FederatedAssuranceMode) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.federatedMode = mode })
+	return mfaRequirementOption(func(p *MFARequirement) { p.federatedMode = mode })
 }
 
 // MFARequirementOption configures the policy NewMFARequirement returns.
@@ -79,13 +79,13 @@ func WithMFARequirementFederatedAssurance(mode FederatedAssuranceMode) MFARequir
 // which governs a rule both MFA policies hold, can be given to either
 // constructor under one name. A consumer implements nothing.
 type MFARequirementOption interface {
-	applyMFARequirement(*mfaRequirementPolicy)
+	applyMFARequirement(*MFARequirement)
 }
 
 // mfaRequirementOption adapts a plain function into an MFARequirementOption.
-type mfaRequirementOption func(*mfaRequirementPolicy)
+type mfaRequirementOption func(*MFARequirement)
 
-func (f mfaRequirementOption) applyMFARequirement(p *mfaRequirementPolicy) { f(p) }
+func (f mfaRequirementOption) applyMFARequirement(p *MFARequirement) { f(p) }
 
 // WithMFARequiredForAll requires a second factor of every non-exempt user,
 // without consulting the requirement lookup at all.
@@ -109,7 +109,7 @@ func (f mfaRequirementOption) applyMFARequirement(p *mfaRequirementPolicy) { f(p
 // gives a first factor. WithEnrolmentPathUntil closes the path again once the
 // rollout is done.
 func WithMFARequiredForAll() MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.requiredForAll = true })
+	return mfaRequirementOption(func(p *MFARequirement) { p.requiredForAll = true })
 }
 
 // WithMFARequirementLogger replaces where the policy writes its refusal and
@@ -124,7 +124,7 @@ func WithMFARequiredForAll() MFARequirementOption {
 // A nil logger is ignored rather than refused, so configuring logging stays
 // optional.
 func WithMFARequirementLogger(l *slog.Logger) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) {
+	return mfaRequirementOption(func(p *MFARequirement) {
 		if l != nil {
 			p.logger = l
 		}
@@ -140,7 +140,7 @@ func WithMFARequirementLogger(l *slog.Logger) MFARequirementOption {
 // WithMFALogInterval, so an outage of the requirement lookup cannot
 // silence the same-channel warnings.
 func WithMFARequirementLogInterval(d time.Duration) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.logInterval = d })
+	return mfaRequirementOption(func(p *MFARequirement) { p.logInterval = d })
 }
 
 // WithMFARequirementClock replaces the time source the policy samples its
@@ -150,7 +150,7 @@ func WithMFARequirementLogInterval(d time.Duration) MFARequirementOption {
 // It is not the instant a decision is judged against — that is Input.Now, taken
 // from the caller's clock so that every policy in a phase agrees.
 func WithMFARequirementClock(clk clock.Clock) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.clock = clk })
+	return mfaRequirementOption(func(p *MFARequirement) { p.clock = clk })
 }
 
 // WithMFARequirementPhaseSource replaces how the policy learns which phase it
@@ -168,5 +168,5 @@ func WithMFARequirementClock(clk clock.Clock) MFARequirementOption {
 func WithMFARequirementPhaseSource(
 	phaseOf func(ctx context.Context, in *Input) (Phase, bool),
 ) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.phaseOf = phaseOf })
+	return mfaRequirementOption(func(p *MFARequirement) { p.phaseOf = phaseOf })
 }

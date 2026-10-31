@@ -3199,7 +3199,7 @@ func TestEnrolmentLogs(t *testing.T) {
 				t.Helper()
 
 				beginsPastTheLimit(t, c, 20)
-				c.FlushRefusalLogs()
+				require.NoError(t, c.FlushRefusalLogs())
 
 				return []string{enrolUsername}
 			},

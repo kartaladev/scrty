@@ -309,10 +309,12 @@ func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 
 // flushRefusalLogs reports what the passkey manager's sampler is holding
 // back.
-func (p *passkeyInterceptor) flushRefusalLogs() {
+func (p *passkeyInterceptor) flushRefusalLogs() error {
 	if p.deps.Passkeys != nil {
-		_ = p.deps.Passkeys.FlushRefusalLogs() // documented never to fail: its reporter only logs
+		return p.deps.Passkeys.FlushRefusalLogs()
 	}
+
+	return nil
 }
 
 // passkeysOf returns the chain's passkey endpoints, or nil when passkeys are

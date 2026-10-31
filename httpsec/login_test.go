@@ -344,7 +344,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 					requireThrottled(t, last)
 				}
 
-				c.FlushRefusalLogs()
+				require.NoError(t, c.FlushRefusalLogs())
 
 				return snapshot(h), last
 			},

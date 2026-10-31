@@ -557,9 +557,7 @@ func TestMFARequirementLookupFailureKeyIsSharedByEveryUser(t *testing.T) {
 		p.Evaluate(ctx, &policy.Input{User: user, FirstFactor: factor.Password, Now: mfaNow})
 	}
 
-	flusher, ok := p.(policy.RefusalLogFlusher)
-	require.True(t, ok, "the policy offers no way to report what it suppressed")
-	require.NoError(t, flusher.FlushRefusalLogs())
+	require.NoError(t, p.FlushRefusalLogs())
 
 	records := mfaRecordsOf(t, buf, logRequirementSuppressed)
 	require.Len(t, records, 1, "the suppressed failures were reported under more than one key")
@@ -587,9 +585,7 @@ func TestMFARequirementAssuranceSourceFailureKeyIsSharedByEveryUser(t *testing.T
 		p.Evaluate(ctx, in)
 	}
 
-	flusher, ok := p.(policy.RefusalLogFlusher)
-	require.True(t, ok, "the policy offers no way to report what it suppressed")
-	require.NoError(t, flusher.FlushRefusalLogs())
+	require.NoError(t, p.FlushRefusalLogs())
 
 	records := mfaRecordsOf(t, buf, logRequirementSuppressed)
 	require.Len(t, records, 1, "the suppressed failures were reported under more than one key")
@@ -672,9 +668,7 @@ func TestMFARequirementChallenges(t *testing.T) {
 			p := mfaRequirementPolicyFor(t, nil, mfaMethod(t, factor.AuthenticatorApp, false, nil),
 				append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, tc.opts...)...)
 
-			challenger, ok := p.(policy.Challenger)
-			require.True(t, ok, "the requirement policy no longer declares its challenges")
-			tc.assert(t, challenger.Challenges())
+			tc.assert(t, p.Challenges())
 		})
 	}
 }
@@ -1577,15 +1571,12 @@ func TestAdmitsWithoutLocalSecondFactor(t *testing.T) {
 			methods := mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp)))
 			p := mfaRequirementPolicyOver(t, lk, methods, opts...)
 
-			adm, ok := p.(policy.LoginAdmission)
-			require.True(t, ok, "the requirement policy must implement LoginAdmission")
-
 			ctx := t.Context()
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
 			}
 
-			got, err := adm.AdmitsWithoutLocalSecondFactor(ctx, user, tc.kind)
+			got, err := p.AdmitsWithoutLocalSecondFactor(ctx, user, tc.kind)
 			tc.assert(t, got, err)
 		})
 	}

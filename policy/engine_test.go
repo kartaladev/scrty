@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -964,21 +965,23 @@ var (
 )
 
 // flushablePolicy is a stubPolicy that also implements
-// policy.RefusalLogFlusher, counting how many times FlushRefusalLogs was
-// called on it. It shares stubPolicy's value semantics, so it registers on
-// the engine exactly as any other policy in this file's tests does.
+// logsample.Flusher, counting how many times FlushRefusalLogs was
+// called on it and returning err from every call. It shares stubPolicy's
+// value semantics, so it registers on the engine exactly as any other policy
+// in this file's tests does.
 type flushablePolicy struct {
 	stubPolicy
 	flushes *int
+	err     error
 }
 
 func (p flushablePolicy) FlushRefusalLogs() error {
 	*p.flushes++
 
-	return nil
+	return p.err
 }
 
-var _ policy.RefusalLogFlusher = flushablePolicy{}
+var _ logsample.Flusher = flushablePolicy{}
 
 // newFlushablePolicy returns a flushable policy registered for phases and a
 // pointer to its own flush counter.
@@ -988,17 +991,26 @@ func newFlushablePolicy(name string, phases ...policy.Phase) (flushablePolicy, *
 	return flushablePolicy{stubPolicy: stubPolicy{name: name, phases: phases}, flushes: &n}, &n
 }
 
+// errPolicyFlushA and errPolicyFlushB are what a consumer's policy returns
+// from a flush whose reporter failed.
+var (
+	errPolicyFlushA = errors.New("policy flush a failed")
+	errPolicyFlushB = errors.New("policy flush b failed")
+)
+
 // TestEngineFlushRefusalLogs pins spec http-security-chain scenario
 // "Registered policy flushed": the engine reaches every registered policy
 // that can flush, once each, skips one that cannot without panicking, and
-// flushes a policy registered for more than one phase only once.
+// flushes a policy registered for more than one phase only once. A policy
+// whose flush fails does not stop the others, and its error is returned,
+// joined with every other failure.
 func TestEngineFlushRefusalLogs(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
 		build  func(t *testing.T) (e *policy.Engine, counts []*int)
-		assert func(t *testing.T, counts []*int)
+		assert func(t *testing.T, counts []*int, err error)
 	}
 
 	cases := []testCase{
@@ -1015,7 +1027,8 @@ func TestEngineFlushRefusalLogs(t *testing.T) {
 
 				return e, []*int{countA, countB}
 			},
-			assert: func(t *testing.T, counts []*int) {
+			assert: func(t *testing.T, counts []*int, err error) {
+				require.NoError(t, err)
 				require.Len(t, counts, 2)
 				assert.Equal(t, 1, *counts[0])
 				assert.Equal(t, 1, *counts[1])
@@ -1031,10 +1044,11 @@ func TestEngineFlushRefusalLogs(t *testing.T) {
 
 				return e, nil
 			},
-			assert: func(t *testing.T, _ []*int) {
-				t.Helper()
-				// Reaching this closure at all is the assertion: a policy
-				// with no RefusalLogFlusher must not panic the flush.
+			assert: func(t *testing.T, _ []*int, err error) {
+				// Reaching this closure at all is the main assertion: a
+				// policy with no FlushRefusalLogs method must not panic the
+				// flush, and has nothing to report.
+				require.NoError(t, err)
 			},
 		},
 		{
@@ -1049,10 +1063,37 @@ func TestEngineFlushRefusalLogs(t *testing.T) {
 
 				return e, []*int{count}
 			},
-			assert: func(t *testing.T, counts []*int) {
+			assert: func(t *testing.T, counts []*int, err error) {
+				require.NoError(t, err)
 				require.Len(t, counts, 1)
 				assert.Equal(t, 1, *counts[0],
 					"a policy registered for two phases must be flushed once, from asked, not once per phase")
+			},
+		},
+		{
+			// Design D2, every flusher still called and errors joined: a consumer's policy whose flush fails, beside
+			// one that succeeds and another that fails after it.
+			name: "failing flushes are joined and every policy is still flushed",
+			build: func(t *testing.T) (*policy.Engine, []*int) {
+				t.Helper()
+
+				a, countA := newFlushablePolicy("a", policy.PerRequest)
+				a.err = errPolicyFlushA
+				b, countB := newFlushablePolicy("b", policy.PerRequest)
+				c, countC := newFlushablePolicy("c", policy.PerRequest)
+				c.err = errPolicyFlushB
+
+				e, err := policy.NewEngine(a, b, c)
+				require.NoError(t, err)
+
+				return e, []*int{countA, countB, countC}
+			},
+			assert: func(t *testing.T, counts []*int, err error) {
+				require.ErrorIs(t, err, errPolicyFlushA, "the first policy's flush error was not returned")
+				require.ErrorIs(t, err, errPolicyFlushB, "the last policy's flush error was not returned")
+				require.Len(t, counts, 3)
+				assert.Equal(t, []int{1, 1, 1}, []int{*counts[0], *counts[1], *counts[2]},
+					"a failing flush must not stop the policies registered after it")
 			},
 		},
 	}
@@ -1062,8 +1103,8 @@ func TestEngineFlushRefusalLogs(t *testing.T) {
 			t.Parallel()
 
 			e, counts := tc.build(t)
-			e.FlushRefusalLogs()
-			tc.assert(t, counts)
+			err := e.FlushRefusalLogs()
+			tc.assert(t, counts, err)
 		})
 	}
 
@@ -1073,15 +1114,15 @@ func TestEngineFlushRefusalLogs(t *testing.T) {
 		e, err := policy.NewEngine()
 		require.NoError(t, err)
 
-		e.FlushRefusalLogs() // nothing registered yet; must not panic
+		require.NoError(t, e.FlushRefusalLogs()) // nothing registered yet; must not panic
 
 		p, count := newFlushablePolicy("added-later", policy.PerRequest)
 		require.NoError(t, e.Add(p))
 
-		e.FlushRefusalLogs()
+		require.NoError(t, e.FlushRefusalLogs())
 		assert.Equal(t, 1, *count, "the policy added after construction was never flushed")
 
-		e.FlushRefusalLogs()
+		require.NoError(t, e.FlushRefusalLogs())
 		assert.Equal(t, 2, *count, "a second flush must reach the same policy again")
 	})
 }

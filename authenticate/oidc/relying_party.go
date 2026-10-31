@@ -259,7 +259,7 @@ func (m *RelyingParty) reportSuppressed(key string, suppressed int) {
 func (m *RelyingParty) FlushRefusalLogs() error {
 	m.sampler.Flush()
 
-	if f, ok := m.broker.(interface{ FlushRefusalLogs() error }); ok {
+	if f, ok := m.broker.(logsample.Flusher); ok {
 		return f.FlushRefusalLogs()
 	}
 

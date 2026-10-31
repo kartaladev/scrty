@@ -72,7 +72,7 @@ func (f enrolmentPathOption) applyEnrolmentPath(e *enrolmentPath) { f(e) }
 // the path can be refused at begin, and that user stays confined until the
 // enrolment-only session ends.
 func WithMFAEnrolmentPath(opts ...EnrolmentPathOption) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) {
+	return mfaRequirementOption(func(p *MFARequirement) {
 		e := &enrolmentPath{firstFactors: defaultEnrolmentFirstFactors()}
 		for _, opt := range opts {
 			if opt != nil {

@@ -2485,7 +2485,7 @@ func TestPasskeyFlushRefusalLogs(t *testing.T) {
 			tc.drive(t, d)
 			before := len(logs.records())
 
-			d.chain.FlushRefusalLogs()
+			require.NoError(t, d.chain.FlushRefusalLogs())
 
 			tc.assert(t, logs.records()[before:])
 		})

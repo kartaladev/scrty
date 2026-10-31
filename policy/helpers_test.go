@@ -118,7 +118,7 @@ func mfaInput(kind factor.Kind) *policy.Input {
 
 // mfaPolicyFor builds the second-factor challenge policy over a set of one
 // method, writing its records nowhere unless a case replaces the logger.
-func mfaPolicyFor(t *testing.T, method policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
+func mfaPolicyFor(t *testing.T, method policy.MFAMethodLookup, opts ...policy.MFAOption) *policy.MFA {
 	t.Helper()
 
 	return mfaPolicyOver(t, mfaMethods(method), opts...)
@@ -192,7 +192,7 @@ func mfaRequirementPolicyFor(
 	required identity.MFARequirementLookup,
 	method policy.MFAMethodLookup,
 	opts ...policy.MFARequirementOption,
-) policy.Policy {
+) *policy.MFARequirement {
 	t.Helper()
 
 	return mfaRequirementPolicyOver(t, required, mfaMethods(method), opts...)
@@ -205,7 +205,7 @@ func mfaRequirementPolicyOver(
 	required identity.MFARequirementLookup,
 	methods []policy.MFAMethodLookup,
 	opts ...policy.MFARequirementOption,
-) policy.Policy {
+) *policy.MFARequirement {
 	t.Helper()
 
 	p, err := policy.NewMFARequirement(required, methods,
@@ -302,7 +302,7 @@ const (
 
 // mfaPolicyOver builds the second-factor challenge policy over methods,
 // writing its records nowhere unless a case replaces the logger.
-func mfaPolicyOver(t *testing.T, methods []policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
+func mfaPolicyOver(t *testing.T, methods []policy.MFAMethodLookup, opts ...policy.MFAOption) *policy.MFA {
 	t.Helper()
 
 	p, err := policy.NewMFA(methods,

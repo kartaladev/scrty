@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -223,19 +224,30 @@ func (i *oidcInterceptor) wire(c *Chain) {
 // (and through it a broker that can flush) and the handoff manager are holding
 // back. A login conveyed by WithOIDCCallbackSuccess has neither a guard nor a
 // handoff manager, so each is flushed only when it exists.
-func (i *oidcInterceptor) flushRefusalLogs() {
+//
+// The relying party returns what a consumer's broker returns from its own flush,
+// so its error is joined with the handoff manager's and returned, and the
+// handoff manager is flushed even when the relying party's flush failed.
+func (i *oidcInterceptor) flushRefusalLogs() error {
 	if i.guard != nil {
 		i.guard.Flush()
 	}
 
-	// Both are documented never to fail: their reporters only log.
+	var errs []error
+
 	if i.manager != nil {
-		_ = i.manager.FlushRefusalLogs()
+		if err := i.manager.FlushRefusalLogs(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 
 	if i.handoffs != nil {
-		_ = i.handoffs.FlushRefusalLogs()
+		if err := i.handoffs.FlushRefusalLogs(); err != nil {
+			errs = append(errs, err)
+		}
 	}
+
+	return errors.Join(errs...)
 }
 
 // Intercept answers the federated-login endpoints and passes everything else

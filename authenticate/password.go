@@ -31,7 +31,7 @@ const referencePassword = "scrty reference password"
 //
 // A nil option is skipped, so a consumer who builds the slice conditionally
 // need not filter it first.
-type PasswordOption func(*passwordAuthenticator)
+type PasswordOption func(*UsernamePasswordAuthenticator)
 
 // WithPasswordEncoder replaces the password encoder.
 //
@@ -50,7 +50,7 @@ type PasswordOption func(*passwordAuthenticator)
 // an algorithm they did not choose would fail to verify every credential their
 // store holds.
 func WithPasswordEncoder(enc password.Encoder) PasswordOption {
-	return func(a *passwordAuthenticator) { a.enc = enc; a.encSet = true }
+	return func(a *UsernamePasswordAuthenticator) { a.enc = enc; a.encSet = true }
 }
 
 // WithPasswordIDGenerator replaces the generator that names each successful
@@ -66,7 +66,7 @@ func WithPasswordEncoder(enc password.Encoder) PasswordOption {
 // one, and correlation that quietly used another generator's identifiers would
 // look like it worked until the records were joined.
 func WithPasswordIDGenerator(g id.Generator) PasswordOption {
-	return func(a *passwordAuthenticator) { a.ids = g; a.idsSet = true }
+	return func(a *UsernamePasswordAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
 // WithPasswordLogInterval sets how often one refusal reason may be
@@ -82,7 +82,7 @@ func WithPasswordIDGenerator(g id.Generator) PasswordOption {
 // stream — and the stated cost is that an attacker choosing the traffic then
 // chooses the log volume.
 func WithPasswordLogInterval(d time.Duration) PasswordOption {
-	return func(a *passwordAuthenticator) { a.logEvery = d; a.logEverySet = true }
+	return func(a *UsernamePasswordAuthenticator) { a.logEvery = d; a.logEverySet = true }
 }
 
 // WithPasswordLogger replaces the logger. The default is
@@ -93,7 +93,7 @@ func WithPasswordLogInterval(d time.Duration) PasswordOption {
 // does not want to choose this component's logger — and refusing it would make
 // configuring logging mandatory.
 func WithPasswordLogger(l *slog.Logger) PasswordOption {
-	return func(a *passwordAuthenticator) {
+	return func(a *UsernamePasswordAuthenticator) {
 		if l != nil {
 			a.logger = l
 		}
@@ -106,22 +106,7 @@ func WithPasswordLogger(l *slog.Logger) PasswordOption {
 // Users type email addresses, and sometimes passwords, into the username
 // field, and every unknown username then reaches the log.
 func WithPasswordUsernameInRefusalLogs() PasswordOption {
-	return func(a *passwordAuthenticator) { a.logUsername = true }
-}
-
-// RefusalLogFlusher reports every refusal a component has suppressed but not
-// yet counted in a written record.
-//
-// Sampling keeps a burst of refusals from burying every other record, but the
-// count of what it held back is only written when the same reason recurs. A
-// caller flushes at shutdown, or before reading the logs of an incident, so a
-// burst that stopped is still accounted for rather than silently discarded.
-//
-// The constructors here return Authenticator, so a consumer reaches this with a
-// type assertion. The error is part of the contract for implementations whose
-// reporter can fail; this package's own always reports none.
-type RefusalLogFlusher interface {
-	FlushRefusalLogs() error
+	return func(a *UsernamePasswordAuthenticator) { a.logUsername = true }
 }
 
 // The reasons a refusal is recorded under. They are the sampler's keys, so each
@@ -149,10 +134,13 @@ const (
 // interval is configured.
 const defaultRefusalLogInterval = time.Minute
 
-// passwordAuthenticator resolves a username and password against a user loader.
+// UsernamePasswordAuthenticator resolves a username and password against a user
+// loader. It is an Authenticator, a DecoyVerifier and a logsample.Flusher.
 //
+// Build it with NewUsernamePasswordAuthenticator; the zero value is not
+// usable, because it has no user loader, no encoder and no reference hash.
 // Every field is fixed at construction, so it is safe for concurrent use.
-type passwordAuthenticator struct {
+type UsernamePasswordAuthenticator struct {
 	users identity.UserLoader
 
 	enc    password.Encoder
@@ -200,12 +188,15 @@ type passwordAuthenticator struct {
 // user loader for full detail. Refusal records omit the submitted username
 // unless WithPasswordUsernameInRefusalLogs is set; see its documentation for why that
 // is not the default.
-func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...PasswordOption) (Authenticator, error) {
+func NewUsernamePasswordAuthenticator(
+	users identity.UserLoader,
+	opts ...PasswordOption,
+) (*UsernamePasswordAuthenticator, error) {
 	if nilcheck.IsNil(users) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("user loader"))
 	}
 
-	a := &passwordAuthenticator{users: users}
+	a := &UsernamePasswordAuthenticator{users: users}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(a)
@@ -302,7 +293,7 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 // of its own. Accepting any credential that merely looked like a username and a
 // password would mean guessing at where the secret is and whether cleanup wipes
 // it, and a wrong guess there leaves the password resident after a success.
-func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
+func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	creds, ok := c.(*identity.UsernamePassword)
 	if !ok || creds == nil {
 		// A typed nil is not credentials of any kind: dereferencing it panics, so
@@ -456,7 +447,7 @@ func endedByCaller(ctx context.Context) error {
 // Either way Match would refuse without deriving anything, and the refusal
 // would be measurably faster than a wrong password; the caller spends the
 // reference verification instead.
-func (a *passwordAuthenticator) usableHash(stored []byte) (reason string, level slog.Level, usable bool) {
+func (a *UsernamePasswordAuthenticator) usableHash(stored []byte) (reason string, level slog.Level, usable bool) {
 	if len(stored) == 0 {
 		// Routine: a federated user tried the password form.
 		return reasonNoPasswordHash, slog.LevelDebug, false
@@ -486,7 +477,7 @@ func (a *passwordAuthenticator) usableHash(stored []byte) (reason string, level 
 // "reason" attribute in recordAttrs, is not written on the caller's behalf:
 // every call site names what it records, so a record built from
 // diag.Failure carries the one reason word that helper chose.
-func (a *passwordAuthenticator) refuse(ctx context.Context, level slog.Level, reason, username string, recordAttrs ...slog.Attr) {
+func (a *UsernamePasswordAuthenticator) refuse(ctx context.Context, level slog.Level, reason, username string, recordAttrs ...slog.Attr) {
 	write, suppressed := a.refusals.Allow(reason, time.Now())
 	if !write {
 		return
@@ -507,7 +498,7 @@ func (a *passwordAuthenticator) refuse(ctx context.Context, level slog.Level, re
 // Without it, a burst that never recurs takes its count with it, and the logs
 // say one refusal happened where there were fifty. It runs on the goroutine
 // whose Allow or FlushRefusalLogs call triggered it, so it only logs.
-func (a *passwordAuthenticator) reportSuppressed(reason string, suppressed int) {
+func (a *UsernamePasswordAuthenticator) reportSuppressed(reason string, suppressed int) {
 	a.logger.LogAttrs(context.Background(), slog.LevelInfo, "authentication refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
@@ -518,15 +509,12 @@ func (a *passwordAuthenticator) reportSuppressed(reason string, suppressed int) 
 //
 // It reports no error: this provider's reporter only writes a log record, which
 // cannot fail in a way it could report. The error is in the signature because
-// RefusalLogFlusher is implemented by components whose reporters can.
-func (a *passwordAuthenticator) FlushRefusalLogs() error {
+// logsample.Flusher is implemented by components whose reporters can.
+func (a *UsernamePasswordAuthenticator) FlushRefusalLogs() error {
 	a.refusals.Flush()
 
 	return nil
 }
-
-var _ Authenticator = (*passwordAuthenticator)(nil)
-var _ RefusalLogFlusher = (*passwordAuthenticator)(nil)
 
 // VerifyDecoy verifies the presented password against the reference hash built
 // at construction, through the configured encoder, and discards the verdict.
@@ -535,7 +523,7 @@ var _ RefusalLogFlusher = (*passwordAuthenticator)(nil)
 // real verification, or reveal whether an account exists. It reports handled
 // only for *identity.UsernamePassword; any other credentials are declined
 // without any hashing.
-func (a *passwordAuthenticator) VerifyDecoy(_ context.Context, c identity.Credentials) bool {
+func (a *UsernamePasswordAuthenticator) VerifyDecoy(_ context.Context, c identity.Credentials) bool {
 	creds, ok := c.(*identity.UsernamePassword)
 	if !ok || creds == nil {
 		return false
@@ -547,4 +535,8 @@ func (a *passwordAuthenticator) VerifyDecoy(_ context.Context, c identity.Creden
 	return true
 }
 
-var _ DecoyVerifier = (*passwordAuthenticator)(nil)
+var (
+	_ Authenticator     = (*UsernamePasswordAuthenticator)(nil)
+	_ DecoyVerifier     = (*UsernamePasswordAuthenticator)(nil)
+	_ logsample.Flusher = (*UsernamePasswordAuthenticator)(nil)
+)

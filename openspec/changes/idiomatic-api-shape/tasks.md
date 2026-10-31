@@ -12,15 +12,15 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
 
 ## 2. Concrete constructor types and the shared flush interface (D1, D2)
 
-- [ ] 2.1 Add `logsample.Flusher`. Replace `authenticate.RefusalLogFlusher`, `policy.RefusalLogFlusher` and `oidc`'s anonymous interface with it in all three probes (`policy.Engine`, `httpsec`, `oidc.RelyingParty`). Verify: the existing flush tests in `policy`, `authenticate`, `httpsec` and `oidc` pass unchanged, and `rg 'RefusalLogFlusher'` finds no declaration.
-- [ ] 2.2 Make the aggregators join errors (D2):
+- [x] 2.1 Add `logsample.Flusher`. Replace `authenticate.RefusalLogFlusher`, `policy.RefusalLogFlusher` and `oidc`'s anonymous interface with it in all three probes (`policy.Engine`, `httpsec`, `oidc.RelyingParty`). Verify: the existing flush tests in `policy`, `authenticate`, `httpsec` and `oidc` pass unchanged, and `rg 'RefusalLogFlusher'` finds no declaration.
+- [x] 2.2 Make the aggregators join errors (D2):
   - first change `policy.Engine.FlushRefusalLogs` and `httpsec.Chain.FlushRefusalLogs` to return `error`, returning nil, so that the tests compile;
   - red: a registered policy, and a consumer authenticator given to the chain, whose flush returns an error. Assert that the engine and the chain return an error matching it, and that every other flusher was still called. Run and confirm the error assertions fail because nil is returned;
   - implement `errors.Join`, and update every caller, which now handles or explicitly discards the error.
 
   Verify: the new tests pass, the existing flush tests pass, and `golangci-lint` reports no unchecked flush error.
-- [ ] 2.3 Return `*UsernamePasswordAuthenticator` and `*JWTAuthenticator` from `authenticate`, and `*MFA` and `*MFARequirement` from `policy`. Each gets a compile-time port check, and its godoc loses the type-assertion advice. `README.md`'s `requirement.(policy.LoginAdmission)` becomes a direct method call. Verify: `go test ./authenticate/... ./policy/... ./httpsec/...` passes, and the tests that type-asserted now call `FlushRefusalLogs` directly.
-- [ ] 2.4 Return `*BcryptEncoder`, `*ScryptEncoder` and `*Argon2idEncoder` from `password`; `*JWTGenerator` and `*JWTVerifier` from `token`; `*StaticKeyring` and `*AEADCipher` from `seal`; and `*MemoryKeyStore` from `signingkey`. Each gets a compile-time port check. Every type renamed in 2.3 and 2.4 gets godoc saying its zero value is not usable and naming its constructor. No method is unexported, because D1's table shows each is reachable through a port or optional interface already. Verify: `go test ./...` passes in every module, and the exported method set of each type matches D1's table.
+- [x] 2.3 Return `*UsernamePasswordAuthenticator` and `*JWTAuthenticator` from `authenticate`, and `*MFA` and `*MFARequirement` from `policy`. Each gets a compile-time port check, and its godoc loses the type-assertion advice. `README.md`'s `requirement.(policy.LoginAdmission)` becomes a direct method call. Verify: `go test ./authenticate/... ./policy/... ./httpsec/...` passes, and the tests that type-asserted now call `FlushRefusalLogs` directly.
+- [x] 2.4 Return `*BcryptEncoder`, `*ScryptEncoder` and `*Argon2idEncoder` from `password`; `*JWTGenerator` and `*JWTVerifier` from `token`; `*StaticKeyring` and `*AEADCipher` from `seal`; and `*MemoryKeyStore` from `signingkey`. Each gets a compile-time port check. Every type renamed in 2.3 and 2.4 gets godoc saying its zero value is not usable and naming its constructor. No method is unexported, because D1's table shows each is reachable through a port or optional interface already. Verify: `go test ./...` passes in every module, and the exported method set of each type matches D1's table.
 
 ## 3. Memory stores refuse bad options (D3)
 
