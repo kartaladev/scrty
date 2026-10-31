@@ -12,6 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -205,7 +206,7 @@ func TestFormLogin_Lifetime(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(start)
 			h := newAuthHarness(t)
 
-			var store session.Store = session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			var store session.Store = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 			if tc.mockStore {
 				store = NewMockStore(ctrl) // no Create expected
 			}

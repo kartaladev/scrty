@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -20,7 +21,7 @@ func TestManagerAndStoreShareAConsumerClock(t *testing.T) {
 
 	start := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
 	clk := clockwork.NewFakeClockAt(start)
-	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 	m, err := onetime.New("magic-link",
 		onetime.WithStore(store), onetime.WithClock(clk), onetime.WithTokenTTL(5*time.Minute))
 	require.NoError(t, err)

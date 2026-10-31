@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -563,7 +564,7 @@ func TestPasskeyEnrolmentEndToEnd(t *testing.T) {
 	d.chain, err = httpsec.New(
 		httpsec.WithPolicyEngine(engineOf(t, challenge, requirement)),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-			Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: lockout.NewMemoryAttemptStore(),
+			Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		}),
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: d.tokens, Sessions: d.sessions, Users: d.users}),
 		httpsec.EnableMFA([]mfa.Method{d.totp, method}, httpsec.WithMFATokens(d.tokens)),

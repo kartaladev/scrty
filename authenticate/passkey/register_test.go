@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -1046,7 +1047,7 @@ func TestBeginRegistration_ConcurrentBeginsStayWithinChallengeLimit(t *testing.T
 
 	f := newFixture(t)
 	challenges := &countBarrierChallenges{
-		MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock)),
+		MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock))),
 		b:           newBarrier(racers),
 	}
 	challenges.b.armed.Store(true)

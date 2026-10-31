@@ -238,7 +238,11 @@ func isChallengeMethod(m mfa.Method) bool {
 func (i *mfaInterceptor) wireChallenges(c *config) error {
 	store := i.challengeStore
 	if store == nil {
-		store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
+		def, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
+		if err != nil {
+			return err
+		}
+		store = def
 	}
 
 	i.challenges = make(map[string]*onetime.Tokens)

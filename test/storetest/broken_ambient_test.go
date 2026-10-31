@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/test/storetest"
@@ -203,13 +204,13 @@ type familyTx struct {
 	aborted bool
 }
 
-func newFamilyDB() *familyDB { return &familyDB{store: session.NewMemoryStore()} }
+func newFamilyDB() *familyDB { return &familyDB{store: must.Must(session.NewMemoryStore())} }
 
 func (db *familyDB) begin() *familyTx {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	tx := &familyTx{db: db, store: session.NewMemoryStore()}
+	tx := &familyTx{db: db, store: must.Must(session.NewMemoryStore())}
 	for _, w := range db.log {
 		_ = w(tx.store)
 	}

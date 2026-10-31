@@ -231,7 +231,11 @@ func New(opts ...Option) (*Sessions, error) {
 		// The default store judges expiry itself, so it reads the manager's
 		// clock: otherwise a manager on a fake or shifted clock would sweep
 		// and refuse sessions by a different time than it created them by.
-		m.store = NewMemoryStore(WithMemoryStoreClock(timedClock(m.clock)))
+		store, err := NewMemoryStore(WithMemoryStoreClock(timedClock(m.clock)))
+		if err != nil {
+			return nil, err
+		}
+		m.store = store
 		m.logger.Warn(perProcessWarning)
 	}
 

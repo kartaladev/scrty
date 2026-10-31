@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 )
@@ -225,7 +226,7 @@ func TestDefaultLockoutStore_PurgesOldFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			s := lockout.NewMemoryAttemptStore()
+			s := must.Must(lockout.NewMemoryAttemptStore())
 			removed, err := tc.run(t, s)
 			tc.assert(t, s, removed, err)
 		})
@@ -296,7 +297,7 @@ func TestMemoryAttemptStore_SharedPurgeKeepsLongestRetention(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
-			s := lockout.NewMemoryAttemptStore()
+			s := must.Must(lockout.NewMemoryAttemptStore())
 			tc.run(t, s, clk)
 			tc.assert(t, s, clk)
 		})
@@ -314,7 +315,7 @@ func TestLockoutCapBurst(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(lockoutNow)
-	store := lockout.NewMemoryAttemptStore()
+	store := must.Must(lockout.NewMemoryAttemptStore())
 	got := &reportLog{}
 	p, err := lockout.New(
 		lockout.WithAttemptStore(store),

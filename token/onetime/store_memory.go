@@ -38,18 +38,18 @@ type MemoryStoreOption func(*MemoryStore)
 // The store needs a clock of its own because only it can decide which of its
 // records have expired while it sweeps them. A test that moves a manager's
 // clock gives the store the same one, so expiry means the same thing on both
-// sides. A nil clock, typed nil included, keeps the default, since this
-// constructor cannot fail and a store with no clock could not sweep at all.
+// sides. A nil clock, typed nil included, is refused by NewMemoryStore with an
+// error wrapping ErrConfig, since a store with no clock could not sweep at all.
 func WithMemoryStoreClock(clk clock.Clock) MemoryStoreOption {
-	return func(s *MemoryStore) {
-		if !nilcheck.IsNil(clk) {
-			s.clock = clk
-		}
-	}
+	return func(s *MemoryStore) { s.clock = clk }
 }
 
-// NewMemoryStore returns the default store.
-func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
+// NewMemoryStore returns the default store, on the system clock unless
+// WithMemoryStoreClock replaces it.
+//
+// It refuses a nil clock, typed nil included, with an error wrapping
+// ErrConfig and returns no store.
+func NewMemoryStore(opts ...MemoryStoreOption) (*MemoryStore, error) {
 	s := &MemoryStore{clock: clock.System(), records: make(map[id.ID]Token)}
 	for _, opt := range opts {
 		if opt != nil {
@@ -57,7 +57,11 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		}
 	}
 
-	return s
+	if nilcheck.IsNil(s.clock) {
+		return nil, fmt.Errorf("%w: the memory store's clock must not be nil", ErrConfig)
+	}
+
+	return s, nil
 }
 
 // Len reports how many records the store currently holds, spent and unspent

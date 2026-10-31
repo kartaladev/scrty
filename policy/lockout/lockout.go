@@ -251,8 +251,13 @@ type Policy struct {
 // observer is refused too: a consumer who passed one meant to be told, and
 // would hear nothing.
 func New(opts ...Option) (*Policy, error) {
+	store, err := NewMemoryAttemptStore()
+	if err != nil {
+		return nil, err
+	}
+
 	p := &Policy{
-		store:     NewMemoryAttemptStore(),
+		store:     store,
 		threshold: defaultLockoutThreshold,
 		window:    defaultLockoutWindow,
 		clock:     clock.System(),

@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -993,7 +994,7 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 	t.Parallel()
 
 	h := newAuthHarness(t)
-	store := lockout.NewMemoryAttemptStore()
+	store := must.Must(lockout.NewMemoryAttemptStore())
 	now := time.Now()
 	for i := range 7 {
 		require.NoError(t, store.RecordFailure(t.Context(), testSubject, now.Add(-time.Duration(i)*time.Second)))

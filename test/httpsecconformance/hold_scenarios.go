@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
@@ -43,7 +44,7 @@ func heldLockout(t *testing.T) *lockout.Policy {
 	t.Helper()
 
 	lockoutPolicy, err := lockout.New(
-		lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithFailureStreakLimit(holdCap))
+		lockout.WithAttemptStore(must.Must(lockout.NewMemoryAttemptStore())), lockout.WithFailureStreakLimit(holdCap))
 	require.NoError(t, err)
 
 	first := time.Now().Add(-time.Hour)

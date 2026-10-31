@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/ginsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 	identitytest "github.com/kartaladev/scrty/test/identity"
@@ -177,7 +178,7 @@ func newSessionReferenceFixture(t *testing.T) sessionReferenceFixture {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 
 	sessions, err := session.New(session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	users := identitytest.NewInMemoryStore()

@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -599,7 +600,7 @@ type countHoldingStore struct {
 }
 
 func newCountHoldingStore(racers int) *countHoldingStore {
-	return &countHoldingStore{MemoryStore: onetime.NewMemoryStore(), racers: racers, all: make(chan struct{})}
+	return &countHoldingStore{MemoryStore: must.Must(onetime.NewMemoryStore()), racers: racers, all: make(chan struct{})}
 }
 
 func (s *countHoldingStore) CountRecentBySubject(
@@ -859,7 +860,7 @@ func TestRedeem(t *testing.T) {
 				loader = activeByID()
 			}
 
-			var inner onetime.Store = onetime.NewMemoryStore()
+			var inner onetime.Store = must.Must(onetime.NewMemoryStore())
 			if tc.store != nil {
 				inner = tc.store(inner)
 			}
@@ -1172,7 +1173,7 @@ func TestManager_PurgeExpired(t *testing.T) {
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
 	tokens, err := onetime.New("magic-link",
-		onetime.WithStore(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))),
+		onetime.WithStore(must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))),
 		onetime.WithClock(clk), onetime.WithTokenTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
 	require.NoError(t, err)
 
@@ -1239,7 +1240,7 @@ func TestExpiryTask(t *testing.T) {
 		{
 			name: "a store that cannot purge matches ErrPurgeUnsupported",
 			store: func(clock *clockwork.FakeClock) onetime.Store {
-				return noPurgeStore{Store: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock))}
+				return noPurgeStore{Store: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock)))}
 			},
 			age: 2 * time.Hour,
 			assert: func(t *testing.T, _ expiry.Task, _ *onetime.Tokens, removed int, err error) {
@@ -1255,7 +1256,7 @@ func TestExpiryTask(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
-			var store onetime.Store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+			var store onetime.Store = must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 			if tc.store != nil {
 				store = tc.store(clk)
 			}
@@ -1364,7 +1365,7 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 				var buf bytes.Buffer
 				logger := slog.New(slog.NewJSONHandler(&buf, nil))
 
-				tokens := tokensWithStore(t, insertFailsStore{Store: onetime.NewMemoryStore()})
+				tokens := tokensWithStore(t, insertFailsStore{Store: must.Must(onetime.NewMemoryStore())})
 
 				loader := stubLoader{byUsername: map[string]*identity.Details{"ada@example.com": known}}
 

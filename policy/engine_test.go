@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -632,7 +633,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				own := viewRequirerStub{
 					stubPolicy: stubPolicy{name: "own", phases: pre},
-					view:       lockout.NewMemoryAttemptStore(),
+					view:       must.Must(lockout.NewMemoryAttemptStore()),
 					required:   true,
 				}
 				p := newLockout(t, lockout.WithFailureStreakLimit(20))
@@ -649,7 +650,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				return []policy.Policy{viewRequirerStub{
 					stubPolicy: stubPolicy{phases: pre},
-					view:       lockout.NewMemoryAttemptStore(),
+					view:       must.Must(lockout.NewMemoryAttemptStore()),
 				}}, nil
 			},
 			assert: none,
@@ -658,7 +659,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			name: "a requirer asked in no phase is never reported",
 			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				return []policy.Policy{viewRequirerStub{
-					view:     lockout.NewMemoryAttemptStore(),
+					view:     must.Must(lockout.NewMemoryAttemptStore()),
 					required: true,
 				}}, nil
 			},

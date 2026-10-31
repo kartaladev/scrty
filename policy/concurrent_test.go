@@ -10,6 +10,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -138,7 +139,7 @@ func TestConcurrentSessionPolicyPhases(t *testing.T) {
 func TestConcurrentSessionPolicyTakesASessionStore(t *testing.T) {
 	t.Parallel()
 
-	var store session.Store = session.NewMemoryStore()
+	var store session.Store = must.Must(session.NewMemoryStore())
 
 	p, err := policy.NewConcurrentSessions(store, 1)
 	require.NoError(t, err)

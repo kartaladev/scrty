@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -536,7 +537,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 
 			h := newMagicLinkHarness(t)
 
-			store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 			mgr, err := session.New(
 				session.WithStore(store),
 				session.WithClock(clk))

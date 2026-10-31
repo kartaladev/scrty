@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -36,7 +37,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+		store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 
 		tok := storedToken(t, checkTokenID)
 		want := bytes.Clone(tok.SecretHash)
@@ -58,7 +59,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+		store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		first, err := store.FindByID(t.Context(), checkTokenID)
@@ -78,7 +79,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+		store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 
 		tok := storedToken(t, checkTokenID)
 		tok.BindingHash = nil
@@ -97,7 +98,7 @@ func TestMemoryStore(t *testing.T) {
 	t.Run("a record that was never inserted is not found", func(t *testing.T) {
 		t.Parallel()
 
-		store := onetime.NewMemoryStore()
+		store := must.Must(onetime.NewMemoryStore())
 
 		got, err := store.FindByID(t.Context(), checkTokenID)
 		require.ErrorIs(t, err, onetime.ErrTokenNotFound)
@@ -107,7 +108,7 @@ func TestMemoryStore(t *testing.T) {
 	t.Run("a record identifier that is already stored is refused, never replaced", func(t *testing.T) {
 		t.Parallel()
 
-		store := onetime.NewMemoryStore()
+		store := must.Must(onetime.NewMemoryStore())
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		require.Error(t, store.Insert(t.Context(), storedToken(t, checkTokenID)),
@@ -119,7 +120,7 @@ func TestMemoryStore(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+		store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		require.NoError(t, store.Consume(t.Context(), checkTokenID, issuedAt.Add(time.Minute)))
@@ -139,7 +140,7 @@ func TestMemoryStore(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Hour))
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+		store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		removed, err := store.DeleteExpiredBefore(t.Context(), "magic-link", time.Time{})
@@ -155,7 +156,7 @@ func TestMemoryStoreIsSafeForConcurrentUse(t *testing.T) {
 	const writers = 32
 
 	clk := clockwork.NewFakeClockAt(issuedAt)
-	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 	gen := id.NewV7Generator()
 
 	ids := make([]id.ID, writers)
@@ -221,17 +222,6 @@ func TestMemoryStoreClock(t *testing.T) {
 			assert: sweepsBySystemTime,
 		},
 		{
-			name:   "an untyped nil clock keeps the system clock",
-			opts:   []onetime.MemoryStoreOption{onetime.WithMemoryStoreClock(nil)},
-			assert: sweepsBySystemTime,
-		},
-		{
-			// time-source: "Absent source on a constructor that cannot fail".
-			name:   "a typed nil clock keeps the system clock, rather than being read",
-			opts:   []onetime.MemoryStoreOption{onetime.WithMemoryStoreClock((*nilClock)(nil))},
-			assert: sweepsBySystemTime,
-		},
-		{
 			name: "a consumer clock judges expiry in place of the system clock",
 			opts: []onetime.MemoryStoreOption{onetime.WithMemoryStoreClock(fixedClock{at: issuedAt.Add(time.Minute)})},
 			assert: func(t *testing.T, store *onetime.MemoryStore) {
@@ -250,8 +240,74 @@ func TestMemoryStoreClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := onetime.NewMemoryStore(tc.opts...)
+			store := must.Must(onetime.NewMemoryStore(tc.opts...))
 			tc.assert(t, store)
+		})
+	}
+}
+
+// TestMemoryStoreConstruction covers what the constructor accepts and refuses:
+// a nil time source, typed nil included, is a configuration error that returns
+// no store, and a consumer's time source decides expiry.
+func TestMemoryStoreConstruction(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		clock  func() onetime.MemoryStoreOption
+		assert func(t *testing.T, store *onetime.MemoryStore, clk *clockwork.FakeClock, err error)
+	}
+
+	refused := func(t *testing.T, store *onetime.MemoryStore, _ *clockwork.FakeClock, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, onetime.ErrConfig)
+		assert.Nil(t, store)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a nil time source is refused",
+			clock:  func() onetime.MemoryStoreOption { return onetime.WithMemoryStoreClock(nil) },
+			assert: refused,
+		},
+		{
+			name:   "a typed-nil time source is refused",
+			clock:  func() onetime.MemoryStoreOption { return onetime.WithMemoryStoreClock((*nilClock)(nil)) },
+			assert: refused,
+		},
+		{
+			name: "a consumer time source expires a record without real waiting",
+			assert: func(t *testing.T, store *onetime.MemoryStore, clk *clockwork.FakeClock, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, store)
+
+				tok := storedToken(t, checkTokenID)
+				tok.IssuedAt, tok.ExpiresAt = clk.Now(), clk.Now().Add(time.Minute)
+				require.NoError(t, store.Insert(t.Context(), tok))
+
+				clk.Advance(2 * time.Minute)
+				removed, purgeErr := store.DeleteExpiredBefore(t.Context(), tok.Purpose, clk.Now())
+				require.NoError(t, purgeErr)
+				assert.Equal(t, 1, removed)
+				assert.Zero(t, store.Len())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(issuedAt)
+
+			opt := onetime.WithMemoryStoreClock(clk)
+			if tc.clock != nil {
+				opt = tc.clock()
+			}
+
+			store, err := onetime.NewMemoryStore(opt)
+			tc.assert(t, store, clk, err)
 		})
 	}
 }

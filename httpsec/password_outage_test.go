@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -123,7 +124,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 	) httpsec.Option {
 		t.Helper()
 
-		sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
+		sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 		require.NoError(t, err)
 
 		tokens := NewMockGenerator(gomock.NewController(t))

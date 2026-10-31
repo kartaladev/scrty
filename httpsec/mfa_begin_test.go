@@ -24,6 +24,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -445,7 +446,7 @@ func TestMFABeginIssuance(t *testing.T) {
 		{
 			name: "expired challenges are removed",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+				return must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 			},
 			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
 			act:  beginsThen(200, httpsec.DefaultMFAChallengeTTL+window+time.Second),
@@ -460,7 +461,7 @@ func TestMFABeginIssuance(t *testing.T) {
 		{
 			name: "expired challenges are swept at most once per issuance window",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return &countingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return &countingReaper{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			},
 			act: beginsThen(5, window+time.Second),
 			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, _ *capturingHandler, outs []served) {
@@ -476,7 +477,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			// is served, and the failure is logged rather than refused.
 			name: "a store that cannot purge does not refuse the begin",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return storeOnly{Store: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return storeOnly{Store: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			},
 			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, logs *capturingHandler, outs []served) {
@@ -492,7 +493,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			// tries again nor logs again.
 			name: "a store that cannot purge keeps its turn",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return &unsupportedReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return &unsupportedReaper{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			},
 			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 2) },
 			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, logs *capturingHandler, outs []served) {
@@ -509,7 +510,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			// begin in hand is still served.
 			name: "a store that fails the purge does not refuse the begin",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return failingPurge{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), err: errPurge}
+				return failingPurge{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))), err: errPurge}
 			},
 			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, logs *capturingHandler, outs []served) {
@@ -526,7 +527,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			name:   "a slow sweep does not hold the begin past its deadline",
 			bubble: true,
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return &slowReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return &slowReaper{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			},
 			act: func(_ *testing.T, b beginner) []served {
 				return []served{b.within(100 * time.Millisecond), b.begin()}
@@ -549,7 +550,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			// and C, unexpired, stay and still count.
 			name: "a sweep leaves the count intact",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return &countingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return &countingReaper{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			},
 			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(3)},
 			act: func(_ *testing.T, b beginner) []served {
@@ -581,7 +582,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			// Of begins racing once a window has passed, exactly one sweeps.
 			name: "concurrent begins sweep once",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return &countingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return &countingReaper{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			},
 			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
 			act: func(_ *testing.T, b beginner) []served {
@@ -615,7 +616,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			name:   "the sweep claim is atomic",
 			bubble: true,
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return &holdingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), others: 15, arrived: make(chan struct{})}
+				return &holdingReaper{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))), others: 15, arrived: make(chan struct{})}
 			},
 			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
 			act: func(_ *testing.T, b beginner) []served {
@@ -646,7 +647,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			// limit, and its own text stays out of the refusal.
 			name: "a store that cannot decide the issue refuses the begin",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return failingIssue{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), err: errIssue}
+				return failingIssue{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))), err: errIssue}
 			},
 			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, _ *capturingHandler, outs []served) {
@@ -1075,7 +1076,7 @@ type recordingStore struct {
 }
 
 func newRecordingStore() *recordingStore {
-	return &recordingStore{MemoryStore: onetime.NewMemoryStore()}
+	return &recordingStore{MemoryStore: must.Must(onetime.NewMemoryStore())}
 }
 
 func (s *recordingStore) InsertWithin(
@@ -1270,7 +1271,7 @@ type countBarrier struct {
 }
 
 func newCountBarrier(racers int32) *countBarrier {
-	return &countBarrier{MemoryStore: onetime.NewMemoryStore(), racers: racers, all: make(chan struct{})}
+	return &countBarrier{MemoryStore: must.Must(onetime.NewMemoryStore()), racers: racers, all: make(chan struct{})}
 }
 
 func (s *countBarrier) CountRecentBySubject(

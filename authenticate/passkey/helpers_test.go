@@ -23,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -119,7 +120,7 @@ func newFixture(t *testing.T) *fixture {
 		}).AnyTimes()
 
 	sessions, err := session.New(session.WithClock(f.clock),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clock))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clock)))))
 	require.NoError(t, err)
 
 	f.sessions = sessions
@@ -500,7 +501,7 @@ func newLoginEnv(t *testing.T, seed func(c *passkey.Credential)) *loginEnv {
 	e := &loginEnv{
 		f:          f,
 		creds:      &spyCredentials{MemoryCredentialStore: f.creds},
-		challenges: &spyChallenges{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock))},
+		challenges: &spyChallenges{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock)))},
 		logs:       &logBuffer{},
 		binding:    "ceremony-cookie-value",
 	}

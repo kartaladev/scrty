@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -64,8 +65,13 @@ type MemoryStore struct {
 	wg        sync.WaitGroup
 }
 
-// NewMemoryStore returns the default store.
-func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
+// NewMemoryStore returns the default store: housekeeping every minute
+// (WithMemoryStoreHousekeepingInterval) on the system clock
+// (WithMemoryStoreClock).
+//
+// It refuses a housekeeping interval of zero or less, and a nil clock, typed
+// nil included, with an error wrapping ErrConfig, and returns no store.
+func NewMemoryStore(opts ...MemoryStoreOption) (*MemoryStore, error) {
 	s := &MemoryStore{
 		clock:    clock.System(),
 		interval: defaultHousekeepingInterval,
@@ -79,7 +85,14 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		}
 	}
 
-	return s
+	if s.interval <= 0 {
+		return nil, fmt.Errorf("%w: the housekeeping interval must be positive, got %s", ErrConfig, s.interval)
+	}
+	if nilcheck.IsNil(s.clock) {
+		return nil, fmt.Errorf("%w: the memory store's clock must not be nil", ErrConfig)
+	}
+
+	return s, nil
 }
 
 // Len reports how many records the store currently holds, expired ones
@@ -658,15 +671,11 @@ type MemoryStoreOption func(*MemoryStore)
 // sessions. The default is one minute. Each sweep starts one interval after
 // the previous one finished.
 //
-// Zero or less is ignored and the default is kept: a non-positive interval
-// would make housekeeping spin, which is not what a caller asking for it
-// wants.
+// Zero or less is refused by NewMemoryStore with an error wrapping ErrConfig:
+// a non-positive interval would make housekeeping spin, which is not what a
+// caller asking for it wants.
 func WithMemoryStoreHousekeepingInterval(d time.Duration) MemoryStoreOption {
-	return func(s *MemoryStore) {
-		if d > 0 {
-			s.interval = d
-		}
-	}
+	return func(s *MemoryStore) { s.interval = d }
 }
 
 // WithMemoryStoreClock replaces the store's time source. The default is
@@ -687,13 +696,9 @@ func WithMemoryStoreHousekeepingInterval(d time.Duration) MemoryStoreOption {
 // store's waiter, so a clock shared with other waiters needs their count added.
 // An advance made earlier is not seen by a loop that has not yet called After.
 //
-// A nil clock, typed nil included, keeps the default, since this
-// constructor cannot fail and a store with no clock could not judge expiry at
+// A nil clock, typed nil included, is refused by NewMemoryStore with an error
+// wrapping ErrConfig, since a store with no clock could not judge expiry at
 // all.
 func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {
-	return func(s *MemoryStore) {
-		if !nilcheck.IsNil(clk) {
-			s.clock = clk
-		}
-	}
+	return func(s *MemoryStore) { s.clock = clk }
 }

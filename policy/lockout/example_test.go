@@ -16,7 +16,12 @@ import (
 // identifier is refused for exactly fifteen minutes after its newest one.
 func ExampleWithWait_fixedDuration() {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
-	store := lockout.NewMemoryAttemptStore()
+	store, err := lockout.NewMemoryAttemptStore()
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
 
 	p, err := lockout.New(
 		lockout.WithWait(15*time.Minute, 15*time.Minute),

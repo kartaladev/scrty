@@ -19,7 +19,10 @@ import (
 // through session.ExpiryTask. No task carries an interval or a cutoff: each
 // owner deletes only what its own rules call expired.
 func ExampleChain_ExpiryTasks() {
-	sessionStore := session.NewMemoryStore()
+	sessionStore, err := session.NewMemoryStore()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	sessions, err := session.New(session.WithStore(sessionStore))
 	if err != nil {

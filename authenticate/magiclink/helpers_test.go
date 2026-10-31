@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -41,7 +42,7 @@ func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Tokens {
 
 	opts := []onetime.Option{onetime.WithClock(clock)}
 	if store == nil {
-		store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock))
+		store = must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock)))
 	}
 	opts = append(opts, onetime.WithStore(store))
 
@@ -58,7 +59,7 @@ func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Tokens {
 func tokensWithFailingStore(t *testing.T) *onetime.Tokens {
 	t.Helper()
 
-	return tokensWithStore(t, insertFailsStore{Store: onetime.NewMemoryStore()})
+	return tokensWithStore(t, insertFailsStore{Store: must.Must(onetime.NewMemoryStore())})
 }
 
 func advanceClockPast(t *testing.T, tokens *onetime.Tokens) {
@@ -84,7 +85,7 @@ func issueFor(t *testing.T, tokens *onetime.Tokens, subject string) string {
 func freshUnknownToken(t *testing.T) string {
 	t.Helper()
 
-	return issueFor(t, tokensWithStore(t, onetime.NewMemoryStore()), "u-1")
+	return issueFor(t, tokensWithStore(t, must.Must(onetime.NewMemoryStore())), "u-1")
 }
 
 func consume(t *testing.T, tokens *onetime.Tokens, presented string) {

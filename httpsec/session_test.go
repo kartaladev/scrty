@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -239,7 +240,7 @@ func TestSessionTouchHonoursTheManagersInterval(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
-			store := &activityCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+			store := &activityCountingStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 
 			sessions, err := session.New(append([]session.Option{
 				session.WithClock(clk), session.WithStore(store),
@@ -490,7 +491,7 @@ func TestTouchIntervalWiring(t *testing.T) {
 			t.Parallel()
 
 			sessions, err := session.New(
-				session.WithStore(session.NewMemoryStore()),
+				session.WithStore(must.Must(session.NewMemoryStore())),
 				session.WithTouchInterval(tc.interval),
 			)
 			require.NoError(t, err)

@@ -41,6 +41,7 @@ import (
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -158,7 +159,7 @@ func otherManager(t *testing.T, f resolveFixture) *session.Sessions {
 	t.Helper()
 
 	m, err := session.New(session.WithClock(f.clk), session.WithStore(
-		session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))))
+		must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))))
 	require.NoError(t, err)
 
 	return m
@@ -912,7 +913,7 @@ func newRenewalFixture(t *testing.T, setup renewalSetup) *renewalFixture {
 	// still stored and only its renewal window has ended.
 	managerOpts := []session.Option{
 		session.WithClock(f.clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))),
 		session.WithLogger(logger),
 		session.WithIdleTimeout(7 * 24 * time.Hour),
 		session.WithAbsoluteTimeout(30 * 24 * time.Hour),
@@ -983,7 +984,7 @@ func newResolveFixture(t *testing.T) resolveFixture {
 	// The store judges expiry by the manager's clock, so deadlines drawn from
 	// the fake clock are read against it.
 	sessions, err := session.New(session.WithClock(clk), session.WithStore(
-		session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
@@ -1267,7 +1268,7 @@ func newLoginGuardHarness(t *testing.T) *loginGuardHarness {
 	ctrl := gomock.NewController(t)
 	h := &loginGuardHarness{
 		authn:    NewMockAuthenticator(ctrl),
-		attempts: lockout.NewMemoryAttemptStore(),
+		attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		tokens:   NewMockGenerator(ctrl),
 		logs:     &capturingHandler{},
 		reported: map[string]int{},
@@ -3420,7 +3421,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 	// The sessions, the core and TOTP share one fake clock, so a case moves
 	// time for all of them at once.
 	sessions, err := session.New(session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	codes, err := recovery.NewCodes()
@@ -3432,7 +3433,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 		clock:    clk,
 		sender:   &capturingSender{},
 		tokens:   NewMockGenerator(ctrl),
-		attempts: lockout.NewMemoryAttemptStore(),
+		attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		users:    NewMockUserLoader(ctrl),
 		proofs: []recovery.ProofKind{
 			recovery.ProofSaved, recovery.ProofIssued, recovery.ProofPassword, recovery.ProofMFA,

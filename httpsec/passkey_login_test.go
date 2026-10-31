@@ -28,6 +28,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -268,7 +269,7 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 	opts := []httpsec.Option{
 		httpsec.WithPolicyEngine(engineOf(t, policies...)),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-			Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: lockout.NewMemoryAttemptStore(),
+			Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		}),
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: d.tokens, Sessions: d.sessions, Users: d.users}),
 		httpsec.EnableMFA(methods, mfaOpts...),
@@ -595,7 +596,7 @@ func TestPasswordless(t *testing.T) {
 		{
 			name: "the 31st begin from one source is throttled",
 			setup: func(_ *testing.T, d *pwlDeployment) {
-				d.challenges = &countingChallenges{Store: onetime.NewMemoryStore()}
+				d.challenges = &countingChallenges{Store: must.Must(onetime.NewMemoryStore())}
 			},
 			act: func(t *testing.T, d *pwlDeployment) served {
 				for i := range 30 {
@@ -1192,7 +1193,7 @@ func TestPasswordless(t *testing.T) {
 				// The form login option is the second; replace it with one
 				// carrying a consumer responder.
 				opts[1] = httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: lockout.NewMemoryAttemptStore(),
+					Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 				}, httpsec.WithLoginResponder(func(ex *httpsec.Exchange, _ httpsec.LoginResult) error {
 					ex.Writer.WriteHeader(http.StatusTeapot)
 
@@ -1383,7 +1384,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 				require.NoError(t, err)
 
 				opts[1] = httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: lockout.NewMemoryAttemptStore(),
+					Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 				}, httpsec.WithLoginRequestPath("/login/begin"))
 
 				return opts

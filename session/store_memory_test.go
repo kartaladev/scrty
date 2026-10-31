@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -63,7 +64,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
-			store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute))
+			store := must.Must(session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute)))
 			_, liveID := seedForHousekeeping(t, store)
 
 			require.NoError(t, store.Start(t.Context()))
@@ -84,7 +85,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
-			store := session.NewMemoryStore()
+			store := must.Must(session.NewMemoryStore())
 			seedForHousekeeping(t, store)
 
 			require.NoError(t, store.Start(t.Context()))
@@ -105,7 +106,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
-			store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute))
+			store := must.Must(session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute)))
 			seedForHousekeeping(t, store)
 
 			require.NoError(t, store.Start(t.Context()))
@@ -140,7 +141,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 	t.Run("Stop without Start is not an error", func(t *testing.T) {
 		t.Parallel()
 
-		store := session.NewMemoryStore()
+		store := must.Must(session.NewMemoryStore())
 		assert.NoError(t, store.Stop())
 	})
 }
@@ -153,7 +154,7 @@ func TestHousekeepingExitsWithItsContext(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	ctx, cancel := context.WithCancel(t.Context())
-	store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(5 * time.Millisecond))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(5 * time.Millisecond)))
 
 	now := time.Now()
 	require.NoError(t, store.Create(ctx, &session.Session{
@@ -299,10 +300,10 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			name: "advancing a controlled clock by one interval sweeps once",
 			assert: func(t *testing.T) {
 				clk := clockwork.NewFakeClockAt(createdAt)
-				store := session.NewMemoryStore(
+				store := must.Must(session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
 					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
-				)
+				))
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("live", createdAt.Add(time.Hour))))
 				require.NoError(t, store.Start(t.Context()))
@@ -325,10 +326,10 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			name: "a manager and its store share one controlled clock",
 			assert: func(t *testing.T) {
 				clk := clockwork.NewFakeClockAt(createdAt)
-				store := session.NewMemoryStore(
+				store := must.Must(session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
 					session.WithMemoryStoreHousekeepingInterval(time.Hour),
-				)
+				))
 				m, err := session.New(session.WithClock(clk), session.WithStore(store))
 				require.NoError(t, err)
 
@@ -359,10 +360,10 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			name: "a restart counts the stopped loop's waiter and sweeps once",
 			assert: func(t *testing.T) {
 				clk := &countingClock{FakeClock: clockwork.NewFakeClockAt(createdAt)}
-				store := session.NewMemoryStore(
+				store := must.Must(session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
 					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
-				)
+				))
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
 
 				require.NoError(t, store.Start(t.Context()))
@@ -393,10 +394,10 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			name: "a long jump sweeps once, and the next sweep is one interval after it",
 			assert: func(t *testing.T) {
 				clk := &countingClock{FakeClock: clockwork.NewFakeClockAt(createdAt)}
-				store := session.NewMemoryStore(
+				store := must.Must(session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
 					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
-				)
+				))
 				require.NoError(t, store.Start(t.Context()))
 				t.Cleanup(func() { _ = store.Stop() })
 				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
@@ -419,10 +420,10 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			name: "the next sweep is one interval after the previous one finished",
 			assert: func(t *testing.T) {
 				clk := &slowSweepClock{FakeClock: clockwork.NewFakeClockAt(createdAt), took: 3 * time.Second}
-				store := session.NewMemoryStore(
+				store := must.Must(session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
 					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
-				)
+				))
 				require.NoError(t, store.Start(t.Context()))
 				t.Cleanup(func() { _ = store.Stop() })
 				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
@@ -453,7 +454,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			// The only clock a consumer ships with.
 			name: "the default system clock still sweeps",
 			assert: func(t *testing.T) {
-				store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(10 * time.Millisecond))
+				store := must.Must(session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(10 * time.Millisecond)))
 				now := time.Now()
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expired", now.Add(-time.Second))))
 				require.NoError(t, store.Start(t.Context()))
@@ -481,7 +482,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(createdAt)
-		store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+		store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
 		s := storedSession("created")
 		require.NoError(t, store.Create(t.Context(), s))
@@ -501,7 +502,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(createdAt)
-		store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+		store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 		require.NoError(t, store.Create(t.Context(), storedSession("loaded")))
 
 		first, err := store.Load(t.Context(), "loaded")
@@ -521,7 +522,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(createdAt)
-		store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+		store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 		require.NoError(t, store.Create(t.Context(), storedSession("saved")))
 
 		s := storedSession("saved")
@@ -539,7 +540,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(createdAt)
-		store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+		store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
 		s := storedSession("nil-data")
 		s.Data = nil
@@ -554,7 +555,7 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(createdAt)
-		store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+		store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 		require.NoError(t, store.Create(t.Context(), storedSession("shared")))
 
 		var wg sync.WaitGroup
@@ -592,7 +593,7 @@ func TestUnstartedMemoryStoreKeepsExpiredRecords(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	require.NoError(t, store.Create(t.Context(), storedSession("expiring")))
 
 	clk.Advance(createdAt.Add(time.Hour).Sub(clk.Now()))
@@ -620,22 +621,33 @@ type nilTimed struct{}
 func (*nilTimed) Now() time.Time                       { return time.Time{} }
 func (*nilTimed) After(time.Duration) <-chan time.Time { return nil }
 
-// TestMemoryStoreClock covers the store's absent clock. Its constructor cannot
-// fail, so nil and typed nil keep the system clock instead of being refused.
-func TestMemoryStoreClock(t *testing.T) {
+// TestMemoryStoreConstruction covers what the constructor accepts and refuses:
+// the system clock by default, and a configuration error, with no store, for a
+// housekeeping interval of zero or less and for a nil clock, typed nil included.
+func TestMemoryStoreConstruction(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
 		opts   []session.MemoryStoreOption
-		assert func(t *testing.T, store *session.MemoryStore)
+		assert func(t *testing.T, store *session.MemoryStore, err error)
+	}
+
+	// refused asserts a configuration error and no store.
+	refused := func(t *testing.T, store *session.MemoryStore, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrConfig)
+		assert.Nil(t, store)
 	}
 
 	// judgesBySystemTime asserts that the store read the system clock: a
 	// session expired a second ago is refused, and one expiring in an hour is
 	// served.
-	judgesBySystemTime := func(t *testing.T, store *session.MemoryStore) {
+	judgesBySystemTime := func(t *testing.T, store *session.MemoryStore, err error) {
 		t.Helper()
+
+		require.NoError(t, err)
 
 		now := time.Now()
 		require.NoError(t, store.Create(t.Context(), &session.Session{
@@ -647,7 +659,7 @@ func TestMemoryStoreClock(t *testing.T) {
 			IdleExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(2 * time.Hour),
 		}))
 
-		_, err := store.Load(t.Context(), "expired")
+		_, err = store.Load(t.Context(), "expired")
 		require.ErrorIs(t, err, session.ErrExpired, "the store did not judge expiry by the system clock")
 		_, err = store.Load(t.Context(), "live")
 		require.NoError(t, err)
@@ -656,14 +668,24 @@ func TestMemoryStoreClock(t *testing.T) {
 	cases := []testCase{
 		{name: "no clock option reads the system clock", assert: judgesBySystemTime},
 		{
-			name:   "an untyped nil clock keeps the system clock",
-			opts:   []session.MemoryStoreOption{session.WithMemoryStoreClock(nil)},
-			assert: judgesBySystemTime,
+			name:   "an interval of zero is refused",
+			opts:   []session.MemoryStoreOption{session.WithMemoryStoreHousekeepingInterval(0)},
+			assert: refused,
 		},
 		{
-			name:   "a typed-nil clock keeps the system clock, rather than being read",
+			name:   "a negative interval is refused",
+			opts:   []session.MemoryStoreOption{session.WithMemoryStoreHousekeepingInterval(-time.Second)},
+			assert: refused,
+		},
+		{
+			name:   "a nil clock is refused",
+			opts:   []session.MemoryStoreOption{session.WithMemoryStoreClock(nil)},
+			assert: refused,
+		},
+		{
+			name:   "a typed-nil clock is refused",
 			opts:   []session.MemoryStoreOption{session.WithMemoryStoreClock((*nilTimed)(nil))},
-			assert: judgesBySystemTime,
+			assert: refused,
 		},
 	}
 
@@ -671,7 +693,8 @@ func TestMemoryStoreClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, session.NewMemoryStore(tc.opts...))
+			store, err := session.NewMemoryStore(tc.opts...)
+			tc.assert(t, store, err)
 		})
 	}
 }
@@ -754,7 +777,7 @@ func TestMemoryStoreReRotationIgnoresAnUnindexedSuccessor(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	s := session.NewMemoryStore(session.WithMemoryStoreClock(clockwork.NewFakeClockAt(createdAt)))
+	s := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clockwork.NewFakeClockAt(createdAt))))
 	require.NoError(t, s.Create(ctx, storedSession("")))
 	require.NoError(t, s.Create(ctx, familyOf("old", id.MustParse("01926a4e-0000-7000-8000-000000000001"))))
 	require.NoError(t, s.Supersede(ctx, firstRotation("old", storedSession("n1"))))
@@ -857,7 +880,7 @@ func TestMemoryStoreSupersessionNeverLowersADeadline(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	require.NoError(t, store.Create(t.Context(), storedSession("old")))
 
 	// n1 is inserted already holding a retention deadline of 23:00, as a

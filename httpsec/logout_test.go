@@ -22,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -321,7 +322,7 @@ func TestLogout_EndsTheSignInWhenTheClientHangsUp(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
-	held := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	held := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
 	// The store the chain sees holds everything in held, and honours the
 	// context on the revocation as database/sql and pgx do.
@@ -650,7 +651,7 @@ func TestLogoutEndsTheWholeSignIn(t *testing.T) {
 
 	sessions, err := session.New(
 		session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	users := NewMockUserLoader(gomock.NewController(t))

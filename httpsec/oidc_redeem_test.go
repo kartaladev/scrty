@@ -25,6 +25,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -1469,7 +1470,7 @@ func (w *sessionWrites) saves() []session.Session {
 func spiedSessions(t *testing.T) (*session.Sessions, *sessionWrites) {
 	t.Helper()
 
-	mem := session.NewMemoryStore()
+	mem := must.Must(session.NewMemoryStore())
 	w := &sessionWrites{}
 
 	store := NewMockStore(gomock.NewController(t))

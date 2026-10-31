@@ -12,6 +12,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -72,7 +73,7 @@ func TestExpiryTask(t *testing.T) {
 		{
 			name: "name is sessions and no interval is set",
 			task: func(*testing.T) (expiry.Task, func(t *testing.T)) {
-				return session.ExpiryTask(session.NewMemoryStore()), func(*testing.T) {}
+				return session.ExpiryTask(must.Must(session.NewMemoryStore())), func(*testing.T) {}
 			},
 			assert: func(t *testing.T, task expiry.Task, _ int, err error, _ func(t *testing.T)) {
 				require.NoError(t, err)

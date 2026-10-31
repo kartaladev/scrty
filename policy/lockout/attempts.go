@@ -223,8 +223,8 @@ type MemoryAttemptOption func(*MemoryAttemptStore)
 // once. The default is 100,000.
 //
 // A maximum of zero or less holds nothing, so every login would be refused;
-// it is a wiring mistake, and NewMemoryAttemptStore panics on it, since it
-// returns no error.
+// it is a wiring mistake, and NewMemoryAttemptStore refuses it with an error
+// wrapping policy.ErrConfig.
 func WithAttemptStoreMaxIdentifiers(n int) MemoryAttemptOption {
 	return func(s *MemoryAttemptStore) { s.capacity = n }
 }
@@ -294,8 +294,9 @@ type MemoryAttemptStore struct {
 
 // NewMemoryAttemptStore returns the default attempt store, holding nothing,
 // with a maximum of 100,000 identifiers unless WithAttemptStoreMaxIdentifiers
-// replaces it. It panics on a maximum of zero or less.
-func NewMemoryAttemptStore(opts ...MemoryAttemptOption) *MemoryAttemptStore {
+// replaces it. It refuses a maximum of zero or less with an error wrapping
+// policy.ErrConfig, and returns no store.
+func NewMemoryAttemptStore(opts ...MemoryAttemptOption) (*MemoryAttemptStore, error) {
 	s := &MemoryAttemptStore{
 		entries:  make(map[attemptKey]*attemptEntry),
 		capacity: defaultAttemptStoreCapacity,
@@ -306,11 +307,11 @@ func NewMemoryAttemptStore(opts ...MemoryAttemptOption) *MemoryAttemptStore {
 		}
 	}
 	if s.capacity <= 0 {
-		panic(fmt.Sprintf("lockout: WithAttemptStoreMaxIdentifiers must be positive, got %d: "+
-			"a store that holds nothing refuses every login", s.capacity))
+		return nil, fmt.Errorf("%w: WithAttemptStoreMaxIdentifiers must be positive, got %d: "+
+			"a store that holds nothing refuses every login", policy.ErrConfig, s.capacity)
 	}
 
-	return s
+	return s, nil
 }
 
 // retainFor tells the store a policy built over it needs failures kept for

@@ -122,7 +122,11 @@ func (r *Recoverer) validateHolds(c *config) error {
 
 	r.holdStore = c.holdStore
 	if !c.holdStoreSet {
-		r.holdStore = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
+		store, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
+		if err != nil {
+			return err
+		}
+		r.holdStore = store
 	}
 
 	var err error

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -47,7 +48,7 @@ func TestNewEncryptedStore(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "an inner store and a cipher are enough",
-			inner:  session.NewMemoryStore(),
+			inner:  must.Must(session.NewMemoryStore()),
 			cipher: fakeCipher{key: 0x2a},
 			assert: func(t *testing.T, s session.Store, err error) {
 				require.NoError(t, err)
@@ -64,7 +65,7 @@ func TestNewEncryptedStore(t *testing.T) {
 		},
 		{
 			name:  "a nil cipher is a configuration error",
-			inner: session.NewMemoryStore(),
+			inner: must.Must(session.NewMemoryStore()),
 			assert: func(t *testing.T, s session.Store, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
 				assert.Nil(t, s)
@@ -74,7 +75,7 @@ func TestNewEncryptedStore(t *testing.T) {
 			// What an unchecked constructor error hands over: the interface is
 			// not nil, so `if c == nil` misses it and the first seal panics.
 			name:   "a typed-nil cipher is a configuration error",
-			inner:  session.NewMemoryStore(),
+			inner:  must.Must(session.NewMemoryStore()),
 			cipher: typedNilCipher,
 			assert: func(t *testing.T, s session.Store, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
@@ -198,7 +199,7 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(createdAt)
-		inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+		inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
 		retired, err := session.NewEncryptedStore(inner, fakeCipher{key: 0x2a})
 		require.NoError(t, err)

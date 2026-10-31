@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -391,7 +392,7 @@ func TestRecoveryGatePerRequestPhase(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC))
 
 			sessions, err := session.New(session.WithClock(clk),
-				session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+				session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 			require.NoError(t, err)
 
 			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Recovery))

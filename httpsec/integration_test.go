@@ -31,6 +31,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -160,7 +161,7 @@ func TestChain_ClockMFA(t *testing.T) {
 			// move, so it never finds the challenge expired.
 			name:  "a consumer's challenge store keeps its own clock",
 			at:    clockInstant,
-			store: func() onetime.Store { return onetime.NewMemoryStore() },
+			store: func() onetime.Store { return must.Must(onetime.NewMemoryStore()) },
 			act: func(t *testing.T, r *clockMFARun) observed {
 				r.begin(t)
 				r.clk.Advance(httpsec.DefaultMFAChallengeTTL + challengeIssuanceWindow + time.Second)
@@ -1691,7 +1692,7 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 			Authenticator: authn,
 			Sessions:      d.sessions,
 			Tokens:        d.tokens,
-			Attempts:      lockout.NewMemoryAttemptStore(),
+			Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
 		}),
 		httpsec.EnableMagicLink(d.links,
 			httpsec.WithMagicLinkSessions(d.sessions), httpsec.WithMagicLinkTokens(d.tokens)),
@@ -2505,7 +2506,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(recoveryStart)
 
 	sessions, err := session.New(session.WithClock(clk), session.WithAbsoluteTimeout(12*time.Hour),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	d := &e2eDeployment{

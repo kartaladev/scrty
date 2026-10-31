@@ -35,6 +35,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -50,7 +51,7 @@ var errStoreDown = errors.New("store down")
 func newManager(t *testing.T, clk *clockwork.FakeClock, opts ...onetime.Option) (*onetime.Tokens, *onetime.MemoryStore) {
 	t.Helper()
 
-	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 	all := append([]onetime.Option{onetime.WithStore(store), onetime.WithClock(clk)}, opts...)
 
 	m, err := onetime.New("magic-link", all...)
@@ -276,7 +277,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			name:   "an explicit store keeps its own clock",
 			offset: 365 * 24 * time.Hour,
 			store: func(clockwork.Clock) onetime.Option {
-				return onetime.WithStore(onetime.NewMemoryStore())
+				return onetime.WithStore(must.Must(onetime.NewMemoryStore()))
 			},
 			window:  time.Hour,
 			advance: 2 * time.Hour,
@@ -1835,7 +1836,7 @@ func TestExpiryTask(t *testing.T) {
 			name: "an expired token inside the issuance window is kept and the count unchanged",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				clk := clockwork.NewFakeClockAt(expiryEpoch)
-				store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+				store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 				m := expiryManager(t, "email-change", store, clk)
 
 				_, _, err := m.Issue(t.Context(), "carol")
@@ -1858,7 +1859,7 @@ func TestExpiryTask(t *testing.T) {
 			name: "an expired token past the issuance window is removed",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				clk := clockwork.NewFakeClockAt(expiryEpoch)
-				store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+				store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 				m := expiryManager(t, "email-change", store, clk)
 
 				_, _, err := m.Issue(t.Context(), "carol")
@@ -1876,7 +1877,7 @@ func TestExpiryTask(t *testing.T) {
 			name: "separate purposes stay separate",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				clk := clockwork.NewFakeClockAt(expiryEpoch)
-				store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+				store := must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 				mine := expiryManager(t, "email-change", store, clk)
 				other := expiryManager(t, "magic-link", store, clk)
 
@@ -1899,7 +1900,7 @@ func TestExpiryTask(t *testing.T) {
 			name: "a store that cannot purge matches both sentinels",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				clk := clockwork.NewFakeClockAt(expiryEpoch)
-				store := storeOnly{onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				store := storeOnly{must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 
 				return onetime.ExpiryTask(expiryManager(t, "email-change", store, clk)), func(*testing.T) {}
 			},
@@ -1913,7 +1914,7 @@ func TestExpiryTask(t *testing.T) {
 			name: "name carries the purpose and no interval is set",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				clk := clockwork.NewFakeClockAt(expiryEpoch)
-				m := expiryManager(t, "email-change", onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), clk)
+				m := expiryManager(t, "email-change", must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))), clk)
 
 				return onetime.ExpiryTask(m), func(*testing.T) {}
 			},
@@ -1927,7 +1928,7 @@ func TestExpiryTask(t *testing.T) {
 			name: "a chosen name replaces the default and the body is shared",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				clk := clockwork.NewFakeClockAt(expiryEpoch)
-				store := storeOnly{onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				store := storeOnly{must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 
 				return onetime.ExpiryTaskNamed("magiclink-tokens", expiryManager(t, "magic-link", store, clk)), func(*testing.T) {}
 			},

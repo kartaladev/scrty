@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -362,7 +363,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 			// user already holds at least none.
 			name: "a maximum of zero sessions",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessions(session.NewMemoryStore(), 0)
+				return policy.NewConcurrentSessions(must.Must(session.NewMemoryStore()), 0)
 			},
 			names:       "maximum number of sessions must be positive",
 			consequence: "refuse every login",
@@ -370,7 +371,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a negative maximum of sessions",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessions(session.NewMemoryStore(), -1)
+				return policy.NewConcurrentSessions(must.Must(session.NewMemoryStore()), -1)
 			},
 			names:       "maximum number of sessions must be positive",
 			consequence: "refuse every login",

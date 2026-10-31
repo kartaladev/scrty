@@ -26,6 +26,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -536,7 +537,7 @@ func TestSessionRenewal_SignedTokenMode(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 
 	sessions, err := session.New(session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
@@ -625,7 +626,7 @@ func TestSessionRenewal_ConcurrentPair(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
-	store := newBarrierStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+	store := newBarrierStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 
 	sessions, err := session.New(session.WithClock(clk), session.WithStore(store))
 	require.NoError(t, err)
@@ -709,7 +710,7 @@ func TestEnableSessionRenewal_Construction(t *testing.T) {
 	otherManager := func(t *testing.T, _ *authHarness) *session.Sessions {
 		t.Helper()
 
-		m, err := session.New(session.WithStore(session.NewMemoryStore()))
+		m, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 		require.NoError(t, err)
 
 		return m
@@ -978,7 +979,7 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 	sessions, err := session.New(
 		session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))),
 	)
 	require.NoError(t, err)
 
@@ -1437,7 +1438,7 @@ func TestSessionRenewalThrottle_RemovedUserIsNotCharged(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 	sessions, err := session.New(
 		session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))),
 	)
 	require.NoError(t, err)
 
@@ -1671,7 +1672,7 @@ func newLifetimeFixture(
 
 	f.sessions, err = session.New(append([]session.Option{
 		session.WithClock(f.clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))),
 		session.WithIdleTimeout(100 * day),
 		session.WithAbsoluteTimeout(12 * time.Hour),
 	}, managerOpts...)...)

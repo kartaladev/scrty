@@ -22,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -972,7 +973,7 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 	sessions, err := session.New(session.WithStore(NewMockStore(ctrl)))
 	require.NoError(t, err)
 
-	attempts := lockout.NewMemoryAttemptStore()
+	attempts := must.Must(lockout.NewMemoryAttemptStore())
 
 	base := []httpsec.Option{
 		httpsec.WithLogger(slog.New(h.logs)),
@@ -992,7 +993,7 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 func lockingAda(t *testing.T) *policy.Engine {
 	t.Helper()
 
-	attempts := lockout.NewMemoryAttemptStore()
+	attempts := must.Must(lockout.NewMemoryAttemptStore())
 	require.NoError(t, attempts.RecordFailure(t.Context(), "ada", time.Now()))
 
 	lockoutPolicy, err := lockout.New(
