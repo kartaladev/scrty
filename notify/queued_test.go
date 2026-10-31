@@ -398,6 +398,49 @@ func TestQueuedSender_CompletionWinsRepeatedly(t *testing.T) {
 	}
 }
 
+// nilContext returns the nil context a caller's unset variable would pass.
+// It is a function so the tests below hand Start and Shutdown a nil without a
+// context-typed variable of their own in scope.
+func nilContext() context.Context { return nil }
+
+// TestQueuedSender_NilContext pins that Shutdown refuses a nil context with an
+// error wrapping ErrConfig and changes nothing: the sender is not marked shut
+// down, so it still accepts sends and a real Shutdown still drains and
+// returns nil.
+func TestQueuedSender_NilContext(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, s *notify.QueuedSender, inner *recordingSender)
+	}
+
+	cases := []testCase{
+		{
+			name: "shutdown",
+			assert: func(t *testing.T, s *notify.QueuedSender, inner *recordingSender) {
+				var err error
+				require.NotPanics(t, func() { err = s.Shutdown(nilContext()) }, "Shutdown must refuse a nil context, not panic")
+				require.ErrorIs(t, err, notify.ErrConfig)
+
+				require.NoError(t, s.Send(t.Context(), notify.Message{Subject: "after"}),
+					"the refused Shutdown did not stop intake")
+				require.NoError(t, s.Shutdown(t.Context()), "a real Shutdown still drains")
+				assert.Equal(t, 1, inner.Count(), "the message accepted after the refused Shutdown was delivered")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := &recordingSender{}
+			tc.assert(t, newQueued(t, inner), inner)
+		})
+	}
+}
+
 // deliveredSet records which messages reached the wrapped sender, by subject.
 type deliveredSet struct {
 	mu   sync.Mutex

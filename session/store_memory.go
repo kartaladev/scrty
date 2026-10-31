@@ -125,6 +125,9 @@ var ErrAlreadyShutdown = errors.New("session: already shut down")
 // it. A second Start returns ErrAlreadyStarted, and a Start after Shutdown
 // returns ErrAlreadyShutdown; neither launches anything.
 //
+// A nil ctx is refused with an error wrapping ErrConfig, and nothing is
+// launched or changed: a later Start with a real context still works.
+//
 // Housekeeping is optional. Without it nothing is ever served that has
 // expired, because Load judges expiry on every read; what is lost is the
 // memory those records occupy. See the type's documentation.
@@ -135,6 +138,10 @@ var ErrAlreadyShutdown = errors.New("session: already shut down")
 // with clockwork's fake, BlockUntilContext(ctx, 1) — or its advance may land
 // before the loop starts counting and never trigger a sweep.
 func (s *MemoryStore) Start(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: Start needs a non-nil context", ErrConfig)
+	}
+
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 
@@ -181,6 +188,9 @@ func (s *MemoryStore) housekeep(ctx context.Context, done chan<- struct{}) {
 // its own. When housekeeping has already ended, it returns nil even for a ctx
 // that is already done.
 //
+// A nil ctx is refused with an error wrapping ErrConfig, and nothing is
+// changed: the store is not marked shut down and housekeeping keeps running.
+//
 // It is terminal for housekeeping only. Housekeeping never runs again, and a
 // later Start returns ErrAlreadyShutdown, but the store keeps saving, loading
 // and deleting sessions, so requests still being drained are served.
@@ -193,6 +203,10 @@ func (s *MemoryStore) housekeep(ctx context.Context, done chan<- struct{}) {
 // a clock or a wrapper the sweep calls into, cannot wait for itself: it waits
 // until its own ctx ends and returns that ctx's error.
 func (s *MemoryStore) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: Shutdown needs a non-nil context", ErrConfig)
+	}
+
 	s.lifecycle.Lock()
 	s.shutdown = true
 	cancel, done := s.cancel, s.done

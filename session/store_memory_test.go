@@ -3,9 +3,8 @@
 // of the controlled-clock table wait on real time, because they assert on the
 // system clock a consumer actually ships with, and the bounded-shutdown
 // lifecycle case waits briefly for its shutdown context to expire. The other
-// tests drive housekeeping
-// either through a synctest bubble or through a clockwork fake given to the
-// store, never both in one test.
+// tests drive housekeeping either through a synctest bubble or through a
+// clockwork fake given to the store, never both in one test.
 package session_test
 
 import (
@@ -267,8 +266,8 @@ func TestMemoryStore_Lifecycle(t *testing.T) {
 				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
 
 				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyStarted)
-				require.NoError(t, fx.store.Shutdown(t.Context()))
-				require.NoError(t, fx.store.Shutdown(t.Context()))
+				require.NoError(t, shutdownWithin(t, fx.store))
+				require.NoError(t, shutdownWithin(t, fx.store))
 
 				fx.noHousekeeping(t)
 			},
@@ -278,7 +277,7 @@ func TestMemoryStore_Lifecycle(t *testing.T) {
 			assert: func(t *testing.T, fx lifecycleFixture) {
 				require.NoError(t, fx.store.Start(t.Context()))
 				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
-				require.NoError(t, fx.store.Shutdown(t.Context()))
+				require.NoError(t, shutdownWithin(t, fx.store))
 
 				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyShutdown)
 
@@ -288,7 +287,7 @@ func TestMemoryStore_Lifecycle(t *testing.T) {
 		{
 			name: "a start after a shutdown of a store never started is refused",
 			assert: func(t *testing.T, fx lifecycleFixture) {
-				require.NoError(t, fx.store.Shutdown(t.Context()))
+				require.NoError(t, shutdownWithin(t, fx.store))
 
 				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyShutdown)
 
@@ -337,13 +336,15 @@ func TestMemoryStore_Lifecycle(t *testing.T) {
 			assert: func(t *testing.T, fx lifecycleFixture) {
 				require.NoError(t, fx.store.Start(t.Context()))
 				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
-				require.NoError(t, fx.store.Shutdown(t.Context()))
+				require.NoError(t, shutdownWithin(t, fx.store))
 				goleak.VerifyNone(t, fx.ignore)
 
 				done, cancel := context.WithCancel(t.Context())
 				cancel()
 
-				assert.NoError(t, fx.store.Shutdown(done), "a shutdown of ended work reported its context's error")
+				for range 100 { // a coin-flip select would lose some of these
+					require.NoError(t, fx.store.Shutdown(done), "a shutdown of ended work reported its context's error")
+				}
 			},
 		},
 		{
@@ -387,6 +388,68 @@ func TestMemoryStore_Lifecycle(t *testing.T) {
 			require.NoError(t, fx.store.Create(t.Context(), sessionExpiringAt("live", createdAt.Add(time.Hour))))
 			t.Cleanup(func() {
 				assert.NoError(t, shutdownWithin(t, fx.store))
+				goleak.VerifyNone(t, fx.ignore)
+			})
+
+			tc.assert(t, fx)
+		})
+	}
+}
+
+// nilContext returns the nil context a caller's unset variable would pass.
+// It is a function so the tests below hand Start and Shutdown a nil without a
+// context-typed variable of their own in scope.
+func nilContext() context.Context { return nil }
+
+// TestMemoryStore_NilContext pins that Start and Shutdown refuse a nil context
+// with an error wrapping ErrConfig and change nothing: a refused Start
+// launches no housekeeping, and a refused Shutdown does not mark the store
+// shut down.
+func TestMemoryStore_NilContext(t *testing.T) {
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, fx lifecycleFixture)
+	}
+
+	cases := []testCase{
+		{
+			name: "start",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				var err error
+				require.NotPanics(t, func() { err = fx.store.Start(nilContext()) }, "Start must refuse a nil context, not panic")
+				require.ErrorIs(t, err, session.ErrConfig)
+				goleak.VerifyNone(t, fx.ignore) // no goroutine was launched
+
+				require.NoError(t, fx.store.Start(t.Context()), "the refused Start used nothing up")
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+			},
+		},
+		{
+			name: "shutdown",
+			assert: func(t *testing.T, fx lifecycleFixture) {
+				var err error
+				require.NotPanics(t, func() { err = fx.store.Shutdown(nilContext()) }, "Shutdown must refuse a nil context, not panic")
+				require.ErrorIs(t, err, session.ErrConfig)
+
+				require.NoError(t, fx.store.Start(t.Context()), "the refused Shutdown did not mark the store shut down")
+				blockUntil(t, fx.clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				require.ErrorIs(t, fx.store.Shutdown(nilContext()), session.ErrConfig)
+				require.ErrorIs(t, fx.store.Start(t.Context()), session.ErrAlreadyStarted,
+					"the refused Shutdown left housekeeping running")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := lifecycleFixture{clk: newGatedClock(), ignore: goleak.IgnoreCurrent()}
+			fx.store = must.Must(session.NewMemoryStore(
+				session.WithMemoryStoreClock(fx.clk),
+				session.WithMemoryStoreHousekeepingInterval(lifecycleInterval),
+			))
+			t.Cleanup(func() {
+				assert.NoError(t, shutdownWithin(t, fx.store), "a real Shutdown after the refused call should end housekeeping")
 				goleak.VerifyNone(t, fx.ignore)
 			})
 

@@ -282,7 +282,7 @@ func TestKeys_Lifecycle(t *testing.T) {
 				require.NoError(t, f.km.Start(t.Context()))
 				require.ErrorIs(t, f.km.Start(t.Context()), signingkey.ErrAlreadyStarted,
 					"starting a manager whose work is running fails")
-				require.NoError(t, f.km.Shutdown(t.Context()))
+				shutdownWithin(t, f.km, parkTimeout, "Shutdown should return")
 				f.noLeak()
 			},
 		},
@@ -322,7 +322,7 @@ func TestKeys_Lifecycle(t *testing.T) {
 			name: "start after shutdown",
 			assert: func(t *testing.T, f *lifecycleFixture) {
 				require.NoError(t, f.km.Start(t.Context()))
-				require.NoError(t, f.km.Shutdown(t.Context()))
+				shutdownWithin(t, f.km, parkTimeout, "Shutdown should return")
 				f.noLeak()
 
 				require.ErrorIs(t, f.km.Start(t.Context()), signingkey.ErrAlreadyShutdown)
@@ -352,7 +352,7 @@ func TestKeys_Lifecycle(t *testing.T) {
 				}
 
 				f.store.release()
-				require.NoError(t, f.km.Shutdown(t.Context()),
+				shutdownWithin(t, f.km, parkTimeout,
 					"a later shutdown waits again and returns nil once the write has completed")
 				f.noLeak()
 			},
@@ -361,8 +361,8 @@ func TestKeys_Lifecycle(t *testing.T) {
 			name: "shutdown twice",
 			assert: func(t *testing.T, f *lifecycleFixture) {
 				require.NoError(t, f.km.Start(t.Context()))
-				require.NoError(t, f.km.Shutdown(t.Context()))
-				require.NoError(t, f.km.Shutdown(t.Context()))
+				shutdownWithin(t, f.km, parkTimeout, "Shutdown should return")
+				shutdownWithin(t, f.km, parkTimeout, "Shutdown should return")
 				f.noLeak()
 			},
 		},
@@ -378,7 +378,7 @@ func TestKeys_Lifecycle(t *testing.T) {
 			name: "completion wins",
 			assert: func(t *testing.T, f *lifecycleFixture) {
 				require.NoError(t, f.km.Start(t.Context()))
-				require.NoError(t, f.km.Shutdown(t.Context()))
+				shutdownWithin(t, f.km, parkTimeout, "Shutdown should return")
 
 				done, cancel := context.WithCancel(t.Context())
 				cancel()
@@ -420,7 +420,7 @@ func TestKeys_Lifecycle(t *testing.T) {
 					t.Fatal("Shutdown called from the error hook did not return: it deadlocked on its own loop")
 				}
 
-				require.NoError(t, f.km.Shutdown(t.Context()),
+				shutdownWithin(t, f.km, parkTimeout,
 					"a shutdown from outside the work then returns once the work has ended")
 				f.noLeak()
 			},
@@ -429,6 +429,8 @@ func TestKeys_Lifecycle(t *testing.T) {
 			name: "concurrent start and shutdown",
 			assert: func(t *testing.T, f *lifecycleFixture) {
 				const pairs = 8
+				bounded, stop := context.WithTimeout(t.Context(), parkTimeout)
+				defer stop()
 				starts := make(chan error, pairs)
 				shutdowns := make(chan error, pairs)
 
@@ -437,7 +439,7 @@ func TestKeys_Lifecycle(t *testing.T) {
 				for range pairs {
 					wg.Add(2)
 					go func() { defer wg.Done(); <-gate; starts <- f.km.Start(t.Context()) }()
-					go func() { defer wg.Done(); <-gate; shutdowns <- f.km.Shutdown(t.Context()) }()
+					go func() { defer wg.Done(); <-gate; shutdowns <- f.km.Shutdown(bounded) }()
 				}
 				close(gate)
 				wg.Wait()
@@ -524,7 +526,7 @@ func TestKeys_ServedAfterShutdown(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 	advance(t, clk, time.Hour, loopCount) // one rotation, so the held key is not construction's
 
-	require.NoError(t, km.Shutdown(t.Context()))
+	shutdownWithin(t, km, parkTimeout, "Shutdown should return")
 	goleak.VerifyNone(t, ignore)
 
 	held := currentKid(t, km, signingkey.EdDSA)
@@ -917,7 +919,7 @@ func TestShutdownWaitsForAnInFlightStoreWrite(t *testing.T) {
 		"no store write may land after Shutdown has returned")
 
 	assert.GreaterOrEqual(t, writes.Load(), int32(2), "the held write did complete")
-	require.NoError(t, km.Shutdown(t.Context()), "shutting down again returns nil")
+	shutdownWithin(t, km, parkTimeout, "shutting down again returns nil")
 	goleak.VerifyNone(t, ignore)
 }
 
@@ -962,7 +964,7 @@ func TestShutdownAfterSeveralLoopRuns(t *testing.T) {
 	require.Equal(t, 1, recorder.written(),
 		"only the first reload failure is written; the later ones are held back")
 
-	require.NoError(t, km.Shutdown(t.Context()))
+	shutdownWithin(t, km, parkTimeout, "Shutdown should return")
 	require.Equal(t, 2, recorder.written(),
 		"when Shutdown returns, the loops have ended and accounted for what was held back")
 
@@ -1002,4 +1004,72 @@ func TestShutdownReturnsOnANilAfterClock(t *testing.T) {
 	assert.Zero(t, store.stores(), "the clock never fired, so nothing rotated")
 	assert.Zero(t, store.loads(), "and nothing reloaded")
 	goleak.VerifyNone(t, ignore)
+}
+
+// nilContext returns the nil context a caller's unset variable would pass.
+// It is a function so the tests below hand Start and Shutdown a nil without a
+// context-typed variable of their own in scope.
+func nilContext() context.Context { return nil }
+
+// TestKeys_NilContext pins that Start and Shutdown refuse a nil context with
+// an error wrapping ErrConfig and change nothing: a refused Start launches no
+// work, and a refused Shutdown does not mark the manager shut down.
+func TestKeys_NilContext(t *testing.T) {
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, km *signingkey.Keys, clk *clockwork.FakeClock, noLeak func())
+	}
+
+	cases := []testCase{
+		{
+			name: "start",
+			assert: func(t *testing.T, km *signingkey.Keys, clk *clockwork.FakeClock, noLeak func()) {
+				var err error
+				require.NotPanics(t, func() { err = km.Start(nilContext()) }, "Start must refuse a nil context, not panic")
+				require.ErrorIs(t, err, signingkey.ErrConfig)
+				noLeak() // no goroutine was launched
+
+				require.NoError(t, km.Start(t.Context()), "the refused Start used nothing up")
+				awaitParked(t, clk, loopCount)
+			},
+		},
+		{
+			name: "shutdown",
+			assert: func(t *testing.T, km *signingkey.Keys, clk *clockwork.FakeClock, _ func()) {
+				var err error
+				require.NotPanics(t, func() { err = km.Shutdown(nilContext()) }, "Shutdown must refuse a nil context, not panic")
+				require.ErrorIs(t, err, signingkey.ErrConfig)
+
+				require.NoError(t, km.Start(t.Context()), "the refused Shutdown did not mark the manager shut down")
+				awaitParked(t, clk, loopCount)
+
+				require.ErrorIs(t, km.Shutdown(nilContext()), signingkey.ErrConfig)
+				require.ErrorIs(t, km.Start(t.Context()), signingkey.ErrAlreadyStarted,
+					"the refused Shutdown left the work running")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ignore := goleak.IgnoreCurrent()
+			clk := newClock()
+
+			km, err := signingkey.New(t.Context(),
+				signingkey.WithKeyStore(newGatedStore()),
+				signingkey.WithClock(clk),
+				signingkey.WithAlgs(signingkey.EdDSA),
+				signingkey.WithRotateInterval(time.Hour),
+				signingkey.WithReloadInterval(time.Minute),
+				signingkey.WithHousekeepingInterval(time.Hour),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				shutdownWithin(t, km, parkTimeout, "a real Shutdown after the refused call should end the work")
+				goleak.VerifyNone(t, ignore)
+			})
+
+			tc.assert(t, km, clk, func() { goleak.VerifyNone(t, ignore) })
+		})
+	}
 }

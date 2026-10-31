@@ -294,6 +294,9 @@ func (s *QueuedSender) deliver(q queued) {
 // has finished, or ctx's error if ctx ends first; the workers then carry on
 // with what is left, and nothing cancels a delivery already under way.
 //
+// A nil ctx is refused with an error wrapping ErrConfig, and nothing is
+// changed: intake stays open and the queue is not closed.
+//
 // Shutdown is terminal: every later Send returns ErrAlreadyShutdown, and there
 // is no way to start the workers again. It is safe to call more than once and
 // from several goroutines. Each call waits for the same drain under its own
@@ -309,6 +312,10 @@ func (s *QueuedSender) deliver(q queued) {
 // Shutdown is waiting for a drain that includes its own delivery, so the call
 // cannot finish: it waits until its ctx ends and returns ctx's error.
 func (s *QueuedSender) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: Shutdown needs a non-nil context", ErrConfig)
+	}
+
 	s.mu.Lock()
 	if !s.shutdown {
 		s.shutdown = true

@@ -585,7 +585,7 @@ func WithLogger(logger *slog.Logger) Option {
 //     as long as it blocks, and one that never returns stops it.
 //   - It must not panic. There is no recover between the hook and the loop, so
 //     a panic ends that loop and takes the process with it.
-//   - It should not call Shutdown. Shutdown waits for the work to end, and
+//   - Do not call Shutdown from the hook. Shutdown waits for the work to end, and
 //     the work includes the loop the hook is running on, so a Shutdown called
 //     from the hook cannot see it end: it returns only when its own context
 //     ends, with that context's error, holding the loop up until then. The

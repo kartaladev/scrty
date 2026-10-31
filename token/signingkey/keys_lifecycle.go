@@ -3,6 +3,7 @@ package signingkey
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -22,6 +23,9 @@ var ErrAlreadyShutdown = errors.New("signingkey: already shut down")
 // does not end them, so a request-scoped context passed by mistake cannot stop
 // rotation. Only Shutdown ends the work.
 //
+// A nil ctx is refused with an error wrapping ErrConfig, and nothing is
+// launched or changed: a later Start with a real context still works.
+//
 // A manager is started at most once. Starting a manager whose loops have been
 // launched returns ErrAlreadyStarted, and starting one that has been shut down
 // returns ErrAlreadyShutdown; neither launches anything.
@@ -32,6 +36,10 @@ var ErrAlreadyShutdown = errors.New("signingkey: already shut down")
 // clockwork's fake, BlockUntilContext(ctx, 3) — or its advance may land before
 // a loop starts counting and never fire that loop.
 func (km *Keys) Start(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: Start needs a non-nil context", ErrConfig)
+	}
+
 	km.lifecycle.Lock()
 	defer km.lifecycle.Unlock()
 
@@ -104,6 +112,9 @@ func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context
 // nil once the work has ended, or ctx's error if ctx is done first. When the
 // work has already ended, it returns nil even if ctx is done.
 //
+// A nil ctx is refused with an error wrapping ErrConfig, and nothing is
+// changed: the manager is not marked shut down and its work keeps running.
+//
 // Shutdown is terminal. The background work never runs again, and a later
 // Start returns ErrAlreadyShutdown. A later Shutdown waits again under its own
 // context, so a caller whose first wait ran out may call it again to wait for
@@ -119,6 +130,10 @@ func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context
 // loop it is running on, so it can only return when its own ctx ends, with
 // that context's error. Call it from outside the work.
 func (km *Keys) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: Shutdown needs a non-nil context", ErrConfig)
+	}
+
 	km.lifecycle.Lock()
 	km.shutdown = true
 	if km.cancel != nil {
