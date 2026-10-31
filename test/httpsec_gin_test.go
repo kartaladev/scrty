@@ -116,9 +116,18 @@ func ginGuard(spec httpsecconformance.GuardSpec) gin.HandlerFunc {
 	// The scenario's nil authorizer means the guards rely on what the chain
 	// published, so the reliance is declared for every scenario, and a non-nil
 	// one is the fallback beside it. Declared, construction cannot fail.
-	guards, err := ginsec.NewGuards(spec.Authorizer, ginsec.WithChainAuthorizer())
+	guardOpts := []ginsec.GuardOption{ginsec.WithChainAuthorizer()}
+	if spec.Clock != nil {
+		guardOpts = append(guardOpts, ginsec.WithGuardClock(spec.Clock))
+	}
+
+	guards, err := ginsec.NewGuards(spec.Authorizer, guardOpts...)
 	if err != nil {
 		panic(err)
+	}
+
+	if spec.Kind == httpsecconformance.GuardRecent {
+		return guards.RequireRecentAuthentication()
 	}
 
 	if spec.Kind == httpsecconformance.GuardAuthenticated {
