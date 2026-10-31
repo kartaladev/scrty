@@ -125,9 +125,9 @@ type Session struct {
 	// and Rotate writes the value from the session it is given, which is how
 	// second-factor verification records its refresh. Either way a
 	// successor's CreatedAt is its renewal time while its AuthenticatedAt
-	// stays the sign-in's, unless the caller refreshed it. Every freshness check that asks
-	// how recently the user authenticated reads this field alone, never
-	// CreatedAt. Library-owned: Save keeps the stored value, so changing it
+	// stays the sign-in's, unless the caller refreshed it. Every freshness
+	// check that asks how recently the user authenticated reads this field
+	// alone, never CreatedAt, through AuthenticatedWithin. Library-owned: Save keeps the stored value, so changing it
 	// here and saving changes nothing, and a consumer cannot set it through
 	// Data.
 	AuthenticatedAt time.Time

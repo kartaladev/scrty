@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -277,6 +278,13 @@ func TestAuthenticatedWithin(t *testing.T) {
 			authenticatedAt: time.Time{},
 			now:             at(9, 0, 0),
 			window:          24 * time.Hour,
+			assert:          func(t *testing.T, got bool) { assert.False(t, got) },
+		},
+		{
+			name:            "no recorded authentication time against the largest window",
+			authenticatedAt: time.Time{},
+			now:             at(9, 0, 0),
+			window:          time.Duration(math.MaxInt64),
 			assert:          func(t *testing.T, got bool) { assert.False(t, got) },
 		},
 	}

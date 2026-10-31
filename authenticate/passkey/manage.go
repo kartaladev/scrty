@@ -109,8 +109,9 @@ func (m *Passkeys) Rename(ctx context.Context, user identity.UserID, cid id.ID, 
 // configured MFA methods (rc.MFAMethods, or Deps.MFAMethods when rc lists
 // none), or holds an active passkey while a passkey route can meet the second
 // factor, s must have met its second factor, and its authentication time
-// (sign-in, satisfied second factor or re-authentication) must be within the management freshness window (WithManagementFreshness, 15 minutes
-// by default). A recovery-pending or enrolment-only session, a session with a
+// (sign-in, satisfied second factor or re-authentication) must be within the
+// management freshness window (WithManagementFreshness, 15 minutes by
+// default). A recovery-pending or enrolment-only session, a session with a
 // pending MFA challenge or owing a password change, and no session at all are
 // refused too. Every such refusal is ErrReauthenticationRequired; a failed MFA
 // or passkey lookup refuses with fixed text, and a nil entry in rc.MFAMethods
