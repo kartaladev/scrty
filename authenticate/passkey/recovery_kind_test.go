@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -307,14 +308,14 @@ func newRecoveryWorld(t *testing.T) *recoveryWorld {
 	w.saved, err = w.codes.Generate(ctx, "u-1")
 	require.NoError(t, err)
 
-	w.tokens = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(w.f.clock))
+	w.tokens = must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(w.f.clock)))
 	mint, err := onetime.New(recovery.IssuedCodePurpose, onetime.WithStore(w.tokens), onetime.WithClock(w.f.clock))
 	require.NoError(t, err)
 	w.issued, _, err = mint.Issue(ctx, "u-1")
 	require.NoError(t, err)
 
 	w.sessions, err = session.New(session.WithClock(w.f.clock),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(w.f.clock))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(w.f.clock)))))
 	require.NoError(t, err)
 
 	w.f.users.EXPECT().LoadByUsername(gomock.Any(), "ana@example.com").Return(

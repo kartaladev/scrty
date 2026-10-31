@@ -80,12 +80,6 @@ func waitRelease(_ context.Context, p *probe) error {
 	return nil
 }
 
-// waitCtx blocks until the run's context is done.
-func waitCtx(ctx context.Context, _ *probe) error {
-	<-ctx.Done()
-	return ctx.Err()
-}
-
 // noteCancelThenRelease reports the run's context being cancelled, then keeps
 // running until the test releases it: a purge that sees the cancellation but
 // still needs time to finish.
@@ -755,38 +749,6 @@ func TestSweeper_Lifecycle(t *testing.T) {
 			},
 		},
 		{
-			name:  "the start context bounds each run",
-			tasks: []taskSpec{{name: "sessions", interval: time.Minute, body: waitCtx}},
-			assert: func(t *testing.T, h *harness) {
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				require.NoError(t, h.sweeper.Start(ctx))
-				h.block(t, 1)
-				h.advance(time.Minute)
-				recv(t, h.probes["sessions"].started)
-
-				cancel()
-				require.ErrorIs(t, recv(t, h.probes["sessions"].done), context.Canceled)
-			},
-		},
-		{
-			name:  "no run starts once the start context is done",
-			tasks: oneTask,
-			assert: func(t *testing.T, h *harness) {
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				require.NoError(t, h.sweeper.Start(ctx))
-				h.block(t, 1)
-
-				cancel()
-				for range 3 {
-					h.advance(time.Minute)
-				}
-				assertNoRun(t, h.probes["sessions"])
-				assert.EqualValues(t, 0, h.probes["sessions"].runs.Load())
-			},
-		},
-		{
 			name:  "a nil start context is refused and leaves the sweeper startable",
 			tasks: oneTask,
 			assert: func(t *testing.T, h *harness) {
@@ -971,11 +933,30 @@ func TestSweeper_SecondShutdownWaitsForTheFirst(t *testing.T) {
 
 				ctx, cancel := context.WithCancel(t.Context())
 				cancel()
-				require.ErrorIs(t, h.sweeper.Shutdown(ctx), context.Canceled)
+				err := h.sweeper.Shutdown(ctx)
+				require.ErrorIs(t, err, context.Canceled)
+				assert.ErrorContains(t, err, "sweep: shutting down")
 				assertPending(t, first, "first Shutdown returned while the run was still in progress")
 
 				p.Release()
 				require.NoError(t, recv(t, first))
+			},
+		},
+		{
+			name: "a finished shutdown wins over a context that is already done",
+			assert: func(t *testing.T, h *harness, p *probe) {
+				first := shutdownAsync(context.WithoutCancel(t.Context()), h)
+				recv(t, p.cancelled)
+				p.Release()
+				require.NoError(t, recv(t, first))
+
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				// A single call could pass by luck if completion lost the tie
+				// only some of the time, so repeat it.
+				for range 100 {
+					require.NoError(t, h.sweeper.Shutdown(ctx))
+				}
 			},
 		},
 	}
@@ -1026,7 +1007,7 @@ func TestSweeper_StopTimeout(t *testing.T) {
 
 	cases := []testCase{
 		{name: "default is ten seconds", assert: timesOutAfter(10 * time.Second)},
-		{name: "consumer override", opts: []sweep.Option{sweep.WithStopTimeout(time.Second)}, assert: timesOutAfter(time.Second)},
+		{name: "consumer override: a purge outlasts a one-second stop timeout", opts: []sweep.Option{sweep.WithStopTimeout(time.Second)}, assert: timesOutAfter(time.Second)},
 	}
 
 	for _, tc := range cases {
@@ -1086,5 +1067,198 @@ func TestSweeper_ConcurrentStartAndShutdown(t *testing.T) {
 			require.NoError(t, err)
 		}
 		require.ErrorIs(t, h.sweeper.Start(t.Context()), sweep.ErrAlreadyShutdown)
+	}
+}
+
+// startCtxKey keys the value TestSweeper_DetachedStart puts in the start
+// context, to see whether runs carry it.
+type startCtxKey struct{}
+
+// runCtx is what a purge saw of its own context.
+type runCtx struct {
+	err   error
+	value any
+}
+
+// observeCtx returns a task body that reports, on seen, its run context's
+// error and the value it carries under startCtxKey.
+func observeCtx(seen chan<- runCtx) func(context.Context, *probe) error {
+	return func(ctx context.Context, _ *probe) error {
+		seen <- runCtx{err: ctx.Err(), value: ctx.Value(startCtxKey{})}
+		return nil
+	}
+}
+
+// shutdownOutcome is what a Shutdown called from inside a purge returned,
+// and how long it took.
+type shutdownOutcome struct {
+	err     error
+	elapsed time.Duration
+}
+
+// TestSweeper_DetachedStart stands apart from TestSweeper_Lifecycle: each
+// case builds its own sweeper, because the task bodies capture per-case
+// channels, and some need the sweeper itself.
+//
+// It pins that runs are detached from the start context: they keep its values
+// but only Shutdown ends them.
+func TestSweeper_DetachedStart(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T)
+	}
+
+	cases := []testCase{
+		{
+			name: "cancelled start context",
+			assert: func(t *testing.T) {
+				seen := make(chan runCtx, 4)
+				h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute, body: observeCtx(seen)}}, nil)
+
+				ctx, cancel := context.WithCancel(context.WithValue(t.Context(), startCtxKey{}, "trace-1"))
+				require.NoError(t, h.sweeper.Start(ctx))
+				cancel()
+
+				require.NoError(t, h.runOnTick(t, h.probes["sessions"], 1, time.Minute))
+				got := recv(t, seen)
+				require.NoError(t, got.err, "the purge's context was cancelled with the start context")
+				assert.Equal(t, "trace-1", got.value, "the purge's context lost the start context's values")
+			},
+		},
+		{
+			name: "already-cancelled start context",
+			assert: func(t *testing.T) {
+				seen := make(chan runCtx, 4)
+				h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute, body: observeCtx(seen)}}, nil)
+
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				require.NoError(t, h.sweeper.Start(ctx))
+
+				require.NoError(t, h.runOnTick(t, h.probes["sessions"], 1, time.Minute))
+				require.NoError(t, recv(t, seen).err)
+			},
+		},
+		{
+			name: "shutdown cancels a running purge",
+			assert: func(t *testing.T) {
+				h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute, body: noteCancelThenRelease}}, nil)
+				p := h.probes["sessions"]
+				h.start(t)
+				h.block(t, 1)
+				h.advance(time.Minute)
+				recv(t, p.started)
+
+				shutdown := shutdownAsync(context.WithoutCancel(t.Context()), h)
+				recv(t, p.cancelled)
+				assertPending(t, shutdown, "Shutdown returned while the purge was still running")
+
+				p.Release()
+				require.ErrorIs(t, recv(t, p.done), context.Canceled)
+				require.NoError(t, recv(t, shutdown))
+			},
+		},
+		{
+			name: "consumer bounds the shutdown",
+			assert: func(t *testing.T) {
+				h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute, body: waitRelease}}, nil)
+				p := h.probes["sessions"]
+				h.start(t)
+				h.block(t, 1)
+				h.advance(time.Minute)
+				recv(t, p.started)
+
+				ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+				defer cancel()
+				err := h.sweeper.Shutdown(ctx)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.ErrorContains(t, err, "sweep: shutting down")
+
+				// The shutdown carries on; once the purge returns, a later call
+				// gets its result.
+				p.Release()
+				require.NoError(t, recv(t, p.done))
+				require.NoError(t, h.sweeper.Shutdown(context.WithoutCancel(t.Context())))
+			},
+		},
+		{
+			name: "shutdown from inside a purge",
+			assert: func(t *testing.T) {
+				inner := make(chan shutdownOutcome, 1)
+				var sw *sweep.Sweeper // set before Start, read only by runs
+				body := func(ctx context.Context, _ *probe) error {
+					sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Millisecond)
+					defer cancel()
+					began := time.Now()
+					err := sw.Shutdown(sctx)
+					inner <- shutdownOutcome{err: err, elapsed: time.Since(began)}
+					return nil
+				}
+				h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute, body: body}}, nil)
+				sw = h.sweeper
+				h.start(t)
+				h.block(t, 1)
+				h.advance(time.Minute)
+				recv(t, h.probes["sessions"].started)
+
+				got := recv(t, inner)
+				require.ErrorIs(t, got.err, context.DeadlineExceeded)
+				assert.Less(t, got.elapsed, time.Second, "Shutdown from inside a purge outlived its context")
+
+				require.NoError(t, recv(t, h.probes["sessions"].done))
+				require.NoError(t, h.sweeper.Shutdown(context.WithoutCancel(t.Context())))
+				require.ErrorIs(t, h.sweeper.Start(t.Context()), sweep.ErrAlreadyShutdown)
+			},
+		},
+		{
+			name: "concurrent start and shutdown",
+			assert: func(t *testing.T) {
+				for range 50 {
+					h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute}}, nil)
+					ctx, cancel := context.WithCancel(t.Context())
+
+					var wg sync.WaitGroup
+					starts := make(chan error, 2)
+					shutdowns := make(chan error, 2)
+					for range 2 {
+						wg.Go(func() { starts <- h.sweeper.Start(ctx) })
+						wg.Go(func() { shutdowns <- h.sweeper.Shutdown(t.Context()) })
+					}
+					wg.Go(cancel)
+					wg.Wait()
+					close(starts)
+					close(shutdowns)
+
+					started := 0
+					for err := range starts {
+						if err == nil {
+							started++
+							continue
+						}
+						if !errors.Is(err, sweep.ErrAlreadyStarted) && !errors.Is(err, sweep.ErrAlreadyShutdown) {
+							require.Failf(t, "unexpected Start error", "%v", err)
+						}
+					}
+					require.LessOrEqual(t, started, 1, "more than one Start succeeded")
+					for err := range shutdowns {
+						require.NoError(t, err)
+					}
+					for range 3 {
+						h.advance(time.Minute)
+					}
+					assertNoRun(t, h.probes["sessions"])
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t)
+		})
 	}
 }

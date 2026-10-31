@@ -71,12 +71,14 @@ var (
 	// queue was full. It never blocks waiting for space.
 	ErrQueueFull = errors.New("notify: send queue is full")
 
-	// ErrSenderClosed refuses a send to a sender that has been closed.
-	ErrSenderClosed = errors.New("notify: sender is closed")
+	// ErrAlreadyShutdown refuses a send to a queued sender that has been
+	// shut down. Shutdown is terminal: no later call accepts a message again.
+	ErrAlreadyShutdown = errors.New("notify: already shut down")
 )
 
 // ErrConfig is wrapped by every error a constructor in this package returns
-// for a wiring mistake, so a consumer can tell a contradictory configuration
+// for a wiring mistake, and by the error QueuedSender.Shutdown returns when it
+// is given a nil context, so a consumer can tell a contradictory configuration
 // from a failure at send time without matching on message text.
 var ErrConfig = errors.New("notify: invalid configuration")
 

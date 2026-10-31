@@ -187,10 +187,12 @@ func (c *config) wireMFA() error {
 }
 
 // flushRefusalLogs reports what the verification throttle is holding back.
-func (i *mfaInterceptor) flushRefusalLogs() {
+func (i *mfaInterceptor) flushRefusalLogs() error {
 	if i.throttle != nil {
-		_ = i.throttle.FlushRefusalLogs() // documented never to fail
+		return i.throttle.FlushRefusalLogs()
 	}
+
+	return nil
 }
 
 // Intercept is every part of the second factor: the verify endpoint and the

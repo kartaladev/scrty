@@ -26,6 +26,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -1020,7 +1021,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				logs := recoveryLogs(t, h)
 				before := len(logs.records())
 
-				h.chain.FlushRefusalLogs()
+				require.NoError(t, h.chain.FlushRefusalLogs())
 
 				flushed := logs.records()[before:]
 				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery"))
@@ -1060,7 +1061,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				written := throttledRecords(recoveryLogs(t, h).records())
 				assert.Len(t, written, 2, "one record per recovery guard: the window is the recovery interval")
 
-				h.chain.FlushRefusalLogs()
+				require.NoError(t, h.chain.FlushRefusalLogs())
 
 				flushed := recoveryLogs(t, h).records()
 				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery"))
@@ -1537,7 +1538,7 @@ func newRecoveryDeployment(t *testing.T, setup recoverySetup) *recoveryDeploymen
 	clk := clockwork.NewFakeClockAt(recoveryStart)
 
 	sessions, err := session.New(session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	d := &recoveryDeployment{
@@ -1862,7 +1863,7 @@ func TestRecoveryEnrolmentSaveFails(t *testing.T) {
 
 	var err error
 	h.sessions, err = session.New(session.WithStore(
-		failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
+		failingSaves{Store: must.Must(session.NewMemoryStore()), failing: &failing}))
 	require.NoError(t, err)
 
 	s := h.recoveryPending(t)
@@ -1920,7 +1921,7 @@ func TestRecoveryResolveRefused(t *testing.T) {
 
 				var err error
 				h.sessions, err = session.New(session.WithClock(clk),
-					session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+					session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 				require.NoError(t, err)
 
 				return func() { clk.Advance(recoveryLifetime + time.Minute) }
@@ -1943,7 +1944,7 @@ func TestRecoveryResolveRefused(t *testing.T) {
 
 				var err error
 				h.sessions, err = session.New(session.WithStore(
-					failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
+					failingSaves{Store: must.Must(session.NewMemoryStore()), failing: &failing}))
 				require.NoError(t, err)
 
 				return func() { failing.Store(true) }

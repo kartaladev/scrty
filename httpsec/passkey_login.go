@@ -414,7 +414,7 @@ func (i *passwordlessInterceptor) newSampler(c *Chain) *logsample.Sampler {
 
 // flushRefusalLogs reports what the begin's source guard and the endpoints'
 // own sampler are holding back.
-func (i *passwordlessInterceptor) flushRefusalLogs() {
+func (i *passwordlessInterceptor) flushRefusalLogs() error {
 	if i.guard != nil {
 		i.guard.Flush()
 	}
@@ -422,6 +422,8 @@ func (i *passwordlessInterceptor) flushRefusalLogs() {
 	if i.sampler != nil {
 		i.sampler.Flush()
 	}
+
+	return nil
 }
 
 // Intercept answers the passwordless endpoints and passes everything else

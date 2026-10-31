@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -65,7 +66,7 @@ func managerWithReader(t *testing.T, store session.Store, r io.Reader) *session.
 func managerOnClock(t *testing.T, clk *clockwork.FakeClock, opts ...session.Option) (*session.Sessions, *session.MemoryStore) {
 	t.Helper()
 
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	all := append([]session.Option{
 		session.WithStore(store),
 		session.WithClock(clk),
@@ -194,7 +195,7 @@ func sealingStore(t *testing.T, key byte) (session.Store, *session.MemoryStore) 
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
-	inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	sealing, err := session.NewEncryptedStore(inner, fakeCipher{key: key})
 	require.NoError(t, err)
 

@@ -30,6 +30,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -145,7 +146,7 @@ func TestWithClock(t *testing.T) {
 				stub := newChallengeStub()
 				h.extra = []mfa.Method{stub}
 
-				store := &expiryStore{MemoryStore: onetime.NewMemoryStore()}
+				store := &expiryStore{MemoryStore: must.Must(onetime.NewMemoryStore())}
 				h.mfaOpts = []httpsec.MFAOption{httpsec.WithMFAChallengeStore(store)}
 
 				s := h.pendingSession(t, factor.Password)
@@ -276,7 +277,7 @@ func TestChain_Clock(t *testing.T) {
 
 			h.extra = []mfa.Method{newChallengeStub()}
 
-			store := &countingReaper{MemoryStore: onetime.NewMemoryStore()}
+			store := &countingReaper{MemoryStore: must.Must(onetime.NewMemoryStore())}
 			h.mfaOpts = []httpsec.MFAOption{httpsec.WithMFAChallengeStore(store)}
 
 			var c *httpsec.Chain
@@ -1228,7 +1229,7 @@ func TestHeld(t *testing.T) {
 			t.Parallel()
 
 			lockoutPolicy, err := lockout.New(
-				lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithFailureStreakLimit(heldCap))
+				lockout.WithAttemptStore(must.Must(lockout.NewMemoryAttemptStore())), lockout.WithFailureStreakLimit(heldCap))
 			require.NoError(t, err)
 
 			// Each identifier is held before any request: heldCap failures
@@ -1241,7 +1242,7 @@ func TestHeld(t *testing.T) {
 				}
 			}
 
-			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 			require.NoError(t, err)
 
 			// No Authenticate expectation: the password is never checked while
@@ -1345,11 +1346,11 @@ func TestUnknownUsernameLock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			attempts := lockout.NewMemoryAttemptStore()
+			attempts := must.Must(lockout.NewMemoryAttemptStore())
 			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
 
-			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 			require.NoError(t, err)
 
 			// Each user's sixth, locked, attempt is the only one that may spend a
@@ -1458,11 +1459,11 @@ func TestUnknownUsernameLockRealAuthenticator(t *testing.T) {
 			authn, err := authenticate.NewUsernamePasswordAuthenticator(loader, authenticate.WithPasswordEncoder(enc))
 			require.NoError(t, err)
 
-			attempts := lockout.NewMemoryAttemptStore()
+			attempts := must.Must(lockout.NewMemoryAttemptStore())
 			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
 
-			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 			require.NoError(t, err)
 
 			chain, err := httpsec.New(
@@ -1555,7 +1556,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Raw store with a cap: form login is refused",
 			wire: func(t *testing.T) wiring {
-				store := lockout.NewMemoryAttemptStore()
+				store := must.Must(lockout.NewMemoryAttemptStore())
 
 				return wiring{lockouts: lockouts(capped(t, store)), form: store}
 			},
@@ -1564,7 +1565,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Raw store with a cap: Basic is refused",
 			wire: func(t *testing.T) wiring {
-				store := lockout.NewMemoryAttemptStore()
+				store := must.Must(lockout.NewMemoryAttemptStore())
 				p := capped(t, store)
 
 				return wiring{lockouts: lockouts(p), form: p.Attempts(), basic: store}
@@ -1574,7 +1575,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "View with a cap: both logins given the view build",
 			wire: func(t *testing.T) wiring {
-				p := capped(t, lockout.NewMemoryAttemptStore())
+				p := capped(t, must.Must(lockout.NewMemoryAttemptStore()))
 
 				return wiring{lockouts: lockouts(p), form: p.Attempts(), basic: p.Attempts()}
 			},
@@ -1583,7 +1584,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Raw store without a cap: Basic given the store builds",
 			wire: func(t *testing.T) wiring {
-				store := lockout.NewMemoryAttemptStore()
+				store := must.Must(lockout.NewMemoryAttemptStore())
 				p, err := lockout.New(lockout.WithAttemptStore(store))
 				require.NoError(t, err)
 
@@ -1594,14 +1595,14 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "a cap with no password login builds",
 			wire: func(t *testing.T) wiring {
-				return wiring{lockouts: lockouts(capped(t, lockout.NewMemoryAttemptStore()))}
+				return wiring{lockouts: lockouts(capped(t, must.Must(lockout.NewMemoryAttemptStore())))}
 			},
 			assert: builds,
 		},
 		{
 			name: "Two capped policies: Basic given the first's view is refused",
 			wire: func(t *testing.T) wiring {
-				first, second := capped(t, lockout.NewMemoryAttemptStore()), capped(t, lockout.NewMemoryAttemptStore())
+				first, second := capped(t, must.Must(lockout.NewMemoryAttemptStore())), capped(t, must.Must(lockout.NewMemoryAttemptStore()))
 
 				return wiring{lockouts: lockouts(first, second), basic: first.Attempts()}
 			},
@@ -1610,7 +1611,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Two capped policies: Basic given the second's view is refused",
 			wire: func(t *testing.T) wiring {
-				first, second := capped(t, lockout.NewMemoryAttemptStore()), capped(t, lockout.NewMemoryAttemptStore())
+				first, second := capped(t, must.Must(lockout.NewMemoryAttemptStore())), capped(t, must.Must(lockout.NewMemoryAttemptStore()))
 
 				return wiring{lockouts: lockouts(first, second), basic: second.Attempts()}
 			},
@@ -1619,7 +1620,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Two capped policies, no password login: builds",
 			wire: func(t *testing.T) wiring {
-				first, second := capped(t, lockout.NewMemoryAttemptStore()), capped(t, lockout.NewMemoryAttemptStore())
+				first, second := capped(t, must.Must(lockout.NewMemoryAttemptStore())), capped(t, must.Must(lockout.NewMemoryAttemptStore()))
 
 				return wiring{lockouts: lockouts(first, second)}
 			},
@@ -1634,7 +1635,7 @@ func TestLockoutCapWiring(t *testing.T) {
 			w := tc.wire(t)
 			ctrl := gomock.NewController(t)
 
-			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 			require.NoError(t, err)
 
 			opts := []httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, lockoutPolicies(w.lockouts)...))}

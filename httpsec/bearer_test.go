@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -695,8 +696,8 @@ func TestBearerMarksEnrolment(t *testing.T) {
 
 			// The store judges expiry by the same clock as the manager, or the
 			// lowered deadline would be read against the wall clock.
-			store := &countingSaves{Store: session.NewMemoryStore(
-				session.WithMemoryStoreClock(clk))}
+			store := &countingSaves{Store: must.Must(session.NewMemoryStore(
+				session.WithMemoryStoreClock(clk)))}
 
 			sessions, err := session.New(
 				session.WithClock(clk), session.WithStore(store))
@@ -973,7 +974,7 @@ func newOwnUserFixture(
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC))
 
 	sessions, err := session.New(session.WithClock(clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))

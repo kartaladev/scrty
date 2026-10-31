@@ -441,6 +441,8 @@ var sentinelRegistry = map[string]map[string]error{
 		"session.ErrSuperseded":         session.ErrSuperseded,
 		"session.ErrSuccessorAdvanced":  session.ErrSuccessorAdvanced,
 		"session.ErrDeleteDidNotSettle": session.ErrDeleteDidNotSettle,
+		"session.ErrAlreadyStarted":     session.ErrAlreadyStarted,
+		"session.ErrAlreadyShutdown":    session.ErrAlreadyShutdown,
 	},
 	"github.com/kartaladev/scrty/store": {
 		"store.ErrIsolationTooStrong": store.ErrIsolationTooStrong,
@@ -479,6 +481,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 			"which re-loads the session and returns its verdict instead",
 		"session.ErrUnreadable":         "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrDeleteDidNotSettle": "a store contract failure, answered 500 by default",
+		"session.ErrAlreadyStarted":     "a lifecycle fault of the memory store's housekeeping, never returned by a request",
+		"session.ErrAlreadyShutdown":    "a lifecycle fault of the memory store's housekeeping, never returned by a request",
 		"store.ErrIsolationTooStrong":   "a store contract failure, answered 500 by default",
 		"ratelimit.ErrConfig":           "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +

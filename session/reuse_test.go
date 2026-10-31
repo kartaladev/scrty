@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -1431,7 +1432,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 			f := &fixture{clk: clk, store: &inFlightStore{MemoryStore: inner, failDelete: tc.failDelete}}
 			f.m = managerFor(t, append([]session.Option{
 				session.WithStore(f.store),
@@ -1633,7 +1634,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			store := &supersessionLog{MemoryStore: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+			store := &supersessionLog{MemoryStore: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 			m := managerFor(t,
 				session.WithStore(store),
 				session.WithClock(clk),
@@ -1658,7 +1659,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 func twoDeploys(t *testing.T, clk *clockwork.FakeClock, first, second time.Duration) (before, after *session.Sessions, store *session.MemoryStore) {
 	t.Helper()
 
-	store = session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	store = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	build := func(lifetime time.Duration, family time.Duration) *session.Sessions {
 		return managerFor(t,
 			session.WithStore(store),
@@ -1816,7 +1817,7 @@ func TestRotateWithGrace_ConcurrentRenewalsProduceOneSuccessor(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 			store := newLoadBarrierStore(inner)
 			managers := make([]*session.Sessions, tc.managers)
 			for i := range managers {
@@ -2363,7 +2364,7 @@ func TestKnockedOutSuccessor_IsReuseWhateverTheReaderClock(t *testing.T) {
 				readerClk: clockwork.NewFakeClockAt(createdAt),
 				writerClk: clockwork.NewFakeClockAt(createdAt),
 			}
-			f.store = session.NewMemoryStore(session.WithMemoryStoreClock(f.readerClk))
+			f.store = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.readerClk)))
 			managerOn := func(clk *clockwork.FakeClock) *session.Sessions {
 				opts := []session.Option{
 					session.WithStore(f.store), session.WithClock(clk),
@@ -2416,7 +2417,7 @@ func TestUnusedSuccessorRecovery_FirstPresentationCost(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
-	store := &countingStore{MemoryStore: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+	store := &countingStore{MemoryStore: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 	m := recoveryManager(t, store, clk)
 	s, err := m.Create(t.Context(), testUser)
 	require.NoError(t, err)
@@ -2607,7 +2608,7 @@ func TestUnusedSuccessorRecovery_FirstPresentationRacingRecovery(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 			store := newPresentationRaceStore(inner, tc.order)
 			store.clk = clk
 			presenter := recoveryManager(t, store, clk)
@@ -2667,7 +2668,7 @@ func (s *outageAfterRecoveryStore) MarkPresented(ctx context.Context, id string,
 // Standalone: it lands a renewal inside Load through a store that fails after recovery.
 func TestFailingMarkAfterRecoveryIsNotServed(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(createdAt)
-	inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	store := &outageAfterRecoveryStore{MemoryStore: inner}
 	presenter := recoveryManager(t, store, clk)
 	renewer := recoveryManager(t, store, clk)
@@ -2750,7 +2751,7 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 				t.Helper()
 
 				clk := clockwork.NewFakeClockAt(createdAt)
-				store := &failFirstMarkStore{MemoryStore: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+				store := &failFirstMarkStore{MemoryStore: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 				m := recoveryManager(t, store, clk)
 
 				o, err := m.Create(ctx, testUser)

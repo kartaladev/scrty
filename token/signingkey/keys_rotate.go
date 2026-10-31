@@ -39,8 +39,9 @@ func (km *Keys) rotateAll(ctx context.Context) {
 // WithErrorHook promises a hook that Signer and VerificationKeys answer,
 // and either one
 // under the lock a caller already held would deadlock on the loop goroutine.
-// The hook also runs on that goroutine, so it may not call Start or Stop —
-// documented in WithErrorHook, because nothing here can enforce it.
+// The hook also runs on that goroutine, so a Shutdown it calls cannot wait
+// for the work to end — documented in WithErrorHook and Shutdown, because
+// nothing here can enforce it.
 func (km *Keys) report(ctx context.Context, op string, alg Alg, f *failure) {
 	if km.errorHook != nil {
 		km.errorHook(f.err)

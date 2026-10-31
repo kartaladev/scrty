@@ -74,7 +74,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 	// with enables federated login with the required wiring plus opts.
 	with := func(opts ...httpsec.OIDCOption) func(f oidcFixture) httpsec.Option {
 		return func(f oidcFixture) httpsec.Option {
-			return httpsec.EnableOIDCLogin(f.manager, f.handoffs, f.required(opts...)...)
+			return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: f.handoffs}, f.required(opts...)...)
 		}
 	}
 
@@ -87,7 +87,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 	// never reached under WithOIDCCallbackSuccess, so neither is required.
 	convey := func(opts ...httpsec.OIDCOption) func(f oidcFixture) httpsec.Option {
 		return func(f oidcFixture) httpsec.Option {
-			return httpsec.EnableOIDCLogin(f.manager, nil, append([]httpsec.OIDCOption{
+			return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: nil}, append([]httpsec.OIDCOption{
 				httpsec.WithOIDCSessions(f.sessions), conveyed,
 			}, opts...)...)
 		}
@@ -123,7 +123,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			name: "the session manager comes from another built-in",
 			enable: func(f oidcFixture) httpsec.Option {
-				return httpsec.EnableOIDCLogin(f.manager, f.handoffs, httpsec.WithOIDCTokens(f.tokens))
+				return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: f.handoffs}, httpsec.WithOIDCTokens(f.tokens))
 			},
 			chain: []httpsec.Option{
 				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: mustSessions(t)}),
@@ -174,21 +174,21 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			name: "no OIDC manager",
 			enable: func(f oidcFixture) httpsec.Option {
-				return httpsec.EnableOIDCLogin(nil, f.handoffs, f.required()...)
+				return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: nil, Handoff: f.handoffs}, f.required()...)
 			},
-			assert: refused("EnableOIDCLogin", "OIDC manager"),
+			assert: refused("EnableOIDCLogin", "OIDCDeps.RelyingParty"),
 		},
 		{
 			name: "no handoff manager and no consumer conveyance",
 			enable: func(f oidcFixture) httpsec.Option {
-				return httpsec.EnableOIDCLogin(f.manager, nil, f.required()...)
+				return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: nil}, f.required()...)
 			},
-			assert: refused("EnableOIDCLogin", "handoff manager", "WithOIDCCallbackSuccess"),
+			assert: refused("EnableOIDCLogin", "OIDCDeps.Handoff", "WithOIDCCallbackSuccess"),
 		},
 		{
 			name: "no token generator",
 			enable: func(f oidcFixture) httpsec.Option {
-				return httpsec.EnableOIDCLogin(f.manager, f.handoffs, httpsec.WithOIDCSessions(f.sessions))
+				return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: f.handoffs}, httpsec.WithOIDCSessions(f.sessions))
 			},
 			assert: refused("EnableOIDCLogin", "token generator", "WithOIDCTokens"),
 		},
@@ -205,7 +205,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			name: "no session manager anywhere on the chain",
 			enable: func(f oidcFixture) httpsec.Option {
-				return httpsec.EnableOIDCLogin(f.manager, f.handoffs, httpsec.WithOIDCTokens(f.tokens))
+				return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: f.handoffs}, httpsec.WithOIDCTokens(f.tokens))
 			},
 			assert: refused("EnableOIDCLogin", "session manager", "WithOIDCSessions"),
 		},
@@ -413,10 +413,10 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			name: "a handoff manager given with the consumer conveyance",
 			enable: func(f oidcFixture) httpsec.Option {
-				return httpsec.EnableOIDCLogin(f.manager, f.handoffs,
+				return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: f.manager, Handoff: f.handoffs},
 					httpsec.WithOIDCSessions(f.sessions), conveyed)
 			},
-			assert: refused("EnableOIDCLogin", "WithOIDCCallbackSuccess", "handoff manager"),
+			assert: refused("EnableOIDCLogin", "WithOIDCCallbackSuccess", "OIDCDeps.Handoff"),
 		},
 		{
 			name:   "a handoff redeemer given with the consumer conveyance",

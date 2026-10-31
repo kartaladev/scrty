@@ -2,9 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make scrty's constructors, lifecycle, guards and context handling idiomatic Go before `v0.1.0`, as the eight spec deltas and design decisions D1–D8 require.
+**Goal:** Make scrty's constructors, flush interface, lifecycle, guards and context handling idiomatic Go before `v0.1.0`, as the eight spec deltas and design decisions D1–D8 require.
 
-**Architecture:** Behaviour changes (D3–D6) are driven test-first from the delta scenarios. Signature-only changes (D1, D2, D7, D8) are verified as refactors by the existing tests. The lanes are split by package ownership. The test module's callers are updated in the lane that owns the changed constructor.
+**Architecture:**
+- Behaviour changes (D2's error joining, and D3–D6) are driven test-first from the delta scenarios.
+- Signature-only changes (D1, D2's interface, D7, D8) are verified as refactors by the existing tests.
+- Scenarios that pin behaviour the code already has are seen to pass, then shown to bite by temporarily breaking the behaviour.
+- The lanes are split by file ownership along the call graph. The lane that changes a signature owns every caller of it, in every module.
 
 **Tech Stack:** Go 1.27 workspace, testify, `go.uber.org/goleak`, mockgen v0.6 (`--typed`), clockwork (tests only), gocron v2 in `expiry/sweep`.
 
@@ -12,10 +16,12 @@
 
 ## Global Constraints
 
-- **Post-restructure names everywhere.** Use `session.Sessions`, `signingkey.Keys`, `policy/lockout`, `expiry/sweep`, `httpsec/ginsec`, `httpsec/fibersec`, `store/seal`, `token/signingkey`.
-- **Configuration errors wrap the package's own sentinel:** `ErrConfig` (`sweep` keeps `ErrInvalidOption`). Adapter guard errors wrap `httpsec.ErrConfig`.
-- **Lifecycle sentinels:** each lifecycle package declares `ErrAlreadyStarted` and `ErrAlreadyShutdown`, with the message form `"<package>: already started"` and `"<package>: already shut down"`.
+- **Post-restructure paths everywhere:** `session`, `token/signingkey`, `token/onetime`, `policy/lockout`, `expiry/sweep`, `notify`, `httpsec/ginsec`, `httpsec/fibersec`, `store/seal`, `authenticate/password`, `authenticate/oidc`, `authenticate/passkey`, `recovery`.
+- **Configuration errors wrap the package's own sentinel:** `ErrConfig`; `sweep` keeps `ErrInvalidOption`; `lockout` wraps `policy.ErrConfig`; adapter guard errors wrap `httpsec.ErrConfig`.
+- **Lifecycle sentinels:** `signingkey` and `session` declare `ErrAlreadyStarted` and `ErrAlreadyShutdown`, with the messages `"<package>: already started"` and `"<package>: already shut down"`. `notify` declares only `ErrAlreadyShutdown`.
+- **Terminal means the background work only.** After `Shutdown`, `Keys` still serves its keys, and `session.MemoryStore` still serves sessions. Only `QueuedSender` refuses new messages.
 - **A nil context is never replaced with `context.Background`.**
+- **Typed-nil detection** uses `internal/nilcheck.IsNil(v any) bool`.
 - **Table tests** follow `.claude/skills/table-test`. Test doubles come from `use-mockgen`. The Docker suites use `use-testcontainers` helpers.
 - **Never run** `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`.
 - **`.claude/.legacy` is never read, copied or cited.** Agents never edit `openspec/`.
@@ -23,11 +29,11 @@
 
 ## Review Focus
 
-1. **Shutdown racing Start**, on every lifecycle owner, not only `Keys`. Expected: no race report and no goroutine left. A test is added in each of 4.2, 4.3 and 4.4.
-2. **Start with a context that is already cancelled.** Expected: the work still launches, because its context is detached. A test is added in 4.1 and 4.2.
-3. **Shutdown called from inside the component's own work** (a sweep purge, or a reuse observer, calling Shutdown). Expected: it returns its context's error within the bound and never deadlocks. A test is added in 4.3.
-4. **A typed-nil authorizer** (`(*myAuthorizer)(nil)` in the interface) passed to `NewGuards` without `WithChainAuthorizer()`. Expected: a configuration error, exactly as for a plain nil. Table cases are added in 5.1 and 5.2.
-5. **`QueuedSender.Send` concurrent with `Shutdown`.** Expected: each message is either queued and delivered, or refused with `ErrAlreadyShutdown`. It is never silently lost, and there is no send-on-closed-channel panic. A test is added in 4.4.
+1. **Shutdown racing Start** on every lifecycle owner. Expected: no race report and no goroutine left. Tests in 4.1, 4.2, 4.3 and 4.4.
+2. **Start with a context that is already cancelled.** Expected: the work still launches, because its context is detached. Tests in 4.1 and 4.2.
+3. **Shutdown called from inside the component's own work:** a sweep purge, a `Keys` error hook, or a wrapped sender. Expected: it returns its context's error within the bound and never deadlocks. Tests in 4.1 (error hook) and 4.3 (purge).
+4. **A consumer flusher that fails beside ones that succeed.** Expected: the aggregate returns the error, and every other flusher is still called. Tests in 2.2 (engine and chain) and 2.5 (`FirstOf`).
+5. **A typed-nil value where a port is expected:** an authorizer, or a memory store's clock. Expected: a configuration error at construction, or no fallback, never a nil-method panic at request time. Table cases in 3.1, 3.2, 5.1 and 5.2.
 
 ---
 
@@ -36,201 +42,292 @@
 | Dispatch | Tasks | Owns | Model, reason | Reviewer |
 |---|---|---|---|---|
 | main session | 1.1 | | verification | none |
-| A | 2.1–2.3 | `pkg/logsample`, `authenticate`, `policy`, `password`, `token`, `store/seal`, `token/signingkey` (record and memory store files only), and their callers in `httpsec`, `authenticate/oidc` and `test/` | Opus: it changes interfaces every other lane compiles against | Opus |
-| B1 | 3.1 | `token/onetime` (+ test-module callers) | Sonnet: a known construction-error pattern | Sonnet |
-| B2 | 3.3 | `policy/lockout` memory attempt store (+ callers) | Sonnet: same reason | Sonnet |
-| C1 | 4.1 | `token/signingkey` lifecycle files | Opus: concurrency and ordering | Opus |
-| C2 | 3.2, then 4.2 | `session` memory store | Opus: concurrency (3.2 rides with it, same file) | Opus |
-| C3 | 4.3 | `expiry/sweep` | Opus: concurrency | Opus |
-| C4 | 4.4 | `notify` queued sender | Opus: concurrency | Opus |
-| D | 4.5 | the four lifecycle owners | Sonnet: nil checks on the shape C1–C4 settled | Sonnet |
-| E | 5.1–5.2 | `httpsec` guards, `ginsec`, `fibersec` | Opus: security refusal logic written for the first time | Opus |
-| F | 6.1, 7.1, 7.2 | `httpsec` exchange and `Enable…` signatures, `authenticate/oidc` registry | Sonnet: signatures and panics fixed by design | Sonnet |
-| main session + Opus reviewer | 8.1–8.2 | whole branch | | Opus |
+| A | 2.1–2.4 | `pkg/logsample`, `authenticate` (root), `authenticate/password`, `policy` (root), `token`, `store/seal`, `token/signingkey/record.go`, `httpsec/chain.go`, `httpsec/login.go`, `httpsec/basic.go`, `authenticate/oidc/relying_party.go`, `README.md`, and every caller of these constructors and flush methods in every module | Opus: it changes interfaces every other lane compiles against | Opus |
+| A2 | 2.5 | `authenticate/firstof.go`, `authenticate/firstof_test.go`, and one `httpsec` test file for the chain-level case | Sonnet: one forwarding method on the pattern A settled | Sonnet |
+| B | 3.1–3.3 | `token/onetime`, `session/store_memory.go`, `session/sessions.go`, `policy/lockout`, `authenticate/passkey/passkey.go`, `recovery/hold.go`, `httpsec/mfa_begin.go`, and every caller of the three memory-store constructors in every module | Sonnet: a known construction-error pattern; its callers share test helpers, so it is one lane | Sonnet |
+| C1 | 4.1 | `token/signingkey` lifecycle files (`keys_lifecycle.go`, `doc.go`, their tests) | Opus: concurrency and ordering | Opus |
+| C2 | 4.2 | `session/store_memory.go` lifecycle, and its tests | Opus: concurrency | Opus |
+| C3 | 4.3 | `expiry/sweep`, and the sweeper callers in `test/` | Opus: concurrency | Opus |
+| C4 | 4.4 | `notify`, and the `Close` callers of `QueuedSender` | Opus: concurrency | Opus |
+| D | 4.5 | the lifecycle methods of `Keys`, `session.MemoryStore` and `QueuedSender` | Sonnet: nil checks on the shape C1–C4 settled | Sonnet |
+| E | 5.1–5.2 | `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`, and every `NewGuards` caller | Opus: security refusal logic written for the first time | Opus |
+| F | 6.1, 7.1, 7.2, 8.1 | `httpsec/exchange.go`, `httpsec/oidc_options.go` and `EnableOIDCLogin`'s callers, `authenticate/oidc/registry.go`, and the final stale-name sweep | Sonnet: signatures and panics fixed by the design | Sonnet |
+| main session + Opus reviewer | 8.2 | whole branch | | Opus |
+| G1 | 9.1, then 9.2 | `notify/queued.go` and its test; the four `Shutdown` files (`token/signingkey/keys_lifecycle.go`, `session/store_memory.go`, `notify/queued.go`, `expiry/sweep/sweeper.go`); new `internal/lifecycle` | Opus: a lock-ordering fix under races, then a refactor of shared behaviour across four packages | Opus |
+| G2 | 9.3 | `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`; new `internal/guardauth` | Opus: a refactor of security refusal logic across three modules | Opus |
+| G3 | 9.4 | `httpsec/oidc_options.go` and `httpsec/oidc_options_test.go`; godoc in `notify/notify.go` and `token/signingkey/keys.go`; new `internal/must/must_test.go`; `authenticate/firstof.go`; `authenticate/oidc/registry.go` | Sonnet: small fixes whose shape each finding states | Sonnet |
 
 **Order:**
-- A runs first, because later lanes compile against its types.
-- B1, B2, C1, C2, C3 and C4 then run in parallel. Their files do not overlap.
-- D runs after all of C, E after D, and F after E.
-- F could run beside E in principle: `exchange.go` is separate from `guards.go`, but both are in `httpsec`. They stay sequential so that the `httpsec` test files never have two writers.
+- A runs first, because every later lane compiles against its types.
+- B runs after A. Its three constructors are called from the same test helpers, including `httpsec/helpers_test.go`, `httpsec/integration_test.go`, `test/storetest/memory_test.go` and `test/httpsecconformance/scenarios.go`. One lane avoids two writers on them.
+- C1, C2, C3 and C4 then run in parallel. Their files and callers do not overlap. C2 comes after B, which owns `session/store_memory.go`'s constructor.
+- A2 was added after A, B and C had started. It touches no file of B, C or D, so it runs once C's lanes have landed, before D.
+- D runs after all of C, E after D, and F after E. E and F stay sequential so that the `httpsec` test files never have two writers.
+- G1, G2 and G3 run in parallel once F has landed. They own disjoint files, and each new internal package has a single owner. `notify/notify.go` (G3) and `notify/queued.go` (G1) are different files. Task 8.2 closes after all three, with a fresh review of group 9 and green CI.
 
 ---
 
 ### Task 1: Preconditions (task 1.1, main session)
 
-- [ ] **Step 1:** `openspec list --json` must not list `restructure-layout`, and `go list ./... | grep -c authenticate/oidc` must be at least 1.
-- [ ] **Step 2:** `git fetch origin main && git checkout -B <branch> origin/main`, then run `make check` (everything but the Docker suites). Expected: PASS.
+- [ ] **Step 1:** `openspec list --json` does not list `restructure-layout`, and `go list ./...` includes `github.com/kartaladev/scrty/authenticate/oidc`.
+- [ ] **Step 2:** `git fetch origin main && git checkout -B refactor/idiomatic-api-shape origin/main`, then `make check`. Expected: PASS.
 
-### Task 2: Shared flush interface and concrete types (tasks 2.1–2.3, dispatch A)
+### Task 2: Flush interface, aggregators and concrete types (tasks 2.1–2.4, dispatch A)
 
 **Files:**
-- Create: the `Flusher` declaration in `pkg/logsample/logsample.go`
-- Modify: `policy/engine.go` (probe), `httpsec/login.go` and `httpsec/basic.go` (probes), `authenticate/oidc/relying_party.go` (probe)
+- Modify: `pkg/logsample/logsample.go` (add `Flusher`); `policy/engine.go`, `httpsec/chain.go` (aggregators); `httpsec/login.go`, `httpsec/basic.go`, `authenticate/oidc/relying_party.go` (probes)
 - Remove: `RefusalLogFlusher` from `authenticate/password.go` and `policy/mfa.go`
-- Modify (exported types): `authenticate/password.go`, `authenticate/jwt.go`, `policy/mfa.go`, `policy/mfa_requirement.go`, the `password` encoder files, the `token` generator and verifier files, `store/seal/keyring.go`, `store/seal/cipher.go`, `token/signingkey/record.go`
+- Modify (exported types): `authenticate/password.go`, `authenticate/jwt.go`, `policy/mfa.go`, `policy/mfa_requirement.go`, `policy/federated.go`, `authenticate/password/{bcrypt,scrypt,argon2id}.go`, `token/generator.go`, `token/verifier.go`, `store/seal/keyring.go`, `store/seal/cipher.go`, `token/signingkey/record.go`, `README.md`
 
 **Interfaces:**
 - Produces:
   - `type logsample.Flusher interface{ FlushRefusalLogs() error }`
+  - `func (e *policy.Engine) FlushRefusalLogs() error`, `func (c *httpsec.Chain) FlushRefusalLogs() error`
   - `authenticate.NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...PasswordOption) (*UsernamePasswordAuthenticator, error)`
   - `authenticate.NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error)`
   - `policy.NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (*MFA, error)`
   - `policy.NewMFARequirement(required identity.MFARequirementLookup, methods []MFAMethodLookup, …) (*MFARequirement, error)`
-  - `password.NewBcryptEncoder(...) (*BcryptEncoder, error)` (Scrypt and Argon2id alike)
+  - `password.NewBcryptEncoder(...) (*BcryptEncoder, error)`, and Scrypt and Argon2id alike
   - `token.NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, error)`
   - `token.NewVerifier(opts ...VerifyOption) (*JWTVerifier, error)`
   - `seal.NewKeyring(opts ...KeyringOption) (*StaticKeyring, error)`
   - `seal.NewAEADCipher(kr Keyring) (*AEADCipher, error)`
   - `signingkey.NewMemoryKeyStore() *MemoryKeyStore`
 
-- [ ] **Step 1 (2.1):** Declare `logsample.Flusher`, switch the three probes to it, and delete the two `RefusalLogFlusher` declarations. Run `go build ./...` in every module, then `go test -count=1 ./pkg/... ./policy/... ./authenticate/... ./httpsec/...`. Expected: PASS with no test assertion changed.
-- [ ] **Step 2 (2.2):** Rename each unexported implementation to its exported name with gopls. Change the constructor results, add `var _ Authenticator = (*UsernamePasswordAuthenticator)(nil)` (and the same for each type), and remove the type-assertion paragraph from the godoc. Rewrite the tests that type-asserted (`authenticate/password_test.go`, `policy/mfa_requirement_test.go`, `policy/integration_test.go`) to call `FlushRefusalLogs()` directly. Expected: `go test ./authenticate/... ./policy/... ./httpsec/...` passes.
-- [ ] **Step 3 (2.3):** The same for the `password`, `token`, `seal` and `signingkey` rows. For each newly exported type, list its exported methods in the dispatch report, and keep any that only serve the library unexported. Expected: `go test -count=1 ./...` passes in every module, and `go vet` is clean.
-- [ ] **Step 4:** Commit: `refactor!: return concrete types and share one flush interface`.
+- [ ] **Step 1 (2.1):** Declare `logsample.Flusher`, switch the three probes to it, and delete both `RefusalLogFlusher` declarations. Run `go build ./...` in every module, then `go test -count=1 ./pkg/... ./policy/... ./authenticate/... ./httpsec/...`. Expected: PASS with no assertion changed. `rg -n 'type RefusalLogFlusher'` finds nothing.
+- [ ] **Step 2 (2.2, compile first):** Change both aggregators to return `error`, returning nil. Build every module. Expected: it builds.
+- [ ] **Step 3 (2.2, red):** Add tests:
+  - `TestEngine_FlushRefusalLogs_JoinsErrors` in `policy`: two registered policies whose flush returns `errA` and nil. Assert `require.ErrorIs(t, err, errA)` and that both were called.
+  - `TestChain_FlushRefusalLogs_JoinsErrors` in `httpsec`: a consumer authenticator given to `EnableFormLogin` whose flush returns `errA`, and a policy engine whose policy returns `errB`. Assert `ErrorIs` for both, and that the chain's own sampler still flushed.
 
-### Task 3: One-time token memory store (task 3.1, dispatch B1)
+  Run `go test -run 'FlushRefusalLogs_JoinsErrors' -count=1 ./policy/ ./httpsec/`. Expected: FAIL, "expected error … got nil".
+- [ ] **Step 4 (2.2, green):** Collect each flusher's error into `errors.Join`, keeping the documented order and calling every flusher. Update every caller, which handles or explicitly discards the error. Rerun, then run `golangci-lint run ./...`. Expected: PASS, and no unchecked flush error.
+- [ ] **Step 5 (2.3):**
+  - rename the unexported implementations with gopls (`jwtAuthenticator`→`JWTAuthenticator`, `passwordAuthenticator`→`UsernamePasswordAuthenticator`, `mfaPolicy`→`MFA`, `mfaRequirementPolicy`→`MFARequirement`);
+  - change the constructor results, and add `var _ Authenticator = (*UsernamePasswordAuthenticator)(nil)` and the same for each type;
+  - replace the type-assertion paragraphs in the godoc with "build it with New…; the zero value is not usable";
+  - rewrite the tests that type-asserted (`authenticate/password_test.go`, `policy/mfa_requirement_test.go`, `policy/integration_test.go`) to call methods directly;
+  - `README.md:227` becomes `deps.Admits = requirement.AdmitsWithoutLocalSecondFactor`.
+
+  Run `go test ./authenticate/... ./policy/... ./httpsec/...`. Expected: PASS.
+- [ ] **Step 6 (2.4):** The same for `bcryptEncoder`, `scryptEncoder`, `argon2idEncoder`, `generator`→`JWTGenerator`, `verifier`→`JWTVerifier`, `keyring`→`StaticKeyring`, `aeadCipher`→`AEADCipher` and `inMemoryKeyStore`→`MemoryKeyStore`. Unexport nothing: every method is in D1's table. Run `go test -count=1 ./...` in every module and `go vet ./...`. Expected: PASS. In the report, list each type's exported methods against D1's table.
+- [ ] **Step 7:** Commit: `refactor!: return concrete types and share one flush interface`.
+
+### Task 2b: `FirstOf` forwards the flush (task 2.5, dispatch A2)
+
+**Files:**
+- Modify: `authenticate/firstof.go`
+- Test: `authenticate/firstof_test.go`, plus one case in `httpsec/chain_test.go` beside `TestChain_FlushRefusalLogs_JoinsErrors`
 
 **Interfaces:**
-- Produces: `onetime.NewMemoryStore(opts ...MemoryStoreOption) (*MemoryStore, error)`
+- Consumes: Task 2's `logsample.Flusher`, `*UsernamePasswordAuthenticator` and `Chain.FlushRefusalLogs() error`.
+- Produces: `func (m *FirstOf) FlushRefusalLogs() error`, and `var _ logsample.Flusher = (*FirstOf)(nil)`.
 
-- [ ] **Step 1: Failing tests.** `TestMemoryStore_Construction`, a table with cases:
-  - `"nil time source"`, with `WithMemoryStoreClock(nil)`, asserting `require.ErrorIs(t, err, onetime.ErrConfig)` and `assert.Nil(t, store)`;
-  - `"typed nil time source"`, with `WithMemoryStoreClock((*fakeClock)(nil))`, asserting the same;
-  - `"consumer time source"`, with a clockwork fake: issue a record with a 1-minute TTL, advance 2 minutes, call `PurgeExpired`, and assert the record is gone.
-- [ ] **Step 2:** `go test -run TestMemoryStore_Construction -count=1 ./token/onetime/`. Expected: FAIL on both nil cases with "expected an error", and with no compile error once the signature is stubbed to return `(s, nil)`.
-- [ ] **Step 3:** Implement the refusal, and pass the error up through `onetime.New` (its existing error return).
-- [ ] **Step 4:** Rerun. Expected: PASS. Then `go test ./...` in the core and test modules. Commit.
+- [ ] **Step 1 (red):** Write `TestFirstOf_FlushRefusalLogs`, a table over `NewFirstOf(...)` whose cases reach the method through `f, ok := any(m).(logsample.Flusher)`, so that they compile today and fail on `require.True(t, ok)`:
+  - `"joins errors and still flushes later delegates"`: delegates a (flush returns `errA`), b (no flush method), c (flush returns nil). Assert `ErrorIs(err, errA)`, and that c was flushed once;
+  - `"nested FirstOf is reached"`: an outer `FirstOf` over an inner one over a flushing delegate. Assert the delegate was flushed once;
+  - `"no flusher"`: only delegates without the method. Assert nil.
 
-### Task 4: Session memory store construction and lifecycle (tasks 3.2 and 4.2, dispatch C2)
+  Add `TestChain_FlushRefusalLogs_ReachesFirstOfDelegates` in `httpsec`: form login over `NewFirstOf(passwordAuthenticator)`, enough refused logins to leave suppressed refusals, then `Chain.FlushRefusalLogs()`. Assert that the password authenticator's summary record is written.
+- [ ] **Step 2:** `go test -run 'TestFirstOf_FlushRefusalLogs|ReachesFirstOfDelegates' -count=1 ./authenticate/ ./httpsec/`. Expected: FAIL. The table fails on `ok`, and the chain case finds no summary record.
+- [ ] **Step 3 (green):** Implement the method in `authenticate/firstof.go`: flush each delegate that is a `logsample.Flusher`, in delegate order, collect the errors, and return `errors.Join`. Add the compile-time check. Godoc: it says what is flushed and in which order, and that a failure does not stop later flushes. Drop the type assertion from Step 1 if it is no longer needed.
+- [ ] **Step 4:** `go test -count=1 ./authenticate/... ./httpsec/...`, `golangci-lint run ./...`. Expected: PASS, 0 issues. Commit: `feat: FirstOf forwards FlushRefusalLogs to its delegates`.
+
+### Task 3: Memory stores refuse bad options (tasks 3.1–3.3, dispatch B)
+
+**Files:**
+- Modify: `token/onetime/store_memory.go`, `token/onetime/tokens.go:240`, `authenticate/passkey/passkey.go:221`, `recovery/hold.go:125`, `httpsec/mfa_begin.go:241`, `session/store_memory.go` (constructor only), `session/sessions.go:234`, `policy/lockout/attempts.go:298`, `policy/lockout/lockout.go`, and every caller in every module (for example `httpsec/helpers_test.go`, `test/storetest/memory_test.go`, `test/httpsecconformance/scenarios.go`, `recovery/helpers_test.go`, `authenticate/passkey/helpers_test.go`)
 
 **Interfaces:**
+- Consumes: Task 2's types.
 - Produces:
+  - `onetime.NewMemoryStore(opts ...MemoryStoreOption) (*MemoryStore, error)`
   - `session.NewMemoryStore(opts ...MemoryStoreOption) (*MemoryStore, error)`
-  - `(*MemoryStore).Start(ctx context.Context) error`
-  - `(*MemoryStore).Shutdown(ctx context.Context) error`
-  - `session.ErrAlreadyStarted`, `session.ErrAlreadyShutdown`
+  - `lockout.NewMemoryAttemptStore(opts ...MemoryAttemptOption) (*MemoryAttemptStore, error)`
 
-- [ ] **Step 1 (3.2): Failing test.** `TestMemoryStore_InvalidHousekeepingConfiguration`, with cases interval `0`, interval `-time.Second` and a nil clock. Each asserts `ErrorIs(err, session.ErrConfig)` and a nil store. Run it. Expected: FAIL, because a store is returned. Implement, run, PASS. Commit.
-- [ ] **Step 2 (4.2): Failing tests.** `TestMemoryStore_Lifecycle`, a table on a clockwork fake with `goleak.VerifyNone` in each case:
-  - `"cancelled start context"`: start with a ctx that is then cancelled, expire a session, advance 10 seconds, and assert the session is gone;
-  - `"already-cancelled start context"` (Review Focus 2): the same, with the ctx cancelled before Start;
-  - `"double start and stop"`: the second Start returns `ErrorIs(err, session.ErrAlreadyStarted)`, and both Shutdowns return nil;
-  - `"start after shutdown"`: Start returns `ErrorIs(err, session.ErrAlreadyShutdown)`;
-  - `"shutdown bounded"`: Shutdown with an expired ctx during a slow `DeleteExpired` returns `context.DeadlineExceeded`;
-  - `"concurrent start and shutdown"` (Review Focus 1), run under `-race`.
-- [ ] **Step 3:** `go test -race -run TestMemoryStore_Lifecycle -count=1 ./session/`. Expected: FAIL on the cancelled-context, double-start and after-shutdown cases.
-- [ ] **Step 4:** Replace `Stop()` with `Shutdown(ctx)`. Derive the work's context with `context.WithCancel(context.WithoutCancel(ctx))`, track the work with a `sync.WaitGroup`, and select on a done channel against `ctx.Done()`. Update every caller of `Stop`. Run again. Expected: PASS. Commit.
+- [ ] **Step 1 (3.1, red):** Write `TestMemoryStore_Construction` in `token/onetime`:
+  - `"nil time source"` and `"typed nil time source"`: assert `require.ErrorIs(t, err, onetime.ErrConfig)` and `assert.Nil(t, store)`;
+  - `"consumer time source"` (clockwork fake): a record with a 1-minute TTL, an advance of 2 minutes, then `PurgeExpired` removes it.
 
-### Task 5: Lockout attempt store (task 3.3, dispatch B2)
-
-**Interfaces:**
-- Produces: `lockout.NewMemoryAttemptStore(opts ...MemoryAttemptOption) (*MemoryAttemptStore, error)`
-
-- [ ] **Step 1: Failing test.** `TestMemoryAttemptStore_Capacity`, with cases:
-  - `"capacity of zero"`, asserting `require.NotPanics`, `ErrorIs(err, policy.ErrConfig)` and a nil store;
-  - `"negative capacity"`, asserting the same;
-  - `"consumer capacity"`, holding 1,000,000 identifiers.
+  Stub the signature to return `(s, nil)` so that it compiles, then run `go test -run TestMemoryStore_Construction -count=1 ./token/onetime/`. Expected: FAIL on both nil cases, "expected an error".
+- [ ] **Step 2 (3.1, green):** Refuse with `nilcheck.IsNil`, and pass the error up through the four default sites. Run the test, then `go test ./token/onetime/... ./authenticate/passkey/... ./recovery/... ./httpsec/...`. Expected: PASS.
+- [ ] **Step 3 (3.2, red):** Write `TestMemoryStore_InvalidHousekeepingConfiguration` in `session`, with cases interval `0`, interval `-time.Second`, a nil clock and a typed-nil clock. Each asserts `ErrorIs(err, session.ErrConfig)` and a nil store. Run it. Expected: FAIL, because a store is returned.
+- [ ] **Step 4 (3.2, green):** Implement, and pass the error up through `session.New`. Run `go test ./session/...`. Expected: PASS.
+- [ ] **Step 5 (3.3, red):** Write `TestMemoryAttemptStore_Capacity` in `policy/lockout`:
+  - `"capacity of zero"` and `"negative capacity"`: assert `require.NotPanics`, `ErrorIs(err, policy.ErrConfig)` and a nil store;
+  - `"consumer capacity"`: 1,000,000 identifiers held.
 
   Run it. Expected: FAIL with a panic on zero.
-- [ ] **Step 2:** Implement the refusal, and pass the error up through `lockout.New`. Run. Expected: PASS. Commit.
+- [ ] **Step 6 (3.3, green):** Replace the panic with the error, and pass it up through `lockout.New`. Run `go test ./policy/...`. Expected: PASS.
+- [ ] **Step 7:** Run `go test -count=1 ./...` in every module. Expected: PASS. Commit: `refactor!: memory stores refuse bad options at construction`.
 
-### Task 6: Signing keys lifecycle (task 4.1, dispatch C1)
+### Task 4: Signing keys lifecycle (task 4.1, dispatch C1)
 
 **Interfaces:**
-- Produces:
-  - `(*Keys).Start(ctx context.Context) error`
-  - `(*Keys).Shutdown(ctx context.Context) error`
-  - `signingkey.ErrAlreadyStarted`, `signingkey.ErrAlreadyShutdown`
+- Produces: `(*Keys).Start(ctx context.Context) error`, `(*Keys).Shutdown(ctx context.Context) error`, `signingkey.ErrAlreadyStarted`, `signingkey.ErrAlreadyShutdown`
 
-- [ ] **Step 1: Failing tests.** `TestKeys_Lifecycle`, a table with `goleak.VerifyNone`, using a clockwork fake that is `BlockUntilContext`-synchronised on the three loops. One case per `signing-keys` scenario:
+- [ ] **Step 1 (red):** Write `TestKeys_Lifecycle`, a table with `goleak.VerifyNone` and a clockwork fake synchronised with `BlockUntilContext(ctx, 3)`. One case per scenario:
   - "Double start" (`ErrorIs(err, ErrAlreadyStarted)`);
   - "Cancelled start context" (a rotation still happens after the interval);
-  - "already-cancelled start context" (Review Focus 2);
+  - `"already-cancelled start context"` (Review Focus 2);
   - "Start after shutdown" (`ErrAlreadyShutdown`);
-  - "Consumer bounds the shutdown" (a store double blocks `Store` until released; Shutdown with a 50 ms ctx returns `context.DeadlineExceeded`; after the release, a second Shutdown returns nil);
+  - "Consumer bounds the shutdown": a store double blocks `Store`, Shutdown with a 50 ms context returns `context.DeadlineExceeded`, and after the release a second Shutdown returns nil;
   - "Shutdown twice";
-  - "Stop before start".
-- [ ] **Step 2:** `go test -race -run TestKeys_Lifecycle -count=1 ./token/signingkey/`. Expected: FAIL on all but "Constructed but not started" and "Clean shutdown".
-- [ ] **Step 3:** Implement as in Task 4, Step 4. Keep "no store write after a nil Shutdown" by waiting for the in-flight write. Update every caller of `Stop`. Run. Expected: PASS. Commit.
+  - "Stop before start";
+  - `"completion wins"`: on a manager whose work has ended, Shutdown with an already-cancelled context returns nil;
+  - `"shutdown from error hook"` (Review Focus 3): a hook calling `Shutdown` with a 100 ms context returns `context.DeadlineExceeded` within 1 s;
+  - "Concurrent start and stop", under `-race`.
+- [ ] **Step 2:** `go test -race -run TestKeys_Lifecycle -count=1 ./token/signingkey/`. Expected: FAIL on every new case.
+- [ ] **Step 3 (pin):** Add `TestKeys_ServedAfterShutdown`: after Shutdown, `Signer` and `VerificationKeys` still return the held key, and advancing the fake past the rotation interval rotates nothing. Run it: PASS. Temporarily clear the keys in `Stop` and watch it fail, then restore.
+- [ ] **Step 4 (green):** Replace `Stop()` with `Shutdown(ctx)`:
+  - derive the work's context as `context.WithCancel(context.WithoutCancel(ctx))`, and track the work with a `sync.WaitGroup`;
+  - in Shutdown, check for completion before the `select` on `ctx.Done()`, and wait for an in-flight store write;
+  - rewrite the godoc of `Start` without the restart paragraph, and the godoc of `Shutdown` with the warning against calling it from an error hook;
+  - update `doc.go` and every caller of `Stop`.
 
-### Task 7: Sweeper lifecycle (task 4.3, dispatch C3)
+  Run Steps 2 and 3. Expected: PASS. Commit.
 
-- [ ] **Step 1: Failing tests.** `TestSweeper_DetachedStart`, with cases:
-  - `"cancelled start context"`: a task's purge runs after the start ctx is cancelled, and its ctx `Err()` is nil;
-  - `"shutdown cancels a running purge"`: the purge observes `ctx.Done()`, and Shutdown returns after the purge returns;
-  - `"consumer bounds the shutdown"`: a purge ignoring cancellation, with Shutdown on a 50 ms ctx, returns `context.DeadlineExceeded`;
-  - `"shutdown from inside a purge"` (Review Focus 3): a purge calls `Shutdown` on a 100 ms ctx, which returns `context.DeadlineExceeded` within 1 second, with no deadlock;
-  - `"concurrent start and shutdown"` (Review Focus 1), under `-race`.
-- [ ] **Step 2:** `go test -race -run TestSweeper_DetachedStart -count=1 ./...` in `expiry/sweep`. Expected: FAIL on "cancelled start context".
-- [ ] **Step 3:** Parent the run contexts on `context.WithoutCancel(ctx)` plus an internal cancel used by Shutdown. Keep `WithStopTimeout` as gocron's bound. Run. Expected: PASS. Commit.
-
-### Task 8: Queued sender (task 4.4, dispatch C4)
+### Task 5: Session memory store lifecycle (task 4.2, dispatch C2)
 
 **Interfaces:**
-- Produces: `(*QueuedSender).Shutdown(ctx context.Context) error`, `notify.ErrAlreadyShutdown` (replaces `ErrSenderClosed`)
+- Consumes: Task 3's `session.NewMemoryStore(...) (*MemoryStore, error)`.
+- Produces: `(*MemoryStore).Start(ctx context.Context) error`, `(*MemoryStore).Shutdown(ctx context.Context) error`, `session.ErrAlreadyStarted`, `session.ErrAlreadyShutdown`
 
-- [ ] **Step 1: Failing tests.** `TestQueuedSender_Shutdown`, with cases:
-  - "Close drains": 3 messages, a 10 s ctx, nil returned, and a later Send returns `ErrorIs(err, notify.ErrAlreadyShutdown)`;
-  - "Shutdown bounded by its context": a 5 s sender with a 1 s ctx returns `context.DeadlineExceeded` within 1.5 s;
+- [ ] **Step 1 (red):** Write `TestMemoryStore_Lifecycle`, a table on a clockwork fake with `goleak.VerifyNone`:
+  - "Cancelled start context", and `"already-cancelled start context"`: the expired session is gone after one interval;
+  - "Double start and stop": `ErrAlreadyStarted`, and both shutdowns return nil;
+  - "Start after shutdown": `ErrAlreadyShutdown`;
+  - `"shutdown bounded, then waits again"`: a slow `DeleteExpired`, Shutdown with an expired context returns `context.DeadlineExceeded`, and a later Shutdown with a sufficient context returns nil;
+  - `"concurrent start and shutdown"`, under `-race`.
+- [ ] **Step 2:** `go test -race -run TestMemoryStore_Lifecycle -count=1 ./session/`. Expected: FAIL on the cancelled-context, double-start, after-shutdown and bounded cases.
+- [ ] **Step 3 (pin):** Add `TestMemoryStore_ServesAfterShutdown`: save and load succeed after Shutdown, and no sweep runs. Run it: PASS. Temporarily refuse `Save` after Stop and watch it fail, then restore.
+- [ ] **Step 4 (green):** Apply Task 4 Step 4's shape. Remove the restart paragraph from the godoc, and update every caller of `Stop`. Run Steps 2 and 3. Expected: PASS. Commit.
+
+### Task 6: Sweeper lifecycle (task 4.3, dispatch C3)
+
+- [ ] **Step 1 (red):** Write `TestSweeper_DetachedStart`:
+  - "Cancelled start context": a purge runs after the start context is cancelled, and its context's `Err()` is nil;
+  - "Shutdown cancels a running purge": the purge sees `ctx.Done()`, and Shutdown returns after it does;
+  - "Consumer bounds the shutdown": a purge ignoring cancellation, and Shutdown with a 50 ms context, returns `ErrorIs(err, context.DeadlineExceeded)`;
+  - `"shutdown from inside a purge"` (Review Focus 3): `Shutdown` with a 100 ms context returns within 1 s, with no deadlock;
+  - `"concurrent start and shutdown"`, under `-race`.
+- [ ] **Step 2:** `go test -race -run TestSweeper_DetachedStart -count=1 ./...` in `expiry/sweep`. Expected: FAIL on "Cancelled start context".
+- [ ] **Step 3 (pin):** Add `TestSweeper_PurgeOutlastsStopTimeout`: `WithStopTimeout(time.Second)`, and a purge ignoring cancellation. Both Shutdown calls return the stop-timeout error (`ErrorIs(err, gocron.ErrStopExecutorTimedOut)` or the sweeper's wrapper of it). Run it: PASS. Temporarily return nil instead and watch it fail, then restore.
+- [ ] **Step 4 (green):** Parent the run contexts on `context.WithoutCancel(ctx)` plus an internal cancel that Shutdown triggers. Keep `WithStopTimeout` and the shared result. Run Steps 2 and 3. Expected: PASS. Commit.
+
+### Task 7: Queued sender (task 4.4, dispatch C4)
+
+**Interfaces:**
+- Produces: `(*QueuedSender).Shutdown(ctx context.Context) error`, and `notify.ErrAlreadyShutdown`, which replaces `ErrSenderClosed`. There is no `notify.ErrAlreadyStarted`.
+
+- [ ] **Step 1 (red):** Write `TestQueuedSender_Shutdown`:
+  - "Close drains": 3 messages and a 10 s context, nil returned; a later Send returns `ErrorIs(err, notify.ErrAlreadyShutdown)`;
+  - "Shutdown bounded by its context": a 5 s sender and a 1 s context return `context.DeadlineExceeded` within 1.5 s;
   - "Shutdown twice": nil;
-  - `"send concurrent with shutdown"` (Review Focus 5): 100 goroutines send while Shutdown runs, under `-race`. Every Send either returns nil and its message is delivered, or returns `ErrAlreadyShutdown`, and nothing panics.
-- [ ] **Step 2:** Stub `Shutdown(ctx)` as a call to the existing `Close(ctx)`, and alias `ErrAlreadyShutdown` to a fresh sentinel, so that the tests compile. Run them. Expected: FAIL on the error identity (a later Send still returns `ErrSenderClosed`) and on the concurrent case.
-- [ ] **Step 3:** Rename `Close` to `Shutdown` and the sentinel, and guard intake with the existing mutex so that no send reaches a closed channel. Run. Expected: PASS. Commit.
+  - "Sends racing shutdown": 100 goroutines send while Shutdown runs, under `-race`. Each Send either returned nil and its message was delivered, or returned `ErrAlreadyShutdown`, and nothing panics.
 
-### Task 9: Nil context on lifecycle methods (task 4.5, dispatch D)
+  To compile, add `Shutdown` as a call to `Close`, and declare `ErrAlreadyShutdown` as a new sentinel. Run. Expected: FAIL on the error identity. A racing case that passes is pinned: temporarily drop accepted messages and watch it fail.
+- [ ] **Step 2 (green):** Rename `Close` to `Shutdown` and the sentinel, and guard intake with the existing mutex. Shutdown closes intake and waits for the drain. It cancels no work context: the workers have none, and each delivery keeps its caller's context with the cancellation removed, bounded by the send timeout (D4). Update every caller. Run. Expected: PASS. Commit.
 
-- [ ] **Step 1: Failing tests.** One table per package, `Test<Type>_NilContext`, with cases `"start"` and `"shutdown"`. Each asserts `ErrorIs(err, <pkg>.ErrConfig)` (`sweep.ErrInvalidOption` for `sweep`) and that no goroutine was started. Run. Expected: FAIL in `signingkey`, `session` and `notify`; `sweep`'s start case already passes.
-- [ ] **Step 2:** Add the checks. Run. Expected: PASS. Commit: `refactor!: one Start and Shutdown lifecycle`.
+### Task 8: Nil context on lifecycle methods (task 4.5, dispatch D)
 
-### Task 10: Guards (tasks 5.1–5.2, dispatch E)
+- [ ] **Step 1 (red):** Write `Test<Type>_NilContext` in `signingkey` and `session`, with cases `"start"` and `"shutdown"`, and in `notify`, with `"shutdown"` only. Each asserts `ErrorIs(err, <pkg>.ErrConfig)`, that no goroutine started, and that a later call with a real context still works. Run them. Expected: FAIL in all three packages. `sweep` already refuses both, and its existing tests stay.
+- [ ] **Step 2 (green):** Add the checks. Run. Expected: PASS. Commit: `refactor!: one Start and Shutdown lifecycle`.
+
+### Task 9: Guards (tasks 5.1–5.2, dispatch E)
 
 **Interfaces:**
 - Produces:
-  - `httpsec.NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error)`
-  - `httpsec.WithChainAuthorizer() GuardOption`
-  - `ginsec.NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error)`
-  - `ginsec.WithChainAuthorizer() GuardOption`
-  - `type fibersec.GuardOption func(*guardConfig)`
-  - `fibersec.NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error)`
-  - `fibersec.WithChainAuthorizer() GuardOption`
+  - `httpsec.NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error)`, `httpsec.WithChainAuthorizer() GuardOption`
+  - `ginsec.NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error)`, `ginsec.WithChainAuthorizer() GuardOption`
+  - `type fibersec.GuardOption func(*Guards)`, `fibersec.NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error)`, `fibersec.WithChainAuthorizer() GuardOption`
 
-- [ ] **Step 1 (5.1): Failing tests.** `TestNewGuards_Authorizer` in `httpsec`, with cases:
-  - `"nil authorizer"` and `"typed-nil authorizer"` (Review Focus 4), each asserting `ErrorIs(err, httpsec.ErrConfig)` and nil guards;
-  - `"chain authorizer declared"`, where a route through a chain with `EnableAuthorization` and a privileged principal is called (200);
-  - `"declared reliance, no chain authorizer"`, refused with `authorize.ErrAccessDenied`;
-  - `"both given"`, where the request's authorizer is preferred.
+- [ ] **Step 1 (5.1, red):** Write `TestNewGuards_Authorizer` in `httpsec`:
+  - `"nil authorizer"` and `"typed-nil authorizer"`: `ErrorIs(err, httpsec.ErrConfig)`, and the guards are nil;
+  - `"chain authorizer declared"`: through a chain with `EnableAuthorization` and a privileged principal, 200;
+  - `"typed nil beside declared reliance"`: no authorizer in the context, refused with `authorize.ErrAccessDenied` and `require.NotPanics`;
+  - `"declared reliance, no chain authorizer"`: `ErrAccessDenied`;
+  - `"both given"`: the request's authorizer is preferred.
 
   Run. Expected: FAIL on the two nil cases.
-- [ ] **Step 2:** Implement. Update every `NewGuards` caller, including examples and the test module. Run. Expected: PASS.
-- [ ] **Step 3 (5.2):** The same table in `ginsec` and `fibersec`, plus `"fiber refusal reaches the consumer's error handler"` (a fiber app whose `ErrorHandler` writes `"custom"` receives the guard's refusal). Run. Expected: FAIL on the nil cases. Implement. Run. Expected: PASS. Commit: `feat!: guards declare where their authorizer comes from`.
+- [ ] **Step 2 (5.1, green):** Implement with `nilcheck.IsNil`, storing a typed nil as no fallback, and rewrite the "nothing to misconfigure" godoc. Update every `NewGuards` caller. Run. Expected: PASS.
+- [ ] **Step 3 (5.2):** The same table in `ginsec` and `fibersec`, plus `"fiber refusal reaches the consumer's error handler"`: an app whose `ErrorHandler` writes `"custom"` receives the guard's refusal. Run. Expected: FAIL on the nil cases. Implement. Run. Expected: PASS. Commit: `feat!: guards declare where their authorizer comes from`.
 
-### Task 11: Nil context in the exchange (task 6.1, dispatch F)
+### Task 10: Nil context in the exchange (task 6.1, dispatch F)
 
-- [ ] **Step 1: Failing tests.** `TestExchange_NilContext`, with cases:
+- [ ] **Step 1 (red):** Write `TestExchange_NilContext`:
   - `"new exchange"`: `require.PanicsWithValue(t, "httpsec: NewExchange needs a non-nil context", …)`;
   - `"set context"`: `PanicsWithValue(t, "httpsec: Exchange.SetContext needs a non-nil context", …)`.
 
   Run. Expected: FAIL, because neither panics.
-- [ ] **Step 2:** Implement, and remove the `//nolint:contextcheck` on `NewExchange`. Run it, plus the `ginsec` and `fibersec` suites. Expected: PASS. Commit.
+- [ ] **Step 2 (green):** Implement, and remove the `//nolint:contextcheck` on `NewExchange`. Run it, plus the `ginsec` and `fibersec` suites. Expected: PASS. Commit.
 
-### Task 12: Deps and default scopes (tasks 7.1–7.2, dispatch F)
+### Task 11: `OIDCDeps` and default scopes (tasks 7.1–7.2, dispatch F)
 
 **Interfaces:**
 - Produces:
   - `type httpsec.OIDCDeps struct{ RelyingParty *oidc.RelyingParty; Handoff *oidc.Handoff }`
   - `EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option`
-  - `type httpsec.RecoveryCooldownDeps struct{ Records recovery.RecordStore; Cooldown time.Duration }`
-  - `EnableRecoveryCooldown(d RecoveryCooldownDeps, routes ...Route) Option`
   - `func oidc.DefaultScopes() []string`
+- `EnableRecoveryCooldown(records, d, routes...)` is unchanged.
 
-- [ ] **Step 1 (7.1): Failing test.** `TestEnableDeps_Required`, with cases:
-  - `"oidc without relying party"` and `"oidc without handoff"`;
-  - `"cooldown without records"` and `"cooldown of zero"`.
+- [ ] **Step 1 (7.1, refactor):** Change the signature and move the existing checks unchanged: a nil `RelyingParty` is refused, and `Handoff` is required unless `WithOIDCCallbackSuccess` is given, when it must be nil. Update every caller, including `README.md` and `authenticate/oidc/doc.go`. Run `go test ./httpsec/... ./authenticate/oidc/...` and the test module's OIDC suites. Expected: PASS, including the existing missing-handoff and callback-success cases.
+- [ ] **Step 2 (7.2, red):** Write `TestDefaultScopes_ReturnsACopy`: overwrite element 0 of one result, and assert the next call returns `[]string{"openid", "profile", "email"}`. With the function stubbed to return the shared variable, run it. Expected: FAIL.
+- [ ] **Step 3 (7.2, green):** Return `slices.Clone` of an unexported array, and make `resolveProvider` call it. Update `registry_test.go:64`. Run. Expected: PASS. Commit: `refactor!: OIDCDeps; DefaultScopes is a function`.
 
-  Each asserts that `httpsec.New(...)` returns `ErrorIs(err, httpsec.ErrConfig)`. Run it against the new signatures with the checks absent. Expected: FAIL. Implement the checks. Run. Expected: PASS, and the existing OIDC and cooldown tests pass on the new signatures.
-- [ ] **Step 2 (7.2):** Replace the variable with the function, using `slices.Clone` of an unexported array. Add `TestDefaultScopes_ReturnsACopy`, which overwrites element 0 of one result and asserts the next call returns `[]string{"openid", "profile", "email"}`. Expected: PASS. Commit: `refactor!: one Deps rule; DefaultScopes is a function`.
+### Task 12: Final integration (tasks 8.1–8.2)
 
-### Task 13: Final integration (tasks 8.1–8.2)
+- [ ] **Step 1 (8.1, dispatch F):** Search, excluding `openspec/` and `.claude/.legacy`:
+  - `rg -n 'RefusalLogFlusher|ErrSenderClosed|\.Stop\(\)|\.Close\(ctx|DefaultScopes\b[^(]|RecoveryCooldownDeps'`;
+  - `rg -n '\.\((authenticate|policy|token|seal|signingkey|password)\.\w+\)'` for type assertions onto ports or optional interfaces;
+  - `rg -n -i 'restart|idempotent|nothing to misconfigure' token/signingkey session expiry/sweep notify httpsec/*guards*.go`, checking each hit by hand.
 
-- [ ] **Step 1 (8.1, dispatch F):** Search `rg -n --glob '!openspec/**' --glob '!.claude/.legacy/**' 'RefusalLogFlusher|ErrSenderClosed|\.Stop\(\)|\.Close\(ctx|DefaultScopes\b[^(]'`. Fix each stale use in godoc, examples and the README. Expected: no hits.
-- [ ] **Step 2 (8.2, main session):** Run `make check`, push, and wait for CI to be green, including the Docker suites. Then run `openspec validate idiomatic-api-shape --strict`, and dispatch the Opus whole-branch reviewer with the eight deltas, D1–D8 and `git diff origin/main...HEAD`. Expected: green, valid, and a clean review.
+  Fix each stale use. Expected: none left.
+- [ ] **Step 2 (8.2, main session):** Run `make check`, push, and wait for CI to be green, including the Docker suites. Run `openspec validate idiomatic-api-shape --strict`. Dispatch the Opus whole-branch reviewer with the eight deltas, D1–D8 and `git diff origin/main...HEAD`. Expected: green, valid, and a clean review.
+
+### Task 13: Review follow-ups (tasks 9.1–9.4)
+
+#### G1, step A (9.1): `Send` logs outside the lock
+
+**Files:** `notify/queued.go`, `notify/queued_test.go`
+
+- [ ] **Step 1 (red):** Write `TestQueuedSender_ShutdownNotHeldByASlowLogger`. Build a sender with a queue of 1, one worker blocked in the wrapped sender, and a `slog` handler that blocks on a channel when it records a queue-full message. Fill the queue, then call `Send` in a goroutine, which parks in the handler. Call `Shutdown` with a 100 ms context. Assert it returns `context.DeadlineExceeded` within 1 s. Release the handler and the worker in cleanup, and check with `goleak`.
+- [ ] **Step 2:** `go test -race -run TestQueuedSender_ShutdownNotHeldByASlowLogger -count=1 ./notify/`. Expected: FAIL, because `Shutdown` is still blocked on the lock after 1 s.
+- [ ] **Step 3 (green):** In `Send`, decide under the read lock (shut down, queued, or full), release it, then log and return. Run Step 2 and the queued-sender suite with `-race -count=5`. Expected: PASS.
+
+#### G1, step B (9.2): one shutdown wait
+
+**Files:** create `internal/lifecycle/lifecycle.go` and `lifecycle_test.go`; modify the four `Shutdown` methods.
+
+**Interfaces:**
+- Produces: `func lifecycle.Await(ctx context.Context, done <-chan struct{}) error`. It returns nil if `done` is already closed, checked before anything else so that completion wins a tie. Otherwise it waits for whichever comes first: `done` closing gives nil, and `ctx` ending gives `ctx.Err()`.
+
+- [ ] **Step 1:** Write `TestAwait`, a table with three cases: "done already closed with ctx already done gives nil", "ctx ends first gives its error", "done closes first gives nil". Implement `Await`, run the test, and see "done already closed with ctx already done" fail when the pre-check is removed. Restore the pre-check.
+- [ ] **Step 2:** Replace the hand-written wait in `Keys.Shutdown`, `MemoryStore.Shutdown`, `QueuedSender.Shutdown` and `Sweeper.Shutdown` with `Await`. `sweep` keeps wrapping the error it returns. No test changes.
+- [ ] **Step 3:** Rename the struct fields `Keys.lifecycle` and `MemoryStore.lifecycle` to `lifecycleMu` with gopls, so they do not read as the package.
+- [ ] **Step 4:** Add to `TestSweeper_SecondShutdownWaitsForTheFirst` the case "a finished shutdown wins over a context that is already done": 100 calls, each nil. Add `ErrorContains(err, "sweep: shutting down")` to the sweeper's bounded-shutdown cases. Bypass the pre-check, and then the wrapping, and see each fail.
+- [ ] **Step 5:** `go test -race -count=3` on `./token/signingkey/ ./session/ ./notify/ ./internal/lifecycle/`, then inside `expiry/sweep`. Expected: PASS. Only the new lifecycle test and the sweeper's test file change.
+
+#### G2 (9.3): one guard rule
+
+**Files:** create `internal/guardauth/guardauth.go` and its test; modify the three `guards.go` files.
+
+**Interfaces:**
+- Produces:
+  - `func guardauth.Fallback(az authorize.Authorizer, chainDeclared bool) (fallback authorize.Authorizer, ok bool)`. With a usable `az`, it returns `az, true`. With a nil or typed-nil `az`, it returns `nil, chainDeclared`. When `ok` is false, the caller refuses construction with its own error text.
+  - `func guardauth.For(ctx context.Context, fallback authorize.Authorizer) (authorize.Authorizer, bool)`. It prefers the request's authorizer (`authorize.AuthorizerFromContext`), then the fallback when `!nilcheck.IsNil(fallback)`.
+
+- [ ] **Step 1:** Write `TestFallback` and `TestFor`, each a table covering a usable authorizer, nil, typed nil, declared and undeclared reliance, and context against fallback. Implement and run.
+- [ ] **Step 2:** Make the three `NewGuards` call `Fallback`, and the three `authorizerFor` call `For`. Each package keeps its error text. No test changes.
+- [ ] **Step 3:** `go test -race -count=1` in the root, `httpsec/ginsec` and `httpsec/fibersec`, plus the `test` module's conformance suites. Expected: PASS, with no existing test changed.
+
+#### G3 (9.4): small fixes
+
+- [ ] **Step 1:** The `EnableOIDCLogin` refusals name `OIDCDeps.RelyingParty` and `OIDCDeps.Handoff`. Update the three assertions in `TestEnableOIDCLoginConstruction`, run them, and see them fail on the old text first.
+- [ ] **Step 2:** The godoc of `notify.ErrConfig`, `signingkey.ErrConfig` and `session.ErrConfig` lists the lifecycle methods (and, for `session`, `NewMemoryStore`) that return them.
+- [ ] **Step 3:** Write `TestMust`, a table with two cases: "value passes through" and "error panics with that error". Use `require.PanicsWithError`, or recover and `ErrorIs`. Make `Must` ignore the error temporarily, see the panic case fail, then restore it.
+- [ ] **Step 4:** `FirstOf.FlushRefusalLogs` appends only non-nil errors. `TestFirstOf_FlushRefusalLogs` passes unchanged.
+- [ ] **Step 5:** `resolveProvider` copies the default scopes once. `registry_test.go` passes unchanged.
+- [ ] **Step 6:** `go test -count=1 ./httpsec/ ./notify/ ./token/signingkey/ ./internal/must/ ./authenticate/...` and `golangci-lint run ./...`. Expected: PASS, 0 issues.
+
+After G1–G3: the main session runs `make check`, a fresh Opus reviewer checks the group-9 diff against D4, D5 and these tasks, the branch is pushed, and CI must be green before 8.2 is ticked.

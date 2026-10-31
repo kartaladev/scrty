@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -383,7 +384,7 @@ func TestStart_ConcurrentBurstStaysWithinIssuanceLimit(t *testing.T) {
 	}).AnyTimes()
 
 	store := &countHoldingTokenStore{
-		MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock)),
+		MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock))),
 		racers:      racers,
 		all:         make(chan struct{}),
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -56,6 +57,192 @@ func recordID(err error) func(httpsec.Request) (string, error) {
 	}
 }
 
+// mustGuards builds fiber guards a test needs to exist, failing the test when
+// the wiring it was handed is refused.
+func mustGuards(t *testing.T, az authorize.Authorizer, opts ...fibersec.GuardOption) *fibersec.Guards {
+	t.Helper()
+
+	g, err := fibersec.NewGuards(az, opts...)
+	require.NoError(t, err)
+
+	return g
+}
+
+// TestFiber_NewGuards_Authorizer pins that fiber guards follow the core guards'
+// construction rule: an authorizer, a declared reliance on the chain's, or
+// both, and a refusal at construction for neither. A refusal is still rendered
+// by fiber's error handler, which the consumer owns.
+func TestFiber_NewGuards_Authorizer(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *MockAuthorizer
+
+	// guarded serves one request through a fiber chain that publishes the test
+	// principal, with opts added to the chain, onto a route behind g's guard.
+	// The error handler records the refusal and then answers as the library's
+	// default does. fiber's recover middleware turns a panic into an error, so
+	// a nil-method call shows as a wrong refusal rather than a crashed binary.
+	guarded := func(t *testing.T, g *fibersec.Guards, opts ...httpsec.Option) (response, bool, error) {
+		t.Helper()
+
+		var (
+			refusal  error
+			routeRan bool
+		)
+
+		app := fiber.New(fiber.Config{ErrorHandler: func(fc fiber.Ctx, err error) error {
+			refusal = err
+
+			return fibersec.ErrorHandler(fc, err)
+		}})
+		app.Use(recoverer.New())
+		app.Use(fibersec.Middleware(newChain(t, append([]httpsec.Option{
+			httpsec.RegisterInterceptor(publishing(testPrincipal()), httpsec.OrderBearerToken),
+		}, opts...)...)))
+		app.Get("/records/:id", g.ResourcePrivileges("admin", "user").RequireOne("read"),
+			func(fc fiber.Ctx) error {
+				routeRan = true
+
+				return fc.SendStatus(http.StatusNoContent)
+			})
+
+		res := serve(t, app,
+			httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/records/r-1", nil))
+
+		return res, routeRan, refusal
+	}
+
+	type testCase struct {
+		name   string
+		az     func(t *testing.T) authorize.Authorizer
+		opts   []fibersec.GuardOption
+		assert func(t *testing.T, g *fibersec.Guards, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "fiber guards built with no authorizer",
+			az:   func(*testing.T) authorize.Authorizer { return nil },
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, g)
+			},
+		},
+		{
+			name: "typed-nil authorizer",
+			az:   func(*testing.T) authorize.Authorizer { return typedNil },
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig,
+					"an interface holding a nil value is no authorizer")
+				assert.Nil(t, g)
+			},
+		},
+		{
+			name: "chain authorizer declared",
+			az:   func(*testing.T) authorize.Authorizer { return nil },
+			opts: []fibersec.GuardOption{fibersec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+
+				chainAz := NewMockAuthorizer(gomock.NewController(t))
+				chainAz.EXPECT().Authorize(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+				res, routeRan, refusal := guarded(t, g, httpsec.EnableAuthorization(chainAz))
+
+				require.NoError(t, refusal)
+				assert.True(t, routeRan, "the guard judged with the chain's authorizer")
+				assert.Equal(t, http.StatusNoContent, res.status)
+			},
+		},
+		{
+			name: "typed nil beside declared reliance",
+			az:   func(*testing.T) authorize.Authorizer { return typedNil },
+			opts: []fibersec.GuardOption{fibersec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+
+				res, routeRan, refusal := guarded(t, g)
+
+				require.ErrorIs(t, refusal, authorize.ErrAccessDenied,
+					"a typed nil is no fallback, so no method is called on it")
+				assert.False(t, routeRan)
+				assert.Equal(t, http.StatusForbidden, res.status)
+			},
+		},
+		{
+			name: "declared reliance, no chain authorizer",
+			az:   func(*testing.T) authorize.Authorizer { return nil },
+			opts: []fibersec.GuardOption{fibersec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+
+				_, routeRan, refusal := guarded(t, g)
+
+				require.ErrorIs(t, refusal, authorize.ErrAccessDenied)
+				assert.False(t, routeRan)
+			},
+		},
+		{
+			name: "both given",
+			az:   func(t *testing.T) authorize.Authorizer { return refusingAuthorizer(t, errAuthorizerRoles) },
+			opts: []fibersec.GuardOption{fibersec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+
+				_, routeRan, refusal := guarded(t, g, httpsec.EnableAuthorization(permittingAuthorizer(t)))
+				require.NoError(t, refusal)
+				assert.True(t, routeRan, "the request's authorizer is preferred over the one built in")
+
+				_, routeRan, refusal = guarded(t, g)
+				require.ErrorIs(t, refusal, errAuthorizerRoles,
+					"the one built in is the fallback when the request carries none")
+				assert.False(t, routeRan)
+			},
+		},
+		{
+			name: "fiber guard refusal reaches the consumer's error handler",
+			az: func(t *testing.T) authorize.Authorizer {
+				return refusingAuthorizer(t, authorize.ErrAccessDenied)
+			},
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+
+				var refusal error
+
+				app := fiber.New(fiber.Config{ErrorHandler: func(fc fiber.Ctx, err error) error {
+					refusal = err
+
+					return fc.Status(http.StatusTeapot).SendString("custom")
+				}})
+				app.Use(fibersec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(publishing(testPrincipal()), httpsec.OrderBearerToken))))
+				app.Get("/records/:id", g.ResourcePrivileges("admin", "user").RequireOne("read"),
+					func(fiber.Ctx) error {
+						t.Error("the route behind a refusing guard ran")
+
+						return nil
+					})
+
+				res := serve(t, app,
+					httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/records/r-1", nil))
+
+				require.ErrorIs(t, refusal, authorize.ErrAccessDenied)
+				assert.Equal(t, http.StatusTeapot, res.status)
+				assert.Equal(t, "custom", res.body, "the consumer's error handler rendered the refusal")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g, err := fibersec.NewGuards(tc.az(t), tc.opts...)
+			tc.assert(t, g, err)
+		})
+	}
+}
+
 // TestFiberGuards pins the fail-closed contract at a fiber route: a guard that
 // cannot establish the caller may proceed returns its refusal the way the chain
 // does, and the route never runs.
@@ -85,7 +272,7 @@ func TestFiberGuards(t *testing.T) {
 			build: func(t *testing.T) fiber.Handler {
 				t.Helper()
 
-				return fibersec.NewGuards(permittingAuthorizer(t)).
+				return mustGuards(t, permittingAuthorizer(t)).
 					ResourcePrivileges("admin", "user").RequireOne("read")
 			},
 			assert: func(t *testing.T, res response, out guarded) {
@@ -100,7 +287,7 @@ func TestFiberGuards(t *testing.T) {
 			build: func(t *testing.T) fiber.Handler {
 				t.Helper()
 
-				return fibersec.NewGuards(permittingAuthorizer(t)).RequireAuthenticated()
+				return mustGuards(t, permittingAuthorizer(t)).RequireAuthenticated()
 			},
 			assert: func(t *testing.T, res response, out guarded) {
 				require.ErrorIs(t, out.refusal, httpsec.ErrAuthenticationRequired)
@@ -117,7 +304,7 @@ func TestFiberGuards(t *testing.T) {
 			build: func(t *testing.T) fiber.Handler {
 				t.Helper()
 
-				return fibersec.NewGuards(nil).
+				return mustGuards(t, nil, fibersec.WithChainAuthorizer()).
 					ResourcePrivileges("admin", "user").RequireOne("read")
 			},
 			assert: func(t *testing.T, res response, out guarded) {
@@ -133,7 +320,7 @@ func TestFiberGuards(t *testing.T) {
 			build: func(t *testing.T) fiber.Handler {
 				t.Helper()
 
-				return fibersec.NewGuards(refusingAuthorizer(t, errAuthorizerRoles)).
+				return mustGuards(t, refusingAuthorizer(t, errAuthorizerRoles)).
 					ResourcePrivileges("admin", "user").RequireAll("read", "write")
 			},
 			assert: func(t *testing.T, res response, out guarded) {
@@ -150,7 +337,7 @@ func TestFiberGuards(t *testing.T) {
 			build: func(t *testing.T) fiber.Handler {
 				t.Helper()
 
-				g := fibersec.NewGuards(authorize.NewOwnershipAuthorizer())
+				g := mustGuards(t, authorize.NewOwnershipAuthorizer())
 				owned := fibersec.ResourceOwnerships(g, "admin", "user",
 					func(context.Context, *identity.Principal, string) (bool, error) {
 						t.Error("the ownership check ran although the record was never named")
@@ -171,7 +358,7 @@ func TestFiberGuards(t *testing.T) {
 			build: func(t *testing.T) fiber.Handler {
 				t.Helper()
 
-				g := fibersec.NewGuards(authorize.NewOwnershipAuthorizer())
+				g := mustGuards(t, authorize.NewOwnershipAuthorizer())
 				owned := fibersec.ResourceOwnerships(g, "admin", "user",
 					func(_ context.Context, subject *identity.Principal, id string) (bool, error) {
 						return subject.ID == "u-1" && id == "/records/r-1", nil
@@ -309,7 +496,7 @@ func TestFiberGuardsAttributes(t *testing.T) {
 			app := fiber.New()
 			app.Use(fibersec.Middleware(newChain(t,
 				httpsec.RegisterInterceptor(publishing(testPrincipal()), httpsec.OrderBearerToken))))
-			app.Get("/records/:id", tc.build(fibersec.NewGuards(az)), func(fc fiber.Ctx) error {
+			app.Get("/records/:id", tc.build(mustGuards(t, az)), func(fc fiber.Ctx) error {
 				routeRan = true
 
 				return fc.SendStatus(http.StatusNoContent)
@@ -345,14 +532,14 @@ func TestFiber_OwnershipGuardFailsAtWiring(t *testing.T) {
 			name: "with nil checker",
 			assert: func(t *testing.T) {
 				assert.PanicsWithValue(t, "fibersec: ResourceOwnerships needs a non-nil checker", func() {
-					fibersec.ResourceOwnerships[string](fibersec.NewGuards(nil), "orders", "order", nil)
+					fibersec.ResourceOwnerships[string](mustGuards(t, nil, fibersec.WithChainAuthorizer()), "orders", "order", nil)
 				})
 			},
 		},
 		{
 			name: "with nil extractor",
 			assert: func(t *testing.T) {
-				owned := fibersec.ResourceOwnerships[string](fibersec.NewGuards(nil), "orders", "order", ownedByAnyone)
+				owned := fibersec.ResourceOwnerships[string](mustGuards(t, nil, fibersec.WithChainAuthorizer()), "orders", "order", ownedByAnyone)
 
 				assert.PanicsWithValue(t, "fibersec: ForResource needs a non-nil extractor", func() {
 					owned.ForResource(nil)

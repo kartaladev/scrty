@@ -25,7 +25,11 @@ const (
 // the algorithm name, memory, iterations, threads, salt and derived key.
 const argon2idFields = 6
 
-type argon2idEncoder struct {
+// Argon2idEncoder is the Argon2id Encoder. It also implements Recognizer.
+//
+// Build it with NewArgon2idEncoder; the zero value is not usable, because its
+// parameters are set and validated only by the constructor.
+type Argon2idEncoder struct {
 	memory     uint32
 	iterations uint32
 	threads    uint8
@@ -35,7 +39,7 @@ type argon2idEncoder struct {
 }
 
 // Argon2idOption configures the Argon2id encoder.
-type Argon2idOption func(*argon2idEncoder)
+type Argon2idOption func(*Argon2idEncoder)
 
 // WithArgon2idMemory sets the memory cost in KiB. Default: 65536, which is
 // 64 MiB.
@@ -48,7 +52,7 @@ type Argon2idOption func(*argon2idEncoder)
 // override: a configurable ceiling would reopen the process-kill, a fatal
 // allocation failure, that it exists to prevent.
 func WithArgon2idMemory(kib uint32) Argon2idOption {
-	return func(e *argon2idEncoder) { e.memory = kib }
+	return func(e *Argon2idEncoder) { e.memory = kib }
 }
 
 // WithArgon2idIterations sets the number of passes. Default: 1.
@@ -62,7 +66,7 @@ func WithArgon2idMemory(kib uint32) Argon2idOption {
 // override: a configurable ceiling would reopen the unbounded login-path work it
 // exists to prevent.
 func WithArgon2idIterations(n uint32) Argon2idOption {
-	return func(e *argon2idEncoder) { e.iterations = n }
+	return func(e *Argon2idEncoder) { e.iterations = n }
 }
 
 // WithArgon2idThreads sets the parallelism. Default: 4.
@@ -72,7 +76,7 @@ func WithArgon2idIterations(n uint32) Argon2idOption {
 // override: a configurable ceiling would reopen the unbounded login-path work it
 // exists to prevent.
 func WithArgon2idThreads(n uint8) Argon2idOption {
-	return func(e *argon2idEncoder) { e.threads = n }
+	return func(e *Argon2idEncoder) { e.threads = n }
 }
 
 // WithArgon2idSaltLength sets the salt length in bytes. Default: 16.
@@ -81,7 +85,7 @@ func WithArgon2idThreads(n uint8) Argon2idOption {
 // [ErrInvalidParameters], a stored record over it never matches, and there is no
 // override.
 func WithArgon2idSaltLength(n int) Argon2idOption {
-	return func(e *argon2idEncoder) { e.saltLength = n }
+	return func(e *Argon2idEncoder) { e.saltLength = n }
 }
 
 // WithArgon2idKeyLength sets the derived key length in bytes. Default: 32.
@@ -90,7 +94,7 @@ func WithArgon2idSaltLength(n int) Argon2idOption {
 // [ErrInvalidParameters], a stored record over it never matches, and there is no
 // override.
 func WithArgon2idKeyLength(n uint32) Argon2idOption {
-	return func(e *argon2idEncoder) { e.keyLength = n }
+	return func(e *Argon2idEncoder) { e.keyLength = n }
 }
 
 // WithArgon2idRandom sets the source every salt is read from.
@@ -101,7 +105,7 @@ func WithArgon2idKeyLength(n uint32) Argon2idOption {
 // worked around, so this option cannot weaken the guarantee that every stored
 // hash carries an unpredictable salt.
 func WithArgon2idRandom(r io.Reader) Argon2idOption {
-	return func(e *argon2idEncoder) { e.random = r }
+	return func(e *Argon2idEncoder) { e.random = r }
 }
 
 // The ceilings on what a STORED RECORD may demand. They are not configuration:
@@ -141,7 +145,7 @@ const (
 //
 // The memory message names iterations too: the two trade against each other, so
 // an operator told only that memory is too low might raise the wrong dial.
-func (e *argon2idEncoder) validate() error {
+func (e *Argon2idEncoder) validate() error {
 	if isNilReader(e.random) {
 		return ErrNoRandomSource
 	}
@@ -177,7 +181,7 @@ func (e *argon2idEncoder) validate() error {
 
 // validateCeilings refuses a configuration above the ceilings a stored record is
 // held to, so the encoder never writes a hash that [Encoder.Match] would refuse.
-func (e *argon2idEncoder) validateCeilings() error {
+func (e *Argon2idEncoder) validateCeilings() error {
 	switch {
 	case uint64(e.memory) > maxRecordMemory:
 		return fmt.Errorf("%w: memory %d KiB; at most %d KiB", ErrInvalidParameters, e.memory, maxRecordMemory)
@@ -203,8 +207,8 @@ func (e *argon2idEncoder) validateCeilings() error {
 // default, for the duration of the call — verification costs as much as encoding.
 // Ten logins at once therefore want 640 MiB. What bounds the total is the rate
 // limit on login attempts, not this encoder.
-func NewArgon2idEncoder(opts ...Argon2idOption) (Encoder, error) {
-	e := &argon2idEncoder{
+func NewArgon2idEncoder(opts ...Argon2idOption) (*Argon2idEncoder, error) {
+	e := &Argon2idEncoder{
 		memory:     defaultArgon2idMemory,
 		iterations: defaultArgon2idIterations,
 		threads:    defaultArgon2idThreads,
@@ -234,7 +238,7 @@ func NewArgon2idEncoder(opts ...Argon2idOption) (Encoder, error) {
 // A salt that cannot be read is returned as an error and never silently replaced
 // with a zero or reused value: every stored hash depends on that salt being
 // unpredictable.
-func (e *argon2idEncoder) Encode(input string) ([]byte, error) {
+func (e *Argon2idEncoder) Encode(input string) ([]byte, error) {
 	salt := make([]byte, e.saltLength)
 	if _, err := io.ReadFull(e.random, salt); err != nil {
 		return nil, fmt.Errorf("password: read salt: %w", err)
@@ -252,7 +256,7 @@ func (e *argon2idEncoder) Encode(input string) ([]byte, error) {
 // is derived at the stored key's own length. The comparison is constant-time: a
 // byte-by-byte one returns sooner the earlier it finds a difference, which leaks
 // how much of a guess was right.
-func (e *argon2idEncoder) Match(input string, encoded []byte) bool {
+func (e *Argon2idEncoder) Match(input string, encoded []byte) bool {
 	memory, iterations, threads, salt, want, ok := parseArgon2id(encoded)
 	if !ok {
 		return false
@@ -314,15 +318,15 @@ func parseArgon2id(encoded []byte) (
 	return uint32(memory64), uint32(iterations64), uint8(threads64), salt, key, true
 }
 
-var _ Encoder = (*argon2idEncoder)(nil)
+var _ Encoder = (*Argon2idEncoder)(nil)
 
 // Recognizes reports whether encoded is an Argon2id record Match would derive a
 // key from: well formed, and within the ceilings on what a record may demand.
 // It derives nothing.
-func (e *argon2idEncoder) Recognizes(encoded []byte) bool {
+func (e *Argon2idEncoder) Recognizes(encoded []byte) bool {
 	_, _, _, _, _, ok := parseArgon2id(encoded)
 
 	return ok
 }
 
-var _ Recognizer = (*argon2idEncoder)(nil)
+var _ Recognizer = (*Argon2idEncoder)(nil)

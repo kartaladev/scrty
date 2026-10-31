@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 )
 
@@ -137,7 +139,7 @@ func TestMemoryAttemptStoreCounts(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
-			store := lockout.NewMemoryAttemptStore()
+			store := must.Must(lockout.NewMemoryAttemptStore())
 			if tc.record != nil {
 				tc.record(t, ctx, store)
 			}
@@ -158,7 +160,7 @@ func TestMemoryAttemptStoreIsSafeForConcurrentUse(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	store := lockout.NewMemoryAttemptStore()
+	store := must.Must(lockout.NewMemoryAttemptStore())
 
 	const writers = 8
 	const perWriter = 50
@@ -221,7 +223,7 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 		{
 			name: "a capacity above the default holds more than 100,000 identifiers",
 			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(1_000_000))
+				return must.Must(lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(1_000_000)))
 			},
 			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
 				s := build()
@@ -232,7 +234,7 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 		{
 			name: "a capacity below the default refuses the identifier past it",
 			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(3))
+				return must.Must(lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(3)))
 			},
 			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
 				s := build()
@@ -246,21 +248,12 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 		{
 			name: "the default capacity is 100,000",
 			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore()
+				return must.Must(lockout.NewMemoryAttemptStore())
 			},
 			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
 				s := build()
 				require.NoError(t, record(t, s, 100_000))
 				require.ErrorIs(t, s.RecordFailure(t.Context(), "one-more", lockoutNow), lockout.ErrAttemptStoreFull)
-			},
-		},
-		{
-			name: "a capacity of zero is a wiring mistake",
-			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(0))
-			},
-			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
-				assert.Panics(t, func() { build() })
 			},
 		},
 	}
@@ -270,6 +263,45 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, tc.build)
+		})
+	}
+}
+
+// TestMemoryAttemptStoreCapacityRefused covers a capacity that holds nothing:
+// a configuration error wrapping policy.ErrConfig and no store, not a panic.
+func TestMemoryAttemptStoreCapacityRefused(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		capacity int
+		assert   func(t *testing.T, build func() (*lockout.MemoryAttemptStore, error))
+	}
+
+	refused := func(t *testing.T, build func() (*lockout.MemoryAttemptStore, error)) {
+		t.Helper()
+
+		var (
+			store *lockout.MemoryAttemptStore
+			err   error
+		)
+		require.NotPanics(t, func() { store, err = build() })
+		require.ErrorIs(t, err, policy.ErrConfig)
+		assert.Nil(t, store)
+	}
+
+	cases := []testCase{
+		{name: "a capacity of zero", capacity: 0, assert: refused},
+		{name: "a negative capacity", capacity: -1, assert: refused},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, func() (*lockout.MemoryAttemptStore, error) {
+				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(tc.capacity))
+			})
 		})
 	}
 }
@@ -382,7 +414,7 @@ func TestMemoryAttemptStoreStreak(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, t.Context(), lockout.NewMemoryAttemptStore())
+			tc.assert(t, t.Context(), must.Must(lockout.NewMemoryAttemptStore()))
 		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 )
@@ -57,7 +58,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 	// the "consumer clock" row below. consumerClockStore is its own store, so
 	// the row can read back the instant RecordFailure stamped through it.
 	consumerClockAt := time.Date(2032, time.April, 4, 4, 4, 4, 0, time.UTC)
-	consumerClockStore := lockout.NewMemoryAttemptStore()
+	consumerClockStore := must.Must(lockout.NewMemoryAttemptStore())
 
 	refused := func(t *testing.T, p *lockout.Policy, err error) {
 		t.Helper()
@@ -139,7 +140,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			name: "a store that keeps streaks given after the cap is accepted",
 			opts: []lockout.Option{
 				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
-				lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()),
+				lockout.WithAttemptStore(must.Must(lockout.NewMemoryAttemptStore())),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
@@ -443,7 +444,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 		},
 		{
 			name: "a consumer's own store is used instead of the in-memory one",
-			opts: []lockout.Option{lockout.WithAttemptStore(lockout.NewMemoryAttemptStore())},
+			opts: []lockout.Option{lockout.WithAttemptStore(must.Must(lockout.NewMemoryAttemptStore()))},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
@@ -708,7 +709,7 @@ func TestAccountLockoutPolicyLockoutError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := lockout.NewMemoryAttemptStore()
+			store := must.Must(lockout.NewMemoryAttemptStore())
 			tc.record(t, store)
 
 			p := lockoutWith(t, append([]lockout.Option{lockout.WithAttemptStore(store)}, tc.opts...)...)
@@ -1000,7 +1001,7 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := lockout.NewMemoryAttemptStore()
+			store := must.Must(lockout.NewMemoryAttemptStore())
 			if tc.record != nil {
 				tc.record(t, store)
 			}
@@ -1258,7 +1259,7 @@ func newReapableAttemptStore(t *testing.T) *reapableAttemptStore {
 	t.Helper()
 
 	return &reapableAttemptStore{
-		MemoryAttemptStore: lockout.NewMemoryAttemptStore(),
+		MemoryAttemptStore: must.Must(lockout.NewMemoryAttemptStore()),
 		reaper:             NewMockAttemptReaper(gomock.NewController(t)),
 	}
 }
@@ -1970,7 +1971,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var store policy.AttemptStore = lockout.NewMemoryAttemptStore()
+			var store policy.AttemptStore = must.Must(lockout.NewMemoryAttemptStore())
 			if tc.store != nil {
 				store = tc.store(t)
 			}
@@ -2119,7 +2120,7 @@ func TestLockoutCapRetention(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := lockout.NewMemoryAttemptStore()
+			store := must.Must(lockout.NewMemoryAttemptStore())
 			clk := clockwork.NewFakeClockAt(lockoutNow)
 
 			p, err := lockout.New(append([]lockout.Option{
@@ -2264,7 +2265,7 @@ func TestLockoutCapPurge(t *testing.T) {
 			name: "with a cap the in-memory store purges",
 			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(*testing.T) policy.AttemptStore {
-				return lockout.NewMemoryAttemptStore()
+				return must.Must(lockout.NewMemoryAttemptStore())
 			},
 			assert: func(t *testing.T, removed int, err error) {
 				require.NoError(t, err)
@@ -2298,7 +2299,7 @@ func TestLockoutCapPurgeKeepsHolds(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(lockoutNow)
-	store := lockout.NewMemoryAttemptStore()
+	store := must.Must(lockout.NewMemoryAttemptStore())
 	p, err := lockout.New(
 		lockout.WithAttemptStore(store),
 		lockout.WithClock(clk),

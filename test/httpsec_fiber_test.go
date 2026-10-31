@@ -129,7 +129,13 @@ func fiberRoute(
 // fiberGuard builds the guard the scenario named, with fibersec's own default:
 // the refusal returned, and the route never reached.
 func fiberGuard(spec httpsecconformance.GuardSpec) fiber.Handler {
-	guards := fibersec.NewGuards(spec.Authorizer)
+	// The scenario's nil authorizer means the guards rely on what the chain
+	// published, so the reliance is declared for every scenario, and a non-nil
+	// one is the fallback beside it. Declared, construction cannot fail.
+	guards, err := fibersec.NewGuards(spec.Authorizer, fibersec.WithChainAuthorizer())
+	if err != nil {
+		panic(err)
+	}
 
 	if spec.Kind == httpsecconformance.GuardAuthenticated {
 		return guards.RequireAuthenticated()

@@ -2,11 +2,13 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
 // Engine evaluates the policies registered for one phase of a request and
@@ -231,19 +233,35 @@ func (e *Engine) IdleTimeouts() []time.Duration {
 }
 
 // FlushRefusalLogs asks every registered policy that keeps a refusal-log
-// sampler to report what it has suppressed. It walks e.asked, so a policy
-// registered for several phases is flushed once, not once per phase; a
-// policy that does not implement RefusalLogFlusher is skipped. It is safe to
-// call at shutdown while requests are still evaluated, since each policy's
-// own flush is documented to be, and safe to call more than once: a policy
-// with nothing new pending reports nothing.
-func (e *Engine) FlushRefusalLogs() {
+// sampler to report what it has suppressed. It walks the policies in
+// registration order, so a policy registered for several phases is flushed
+// once, not once per phase; a policy that does not implement
+// logsample.Flusher is skipped.
+//
+// A policy whose flush fails does not stop the others: every policy is
+// flushed, and the errors are returned joined (errors.Join), or nil when none
+// failed. The policies in this package never fail to flush, so the error can
+// only come from a consumer's policy.
+//
+// It is safe to call at shutdown while requests are still evaluated, since
+// each policy's own flush is documented to be, and safe to call more than
+// once: a policy with nothing new pending reports nothing. It makes Engine a
+// logsample.Flusher itself.
+func (e *Engine) FlushRefusalLogs() error {
+	var errs []error
+
 	for _, p := range e.asked {
-		if f, ok := p.(RefusalLogFlusher); ok {
-			_ = f.FlushRefusalLogs() // documented never to fail
+		if f, ok := p.(logsample.Flusher); ok {
+			if err := f.FlushRefusalLogs(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
+
+	return errors.Join(errs...)
 }
+
+var _ logsample.Flusher = (*Engine)(nil)
 
 // EvaluatePhase asks the policies that declared phase, in the order they were
 // registered, and reduces their answers to one Decision.

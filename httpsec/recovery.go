@@ -331,7 +331,7 @@ func (i *recoveryInterceptor) reportSuppressed(key string, suppressed int) {
 
 // flushRefusalLogs reports what the endpoints' own sampler and both source
 // guards are holding back.
-func (i *recoveryInterceptor) flushRefusalLogs() {
+func (i *recoveryInterceptor) flushRefusalLogs() error {
 	if i.sampler != nil {
 		i.sampler.Flush()
 	}
@@ -343,6 +343,8 @@ func (i *recoveryInterceptor) flushRefusalLogs() {
 	if i.startGuard != nil {
 		i.startGuard.Flush()
 	}
+
+	return nil
 }
 
 // Intercept answers the recovery endpoints and passes everything else through.

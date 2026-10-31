@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -292,7 +293,7 @@ var readThenDeleteExcept = supersedeVariant("race-cut-read-then-delete",
 // sessionRaceVariants race supersessions: the shipped memory store and the
 // conforming fake must pass, and the read-then-write fake must fail.
 var sessionRaceVariants = []brokenVariant{
-	supersedeVariant("race-supersede-memory", func() *session.MemoryStore { return session.NewMemoryStore() }, "", ""),
+	supersedeVariant("race-supersede-memory", func() *session.MemoryStore { return must.Must(session.NewMemoryStore()) }, "", ""),
 	supersedeVariant("race-supersede-conforming", supersedeStore(sessionConforming), "", ""),
 	readThenWriteSupersede,
 	readThenDeleteExcept,

@@ -169,15 +169,18 @@ func (l *formLogin) wire(c *Chain) {
 
 // flushRefusalLogs reports what the source guard and the authenticator are
 // holding back; an authenticator that keeps no refusal logs of its own has
-// nothing to report.
-func (l *formLogin) flushRefusalLogs() {
+// nothing to report. The authenticator may be a consumer's, whose flush can
+// fail, so its error is returned for Chain.FlushRefusalLogs to join.
+func (l *formLogin) flushRefusalLogs() error {
 	if l.guard != nil {
 		l.guard.Flush()
 	}
 
-	if f, ok := l.authn.(authenticate.RefusalLogFlusher); ok {
-		_ = f.FlushRefusalLogs() // documented never to fail: its reporter only logs
+	if f, ok := l.authn.(logsample.Flusher); ok {
+		return f.FlushRefusalLogs()
 	}
+
+	return nil
 }
 
 // wirePasswordLogin settles the password-login source guard of form login and

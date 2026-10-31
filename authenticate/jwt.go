@@ -20,7 +20,7 @@ import (
 //
 // A nil option is skipped, so a consumer who builds the slice conditionally
 // need not filter it first.
-type JWTOption func(*jwtAuthenticator)
+type JWTOption func(*JWTAuthenticator)
 
 // WithJWTVerifier supplies the verifier every presented token is checked by.
 //
@@ -33,7 +33,7 @@ type JWTOption func(*jwtAuthenticator)
 // A nil verifier, including a non-nil interface holding a nil pointer, is the
 // same as supplying none.
 func WithJWTVerifier(v token.Verifier) JWTOption {
-	return func(a *jwtAuthenticator) { a.verifier = v }
+	return func(a *JWTAuthenticator) { a.verifier = v }
 }
 
 // WithJWTIDGenerator replaces the generator that names an authentication whose
@@ -47,13 +47,16 @@ func WithJWTVerifier(v token.Verifier) JWTOption {
 // default, because a consumer supplying one means their records are keyed by
 // its identifiers.
 func WithJWTIDGenerator(g id.Generator) JWTOption {
-	return func(a *jwtAuthenticator) { a.ids = g; a.idsSet = true }
+	return func(a *JWTAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
-// jwtAuthenticator resolves a bearer token through a token verifier.
+// JWTAuthenticator resolves a bearer token through a token verifier. It is an
+// Authenticator.
 //
-// Every field is fixed at construction, so it is safe for concurrent use.
-type jwtAuthenticator struct {
+// Build it with NewJWTAuthenticator; the zero value is not usable, because it
+// has no verifier. Every field is fixed at construction, so it is safe for
+// concurrent use.
+type JWTAuthenticator struct {
 	verifier token.Verifier
 
 	ids    id.Generator
@@ -69,8 +72,8 @@ type jwtAuthenticator struct {
 // Nothing here parses or trusts a token itself. The verifier is the only thing
 // that reads one, and this provider builds a principal only from what the
 // verifier reported — never from an unverified segment of the presented string.
-func NewJWTAuthenticator(opts ...JWTOption) (Authenticator, error) {
-	a := &jwtAuthenticator{}
+func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
+	a := &JWTAuthenticator{}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(a)
@@ -101,7 +104,7 @@ func NewJWTAuthenticator(opts ...JWTOption) (Authenticator, error) {
 // A verified token with no subject is refused. A principal with no username
 // satisfies every check that asks only whether someone is authenticated, while
 // naming nobody the consumer's store could recognise, so it must not exist.
-func (a *jwtAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
+func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	creds, ok := c.(BearerCredentials)
 	if !ok {
 		return nil, ErrUnsupportedCredentials
@@ -145,7 +148,7 @@ func (a *jwtAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 // not a UUID would refuse a perfectly valid credential over a detail this
 // library does not own. Such a token is named by the generator instead: the
 // event is still named, and only the correspondence with the token is lost.
-func (a *jwtAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
+func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 	if fromToken, err := id.Parse(claims.ID()); err == nil {
 		return fromToken, nil
 	}
@@ -158,7 +161,7 @@ func (a *jwtAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 	return generated, nil
 }
 
-var _ Authenticator = (*jwtAuthenticator)(nil)
+var _ Authenticator = (*JWTAuthenticator)(nil)
 
 // BearerCredentials is the shape the bearer-token provider reads a token from.
 //

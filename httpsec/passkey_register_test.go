@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -603,7 +604,7 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 					Authenticator: NewMockAuthenticator(gomock.NewController(t)),
 					Sessions:      h.sessions,
 					Tokens:        h.tokens,
-					Attempts:      lockout.NewMemoryAttemptStore(),
+					Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
 				}, httpsec.WithLoginRequestPath(passkeyBeginPath)))
 			},
 			assert: refused,

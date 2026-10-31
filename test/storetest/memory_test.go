@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -28,7 +29,7 @@ func TestMemorySessionStore(t *testing.T) {
 
 	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
-		return session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))
+		return must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
 	})
 }
 
@@ -73,7 +74,7 @@ func TestEncryptedSessionStore(t *testing.T) {
 		t.Helper()
 
 		s, err := session.NewEncryptedStore(
-			session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))), xorCipher{})
+			must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))), xorCipher{})
 		require.NoError(t, err)
 
 		return s
@@ -86,7 +87,7 @@ func TestMemoryOneTimeStore(t *testing.T) {
 
 	storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
 		t.Helper()
-		return onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+		return must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
 	}, storetest.RequireReaper())
 }
 
@@ -98,7 +99,7 @@ func TestMemoryAttemptStore(t *testing.T) {
 
 	storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
 		t.Helper()
-		return lockout.NewMemoryAttemptStore()
+		return must.Must(lockout.NewMemoryAttemptStore())
 	})
 }
 
@@ -106,7 +107,7 @@ func TestMemoryAttemptStore(t *testing.T) {
 func TestMemoryFailureStreak(t *testing.T) {
 	t.Parallel()
 
-	newStore := func(*testing.T) storetest.StreakStore { return lockout.NewMemoryAttemptStore() }
+	newStore := func(*testing.T) storetest.StreakStore { return must.Must(lockout.NewMemoryAttemptStore()) }
 	storetest.RunFailureStreakSuite(t, newStore)
 	storetest.RunFailureStreakRace(t, newStore)
 }

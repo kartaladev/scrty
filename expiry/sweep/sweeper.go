@@ -14,6 +14,7 @@ import (
 	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/lifecycle"
 )
 
 // JobPrefix starts the name of every job a Sweeper schedules: the job for the
@@ -229,6 +230,9 @@ type Sweeper struct {
 
 	mu    sync.Mutex
 	state state
+	// cancelRuns cancels the context every run descends from. Start sets it
+	// under mu; the one gocron shutdown calls it once that shutdown returns.
+	cancelRuns context.CancelFunc
 
 	// shutdownDone is closed once the one gocron shutdown has returned, and
 	// shutdownErr then holds its result. shutdownErr is written only before
@@ -291,10 +295,10 @@ func New(r *expiry.Runner, opts ...Option) (*Sweeper, error) {
 // A nil ctx is refused with ErrInvalidOption and changes nothing, so a later
 // Start with a real context still works.
 //
-// ctx bounds each run: it is the parent of the context every run receives,
-// and once it is done no further run starts and a running purge sees its
-// cancellation. The sweeper's goroutines are released only by Shutdown, which
-// is still required after ctx is done.
+// Every run receives a context that carries ctx's values, such as trace and
+// log fields, but not its cancellation or deadline: ctx being done stops
+// nothing, so a request context passed by mistake cannot end the sweeping.
+// Only Shutdown cancels the runs and stops scheduling them.
 //
 // If scheduling fails partway, Start shuts the sweeper down before returning
 // the error, so no task is left half-scheduled, and a retry gets
@@ -314,8 +318,13 @@ func (s *Sweeper) Start(ctx context.Context) error {
 		return ErrAlreadyShutdown
 	}
 
+	// cancel is kept in s.cancelRuns and called by the one shutdown, including
+	// the one a failed Start begins below.
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx)) //nolint:gosec // G118: called by the shutdown goroutine.
+	s.cancelRuns = cancel
+
 	for _, j := range s.jobs {
-		if err := s.schedule(ctx, j); err != nil {
+		if err := s.schedule(runCtx, j); err != nil {
 			// The scheduler was never started, so its shutdown only stops
 			// its goroutine; the scheduling error is the one to report.
 			s.beginShutdownLocked(ctx)
@@ -356,7 +365,8 @@ func (s *Sweeper) schedule(ctx context.Context, j job) error {
 }
 
 // lockFailed returns the listener gocron calls when the distributed locker
-// refuses a run of task. ctx is Start's, handed to the logger with the record.
+// refuses a run of task. ctx is the runs' context, which carries Start's
+// values, handed to the logger with the record.
 func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, string, error) {
 	return func(_ uuid.UUID, jobName string, err error) {
 		attrs := []slog.Attr{
@@ -394,6 +404,11 @@ func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, s
 // gocron.ErrStopExecutorTimedOut; that backstop also ensures the shutdown
 // always completes.
 //
+// Do not call Shutdown from inside a purge. The shutdown waits for that very
+// purge to return, so the call cannot see it finish: it waits until its own
+// ctx ends and returns an error wrapping ctx.Err(). Call it from outside the
+// runs, such as from the application's own shutdown.
+//
 // A nil ctx is refused with ErrInvalidOption and changes nothing, so a later
 // Shutdown with a real context still shuts the sweeper down.
 func (s *Sweeper) Shutdown(ctx context.Context) error {
@@ -405,35 +420,43 @@ func (s *Sweeper) Shutdown(ctx context.Context) error {
 	s.beginShutdownLocked(ctx)
 	s.mu.Unlock()
 
-	// Prefer a finished shutdown over a ctx that is already done.
-	select {
-	case <-s.shutdownDone:
-		return s.shutdownResult()
-	default:
+	// A finished shutdown wins over a ctx that is already done, and then
+	// reports its shared result.
+	if err := lifecycle.Await(ctx, s.shutdownDone); err != nil {
+		return fmt.Errorf("sweep: shutting down: %w", err)
 	}
-	select {
-	case <-s.shutdownDone:
-		return s.shutdownResult()
-	case <-ctx.Done():
-		return fmt.Errorf("sweep: shutting down: %w", ctx.Err())
-	}
+
+	return s.shutdownResult()
 }
 
 // beginShutdownLocked moves the sweeper to stateShutdown and starts the one
 // gocron shutdown on its own goroutine, unless that has already happened. The
-// caller holds s.mu. The shutdown keeps ctx's values but not its
-// cancellation, so one caller giving up does not cut it short for the others;
-// gocron bounds it by the stop timeout.
+// caller holds s.mu.
+//
+// gocron's shutdown cancels the context of every run in progress, which is
+// what ends a purge. The sweeper's own cancel, the one Start took, is called
+// once that shutdown returns: by then no run starts again, so it only
+// releases the context the runs descended from. Calling it earlier would
+// cancel a purge before gocron has stopped the job's timer, which gains
+// nothing and changes the order gocron's stop timeout is armed in.
+//
+// The shutdown keeps ctx's values but not its cancellation, so one caller
+// giving up does not cut it short for the others; gocron bounds it by the
+// stop timeout.
 func (s *Sweeper) beginShutdownLocked(ctx context.Context) {
 	if s.state == stateShutdown {
 		return
 	}
 	s.state = stateShutdown
+	cancelRuns := s.cancelRuns
 	// Detached here rather than inside the goroutine, so a bad ctx panics on
 	// the caller's goroutine, where it can be seen, not on one nothing joins.
 	detached := context.WithoutCancel(ctx)
 	go func() {
 		s.shutdownErr = s.sched.ShutdownWithContext(detached)
+		if cancelRuns != nil {
+			cancelRuns()
+		}
 		close(s.shutdownDone)
 	}()
 }

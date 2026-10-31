@@ -92,8 +92,7 @@ func ExampleWithMFARequirementFederatedAssurance() {
 			panic(err)
 		}
 
-		admits, err := requirement.(policy.LoginAdmission).
-			AdmitsWithoutLocalSecondFactor(ctx, "u-1", factor.OIDC)
+		admits, err := requirement.AdmitsWithoutLocalSecondFactor(ctx, "u-1", factor.OIDC)
 		if err != nil {
 			panic(err)
 		}

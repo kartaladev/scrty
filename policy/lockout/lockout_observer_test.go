@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 )
@@ -533,7 +534,7 @@ func TestLockoutObserver(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var store policy.AttemptStore = lockout.NewMemoryAttemptStore()
+			var store policy.AttemptStore = must.Must(lockout.NewMemoryAttemptStore())
 			if tc.store != nil {
 				store = tc.store(t)
 			}
@@ -561,7 +562,7 @@ func TestLockoutObserver(t *testing.T) {
 func TestLockoutObserverReportsEveryConcurrentLockingFailure(t *testing.T) {
 	t.Parallel()
 
-	store := lockout.NewMemoryAttemptStore()
+	store := must.Must(lockout.NewMemoryAttemptStore())
 	failuresEndingAt("ada", 5, time.Minute)(t, store)
 
 	got := &reportLog{}
@@ -608,7 +609,7 @@ func TestLockoutObserverDefaultLoggerIsSlogDefault(t *testing.T) {
 func TestLockoutObserverPanicChangesNothing(t *testing.T) {
 	t.Parallel()
 
-	store := lockout.NewMemoryAttemptStore()
+	store := must.Must(lockout.NewMemoryAttemptStore())
 	failuresEndingAt("ada", 4, time.Second)(t, store)
 
 	var logs bytes.Buffer

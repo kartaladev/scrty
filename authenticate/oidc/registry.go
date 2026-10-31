@@ -22,8 +22,15 @@ const (
 	ClientSecretBasic
 )
 
-// DefaultScopes are the scopes requested from a provider whose Scopes is nil.
-var DefaultScopes = []string{"openid", "profile", "email"}
+var defaultScopes = [...]string{"openid", "profile", "email"}
+
+// DefaultScopes returns the scopes requested from a provider whose Scopes is
+// nil: "openid", "profile" and "email". Each call returns a new slice, so
+// changing the result changes nothing else.
+//
+// To request other scopes, set Provider.Scopes on that provider; a non-nil
+// list replaces the default whole and must include "openid".
+func DefaultScopes() []string { return slices.Clone(defaultScopes[:]) }
 
 // defaultSigningAlgs are the algorithms accepted from a provider whose
 // SigningAlgs is nil.
@@ -76,7 +83,7 @@ type Provider struct {
 	// a client controls. It is trusted configuration: see Provider.
 	RedirectURL string
 
-	// Scopes are requested at authorization. Nil means DefaultScopes. A
+	// Scopes are requested at authorization. Nil means DefaultScopes(). A
 	// non-nil list must include "openid", so an empty non-nil list is refused.
 	Scopes []string
 
@@ -131,7 +138,7 @@ type Registry struct {
 // It does not check the URLs' scheme: that follows the outbound client, which
 // NewRelyingParty holds and checks against.
 //
-// Nil Scopes resolve to DefaultScopes, and nil SigningAlgs to RS256.
+// Nil Scopes resolve to DefaultScopes(), and nil SigningAlgs to RS256.
 func NewRegistry(providers ...Provider) (*Registry, error) {
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("%w: no provider is registered", ErrConfig)
@@ -167,9 +174,12 @@ func (r *Registry) Lookup(name string) (Provider, bool) {
 // returned slice is the caller's own.
 func (r *Registry) Names() []string { return slices.Clone(r.names) }
 
+// resolveProvider fills the defaults into p and returns a copy that shares no
+// slice with p or with the package defaults. The defaults are read from their
+// unexported backing values and copied once, by cloneProvider.
 func resolveProvider(p Provider) Provider {
 	if p.Scopes == nil {
-		p.Scopes = DefaultScopes
+		p.Scopes = defaultScopes[:]
 	}
 	if p.SigningAlgs == nil {
 		p.SigningAlgs = defaultSigningAlgs

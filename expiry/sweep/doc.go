@@ -44,4 +44,11 @@
 // (WithStopTimeout, default 10 seconds) or its own context, whichever ends
 // first. Start after Shutdown, or after a Start that
 // failed partway, returns ErrAlreadyShutdown; a sweeper is never restarted.
+//
+// Runs carry the values of the context given to Start, such as trace and log
+// fields, but not its cancellation: that context ending stops nothing. Only
+// Shutdown cancels a running purge and stops scheduling new ones. Call
+// Shutdown from outside the runs, never from inside a purge: the shutdown
+// waits for that very purge, so such a call waits until its own context ends
+// and returns that context's error.
 package sweep

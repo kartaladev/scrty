@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/internal/must"
 	pkgid "github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/seal"
@@ -761,7 +762,7 @@ func TestSessionCipher(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			inner := session.NewMemoryStore()
+			inner := must.Must(session.NewMemoryStore())
 			sealing, err := session.NewEncryptedStore(inner, seal.SessionCipher(tc.cipher))
 			tc.assert(t, sealing, inner, err)
 		})

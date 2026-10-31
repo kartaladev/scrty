@@ -151,7 +151,7 @@ func ExampleWayBackDeps_admits() {
 		panic(err)
 	}
 
-	deps.Admits = requirement.(policy.LoginAdmission).AdmitsWithoutLocalSecondFactor
+	deps.Admits = requirement.AdmitsWithoutLocalSecondFactor
 
 	with, err := recovery.NewWayBackCheck(deps)
 	if err != nil {

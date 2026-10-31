@@ -22,6 +22,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -536,7 +537,7 @@ func TestManagerLogger(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 		_, err := session.New(
-			session.WithStore(session.NewMemoryStore()),
+			session.WithStore(must.Must(session.NewMemoryStore())),
 			session.WithLogger(logger))
 		require.NoError(t, err)
 
@@ -1496,7 +1497,7 @@ func TestManagerRotate(t *testing.T) {
 	cases := []testCase{
 		{
 			name:  "the old handle stops loading and the new one carries everything",
-			store: func(*testing.T) session.Store { return session.NewMemoryStore() },
+			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
 			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
 				require.NoError(t, err)
 				assert.NotEqual(t, old.ID, got.ID)
@@ -1518,7 +1519,7 @@ func TestManagerRotate(t *testing.T) {
 		{
 			name: "a failed write leaves the old handle loadable",
 			store: func(*testing.T) session.Store {
-				return &failingWriteStore{Store: session.NewMemoryStore()}
+				return &failingWriteStore{Store: must.Must(session.NewMemoryStore())}
 			},
 			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
 				require.ErrorIs(t, err, errStoreWrite)
@@ -1531,7 +1532,7 @@ func TestManagerRotate(t *testing.T) {
 		},
 		{
 			name:  "a handle already rotated away cannot be rotated again",
-			store: func(*testing.T) session.Store { return session.NewMemoryStore() },
+			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
 			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, got)
@@ -1683,7 +1684,7 @@ func TestManagerRotateConcurrentDistinctSessions(t *testing.T) {
 
 	const sessions = 8
 
-	store := newBarrierStore(session.NewMemoryStore(), sessions)
+	store := newBarrierStore(must.Must(session.NewMemoryStore()), sessions)
 	m := managerFor(t, session.WithStore(store))
 
 	originals := make([]*session.Session, 0, sessions)
@@ -1902,7 +1903,7 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 			store := &gatedStore{MemoryStore: inner}
 			tc.gates(store)
 			ms := make([]*session.Sessions, tc.managers)
@@ -2056,7 +2057,7 @@ func TestRotate_OldIdentifierInFlight(t *testing.T) {
 			t.Parallel()
 
 			f := &inFlightFixture{clk: clockwork.NewFakeClockAt(createdAt), logs: &bytes.Buffer{}}
-			f.inner = session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))
+			f.inner = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))
 			f.store = tc.store(f.inner)
 			f.m = managerFor(t, session.WithStore(f.store), session.WithClock(f.clk),
 				session.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))))
@@ -2110,7 +2111,7 @@ func TestSessionIdentifiers(t *testing.T) {
 	t.Run("a failing entropy source is an error, never a weak identifier", func(t *testing.T) {
 		t.Parallel()
 
-		store := session.NewMemoryStore()
+		store := must.Must(session.NewMemoryStore())
 		m := managerWithReader(t, store, iotest.ErrReader(errNoEntropy))
 
 		s, err := m.Create(t.Context(), testUser)
@@ -2208,7 +2209,7 @@ func TestManagerTouchInterval(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := session.New(append([]session.Option{session.WithStore(session.NewMemoryStore())}, tc.opts...)...)
+			m, err := session.New(append([]session.Option{session.WithStore(must.Must(session.NewMemoryStore()))}, tc.opts...)...)
 			require.NoError(t, err)
 
 			tc.assert(t, m.TouchInterval())
@@ -2272,7 +2273,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 		{
 			name:    "an explicit store keeps its own clock",
 			offset:  365 * 24 * time.Hour,
-			store:   func() session.Option { return session.WithStore(session.NewMemoryStore()) },
+			store:   func() session.Option { return session.WithStore(must.Must(session.NewMemoryStore())) },
 			advance: 2 * time.Hour,
 			assert: func(t *testing.T, _ *session.Sessions, _ string, removed int, err error) {
 				require.NoError(t, err)
@@ -2503,7 +2504,7 @@ func TestCreate_RefusesAnUnusableFamilyIdentifier(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := session.NewMemoryStore()
+			store := must.Must(session.NewMemoryStore())
 			m := managerFor(t, session.WithStore(store), session.WithFamilyIDGenerator(tc.gen))
 
 			_, err := m.Create(t.Context(), testUser)
@@ -2578,7 +2579,7 @@ func TestDefaultFamilyIDsFollowTheClockInAnyOptionOrder(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
 	for name, opts := range map[string][]session.Option{
 		"clock first": {session.WithClock(clk), session.WithStore(store)},
@@ -2771,7 +2772,7 @@ func TestFederatedAssurance(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			store := &writeCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+			store := &writeCountingStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 			m := managerFor(t, session.WithStore(store), session.WithClock(clk))
 
 			got := tc.act(t, m)
@@ -2946,7 +2947,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			store := &writeCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+			store := &writeCountingStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))}
 			m := managerFor(t, session.WithStore(store), session.WithClock(clk))
 
 			got := tc.act(t, m)
@@ -3499,7 +3500,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "memory create: a stored identifier is refused without quoting it",
 			call: func(ctx context.Context, t *testing.T, _ returnedErrorsDoubles) error {
-				store := session.NewMemoryStore()
+				store := must.Must(session.NewMemoryStore())
 				require.NoError(t, store.Create(ctx, returnedErrorsSession("")))
 				return store.Create(ctx, returnedErrorsSession(""))
 			},

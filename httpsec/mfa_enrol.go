@@ -177,10 +177,12 @@ func (i *enrolmentInterceptor) logSampled(ctx context.Context, level slog.Level,
 
 // flushRefusalLogs reports what the enrolment path's own sampler is holding
 // back.
-func (i *enrolmentInterceptor) flushRefusalLogs() {
+func (i *enrolmentInterceptor) flushRefusalLogs() error {
 	if i.sampler != nil {
 		i.sampler.Flush()
 	}
+
+	return nil
 }
 
 // reportSuppressed writes what the sampler held back for key and is about to

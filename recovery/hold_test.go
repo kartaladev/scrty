@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -585,7 +586,7 @@ func TestRecoverer_CancelPending(t *testing.T) {
 func (e *completeEnv) faultyHold(t *testing.T, extra ...recovery.Option) (*recovery.Recoverer, *recordingTokenStore, id.ID) {
 	t.Helper()
 
-	tokens := &recordingTokenStore{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(e.clock)), f: e.faults}
+	tokens := &recordingTokenStore{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(e.clock))), f: e.faults}
 	rid := newRecordID(t)
 
 	d := e.completeDeps()

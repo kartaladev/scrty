@@ -42,6 +42,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
@@ -237,7 +238,7 @@ func (e *Effects) LoadSession(t *testing.T, id string) *session.Session {
 func newEffects(t *testing.T) *Effects {
 	t.Helper()
 
-	store := session.NewMemoryStore()
+	store := must.Must(session.NewMemoryStore())
 
 	manager, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
@@ -245,7 +246,7 @@ func newEffects(t *testing.T) *Effects {
 	return &Effects{
 		Sessions: manager,
 		Store:    store,
-		Attempts: lockout.NewMemoryAttemptStore(),
+		Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 	}
 }
 
@@ -1251,6 +1252,6 @@ func MisconfiguredFormLogin() httpsec.Option {
 	return httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 		Authenticator: &fixtureAuthenticator{calls: new(atomic.Int64)},
 		Tokens:        fixtureTokens{},
-		Attempts:      lockout.NewMemoryAttemptStore(),
+		Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
 	})
 }

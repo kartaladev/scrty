@@ -48,7 +48,7 @@ handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 
 chain, err := httpsec.New(
 	// ... your other chain options ...
-	httpsec.EnableOIDCLogin(relyingParty, handoffs,
+	httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: relyingParty, Handoff: handoffs},
 		httpsec.WithOIDCTokens(tokens),
 		httpsec.WithOIDCSessions(sessions),
 	),
@@ -224,7 +224,7 @@ no assurance, so a required user is challenged or refused on every request.
   cannot disagree:
 
   ```go
-  deps.Admits = requirement.(policy.LoginAdmission).AdmitsWithoutLocalSecondFactor
+  deps.Admits = requirement.AdmitsWithoutLocalSecondFactor
   ```
 
   That answer is the requirement policy's alone, so under `WithMFAFederatedChallengeWhenUnmet(true)`

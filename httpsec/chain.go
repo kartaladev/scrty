@@ -3,6 +3,7 @@ package httpsec
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -79,8 +80,9 @@ type Chain struct {
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
 // keeping a refusal-log sampler of its own, so FlushRefusalLogs can reach it
-// without knowing which built-in it is.
-type refusalLogFlusher interface{ flushRefusalLogs() }
+// without knowing which built-in it is. It flushes everything it holds even
+// when one flush fails, and returns the failures joined, or nil.
+type refusalLogFlusher interface{ flushRefusalLogs() error }
 
 // FlushRefusalLogs reports every suppressed refusal count the chain can reach,
 // for example from a shutdown hook, so counts held for a window that will never
@@ -99,18 +101,25 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //     limiter or over one the consumer supplied. Each keeps its own sampler,
 //     but reports to the chain's reporter, as item 1 does.
 //  5. The authenticator given to EnableFormLogin or EnableBasicAuth, when it
-//     implements authenticate.RefusalLogFlusher.
+//     implements logsample.Flusher.
 //  6. The oidc.RelyingParty given to EnableOIDCLogin, which in turn flushes its
 //     identity broker when that can flush, and the oidc.Handoff given
 //     beside it, when there is one.
 //  7. The passkey.Passkeys given to EnablePasskeys.
 //  8. The policy engine given to WithPolicyEngine, which flushes every
-//     registered policy implementing policy.RefusalLogFlusher, including one
+//     registered policy implementing logsample.Flusher, including one
 //     registered after the chain was built.
 //
 // The chain's own sampler is flushed first and the policy engine last; items 2
 // to 7 are reached through the registered built-ins holding them, in the order
 // the chain runs those built-ins.
+//
+// A component whose flush fails does not stop the others: everything above is
+// flushed, and the errors are returned joined (errors.Join), the policy
+// engine's own joined error included, or nil when none failed. The library's
+// own components never fail to flush, so an error comes from a consumer's
+// authenticator, identity broker or policy. It makes Chain a
+// logsample.Flusher itself.
 //
 // A flush reports what is pending and forgets it, so calling this more than
 // once, flushing a component directly as well, or flushing two chains that
@@ -122,19 +131,29 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //     authenticator used only outside it. The consumer flushes that itself.
 //   - A signingkey.Keys, which is not a chain dependency and flushes its
 //     own refusal logs when its background loops stop.
-func (c *Chain) FlushRefusalLogs() {
+func (c *Chain) FlushRefusalLogs() error {
 	c.sampler.Flush()
+
+	var errs []error
 
 	for _, r := range c.registrations {
 		if f, ok := r.interceptor.(refusalLogFlusher); ok {
-			f.flushRefusalLogs()
+			if err := f.flushRefusalLogs(); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 
 	if c.engine != nil {
-		c.engine.FlushRefusalLogs()
+		if err := c.engine.FlushRefusalLogs(); err != nil {
+			errs = append(errs, err)
+		}
 	}
+
+	return errors.Join(errs...)
 }
+
+var _ logsample.Flusher = (*Chain)(nil)
 
 // Assemble folds the chain around terminal and returns its outermost step.
 //

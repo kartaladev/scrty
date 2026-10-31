@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -264,7 +265,7 @@ func TestEnableMFA(t *testing.T) {
 			opts: []httpsec.MFAOption{
 				httpsec.WithMFABeginPrefix("/auth/second-factor/begin"),
 				httpsec.WithMFAChallengeTTL(2 * time.Minute),
-				httpsec.WithMFAChallengeStore(onetime.NewMemoryStore()),
+				httpsec.WithMFAChallengeStore(must.Must(onetime.NewMemoryStore())),
 				httpsec.WithMFABeginResponder(func(*httpsec.Exchange, json.RawMessage) error { return nil }),
 			},
 			assert: built,

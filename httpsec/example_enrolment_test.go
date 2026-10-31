@@ -123,13 +123,18 @@ func ExampleEnableMFAEnrolment() {
 		panic(err)
 	}
 
+	attempts, err := lockout.NewMemoryAttemptStore()
+	if err != nil {
+		panic(err)
+	}
+
 	chain, err := httpsec.New(
 		httpsec.WithPolicyEngine(engine),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: authn,
 			Sessions:      sessions,
 			Tokens:        exampleTokens{},
-			Attempts:      lockout.NewMemoryAttemptStore(),
+			Attempts:      attempts,
 		}),
 		httpsec.EnableMFA([]mfa.Method{totp}, httpsec.WithMFATokens(exampleTokens{})),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: users, Sender: exampleSender{}}),

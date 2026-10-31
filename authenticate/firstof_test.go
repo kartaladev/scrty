@@ -2,6 +2,7 @@ package authenticate_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
 func TestManagerAuthenticate(t *testing.T) {
@@ -532,6 +534,133 @@ func TestManager_NestedManagerThatSkipsLetsOuterTryNextDelegate(t *testing.T) {
 
 			got, err := outer.Authenticate(t.Context(), credentials(t))
 			tc.assert(t, got, err)
+		})
+	}
+}
+
+var (
+	errFlushFirst = errors.New("firstof_test: first delegate flush failed")
+	errFlushLast  = errors.New("firstof_test: last delegate flush failed")
+)
+
+// flushDelegate is a delegate that records its refusal-log flush into a
+// sequence shared with its siblings, and fails the flush with err.
+type flushDelegate struct {
+	plainDelegate
+	name string
+	seq  *[]string
+	err  error
+}
+
+func (d *flushDelegate) FlushRefusalLogs() error {
+	*d.seq = append(*d.seq, d.name)
+
+	return d.err
+}
+
+var _ logsample.Flusher = (*flushDelegate)(nil)
+
+func TestFirstOf_FlushRefusalLogs(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// build returns the FirstOf under test and the sequence its flushing
+		// delegates append their names to.
+		build  func(t *testing.T) (*authenticate.FirstOf, *[]string)
+		assert func(t *testing.T, err error, calls []string)
+	}
+
+	mustFirstOf := func(t *testing.T, delegates ...authenticate.Authenticator) *authenticate.FirstOf {
+		t.Helper()
+
+		m, err := authenticate.NewFirstOf(delegates...)
+		require.NoError(t, err)
+
+		return m
+	}
+
+	cases := []testCase{
+		{
+			name: "flushes in delegate order and joins every failure in that order",
+			build: func(t *testing.T) (*authenticate.FirstOf, *[]string) {
+				t.Helper()
+
+				seq := &[]string{}
+				first := &flushDelegate{name: "first", seq: seq, err: errFlushFirst}
+				middle := &flushDelegate{name: "middle", seq: seq}
+				last := &flushDelegate{name: "last", seq: seq, err: errFlushLast}
+
+				return mustFirstOf(t, first, plainDelegate{}, middle, last), seq
+			},
+			assert: func(t *testing.T, err error, calls []string) {
+				t.Helper()
+
+				require.ErrorIs(t, err, errFlushFirst)
+				require.ErrorIs(t, err, errFlushLast)
+				assert.Equal(t, errFlushFirst.Error()+"\n"+errFlushLast.Error(), err.Error())
+				assert.Equal(t, []string{"first", "middle", "last"}, calls)
+			},
+		},
+		{
+			name: "a failing delegate does not stop the later ones",
+			build: func(t *testing.T) (*authenticate.FirstOf, *[]string) {
+				t.Helper()
+
+				seq := &[]string{}
+				first := &flushDelegate{name: "first", seq: seq, err: errFlushFirst}
+				last := &flushDelegate{name: "last", seq: seq}
+
+				return mustFirstOf(t, first, last), seq
+			},
+			assert: func(t *testing.T, err error, calls []string) {
+				t.Helper()
+
+				require.ErrorIs(t, err, errFlushFirst)
+				assert.Equal(t, []string{"first", "last"}, calls)
+			},
+		},
+		{
+			name: "nested FirstOf is reached",
+			build: func(t *testing.T) (*authenticate.FirstOf, *[]string) {
+				t.Helper()
+
+				seq := &[]string{}
+				leaf := &flushDelegate{name: "leaf", seq: seq}
+				inner := mustFirstOf(t, leaf)
+
+				return mustFirstOf(t, inner), seq
+			},
+			assert: func(t *testing.T, err error, calls []string) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, []string{"leaf"}, calls)
+			},
+		},
+		{
+			name: "no flusher",
+			build: func(t *testing.T) (*authenticate.FirstOf, *[]string) {
+				t.Helper()
+
+				return mustFirstOf(t, plainDelegate{}), &[]string{}
+			},
+			assert: func(t *testing.T, err error, calls []string) {
+				t.Helper()
+
+				assert.NoError(t, err)
+				assert.Empty(t, calls)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m, seq := tc.build(t)
+
+			tc.assert(t, m.FlushRefusalLogs(), *seq)
 		})
 	}
 }

@@ -15,9 +15,11 @@
 // # Wiring
 //
 // New returns a manager that already has a current key and starts no
-// goroutine. Start launches the rotation, reload and housekeeping loops; Stop
-// ends them and returns only once they have ended, an in-flight store write
-// included.
+// goroutine. Start launches the rotation, reload and housekeeping loops, once:
+// they keep the start context's values but not its cancellation, so only
+// Shutdown ends them. Shutdown waits for them to end, an in-flight store write
+// included, for as long as its own context allows. It is terminal: the loops
+// never run again, but the manager keeps serving the keys it holds.
 //
 //	km, err := signingkey.New(ctx)
 //	if err != nil {
@@ -26,7 +28,11 @@
 //	if err := km.Start(ctx); err != nil {
 //		return err
 //	}
-//	defer func() { _ = km.Stop() }()
+//	defer func() {
+//		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+//		defer cancel()
+//		_ = km.Shutdown(shutdownCtx)
+//	}()
 //
 // # Storage
 //

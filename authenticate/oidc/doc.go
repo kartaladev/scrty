@@ -31,7 +31,7 @@
 //
 //	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 //
-//	chainOpt := httpsec.EnableOIDCLogin(manager, handoffs,
+//	chainOpt := httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: manager, Handoff: handoffs},
 //		httpsec.WithOIDCTokens(tokens),
 //		httpsec.WithOIDCSessions(sessions),
 //	)

@@ -9,7 +9,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/guardauth"
 )
 
 // Guards builds the per-endpoint authorization a consumer puts in front of one
@@ -31,8 +31,14 @@ import (
 type Guards struct {
 	// authorizer is the fallback judge, for a guard used outside a chain or in
 	// front of one that published none. The chain's own authorizer is preferred
-	// whenever the request carries one.
+	// whenever the request carries one. It is never an interface holding a nil
+	// value: NewGuards stores that as nil, so it is no judge rather than a
+	// nil-method panic.
 	authorizer authorize.Authorizer
+
+	// chainAuthorizer is the consumer's declaration that the guards rely on
+	// the authorizer the chain publishes on each request.
+	chainAuthorizer bool
 
 	// onError answers a refusal, and nil means the library's own default.
 	onError func(gc *gin.Context, err error)
@@ -44,16 +50,19 @@ type GuardOption func(*Guards)
 
 // NewGuards returns the guards for one set of gin routes, judging through az.
 //
-// az is the fallback: a guard prefers the authorizer the chain published on the
-// request, so a deployment that mounts the chain wires its authorizer once and
-// may pass nil here. With neither, every guard refuses, because a guard that
-// found no judge has not been told the request is allowed.
+// It follows httpsec.NewGuards' construction rule. A guard prefers the
+// authorizer the chain published on the request, and az is the fallback for a
+// request that carries none. Guards must be told where their judge comes from:
+// az, WithChainAuthorizer, or both.
 //
-// It reports no error because there is nothing to misconfigure: a missing
-// authorizer is a refusal at the guard rather than a fault at wiring time,
-// since the chain may still supply one per request.
-func NewGuards(az authorize.Authorizer, opts ...GuardOption) *Guards {
-	g := &Guards{authorizer: az}
+// It fails with an error wrapping httpsec.ErrConfig when az is nil, or an
+// interface holding a nil value, and WithChainAuthorizer was not given: guards
+// with no judge would refuse every request, which looks the same as wiring
+// that meant to rely on the chain. With WithChainAuthorizer, a nil az — typed
+// or not — means no fallback, and a request the chain published no authorizer
+// on is refused with authorize.ErrAccessDenied.
+func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
+	g := &Guards{}
 
 	for _, opt := range opts {
 		if opt == nil {
@@ -63,7 +72,32 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) *Guards {
 		opt(g)
 	}
 
-	return g
+	// A nil az, typed or not, comes back as no fallback at all, so the guard
+	// refuses rather than calling a method on a nil value.
+	fallback, ok := guardauth.Fallback(az, g.chainAuthorizer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"%w: ginsec: NewGuards needs an authorizer, or WithChainAuthorizer to rely on the chain's",
+			httpsec.ErrConfig)
+	}
+
+	g.authorizer = fallback
+
+	return g, nil
+}
+
+// WithChainAuthorizer declares that the guards rely on the authorizer the chain
+// publishes on each request, as httpsec.EnableAuthorization does.
+//
+// Default: NewGuards refuses a nil authorizer, because guards with no judge
+// refuse every request. This option is the consumer's statement that the
+// missing authorizer is deliberate. A guard then judges with the request's
+// authorizer and refuses, with authorize.ErrAccessDenied, a request that
+// carries none. Given beside a non-nil authorizer, it changes nothing: the
+// request's authorizer is preferred and the one passed to NewGuards is the
+// fallback.
+func WithChainAuthorizer() GuardOption {
+	return func(g *Guards) { g.chainAuthorizer = true }
 }
 
 // WithGuardErrorHandler replaces what a guard's refusal answers with.
@@ -111,15 +145,7 @@ func (g *Guards) refuse(gc *gin.Context, err error) {
 // and the one the guard was built with is the fallback for a guard used outside
 // a chain. When there is neither, the guard refuses.
 func (g *Guards) authorizerFor(ctx context.Context) (authorize.Authorizer, bool) {
-	if az, ok := authorize.AuthorizerFromContext(ctx); ok {
-		return az, true
-	}
-
-	if !nilcheck.IsNil(g.authorizer) {
-		return g.authorizer, true
-	}
-
-	return nil, false
+	return guardauth.For(ctx, g.authorizer)
 }
 
 // judgement is what one guard asks about a request once the caller and the

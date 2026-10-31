@@ -38,11 +38,11 @@
 // every worker indefinitely and the queue behind them fills and then drops.
 // The bound is a contract with the inner sender, not a guarantee over it.
 //
-// Neither bounds durability: messages live in memory only, and a crash, or a
-// shutdown that skips Close or gives its drain too little time, loses whatever
-// is still queued — silently, because the send already returned nil. A
-// consumer who needs delivery to survive that supplies a Sender backed by a
-// durable queue.
+// Neither bounds durability: messages live in memory only, and a crash, a
+// process that ends without calling QueuedSender.Shutdown, or a Shutdown
+// that gives its drain too little time loses whatever is still queued —
+// silently, because the send already returned nil. A consumer who needs
+// delivery to survive that supplies a Sender backed by a durable queue.
 //
 // No log record written here carries a message body or subject: the body of a
 // sign-in message is a live credential.

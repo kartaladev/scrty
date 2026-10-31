@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -56,7 +57,7 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 				t.Helper()
-				return saveInsertsStore{session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))}
+				return saveInsertsStore{must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))}
 			})
 		},
 		failsCase: "saving a deleted session is not found and does not bring it back",
@@ -190,7 +191,7 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
 				t.Helper()
-				return withoutOneTimeReaper{onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+				return withoutOneTimeReaper{must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
 			}, storetest.RequireReaper())
 		},
 		failsCase: "a purge with a zero cutoff is refused and deletes nothing",
@@ -207,7 +208,7 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
 				t.Helper()
-				return withoutAttemptReaper{lockout.NewMemoryAttemptStore()}
+				return withoutAttemptReaper{must.Must(lockout.NewMemoryAttemptStore())}
 			}, storetest.RequireReaper())
 		},
 		failsCase: "a purge with a zero cutoff is refused and deletes nothing",

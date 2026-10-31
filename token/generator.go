@@ -103,9 +103,15 @@ func WithSigningAlg(alg signingkey.Alg) Option {
 // generator with no clock could not stamp iat or exp at all.
 func WithClock(clk clock.Clock) Option { return Option(setClock(clk)) }
 
-type generator struct{ cfg *config }
+// JWTGenerator is the Generator this package provides: it signs JWTs with the
+// keys of a signingkey.KeySource, and verifies its own tokens, so it is a
+// Verifier too.
+//
+// Build it with NewGenerator; the zero value is not usable, because it has no
+// key source and no validated configuration.
+type JWTGenerator struct{ cfg *config }
 
-// NewGenerator returns a Generator signing with keys.
+// NewGenerator returns a JWTGenerator signing with keys.
 //
 // A decision on the issuer and on the audience is required: each is
 // configured, with WithIssuer and WithAudience, or waived by name, with
@@ -125,7 +131,7 @@ type generator struct{ cfg *config }
 // less or is not a whole number of seconds, and when a key source that reports
 // its own key lifetime and rotation interval could not keep a key published for
 // as long as the tokens would live.
-func NewGenerator(keys signingkey.KeySource, opts ...Option) (Generator, error) {
+func NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, error) {
 	cfg := newConfig()
 	cfg.keys = keys
 	for _, opt := range opts {
@@ -146,14 +152,19 @@ func NewGenerator(keys signingkey.KeySource, opts ...Option) (Generator, error) 
 		return nil, err
 	}
 
-	return &generator{cfg: cfg}, nil
+	return &JWTGenerator{cfg: cfg}, nil
 }
 
-func (g *generator) Verify(ctx context.Context, raw string) (*Claims, error) {
+// Verify checks raw against the generator's own keys, issuer, audience and
+// clock, as a JWTVerifier configured the same way would, and returns its
+// claims. See Verifier.
+func (g *JWTGenerator) Verify(ctx context.Context, raw string) (*Claims, error) {
 	return g.cfg.verify(ctx, raw)
 }
 
-func (g *generator) Generate(_ context.Context, id string, p *identity.Principal) (string, error) {
+// Generate signs a token for p, identified by id, with the key source's current
+// signing key. See Generator.
+func (g *JWTGenerator) Generate(_ context.Context, id string, p *identity.Principal) (string, error) {
 	// Never ErrInvalid: that is the verdict on a token a caller
 	// presented, and there is no token here. A consumer mapping
 	// ErrInvalid to "credential refused" must not see this.
@@ -220,3 +231,8 @@ func (g *generator) Generate(_ context.Context, id string, p *identity.Principal
 
 	return string(signed), nil
 }
+
+var (
+	_ Generator = (*JWTGenerator)(nil)
+	_ Verifier  = (*JWTGenerator)(nil)
+)

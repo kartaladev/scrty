@@ -218,7 +218,11 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 
 	challenges := deps.Challenges
 	if nilcheck.IsNil(challenges) {
-		challenges = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(m.clock))
+		store, storeErr := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(m.clock))
+		if storeErr != nil {
+			return nil, storeErr
+		}
+		challenges = store
 	}
 
 	reg, err := onetime.New(registrationPurpose,

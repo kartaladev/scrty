@@ -676,7 +676,7 @@ func TestCloneRefusalDoesNotWaitForDelivery(t *testing.T) {
 			close(gate.release)
 		}
 
-		assert.NoError(t, q.Close(context.WithoutCancel(t.Context())))
+		assert.NoError(t, q.Shutdown(context.WithoutCancel(t.Context())))
 	})
 
 	e := newLoginEnv(t, nil)

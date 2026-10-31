@@ -418,14 +418,14 @@ func (h *Handoff) record(ctx context.Context, level slog.Level, key string, attr
 // FlushRefusalLogs reports every refusal record the handoff manager's sampler
 // has suppressed but not yet counted, then forgets every key, so the next
 // redemption refused for a reason already reported is written again rather
-// than held back. It always returns nil; the signature matches the shape
-// authenticate.RefusalLogFlusher and policy.RefusalLogFlusher already use.
+// than held back. It always returns nil; the signature is logsample.Flusher's, the
+// optional interface every refusal-log flusher shares.
 //
 // It is safe to call at shutdown, including while redemptions are still in
 // flight, and safe to call more than once: a second flush with nothing new
 // pending reports nothing. Call it directly, or let
-// httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
-// was given (oidc.RelyingParty.FlushRefusalLogs).
+// httpsec.Chain.FlushRefusalLogs reach it: the chain's OIDC interceptor flushes
+// the handoff it was given directly, beside the relying party.
 func (h *Handoff) FlushRefusalLogs() error {
 	h.sampler.Flush()
 

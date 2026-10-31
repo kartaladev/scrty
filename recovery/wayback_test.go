@@ -505,8 +505,6 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 			p, err := policy.NewMFARequirement(lookup, nil,
 				append([]policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(tc.mode)}, tc.opts...)...)
 			require.NoError(t, err)
-			adm, ok := p.(policy.LoginAdmission)
-			require.True(t, ok, "the requirement policy must implement LoginAdmission")
 
 			m := newWayBackMocks(ctrl)
 			m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
@@ -518,7 +516,7 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 				LinkedLogins: func(context.Context, identity.UserID) ([]factor.Kind, error) {
 					return []factor.Kind{factor.OIDC}, nil
 				},
-				Admits: adm.AdmitsWithoutLocalSecondFactor,
+				Admits: p.AdmitsWithoutLocalSecondFactor,
 			})
 			require.NoError(t, err)
 

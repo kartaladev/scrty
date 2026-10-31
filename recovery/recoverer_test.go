@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -419,7 +420,7 @@ func TestRecoverer_ExpiryTasks(t *testing.T) {
 			name: "each hold token task sweeps only its own tokens",
 			opts: func(e *completeEnv) []recovery.Option {
 				return append(holdFor(time.Hour),
-					recovery.WithHoldTokenStore(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(e.clock))))
+					recovery.WithHoldTokenStore(must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(e.clock)))))
 			},
 			assert: func(t *testing.T, e *completeEnv, r *recovery.Recoverer) {
 				ctx := t.Context()

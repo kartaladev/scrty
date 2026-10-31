@@ -237,7 +237,11 @@ func New(purpose string, opts ...Option) (*Tokens, error) {
 	// The default store reads the manager's clock, so a manager on a fake or
 	// shifted clock purges by the same time it expires by.
 	if !m.storeSet {
-		m.store = NewMemoryStore(WithMemoryStoreClock(m.clock))
+		store, err := NewMemoryStore(WithMemoryStoreClock(m.clock))
+		if err != nil {
+			return nil, err
+		}
+		m.store = store
 	}
 
 	return m, nil

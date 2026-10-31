@@ -109,9 +109,15 @@ func WithVerifyMaxTokenSize(size int) VerifyOption {
 // verifier with no clock could not judge exp, nbf or iat at all.
 func WithVerifyClock(clk clock.Clock) VerifyOption { return VerifyOption(setClock(clk)) }
 
-type verifier struct{ cfg *config }
+// JWTVerifier is the Verifier this package provides: it checks a JWT's
+// signature against the keys of a signingkey.KeySource, and its claims against
+// the configured issuer, audience and clock.
+//
+// Build it with NewVerifier; the zero value is not usable, because it has no
+// key source and no validated configuration.
+type JWTVerifier struct{ cfg *config }
 
-// NewVerifier returns a Verifier.
+// NewVerifier returns a JWTVerifier.
 //
 // WithVerifyKeySource is required. So is a decision on the issuer and on the
 // audience: each is enforced, with WithVerifyIssuer and WithVerifyAudience, or
@@ -128,7 +134,7 @@ type verifier struct{ cfg *config }
 // instead). A port given as a non-nil interface holding a nil
 // pointer — what an unchecked constructor error hands over — counts as
 // absent.
-func NewVerifier(opts ...VerifyOption) (Verifier, error) {
+func NewVerifier(opts ...VerifyOption) (*JWTVerifier, error) {
 	cfg := newConfig()
 	for _, opt := range opts {
 		// A consumer who builds the slice conditionally leaves an entry nil
@@ -145,10 +151,13 @@ func NewVerifier(opts ...VerifyOption) (Verifier, error) {
 		return nil, err
 	}
 
-	return &verifier{cfg: cfg}, nil
+	return &JWTVerifier{cfg: cfg}, nil
 }
 
-func (v *verifier) Verify(ctx context.Context, raw string) (*Claims, error) {
+// Verify checks raw's signature against the key source and its claims against
+// the configured issuer, audience and clock, and returns the claims. See
+// Verifier.
+func (v *JWTVerifier) Verify(ctx context.Context, raw string) (*Claims, error) {
 	return v.cfg.verify(ctx, raw)
 }
 
@@ -323,3 +332,5 @@ func base64URL(s string) bool {
 
 	return true
 }
+
+var _ Verifier = (*JWTVerifier)(nil)

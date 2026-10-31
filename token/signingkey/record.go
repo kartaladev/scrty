@@ -49,7 +49,12 @@ type KeyStore interface {
 	LoadAll(ctx context.Context) ([]Record, error)
 }
 
-type inMemoryKeyStore struct {
+// MemoryKeyStore is the default KeyStore: it keeps records in process memory,
+// and is safe for concurrent use.
+//
+// Build it with NewMemoryKeyStore; the zero value is not usable, because it has
+// no record map.
+type MemoryKeyStore struct {
 	mu      sync.RWMutex
 	records map[string]Record
 	// order holds each kid once, in the order it was first stored. LoadAll
@@ -60,7 +65,8 @@ type inMemoryKeyStore struct {
 	order []string
 }
 
-// NewMemoryKeyStore returns a KeyStore that keeps records in process memory.
+// NewMemoryKeyStore returns a MemoryKeyStore, which keeps records in process
+// memory.
 // It is the default, and it is not durable: a new process starts with no keys,
 // so every token signed by the previous process stops verifying. Supply a
 // durable store through WithKeyStore to keep tokens valid across a restart.
@@ -69,9 +75,11 @@ type inMemoryKeyStore struct {
 // in the order their kids were first stored; storing a kid again replaces its
 // record in place. The key manager gives such a tie to the record listed
 // later, so the key stored last of a tied pair is the one that signs.
-func NewMemoryKeyStore() KeyStore {
-	return &inMemoryKeyStore{records: make(map[string]Record)}
+func NewMemoryKeyStore() *MemoryKeyStore {
+	return &MemoryKeyStore{records: make(map[string]Record)}
 }
+
+var _ KeyStore = (*MemoryKeyStore)(nil)
 
 // copyRecord returns a record that shares no backing array with rec.
 //
@@ -87,7 +95,9 @@ func copyRecord(rec Record) Record {
 	return rec
 }
 
-func (s *inMemoryKeyStore) Store(_ context.Context, rec Record) error {
+// Store keeps a copy of rec, replacing any record with the same Kid in place.
+// It never fails.
+func (s *MemoryKeyStore) Store(_ context.Context, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -99,7 +109,9 @@ func (s *inMemoryKeyStore) Store(_ context.Context, rec Record) error {
 	return nil
 }
 
-func (s *inMemoryKeyStore) LoadAll(_ context.Context) ([]Record, error) {
+// LoadAll returns a copy of every record, oldest first by CreatedAt, ties in
+// the order their kids were first stored. It never fails.
+func (s *MemoryKeyStore) LoadAll(_ context.Context) ([]Record, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

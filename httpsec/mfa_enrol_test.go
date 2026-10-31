@@ -28,6 +28,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -1990,7 +1991,7 @@ func TestEnrolmentNotifiesWhenSessionUnsaved(t *testing.T) {
 
 			var err error
 			h.sessions, err = session.New(session.WithStore(
-				failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
+				failingSaves{Store: must.Must(session.NewMemoryStore()), failing: &failing}))
 			require.NoError(t, err)
 
 			if tc.emailOff {
@@ -2966,7 +2967,7 @@ func TestEnrolmentOutagesCarryNoAddress(t *testing.T) {
 
 			var err error
 			h.sessions, err = session.New(session.WithStore(
-				failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
+				failingSaves{Store: must.Must(session.NewMemoryStore()), failing: &failing}))
 			require.NoError(t, err)
 
 			h.totp, err = mfa.NewTOTP(tc.store(h.store), enrolIssuer,
@@ -3199,7 +3200,7 @@ func TestEnrolmentLogs(t *testing.T) {
 				t.Helper()
 
 				beginsPastTheLimit(t, c, 20)
-				c.FlushRefusalLogs()
+				require.NoError(t, c.FlushRefusalLogs())
 
 				return []string{enrolUsername}
 			},
@@ -3547,7 +3548,7 @@ func onTimeline(t *testing.T, h *enrolHarness, failing *atomic.Bool) {
 	// move would keep the harness clock's location.
 	h.clock = clockwork.NewFakeClockAt(clockAt(9, 0))
 
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(h.clock))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(h.clock)))
 
 	var err error
 	h.sessions, err = session.New(

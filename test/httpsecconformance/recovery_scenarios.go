@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -512,7 +513,7 @@ func recoveryAtTheCeilingSignsInAfterTheResolve() Scenario {
 
 			// One hundred failures in the window: the default ceiling, which
 			// locks until failures leave the window rather than for a wait.
-			attempts := lockout.NewMemoryAttemptStore()
+			attempts := must.Must(lockout.NewMemoryAttemptStore())
 			now := time.Now()
 			for i := range 100 {
 				require.NoError(t, attempts.RecordFailure(ctx, Username, now.Add(-time.Duration(i)*time.Second)))
@@ -609,7 +610,7 @@ func recoveryHeldRecoveryCancelledByLogin() Scenario {
 						Authenticator: &fixtureAuthenticator{calls: &effects.authCalls},
 						Sessions:      sessions,
 						Tokens:        fixtureTokens{},
-						Attempts:      lockout.NewMemoryAttemptStore(),
+						Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
 					}),
 					httpsec.EnableAccountRecovery(httpsec.RecoveryDeps(deps),
 						httpsec.WithRecoveryCore(coreOpts...),

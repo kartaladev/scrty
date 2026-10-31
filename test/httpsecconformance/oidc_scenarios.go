@@ -108,7 +108,7 @@ func newOIDCFixture(t *testing.T, e *Effects) *OIDCFixture {
 // chain's own defaults, with the fixture's token generator and sessions.
 func oidcOptions(e *Effects) []httpsec.Option {
 	return []httpsec.Option{
-		httpsec.EnableOIDCLogin(e.OIDC.RelyingParty, e.OIDC.Handoffs,
+		httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: e.OIDC.RelyingParty, Handoff: e.OIDC.Handoffs},
 			httpsec.WithOIDCTokens(fixtureTokens{}),
 			httpsec.WithOIDCSessions(e.Sessions)),
 	}

@@ -937,7 +937,7 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 				handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(gomock.NewController(t)))
 				require.NoError(t, err)
 
-				return []httpsec.Option{discard, factory, httpsec.EnableOIDCLogin(h.manager, handoffs,
+				return []httpsec.Option{discard, factory, httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: handoffs},
 					httpsec.WithOIDCTokens(h.tokens), httpsec.WithOIDCSessions(h.sessions))}
 			},
 			assert: built,

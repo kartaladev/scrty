@@ -21,7 +21,9 @@ import (
 // lockout policy never reads, which is worse than none.
 type FormLoginDeps struct {
 	// Authenticator judges the submitted credentials. An authenticate.FirstOf
-	// satisfies it, and so does a consumer's own provider.
+	// satisfies it, and so does a consumer's own provider. A FirstOf forwards
+	// the refusal-log flush to its delegates, so the chain's flush reaches
+	// each of them.
 	Authenticator authenticate.Authenticator
 
 	// Sessions opens the session a successful login establishes.

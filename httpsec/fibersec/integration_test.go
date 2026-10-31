@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/fibersec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
@@ -71,7 +72,7 @@ func newReferenceDeployment(t *testing.T, extra ...httpsec.Option) *referenceDep
 	t.Helper()
 
 	clk := &sessionClock{now: time.Date(2026, time.October, 22, 9, 0, 0, 0, time.UTC)}
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
 	sessions, err := session.New(session.WithStore(store), session.WithClock(clk))
 	require.NoError(t, err)

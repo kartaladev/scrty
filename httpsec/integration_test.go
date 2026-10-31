@@ -31,6 +31,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -160,7 +161,7 @@ func TestChain_ClockMFA(t *testing.T) {
 			// move, so it never finds the challenge expired.
 			name:  "a consumer's challenge store keeps its own clock",
 			at:    clockInstant,
-			store: func() onetime.Store { return onetime.NewMemoryStore() },
+			store: func() onetime.Store { return must.Must(onetime.NewMemoryStore()) },
 			act: func(t *testing.T, r *clockMFARun) observed {
 				r.begin(t)
 				r.clk.Advance(httpsec.DefaultMFAChallengeTTL + challengeIssuanceWindow + time.Second)
@@ -1351,7 +1352,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				chain, err := httpsec.New(
 					httpsec.WithLogger(slog.New(&log)),
 					httpsec.WithRefusalLogInterval(0),
-					httpsec.EnableOIDCLogin(h.manager, handoffs,
+					httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: handoffs},
 						httpsec.WithOIDCTokens(h.tokens),
 						httpsec.WithOIDCSessions(h.sessions)),
 				)
@@ -1691,7 +1692,7 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 			Authenticator: authn,
 			Sessions:      d.sessions,
 			Tokens:        d.tokens,
-			Attempts:      lockout.NewMemoryAttemptStore(),
+			Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
 		}),
 		httpsec.EnableMagicLink(d.links,
 			httpsec.WithMagicLinkSessions(d.sessions), httpsec.WithMagicLinkTokens(d.tokens)),
@@ -2485,7 +2486,7 @@ func TestPasskeyFlushRefusalLogs(t *testing.T) {
 			tc.drive(t, d)
 			before := len(logs.records())
 
-			d.chain.FlushRefusalLogs()
+			require.NoError(t, d.chain.FlushRefusalLogs())
 
 			tc.assert(t, logs.records()[before:])
 		})
@@ -2505,7 +2506,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(recoveryStart)
 
 	sessions, err := session.New(session.WithClock(clk), session.WithAbsoluteTimeout(12*time.Hour),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))))
 	require.NoError(t, err)
 
 	d := &e2eDeployment{
@@ -2726,7 +2727,7 @@ func oidcLoginOver(t *testing.T, m *oidc.RelyingParty) httpsec.Option {
 	sessions, err := session.New()
 	require.NoError(t, err)
 
-	return httpsec.EnableOIDCLogin(m, newTestHandoffManager(t),
+	return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: m, Handoff: newTestHandoffManager(t)},
 		httpsec.WithOIDCTokens(NewMockGenerator(gomock.NewController(t))),
 		httpsec.WithOIDCSessions(sessions))
 }
@@ -3145,7 +3146,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				sink := &errorSink{}
 
 				c, err := httpsec.New(sink.option(),
-					httpsec.EnableOIDCLogin(h.manager, handoffs,
+					httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: handoffs},
 						httpsec.WithOIDCTokens(h.tokens),
 						httpsec.WithOIDCSessions(h.sessions)))
 				require.NoError(t, err)
@@ -3262,7 +3263,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			name: "guard: a consumer authorizer's refusal is returned as itself",
 			act: func(t *testing.T) *errorSink {
 				sink := &errorSink{}
-				g := httpsec.NewGuards(refusingAuthorizer(t, errRolesOnHold), sink.guardOption())
+				g := mustGuards(t, refusingAuthorizer(t, errRolesOnHold), sink.guardOption())
 
 				runGuard(t, g.ResourcePrivileges("admin", "user").RequireOne("read"),
 					guardRequest(t, testPrincipal(), nil))
@@ -3282,7 +3283,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				require.NoError(t, err)
 
 				sink := &errorSink{}
-				g := httpsec.NewGuards(authorizer, sink.guardOption())
+				g := mustGuards(t, authorizer, sink.guardOption())
 
 				runGuard(t, g.ResourcePrivileges("billing", "invoice").RequireOne("read"),
 					guardRequest(t, activeRolePrincipal("editor"), nil))

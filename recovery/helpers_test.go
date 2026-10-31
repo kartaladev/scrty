@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
@@ -578,7 +579,7 @@ func newRecoverEnv(t *testing.T) *recoverEnv {
 	t.Helper()
 
 	f := newFixture(t)
-	e := &recoverEnv{fixture: f, tokens: onetime.NewMemoryStore(), limiter: NewMockLimiter(f.ctrl)}
+	e := &recoverEnv{fixture: f, tokens: must.Must(onetime.NewMemoryStore()), limiter: NewMockLimiter(f.ctrl)}
 	e.totp = formMethod(f.ctrl, "totp")
 
 	mint, err := onetime.New(recovery.IssuedCodePurpose, onetime.WithStore(e.tokens), onetime.WithClock(f.clock))
@@ -720,7 +721,7 @@ func newFixture(t *testing.T) *fixture {
 
 	// The store judges expiry on its own clock, so it gets the same one.
 	sessions, err := session.New(session.WithClock(clk),
-		session.WithStore(faultySessionStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk)), f: flt}))
+		session.WithStore(faultySessionStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk))), f: flt}))
 	require.NoError(t, err)
 
 	return &fixture{

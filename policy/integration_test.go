@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -240,10 +241,7 @@ func TestChallengesDoesNotAliasPolicyState(t *testing.T) {
 				p, err := policy.NewMFA([]policy.MFAMethodLookup{idleMFAMethod(t, "totp")})
 				require.NoError(t, err)
 
-				c, ok := p.(policy.Challenger)
-				require.True(t, ok)
-
-				return c
+				return p
 			},
 		},
 		{
@@ -257,10 +255,7 @@ func TestChallengesDoesNotAliasPolicyState(t *testing.T) {
 					NewMockMFARequirementLookup(ctrl), mfaMethods(idleMFAMethod(t, "totp")))
 				require.NoError(t, err)
 
-				c, ok := p.(policy.Challenger)
-				require.True(t, ok)
-
-				return c
+				return p
 			},
 		},
 		{
@@ -368,7 +363,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 			// user already holds at least none.
 			name: "a maximum of zero sessions",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessions(session.NewMemoryStore(), 0)
+				return policy.NewConcurrentSessions(must.Must(session.NewMemoryStore()), 0)
 			},
 			names:       "maximum number of sessions must be positive",
 			consequence: "refuse every login",
@@ -376,7 +371,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a negative maximum of sessions",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessions(session.NewMemoryStore(), -1)
+				return policy.NewConcurrentSessions(must.Must(session.NewMemoryStore()), -1)
 			},
 			names:       "maximum number of sessions must be positive",
 			consequence: "refuse every login",
@@ -551,7 +546,7 @@ func mfaSamplingPair(
 	t *testing.T,
 	challengeOpts []policy.MFAOption,
 	requirementOpts []policy.MFARequirementOption,
-) (challenge, requirement policy.Policy, challengeLog, requirementLog *bytes.Buffer) {
+) (challenge *policy.MFA, requirement *policy.MFARequirement, challengeLog, requirementLog *bytes.Buffer) {
 	t.Helper()
 
 	challengeLog, requirementLog = &bytes.Buffer{}, &bytes.Buffer{}
@@ -584,16 +579,6 @@ func mfaRefuseBoth(t *testing.T, challenge, requirement policy.Policy, n int) {
 		require.Equal(t, policy.Deny, challenge.Evaluate(t.Context(), login).Outcome)
 		require.Equal(t, policy.Deny, requirement.Evaluate(statelessCtx, stateless).Outcome)
 	}
-}
-
-// mfaFlush flushes a policy's held-back counts through the flusher a consumer
-// reaches by type assertion, the constructors returning Policy.
-func mfaFlush(t *testing.T, p policy.Policy) {
-	t.Helper()
-
-	flusher, ok := p.(policy.RefusalLogFlusher)
-	require.True(t, ok, "the policy offers no way to report what it suppressed")
-	require.NoError(t, flusher.FlushRefusalLogs())
 }
 
 func TestPolicyRefusalLogsAreSampledPerSubsystem(t *testing.T) {
@@ -629,8 +614,8 @@ func TestPolicyRefusalLogsAreSampledPerSubsystem(t *testing.T) {
 		assert.Len(t, mfaRecordsOf(t, requirementLog, logMFARequired), 1,
 			"one interval option governed both subsystems, so a minute reset an hour")
 
-		mfaFlush(t, challenge)
-		mfaFlush(t, requirement)
+		require.NoError(t, challenge.FlushRefusalLogs())
+		require.NoError(t, requirement.FlushRefusalLogs())
 
 		challengeSummary := mfaRecordsOf(t, challengeLog, logMFASuppressed)
 		require.Len(t, challengeSummary, 1, "the challenge policy dropped what it held back")

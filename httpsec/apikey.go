@@ -85,10 +85,12 @@ func (c *config) wireAPIKey() error {
 }
 
 // flushRefusalLogs reports what the source guard is holding back.
-func (i *apiKeyInterceptor) flushRefusalLogs() {
+func (i *apiKeyInterceptor) flushRefusalLogs() error {
 	if i.guard != nil {
 		i.guard.Flush()
 	}
+
+	return nil
 }
 
 // Intercept authenticates a machine caller by the key in the Authorization
