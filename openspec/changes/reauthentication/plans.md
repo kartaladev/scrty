@@ -40,6 +40,7 @@
 - A JSON password re-proof body carrying both `username` and `password` checks the session's own user only. Added to Task 8 (6.4).
 - An authentication time hours ahead of the guard's clock is fresh (D1). It is pinned explicitly so a later "fix" to refuse it is a visible decision. Added to Task 1 (1.1) and Task 3 (3.2).
 - A re-proof on a session-reference bearer chain returns a new reference, and the old reference is refused. On a JWT chain it returns a new token whose session loads. Added to Task 8 (6.5).
+- A passkey-only session where a passkey sign-in is one factor re-proves with that passkey: it becomes fresh but never "second factor met" (D4). Added to Task 14 (6.7).
 - Two valid re-proofs, or two valid MFA verifications, from one session at once on one server: one wins and the other gets 409, never 401 (D10). Added to Task 13 (7.1).
 - A re-proof racing a renewal of the same session: one wins, and the other is refused with the renewal-conflict error (409), leaving the winner's session in place. A GET to `/reauth/verify/totp` passes through untouched. Added to Task 8 (6.5) and Task 6 (6.1).
 
@@ -59,6 +60,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 3 | C3 | 6.3 | `httpsec/reauth_verify.go`, `httpsec/reauth_resolve.go` (minimal), `httpsec/reauth_verify_test.go` (all new); extends `reauth.go`, `reauth_options.go` | Opus: check-then-consume challenges, throttle sharing | Opus |
 | 4 | C4 | 6.4–6.6 | `httpsec/reauth_password.go` (new), completes `httpsec/reauth_resolve.go`, their tests, `httpsec/example_reauth_test.go` (new), README re-authentication section and defaults rows; read-only use of `login.go`'s password path | Opus: password refusal logic, rotation rollback | Opus |
 | 5 | A2 | 7.1 | `session/sessions.go`, `session/store.go` (the `ErrRenewalConflict` godoc), `session/sessions_test.go`; in `httpsec`: the concurrent re-proof row in `reauth_resolve_test.go`, a new row in `TestMFAVerifyRotationRefusals` (`mfa_verify_test.go`), godoc in `reauth_resolve.go`, `reauth_options.go`, `mfa_verify.go` (`rotationRefusal`), `errors.go` (`ErrSessionRenewalConflict`) | Opus: ordering under races, keyed lock | Opus |
+| 6 | C5 | 6.7 | `httpsec/reauth_resolve.go`, `httpsec/reauth_resolve_test.go`, `httpsec/reauth_test.go` (consumer-prefix row), `httpsec/fibersec/guards.go` (the default constant), godoc in `authenticate/passkey/doc.go`, `authenticate/passkey/register.go`, `httpsec/passkey.go`, README passkey and re-authentication sections | Sonnet: the fix and its test are stated; docs | Opus (assurance rule) |
 | 6 | D1 | 8.1 | `test/httpsecconformance/reauth_scenarios.go` (new), its registration in `scenarios.go` | Sonnet: conformance cases in an existing suite | Sonnet |
 | 6 | main | 8.2 | runs the gate; edits nothing | — | whole-branch review: Opus |
 
@@ -70,6 +72,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 - B3 consumes B2's exported names.
 - C3 and C4 extend C2's files, in their own lane.
 - A2 runs on C4's branch, after C4, because it changes C4's concurrent re-proof row.
+- C5 runs after D1 and the whole-branch review, which raised it; the gate (8.2) waits on C5.
 
 **Waits:** each wave starts only when the previous wave is merged, verified green, and reviewed clean. Each dispatch's prompt carries:
 - the Global Constraints;
@@ -404,6 +407,27 @@ Two parallel dispatches, one per module.
 - [ ] **Step 4: Run.** `go test -race -count=1 ./session/ ./httpsec/` passes, then `go test ./...` in `test`.
 - [ ] **Step 5: Commit** `feat(session): a lost strict rotation is a renewal conflict`.
 
+### Task 14: A same-channel re-proof refreshes freshness only (tasks.md 6.7)
+
+**Files:**
+- Modify: `httpsec/reauth_resolve.go` (`resolve`), `httpsec/fibersec/guards.go` (`DefaultRecentAuthenticationWindow = httpsec.DefaultRecentAuthenticationWindow`)
+- Modify, docs: `authenticate/passkey/doc.go`, `authenticate/passkey/register.go`, `httpsec/passkey.go`, README (passkey section; re-authentication "Endpoints")
+- Test: `httpsec/reauth_resolve_test.go`, `httpsec/reauth_verify_test.go` (E2E passkey row), `httpsec/reauth_test.go`
+
+**Interfaces:**
+- Consumes: `resolve(ex, s, secondFactor bool)`; the channel test `/mfa/verify` applies to a method against `s.FirstFactor` (the same-channel rule's helper in `mfa_verify.go` or `policy`, called and not edited).
+- Produces: `resolve` takes the verified method's channel (or the method) so it can decide; signature change owned here with its callers in `reauth_verify.go` and `reauth_password.go`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestReauthResolve` "a same-channel re-proof refreshes freshness only": `WithoutSecondFactorAtLogin`-style wiring so a passkey sign-in leaves `MFA == MFANone`; that session re-proves at `/reauth/verify/passkey` at 09:30 → `AuthenticatedAt == 09:30`, `MFA == MFANone`, `MFASatisfiedAt` zero, new credential returned.
+  - The E2E "a passkey login re-proves with the passkey" row: where the passkey login already met the second factor, the state stays `MFASatisfied` and `MFASatisfiedAt` is unchanged (not moved to the re-proof time).
+  - "a different channel meets the second factor": a password session re-proves with TOTP → `MFASatisfied`, `MFASatisfiedAt == now` (existing row; keep).
+  - `TestEnableReauthentication` "a consumer prefix moves the endpoints" also posts a valid TOTP code to `/account/confirm/verify/totp` → 200 with a new credential.
+- [ ] **Step 2: Run and see** the same-channel row fail with `MFA == MFASatisfied`.
+- [ ] **Step 3: Implement.** `resolve` sets `MFA`/`MFASatisfiedAt` only for a second factor whose channel differs from the session's first factor; rollback covers only the fields it changed. Alias the fiber default. Rewrite the step-up docs: a full session re-proves at `/reauth`, not `/mfa/verify`; a same-channel re-proof refreshes freshness without meeting the second factor. README re-authentication "Endpoints": a session owing a challenge is refused by that challenge's gate with its challenge error; a concurrent re-proof or MFA verification on one server gets 409.
+- [ ] **Step 4: Run.** `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...`, `go test ./...` in `httpsec/fibersec`, `go vet`.
+- [ ] **Step 5: Commit** `fix(httpsec): a same-channel re-proof refreshes freshness only`.
+
 ### Task 11: Conformance (tasks.md 8.1)
 
 **Files:**
@@ -445,6 +469,7 @@ Run by the main session. It edits nothing.
 | 6.1–6.2 | Task 6 |
 | 6.3 | Task 7 |
 | 6.4–6.6 | Task 8 |
+| 6.7 | Task 14 |
 | 7.1 | Task 13 |
 | 8.1 | Task 11 |
 | 8.2 | Task 12 |
