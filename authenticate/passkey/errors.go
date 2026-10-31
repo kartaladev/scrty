@@ -41,7 +41,8 @@ var ErrAttestationRefused = errors.New("passkey: attestation refused")
 var ErrPerUserLimitReached = errors.New("passkey: passkey limit reached")
 
 // ErrReauthenticationRequired is the refusal of an action from a session whose
-// latest authentication is older than the freshness window.
+// authentication time (sign-in, satisfied second factor or re-authentication)
+// is older than the freshness window.
 var ErrReauthenticationRequired = errors.New("passkey: reauthentication required")
 
 // ErrNotFound reports a credential that does not exist, or that does not

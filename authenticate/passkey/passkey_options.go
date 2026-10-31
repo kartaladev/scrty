@@ -92,8 +92,8 @@ func WithPerUserLimit(n int) Option {
 
 // WithManagementFreshness replaces how recent a full session's authentication
 // must be for it to register or remove a passkey. The window is measured from
-// the session's AuthenticatedAt: its sign-in, or the last time it satisfied a
-// second factor. A renewal never refreshes it, so a renewed session does not
+// the session's authentication time, AuthenticatedAt: its sign-in, a satisfied
+// second factor or a re-authentication. A renewal never refreshes it, so a renewed session does not
 // regain freshness. The default is 15 minutes; an older session is refused
 // with ErrReauthenticationRequired. Zero or less is a configuration error.
 func WithManagementFreshness(d time.Duration) Option {
