@@ -116,20 +116,23 @@ type Session struct {
 	// recorded and not something a consumer key can claim.
 	MFASatisfiedAt time.Time
 
-	// AuthenticatedAt is when the user last proved who they are, read from
-	// the manager's clock: the time the authentication occurred, as the
-	// OpenID Connect auth_time claim means it. Sessions.Create sets it to
-	// CreatedAt, before the create options run, so a CreateOption may still
-	// set another time; it is refreshed when a second factor is satisfied.
-	// No renewal moves it: RotateWithGrace carries the stored value over,
-	// and Rotate writes the value from the session it is given, which is how
-	// second-factor verification records its refresh. Either way a
-	// successor's CreatedAt is its renewal time while its AuthenticatedAt
-	// stays the sign-in's, unless the caller refreshed it. Every freshness
-	// check that asks how recently the user authenticated reads this field
-	// alone, never CreatedAt, through AuthenticatedWithin. Library-owned: Save keeps the stored value, so changing it
-	// here and saving changes nothing, and a consumer cannot set it through
-	// Data.
+	// AuthenticatedAt is when the user last proved who they are: the time the
+	// authentication occurred, as the OpenID Connect auth_time claim means
+	// it. Sessions.Create sets it to CreatedAt, read from the manager's clock,
+	// before the create options run, so a CreateOption may still
+	// set another time. It is refreshed when a second factor is satisfied,
+	// and when a signed-in session re-authenticates (a re-proof of a second
+	// factor or of the password), each time from the clock of the endpoint
+	// that records it. No renewal moves it: RotateWithGrace carries the
+	// stored value over, and Rotate writes the value from the session it is
+	// given, which is how second-factor verification and re-authentication
+	// record their refresh. Either way a successor's CreatedAt is its
+	// renewal time while its AuthenticatedAt stays the last authentication's,
+	// unless the caller refreshed it. Every freshness check that asks how
+	// recently the user authenticated reads this field alone, never
+	// CreatedAt, through AuthenticatedWithin. Library-owned: Save keeps the
+	// stored value, so changing it here and saving changes nothing, and a
+	// consumer cannot set it through Data.
 	AuthenticatedAt time.Time
 
 	// MFAAtFirstFactor marks that the second factor was met at the first

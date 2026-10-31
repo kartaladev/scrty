@@ -29,12 +29,31 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     "password":…} marked Cache-Control: no-store, or through
 //     WithReauthenticationMethodsResponder;
 //   - POST <prefix>/begin/<method> begins a second-factor method that has a
-//     begin step;
-//   - POST <prefix>/verify/<method> re-proves with a second-factor method;
+//     begin step, answering the method's data as JSON marked Cache-Control:
+//     no-store, or through WithReauthenticationBeginResponder;
+//   - POST <prefix>/verify/<method> re-proves with a second-factor method,
+//     under the MFA slot's per-user verification throttle;
 //   - POST <prefix>/password re-proves with the session's own user's
-//     password.
+//     password. It reads only the password, from the form field form login
+//     reads it from or a JSON member of that name, under form login's body
+//     limit, and checks it for the resolved caller's username: a username in
+//     the request is ignored. The check is form login's own, under the
+//     account lockout and the password-login source guard; a wrong password
+//     is recorded against the user, a lock is refused as a login refuses one,
+//     and a success clears the user's recorded failures.
 //
 // Every other request, including a GET to a verify path, passes on untouched.
+//
+// A successful re-proof sets the session's authentication time to now, read
+// from the chain's clock (WithClock), and a second-factor re-proof also
+// records the second factor as satisfied then; a password re-proof leaves the
+// second-factor state alone. The session is then rotated to a new handle, so
+// the credential the caller arrived with stops working, and the response
+// carries the rotated session's credential: by default the JSON document a
+// login answers with, marked Cache-Control: no-store
+// (WithReauthenticationResponder replaces it). A rotation a concurrent renewal
+// won is refused with ErrSessionRenewalConflict, and a failed re-proof changes
+// neither the session nor its handle.
 //
 // # Who may re-prove
 //
@@ -44,8 +63,7 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // raised for (Exchange.RaisedChallenge). A session owing a challenge is refused
 // by that challenge's gate, which runs first; any other request the endpoints
 // cannot serve, a raised consumer challenge included, is refused with
-// ErrAuthenticationRequired. A session that is
-// still fresh is served.
+// ErrAuthenticationRequired. A session that is still fresh is served.
 //
 // # With what: the factor policy
 //
@@ -60,6 +78,13 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // user re-proves with the password. There is no option to weaken it: a
 // password re-proof by a user who holds a second factor would make a session
 // fresh at single-factor strength, fresh enough to bind a new authenticator.
+//
+// Whether a user has a password at all is not known without loading them, so
+// the policy offers the password to every user who holds no second factor. A
+// user who signed in only through a provider then fails a password re-proof
+// as a wrong password would. A deployment with such users filters the
+// password out for them in WithReauthenticationMethodsResponder, which runs on
+// the request carrying the session.
 //
 // # Defaults
 //

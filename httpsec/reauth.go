@@ -60,6 +60,10 @@ type ReauthenticationResult struct {
 // ReauthenticationResponder writes the response to a successful re-proof, at
 // the verify and password endpoints.
 //
+// With none supplied (WithReauthenticationResponder), the library answers 200
+// with the JSON document a login answers with, carrying the rotated session's
+// credential and its idle expiry, marked Cache-Control: no-store.
+//
 // It is called instead of the downstream handler, because the endpoints are
 // the library's own and the application has no route behind them. The session
 // it receives carries the handle rotation produced, which is the only place
