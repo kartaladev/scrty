@@ -381,7 +381,7 @@ A successful re-proof SHALL set the authentication time to now from the chain's 
 - **THEN** the route is called
 
 #### Scenario: Concurrent re-proofs
-- **WHEN** one session sends two valid re-proofs at once
+- **WHEN** one session sends two valid re-proofs at once to one server
 - **THEN** one succeeds and the other is refused with the renewal-conflict error, leaving the winner's session in place
 
 #### Scenario: Controlled chain time source

@@ -45,3 +45,32 @@ The library SHALL offer one check of whether a session authenticated within a wi
 #### Scenario: No recorded authentication time
 - **WHEN** a session with a zero authentication time is checked against a 24-hour window
 - **THEN** it is not within the window
+
+### Requirement: A strict rotation that lost a race within one manager is a renewal conflict
+A rotation without grace that finds its session already rotated through the same session manager within the in-flight window SHALL fail with the renewal-conflict error, storing and revoking nothing. Otherwise a missing session SHALL be the not-found error and an expired one the expired error. The old identifier SHALL stop loading as soon as a rotation succeeds.
+
+#### Scenario: Two rotations at once
+- **WHEN** two rotations without grace of one session run at once through one manager
+- **THEN** one returns a successor and the other fails with the renewal-conflict error
+- **AND** the family keeps exactly one live session and nothing is revoked
+
+#### Scenario: A rotation inside the in-flight window
+- **WHEN** a session is rotated without grace at 09:00:00 and its old identifier is rotated again through the same manager at 09:00:10
+- **THEN** the second rotation fails with the renewal-conflict error
+
+#### Scenario: A rotation after the in-flight window
+- **WHEN** the same second rotation runs at 09:00:31
+- **THEN** it fails with the not-found error
+
+#### Scenario: A revoked session
+- **WHEN** a session whose family was revoked, and which was never rotated, is rotated without grace
+- **THEN** it fails with the not-found error
+
+#### Scenario: The old identifier stops loading
+- **WHEN** a session is rotated without grace and its old identifier is loaded at once
+- **THEN** loading it fails with the not-found error, and the successor's family is not revoked
+
+#### Scenario: Two managers sharing a store
+- **WHEN** two rotations without grace of one session race through two managers sharing one store, and the loser reads the session after the winner removed it
+- **THEN** the loser may fail with the not-found error, since the guarantee holds within one manager
+

@@ -24,3 +24,12 @@ The second-factor verify and begin endpoints SHALL refuse a session that owes no
 #### Scenario: A pending session is still served
 - **WHEN** a session with the MFA challenge pending posts a valid code to `/mfa/verify/totp`
 - **THEN** the challenge is resolved and the session rotated
+
+### Requirement: Concurrent verifications of one pending session yield one success
+When one session pending a second factor posts two valid verifications at once to one server, exactly one SHALL resolve the challenge and rotate the session, and the other SHALL be refused with the renewal-conflict error, leaving the winner's session and credential in place.
+
+#### Scenario: Two valid codes at once
+- **WHEN** one pending session posts two valid codes to `/mfa/verify/totp` at once
+- **THEN** one succeeds and the other is refused with the renewal-conflict error
+- **AND** the winner's credential authenticates the next request
+

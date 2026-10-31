@@ -75,7 +75,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - registration after the MFA slot and form login are known;
   - every construction error in D6, as `ErrConfig`, each naming its cause.
 
-  ("Re-proof endpoints exist only when re-authentication is enabled" scenarios "Off by default", "Consumer prefix"; "Re-authentication wiring mistakes fail at construction", every scenario; "Re-proof challenges are their own and bound to the session" scenario "Zero lifetime".) Verify with `go test -race -run 'TestEnableReauthentication|TestChainOrder' ./httpsec/`
+  ("Re-proof endpoints exist only when re-authentication is enabled" scenarios "Off by default", "Consumer prefix"; "Re-authentication wiring mistakes fail at construction", every scenario; "Re-proof challenges are their own and bound to the session" scenario "Zero lifetime".) Verify with `go test -race -run 'TestEnableReauthentication|TestOrder' ./httpsec/`
 - [x] 6.2 Admission, the factor policy, and `GET <prefix>/methods` with its default JSON body and replaceable responder:
   - the decision is shared by every endpoint;
   - a lookup failure refuses;
@@ -115,9 +115,20 @@ Each task names how it is verified. A signature change owns every caller of the 
 
   The defaults table gains every new default (D6, D7, D9). Verify with `go test -run 'Example' ./httpsec/` and `go vet ./httpsec/`
 
-## 7. Conformance and close-out
+## 7. A lost strict rotation is a renewal conflict (`sessions`, `multi-factor-auth`, `reauthentication`)
 
-- [ ] 7.1 `test/httpsecconformance` on net/http, gin and fiber, each scenario mirroring a spec scenario:
+- [ ] 7.1 Within the in-flight window after a strict rotation, the manager remembers the rotated handle's digest, and a strict `Rotate` of that handle that finds no record fails with `session.ErrRenewalConflict`:
+  - no store write and no `judge` on that path, so reuse detection never fires and nothing is revoked;
+  - past the window, or for a never-rotated revoked or unknown session, `ErrNotFound`; an expired session `ErrExpired`;
+  - the old identifier stops loading at once;
+  - the memory is bounded and pruned as entries expire;
+  - `Rotate`'s godoc states the guarantee and that across managers sharing a store a loser may still get `ErrNotFound`; `ErrRenewalConflict`'s godoc says "a concurrent rotation".
+
+  Change the tests that pin today's not-found: `session/sessions_test.go` "a handle already rotated away cannot be rotated again" splits into inside and after the window, and `TestManagerRotateConcurrent` expects every loser to be `ErrRenewalConflict`. In `httpsec`, the concurrent re-proof row in `TestReauthResolve` expects `ErrSessionRenewalConflict` (409), and `TestMFAVerifyRotationRefusals` gains two valid codes at once, one 409. (D10; ADDED sessions "A strict rotation that lost a race within one manager is a renewal conflict", every scenario; ADDED multi-factor-auth "Concurrent verifications of one pending session yield one success"; reauthentication scenario "Concurrent re-proofs".) Verify with `go test -race -count=1 ./session/ ./httpsec/` and `go test ./...` in the `test` module
+
+## 8. Conformance and close-out
+
+- [ ] 8.1 `test/httpsecconformance` on net/http, gin and fiber, each scenario mirroring a spec scenario:
   - a stale session refused by the recency guard, a TOTP re-proof, and the route accepted with the new credential;
   - a password re-proof by a user without a second factor;
   - a TOTP holder refused at `/reauth/password`;
@@ -125,7 +136,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - a fiber refusal carrying its window to the error handler.
 
   (D9; framework-adapters "Adapter recency guards match the core recency guard" across adapters.) Verify with `go vet ./...` and `go test -race ./...` in the `test` module (needs Docker for durable backends)
-- [ ] 7.2 The whole-workspace gate:
+- [ ] 8.2 The whole-workspace gate:
   - `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module listed by `go list -m`;
   - `gofmt -l` empty over tracked Go files;
   - `openspec validate reauthentication --strict`.
