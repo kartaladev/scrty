@@ -2051,6 +2051,7 @@ func builtInSlots() []namedSlot {
 		{"BearerToken", httpsec.OrderBearerToken},
 		{"MFAChallenge", httpsec.OrderMFAChallenge},
 		{"PasswordChange", httpsec.OrderPasswordChange},
+		{"Reauthentication", httpsec.OrderReauthentication},
 		{"Passkeys", httpsec.OrderPasskeys},
 		{"SessionRenewal", httpsec.OrderSessionRenewal},
 		{"Logout", httpsec.OrderLogout},
@@ -2119,6 +2120,15 @@ func TestOrder(t *testing.T) {
 		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderPasswordChange)
 		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderMFAChallenge)
 		assert.Less(t, httpsec.OrderPasskeys, httpsec.OrderLogout)
+
+		// The re-authentication endpoints run inside every gate, the
+		// password-change gate included, and outside the passkey endpoints
+		// and renewal.
+		assert.Equal(t, httpsec.Order(655), httpsec.OrderReauthentication)
+		assert.Greater(t, httpsec.OrderReauthentication, httpsec.OrderPasswordChange)
+		assert.Greater(t, httpsec.OrderReauthentication, httpsec.OrderMFAChallenge)
+		assert.Less(t, httpsec.OrderReauthentication, httpsec.OrderPasskeys)
+		assert.Less(t, httpsec.OrderReauthentication, httpsec.OrderSessionRenewal)
 
 		// The renewal endpoint sits between the passkey endpoints and logout:
 		// inside every gate and bearer authentication, outside logout.
