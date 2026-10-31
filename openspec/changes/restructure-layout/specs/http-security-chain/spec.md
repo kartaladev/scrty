@@ -23,6 +23,10 @@ When form login or Basic authentication receives the authentication capability's
 - **WHEN** the user store is down, `bob` is held by the lockout policy with locks concealed, and `ada` is not
 - **THEN** a form login for `bob` and one for `ada` receive the same status and headers
 
+#### Scenario: Known and unknown users answer a partial outage alike
+- **WHEN** the user store fails to load `ada` and has no user `zed`
+- **THEN** a form login for `ada` and one for `zed` receive the same status and headers, and each is counted once against the source
+
 #### Scenario: Outages are charged to the source
 - **WHEN** the user store fails for every load, and more password logins arrive from one source than its limit allows in the window
 - **THEN** the source guard refuses the requests beyond the limit, and no password work is spent on them

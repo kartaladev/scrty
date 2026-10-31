@@ -388,3 +388,14 @@ test	github.com/kartaladev/scrty/token#TestVerifyClaimEnforcement/an_audience_co
 added	-	github.com/kartaladev/scrty/authenticate.ErrUnavailable
 test	github.com/kartaladev/scrty/authenticate#TestPasswordAuthenticatorDoesNotRevealWhyItFailed/a_loader_failure_returns_the_same_bare_sentinel,_and_still_pays_for_a_comparison	github.com/kartaladev/scrty/authenticate#TestPasswordAuthenticatorDoesNotRevealWhyItFailed/a_loader_failure_is_unavailable,_not_the_uniform_failure,_and_carries_no_driver_text
 added	-	github.com/kartaladev/scrty/httpsec.WithAPIKeyOwners
+added	-	github.com/kartaladev/scrty/ratelimit.Receipt
+added	-	github.com/kartaladev/scrty/ratelimit.NewReceipt
+added	-	github.com/kartaladev/scrty/ratelimit.Charger
+added	-	github.com/kartaladev/scrty/ratelimit.MemoryLimiter.Charge
+added	-	github.com/kartaladev/scrty/ratelimit.MemoryLimiter.Refund
+added	-	github.com/kartaladev/scrty/ratelimit/redisstore.Limiter.Charge
+added	-	github.com/kartaladev/scrty/ratelimit/redisstore.Limiter.Refund
+added	-	github.com/kartaladev/scrty/store/sqlstore.Limiter.Charge
+added	-	github.com/kartaladev/scrty/store/sqlstore.Limiter.Refund
+added	-	github.com/kartaladev/scrty/store/pgxstore.Limiter.Charge
+added	-	github.com/kartaladev/scrty/store/pgxstore.Limiter.Refund

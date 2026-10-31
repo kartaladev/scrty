@@ -102,6 +102,8 @@
 | K2 | 14.3 | `httpsec/apikey.go`, `httpsec/apikey_test.go` | Sonnet: the fix and its rows are given by the review | Sonnet |
 | U6 | 13.8 | the files of Task 43e | Opus: changes what three security endpoints answer and count, and a mistake would pass most tests | Opus |
 | S2 | 13.9 | the files of Task 43f | Sonnet: the classifier, its codes and its tests are given | Opus, inside the 13.10 group review |
+| U7 | 13.10 | the files of Task 43g | Sonnet: each fix and its rows are given by the review | Sonnet |
+| S3 | 13.11 | the files of Task 43h | Sonnet: the narrowing and its test are given | Sonnet |
 | U2 | 13.4 | `recovery/recover*.go`, `httpsec/login_options.go` | Opus: same reason as U1, and it touches a security refusal path | Opus (one review of U1–U2) |
 | K1 | 14.1–14.2 | `httpsec/apikey*.go` | Opus: refusal logic written for the first time | Opus |
 | V1 | 15.1–15.3 | `token/**` | Opus: token verification logic | Opus |
@@ -112,7 +114,7 @@
 | L2 | 16.2 | `internal/pglimiter`, `internal/unavailable`, `store/sqlstore/limiter*.go`, `store/pgxstore/limiter*.go`, `ratelimit/redisstore`, the test module's limiter suites | Opus: atomic writes in SQL and Lua | Opus (one review of L1–L3) |
 | L2b | 16.3 | `test/ratelimittest/charge.go`, `test/ratelimittest/doubles_test.go`, `test/ratelimittest/broken_test.go`, godoc in `ratelimit/charge.go`, `ratelimit/memory.go`, `ratelimit/redisstore/limiter.go`, `internal/unavailable/wrap.go` | Sonnet: the case, the flaw and the wording are given by the review | Opus, inside the 16.5 group review |
 | L3 | 16.4 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
-| main session | 12.3, 13.10, 14.4, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| main session | 12.3, 13.12, 14.4, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
 The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3. K1 then runs in its own worktree off the U commit, in parallel with U5 on the branch: both compile in `httpsec` but own disjoint files. L3 runs on the branch after K1 lands. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
@@ -723,7 +725,31 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 4: Implement** `LookupMiss` and its use in the six lookups. Godoc on `identity.UserLoader`: input the store cannot represent is reported as "user not found".
 - [ ] **Step 5: Verify.** `go test -count=1 -race ./internal/storekit/ ./store/...`, the `store/pgxstore` and `store/gormstore` modules, and the test module's identity-store conformance with Docker. Expected: PASS.
 
-### Task 44: Group-13 gate (task 13.10, main session)
+### Task 43g: Fold the group-13 endpoint findings (task 13.10, U7, after Task 43e)
+
+**Files:** `recovery/recover.go` (`resolveForRecover`) and `recovery/recover_test.go`; `httpsec/outage_oracle_test.go`, `httpsec/recovery_test.go`; godoc in `httpsec/options.go` (`WithErrorHandler`), `httpsec/basic.go`, `httpsec/recovery_options.go`, and the error-handler docs of `httpsec/ginsec` and `httpsec/fibersec`.
+
+**Interfaces:**
+- Produces: `resolveForRecover` returns an error matching `authenticate.ErrUnavailable` (no driver text) for a load failure other than not found whose cause is not the caller's own context; the endpoint already charges it once to the source and nothing to the recovery limit.
+
+- [ ] **Step 1: Write** the recovery partial-outage row, the count-refusals-off outage row and the bare-uniform-failure row, as task 13.10 lists.
+- [ ] **Step 2: Run.** `go test -count=1 -race -run 'TestPasswordLoginOutageAnswersEveryUsernameAlike|TestRecoveryComplete_HTTP' ./httpsec/` and `go test -count=1 -race ./recovery/`. Expected: the partial-outage row FAILS with `expected: 401 actual: 500`; the two pinning rows pass, then fail under their mutations. Record the lines.
+- [ ] **Step 3: Implement** the `ErrUnavailable` return, and the godoc and reflows.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./httpsec/... ./recovery/...`, and in `httpsec/ginsec` and `httpsec/fibersec`. Expected: PASS.
+
+### Task 43h: Narrow the lookup classification (task 13.11, S3, in parallel with Task 43g)
+
+**Files:** `internal/storekit/storekit.go` and its test; the identity files of `store/sqlstore`, `store/pgxstore`, `store/gormstore`; the three backends' LATIN1 tests in the test module and `test/internal/storefix/latin1.go`.
+
+**Interfaces:**
+- Produces: `func storekit.LookupMiss(value string, err error) bool`, true only when `value` holds a non-ASCII byte and `err`'s chain holds a `SQLStater` reporting 22021 or 22P05. Only `LoadByUsername` calls it.
+
+- [ ] **Step 1: Write** the output-encoding row in each backend's LATIN1 test (a UTF-8 database read with `client_encoding=LATIN1`, a stored `€`), asserting a failure that is not `ErrUserNotFound` for `LoadByUserID` and for `LoadByUsername("ada")`; add `TestLookupMiss` rows for an ASCII value with 22P05 → false.
+- [ ] **Step 2: Run** them. Expected: FAIL, the store answering `ErrUserNotFound`. Record the lines.
+- [ ] **Step 3: Implement** the value parameter and the ASCII test; remove the call from the reference lookups; godoc.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./internal/storekit/ ./store/...`, the nested store modules, and the three LATIN1 tests with Docker. Expected: PASS.
+
+### Task 44: Group-13 gate (task 13.12, main session)
 
 - [ ] **Step 1:** Add an `added` row for `ErrUnavailable`, and list Task 41's changed case for the assertion review. Run `evidence/check.sh all && make check && openspec validate restructure-layout --strict`.
 - [ ] **Step 2:** An Opus review of the U1–U6 and S2 diffs against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.

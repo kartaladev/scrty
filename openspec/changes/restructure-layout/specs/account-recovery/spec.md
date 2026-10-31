@@ -36,9 +36,16 @@ When a recovery's password proof receives the authentication capability's unavai
 - **AND** one failure is counted against the source and nothing against `u-1`'s recovery limit
 
 ### Requirement: A client that leaves during the proof's user load is charged to its source only
-When a recovery's password proof receives the uniform failure for a load the request's own context ended, the recovery SHALL be refused as a failed proof and counted against the request's source, but SHALL NOT be counted against the user's recovery limit, because no password was compared.
+When a recovery's password proof receives the uniform failure for a load the request's own context ended, the recovery SHALL be refused as a failed proof and counted against the request's source as any refusal after the codes passed is, so the consumer's choice not to count those refusals applies to it, but SHALL NOT be counted against the user's recovery limit, because no password was compared.
 
 #### Scenario: A client hangs up during the password proof
 - **WHEN** a recovery for `u-1` has passed its codes, the request's context is cancelled, and the user loader fails with that cancellation during the password proof
 - **THEN** the recovery is refused as a failed proof
 - **AND** one failure is counted against the source and none against `u-1`'s recovery limit
+
+### Requirement: A recovery's user lookup answers an outage as an unknown user
+When a recovery cannot load its user for a reason other than "not found", and the request's own context did not end the load, the recovery SHALL be refused with the authentication capability's unavailable error, answered as a recovery for an unknown user is, and counted once against the request's source.
+
+#### Scenario: Known and unknown users answer a partial outage alike
+- **WHEN** the user store fails to load `u-1` and has no user `u-2`, and a recovery is completed for each
+- **THEN** both are answered 401 with the same headers, and each is counted once against the source
