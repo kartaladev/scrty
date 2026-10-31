@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/apikey"
@@ -88,7 +89,54 @@ var (
 	//
 	// Its text names neither the family nor the limiter's failure.
 	ErrRenewalThrottled = errors.New("httpsec: too many renewals of this session family")
+
+	// ErrReauthenticationRequired refuses a request to a route behind the
+	// recency guard (Guards.RequireRecentAuthentication or
+	// RequireAuthenticationWithin) whose session last proved the user's
+	// identity longer ago than the guard allows. Nothing was changed. It maps
+	// to 403: the caller is known and must prove identity again, which the
+	// client does by calling a re-authentication endpoint.
+	//
+	// The guard returns it as a *ReauthenticationRequiredError, which carries
+	// the window; errors.Is matches this sentinel through that type. A
+	// consumer that wants "any re-authentication needed" matches this
+	// together with recovery.ErrReauthenticationRequired and
+	// passkey.ErrReauthenticationRequired. Its text names no session, user or
+	// handle.
+	ErrReauthenticationRequired = errors.New("httpsec: reauthentication required")
+
+	// ErrReauthenticationMethodNotUsable refuses a re-authentication request
+	// whose method the caller cannot use: the user has not enrolled it, it is
+	// not among the methods the re-authentication endpoints
+	// (EnableReauthentication) offer, or it is the password while the user
+	// holds a usable second factor or a second factor is required for every
+	// re-proof. Nothing was checked or counted. It maps to 403.
+	// Its text names no method, session or user.
+	ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication method not usable")
 )
+
+// ReauthenticationRequiredError is the recency guard's refusal. It carries the
+// window the session's last proof of identity fell outside of, so a client
+// can say how recent a proof is needed.
+//
+// The guard (Guards.RequireRecentAuthentication, RequireAuthenticationWithin)
+// returns it. It matches ErrReauthenticationRequired through errors.Is and
+// maps to 403. Its text names the window and nothing else: no session, user
+// or handle.
+type ReauthenticationRequiredError struct {
+	// Window is how recently the identity must have been proved.
+	Window time.Duration
+}
+
+// Error names the window and nothing else.
+func (e *ReauthenticationRequiredError) Error() string {
+	return fmt.Sprintf("httpsec: reauthentication required within %s", e.Window)
+}
+
+// Is reports whether target is ErrReauthenticationRequired.
+func (e *ReauthenticationRequiredError) Is(target error) bool {
+	return target == ErrReauthenticationRequired
+}
 
 // ChallengeError refuses a request that must satisfy a challenge before it
 // goes further.
@@ -284,6 +332,12 @@ var statusTable = []statusRow{
 	{passkey.ErrAttestationRefused, http.StatusForbidden},
 	{passkey.ErrPerUserLimitReached, http.StatusForbidden},
 	{passkey.ErrReauthenticationRequired, http.StatusForbidden},
+
+	// The recency guard's refusal and an unusable re-authentication method.
+	// The guard's *ReauthenticationRequiredError matches the first through
+	// its Is method, so it needs no row of its own.
+	{ErrReauthenticationRequired, http.StatusForbidden},
+	{ErrReauthenticationMethodNotUsable, http.StatusForbidden},
 }
 
 // StatusForError maps a refusal to the status it is answered with.
