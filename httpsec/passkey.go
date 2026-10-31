@@ -157,7 +157,8 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //     active passkeys when that method is there or WithPasskeyPasswordlessLogin is
 //     given and its login proves the second factor. A password session steps
 //     up through the passkey MFA method (recognised by identity: a wrapped
-//     method opens no route); a passkey-first session cannot, and signs in
+//     method opens no route); a passkey-first session cannot meet the second
+//     factor through it (a same-channel re-proof refreshes freshness only), and signs in
 //     again with user verification, or by password and then the passkey
 //     step-up. It answers 200 with
 //     {"publicKey":{…creation options…}} and Cache-Control: no-store

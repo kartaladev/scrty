@@ -764,6 +764,9 @@ func TestReauthVerifyEndToEnd(t *testing.T) {
 		assert func(t *testing.T, d *pwlDeployment, tok string, out served)
 	}
 
+	// metAt is when the passkey-login row's session met its second factor.
+	var metAt time.Time
+
 	cases := []testCase{
 		{
 			// "Valid TOTP code", on the real method.
@@ -833,7 +836,10 @@ func TestReauthVerifyEndToEnd(t *testing.T) {
 			setup: func(t *testing.T, d *pwlDeployment) { d.mfaLimiter = limiterCounting(t, 0) },
 			act: func(t *testing.T, d *pwlDeployment) (string, served) {
 				tok := passkeyLogin(t, d, "cred-1")
-				require.Equal(t, factor.Passkey, d.sessionOf(t, tok).FirstFactor)
+				login := d.sessionOf(t, tok)
+				require.Equal(t, factor.Passkey, login.FirstFactor)
+				require.Equal(t, session.MFASatisfied, login.MFA, "the passkey login met the second factor")
+				metAt = login.MFASatisfiedAt
 
 				return tok, reauthPasskey(t, d, tok, "cred-1")
 			},
@@ -849,6 +855,8 @@ func TestReauthVerifyEndToEnd(t *testing.T) {
 				s := d.sessionOf(t, rotated)
 				assert.Equal(t, session.MFASatisfied, s.MFA)
 				assert.Equal(t, factor.Passkey, s.FirstFactor)
+				assert.True(t, s.MFASatisfiedAt.Equal(metAt),
+					"a same-channel re-proof leaves the time the second factor was met: %s, was %s", s.MFASatisfiedAt, metAt)
 			},
 		},
 		{

@@ -45,9 +45,13 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // Every other request, including a GET to a verify path, passes on untouched.
 //
 // A successful re-proof sets the session's authentication time to now, read
-// from the chain's clock (WithClock), and a second-factor re-proof also
-// records the second factor as satisfied then; a password re-proof leaves the
-// second-factor state alone. The session is then rotated to a new handle, so
+// from the chain's clock (WithClock). A second-factor re-proof also records the
+// second factor as satisfied then, but only when the method's channel differs
+// from the channel of the session's first factor, the test /mfa/verify
+// applies: a re-proof on the first factor's own channel (a passkey session
+// re-proved with the passkey) refreshes freshness only and leaves the
+// second-factor state and its time as they were, as does a password
+// re-proof. The session is then rotated to a new handle, so
 // the credential the caller arrived with stops working, and the response
 // carries the rotated session's credential: by default the JSON document a
 // login answers with, marked Cache-Control: no-store

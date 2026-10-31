@@ -92,7 +92,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	return i.resolve(ex, s, true)
+	return i.resolve(ex, s, method)
 }
 
 // begin issues a re-proof challenge for a challenge method at POST

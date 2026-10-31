@@ -100,7 +100,7 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	l.resetFailures(ctx, username)
 
-	return i.resolve(ex, s, false)
+	return i.resolve(ex, s, nil)
 }
 
 // readPassword reads only the password out of a re-proof request, the way

@@ -257,9 +257,9 @@ func (p *PrivilegeGuard) require(mode authorize.MatchMode, privileges ...string)
 // DefaultRecentAuthenticationWindow is how recently a recency guard requires
 // the caller to have proved their identity when neither
 // WithRecentAuthenticationWindow nor RequireAuthenticationWithin says
-// otherwise. It is the core guards' default, so a deployment on either
-// adapter is judged alike.
-const DefaultRecentAuthenticationWindow = 15 * time.Minute
+// otherwise. It is the core guards' window, httpsec.DefaultRecentAuthenticationWindow,
+// so a deployment on either adapter is judged alike.
+const DefaultRecentAuthenticationWindow = httpsec.DefaultRecentAuthenticationWindow
 
 // WithRecentAuthenticationWindow sets how recently every recency guard built
 // from these Guards requires the caller to have proved their identity, unless

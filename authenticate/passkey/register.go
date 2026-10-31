@@ -27,9 +27,10 @@ import (
 // section states, deciding over rc.MFAMethods, or Deps.MFAMethods when rc
 // lists none, and over the user's own active passkeys when a passkey route
 // can meet the second factor: a stale or insufficiently assured full session
-// is refused with ErrReauthenticationRequired. A password session steps up
-// through the passkey MFA method; a session whose first factor is a passkey
-// cannot, and signs in again with user verification, or by password and then
+// is refused with ErrReauthenticationRequired. A password session that owes a
+// challenge steps up through the passkey MFA method; a session whose first
+// factor is a passkey cannot meet the second factor through it (a same-channel
+// re-proof refreshes freshness only), and signs in again with user verification, or by password and then
 // the passkey step-up. A nil entry in rc.MFAMethods is ErrConfig, whatever the
 // session's MFA state. A user issued the registration challenge limit
 // within the hour is refused with ErrRegistrationThrottled, as is one the

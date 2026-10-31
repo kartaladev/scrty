@@ -113,6 +113,9 @@ func TestReauthResolve(t *testing.T) {
 		wire    func(t *testing.T, f *pwFixture)
 		// state is the session's second-factor state.
 		state session.MFAState
+		// first is the first factor the session was signed in with; the zero
+		// value is a password.
+		first factor.Kind
 		act   func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served
 		// assert is given the session as it was signed in.
 		assert func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session, out served)
@@ -153,6 +156,37 @@ func TestReauthResolve(t *testing.T) {
 				old := serve(t, c, bearerRequestTo(t.Context(), http.MethodGet, "/app", mfaTokenFor(s.ID), ""))
 				require.Error(t, old.err, "the credential the caller arrived with is refused")
 				assert.False(t, old.handlerRan)
+			},
+		},
+		{
+			// "A same-channel re-proof refreshes freshness only": a passkey
+			// sign-in that counted as one factor, re-proved with the passkey
+			// method, which travels the same channel.
+			name: "a same-channel re-proof refreshes freshness only",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.methodChannel = factor.PublicKey
+				totpHolder(t, f)
+			},
+			first: factor.Passkey,
+			state: session.MFANone,
+			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
+				f.elapse(t, s, 30*time.Minute) // 09:00 to 09:30
+
+				return totp(t, f, c, s)
+			},
+			assert: func(t *testing.T, f *pwFixture, _ *httpsec.Chain, s *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+
+				issued, ok := f.issuedFor.Load().(string)
+				require.True(t, ok, "a credential was issued")
+				assert.Equal(t, mfaTokenFor(issued), accessTokenFrom(t, out))
+				assert.NotEqual(t, s.ID, issued, "the session was rotated")
+
+				rotated := f.stored(t, issued)
+				assert.True(t, rotated.AuthenticatedAt.Equal(s.AuthenticatedAt.Add(30*time.Minute)), "09:30: %s", rotated.AuthenticatedAt)
+				assert.Equal(t, session.MFANone, rotated.MFA)
+				assert.True(t, rotated.MFASatisfiedAt.IsZero(), "no second factor was met: %s", rotated.MFASatisfiedAt)
 			},
 		},
 		{
@@ -562,7 +596,12 @@ func TestReauthResolve(t *testing.T) {
 				tc.wire(t, f)
 			}
 
-			s := f.newSession(t, factor.Password, tc.state)
+			first := tc.first
+			if first == "" {
+				first = factor.Password
+			}
+
+			s := f.newSession(t, first, tc.state)
 
 			c, err := f.build(nil)
 			require.NoError(t, err)

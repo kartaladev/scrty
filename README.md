@@ -541,7 +541,7 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
 | Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
 | Freshness to register or remove a passkey | the session's authentication time (sign-in, satisfied second factor or re-authentication) within 15 minutes, the end included | `passkey.WithManagementFreshness` |
-| Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session steps up through the passkey method; a passkey-first session cannot (same channel) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
+| Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session that owes a challenge steps up through the passkey method at `/mfa/verify`; a passkey-first session cannot meet the second factor through it (same channel; a re-proof at `/reauth` with the passkey refreshes freshness only) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys, and no re-proof changes that. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
 | User verification | required | `passkey.WithUserVerification` |
 | Resident (discoverable) key | required; a non-resident passkey serves only as a second factor | `passkey.WithResidentKey` |
 | Emailed confirmation code | 6 digits, valid 10 minutes, 5 attempts | not configurable: the store contract fixes the attempts (`passkey.MaxEmailCodeAttempts`) |
@@ -775,7 +775,9 @@ chain, err := httpsec.New(
 ### Endpoints
 
 Only a full session is served: a resolved caller, no pending challenge of any kind, and not confined
-to enrolment or recovery. Anything else is refused as authentication required.
+to enrolment or recovery. Anything else is refused: a session owing a challenge is refused by that
+challenge's gate with its challenge error, not by these endpoints, and a request with no resolved
+caller is refused as authentication required.
 
 | Request | What it does | Default response |
 |---|---|---|
@@ -787,10 +789,12 @@ to enrolment or recovery. Anything else is refused as authentication required.
 Every default response is marked `Cache-Control: no-store`, and each has a replaceable responder;
 a consumer's responder owns its headers. The password endpoint checks the password of the session's
 own user: a `username` in the request is ignored. A successful re-proof sets the session's
-authentication time to now on the chain's clock (a second factor also records the second factor as
-satisfied), rotates the session, and answers with the rotated session's credential; the credential
+authentication time to now on the chain's clock (a second factor on a different channel from the
+session's first factor also records the second factor as satisfied; a same-channel re-proof, such as a
+passkey session re-proved with the passkey, refreshes freshness only), rotates the session, and answers with the rotated session's credential; the credential
 the caller arrived with stops working. A re-proof that loses a race with a renewal of the same
-session is refused 409 (`httpsec.ErrSessionRenewalConflict`), and a failed re-proof changes
+session, or with a concurrent re-proof or MFA verification of it on one server, is refused 409
+(`httpsec.ErrSessionRenewalConflict`), and a failed re-proof changes
 nothing.
 
 ### The factor policy

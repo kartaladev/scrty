@@ -52,9 +52,12 @@
 // methods, or the caller serves passwordless login
 // (RegistrationContext.PasswordlessLogin) and it proves the second factor
 // (WithoutSecondFactorAtLogin not set). A password session of a passkey
-// holder then steps up through the passkey MFA method. A session whose first
-// factor is a passkey cannot: the method is on the same channel, which the
-// security policies never offer as that session's second factor. It signs in
+// holder that owes a challenge steps up through the passkey MFA method at
+// /mfa/verify, and a full session re-proves at the re-authentication
+// endpoints. A session whose first factor is a passkey can never meet the
+// second factor through the passkey method: it is on the same channel, which
+// the security policies never offer as that session's second factor, and a
+// same-channel re-proof refreshes the authentication time only. It signs in
 // again with user verification, or by password and then the passkey step-up.
 // With no route a passkey meets no second factor, and counting it would leave
 // its holder unable ever to manage passkeys. Pending and suspended passkeys
@@ -63,7 +66,8 @@
 // One limit is accepted and fails closed. When WithoutSecondFactorAtLogin is
 // set, this manager's passkey MFA method is on the MFA slot, and a policy
 // completes a passkey-first session without a second factor, that session
-// cannot register or remove a passkey, and has no step-up to change that. It
+// cannot register or remove a passkey, and no re-proof changes that: a
+// passkey re-proof refreshes freshness without meeting the second factor. It
 // is refused, never admitted.
 //
 // The passkey MFA method is recognised as this manager's route by identity:

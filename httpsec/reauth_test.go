@@ -65,6 +65,10 @@ type reauthHarness struct {
 	// noCarrier leaves out the carrier that records the resolved session, for
 	// a case serving concurrent requests, whose records would race.
 	noCarrier bool
+
+	// methodChannel is the channel the scripted second-factor method travels
+	// over; the zero value is the authenticator-app channel, TOTP's.
+	methodChannel factor.Channel
 }
 
 func newReauthHarness(t *testing.T) *reauthHarness {
@@ -77,14 +81,18 @@ func newReauthHarness(t *testing.T) *reauthHarness {
 		authn:      NewMockAuthenticator(ctrl),
 		attempts:   NewMockAttemptStore(ctrl),
 	}
-	h.channel(factor.AuthenticatorApp)
-
 	return h
 }
 
 // options is every option the harness's chain is built from, with s carried
 // as a first factor would have carried it.
 func (h *reauthHarness) options(s *session.Session) []httpsec.Option {
+	if h.methodChannel == "" {
+		h.methodChannel = factor.AuthenticatorApp
+	}
+
+	h.channel(h.methodChannel)
+
 	opts := h.clockOpt()
 	if !h.noCarrier {
 		opts = append(opts, h.carries(s))
@@ -216,8 +224,7 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: passed,
 		},
 		{
-			// "Consumer prefix", at the listing; the verify half of the
-			// scenario lands with the verify endpoint.
+			// "Consumer prefix", at the listing; the next row is its verify half.
 			name: "a consumer prefix moves the endpoints",
 			wire: with(httpsec.WithReauthenticationPrefix("/account/confirm/")),
 			request: func(r *http.Request) *http.Request {
@@ -230,6 +237,27 @@ func TestEnableReauthentication(t *testing.T) {
 				require.NoError(t, out.err)
 				assert.False(t, out.handlerRan, "the listing answered under the consumer's prefix")
 				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			// "Consumer prefix", at the verify endpoint.
+			name: "a consumer prefix moves the verify endpoint",
+			wire: func(h *reauthHarness) {
+				h.reauthOpts = []httpsec.ReauthenticationOption{httpsec.WithReauthenticationPrefix("/account/confirm/")}
+				h.totpUnenrolled = false
+				h.allows().accepts().recordsNoFailure()
+			},
+			request: func(r *http.Request) *http.Request {
+				return formRequest(r.Context(), "/account/confirm/verify/totp", "code="+testMFACode)
+			},
+			assert: func(t *testing.T, out served, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NoError(t, out.err)
+				assert.False(t, out.handlerRan, "the verify endpoint answered under the consumer's prefix")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Contains(t, out.rec.Body.String(), "access_token", "a new credential was issued")
 			},
 		},
 		{

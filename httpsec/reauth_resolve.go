@@ -1,16 +1,21 @@
 package httpsec
 
 import (
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/session"
 )
 
 // resolve records a successful re-proof on s and moves it to a new handle.
 //
-// The authentication time is set from the chain's clock, and for a second
-// factor the second factor is recorded as satisfied at that time, before the
-// rotation, because Rotate writes the session as it stands. A password
-// re-proof leaves the second-factor state alone. The enrolment deadlines are
-// not restored: only a full session is admitted, and a full session carries
+// The authentication time is set from the chain's clock, always: that is what
+// freshness is. The second factor is recorded as satisfied at that time, before
+// the rotation, because Rotate writes the session as it stands, only when method
+// is a second factor whose channel differs from the channel of the session's
+// first factor, the test /mfa/verify applies to refuse a same-channel factor.
+// A re-proof on the first factor's own channel is not a second factor, so it
+// refreshes freshness and leaves the second-factor state and its time alone, as
+// does a password re-proof, which passes a nil method. The enrolment deadlines
+// are not restored: only a full session is admitted, and a full session carries
 // none to restore.
 //
 // The rotation is the strict one a second factor at login makes, so a handle
@@ -27,7 +32,7 @@ import (
 // The rotated session is published on the exchange and its context, its
 // credential is issued against the new identifier in the chain's bearer mode,
 // and the responder answers.
-func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, secondFactor bool) error {
+func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa.Method) error {
 	was := *s
 	rollback := func() {
 		s.AuthenticatedAt, s.MFA, s.MFASatisfiedAt = was.AuthenticatedAt, was.MFA, was.MFASatisfiedAt
@@ -36,7 +41,7 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, secondFact
 	now := i.now()
 
 	s.AuthenticatedAt = now
-	if secondFactor {
+	if method != nil && method.Channel() != s.FirstFactor.Channel() {
 		s.MFA = session.MFASatisfied
 		s.MFASatisfiedAt = now
 	}
