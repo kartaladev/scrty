@@ -123,6 +123,12 @@ Each task names how it is verified. A signature change owns every caller of the 
 
   (D4, D8, D10; "A successful re-proof refreshes the authentication time and rotates the session" and the ADDED "A same-channel re-proof refreshes freshness only", every scenario; "Re-proof endpoints exist only when re-authentication is enabled" scenario "Consumer prefix".) Verify with `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...`, `go test ./...` in `httpsec/fibersec`, and `go vet`
 
+- [ ] 6.8 One implementation per control, behaviour unchanged (D6):
+  - one challenge spend and one expiry sweep, shared by the MFA slot and re-proof, with the purpose and the log names as parameters; the copies in `httpsec/reauth_verify.go` are removed;
+  - one form-login method running the whole password order (source throttle, pre-authentication, lock refusal, source charging, password check), returning the proved authentication; login's handler and the password re-proof both call it, and `authenticatePassword` keeps its own callers' behaviour.
+
+  Existing tests are the safety net; the red step for each extraction is a temporary divergence in the shared code that both a login or MFA test and a re-proof test catch. Verify with `go test -race -count=1 ./httpsec/...`, `go vet ./httpsec/`, `golangci-lint run ./httpsec/`, and `go test ./...` in the `test` module
+
 ## 7. A lost strict rotation is a renewal conflict (`sessions`, `multi-factor-auth`, `reauthentication`)
 
 - [x] 7.1 Within the in-flight window after a strict rotation, the manager remembers the rotated handle's digest, and a strict `Rotate` of that handle that finds no record fails with `session.ErrRenewalConflict`:

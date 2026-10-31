@@ -61,6 +61,8 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 4 | C4 | 6.4–6.6 | `httpsec/reauth_password.go` (new), completes `httpsec/reauth_resolve.go`, their tests, `httpsec/example_reauth_test.go` (new), README re-authentication section and defaults rows; read-only use of `login.go`'s password path | Opus: password refusal logic, rotation rollback | Opus |
 | 5 | A2 | 7.1 | `session/sessions.go`, `session/store.go` (the `ErrRenewalConflict` godoc), `session/sessions_test.go`; in `httpsec`: the concurrent re-proof row in `reauth_resolve_test.go`, a new row in `TestMFAVerifyRotationRefusals` (`mfa_verify_test.go`), godoc in `reauth_resolve.go`, `reauth_options.go`, `mfa_verify.go` (`rotationRefusal`), `errors.go` (`ErrSessionRenewalConflict`) | Opus: ordering under races, keyed lock | Opus |
 | 6 | C5 | 6.7 | `httpsec/reauth_resolve.go`, `httpsec/reauth_resolve_test.go`, `httpsec/reauth_test.go` (consumer-prefix row), `httpsec/fibersec/guards.go` (the default constant), godoc in `authenticate/passkey/doc.go`, `authenticate/passkey/register.go`, `httpsec/passkey.go`, README passkey and re-authentication sections | Sonnet: the fix and its test are stated; docs | Opus (assurance rule) |
+| 7 | E1 | 6.8 (helpers) | `httpsec/mfa_verify.go` (`spendChallenge`), `httpsec/mfa_begin.go` (`sweepExpired`), `httpsec/reauth_verify.go` (their copies), a new `httpsec/challenge_spend.go` | Sonnet: identical copies moved behind one function | Sonnet |
+| 7 | E2 | 6.8 (password order) | `httpsec/login.go` (the handler's order and a new method), `httpsec/reauth_password.go` (`reprove`) | Opus: a behaviour-preserving extraction in the login hot path | Opus |
 | 6 | D1 | 8.1 | `test/httpsecconformance/reauth_scenarios.go` (new), its registration in `scenarios.go` | Sonnet: conformance cases in an existing suite | Sonnet |
 | 6 | main | 8.2 | runs the gate; edits nothing | — | whole-branch review: Opus |
 
@@ -73,6 +75,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 - C3 and C4 extend C2's files, in their own lane.
 - A2 runs on C4's branch, after C4, because it changes C4's concurrent re-proof row.
 - C5 runs after D1 and the whole-branch review, which raised it; the gate (8.2) waits on C5.
+- E1 and E2 run in parallel worktrees (disjoint files) after C5; the gate (8.2) reruns after both merge.
 
 **Waits:** each wave starts only when the previous wave is merged, verified green, and reviewed clean. Each dispatch's prompt carries:
 - the Global Constraints;
@@ -428,6 +431,26 @@ Two parallel dispatches, one per module.
 - [ ] **Step 4: Run.** `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...`, `go test ./...` in `httpsec/fibersec`, `go vet`.
 - [ ] **Step 5: Commit** `fix(httpsec): a same-channel re-proof refreshes freshness only`.
 
+### Task 15: One implementation per control (tasks.md 6.8)
+
+Two parallel dispatches. Behaviour is unchanged, so existing tests are the safety net and each red step is a temporary divergence in the shared code that a login or MFA test and a re-proof test both catch.
+
+**Files (E1, helpers):**
+- Create: `httpsec/challenge_spend.go`
+- Modify: `httpsec/mfa_verify.go` (`spendChallenge`), `httpsec/mfa_begin.go` (`sweepExpired`), `httpsec/reauth_verify.go` (remove both copies)
+
+**Files (E2, password order):**
+- Modify: `httpsec/login.go` (the login handler's order at ~325-360), `httpsec/reauth_password.go` (`reprove`)
+
+**Interfaces:**
+- Produces (E1): `func spendChallenge(ctx context.Context, mgr *onetime.Tokens, cm mfa.ChallengeMethod, s *session.Session, response []byte) error` and `func sweepExpired(ctx context.Context, mgr *onetime.Tokens, clock *sweepClock, now time.Time, flow, message string, sampler *logsample.Sampler, log *slog.Logger)`, package-level; the two interceptors keep thin methods or call them directly. Exact parameter types follow the current bodies.
+- Produces (E2): `func (l *formLogin) attemptPassword(ctx context.Context, clientIP, username string, password []byte, now time.Time) (*authenticate.Authentication, error)`: source throttle, pre-authentication with the lock refusal and its source charge, the password check with its source charge. It does not reset failures: login resets after it, and the re-proof resets only after confirming the proved account is the session's.
+
+- [ ] **Step 1: Red by divergence.** E1: in the shared `spendChallenge`, temporarily skip the session-binding check; see an MFA verify test and a re-proof test both fail ("another session's challenge"). Restore. E2: in `attemptPassword`, temporarily stop charging the source on a lock; see a login lockout test and the re-proof locked/source rows both fail. Restore.
+- [ ] **Step 2: Extract** as above; delete the copies; login and `reprove` call `attemptPassword`.
+- [ ] **Step 3: Run.** `go test -race -count=1 ./httpsec/...`, `go vet ./httpsec/`, `golangci-lint run ./httpsec/`, and `go test ./...` in `test`.
+- [ ] **Step 4: Commit** `refactor(httpsec): one challenge spend and sweep for MFA and re-proof` (E1) and `refactor(httpsec): one password order for login and re-proof` (E2).
+
 ### Task 11: Conformance (tasks.md 8.1)
 
 **Files:**
@@ -470,6 +493,7 @@ Run by the main session. It edits nothing.
 | 6.3 | Task 7 |
 | 6.4–6.6 | Task 8 |
 | 6.7 | Task 14 |
+| 6.8 | Task 15 |
 | 7.1 | Task 13 |
 | 8.1 | Task 11 |
 | 8.2 | Task 12 |
