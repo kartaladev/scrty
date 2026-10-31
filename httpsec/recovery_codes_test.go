@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -274,6 +275,34 @@ func TestRecoveryCodes(t *testing.T) {
 				h.elapse(t, s, 5*time.Minute)
 
 				return h.codesRequest(t, http.MethodPost, s) // 09:20
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				regenerated(t, h, out, first)
+			},
+		},
+		{
+			// "Fresh after a re-authentication".
+			name: "a re-authentication at 09:30 is fresh at 09:40",
+			arrange: func(_ *testing.T, h *recoveryHarness) {
+				h.chainOpts = append(h.chainOpts,
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t) // 09:00
+				h.elapse(t, s, 30*time.Minute)
+
+				// The user holds no second factor, so they re-prove with their
+				// password, at 09:30.
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+					httpsec.DefaultReauthenticationPrefix+"/password",
+					strings.NewReader(url.Values{httpsec.DefaultLoginPasswordParam: {e2ePassword}}.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.Header.Set("Authorization", "Bearer "+mfaTokenFor(s.ID))
+
+				s = h.sessionIssued(t, serve(t, h.chain, req))
+				h.elapse(t, s, 10*time.Minute)
+
+				return h.codesRequest(t, http.MethodPost, s) // 09:40
 			},
 			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
 				regenerated(t, h, out, first)

@@ -3,7 +3,6 @@ package httpsec
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -98,11 +97,6 @@ type ReauthenticationMethodsResponder func(ex *Exchange, m ReauthenticationMetho
 // with when the user's enrolments could not be looked up. The failure is the
 // consumer's enrolment store's, and its own text stays out.
 const msgReauthMethodsUnavailable = "httpsec: the re-authentication methods could not be looked up"
-
-// errReauthNotServed refuses a re-proof that this release recognises and
-// admits but does not yet carry out. It keeps an admitted request at a
-// re-proof path from reaching the application, which has no route there.
-var errReauthNotServed = errors.New("httpsec: this re-authentication endpoint is not served yet")
 
 // reauthInterceptor is the re-authentication endpoints: the method listing,
 // and the second-factor and password re-proofs.
@@ -203,17 +197,6 @@ func (i *reauthInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	return next(ex)
-}
-
-// reprove answers the password endpoint. It admits the session first, as
-// every endpoint does; carrying a password re-proof out is not served yet, so
-// an admitted request is refused rather than passed to the application.
-func (i *reauthInterceptor) reprove(ex *Exchange) error {
-	if _, err := i.admit(ex); err != nil {
-		return err
-	}
-
-	return errReauthNotServed
 }
 
 // admit refuses a request no re-proof endpoint may serve, and returns the

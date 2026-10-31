@@ -56,6 +56,15 @@ type reauthHarness struct {
 	// reauthStore is the re-proof challenge store a case gave the chain, kept
 	// so the case can read back what was issued into it.
 	reauthStore onetime.Store
+
+	// password, when set, is the authenticator form login judges passwords
+	// with in place of authn, and loginOpts are further form login options.
+	password  authenticate.Authenticator
+	loginOpts []httpsec.LoginOption
+
+	// noCarrier leaves out the carrier that records the resolved session, for
+	// a case serving concurrent requests, whose records would race.
+	noCarrier bool
 }
 
 func newReauthHarness(t *testing.T) *reauthHarness {
@@ -76,7 +85,10 @@ func newReauthHarness(t *testing.T) *reauthHarness {
 // options is every option the harness's chain is built from, with s carried
 // as a first factor would have carried it.
 func (h *reauthHarness) options(s *session.Session) []httpsec.Option {
-	opts := append(h.clockOpt(), h.carries(s))
+	opts := h.clockOpt()
+	if !h.noCarrier {
+		opts = append(opts, h.carries(s))
+	}
 
 	if !h.noMFA {
 		mfaOpts := append([]httpsec.MFAOption{httpsec.WithMFAVerifyLimiter(h.limiter)}, h.mfaOpts...)
@@ -93,11 +105,14 @@ func (h *reauthHarness) options(s *session.Session) []httpsec.Option {
 			Sessions:      h.sessions,
 			Attempts:      h.attempts,
 		}
+		if h.password != nil {
+			deps.Authenticator = h.password
+		}
 		if !h.sessionBearer {
 			deps.Tokens = h.tokens
 		}
 
-		opts = append(opts, httpsec.EnableFormLogin(deps))
+		opts = append(opts, httpsec.EnableFormLogin(deps, h.loginOpts...))
 	}
 
 	opts = append(opts, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...))
