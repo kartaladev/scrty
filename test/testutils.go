@@ -1218,9 +1218,7 @@ func RunTestKeycloak(t *testing.T, opts ...TestOption) KeycloakConn {
 	port, err := ctr.MappedPort(ctx, keycloakHTTPSPort)
 	require.NoError(t, err, "failed to read the Keycloak port")
 
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-	}
+	transport := keycloakTransport(t, pool)
 
 	out, err := outbound.New(outbound.WithHTTPClient(&http.Client{Transport: transport}))
 	require.NoError(t, err, "failed to build the outbound client")
@@ -1287,6 +1285,20 @@ var keycloakLoginForm = regexp.MustCompile(`(?s)<form[^>]*\bid="kc-form-login"[^
 
 // keycloakFormAction reads the action attribute out of a form tag.
 var keycloakFormAction = regexp.MustCompile(`\baction="([^"]+)"`)
+
+// keycloakTransport returns a transport of its own that trusts roots and
+// closes its idle connections when t ends. Keycloak's clients keep connections
+// no other test can clear, so the transport must not outlive the test that
+// built it. It is a bare transport, not a clone of the default one, so no
+// proxy from the environment sits between a test and its container.
+func keycloakTransport(t *testing.T, roots *x509.CertPool) *http.Transport {
+	t.Helper()
+
+	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	t.Cleanup(tr.CloseIdleConnections)
+
+	return tr
+}
 
 // keycloakLogin returns KeycloakConn.Login over transport. Each call keeps its
 // own cookie jar, as a fresh browser would, so two logins never share a

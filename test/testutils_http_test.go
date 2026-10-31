@@ -50,6 +50,9 @@ func TestHTTPClientsKeepTheirConnectionsWhenAnotherServerCloses(t *testing.T) {
 	}{
 		{name: "keycloak browser", client: keycloakBrowser},
 		{name: "smtp message API", client: smtpAPIClient},
+		{name: "keycloak transport", client: func(t *testing.T) *http.Client {
+			return &http.Client{Transport: keycloakTransport(t, nil)}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,6 +76,9 @@ func TestHTTPClientsReleaseTheirConnectionsWhenTheirTestEnds(t *testing.T) {
 	}{
 		{name: "keycloak browser", client: keycloakBrowser},
 		{name: "smtp message API", client: smtpAPIClient},
+		{name: "keycloak transport", client: func(t *testing.T) *http.Client {
+			return &http.Client{Transport: keycloakTransport(t, nil)}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

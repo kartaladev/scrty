@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -420,6 +422,9 @@ type apiKeyOwnerOutcome struct {
 	// logs are the records written while the request was served, not while
 	// the chain was built.
 	logs []slog.Record
+
+	// record is the key's stored record after the request was served.
+	record apikey.Key
 }
 
 // TestAPIKeyOwners pins the owner check. With a user loader, a verified key is
@@ -585,6 +590,17 @@ func TestAPIKeyOwners(t *testing.T) {
 		require.ErrorIs(t, err, httpsec.ErrConfig)
 	}
 
+	// A key whose owner the loader refuses was still verified, so its last-use
+	// stamp stays: the stamp says the key was presented and checked, not that
+	// the request went through.
+	keepsLastUse := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		refusedAsWrongKey(t, out, err)
+		require.NotNil(t, out.record.LastUsedAt, "a key refused for its owner keeps its last-use stamp")
+		assert.False(t, out.record.LastUsedAt.IsZero())
+	}
+
 	cases := []testCase{
 		{
 			name:   "no loader looks nothing up",
@@ -596,6 +612,12 @@ func TestAPIKeyOwners(t *testing.T) {
 			owners:   loads(&identity.Details{ID: apiKeyPrincipal, Active: false}, nil),
 			failures: 1,
 			assert:   refusedAsWrongKey,
+		},
+		{
+			name:     "a key refused for its owner keeps its last-use stamp",
+			owners:   loads(&identity.Details{ID: apiKeyPrincipal, Active: false}, nil),
+			failures: 1,
+			assert:   keepsLastUse,
 		},
 		{
 			name:     "missing owner",
@@ -719,7 +741,18 @@ func TestAPIKeyOwners(t *testing.T) {
 			built := len(logs.records())
 			out := serveAPIKey(ctx, c, httpsec.DefaultAPIKeyScheme+h.valid)
 
-			tc.assert(t, apiKeyOwnerOutcome{served: out, logs: logs.records()[built:]}, out.err)
+			// The key's identifier is the part between the prefix and the secret.
+			rest, _ := strings.CutPrefix(h.valid, "sk_")
+			idPart, _, _ := strings.Cut(rest, ".")
+			keyID, err := id.Parse(idPart)
+			require.NoError(t, err)
+
+			rec, err := h.store.Store.Get(t.Context(), keyID)
+			require.NoError(t, err)
+
+			tc.assert(t, apiKeyOwnerOutcome{
+				served: out, logs: logs.records()[built:], record: rec,
+			}, out.err)
 		})
 	}
 }

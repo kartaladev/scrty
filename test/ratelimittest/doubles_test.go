@@ -3,7 +3,6 @@ package ratelimittest_test
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -36,8 +35,11 @@ const (
 	flawFailOpen         = "fail-open"
 	flawRecordHonoursCtx = "record-honours-context"
 
-	// flawCheckThenRecord charges by calling Exceeded, yielding, then calling
-	// RecordFailure, so a charge is two steps where it must be one.
+	// flawCheckThenRecord charges by calling Exceeded, then RecordFailure, so
+	// a charge is two steps where it must be one. Between the two, a caller
+	// waits for a second caller to pass its check (see chargeInTwoSteps), so
+	// concurrent charges overlap there on every run, not when the scheduler
+	// happens to interleave them.
 	flawCheckThenRecord = "check-then-record"
 	// flawRefusedChargeRecords records the attempt of a charge it refuses.
 	flawRefusedChargeRecords = "refused-charge-records"
@@ -68,7 +70,26 @@ type stampLimiter struct {
 
 	mu   sync.Mutex
 	keys map[string][]time.Time
+
+	// pairing guards the rendezvous of chargeInTwoSteps. inFlight counts
+	// the charges inside it, overlapped records that two were ever inside it
+	// at once, and waiting is the channel of the caller waiting for a
+	// partner, or nil.
+	pairing    sync.Mutex
+	inFlight   int
+	overlapped bool
+	waiting    chan struct{}
 }
+
+// A charge with flawCheckThenRecord waits between its check and its record for
+// a second charge to pass its own check. Until two charges have overlapped on
+// the limiter it waits soloBound, so each sequential charge pays about a
+// millisecond; once they have, it waits up to pairBound, so a slow host still
+// pairs the charge that reaches the limit with the one behind it.
+const (
+	soloBound = time.Millisecond
+	pairBound = 50 * time.Millisecond
+)
 
 func newStampLimiter(flaw string, limit int, window time.Duration, clk clockwork.Clock) *stampLimiter {
 	return &stampLimiter{flaw: flaw, limit: limit, window: window, clk: clk, keys: map[string][]time.Time{}}
@@ -193,21 +214,83 @@ func (l *stampLimiter) Charge(ctx context.Context, key string) (ratelimit.Receip
 	return ratelimit.NewReceipt(key, now), false, nil
 }
 
-// chargeInTwoSteps checks with Exceeded, yields, then records with
-// RecordFailure: each step holds the lock, but nothing holds it across both,
-// so concurrent charges all pass the check before any of them records.
+// chargeInTwoSteps checks with Exceeded, then records with RecordFailure:
+// each step holds the lock, but nothing holds it across both. Between the two,
+// a caller whose check passed waits to pair with the next caller whose check
+// passes, and only then do both record. So whenever charges run concurrently,
+// the one whose check sees the key one below the limit is joined by a second
+// that sees the same count, and both are accepted. A caller nobody pairs with
+// records alone, as a sequential charge does, after soloBound or pairBound.
 func (l *stampLimiter) chargeInTwoSteps(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	l.pairing.Lock()
+	l.inFlight++
+	if l.inFlight > 1 {
+		l.overlapped = true
+	}
+	l.pairing.Unlock()
+	defer func() {
+		l.pairing.Lock()
+		l.inFlight--
+		l.pairing.Unlock()
+	}()
+
 	exceeded, err := l.Exceeded(ctx, key)
 	if err != nil || exceeded {
 		return ratelimit.Receipt{}, true, err
 	}
-	runtime.Gosched()
+	l.awaitPartner()
 	now := l.clk.Now()
 	if err := l.RecordFailure(ctx, key); err != nil {
 		return ratelimit.Receipt{}, true, err
 	}
 
 	return ratelimit.NewReceipt(key, now), false, nil
+}
+
+// awaitPartner releases the caller already waiting, if there is one, and
+// returns at once. Otherwise it waits to be released by the next caller. It
+// gives up after soloBound while no two charges have overlapped, and after
+// pairBound once they have; blocking, not yielding, is what lets a scheduler
+// with one thread run the next caller meanwhile.
+func (l *stampLimiter) awaitPartner() {
+	l.pairing.Lock()
+	if partner := l.waiting; partner != nil {
+		l.waiting = nil
+		l.pairing.Unlock()
+		close(partner)
+
+		return
+	}
+	released := make(chan struct{})
+	l.waiting = released
+	l.pairing.Unlock()
+
+	// The wait runs on the wall clock, not on clk: a fake clock never advances
+	// on its own, so a solo caller timed by it would wait for ever.
+	start := time.Now()
+	tick := time.NewTicker(soloBound)
+	defer tick.Stop()
+	for {
+		select {
+		case <-released:
+			return
+		case <-tick.C:
+		}
+
+		l.pairing.Lock()
+		if l.waiting != released {
+			l.pairing.Unlock() // a partner took it as it timed out
+
+			return
+		}
+		if !l.overlapped || time.Since(start) >= pairBound {
+			l.waiting = nil // nobody came: record alone
+			l.pairing.Unlock()
+
+			return
+		}
+		l.pairing.Unlock()
+	}
 }
 
 // Refund removes one stamp equal to the receipt's, while it is in the window,
