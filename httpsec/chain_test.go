@@ -1317,7 +1317,7 @@ func oidcChain(
 
 	c, err := httpsec.New(
 		httpsec.WithLogger(log),
-		httpsec.EnableOIDCLogin(m, handoffs, append(base, opts...)...),
+		httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: m, Handoff: handoffs}, append(base, opts...)...),
 	)
 	require.NoError(t, err)
 
@@ -1798,7 +1798,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 			httpsec.WithMFATokens(mh.tokens),
 			httpsec.WithMFALogInterval(time.Hour)),
 		httpsec.EnableMagicLink(lh.manager, lh.options()...),
-		httpsec.EnableOIDCLogin(m, handoffs,
+		httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: m, Handoff: handoffs},
 			httpsec.WithOIDCSessions(oidcSessions),
 			httpsec.WithOIDCTokens(NewMockGenerator(gomock.NewController(t)))),
 	)

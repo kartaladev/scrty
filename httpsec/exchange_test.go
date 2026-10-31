@@ -413,19 +413,6 @@ func TestExchangeContext(t *testing.T) {
 			},
 		},
 		{
-			name: "SetContext ignores a nil context rather than losing the one it has",
-			ctx: func(ctx context.Context) context.Context {
-				return context.WithValue(ctx, ctxKey("request-id"), "r-2")
-			},
-			act: func(ex *httpsec.Exchange) {
-				ex.SetContext(nil) //nolint:staticcheck // the point of the case
-			},
-			assert: func(t *testing.T, ex *httpsec.Exchange) {
-				require.NotNil(t, ex.Context())
-				assert.Equal(t, "r-2", ex.Context().Value(ctxKey("request-id")))
-			},
-		},
-		{
 			name: "cancellation on the seed reaches the exchange",
 			ctx: func(ctx context.Context) context.Context {
 				cctx, cancel := context.WithCancel(ctx)
@@ -609,6 +596,43 @@ func TestPublishSession_Family(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, serve(t, chain, bearerRequest(t.Context(), "")))
+		})
+	}
+}
+
+func nilContext() context.Context { return nil }
+
+func TestExchange_NilContext(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		act  func()
+		want string
+	}
+
+	cases := []testCase{
+		{
+			name: "new exchange",
+			act: func() {
+				httpsec.NewExchange(nilContext(), stubRequest{}, &stubWriter{})
+			},
+			want: "httpsec: NewExchange needs a non-nil context",
+		},
+		{
+			name: "set context",
+			act: func() {
+				httpsec.NewExchange(context.Background(), stubRequest{}, &stubWriter{}).SetContext(nilContext())
+			},
+			want: "httpsec: Exchange.SetContext needs a non-nil context",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.PanicsWithValue(t, tc.want, tc.act)
 		})
 	}
 }

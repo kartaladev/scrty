@@ -88,7 +88,7 @@ func newLoginHarness(t *testing.T, auth oidc.ClientAuthMethod) *loginHarness {
 	tokens, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience())
 	require.NoError(t, err)
 
-	chain, err := httpsec.New(httpsec.EnableOIDCLogin(manager, handoffs,
+	chain, err := httpsec.New(httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: manager, Handoff: handoffs},
 		httpsec.WithOIDCTokens(tokens), httpsec.WithOIDCSessions(sessions)))
 	require.NoError(t, err)
 

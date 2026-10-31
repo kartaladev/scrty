@@ -61,7 +61,7 @@ func TestNewRegistry(t *testing.T) {
 				require.NoError(t, err)
 				p, ok := r.Lookup("corp")
 				require.True(t, ok)
-				assert.Equal(t, oidc.DefaultScopes, p.Scopes, "nil scopes resolve to the default")
+				assert.Equal(t, oidc.DefaultScopes(), p.Scopes, "nil scopes resolve to the default")
 				assert.Equal(t, []string{"RS256"}, p.SigningAlgs, "nil algorithms resolve to RS256")
 				assert.Equal(t, oidc.ClientSecretPost, p.ClientAuth, "the zero auth method is client_secret_post")
 				_, ok = r.Lookup("other")
@@ -167,4 +167,13 @@ func TestNewRegistry(t *testing.T) {
 			tc.assert(t, r, err)
 		})
 	}
+}
+
+func TestDefaultScopes_ReturnsACopy(t *testing.T) {
+	t.Parallel()
+
+	first := oidc.DefaultScopes()
+	first[0] = "changed"
+
+	assert.Equal(t, []string{"openid", "profile", "email"}, oidc.DefaultScopes())
 }

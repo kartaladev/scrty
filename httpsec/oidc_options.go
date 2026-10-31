@@ -16,16 +16,30 @@ import (
 // the defaults named on EnableOIDCLogin.
 type OIDCOption func(*oidcInterceptor) error
 
+// OIDCDeps are the dependencies EnableOIDCLogin cannot default.
+type OIDCDeps struct {
+	// RelyingParty holds the providers every endpoint serves: the registry,
+	// discovery, the broker and its role options. It is required, and a nil
+	// one is refused when the chain is built.
+	RelyingParty *oidc.RelyingParty
+
+	// Handoff issues and redeems the single-use code the callback conveys the
+	// login with. It is required unless WithOIDCCallbackSuccess conveys the
+	// login instead, and must then be nil: that conveyance issues no code, so
+	// there is nothing for a handoff to govern.
+	Handoff *oidc.Handoff
+}
+
 // EnableOIDCLogin answers the federated-login endpoints at the OIDC slot:
 // starting a login, the provider's callback, redeeming the handoff code the
 // callback conveys the login with, and back-channel logout.
 //
-// The manager is required and holds everything about the providers: the
+// d.RelyingParty is required and holds everything about the providers: the
 // registry, discovery, the broker and its role options all belong to the oidc
-// constructors, and only transport lives here. The handoff manager is
-// required unless WithOIDCCallbackSuccess conveys the login instead, because the
-// default conveyance issues its code through it; with WithOIDCCallbackSuccess
-// given, h must be nil, since the conveyance replaces it and issues no code
+// constructors, and only transport lives here. d.Handoff is required unless
+// WithOIDCCallbackSuccess conveys the login instead, because the default
+// conveyance issues its code through it; with WithOIDCCallbackSuccess given,
+// d.Handoff must be nil, since the conveyance replaces it and issues no code
 // for it, or any redemption-only option, to govern.
 //
 // Defaults: a login starts with a GET on DefaultOIDCAuthorizePath followed by
@@ -82,18 +96,18 @@ type OIDCOption func(*oidcInterceptor) error
 // WithOIDCHandoffRedeemer, WithOIDCHandoffLimiter, WithOIDCHandoffRateLimit,
 // WithOIDCHandoffCountRefusals or WithOIDCHandoffPath, since none of them
 // govern anything once no handoff code is issued.
-func EnableOIDCLogin(m *oidc.RelyingParty, h *oidc.Handoff, opts ...OIDCOption) Option {
+func EnableOIDCLogin(d OIDCDeps, opts ...OIDCOption) Option {
 	const option = "EnableOIDCLogin"
 
 	return func(c *config) error {
-		if m == nil {
+		if d.RelyingParty == nil {
 			return newConfigError("%s needs an OIDC manager: it holds the providers every "+
 				"endpoint serves", option)
 		}
 
 		i := &oidcInterceptor{
-			manager:         m,
-			handoffs:        h,
+			manager:         d.RelyingParty,
+			handoffs:        d.Handoff,
 			now:             c.now,
 			authorizePath:   DefaultOIDCAuthorizePath,
 			callbackPath:    DefaultOIDCCallbackPath,

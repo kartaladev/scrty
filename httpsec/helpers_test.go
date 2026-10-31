@@ -3070,7 +3070,7 @@ func (h *oidcHarness) assemble(handoffs *oidc.Handoff, opts ...httpsec.OIDCOptio
 		httpsec.WithRefusalLogInterval(0),
 	}
 	chainOpts = append(chainOpts, h.chainOpts...)
-	chainOpts = append(chainOpts, httpsec.EnableOIDCLogin(h.manager, handoffs, opts...))
+	chainOpts = append(chainOpts, httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: handoffs}, opts...))
 
 	return httpsec.New(chainOpts...)
 }

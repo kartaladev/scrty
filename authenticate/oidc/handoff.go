@@ -424,8 +424,8 @@ func (h *Handoff) record(ctx context.Context, level slog.Level, key string, attr
 // It is safe to call at shutdown, including while redemptions are still in
 // flight, and safe to call more than once: a second flush with nothing new
 // pending reports nothing. Call it directly, or let
-// httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
-// was given (oidc.RelyingParty.FlushRefusalLogs).
+// httpsec.Chain.FlushRefusalLogs reach it: the chain's OIDC interceptor flushes
+// the handoff it was given directly, beside the relying party.
 func (h *Handoff) FlushRefusalLogs() error {
 	h.sampler.Flush()
 

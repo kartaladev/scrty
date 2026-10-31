@@ -48,7 +48,7 @@ handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 
 chain, err := httpsec.New(
 	// ... your other chain options ...
-	httpsec.EnableOIDCLogin(relyingParty, handoffs,
+	httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: relyingParty, Handoff: handoffs},
 		httpsec.WithOIDCTokens(tokens),
 		httpsec.WithOIDCSessions(sessions),
 	),

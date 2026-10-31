@@ -92,7 +92,7 @@ func multipartHandoffBody(t *testing.T, code string) (string, []byte) {
 func requireRedeemable(t *testing.T, h *oidcHarness, code string) {
 	t.Helper()
 
-	c, err := httpsec.New(httpsec.EnableOIDCLogin(h.manager, h.handoffs,
+	c, err := httpsec.New(httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: h.handoffs},
 		httpsec.WithOIDCTokens(h.tokens), httpsec.WithOIDCSessions(h.sessions)))
 	require.NoError(t, err)
 

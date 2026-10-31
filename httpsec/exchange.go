@@ -136,12 +136,11 @@ type Exchange struct {
 
 // NewExchange starts an exchange seeded from ctx.
 //
-// A nil ctx is taken as context.Background rather than refused, because an
-// exchange with no context at all would panic at the first call into a core
-// and an integration has nothing better to substitute.
-func NewExchange(ctx context.Context, r Request, w ResponseWriter) *Exchange { //nolint:contextcheck // the fallback is only reached when the caller supplied no context to inherit from
+// It panics when ctx is nil: an exchange with no context would panic at the
+// first call into a core, so the mistake is refused where it is made.
+func NewExchange(ctx context.Context, r Request, w ResponseWriter) *Exchange {
 	if ctx == nil {
-		ctx = context.Background()
+		panic("httpsec: NewExchange needs a non-nil context")
 	}
 	return &Exchange{Request: r, Writer: w, ctx: ctx}
 }
@@ -154,12 +153,13 @@ func (e *Exchange) Context() context.Context { return e.ctx }
 // SetContext replaces the context. An interceptor that resolves security state
 // calls it so every later interceptor, and the handler, read that state.
 //
-// A nil context is ignored: dropping the context the exchange already holds
+// It panics when ctx is nil: dropping the context the exchange already holds
 // would silently detach the rest of the chain from the client's cancellation.
 func (e *Exchange) SetContext(ctx context.Context) {
-	if ctx != nil {
-		e.ctx = ctx
+	if ctx == nil {
+		panic("httpsec: Exchange.SetContext needs a non-nil context")
 	}
+	e.ctx = ctx
 }
 
 // RaisedChallenge returns the challenge kind of the consumer's own that the

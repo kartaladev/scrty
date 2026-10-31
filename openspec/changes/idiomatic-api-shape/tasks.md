@@ -57,16 +57,16 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
 
 ## 6. Nil contexts (D6)
 
-- [ ] 6.1 Red: write tests that `httpsec.NewExchange(nil, …)` and `Exchange.SetContext(nil)` panic with messages naming the function. Run them and confirm they fail, because today the first substitutes and the second ignores. Then implement the panics, and remove the `contextcheck` exemption. Verify: the tests pass, and every adapter test still passes.
+- [x] 6.1 Red: write tests that `httpsec.NewExchange(nil, …)` and `Exchange.SetContext(nil)` panic with messages naming the function. Run them and confirm they fail, because today the first substitutes and the second ignores. Then implement the panics, and remove the `contextcheck` exemption. Verify: the tests pass, and every adapter test still passes.
 
 ## 7. Required dependencies and default scopes (D7, D8)
 
-- [ ] 7.1 Introduce `OIDCDeps` and change `EnableOIDCLogin` to take it. Its rules move with the fields unchanged: a nil `RelyingParty` is refused, and `Handoff` is required unless `WithOIDCCallbackSuccess` is given, and must then be nil. These checks already exist, so this is a signature refactor with no red step. `EnableRecoveryCooldown` is unchanged (design D7). Verify: the existing OIDC tests pass on the new signature, including those for a missing handoff, for `WithOIDCCallbackSuccess` with a nil handoff, and for one given with a handoff.
-- [ ] 7.2 Replace `var DefaultScopes` with `func DefaultScopes() []string`, which returns a new slice. Verify: the existing registry tests pass, and a new test that changes the returned slice shows the next call unaffected.
+- [x] 7.1 Introduce `OIDCDeps` and change `EnableOIDCLogin` to take it. Its rules move with the fields unchanged: a nil `RelyingParty` is refused, and `Handoff` is required unless `WithOIDCCallbackSuccess` is given, and must then be nil. These checks already exist, so this is a signature refactor with no red step. `EnableRecoveryCooldown` is unchanged (design D7). Verify: the existing OIDC tests pass on the new signature, including those for a missing handoff, for `WithOIDCCallbackSuccess` with a nil handoff, and for one given with a handoff.
+- [x] 7.2 Replace `var DefaultScopes` with `func DefaultScopes() []string`, which returns a new slice. Verify: the existing registry tests pass, and a new test that changes the returned slice shows the next call unaffected.
 
 ## 8. Final integration
 
-- [ ] 8.1 Sweep the godoc, examples and README for the old signatures and names, excluding `openspec/` and `.claude/.legacy`:
+- [x] 8.1 Sweep the godoc, examples and README for the old signatures and names, excluding `openspec/` and `.claude/.legacy`:
   - `Stop()`, `Close(ctx)`, `ErrSenderClosed`, `RefusalLogFlusher`, and `DefaultScopes` as a variable;
   - type assertions onto the twelve ports or the optional interfaces (for example `.(policy.LoginAdmission)`);
   - prose that still says stop, close, restart or idempotent start for the four lifecycle owners (for example `token/signingkey/doc.go`);

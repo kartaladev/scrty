@@ -1352,7 +1352,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				chain, err := httpsec.New(
 					httpsec.WithLogger(slog.New(&log)),
 					httpsec.WithRefusalLogInterval(0),
-					httpsec.EnableOIDCLogin(h.manager, handoffs,
+					httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: handoffs},
 						httpsec.WithOIDCTokens(h.tokens),
 						httpsec.WithOIDCSessions(h.sessions)),
 				)
@@ -2727,7 +2727,7 @@ func oidcLoginOver(t *testing.T, m *oidc.RelyingParty) httpsec.Option {
 	sessions, err := session.New()
 	require.NoError(t, err)
 
-	return httpsec.EnableOIDCLogin(m, newTestHandoffManager(t),
+	return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: m, Handoff: newTestHandoffManager(t)},
 		httpsec.WithOIDCTokens(NewMockGenerator(gomock.NewController(t))),
 		httpsec.WithOIDCSessions(sessions))
 }
@@ -3146,7 +3146,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				sink := &errorSink{}
 
 				c, err := httpsec.New(sink.option(),
-					httpsec.EnableOIDCLogin(h.manager, handoffs,
+					httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: h.manager, Handoff: handoffs},
 						httpsec.WithOIDCTokens(h.tokens),
 						httpsec.WithOIDCSessions(h.sessions)))
 				require.NoError(t, err)

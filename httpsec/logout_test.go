@@ -834,7 +834,7 @@ func TestOIDCRPInitiatedLogout(t *testing.T) {
 				deps.EndSession = b
 			}
 
-			enableOIDC := httpsec.EnableOIDCLogin(manager, oh.handoffs, append([]httpsec.OIDCOption{
+			enableOIDC := httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: manager, Handoff: oh.handoffs}, append([]httpsec.OIDCOption{
 				httpsec.WithOIDCTokens(ah.tokens),
 				httpsec.WithOIDCSessions(ah.sessions),
 			}, tc.opts...)...)
