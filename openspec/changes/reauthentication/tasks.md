@@ -54,7 +54,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 4. Adapter recency guards (`framework-adapters`)
 
-- [ ] 4.1 `ginsec`: the same three options, two methods, validation and wiring panics, refusing through the gin error-channel path; godoc as in 3.3 (D8; ADDED "Adapter recency guards match the core recency guard" scenarios "gin stale session", "Fresh session on every adapter" for gin, "Per-route window on gin", "gin per-route window of zero"). Verify with `go test -race ./...` in `httpsec/ginsec`
+- [x] 4.1 `ginsec`: the same three options, two methods, validation and wiring panics, refusing through the gin error-channel path; godoc as in 3.3 (D8; ADDED "Adapter recency guards match the core recency guard" scenarios "gin stale session", "Fresh session on every adapter" for gin, "Per-route window on gin", "gin per-route window of zero"). Verify with `go test -race ./...` in `httpsec/ginsec`
 - [ ] 4.2 `fibersec`: the same, returning the refusal to fiber's error handler with its window; no error-handler option; godoc as in 3.3 (D8; scenarios "fiber stale session", "Fresh session on every adapter" for fiber, "fiber guards with an absent time source"). Verify with `go test -race ./...` in `httpsec/fibersec`
 
 ## 5. The MFA endpoints serve only a pending session (`multi-factor-auth`)
