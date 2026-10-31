@@ -128,7 +128,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 8. Conformance and close-out
 
-- [ ] 8.1 `test/httpsecconformance` on net/http, gin and fiber, each scenario mirroring a spec scenario:
+- [x] 8.1 `test/httpsecconformance` on net/http, gin and fiber, each scenario mirroring a spec scenario:
   - a stale session refused by the recency guard, a TOTP re-proof, and the route accepted with the new credential;
   - a password re-proof by a user without a second factor;
   - a TOTP holder refused at `/reauth/password`;
