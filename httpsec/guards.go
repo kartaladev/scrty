@@ -381,13 +381,13 @@ func (o *OwnershipGuard[ID]) ForResource(
 // the route names its own window with RequireAuthenticationWithin.
 //
 // Default: DefaultRecentAuthenticationWindow, 15 minutes. The window is fixed,
-// counted from the session's authentication time, and nothing but an
-// authentication moves it: calling a guarded route does not extend it, nor
-// does a session renewal. A window of zero or less fails NewGuards with
-// ErrConfig, since no session could ever meet it. A window longer than the
-// session's absolute lifetime (session.WithAbsoluteTimeout) is never reached:
-// the session ends first, so such a guard only ever refuses a session with no
-// recorded authentication time.
+// counted from the caller's authentication time (the session's, or the one
+// WithAuthenticationTime reports), and nothing but an authentication moves it:
+// calling a guarded route does not extend it, nor does a session renewal. A
+// window of zero or less fails NewGuards with ErrConfig, since no caller could
+// ever meet it. For a session, a window longer than its absolute lifetime
+// (session.WithAbsoluteTimeout) is never reached: the session ends first, so
+// the guard refuses only a caller with no recorded authentication time.
 func WithRecentAuthenticationWindow(d time.Duration) GuardOption {
 	return func(g *Guards) { g.window = d }
 }

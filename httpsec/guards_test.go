@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -1286,6 +1287,18 @@ func TestRecencyGuard(t *testing.T) {
 			session: nineOClock,
 			calls:   []time.Time{clockAt(9, 10)},
 			assert:  refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			// A source that reports a time but a zero one is absent all the
+			// same, even against the largest window a guard can be given.
+			name: "consumer source reports a zero time",
+			opts: []httpsec.GuardOption{
+				httpsec.WithRecentAuthenticationWindow(time.Duration(math.MaxInt64)),
+				httpsec.WithAuthenticationTime(
+					func(context.Context) (time.Time, bool) { return time.Time{}, true }),
+			},
+			calls:  []time.Time{clockAt(9, 10)},
+			assert: refusedWithin(time.Duration(math.MaxInt64)),
 		},
 		{
 			// Pinned deliberately: replicas' clocks disagree by seconds, and a
