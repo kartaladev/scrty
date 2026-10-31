@@ -66,7 +66,7 @@ func TestStatusForError(t *testing.T) {
 		{
 			name: "user store unavailable",
 			err:  fmt.Errorf("login: %w", authenticate.ErrUnavailable),
-			want: 503,
+			want: 401,
 		},
 		{name: "session idle", err: policy.ErrSessionIdle, want: 401},
 		{name: "throttled source", err: ratelimit.ErrThrottled, want: 401},

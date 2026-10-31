@@ -408,8 +408,10 @@ func WithAPIKeyLimiter(l ratelimit.Limiter) APIKeyOption {
 //     principal, unchanged;
 //   - any other loader failure is refused with authenticate.ErrUnavailable,
 //     which carries none of the loader's text and which StatusForError
-//     answers 503. It is logged at error level, naming the error's Go type,
-//     and not counted against the source: the key was not refused;
+//     answers 401, as it answers a wrong key. It is logged at error level,
+//     naming the error's Go type, and not counted against the source: the
+//     key was verified, not refused. A consumer error handler that answers
+//     it 503 tells a client its key verified;
 //   - a load the request's own context ended, when the loader's error is or
 //     wraps that context's error or its cause, is refused with the wrong-key
 //     error joined with that context's error, not ErrUnavailable. It is not

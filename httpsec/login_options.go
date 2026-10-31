@@ -93,13 +93,15 @@ type LoginOption func(*formLogin) error
 //  4. Authenticate. A failure is recorded against the account (the attempt
 //     store) and against the source; a success clears the account's failures
 //     and spends nothing of the source's allowance. A user store that could
-//     not answer (authenticate.ErrUnavailable) is not a failure: it is
-//     refused with that error, answered 503, and counted against neither the
-//     account nor the source. A load the request's own context ended
-//     compared no password: it is refused as a failure and counted against
-//     the source only, with nothing recorded against the account. Account
-//     recovery's password proof, which runs this step, treats both the same
-//     way, and counts neither against the user's recovery limit.
+//     not answer (authenticate.ErrUnavailable) judged no credential: it is
+//     refused with that error, answered 401 as a wrong password is, and
+//     counted once against the source, on a context with the client's
+//     cancellation stripped, with nothing recorded or cleared for the
+//     account. A load the request's own context ended compared no password:
+//     it is refused as a failure and counted against the source only, with
+//     nothing recorded against the account. Account recovery's password
+//     proof, which runs this step, treats both the same way, and counts
+//     neither against the user's recovery limit.
 //  5. Run the post-authentication phase, open the session, and issue the
 //     access token, refusing with a ChallengeError when a challenge is
 //     raised.

@@ -190,15 +190,15 @@ func TestFiberRefusalResponse(t *testing.T) {
 		},
 		{
 			// The status comes from httpsec.StatusForError, so an outage of
-			// the user store answers 503 here as it does on net/http, and
-			// neither 401 (a refused credential) nor 500.
-			name:   "an unavailable user store answers 503",
+			// the user store answers 401 here as it does on net/http: a wrong
+			// password's answer, and not 503 or 500.
+			name:   "an unavailable user store answers 401",
 			refuse: fmt.Errorf("login: %w", authenticate.ErrUnavailable),
 			config: func(*refused) fiber.Config {
 				return fiber.Config{ErrorHandler: fibersec.ErrorHandler}
 			},
 			assert: func(t *testing.T, res response, _ refused) {
-				assert.Equal(t, http.StatusServiceUnavailable, res.status)
+				assert.Equal(t, http.StatusUnauthorized, res.status)
 				assert.Empty(t, res.body)
 			},
 		},

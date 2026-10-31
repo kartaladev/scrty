@@ -247,11 +247,11 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
-			name: "an unavailable user store during the password proof is answered 503 and counted nowhere",
+			name: "an unavailable user store during the password proof is answered 401 and charged to its source only",
 			arrange: func(t *testing.T, h *recoveryHarness) {
 				h.authn = unavailableAuthenticator(t)
 				h.recOpts = []httpsec.RecoveryOption{
-					httpsec.WithRecoveryLimiter(countingLimiter(t, 0)),
+					httpsec.WithRecoveryLimiter(countingLimiter(t, 1)),
 					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)),
 				}
 			},
@@ -263,7 +263,8 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			assert: func(t *testing.T, h *recoveryHarness, out served) {
 				require.ErrorIs(t, out.err, authenticate.ErrUnavailable)
 				assert.NotErrorIs(t, out.err, recovery.ErrRefused, "an outage read as a refused proof")
-				assert.Equal(t, http.StatusServiceUnavailable, httpsec.StatusForError(out.err))
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err),
+					"the outage was not answered as a refused proof is")
 
 				n, err := h.attempts.FailureCount(t.Context(), e2eAddress, time.Now().Add(-time.Hour))
 				require.NoError(t, err)

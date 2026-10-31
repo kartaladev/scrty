@@ -98,11 +98,12 @@ type Request struct {
 //
 // An error matching authenticate.ErrUnavailable is the one exception: the
 // check could not judge the password, because the user store could not
-// answer. The recovery returns it unchanged and unmarked, counts it against
-// nothing, and spends nothing; httpsec answers it 503 and does not count it
-// against the source. A check that meets an outage should return that error,
-// and never disguise the outage as a wrong password or a lock, which would
-// count it as a guess.
+// answer. The recovery returns it unchanged and unmarked, counts nothing
+// against the user's recovery limit, and spends nothing. httpsec answers it
+// 401, as a refused proof is answered, and charges it to the request's source,
+// which bounds the password work an outage costs. A check that meets an outage
+// should return that error, and never disguise the outage as a wrong password
+// or a lock, which would count it against the user as a guess.
 type PasswordCheck func(ctx context.Context, username string, password []byte) error
 
 // Check is a consumer's refusal check. It runs after every proof has been
@@ -220,7 +221,8 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 	if v.has(ProofPassword) {
 		if err := r.passwordCheck(ctx, req.Username, req.Password); err != nil {
 			// The user store could not answer, so no proof was refused:
-			// returned as it is, unmarked, and counted nowhere.
+			// returned as it is, unmarked, and nothing is counted against
+			// the user. The HTTP layer charges it to the source.
 			if errors.Is(err, authenticate.ErrUnavailable) {
 				return nil, err
 			}

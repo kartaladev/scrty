@@ -155,11 +155,12 @@ var statusTable = []statusRow{
 	{ErrAuthenticationRequired, http.StatusUnauthorized},
 	{authorize.ErrAuthenticationRequired, http.StatusUnauthorized},
 
-	// The user store could not answer, so no credential was judged. It is not
-	// a refusal of the caller and does not match ErrAuthenticationFailed; it
-	// sits above that row so an error that joins both still reads as the
-	// outage it is. The client may retry, which 503 says.
-	{authenticate.ErrUnavailable, http.StatusServiceUnavailable},
+	// The user store could not answer, so no credential was judged. It does
+	// not match ErrAuthenticationFailed, so a consumer's handler can tell it
+	// apart, but it is answered as that refusal is: an outage answered
+	// otherwise would tell a held account from a free one, and a known user
+	// from an unknown one, wherever the store fails for some rows only.
+	{authenticate.ErrUnavailable, http.StatusUnauthorized},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
@@ -309,10 +310,16 @@ var statusTable = []statusRow{
 // is a dependency failure, not a refusal of the caller's input, and maps to
 // 500 like any other unrecognised error.
 //
-// A user store that could not answer a login ([authenticate.ErrUnavailable])
-// is 503: no credential was judged, so it is neither 401 nor an unexplained
-// 500, and the client may retry. This is the default answer; a consumer's own
-// error handler, which replaces the default response, may answer it otherwise.
+// A user store that could not answer a login, a Basic request, a recovery's
+// password proof or an API key's owner check ([authenticate.ErrUnavailable])
+// is 401, the answer a wrong password gets. It still does not match
+// [authenticate.ErrAuthenticationFailed], so a consumer's own error handler,
+// which replaces the default response, can match it and answer 503 instead.
+// That handler brings back two oracles the 401 closes: with locks concealed,
+// a held or locked account answers 401 during an outage while a free one
+// answers 503, revealing lock state; and in a partial outage, where a found
+// user's load reads more than a miss does, known users answer 503 and unknown
+// ones 401, revealing which usernames exist.
 func StatusForError(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError

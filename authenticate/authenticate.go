@@ -45,9 +45,10 @@ var ErrUnsupportedCredentials = errors.New("authenticate: unsupported credential
 // differs, so it matches both ErrAuthenticationFailed and ctx.Err(). A caller
 // that counts refusals can count it, and can tell from the error that no
 // password was compared. httpsec's form login, Basic authentication and
-// account recovery's password proof charge it to the request's source only:
-// they record no failure for the username, and a recovery counts nothing
-// against the user's recovery limit.
+// account recovery's password proof charge it to the request's source only,
+// on a context with the caller's cancellation stripped: they record no
+// failure for the username, and a recovery counts nothing against the user's
+// recovery limit.
 var ErrAuthenticationFailed = errors.New("authenticate: authentication failed")
 
 // ErrUnavailable reports that the user store could not answer, so the
@@ -57,26 +58,36 @@ var ErrAuthenticationFailed = errors.New("authenticate: authentication failed")
 // anything other than identity.ErrUserNotFound. The one exception is a load the
 // caller's own context ended: when ctx has ended and the loader's error is, or
 // wraps, ctx's error or its cause, the provider returns ErrAuthenticationFailed
-// joined with the context's error instead, so a client that hangs up mid-login
-// is charged to its source. ErrUnavailable itself never matches
-// ErrAuthenticationFailed: no credential was refused, and a caller that counts
-// failed logins must not count this one. An outage counted as a guess would
-// lock or hold real accounts for failures their owners never made. It carries
-// none of the loader's error text; the provider logs the failure at error
-// level, naming its Go type, for the operator.
+// joined with the context's error instead. ErrUnavailable itself never matches
+// ErrAuthenticationFailed, so logs, metrics and a consumer's error handler can
+// tell an outage from a refusal: no credential was refused, and a caller that
+// counts failed logins against an account must not count this one. An outage
+// counted against the account would lock or hold real accounts for failures
+// their owners never made. It carries none of the loader's error text; the
+// provider logs the failure at error level, naming its Go type, for the
+// operator.
 //
-// It reveals nothing about any one account: the store is down for every
-// username alike, and the provider spends the same password work as for an
-// unknown username, so the timing does not change either. One edge remains. A
-// single account whose own row fails to load, from corrupt data say, while
-// other rows load, answers unavailable where other accounts answer as refused,
-// which tells a prober that account exists. Such a row is already an incident
-// the error-level record reports.
+// The provider spends the same password work for it as for an unknown
+// username, so the timing does not change. A store can fail for some rows
+// only, in a partial outage or for one account's corrupt row, so the error
+// alone could tell a prober which usernames exist; that is why the default
+// answer below is the refusal's own. A partial outage can still differ in
+// timing, when a found user's load waits on a lock a miss never reaches.
 //
-// By default httpsec answers it 503 (httpsec.StatusForError), and form login,
-// Basic authentication and account recovery's password proof record no failure
-// for it. A consumer's own error handler, which replaces the default response,
-// may answer it as it likes. There is no option to count it as a failed login.
+// By default httpsec answers it exactly as a wrong password: 401 through
+// httpsec.StatusForError, with Basic authentication's WWW-Authenticate
+// challenge. Form login, Basic authentication and account recovery's password
+// proof charge it once to the request's source, on a context with the
+// caller's cancellation stripped, so the source limit bounds the password work
+// an outage costs; they record no failure for the username, count nothing
+// against the user's recovery limit, and clear nothing. An API key's owner
+// check returns it too, answered 401 and not counted against the source,
+// because the key was verified. A consumer's own error handler, which replaces
+// the default response, may match it and answer 503, at a cost: with locks
+// concealed, a held or locked account then answers an outage differently from
+// a free one, revealing its lock state, and in a partial outage, where a found
+// user's load reads more than a miss does, a known user answers differently
+// from an unknown one. There is no option to count it against the account.
 var ErrUnavailable = errors.New("authenticate: the user store is unavailable")
 
 // ErrNoEligibleAuthenticator reports that every provider skipped the presented

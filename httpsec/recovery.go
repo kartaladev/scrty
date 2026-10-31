@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -463,20 +462,21 @@ func (i *recoveryInterceptor) issue(ctx context.Context, res *recovery.Result) (
 // against the source that made it.
 //
 // A malformed request is counted nowhere: it is the client's mistake, checked
-// before any proof, and says nothing about a guess. Nor is any error matching
-// authenticate.ErrUnavailable, which the password proof returns when its user
-// store could not answer: no proof was refused, and counting it would let an
-// outage use up the allowance of every source that tried to recover during it.
-// A load the caller's own cancellation ended is not that error: the password
-// proof refuses it, and it is counted against the source as any refusal after
-// the codes passed is, though nothing is recorded against the account and the
-// recovery counts nothing against the user's recovery limit, because no
-// password was compared.
-// A refusal after the recovery codes passed is counted unless the consumer
-// turned that off. Every other failure is counted: a refused code, an unknown
-// or throttled user, and any other dependency outage the recovery met.
+// before any proof, and says nothing about a guess. A refusal after the
+// recovery codes passed is counted unless the consumer turned that off. Every
+// other failure is counted: a refused code, an unknown or throttled user, and
+// any dependency outage the recovery met.
+//
+// That includes an error matching authenticate.ErrUnavailable, which the
+// password proof returns when its user store could not answer. No password
+// was compared, and the recovery counts nothing against the user's recovery
+// limit, but the source pays, because its limit is what bounds the password
+// work an outage costs. A load the caller's own cancellation ended
+// is not that error: the password proof refuses it, marked as a refusal after
+// the codes passed, so it is counted as such a refusal is, though nothing is
+// recorded against the account or the user's recovery limit.
 func countsAgainstRecoverySource(countRefusals bool, err error) bool {
-	if errors.Is(err, recovery.ErrMalformed) || errors.Is(err, authenticate.ErrUnavailable) {
+	if errors.Is(err, recovery.ErrMalformed) {
 		return false
 	}
 

@@ -422,11 +422,11 @@ type apiKeyOwnerOutcome struct {
 	logs []slog.Record
 }
 
-// TestAPIKeyOwners pins the owner check: with a user loader, a verified key
-// whose owner is missing or inactive, or whom the loader answers for as
-// another user, is refused as a wrong key is, an outage is unavailable and
-// uncounted, and a client that leaves mid-load is not
-// counted either. Without one, nothing is looked up.
+// TestAPIKeyOwners pins the owner check. With a user loader, a verified key is
+// refused as a wrong key is when its owner is missing or inactive, or when the
+// loader answers with another user. An outage is unavailable, answered 401 as
+// a wrong key is, and not counted against the source, and neither is a client
+// that leaves mid-load. Without a loader, nothing is looked up.
 func TestAPIKeyOwners(t *testing.T) {
 	t.Parallel()
 
@@ -534,7 +534,8 @@ func TestAPIKeyOwners(t *testing.T) {
 		require.ErrorIs(t, err, authenticate.ErrUnavailable)
 		assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed, "no key was refused")
 		assert.NotContains(t, err.Error(), "10.0.0.5", "the loader's text stays out")
-		assert.Equal(t, http.StatusServiceUnavailable, httpsec.StatusForError(err))
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(err),
+			"the outage was not answered as a wrong key is")
 		assert.False(t, out.handlerRan)
 
 		var faults int

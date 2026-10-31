@@ -31,28 +31,34 @@ var errUserStoreRefused = errors.New("user store: connection refused to db-prima
 // store is up, the row's requests with the right password while it is down,
 // then the right password once it has recovered.
 type outageRun struct {
+	// wrong is the wrong password served before the outage.
+	wrong served
+
 	// outages are the requests served while the store was down.
 	outages   []served
 	recovered served
 
 	// recordedFailures is the username's failure count in the lockout policy's
 	// store after the outage, and sourceFailures the failures the source
-	// guard's limiter was charged. The wrong password before the outage
-	// accounts for one of each.
+	// guard's limiter was charged on a context that had not ended, as a
+	// limiter that honours cancellation records them. The wrong password
+	// before the outage accounts for one of each.
 	recordedFailures int
 	sourceFailures   int
 }
 
 // TestPasswordLoginStoreOutageIsNotACredentialFailure pins that a user store
 // that cannot answer is not a failed login, at form login and at Basic: the
-// request is refused as unavailable, nothing is recorded, counted or cleared,
-// and a lockout policy with a failure-streak limit does not hold an account
-// for failures its owner never made. Its hung-up rows pin the other side of
-// that line: a client that hangs up mid-login did not find the store down, so
-// the request is the uniform failure, answered 401 and charged to the source,
-// but no password was compared, so nothing is recorded for the username. Its
-// slow-store rows pin what follows from that: client timeouts in front of a
-// slow store never hold an account.
+// request is refused as unavailable and answered as a wrong password is,
+// Basic's challenge included; it is charged once to the source, on a context
+// with the client's cancellation stripped; nothing is recorded or cleared for
+// the username, and a lockout policy with a failure-streak limit does not hold
+// an account for failures its owner never made. Its hung-up rows pin the other
+// side of that line: a client that hangs up mid-login did not find the store
+// down, so the request is the uniform failure, answered 401 and charged to the
+// source, but no password was compared, so nothing is recorded for the
+// username. Its slow-store rows pin what follows from that: client timeouts in
+// front of a slow store never hold an account.
 func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 	t.Parallel()
 
@@ -137,7 +143,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 	}
 
 	// cancelled is a client that hung up after sending its request: the
-	// endpoints charge a hung-up guess, so it must not turn an outage into one.
+	// outage is still charged to its source, and still not to the username.
 	cancelled := func(ctx context.Context) context.Context {
 		cctx, cancel := context.WithCancel(ctx)
 		cancel()
@@ -145,11 +151,12 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		return cctx
 	}
 
-	// notCounted is what every row asserts: each outage request refused as
-	// unavailable, answered 503 and never as a refused credential; nothing
-	// recorded, counted or cleared beyond the one wrong password before it;
-	// and the right password accepted once the store is back.
-	notCounted := func(t *testing.T, run outageRun) {
+	// chargedAsAGuess is what every outage row asserts: each outage request
+	// refused as unavailable, never as a refused credential, and answered 401
+	// as a wrong password is; each charged once to the source; nothing
+	// recorded or cleared for the username beyond the one wrong password
+	// before it; and the right password accepted once the store is back.
+	chargedAsAGuess := func(t *testing.T, run outageRun) {
 		t.Helper()
 
 		require.Len(t, run.outages, outageRequests)
@@ -157,8 +164,8 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			require.ErrorIs(t, out.err, authenticate.ErrUnavailable, "outage request %d", i+1)
 			assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
 				"outage request %d was refused as a failed credential", i+1)
-			assert.Equal(t, http.StatusServiceUnavailable, httpsec.StatusForError(out.err),
-				"outage request %d", i+1)
+			assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err),
+				"outage request %d was not answered as a wrong password", i+1)
 			assert.NotContains(t, out.err.Error(), "db-primary",
 				"outage request %d carried the store's error text", i+1)
 			assert.False(t, out.handlerRan, "outage request %d reached the application", i+1)
@@ -167,8 +174,8 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		assert.Equal(t, 1, run.recordedFailures,
 			"the outage changed the username's failures: more than one is an outage recorded "+
 				"as a failed login, none is a clear no login earned")
-		assert.Equal(t, 1, run.sourceFailures,
-			"the outage was counted against the source as failed logins")
+		assert.Equal(t, 1+outageRequests, run.sourceFailures,
+			"each outage request was not charged once to the source")
 		assert.NoError(t, run.recovered.err,
 			"the right password was refused once the store recovered")
 		assert.NotErrorIs(t, run.recovered.err, lockout.ErrAccountHeld,
@@ -246,14 +253,17 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		assert.True(t, run.recovered.handlerRan, "the recovered request did not reach the application")
 	}
 
-	// noChallenge is what a Basic row asserts besides: no credential was
-	// refused, so no outage response asks for one.
-	noChallenge := func(t *testing.T, run outageRun) {
+	// challengedAsWrong is what a Basic outage row asserts besides: each
+	// outage response carries the challenge the wrong password got.
+	challengedAsWrong := func(t *testing.T, run outageRun) {
 		t.Helper()
 
+		want := run.wrong.rec.Header().Get("WWW-Authenticate")
+		require.NotEmpty(t, want, "precondition: the wrong password was challenged")
+
 		for i, out := range run.outages {
-			assert.Empty(t, out.rec.Header().Get("WWW-Authenticate"),
-				"outage request %d was challenged as though its credential had been refused", i+1)
+			assert.Equal(t, want, out.rec.Header().Get("WWW-Authenticate"),
+				"outage request %d was not challenged as a wrong password is", i+1)
 		}
 		assert.True(t, run.recovered.handlerRan, "the recovered request did not reach the application")
 	}
@@ -274,8 +284,8 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			assert: func(t *testing.T, run outageRun) {
 				t.Helper()
 
-				notCounted(t, run)
-				noChallenge(t, run)
+				chargedAsAGuess(t, run)
+				challengedAsWrong(t, run)
 			},
 		},
 		{
@@ -286,8 +296,8 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			assert: func(t *testing.T, run outageRun) {
 				t.Helper()
 
-				notCounted(t, run)
-				noChallenge(t, run)
+				chargedAsAGuess(t, run)
+				challengedAsWrong(t, run)
 			},
 		},
 		{
@@ -324,7 +334,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			assert: func(t *testing.T, run outageRun) {
 				t.Helper()
 
-				notCounted(t, run)
+				chargedAsAGuess(t, run)
 				loggedIn(t, run)
 			},
 		},
@@ -336,7 +346,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			assert: func(t *testing.T, run outageRun) {
 				t.Helper()
 
-				notCounted(t, run)
+				chargedAsAGuess(t, run)
 				loggedIn(t, run)
 			},
 		},
@@ -411,8 +421,15 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 
 			limiter := NewMockLimiter(ctrl)
 			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+			// A charge on a context that has ended is dropped, as a limiter
+			// that honours cancellation drops it, so a charge the client's
+			// hang-up could cancel is not counted.
 			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).
-				DoAndReturn(func(context.Context, string) error {
+				DoAndReturn(func(ctx context.Context, _ string) error {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+
 					charged.Add(1)
 
 					return nil
@@ -426,15 +443,15 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 
 			// One real failure first, so the run shows both that a failure is
 			// counted here and that the outage neither adds to nor clears it.
-			wrong := serve(t, chain, tc.request(t.Context(), "wrong"))
-			require.ErrorIs(t, wrong.err, authenticate.ErrAuthenticationFailed)
+			var run outageRun
+
+			run.wrong = serve(t, chain, tc.request(t.Context(), "wrong"))
+			require.ErrorIs(t, run.wrong.err, authenticate.ErrAuthenticationFailed)
 
 			requests := outageRequests
 			if tc.requests != 0 {
 				requests = tc.requests
 			}
-
-			var run outageRun
 
 			down.Store(true)
 			for range requests {

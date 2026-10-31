@@ -343,15 +343,12 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	}
 
 	auth, err := l.verifyPassword(ctx, username, password, now)
-	if errors.Is(err, authenticate.ErrUnavailable) {
-		// No credential was judged, so the source is charged nothing.
-		return err
-	}
 	if err != nil {
-		// Every refusal is charged to the source, a load the client's own
-		// hang-up ended included: verifyPassword recorded nothing for the
-		// username then, and a client timing its hang-ups must still pay for
-		// the password work it spent.
+		// Every refusal is charged to the source, an unavailable user store
+		// and a load the client's own hang-up ended included: verifyPassword
+		// recorded nothing for the username then, and the source still pays
+		// for the password work it spent, so an outage or a client timing its
+		// hang-ups cannot spend work no throttle bounds.
 		recordSourceFailure(ctx, l.guard, src)
 
 		return err
@@ -403,9 +400,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // lock alone when the consumer discloses locks. A credential the
 // authenticator refuses is recorded as a failed attempt; a user store that
 // could not answer (authenticate.ErrUnavailable), and a load the request's own
-// context ended, are returned as they are and recorded as nothing. Clearing
-// the failures a success supersedes is left to the caller, because only a
-// login is a success in that sense.
+// context ended, are returned as they are and recorded as nothing for the
+// username, for the caller to charge to its source. Clearing the failures a
+// success supersedes is left to the caller, because only a login is a success
+// in that sense.
 //
 // There is no source check here. The login endpoint checks the
 // password-login guard before calling the two steps itself, and account
@@ -443,13 +441,13 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 // attempt against the account.
 //
 // A user store that could not answer (authenticate.ErrUnavailable) is returned
-// as it is and recorded as nothing: no credential was judged, and counting it
-// would let an outage lock or hold accounts whose owners typed the right
-// password. Nor is a load the request's own context ended (see
-// loadEndedByCaller) recorded against the account: no password was compared,
-// and recording it would let client timeouts in front of a slow store hold an
-// account. It is returned as the refusal it is, for the caller to charge to
-// the source.
+// as it is and recorded as nothing against the account: no credential was
+// judged, and counting it would let an outage lock or hold accounts whose
+// owners typed the right password. Nor is a load the request's own context
+// ended (see loadEndedByCaller) recorded against the account: no password was
+// compared, and recording it would let client timeouts in front of a slow
+// store hold an account. Both are returned as they are, for the caller to
+// charge to the source.
 func (l *formLogin) verifyPassword(
 	ctx context.Context,
 	username string,

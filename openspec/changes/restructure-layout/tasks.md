@@ -187,7 +187,7 @@ Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md
   - the Basic hung-up row asserts its `WWW-Authenticate` challenge.
 
   Verify: the failing lines are recorded, and `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
-- [ ] 13.8 Answer an unavailable store as a wrong password, and charge it to the source (D19, "The client sees a wrong password" and "The source pays" bullets). Red step: port the security review's tests into `httpsec`, following `table-test` and `use-mockgen`, with a mock user loader in place of PostgreSQL:
+- [x] 13.8 Answer an unavailable store as a wrong password, and charge it to the source (D19, "The client sees a wrong password" and "The source pays" bullets). Red step: port the security review's tests into `httpsec`, following `table-test` and `use-mockgen`, with a mock user loader in place of PostgreSQL:
   - "a held account answers an outage as a free one does": concealed locks, a failing loader, one held and one free username, over form login and Basic; both answer the same status and headers;
   - "known and unknown users answer a partial outage alike": the loader fails for a known username and misses an unknown one; both answer the same status and headers and are charged to the source once;
   - "outages are charged to the source": a loader failing every load; more requests than the source limit; the guard refuses those beyond it, and the encoder double counts no more password work than the limit;
