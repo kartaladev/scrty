@@ -93,7 +93,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 
 | Refusal | Status |
 |---|---|
-| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), refused magic-link redemption, session idle, throttled source, throttled saved-code presentation | 401 |
+| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), refused magic-link redemption, session idle, throttled source, throttled saved-code presentation, the user store unavailable to a password login, a Basic authentication, a recovery's password proof or an API key owner check (the authentication capability's unavailable error) | 401 |
 | challenge of kind password change, challenge of kind second-factor enrolment, challenge of kind account recovery | 403 |
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
@@ -127,6 +127,10 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Wrapped sentinel
 - **WHEN** an error wraps the access-denied refusal with extra context
 - **THEN** the mapping returns 403
+
+#### Scenario: User store unavailable
+- **WHEN** an error wraps the authentication capability's unavailable error, because the user store returned a connection error during a password login
+- **THEN** the mapping returns 401, as for a wrong password, and not 503 or 500
 
 #### Scenario: Joined verification failure
 - **WHEN** an error joins the authentication failure refusal with a token-parsing cause

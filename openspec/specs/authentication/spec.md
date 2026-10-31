@@ -75,10 +75,11 @@ When a deciding provider reports no error but returns no result, or a result wit
 The username-and-password provider SHALL return the same uniform failure, with no distinguishing error, in all of these cases:
 - an unknown username;
 - a wrong password;
-- a correct password for an inactive account;
-- a failure to load the user.
+- a correct password for an inactive account.
 
-The account's active state SHALL be checked only after the password has been verified. A user-load failure other than "not found" SHALL be logged at error level. Constructing the provider without a user loader SHALL fail with a configuration error.
+A failure to load the user other than "not found", and other than the caller's own context ending, SHALL NOT be returned as the uniform failure. It SHALL be returned as a distinct unavailable error, which is not identifiable as the uniform failure, so that a caller can tell an outage of the user store from a refused credential and never counts the outage against the account. The provider SHALL spend the same password work on a load failure as on an unknown username, so the outcome's timing does not change.
+
+The account's active state SHALL be checked only after the password has been verified. A user-load failure other than "not found", and other than the caller's own context ending, SHALL be logged at error level. A load the caller's own context ended SHALL be returned as the uniform failure, which SHALL also match that context's error, so that a caller can tell that no password was compared. Constructing the provider without a user loader SHALL fail with a configuration error.
 
 #### Scenario: Unknown user
 - **WHEN** a username that does not exist is presented
@@ -94,8 +95,15 @@ The account's active state SHALL be checked only after the password has been ver
 
 #### Scenario: User store unavailable
 - **WHEN** the user loader returns a connection error
-- **THEN** the uniform authentication failure is returned
+- **THEN** the unavailable error is returned, and it is not identifiable as the uniform authentication failure
+- **AND** the provider has spent the same password work as for an unknown username
 - **AND** an error-level record naming the connection error is logged
+
+#### Scenario: The caller hangs up during the load
+- **WHEN** the request's context is cancelled and the user loader fails with that cancellation
+- **THEN** the uniform authentication failure is returned, not the unavailable error
+- **AND** it also matches the context's cancellation error
+- **AND** the record of it is logged at debug level, apart from the error-level records of store outages
 
 ### Requirement: An unknown user costs the same password work as a known one
 When loading the user fails, or the loaded user has no usable password hash, the password provider SHALL still perform exactly one full password verification against a reference hash that the configured password encoder produced at construction, and SHALL discard that verification's result, so a match against the reference never admits anyone. A stored hash is not usable when it is empty, or when the encoder reports that it does not recognise the hash. An encoder that cannot report recognition SHALL be treated as recognising every non-empty hash. Construction SHALL fail if the reference hash cannot be produced. When no encoder is configured, the default password encoder SHALL be used.

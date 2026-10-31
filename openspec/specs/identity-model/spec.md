@@ -127,7 +127,7 @@ Only `api-key` SHALL report itself as exempt from an MFA requirement. `oidc`, `r
 - **THEN** it reports channel `public-key` and is not exempt
 
 ### Requirement: User loader contract
-A user loader SHALL load user details by username and by user reference. The library SHALL pass the username, and the user reference, exactly as presented. A flow that recorded a user reference SHALL load by that reference, never by a username, because a username is a reusable handle. When no user matches, the loader SHALL return a "user not found" error that callers can identify. Any other failure SHALL be returned as an error that is not identifiable as "user not found". Details loaded by user reference SHALL carry exactly the reference asked for.
+A user loader SHALL load user details by username and by user reference. The library SHALL pass the username, and the user reference, exactly as presented. A flow that recorded a user reference SHALL load by that reference, never by a username, because a username is a reusable handle. When no user matches, the loader SHALL return a "user not found" error that callers can identify. Input the loader's store cannot represent, such as text the database's encoding cannot hold, SHALL be reported as "user not found", because no user can match it, so that a client cannot cause a load failure with its own input. Any other failure SHALL be returned as an error that is not identifiable as "user not found". Details loaded by user reference SHALL carry exactly the reference asked for.
 
 #### Scenario: Username passed unchanged
 - **WHEN** a login presents the username ` Alice@Example.COM`
@@ -148,6 +148,10 @@ A user loader SHALL load user details by username and by user reference. The lib
 #### Scenario: Reference is not case-folded
 - **WHEN** a conforming loader holds user reference `u-1` and is asked for `U-1`
 - **THEN** it returns an error identifiable as "user not found"
+
+#### Scenario: Input the store cannot represent
+- **WHEN** a conforming loader over a database whose encoding cannot hold `€` is asked for the username `ada€`
+- **THEN** it returns an error identifiable as "user not found", not a database failure
 
 ### Requirement: Role loader contract
 A role loader SHALL return the resource privileges effective for a role name. When the role has no privileges, it SHALL return a "privileges not found" error that callers can identify.
