@@ -62,6 +62,170 @@ func recordID(err error) func(httpsec.Request) (string, error) {
 	}
 }
 
+// mustGuards builds guards a test needs to exist, failing the test when the
+// wiring it was handed is refused.
+func mustGuards(t *testing.T, az authorize.Authorizer, opts ...httpsec.GuardOption) *httpsec.Guards {
+	t.Helper()
+
+	g, err := httpsec.NewGuards(az, opts...)
+	require.NoError(t, err)
+
+	return g
+}
+
+// throughChain puts one request from a principal through a chain that enables
+// authorization with chainAz and a rule permitting everything, onto mw, so the
+// guard runs behind what the chain published.
+func throughChain(t *testing.T, chainAz authorize.Authorizer, mw func(http.Handler) http.Handler) guardRun {
+	t.Helper()
+
+	permitAll := authorize.Rule[httpsec.Request]{
+		Match:   func(httpsec.Request) bool { return true },
+		Require: authorize.PermitAll(),
+	}
+
+	chain, err := httpsec.New(httpsec.EnableAuthorization(chainAz, permitAll))
+	require.NoError(t, err)
+
+	out := guardRun{rec: httptest.NewRecorder()}
+	route := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { out.routeRan = true })
+
+	ctx := identity.WithPrincipal(t.Context(), testPrincipal())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/records/r-1", nil)
+
+	runChain := chain.Assemble(func(ex *httpsec.Exchange) error {
+		mw(route).ServeHTTP(out.rec, req.WithContext(ex.Context()))
+
+		return nil
+	})
+
+	require.NoError(t, runChain(httpsec.NewExchange(ctx,
+		httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(out.rec))))
+
+	return out
+}
+
+// TestNewGuards_Authorizer pins where guards are told their judge comes from:
+// an authorizer at construction, a declared reliance on the chain's, or both.
+// Guards given neither are a wiring mistake refused before traffic, and a typed
+// nil beside the declaration is no judge at all rather than a nil-method panic.
+func TestNewGuards_Authorizer(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *MockAuthorizer
+
+	type testCase struct {
+		name   string
+		az     func(t *testing.T) authorize.Authorizer
+		opts   []httpsec.GuardOption
+		assert func(t *testing.T, g *httpsec.Guards, err error, run *guardRun)
+	}
+
+	cases := []testCase{
+		{
+			name: "nil authorizer",
+			az:   func(*testing.T) authorize.Authorizer { return nil },
+			assert: func(t *testing.T, g *httpsec.Guards, err error, _ *guardRun) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, g)
+			},
+		},
+		{
+			name: "typed-nil authorizer",
+			az:   func(*testing.T) authorize.Authorizer { return typedNil },
+			assert: func(t *testing.T, g *httpsec.Guards, err error, _ *guardRun) {
+				require.ErrorIs(t, err, httpsec.ErrConfig,
+					"an interface holding a nil value is no authorizer")
+				assert.Nil(t, g)
+			},
+		},
+		{
+			name: "chain authorizer declared",
+			az:   func(*testing.T) authorize.Authorizer { return nil },
+			opts: []httpsec.GuardOption{httpsec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *httpsec.Guards, err error, run *guardRun) {
+				require.NoError(t, err)
+
+				chainAz := NewMockAuthorizer(gomock.NewController(t))
+				chainAz.EXPECT().Authorize(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+
+				out := throughChain(t, chainAz, g.ResourcePrivileges("admin", "user").RequireOne("read"))
+
+				require.NoError(t, run.refusal)
+				assert.True(t, out.routeRan, "the guard judged with the chain's authorizer")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name: "typed nil beside declared reliance",
+			az:   func(*testing.T) authorize.Authorizer { return typedNil },
+			opts: []httpsec.GuardOption{httpsec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *httpsec.Guards, err error, run *guardRun) {
+				require.NoError(t, err)
+
+				mw := g.ResourcePrivileges("admin", "user").RequireOne("read")
+				require.NotPanics(t, func() {
+					out := runGuard(t, mw, guardRequest(t, testPrincipal(), nil))
+					run.routeRan = out.routeRan
+				}, "a typed nil is no fallback, so no method is called on it")
+
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.False(t, run.routeRan)
+			},
+		},
+		{
+			name: "declared reliance, no chain authorizer",
+			az:   func(*testing.T) authorize.Authorizer { return nil },
+			opts: []httpsec.GuardOption{httpsec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *httpsec.Guards, err error, run *guardRun) {
+				require.NoError(t, err)
+
+				out := runGuard(t, g.ResourcePrivileges("admin", "user").RequireOne("read"),
+					guardRequest(t, testPrincipal(), nil))
+
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.False(t, out.routeRan)
+			},
+		},
+		{
+			name: "both given",
+			az: func(t *testing.T) authorize.Authorizer {
+				return refusingAuthorizer(t, errAuthorizerRoles)
+			},
+			opts: []httpsec.GuardOption{httpsec.WithChainAuthorizer()},
+			assert: func(t *testing.T, g *httpsec.Guards, err error, run *guardRun) {
+				require.NoError(t, err)
+
+				mw := g.ResourcePrivileges("admin", "user").RequireOne("read")
+
+				preferred := runGuard(t, mw, guardRequest(t, testPrincipal(), permittingAuthorizer(t)))
+				assert.True(t, preferred.routeRan,
+					"the request's authorizer is preferred over the one built in")
+
+				fallback := runGuard(t, mw, guardRequest(t, testPrincipal(), nil))
+				assert.False(t, fallback.routeRan,
+					"the one built in is the fallback when the request carries none")
+				require.ErrorIs(t, run.refusal, errAuthorizerRoles)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Every row's refusal is captured, so a row names what it was
+			// refused with rather than reading it back out of a status code.
+			var run guardRun
+
+			opts := append([]httpsec.GuardOption{capturing(&run)}, tc.opts...)
+
+			g, err := httpsec.NewGuards(tc.az(t), opts...)
+			tc.assert(t, g, err, &run)
+		})
+	}
+}
+
 // TestGuardsFailClosed pins the four refusals a guard answers without reaching
 // the route, and that a guard which found everything it needs does reach it.
 func TestGuardsFailClosed(t *testing.T) {
@@ -77,7 +241,7 @@ func TestGuardsFailClosed(t *testing.T) {
 		{
 			name: "no principal",
 			build: func(t *testing.T, run *guardRun) (func(http.Handler) http.Handler, *http.Request) {
-				g := httpsec.NewGuards(permittingAuthorizer(t), capturing(run))
+				g := mustGuards(t, permittingAuthorizer(t), capturing(run))
 
 				return g.RequireAuthenticated(), guardRequest(t, nil, nil)
 			},
@@ -89,7 +253,7 @@ func TestGuardsFailClosed(t *testing.T) {
 		{
 			name: "no authorizer in the context and none at construction",
 			build: func(t *testing.T, run *guardRun) (func(http.Handler) http.Handler, *http.Request) {
-				g := httpsec.NewGuards(nil, capturing(run))
+				g := mustGuards(t, nil, capturing(run), httpsec.WithChainAuthorizer())
 
 				return g.ResourcePrivileges("admin", "user").RequireOne("read"),
 					guardRequest(t, testPrincipal(), nil)
@@ -103,7 +267,7 @@ func TestGuardsFailClosed(t *testing.T) {
 		{
 			name: "the identifier extractor fails",
 			build: func(t *testing.T, run *guardRun) (func(http.Handler) http.Handler, *http.Request) {
-				g := httpsec.NewGuards(permittingAuthorizer(t), capturing(run))
+				g := mustGuards(t, permittingAuthorizer(t), capturing(run))
 				owned := httpsec.ResourceOwnerships(g, "admin", "user",
 					recordOwner(true, nil))
 
@@ -120,7 +284,7 @@ func TestGuardsFailClosed(t *testing.T) {
 		{
 			name: "the authorizer refuses",
 			build: func(t *testing.T, run *guardRun) (func(http.Handler) http.Handler, *http.Request) {
-				g := httpsec.NewGuards(refusingAuthorizer(t, errAuthorizerRoles), capturing(run))
+				g := mustGuards(t, refusingAuthorizer(t, errAuthorizerRoles), capturing(run))
 
 				return g.ResourcePrivileges("admin", "user").RequireOne("read"),
 					guardRequest(t, testPrincipal(), nil)
@@ -135,7 +299,7 @@ func TestGuardsFailClosed(t *testing.T) {
 		{
 			name: "the ownership check refuses",
 			build: func(t *testing.T, run *guardRun) (func(http.Handler) http.Handler, *http.Request) {
-				g := httpsec.NewGuards(authorize.NewOwnershipAuthorizer(), capturing(run))
+				g := mustGuards(t, authorize.NewOwnershipAuthorizer(), capturing(run))
 				owned := httpsec.ResourceOwnerships(g, "admin", "user",
 					recordOwner(false, nil))
 
@@ -149,7 +313,7 @@ func TestGuardsFailClosed(t *testing.T) {
 		{
 			name: "everything the guard needed is there",
 			build: func(t *testing.T, run *guardRun) (func(http.Handler) http.Handler, *http.Request) {
-				g := httpsec.NewGuards(permittingAuthorizer(t), capturing(run))
+				g := mustGuards(t, permittingAuthorizer(t), capturing(run))
 
 				return g.ResourcePrivileges("admin", "user").RequireOne("read"),
 					guardRequest(t, testPrincipal(), nil)
@@ -234,7 +398,7 @@ func TestGuardsAuthorizerSource(t *testing.T) {
 				published = tc.inCtx(t)
 			}
 
-			g := httpsec.NewGuards(built, capturing(&run))
+			g := mustGuards(t, built, capturing(&run))
 			mw := g.ResourcePrivileges("admin", "user").RequireOne("read")
 
 			out := runGuard(t, mw, guardRequest(t, testPrincipal(), published))
@@ -326,7 +490,7 @@ func TestGuardsAttributes(t *testing.T) {
 					return nil
 				})
 
-			run := runGuard(t, tc.build(httpsec.NewGuards(az)),
+			run := runGuard(t, tc.build(mustGuards(t, az)),
 				guardRequest(t, testPrincipal(), nil))
 			require.True(t, run.routeRan)
 
@@ -348,7 +512,7 @@ func TestGuardOwnershipCheck(t *testing.T) {
 		gotSubject *identity.Principal
 	)
 
-	g := httpsec.NewGuards(authorize.NewOwnershipAuthorizer())
+	g := mustGuards(t, authorize.NewOwnershipAuthorizer())
 	owned := httpsec.ResourceOwnerships(g, "admin", "user",
 		func(_ context.Context, subject *identity.Principal, id string) (bool, error) {
 			gotID, gotSubject = id, subject
@@ -387,7 +551,7 @@ func TestGuardOnTopOfPermissiveRule(t *testing.T) {
 	chain, err := httpsec.New(httpsec.EnableAuthorization(az, permitAll))
 	require.NoError(t, err)
 
-	guards := httpsec.NewGuards(nil, capturing(&run))
+	guards := mustGuards(t, nil, capturing(&run), httpsec.WithChainAuthorizer())
 	mw := guards.ResourcePrivileges("admin", "user").RequireOne("read")
 
 	route := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { run.routeRan = true })
@@ -557,7 +721,7 @@ func TestGuardBehindAuthentication(t *testing.T) {
 
 			var run guardRun
 
-			g := httpsec.NewGuards(permittingAuthorizer(t), answering(&run))
+			g := mustGuards(t, permittingAuthorizer(t), answering(&run))
 			out := runGuard(t, g.RequireAuthenticated(),
 				httptest.NewRequestWithContext(published, http.MethodGet, "/records/r-1", nil))
 			run.rec, run.routeRan = out.rec, out.routeRan
@@ -646,7 +810,7 @@ func TestConsumerFirstFactorPublishesCaller(t *testing.T) {
 
 			var run guardRun
 
-			g := httpsec.NewGuards(permittingAuthorizer(t), answering(&run))
+			g := mustGuards(t, permittingAuthorizer(t), answering(&run))
 			out := runGuard(t, g.RequireAuthenticated(),
 				httptest.NewRequestWithContext(published, http.MethodGet, "/records/r-1", nil))
 			run.rec, run.routeRan = out.rec, out.routeRan
@@ -729,7 +893,7 @@ func TestOwnershipGuard_WiringPanics(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			g := httpsec.NewGuards(authorize.NewOwnershipAuthorizer())
+			g := mustGuards(t, authorize.NewOwnershipAuthorizer())
 			tc.assert(t, func() { tc.wire(g) })
 		})
 	}

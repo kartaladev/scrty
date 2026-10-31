@@ -3263,7 +3263,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			name: "guard: a consumer authorizer's refusal is returned as itself",
 			act: func(t *testing.T) *errorSink {
 				sink := &errorSink{}
-				g := httpsec.NewGuards(refusingAuthorizer(t, errRolesOnHold), sink.guardOption())
+				g := mustGuards(t, refusingAuthorizer(t, errRolesOnHold), sink.guardOption())
 
 				runGuard(t, g.ResourcePrivileges("admin", "user").RequireOne("read"),
 					guardRequest(t, testPrincipal(), nil))
@@ -3283,7 +3283,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				require.NoError(t, err)
 
 				sink := &errorSink{}
-				g := httpsec.NewGuards(authorizer, sink.guardOption())
+				g := mustGuards(t, authorizer, sink.guardOption())
 
 				runGuard(t, g.ResourcePrivileges("billing", "invoice").RequireOne("read"),
 					guardRequest(t, activeRolePrincipal("editor"), nil))

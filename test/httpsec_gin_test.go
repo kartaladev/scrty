@@ -113,7 +113,13 @@ func ginRoute(
 // ginGuard builds the guard the scenario named, with gin's own defaults: the
 // refusal on the error channel and the mapped status set but not committed.
 func ginGuard(spec httpsecconformance.GuardSpec) gin.HandlerFunc {
-	guards := ginsec.NewGuards(spec.Authorizer)
+	// The scenario's nil authorizer means the guards rely on what the chain
+	// published, so the reliance is declared for every scenario, and a non-nil
+	// one is the fallback beside it. Declared, construction cannot fail.
+	guards, err := ginsec.NewGuards(spec.Authorizer, ginsec.WithChainAuthorizer())
+	if err != nil {
+		panic(err)
+	}
 
 	if spec.Kind == httpsecconformance.GuardAuthenticated {
 		return guards.RequireAuthenticated()

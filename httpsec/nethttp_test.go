@@ -1326,7 +1326,7 @@ func TestGuardErrorHandler(t *testing.T) {
 			var seen error
 
 			misbuilt := refusingAuthorizer(t, authorize.ErrInvalidAttributes)
-			g := httpsec.NewGuards(misbuilt, tc.opts(&seen)...)
+			g := mustGuards(t, misbuilt, tc.opts(&seen)...)
 
 			run := runGuard(t, g.ResourcePrivileges("admin", "user").RequireOne("read"),
 				guardRequest(t, testPrincipal(), nil))

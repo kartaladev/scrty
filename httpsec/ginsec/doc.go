@@ -64,4 +64,8 @@
 // NewGuards builds the guards a consumer puts on individual routes, mirroring
 // httpsec.Guards and refusing the same way: the error on gin's channel, the
 // mapped status, and the route never reached.
+//
+// Guards are built with an authorizer, with WithChainAuthorizer to rely on the
+// one the chain publishes on each request, or with both. Building them with
+// neither fails with an error wrapping httpsec.ErrConfig.
 package ginsec
