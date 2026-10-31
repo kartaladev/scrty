@@ -144,7 +144,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - a fiber refusal carrying its window to the error handler.
 
   (D9; framework-adapters "Adapter recency guards match the core recency guard" across adapters.) Verify with `go vet ./...` and `go test -race ./...` in the `test` module (needs Docker for durable backends)
-- [ ] 8.2 The whole-workspace gate:
+- [x] 8.2 The whole-workspace gate:
   - `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module listed by `go list -m`;
   - `gofmt -l` empty over tracked Go files;
   - `openspec validate reauthentication --strict`.
