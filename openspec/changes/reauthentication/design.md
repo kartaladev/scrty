@@ -185,7 +185,8 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 - **Dependencies the chain already has.**
   - **Second-factor re-proof uses the MFA slot's** methods, lookups and **its `*mfa.VerifyThrottle` instance**. Failures at login and at re-proof share one per-user count (5 per 15 minutes by default), and re-proof has no budget of its own.
   - **Password re-proof uses the form login's** password path (`authenticatePassword`). That gives the pre-authentication lockout, the decoy-even authenticator, failure recording on the attempt store and its source accounting. Success clears the user's lockout failures, as a login does.
-- **Admission:** a session with a resolved caller, and `MFA` in {`MFANone`, `MFASatisfied`}. It must have no `PasswordChangePending` and no enrolment or recovery marker. Otherwise it is refused as authentication required. A fresh session is served: re-proving early is harmless and throttled.
+- **Admission:** a session with a resolved caller, and `MFA` in {`MFANone`, `MFASatisfied`}. It must have no `PasswordChangePending`, no enrolment or recovery marker (`EnrolmentOriginDeadline`; `RecoveredAt` is history, not a marker), and no challenge a consumer gate raised on the request (`Exchange.RaisedChallenge`), as the recovery-code endpoint already checks. Otherwise it is refused as authentication required. A fresh session is served: re-proving early is harmless and throttled.
+  - The raised-challenge check means a consumer gate registered after slot 655 still cannot let a session owing its challenge become fresh. The alternative, documenting that consumer gates must sit before 655, was rejected: it leaves the spec's "no pending challenge of any kind" true only for a correctly ordered chain.
 - **Verify order:**
   1. admission;
   2. method name;
