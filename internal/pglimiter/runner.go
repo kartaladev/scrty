@@ -13,7 +13,6 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/internal/unavailable"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -79,7 +78,7 @@ type backend struct {
 // clock and the lock timeout of cfg's operation timeout. Its errors start
 // with prefix. The window must already be in whole microseconds, and the
 // policy and cfg already validated (ValidatePolicy, Config.Validate).
-func NewBackend(r Runner, prefix, namespace string, limit int, window time.Duration, cfg Config) unavailable.Limiter {
+func NewBackend(r Runner, prefix, namespace string, limit int, window time.Duration, cfg Config) ratelimit.Limiter {
 	return &backend{
 		r:           r,
 		prefix:      prefix,

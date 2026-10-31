@@ -14,16 +14,16 @@ import (
 // guarded work only when the charge was accepted, and refunds the charge when
 // the attempt succeeds, so only failed attempts spend the allowance.
 //
-// Every limiter scrty ships implements it: MemoryLimiter, under the same lock
-// that guards its counts, and the limiters of redisstore, sqlstore and
-// pgxstore, each in one step on its store. A consumer's own limiter implements
-// it to take part in such a flow, and must meet the line the guarantee needs:
-// Charge is one indivisible step. Reading
-// the count and recording the failure in two steps, even under a lock released
-// in between or with two round trips to a store, is not an implementation of
-// Charge. The conformance suite in the test module's ratelimittest package
-// proves it, with a case that releases concurrent charges against one key
-// together and fails a two-step charge.
+// Limiter embeds it, so every limiter charges and refunds. The limiters scrty
+// ships do it in one step: MemoryLimiter under the same lock that guards its
+// counts, and the limiters of redisstore, sqlstore and pgxstore each in one
+// step on its store. A consumer's own limiter must meet the same line the
+// guarantee needs: Charge is one indivisible step. Reading the count and
+// recording the failure in two steps, even under a lock released in between
+// or with two round trips to a store, is not an implementation of Charge. The
+// conformance suite in the test module's ratelimittest package proves it, with
+// a case that releases concurrent charges against one key together and fails
+// a two-step charge.
 //
 // An implementation must be safe for concurrent use.
 type Charger interface {

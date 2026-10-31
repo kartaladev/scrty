@@ -145,18 +145,15 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 			limit:  1,
 			window: time.Minute,
 			assert: func(t *testing.T, e pgClockEnv) {
-				c, ok := e.l.(ratelimit.Charger)
-				require.True(t, ok, "%T does not implement ratelimit.Charger", e.l)
-
-				r, exceeded, err := c.Charge(t.Context(), "k")
+				r, exceeded, err := e.l.Charge(t.Context(), "k")
 				require.NoError(t, err)
 				require.False(t, exceeded)
-				_, exceeded, err = c.Charge(t.Context(), "k")
+				_, exceeded, err = e.l.Charge(t.Context(), "k")
 				require.NoError(t, err)
 				require.True(t, exceeded, "a second charge passed a limit of one")
 
-				require.NoError(t, c.Refund(t.Context(), r))
-				_, exceeded, err = c.Charge(t.Context(), "k")
+				require.NoError(t, e.l.Refund(t.Context(), r))
+				_, exceeded, err = e.l.Charge(t.Context(), "k")
 				require.NoError(t, err)
 				assert.False(t, exceeded, "the refund did not find the stamp its charge stored")
 

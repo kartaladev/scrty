@@ -13,7 +13,6 @@
 // nothing stopped.
 //
 //go:generate mockgen -source=../../ratelimit/limiter.go -package=unavailable_test -destination=limiter_mock_test.go -exclude_interfaces=LimiterFactory,Verifier,PolicyReporter,Pruner -typed
-//go:generate mockgen -source=../../ratelimit/charge.go -package=unavailable_test -destination=charger_mock_test.go -typed
 package unavailable
 
 import (
@@ -95,13 +94,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// Limiter is a ratelimit.Limiter that also charges and refunds
-// (ratelimit.Charger): what Wrap takes as its backend, and what it returns.
-type Limiter interface {
-	ratelimit.Limiter
-	ratelimit.Charger
-}
-
 // Wrap returns backend decorated with the unavailable handling cfg describes,
 // for one namespace's limit and window. The limit and window are the ones the
 // backend counts with; the fall-back mode counts locally with the same pair, and
@@ -114,7 +106,7 @@ type Limiter interface {
 // A nil backend (typed nil included), an empty namespace, a non-positive limit,
 // window, timeout or probe interval, an unknown mode, or a nil clock or logger
 // is an error wrapping ratelimit.ErrConfig.
-func Wrap(backend Limiter, namespace string, limit int, window time.Duration, cfg Config) (Limiter, error) {
+func Wrap(backend ratelimit.Limiter, namespace string, limit int, window time.Duration, cfg Config) (ratelimit.Limiter, error) {
 	if err := validate(backend, namespace, limit, window, cfg); err != nil {
 		return nil, err
 	}
@@ -149,7 +141,7 @@ func Wrap(backend Limiter, namespace string, limit int, window time.Duration, cf
 	return l, nil
 }
 
-func validate(backend Limiter, namespace string, limit int, window time.Duration, cfg Config) error {
+func validate(backend ratelimit.Limiter, namespace string, limit int, window time.Duration, cfg Config) error {
 	switch {
 	case nilcheck.IsNil(backend):
 		return fmt.Errorf("%w: the backend limiter is nil", ratelimit.ErrConfig)
@@ -209,7 +201,7 @@ const (
 
 // limiter is the decorator Wrap returns.
 type limiter struct {
-	backend   Limiter
+	backend   ratelimit.Limiter
 	namespace string
 	mode      ratelimit.UnavailableMode
 	timeout   time.Duration
@@ -643,4 +635,4 @@ func (l *limiter) refundBackend(ctx context.Context, r ratelimit.Receipt, adm ad
 	return err
 }
 
-var _ Limiter = (*limiter)(nil)
+var _ ratelimit.Limiter = (*limiter)(nil)

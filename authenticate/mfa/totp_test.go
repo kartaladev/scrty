@@ -24,6 +24,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // rfc6238SHA1Secret is the ASCII seed RFC 6238 Appendix B uses for HMAC-SHA-1,
@@ -286,6 +287,14 @@ func (l *barrierLimiter) Exceeded(context.Context, string) (bool, error) {
 }
 
 func (l *barrierLimiter) RecordFailure(context.Context, string) error { return nil }
+
+// Charge and Refund complete the port. The throttle under test checks and
+// records, and never charges.
+func (l *barrierLimiter) Charge(context.Context, string) (ratelimit.Receipt, bool, error) {
+	return ratelimit.Receipt{}, false, nil
+}
+
+func (l *barrierLimiter) Refund(context.Context, ratelimit.Receipt) error { return nil }
 
 // wrongCodeAt returns a well-formed code that matches none of the steps a
 // verification at at accepts.

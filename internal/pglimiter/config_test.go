@@ -343,6 +343,10 @@ type builtLimiter struct{ id int }
 
 func (*builtLimiter) Exceeded(context.Context, string) (bool, error) { return false, nil }
 func (*builtLimiter) RecordFailure(context.Context, string) error    { return nil }
+func (*builtLimiter) Charge(context.Context, string) (ratelimit.Receipt, bool, error) {
+	return ratelimit.Receipt{}, false, nil
+}
+func (*builtLimiter) Refund(context.Context, ratelimit.Receipt) error { return nil }
 
 // claim is one Registry.Claim call: buildErr makes its build fail.
 type claim struct {

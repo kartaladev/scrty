@@ -261,7 +261,11 @@ type fixedWindowLimiter struct {
 }
 
 func (l *fixedWindowLimiter) bucket(key string) string {
-	return fmt.Sprintf("%s|%d", key, l.clk.Now().UnixNano()/int64(l.window))
+	return l.bucketAt(key, l.clk.Now())
+}
+
+func (l *fixedWindowLimiter) bucketAt(key string, at time.Time) string {
+	return fmt.Sprintf("%s|%d", key, at.UnixNano()/int64(l.window))
 }
 
 func (l *fixedWindowLimiter) Exceeded(ctx context.Context, key string) (bool, error) {
@@ -284,6 +288,42 @@ func (l *fixedWindowLimiter) RecordFailure(_ context.Context, key string) error 
 	return nil
 }
 
+// Charge decides and records under one hold of the lock, in the current
+// bucket.
+func (l *fixedWindowLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ratelimit.Receipt{}, true, err
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.clk.Now()
+	b := l.bucketAt(key, now)
+	if l.counts[b] >= l.limit {
+		return ratelimit.Receipt{}, true, nil
+	}
+	l.counts[b]++
+
+	return ratelimit.NewReceipt(key, now), false, nil
+}
+
+// Refund removes one failure from the bucket the receipt was charged in.
+func (l *fixedWindowLimiter) Refund(_ context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if b := l.bucketAt(r.Key(), r.Stamp()); l.counts[b] > 0 {
+		l.counts[b]--
+	}
+
+	return nil
+}
+
 // unsynchronisedLimiter counts without a lock, which only the race detector
 // can see.
 type unsynchronisedLimiter struct {
@@ -301,6 +341,28 @@ func (l *unsynchronisedLimiter) Exceeded(ctx context.Context, _ string) (bool, e
 
 func (l *unsynchronisedLimiter) RecordFailure(_ context.Context, _ string) error {
 	l.n++
+
+	return nil
+}
+
+// Charge decides and records without a lock, as the rest of this double does.
+func (l *unsynchronisedLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ratelimit.Receipt{}, true, err
+	}
+	if l.n >= l.limit {
+		return ratelimit.Receipt{}, true, nil
+	}
+	l.n++
+
+	return ratelimit.NewReceipt(key, time.Now()), false, nil
+}
+
+// Refund removes one failure, without a lock.
+func (l *unsynchronisedLimiter) Refund(_ context.Context, r ratelimit.Receipt) error {
+	if !r.Stamp().IsZero() && l.n > 0 {
+		l.n--
+	}
 
 	return nil
 }
@@ -405,7 +467,10 @@ func (l *sharedLimiter) Exceeded(ctx context.Context, key string) (bool, error) 
 	l.scope.mu.Lock()
 	defer l.scope.mu.Unlock()
 
-	now := l.b.clk.Now()
+	return l.exceededLocked(key, l.b.clk.Now()), nil
+}
+
+func (l *sharedLimiter) exceededLocked(key string, now time.Time) bool {
 	if exp, ok := l.scope.expires[key]; ok && !exp.After(now) {
 		delete(l.scope.stamps, key)
 		delete(l.scope.expires, key)
@@ -418,14 +483,57 @@ func (l *sharedLimiter) Exceeded(ctx context.Context, key string) (bool, error) 
 		}
 	}
 
-	return count >= l.limit, nil
+	return count >= l.limit
 }
 
 func (l *sharedLimiter) RecordFailure(_ context.Context, key string) error {
 	l.scope.mu.Lock()
 	defer l.scope.mu.Unlock()
 
+	l.recordLocked(key, l.b.clk.Now())
+
+	return nil
+}
+
+// Charge decides and records under one hold of the scope's lock.
+func (l *sharedLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ratelimit.Receipt{}, true, err
+	}
+
+	l.scope.mu.Lock()
+	defer l.scope.mu.Unlock()
+
 	now := l.b.clk.Now()
+	if l.exceededLocked(key, now) {
+		return ratelimit.Receipt{}, true, nil
+	}
+	l.recordLocked(key, now)
+
+	return ratelimit.NewReceipt(key, now), false, nil
+}
+
+// Refund removes one stamp equal to the receipt's, while it is in the window.
+func (l *sharedLimiter) Refund(_ context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+
+	l.scope.mu.Lock()
+	defer l.scope.mu.Unlock()
+
+	if !r.Stamp().After(l.b.clk.Now().Add(-l.window)) {
+		return nil
+	}
+	stamps := l.scope.stamps[r.Key()]
+	if i := slices.IndexFunc(stamps, func(s time.Time) bool { return s.Equal(r.Stamp()) }); i >= 0 {
+		l.scope.stamps[r.Key()] = slices.Delete(slices.Clone(stamps), i, i+1)
+	}
+
+	return nil
+}
+
+func (l *sharedLimiter) recordLocked(key string, now time.Time) {
 	stamps := l.scope.stamps[key]
 	if l.b.flaw == flawTrimByRecorder {
 		// Trims by the recording instance's window, so a shorter window
@@ -443,6 +551,4 @@ func (l *sharedLimiter) RecordFailure(_ context.Context, key string) error {
 		expiry = prev
 	}
 	l.scope.expires[key] = expiry
-
-	return nil
 }

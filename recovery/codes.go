@@ -30,7 +30,7 @@ const codeThrottleFlow = "recovery-code"
 // route on them.
 const (
 	msgCodeLimiterError = "recovery: saved-code limiter could not be consulted"
-	msgCodeRecordError  = "recovery: saved-code failure could not be recorded"
+	msgCodeRefundError  = "recovery: saved-code charge could not be refunded"
 	msgCodeStoreError   = "recovery: saved-code store failed"
 	msgCodeRandomError  = "recovery: saved-code random source failed"
 )
@@ -58,10 +58,13 @@ type RemainingCodes struct {
 // user kept their set, spending nothing. Remaining reports how many codes are
 // left and whether that is low.
 //
-// Every presentation is throttled per user: a user at the limit is refused
-// before the code is looked up, and every failed presentation — a malformed
-// code, an unknown one, a spent one or another user's — is charged, even when
-// the caller has gone away.
+// Every presentation is throttled per user. It is charged against the user's
+// limit before its code is looked up, in one step of the limiter's Charge, and
+// the charge is refunded when the code is valid, so the limit holds however
+// many presentations arrive at once. A user at the limit is refused before the
+// code is looked up, and every failed presentation — a malformed code, an
+// unknown one, a spent one or another user's — keeps its charge, even when the
+// caller has gone away.
 //
 // With no options a manager keeps codes in process memory, draws them from
 // crypto/rand, generates 10 per set, reports 2 or fewer as low, and allows 5
@@ -204,9 +207,9 @@ func (c *Codes) Generate(ctx context.Context, user identity.UserID) ([]string, e
 //
 // It is throttled like a recovery: a user at the limit is refused with
 // ErrCodeThrottled before the code is looked up, and a wrong code is refused
-// with ErrRefused and charged against the user. A store that cannot answer is
-// an error that is neither, and charges nothing, unless it gave up because ctx
-// ended: a presentation abandoned mid-lookup is charged like a wrong code.
+// with ErrRefused and stays charged against the user. A store that cannot
+// answer is an error that is neither, and its charge stands too: an outage
+// during the lookup costs the user one attempt.
 func (c *Codes) Confirm(ctx context.Context, user identity.UserID, presented string) error {
 	_, err := c.check(ctx, user, presented)
 
@@ -229,21 +232,21 @@ func (c *Codes) Remaining(ctx context.Context, user identity.UserID) (RemainingC
 // check is the throttled, write-free check of a presented code, and returns
 // the hash that spend takes.
 //
-// The order is the guarantee: the limiter is asked first, so a throttled user's
-// guess is compared against nothing; the code is parsed next, so a malformed
-// one never reaches the store; and only then is it looked up.
+// The order is the guarantee: the presentation is charged first, so a
+// throttled user's guess is compared against nothing and concurrent
+// presentations cannot all pass before any is counted; the code is parsed
+// next, so a malformed one never reaches the store; and only then is it
+// looked up. Only a valid code has its charge refunded.
 //
-// The limiter is asked, and a malformed or unmatched code charged, with the
-// caller's cancellation stripped, so a client that hangs up can neither slip
-// past the check nor take back the guess it made. A limiter that cannot answer
-// refuses. A store that cannot answer is returned as an error, charged to
-// nobody, since it says nothing about the code — unless it gave up because the
-// caller went away, which is charged: a guess abandoned mid-lookup is still a
-// guess, and a client must not be able to make free guesses by hanging up.
+// The charge and the refund are made with the caller's cancellation stripped,
+// so a client that hangs up can neither slip past the limit nor take back the
+// guess it made. A limiter that cannot charge refuses. A store that cannot
+// answer is returned as an error, and its charge stands: the presentation was
+// counted before the lookup, and only a valid code earns it back.
 func (c *Codes) check(ctx context.Context, user identity.UserID, presented string) ([32]byte, error) {
 	key := CodeThrottleKey(user)
 
-	exceeded, err := c.limiter.Exceeded(context.WithoutCancel(ctx), key)
+	receipt, exceeded, err := c.limiter.Charge(context.WithoutCancel(ctx), key)
 	if err != nil {
 		c.logFailure(ctx, msgCodeLimiterError, "limiter", err)
 
@@ -255,8 +258,6 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 
 	hash, err := parseCode(presented)
 	if err != nil {
-		c.recordFailure(ctx, key)
-
 		return [32]byte{}, ErrRefused
 	}
 
@@ -264,17 +265,13 @@ func (c *Codes) check(ctx context.Context, user identity.UserID, presented strin
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
-		if causedByCaller(ctx, err) {
-			c.recordFailure(ctx, key)
-		}
-
 		return [32]byte{}, diag.Wrap(err, errTextCodeStore)
 	}
 	if !matched {
-		c.recordFailure(ctx, key)
-
 		return [32]byte{}, ErrRefused
 	}
+
+	c.refund(ctx, receipt)
 
 	return hash, nil
 }
@@ -296,13 +293,14 @@ func (c *Codes) spend(ctx context.Context, user identity.UserID, hash [32]byte) 
 	return nil
 }
 
-// recordFailure charges one failed presentation to key. The limiter is given a
-// context with its cancellation stripped, as that port says to expect. A
-// limiter that cannot record is logged and otherwise ignored: it is an outage,
-// not a judgement about the presentation, whose refusal stands as it was.
-func (c *Codes) recordFailure(ctx context.Context, key string) {
-	if err := c.limiter.RecordFailure(context.WithoutCancel(ctx), key); err != nil {
-		c.logFailure(ctx, msgCodeRecordError, "limiter", err)
+// refund returns the charge of a presentation whose code was valid. The
+// limiter is given a context with its cancellation stripped, as that port says
+// to expect. A limiter that cannot refund is logged and otherwise ignored: the
+// code stays valid, and the charge stays counted until its window passes, so
+// the user loses one attempt.
+func (c *Codes) refund(ctx context.Context, r ratelimit.Receipt) {
+	if err := c.limiter.Refund(context.WithoutCancel(ctx), r); err != nil {
+		c.logFailure(ctx, msgCodeRefundError, "limiter", err)
 	}
 }
 
@@ -323,11 +321,14 @@ func (c *Codes) logFailure(ctx context.Context, msg, reason string, err error) {
 }
 
 // causedByCaller reports whether err is the caller's own context ending, rather
-// than a dependency failing on its own.
+// than a dependency failing on its own: ctx has ended, and err is or wraps
+// ctx's error or its cause. A cancellation or deadline a dependency met on a
+// context of its own does not count, since the caller was still waiting.
 func causedByCaller(ctx context.Context, err error) bool {
 	ctxErr := ctx.Err()
 
-	return ctxErr != nil && errors.Is(err, ctxErr)
+	return ctxErr != nil &&
+		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // CodeThrottleKey is the limiter key saved-code presentations for user are

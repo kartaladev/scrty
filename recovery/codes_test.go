@@ -175,6 +175,7 @@ func TestCodes(t *testing.T) {
 	}
 
 	key := recovery.CodeThrottleKey("u-1")
+	receipt := ratelimit.NewReceipt(key, time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC))
 	storeFault := errors.New("store fault: row u-1 holds 7ZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZ")
 
 	cases := []testCase{
@@ -436,14 +437,14 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "the limiter is asked before the store, and a wrong code is charged under the user's key",
+			name: "the presentation is charged under the user's key before the store is asked, and a wrong code keeps its charge",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
+				// No Refund is expected: gomock fails the case if one is made.
 				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil),
+					limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil),
 					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).Return(false, nil),
-					limiter.EXPECT().RecordFailure(gomock.Any(), key).Return(nil),
 				)
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(store)}
@@ -453,19 +454,29 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "a good code is not charged",
-			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
+			name: "a good code has its charge refunded, by the charge's receipt",
+			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
 				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil),
+					limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil),
 					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).Return(true, nil),
+					limiter.EXPECT().Refund(gomock.Any(), receipt).
+						DoAndReturn(func(ctx context.Context, _ ratelimit.Receipt) error {
+							assert.NoError(t, ctx.Err())
+							return nil
+						}),
 				)
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
-				hash, err := c.Check(t.Context(), "u-1", wrongCode)
+				// The client hangs up once the code has matched: the refund is
+				// still made.
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+
+				hash, err := c.Check(ctx, "u-1", wrongCode)
 				require.NoError(t, err)
 				assert.Equal(t, hashOf(t, wrongCode), hash[:])
 			},
@@ -474,7 +485,7 @@ func TestCodes(t *testing.T) {
 			name: "a throttled user is refused without the code being looked up or charged",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(true, nil)
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(ratelimit.Receipt{}, true, nil)
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
@@ -483,13 +494,10 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "a malformed code is charged and the store is not asked",
+			name: "a malformed code keeps its charge and the store is not asked",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil),
-					limiter.EXPECT().RecordFailure(gomock.Any(), key).Return(nil),
-				)
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil)
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
@@ -498,17 +506,12 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "an already cancelled context still records the failure",
-			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
+			name: "an already cancelled context is still charged",
+			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				// A limiter that honours its context cannot answer on an ended
+				// A limiter that honours its context cannot charge on an ended
 				// one, as the port says to expect.
-				limiter.EXPECT().Exceeded(gomock.Any(), key).DoAndReturn(honouringExceeded)
-				limiter.EXPECT().RecordFailure(gomock.Any(), key).
-					DoAndReturn(func(ctx context.Context, _ string) error {
-						assert.NoError(t, ctx.Err())
-						return nil
-					})
+				limiter.EXPECT().Charge(gomock.Any(), key).DoAndReturn(honouringCharge)
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
@@ -524,19 +527,15 @@ func TestCodes(t *testing.T) {
 			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
+				// No Refund is expected: gomock fails the case if one is made.
 				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).DoAndReturn(honouringExceeded),
+					limiter.EXPECT().Charge(gomock.Any(), key).DoAndReturn(honouringCharge),
 					// A store that honours its context abandons the lookup with the
 					// context's error, as a database driver does.
 					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Any()).
 						DoAndReturn(func(ctx context.Context, _ identity.UserID, _ []byte) (bool, error) {
 							ctx.Value(hangUpKey{}).(context.CancelFunc)()
 							return false, ctx.Err()
-						}),
-					limiter.EXPECT().RecordFailure(gomock.Any(), key).
-						DoAndReturn(func(ctx context.Context, _ string) error {
-							assert.NoError(t, ctx.Err())
-							return nil
 						}),
 				)
 
@@ -596,7 +595,9 @@ func TestCodes(t *testing.T) {
 			name: "a limiter that cannot decide refuses without a lookup",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, errors.New("limiter unreachable"))
+				// The limiter reports the key below its limit beside the error:
+				// the error alone must refuse.
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, errors.New("limiter unreachable"))
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
@@ -607,25 +608,26 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "a limiter that cannot record leaves the refusal as it was",
+			name: "a limiter that cannot refund leaves a valid code accepted",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil)
-				limiter.EXPECT().RecordFailure(gomock.Any(), key).Return(errors.New("limiter unreachable"))
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil)
+				limiter.EXPECT().Refund(gomock.Any(), receipt).Return(errors.New("limiter unreachable"))
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
-				err := c.Confirm(t.Context(), "u-1", wrongCode)
-				require.ErrorIs(t, err, recovery.ErrRefused)
-				assert.NotContains(t, err.Error(), "limiter unreachable")
+				codes := mustGenerate(t, c, "u-1")
+
+				assert.NoError(t, c.Confirm(t.Context(), "u-1", codes[0]))
 			},
 		},
 		{
-			name: "a store that cannot answer is an error, not a refusal, and nobody is charged",
+			name: "a store that cannot answer is an error, not a refusal, and its charge stands",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil)
+				// No Refund is expected: gomock fails the case if one is made.
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil)
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, storeFault)
 
@@ -746,14 +748,28 @@ func TestCodes(t *testing.T) {
 // client hanging up mid-lookup.
 type hangUpKey struct{}
 
-// honouringExceeded is what a limiter that honours its context answers: an
-// error on an ended context, true beside it, and otherwise not exceeded.
-func honouringExceeded(ctx context.Context, key string) (bool, error) {
+// errClientLeft is the cause a request's context is cancelled with when its
+// client leaves.
+var errClientLeft = errors.New("client left")
+
+// honouringCharge is what a limiter that honours its context answers: an
+// error on an ended context, exceeded beside it, and otherwise an accepted
+// charge.
+func honouringCharge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return true, fmt.Errorf("check %q: %w", key, err)
+		return ratelimit.Receipt{}, true, fmt.Errorf("charge %q: %w", key, err)
 	}
 
-	return false, nil
+	return ratelimit.NewReceipt(key, time.Now()), false, nil
+}
+
+// refusingCharger is a limiter refusing every charge, expected to be charged
+// under key at least once.
+func refusingCharger(ctrl *gomock.Controller, key string) *MockLimiter {
+	l := NewMockLimiter(ctrl)
+	l.EXPECT().Charge(gomock.Any(), key).Return(ratelimit.Receipt{}, true, nil).MinTimes(1)
+
+	return l
 }
 
 // hangingUpStore is a memory store whose lookup simulates the client hanging up
@@ -796,9 +812,12 @@ func TestCodes_NoCodesInLogs(t *testing.T) {
 	)
 
 	limiter := NewMockLimiter(ctrl)
-	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).Times(3)
-	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, errors.New("limiter down"))
-	limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(errors.New("record failed")).AnyTimes()
+	limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, key string) (ratelimit.Receipt, bool, error) {
+			return ratelimit.NewReceipt(key, time.Now()), false, nil
+		}).Times(3)
+	limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).Return(ratelimit.Receipt{}, true, errors.New("limiter down"))
+	limiter.EXPECT().Refund(gomock.Any(), gomock.Any()).Return(errors.New("refund failed")).AnyTimes()
 
 	c := newCodes(t,
 		recovery.WithCodesLogger(logger),
@@ -927,6 +946,26 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 			assert: atLevel(slog.LevelDebug),
 		},
 		{
+			name: "a lookup abandoned with the cause the client hung up with is written at debug",
+			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
+				store := NewMockCodeStore(ctrl)
+				store.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ identity.UserID, _ []byte) (bool, error) {
+						ctx.Value(hangUpKey{}).(context.CancelCauseFunc)(errClientLeft)
+						return false, context.Cause(ctx)
+					})
+
+				return []recovery.CodesOption{recovery.WithCodesLimiter(generousLimiter(t)), recovery.WithCodesStore(store)}
+			},
+			ctx: func(ctx context.Context) context.Context {
+				ctx, cancel := context.WithCancelCause(ctx)
+
+				return context.WithValue(ctx, hangUpKey{}, cancel)
+			},
+			msg:    msgStore,
+			assert: atLevel(slog.LevelDebug),
+		},
+		{
 			name: "a store fault on a live context is written at error",
 			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
 				store := NewMockCodeStore(ctrl)
@@ -941,8 +980,8 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 			name: "a limiter failing with the caller's own cancellation is written at debug",
 			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).
-					Return(true, fmt.Errorf("limiter call: %w", context.Canceled))
+				limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).
+					Return(ratelimit.Receipt{}, true, fmt.Errorf("limiter call: %w", context.Canceled))
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter)}
 			},
@@ -954,7 +993,8 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 			name: "a limiter outage on an ended context is still written at error",
 			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, errors.New("limiter down"))
+				limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).
+					Return(ratelimit.Receipt{}, true, errors.New("limiter down"))
 
 				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter)}
 			},
@@ -1524,7 +1564,7 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 				ctrl := gomock.NewController(t)
 				f := NewMockLimiterFactory(ctrl)
 				f.EXPECT().NewLimiter("recovery-codes", 5, 15*time.Minute).
-					Return(refusingLimiter(ctrl, key), nil).Times(1)
+					Return(refusingCharger(ctrl, key), nil).Times(1)
 
 				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(f)}
 			},
@@ -1545,7 +1585,7 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 				f := NewMockLimiterFactory(ctrl)
 
 				return []recovery.CodesOption{
-					recovery.WithCodesLimiter(refusingLimiter(ctrl, key)),
+					recovery.WithCodesLimiter(refusingCharger(ctrl, key)),
 					recovery.WithCodesLimiterFactory(f),
 				}
 			},

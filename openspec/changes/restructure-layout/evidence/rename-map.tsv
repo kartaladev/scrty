@@ -399,3 +399,15 @@ added	-	github.com/kartaladev/scrty/store/sqlstore.Limiter.Charge
 added	-	github.com/kartaladev/scrty/store/sqlstore.Limiter.Refund
 added	-	github.com/kartaladev/scrty/store/pgxstore.Limiter.Charge
 added	-	github.com/kartaladev/scrty/store/pgxstore.Limiter.Refund
+# D20 L3 (task 16.4): charge-first recovery codes; listed for the 16.5 assertion review.
+test	github.com/kartaladev/scrty/recovery#TestRecoverer_Verify/a_user_lookup_failure_is_an_error_behind_fixed_text,_not_a_refusal	github.com/kartaladev/scrty/recovery#TestRecoverer_Verify/a_user_lookup_failure_is_an_outage_with_none_of_the_driver's_text,_not_a_refusal
+test	github.com/kartaladev/scrty/recovery#TestCodes/a_good_code_is_not_charged	github.com/kartaladev/scrty/recovery#TestCodes/a_good_code_has_its_charge_refunded,_by_the_charge's_receipt
+test	github.com/kartaladev/scrty/recovery#TestCodes/the_limiter_is_asked_before_the_store,_and_a_wrong_code_is_charged_under_the_user's_key	github.com/kartaladev/scrty/recovery#TestCodes/the_presentation_is_charged_under_the_user's_key_before_the_store_is_asked,_and_a_wrong_code_keeps_its_charge
+test	github.com/kartaladev/scrty/recovery#TestCodes/a_limiter_that_cannot_record_leaves_the_refusal_as_it_was	github.com/kartaladev/scrty/recovery#TestCodes/a_limiter_that_cannot_refund_leaves_a_valid_code_accepted
+test	github.com/kartaladev/scrty/recovery#TestCodes/an_already_cancelled_context_still_records_the_failure	github.com/kartaladev/scrty/recovery#TestCodes/an_already_cancelled_context_is_still_charged
+test	github.com/kartaladev/scrty/recovery#TestCodes/a_malformed_code_is_charged_and_the_store_is_not_asked	github.com/kartaladev/scrty/recovery#TestCodes/a_malformed_code_keeps_its_charge_and_the_store_is_not_asked
+test	github.com/kartaladev/scrty/recovery#TestCodes/a_store_that_cannot_answer_is_an_error,_not_a_refusal,_and_nobody_is_charged	github.com/kartaladev/scrty/recovery#TestCodes/a_store_that_cannot_answer_is_an_error,_not_a_refusal,_and_its_charge_stands
+ident	github.com/kartaladev/scrty/recovery.msgCodeRecordError	github.com/kartaladev/scrty/recovery.msgCodeRefundError
+ident	github.com/kartaladev/scrty/recovery.Codes.recordFailure	github.com/kartaladev/scrty/recovery.Codes.refund
+added	-	github.com/kartaladev/scrty/ratelimit.Charger.Charge
+added	-	github.com/kartaladev/scrty/ratelimit.Charger.Refund

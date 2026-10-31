@@ -69,14 +69,17 @@ func WithCodesLowThreshold(n int) CodesOption { return func(c *Codes) { c.lowThr
 // default is a ratelimit.MemoryLimiter allowing 5 failures per 15 minutes, per
 // process.
 //
-// Failures are counted under CodeThrottleKey(user), and every check and every
-// failure goes to this limiter, so a consumer can share one limiter across
-// replicas, or across flows, and still find these counts. A limiter that
-// cannot answer refuses the presentation.
+// Failures are counted under CodeThrottleKey(user), and every charge and every
+// refund goes to this limiter, so a consumer can share one limiter across
+// replicas, or across flows, and still find these counts. Each presentation is
+// charged with the limiter's Charge before its code is looked up, and refunded
+// when the code is valid, so the limit holds under concurrent presentations
+// only as far as the limiter's Charge is one indivisible step. A limiter that
+// cannot charge refuses the presentation.
 //
-// Both the check and the recording are given the caller's context with its
-// cancellation stripped, so a client that hangs up can neither skip the check
-// nor avoid the charge. A limiter that reaches a remote store must therefore
+// Both the charge and the refund are given the caller's context with its
+// cancellation stripped, so a client that hangs up can neither skip the charge
+// nor take it back. A limiter that reaches a remote store must therefore
 // bound its own I/O with its own timeout, rather than rely on the caller's
 // deadline.
 //

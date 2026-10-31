@@ -25,7 +25,16 @@ import (
 // The key is composed by the guard and is opaque to the limiter: it identifies a
 // flow and a canonical source, and carries nothing the limiter is expected to
 // parse.
+//
+// A Limiter also charges and refunds (Charger), for a flow whose limit must
+// hold under concurrent attempts. That is the line the guarantee needs: Charge
+// is one indivisible step, deciding and recording together, and an
+// implementation that reads the count and records the failure in two steps
+// does not meet it. The conformance suite in the test module's ratelimittest
+// package is how an implementation proves it does.
 type Limiter interface {
+	Charger
+
 	// Exceeded reports whether key has reached its limit, without recording
 	// anything. A caller may ask as often as it likes; only recorded failures
 	// spend a source's allowance.

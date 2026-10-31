@@ -60,7 +60,7 @@ import (
 // limiters with NewLimiter only builds a factory over the same handle for the
 // prune.
 type Limiter struct {
-	limiter unavailable.Limiter
+	limiter ratelimit.Limiter
 	check   limiterCheck
 
 	// limit and window are the policy NewLimiter was given, kept so Policy
@@ -71,7 +71,6 @@ type Limiter struct {
 
 var (
 	_ ratelimit.Limiter        = (*Limiter)(nil)
-	_ ratelimit.Charger        = (*Limiter)(nil)
 	_ ratelimit.PolicyReporter = (*Limiter)(nil)
 )
 

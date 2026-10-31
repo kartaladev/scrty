@@ -29,7 +29,7 @@ func TestUnavailable_Construction(t *testing.T) {
 	t.Parallel()
 
 	type input struct {
-		backend   func(ctrl *gomock.Controller) unavailable.Limiter
+		backend   func(ctrl *gomock.Controller) ratelimit.Limiter
 		namespace string
 		limit     int
 		window    time.Duration
@@ -44,7 +44,7 @@ func TestUnavailable_Construction(t *testing.T) {
 
 	valid := func() input {
 		return input{
-			backend:   func(ctrl *gomock.Controller) unavailable.Limiter { return newBackendDouble(ctrl) },
+			backend:   func(ctrl *gomock.Controller) ratelimit.Limiter { return NewMockLimiter(ctrl) },
 			namespace: testNamespace,
 			limit:     testLimit,
 			window:    testWindow,
@@ -79,7 +79,7 @@ func TestUnavailable_Construction(t *testing.T) {
 				} {
 					cfg := unavailable.DefaultConfig()
 					cfg.Mode = mode
-					l, err := unavailable.Wrap(newBackendDouble(gomock.NewController(t)),
+					l, err := unavailable.Wrap(NewMockLimiter(gomock.NewController(t)),
 						testNamespace, testLimit, testWindow, cfg)
 					require.NoError(t, err, "mode %d", mode)
 					assert.NotNil(t, l, "mode %d", mode)
@@ -125,14 +125,14 @@ func TestUnavailable_Construction(t *testing.T) {
 		{
 			name: "a nil backend is refused",
 			input: with(func(in *input) {
-				in.backend = func(*gomock.Controller) unavailable.Limiter { return nil }
+				in.backend = func(*gomock.Controller) ratelimit.Limiter { return nil }
 			}),
 			assert: refused,
 		},
 		{
 			name: "a typed nil backend is refused",
 			input: with(func(in *input) {
-				in.backend = func(*gomock.Controller) unavailable.Limiter { return (*backendDouble)(nil) }
+				in.backend = func(*gomock.Controller) ratelimit.Limiter { return (*MockLimiter)(nil) }
 			}),
 			assert: refused,
 		},

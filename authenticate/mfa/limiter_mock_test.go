@@ -42,6 +42,46 @@ func (m *MockLimiter) EXPECT() *MockLimiterMockRecorder {
 	return m.recorder
 }
 
+// Charge mocks base method.
+func (m *MockLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Charge", ctx, key)
+	ret0, _ := ret[0].(ratelimit.Receipt)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// Charge indicates an expected call of Charge.
+func (mr *MockLimiterMockRecorder) Charge(ctx, key any) *MockLimiterChargeCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Charge", reflect.TypeOf((*MockLimiter)(nil).Charge), ctx, key)
+	return &MockLimiterChargeCall{Call: call}
+}
+
+// MockLimiterChargeCall wrap *gomock.Call
+type MockLimiterChargeCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLimiterChargeCall) Return(r ratelimit.Receipt, exceeded bool, err error) *MockLimiterChargeCall {
+	c.Call = c.Call.Return(r, exceeded, err)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLimiterChargeCall) Do(f func(context.Context, string) (ratelimit.Receipt, bool, error)) *MockLimiterChargeCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLimiterChargeCall) DoAndReturn(f func(context.Context, string) (ratelimit.Receipt, bool, error)) *MockLimiterChargeCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Exceeded mocks base method.
 func (m *MockLimiter) Exceeded(ctx context.Context, key string) (bool, error) {
 	m.ctrl.T.Helper()
@@ -115,6 +155,44 @@ func (c *MockLimiterRecordFailureCall) Do(f func(context.Context, string) error)
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockLimiterRecordFailureCall) DoAndReturn(f func(context.Context, string) error) *MockLimiterRecordFailureCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// Refund mocks base method.
+func (m *MockLimiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Refund", ctx, r)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Refund indicates an expected call of Refund.
+func (mr *MockLimiterMockRecorder) Refund(ctx, r any) *MockLimiterRefundCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Refund", reflect.TypeOf((*MockLimiter)(nil).Refund), ctx, r)
+	return &MockLimiterRefundCall{Call: call}
+}
+
+// MockLimiterRefundCall wrap *gomock.Call
+type MockLimiterRefundCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockLimiterRefundCall) Return(arg0 error) *MockLimiterRefundCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockLimiterRefundCall) Do(f func(context.Context, ratelimit.Receipt) error) *MockLimiterRefundCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockLimiterRefundCall) DoAndReturn(f func(context.Context, ratelimit.Receipt) error) *MockLimiterRefundCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

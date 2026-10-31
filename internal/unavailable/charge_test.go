@@ -17,8 +17,8 @@ import (
 // chargesDown makes every backend charge and refund fail, as many times as
 // they are called.
 func (h *harness) chargesDown() {
-	h.charger.EXPECT().Charge(gomock.Any(), gomock.Any()).Return(ratelimit.Receipt{}, true, errDown).AnyTimes()
-	h.charger.EXPECT().Refund(gomock.Any(), gomock.Any()).Return(errDown).AnyTimes()
+	h.backend.EXPECT().Charge(gomock.Any(), gomock.Any()).Return(ratelimit.Receipt{}, true, errDown).AnyTimes()
+	h.backend.EXPECT().Refund(gomock.Any(), gomock.Any()).Return(errDown).AnyTimes()
 }
 
 // chargeN charges key n times through the decorator, and fails the test
@@ -71,7 +71,7 @@ func TestUnavailable_Charge(t *testing.T) {
 		{
 			name: "an accepted charge passes through with the backend's receipt",
 			arrange: func(_ *testing.T, h *harness) {
-				h.charger.EXPECT().Charge(gomock.Any(), testKey).Return(backendReceipt, false, nil)
+				h.backend.EXPECT().Charge(gomock.Any(), testKey).Return(backendReceipt, false, nil)
 			},
 			assert: func(t *testing.T, _ *harness, r ratelimit.Receipt, exceeded bool, err error) {
 				require.NoError(t, err)
@@ -82,7 +82,7 @@ func TestUnavailable_Charge(t *testing.T) {
 		{
 			name: "a refused charge passes through",
 			arrange: func(_ *testing.T, h *harness) {
-				h.charger.EXPECT().Charge(gomock.Any(), testKey).Return(ratelimit.Receipt{}, true, nil)
+				h.backend.EXPECT().Charge(gomock.Any(), testKey).Return(ratelimit.Receipt{}, true, nil)
 			},
 			assert: func(t *testing.T, _ *harness, r ratelimit.Receipt, exceeded bool, err error) {
 				require.NoError(t, err)
@@ -93,7 +93,7 @@ func TestUnavailable_Charge(t *testing.T) {
 		{
 			name: "a charge is bounded by the operation timeout",
 			arrange: func(t *testing.T, h *harness) {
-				h.charger.EXPECT().Charge(gomock.Any(), testKey).DoAndReturn(
+				h.backend.EXPECT().Charge(gomock.Any(), testKey).DoAndReturn(
 					func(ctx context.Context, _ string) (ratelimit.Receipt, bool, error) {
 						require.NoError(t, ctx.Err(), "the backend was handed an ended context")
 						deadline, ok := ctx.Deadline()
@@ -118,7 +118,7 @@ func TestUnavailable_Charge(t *testing.T) {
 					return cctx
 				},
 				arrange: func(_ *testing.T, h *harness) {
-					h.charger.EXPECT().Charge(gomock.Any(), testKey).DoAndReturn(
+					h.backend.EXPECT().Charge(gomock.Any(), testKey).DoAndReturn(
 						func(ctx context.Context, _ string) (ratelimit.Receipt, bool, error) {
 							cancel()
 							<-ctx.Done()
@@ -131,7 +131,7 @@ func TestUnavailable_Charge(t *testing.T) {
 					assert.True(t, exceeded)
 					assert.Zero(t, r)
 
-					h.charger.EXPECT().Charge(gomock.Any(), otherKey).Return(backendReceipt, false, nil)
+					h.backend.EXPECT().Charge(gomock.Any(), otherKey).Return(backendReceipt, false, nil)
 					_, exceeded, err = h.limiter.Charge(t.Context(), otherKey)
 					require.NoError(t, err, "the next charge did not reach the backend")
 					assert.False(t, exceeded)
@@ -144,7 +144,7 @@ func TestUnavailable_Charge(t *testing.T) {
 		{
 			name: "refuse: a backend error refuses as unavailable, with fixed text",
 			arrange: func(_ *testing.T, h *harness) {
-				h.charger.EXPECT().Charge(gomock.Any(), testKey).Return(ratelimit.Receipt{}, true, errDown)
+				h.backend.EXPECT().Charge(gomock.Any(), testKey).Return(ratelimit.Receipt{}, true, errDown)
 			},
 			assert: func(t *testing.T, _ *harness, r ratelimit.Receipt, exceeded bool, err error) {
 				refusedUnavailable(t, exceeded, err)
@@ -219,7 +219,7 @@ func TestUnavailable_Charge(t *testing.T) {
 			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(t *testing.T, h *harness) {
 				fillLocal(t, h)
-				h.charger.EXPECT().Charge(gomock.Any(), testKey).Return(backendReceipt, false, nil)
+				h.backend.EXPECT().Charge(gomock.Any(), testKey).Return(backendReceipt, false, nil)
 			},
 			assert: func(t *testing.T, _ *harness, r ratelimit.Receipt, exceeded bool, err error) {
 				require.NoError(t, err)
@@ -303,7 +303,7 @@ func TestUnavailable_Refund(t *testing.T) {
 		{
 			name: "a refund passes through",
 			arrange: func(_ *testing.T, h *harness) ratelimit.Receipt {
-				h.charger.EXPECT().Refund(gomock.Any(), backendReceipt).Return(nil)
+				h.backend.EXPECT().Refund(gomock.Any(), backendReceipt).Return(nil)
 				return backendReceipt
 			},
 			assert: func(t *testing.T, _ *harness, err error) {
@@ -314,7 +314,7 @@ func TestUnavailable_Refund(t *testing.T) {
 			name: "a refund on an ended caller context still reaches the backend, bounded by the timeout",
 			ctx:  cancelled,
 			arrange: func(t *testing.T, h *harness) ratelimit.Receipt {
-				h.charger.EXPECT().Refund(gomock.Any(), backendReceipt).DoAndReturn(
+				h.backend.EXPECT().Refund(gomock.Any(), backendReceipt).DoAndReturn(
 					func(ctx context.Context, _ ratelimit.Receipt) error {
 						require.NoError(t, ctx.Err(), "the backend was handed an ended context")
 						deadline, ok := ctx.Deadline()
@@ -340,7 +340,7 @@ func TestUnavailable_Refund(t *testing.T) {
 		{
 			name: "refuse: a backend error is unavailable, with fixed text",
 			arrange: func(_ *testing.T, h *harness) ratelimit.Receipt {
-				h.charger.EXPECT().Refund(gomock.Any(), backendReceipt).Return(errDown)
+				h.backend.EXPECT().Refund(gomock.Any(), backendReceipt).Return(errDown)
 				return backendReceipt
 			},
 			assert: func(t *testing.T, _ *harness, err error) {
@@ -386,7 +386,7 @@ func TestUnavailable_Refund(t *testing.T) {
 				h.openBreaker(t)
 				receipts := h.chargeN(t, testKey, testLimit)
 				h.clock.Advance(defaultInterval)
-				h.charger.EXPECT().Refund(gomock.Any(), receipts[0]).Return(errDown)
+				h.backend.EXPECT().Refund(gomock.Any(), receipts[0]).Return(errDown)
 				return receipts[0]
 			},
 			assert: func(t *testing.T, h *harness, err error) {

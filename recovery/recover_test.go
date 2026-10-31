@@ -633,7 +633,8 @@ func TestRecoverer_Verify(t *testing.T) {
 			name: "saved-code throttling is refused like a wrong code",
 			opts: func(e *recoverEnv) []recovery.Option {
 				codeLimiter := NewMockLimiter(e.ctrl)
-				codeLimiter.EXPECT().Exceeded(gomock.Any(), recovery.CodeThrottleKey(anaID)).Return(true, nil).AnyTimes()
+				codeLimiter.EXPECT().Charge(gomock.Any(), recovery.CodeThrottleKey(anaID)).
+					Return(ratelimit.Receipt{}, true, nil).AnyTimes()
 				// The limiter is valid, so construction cannot fail.
 				e.codes, _ = recovery.NewCodes(recovery.WithCodesLimiter(codeLimiter))
 

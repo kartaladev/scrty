@@ -24,7 +24,6 @@ func chargeCases() []testCase {
 			// exactly the limit: at the limit before it, below it after.
 			name: "concurrent charges stop at the limit", limit: 5, window: time.Minute,
 			assert: func(t *testing.T, _ Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
 
 				const callers = 64
 				type outcome struct {
@@ -40,7 +39,7 @@ func chargeCases() []testCase {
 					done.Go(func() {
 						ready.Done()
 						<-start
-						r, exceeded, err := c.Charge(t.Context(), "k")
+						r, exceeded, err := l.Charge(t.Context(), "k")
 						outcomes[i] = outcome{receipt: r, exceeded: exceeded, err: err}
 					})
 				}
@@ -60,21 +59,20 @@ func chargeCases() []testCase {
 				require.Equal(t, 5, accepted,
 					"charges reported below the limit of 5, out of %d concurrent callers", callers)
 				requireExceeded(t, l, "k", true)
-				require.NoError(t, c.Refund(t.Context(), receipt))
+				require.NoError(t, l.Refund(t.Context(), receipt))
 				requireExceeded(t, l, "k", false)
 			},
 		},
 		{
 			name: "refund returns the allowance", limit: 5, window: time.Minute,
 			assert: func(t *testing.T, _ Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
-				charge(t, c, "k", 4)
-				fifth := requireCharge(t, c, "k", false)
+				charge(t, l, "k", 4)
+				fifth := requireCharge(t, l, "k", false)
 				requireExceeded(t, l, "k", true)
 
-				require.NoError(t, c.Refund(t.Context(), fifth))
+				require.NoError(t, l.Refund(t.Context(), fifth))
 				requireExceeded(t, l, "k", false)
-				requireCharge(t, c, "k", false)
+				requireCharge(t, l, "k", false)
 				requireExceeded(t, l, "k", true)
 			},
 		},
@@ -84,16 +82,15 @@ func chargeCases() []testCase {
 			// back two allowances for one receipt.
 			name: "refund removes only its own failure", limit: 5, window: time.Minute,
 			assert: func(t *testing.T, _ Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
-				first := requireCharge(t, c, "k", false)
-				second := requireCharge(t, c, "k", false)
+				first := requireCharge(t, l, "k", false)
+				second := requireCharge(t, l, "k", false)
 				require.True(t, first.Stamp().Equal(second.Stamp()),
 					"the clock did not move, yet the receipts carry different stamps: %s and %s",
 					first.Stamp(), second.Stamp())
 
-				require.NoError(t, c.Refund(t.Context(), first))
-				charge(t, c, "k", 4) // one failure is left, so four more reach the limit
-				requireCharge(t, c, "k", true)
+				require.NoError(t, l.Refund(t.Context(), first))
+				charge(t, l, "k", 4) // one failure is left, so four more reach the limit
+				requireCharge(t, l, "k", true)
 			},
 		},
 		{
@@ -103,13 +100,12 @@ func chargeCases() []testCase {
 			// still counts in its place.
 			name: "refund after the window removes nothing", limit: 2, window: time.Minute,
 			assert: func(t *testing.T, h Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
-				stale := requireCharge(t, c, "k", false)
+				stale := requireCharge(t, l, "k", false)
 				h.Advance(time.Minute)
-				charge(t, c, "k", 2)
+				charge(t, l, "k", 2)
 				requireExceeded(t, l, "k", true)
 
-				require.NoError(t, c.Refund(t.Context(), stale))
+				require.NoError(t, l.Refund(t.Context(), stale))
 				requireExceeded(t, l, "k", true)
 			},
 		},
@@ -122,14 +118,13 @@ func chargeCases() []testCase {
 			// limit, not at it.
 			name: "refund removes its own failure, not a newer one", limit: 2, window: time.Minute,
 			assert: func(t *testing.T, h Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
-				a := requireCharge(t, c, "k", false)
+				a := requireCharge(t, l, "k", false)
 				h.Advance(30 * time.Second)
-				requireCharge(t, c, "k", false)
+				requireCharge(t, l, "k", false)
 
-				require.NoError(t, c.Refund(t.Context(), a))
+				require.NoError(t, l.Refund(t.Context(), a))
 				h.Advance(31 * time.Second)
-				requireCharge(t, c, "k", false)
+				requireCharge(t, l, "k", false)
 				requireExceeded(t, l, "k", true)
 			},
 		},
@@ -140,19 +135,17 @@ func chargeCases() []testCase {
 			// the refusal at +30s left nothing behind.
 			name: "a refused charge records nothing", limit: 2, window: time.Minute,
 			assert: func(t *testing.T, h Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
-				charge(t, c, "k", 2)
+				charge(t, l, "k", 2)
 				h.Advance(30 * time.Second)
-				requireCharge(t, c, "k", true)
+				requireCharge(t, l, "k", true)
 				h.Advance(30 * time.Second)
-				charge(t, c, "k", 2)
+				charge(t, l, "k", 2)
 			},
 		},
 		{
 			name: "ended context: Charge refuses with an error", limit: 1, window: time.Minute,
 			assert: func(t *testing.T, _ Harness, l ratelimit.Limiter) {
-				c := requireCharger(t, l)
-				_, exceeded, err := c.Charge(endedContext(t), "k")
+				_, exceeded, err := l.Charge(endedContext(t), "k")
 				require.Error(t, err)
 				assert.True(t, exceeded, "a charge that could not be decided reported the key below its limit")
 				requireExceeded(t, l, "k", false)
@@ -161,29 +154,13 @@ func chargeCases() []testCase {
 	}
 }
 
-// requireCharger returns l as a ratelimit.Charger, and skips the case when l
-// does not implement it.
-//
-// The skip lasts only until ratelimit.Limiter embeds Charger: from then on
-// every limiter is one, and the assertion always holds.
-func requireCharger(t *testing.T, l ratelimit.Limiter) ratelimit.Charger {
-	t.Helper()
-
-	c, ok := l.(ratelimit.Charger)
-	if !ok {
-		t.Skipf("%T does not implement ratelimit.Charger, so the charge scenarios do not run", l)
-	}
-
-	return c
-}
-
 // charge charges key n times, and fails the test unless every charge reports
 // the key below its limit.
-func charge(t *testing.T, c ratelimit.Charger, key string, n int) {
+func charge(t *testing.T, l ratelimit.Limiter, key string, n int) {
 	t.Helper()
 
 	for i := range n {
-		_, exceeded, err := c.Charge(t.Context(), key)
+		_, exceeded, err := l.Charge(t.Context(), key)
 		require.NoError(t, err)
 		require.False(t, exceeded, "charge %d of %d for %q was refused", i+1, n, key)
 	}
@@ -191,10 +168,10 @@ func charge(t *testing.T, c ratelimit.Charger, key string, n int) {
 
 // requireCharge charges key once, asserts the answer without an error, and
 // returns the receipt.
-func requireCharge(t *testing.T, c ratelimit.Charger, key string, wantExceeded bool) ratelimit.Receipt {
+func requireCharge(t *testing.T, l ratelimit.Limiter, key string, wantExceeded bool) ratelimit.Receipt {
 	t.Helper()
 
-	r, exceeded, err := c.Charge(t.Context(), key)
+	r, exceeded, err := l.Charge(t.Context(), key)
 	require.NoError(t, err)
 	require.Equal(t, wantExceeded, exceeded, "Charge(%q) exceeded", key)
 

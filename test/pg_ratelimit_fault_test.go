@@ -511,9 +511,6 @@ const (
 // dial of the limiter's handle: only the lock timeout can then end the
 // server's wait, and without it the session would wait on the row for as long
 // as the holder keeps it.
-//
-// The charge and refund cases run only against a limiter that implements
-// ratelimit.Charger.
 func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 	t.Helper()
 
@@ -522,15 +519,6 @@ func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 		// call runs the statement under test against the held row; stamp is
 		// the stamp the row holds.
 		call func(t *testing.T, l ratelimit.Limiter, stamp time.Time) error
-	}
-
-	charger := func(t *testing.T, l ratelimit.Limiter) ratelimit.Charger {
-		t.Helper()
-		c, ok := l.(ratelimit.Charger)
-		if !ok {
-			t.Skipf("%T does not implement ratelimit.Charger", l)
-		}
-		return c
 	}
 
 	cases := []testCase{
@@ -543,7 +531,7 @@ func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 		{
 			name: "charge gives up on a held row within its timeout",
 			call: func(t *testing.T, l ratelimit.Limiter, _ time.Time) error {
-				r, exceeded, err := charger(t, l).Charge(t.Context(), "k")
+				r, exceeded, err := l.Charge(t.Context(), "k")
 				assert.True(t, exceeded, "a charge that could not be decided reported the key below its limit")
 				assert.Zero(t, r)
 				return err
@@ -552,7 +540,7 @@ func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 		{
 			name: "refund gives up on a held row within its timeout",
 			call: func(t *testing.T, l ratelimit.Limiter, stamp time.Time) error {
-				return charger(t, l).Refund(t.Context(), ratelimit.NewReceipt("k", stamp))
+				return l.Refund(t.Context(), ratelimit.NewReceipt("k", stamp))
 			},
 		},
 	}
@@ -708,7 +696,7 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 		{
 			name: "refuse while stopped: a charge is refused as the backend unavailable",
 			assert: func(t *testing.T, e pgOutage) {
-				c := requirePGCharger(t, e.build(ratelimit.UnavailableRefuse))
+				c := e.build(ratelimit.UnavailableRefuse)
 				e.conn.Stop(t)
 
 				r, exceeded, err := c.Charge(t.Context(), pgOutageSource)
@@ -720,7 +708,7 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 		{
 			name: "fall back while stopped: charges count locally, stop at the limit, and a refund returns one",
 			assert: func(t *testing.T, e pgOutage) {
-				c := requirePGCharger(t, e.build(ratelimit.UnavailableFallbackToLocal))
+				c := e.build(ratelimit.UnavailableFallbackToLocal)
 				e.conn.Stop(t)
 
 				var first ratelimit.Receipt
@@ -822,16 +810,6 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 	}
 }
 
-// requirePGCharger returns l as a ratelimit.Charger, failing the test when it
-// is not one.
-func requirePGCharger(t *testing.T, l ratelimit.Limiter) ratelimit.Charger {
-	t.Helper()
-
-	c, ok := l.(ratelimit.Charger)
-	require.True(t, ok, "%T does not implement ratelimit.Charger", l)
-	return c
-}
-
 func TestPGLimiter_Unavailable(t *testing.T) {
 	t.Parallel()
 
@@ -845,6 +823,8 @@ type pgRawLimiter struct {
 	db          *sql.DB
 	check       string
 	record      string
+	charge      string
+	refund      string
 	ns          string
 	limit       int
 	windowUS    int64
@@ -871,6 +851,33 @@ func (l *pgRawLimiter) RecordFailure(ctx context.Context, key string) error {
 	return err
 }
 
+func (l *pgRawLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	var (
+		recorded bool
+		stamp    time.Time
+	)
+	err := l.db.QueryRowContext(ctx, l.charge, l.ns, pgStoredKey(key), l.limit, l.windowUS, nil, l.lockTimeout).
+		Scan(&recorded, &stamp)
+	if err != nil || !recorded {
+		return ratelimit.Receipt{}, true, err
+	}
+	return ratelimit.NewReceipt(key, stamp), false, nil
+}
+
+func (l *pgRawLimiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.timeout)
+	defer cancel()
+
+	_, err := l.db.ExecContext(ctx, l.refund, l.ns, pgStoredKey(r.Key()), r.Stamp(), l.windowUS, nil, l.lockTimeout)
+	return err
+}
+
 // pgUnavailableBroken is a limiter with no breaker. Like the held-row variant
 // it bypasses the unavailable decorator altogether, which the test module
 // cannot import, and so also lacks the unavailable modes and the hold; the
@@ -885,6 +892,8 @@ var pgUnavailableBroken = pgFaultVariants(runPGUnavailable, pgFaultVariant{
 			db:          pgFaultDB(t, conn, o),
 			check:       pgStatement(t, pgCheckName),
 			record:      pgStatement(t, pgRecordName),
+			charge:      pgStatement(t, pgChargeName),
+			refund:      pgStatement(t, pgRefundName),
 			ns:          ns,
 			limit:       limit,
 			windowUS:    window.Microseconds(),

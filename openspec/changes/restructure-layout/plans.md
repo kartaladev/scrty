@@ -114,7 +114,8 @@
 | L2 | 16.2 | `internal/pglimiter`, `internal/unavailable`, `store/sqlstore/limiter*.go`, `store/pgxstore/limiter*.go`, `ratelimit/redisstore`, the test module's limiter suites | Opus: atomic writes in SQL and Lua | Opus (one review of L1–L3) |
 | L2b | 16.3 | `test/ratelimittest/charge.go`, `test/ratelimittest/doubles_test.go`, `test/ratelimittest/broken_test.go`, godoc in `ratelimit/charge.go`, `ratelimit/memory.go`, `ratelimit/redisstore/limiter.go`, `internal/unavailable/wrap.go` | Sonnet: the case, the flaw and the wording are given by the review | Opus, inside the 16.5 group review |
 | L3 | 16.4 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
-| main session | 12.3, 13.12, 14.4, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| L4 | 16.5 | the files of Task 52a | Sonnet: test additions whose rows are given | Opus, inside the 16.6 group review |
+| main session | 12.3, 13.12, 14.4, 15.7, 16.6, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
 The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3. K1 then runs in its own worktree off the U commit, in parallel with U5 on the branch: both compile in `httpsec` but own disjoint files. L3 runs on the branch after K1 lands. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
@@ -926,7 +927,15 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 4: Implement** `Codes`' charge-before-match and refund-on-success.
 - [ ] **Step 5: Verify.** `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run; `go test -count=1 -race ./...` in the core and every nested module; `go generate ./... && git status --porcelain` shows only this task's files.
 
-### Task 53: Group-16 gate (task 16.5, main session)
+### Task 52a: Pin the charge's fail-closed error paths (task 16.5, L4, after Task 52)
+
+**Files:** `ratelimit/redisstore/limiter_test.go`; `internal/unavailable/charge_test.go`. Tests only.
+
+- [ ] **Step 1: Write** in `redisstore` the row `"a charge whose script fails is refused and records nothing"`, through the module's existing client double or a closed client: `exceeded == true`, `err != nil`, and no member added. In `internal/unavailable`, the row `"a fallback charge whose caller left is refused"`: the breaker open in fallback mode, a cancelled context; the error matches the context's error and says the charge was abandoned, and the local count holds no failure.
+- [ ] **Step 2: Run** both. Expected: PASS. Invert each pinned branch (return `exceeded=false`, or charge the local count anyway), see the row fail, and edit it back. Record the lines.
+- [ ] **Step 3: Verify.** `go test -count=1 -race ./internal/unavailable/` and `cd ratelimit/redisstore && go test -count=1 -race ./...`. Expected: PASS.
+
+### Task 53: Group-16 gate (task 16.6, main session)
 
 - [ ] As Task 44, with `Receipt`, `NewReceipt`, its accessors, `Charger` and each limiter's two methods as `added` rows. An Opus review of L1–L3 and L2b against D20 and the `rate-limiting` and `account-recovery` deltas covers refund precision, the decorator's degraded paths, and the conditional statement under PostgreSQL's default isolation. Commit `fix(recovery)!: saved codes hold their limit under concurrency`.
 

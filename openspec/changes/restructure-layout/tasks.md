@@ -282,12 +282,17 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
   - the odd line wraps at `ratelimit/memory.go:548` and `ratelimit/redisstore/limiter.go:349` are reflowed.
 
   Verify: the failing lines are recorded; `cd test && go test -count=1 -race ./ratelimittest/` passes, including the catch-broken test; the new case passes against the memory limiter, `sqlstore`, `pgxstore` and every Redis and Valkey image in the test module's limiter suites.
-- [ ] 16.4 Widen `ratelimit.Limiter` to embed `Charger`, and make `recovery/codes.go`'s `causedByCaller` match `context.Cause(ctx)` too, as the password path does, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
+- [x] 16.4 Widen `ratelimit.Limiter` to embed `Charger`, and make `recovery/codes.go`'s `causedByCaller` match `context.Cause(ctx)` too, as the password path does, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
   - the failing lines are recorded;
   - `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run;
   - `go test -count=1 -race ./...` passes in the core module and every nested module;
   - `go generate ./...` leaves no drift.
-- [ ] 16.5 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows. Then an Opus review of 16.1–16.4 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
+- [ ] 16.5 Pin the charge's fail-closed error paths (D20; `golang-tdd`, error paths that change an observable outcome). Tests only:
+  - `redisstore`: a charge whose script fails returns `exceeded=true` with the error, and records nothing;
+  - `internal/unavailable`: in fallback mode, a charge whose caller's context has ended while the breaker is open is refused with the "charge abandoned" error, and the local count records nothing.
+
+  Each passes on the current code; invert the branch it pins, see it fail, and edit it back. Verify: the failing lines are recorded, and `go test -count=1 -race ./internal/unavailable/` and the `ratelimit/redisstore` module pass.
+- [ ] 16.6 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows, and the charge-first `TestCodes` cases listed for the assertion review. Then an Opus review of 16.1–16.5 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
   - refund precision under concurrent charges;
   - the decorator's degraded path;
   - the conditional `UPDATE` under PostgreSQL's default isolation.

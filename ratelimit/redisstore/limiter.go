@@ -32,7 +32,7 @@ const maxRawKeyLen = 512
 // so a flow that charges first holds its limit under any concurrency
 // (Charge). It is safe for concurrent use.
 type Limiter struct {
-	limiter unavailable.Limiter
+	limiter ratelimit.Limiter
 	check   serverCheck
 
 	// limit and window are the policy NewLimiter was given, kept so Policy can
@@ -43,7 +43,6 @@ type Limiter struct {
 
 var (
 	_ ratelimit.Limiter        = (*Limiter)(nil)
-	_ ratelimit.Charger        = (*Limiter)(nil)
 	_ ratelimit.PolicyReporter = (*Limiter)(nil)
 )
 

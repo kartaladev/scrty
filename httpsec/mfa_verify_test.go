@@ -2126,6 +2126,14 @@ func (l *barrierLimiter) Exceeded(context.Context, string) (bool, error) {
 
 func (l *barrierLimiter) RecordFailure(context.Context, string) error { return nil }
 
+// Charge and Refund complete the port. The throttle under test checks and
+// records, and never charges.
+func (l *barrierLimiter) Charge(context.Context, string) (ratelimit.Receipt, bool, error) {
+	return ratelimit.Receipt{}, false, nil
+}
+
+func (l *barrierLimiter) Refund(context.Context, ratelimit.Receipt) error { return nil }
+
 // TestMFAVerify_RefusedChargeIsNotRecorded pins that a method refusing a
 // verification because its attempt charge was refused compared nothing, so the
 // endpoint returns the refusal unchanged and records no failed verification. A

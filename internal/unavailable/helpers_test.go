@@ -37,27 +37,14 @@ var epoch = time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 // exhausted pool.
 var errDown = errors.New("dial tcp 10.0.0.1:6379: connection refused")
 
-// backendDouble is a mock backend: its check and record from one mock, its
-// charge and refund from the other.
-type backendDouble struct {
-	*MockLimiter
-	*MockCharger
-}
-
-// newBackendDouble returns a backendDouble whose two mocks share ctrl.
-func newBackendDouble(ctrl *gomock.Controller) *backendDouble {
-	return &backendDouble{MockLimiter: NewMockLimiter(ctrl), MockCharger: NewMockCharger(ctrl)}
-}
-
 // harness is one wrapped limiter over a mock backend, with the fake clock its
 // breaker and hold set read, and the records it logged. backend scripts the
-// backend's checks and records, and charger its charges and refunds.
+// backend's checks, records, charges and refunds.
 type harness struct {
 	backend *MockLimiter
-	charger *MockCharger
 	clock   *clockwork.FakeClock
 	logs    *recorder
-	limiter unavailable.Limiter
+	limiter ratelimit.Limiter
 }
 
 func newHarness(t *testing.T, mode ratelimit.UnavailableMode) *harness {
@@ -71,10 +58,9 @@ func newHarness(t *testing.T, mode ratelimit.UnavailableMode) *harness {
 func newHarnessWith(t *testing.T, mode ratelimit.UnavailableMode, edit func(cfg *unavailable.Config)) *harness {
 	t.Helper()
 
-	double := newBackendDouble(gomock.NewController(t))
+	backend := NewMockLimiter(gomock.NewController(t))
 	h := &harness{
-		backend: double.MockLimiter,
-		charger: double.MockCharger,
+		backend: backend,
 		clock:   clockwork.NewFakeClockAt(epoch),
 		logs:    &recorder{},
 	}
@@ -87,7 +73,7 @@ func newHarnessWith(t *testing.T, mode ratelimit.UnavailableMode, edit func(cfg 
 		edit(&cfg)
 	}
 
-	l, err := unavailable.Wrap(double, testNamespace, testLimit, testWindow, cfg)
+	l, err := unavailable.Wrap(backend, testNamespace, testLimit, testWindow, cfg)
 	require.NoError(t, err)
 	h.limiter = l
 
