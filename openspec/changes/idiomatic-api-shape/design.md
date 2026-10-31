@@ -85,6 +85,7 @@ These keep returning their interface, because each one is a wrapper over a port 
 - each still flushes everything it reaches, in its documented order, even when one flush fails;
 - each returns `errors.Join` of the errors it got, or nil;
 - `Chain` returns the errors of the components it reaches, the policy engine's joined error included.
+- **`authenticate.FirstOf` is an aggregator too.** It implements `logsample.Flusher`: it flushes each delegate that implements it, in delegate order, keeps going after a failure, and returns `errors.Join` of their errors, or nil. Without it, the form-login and basic-auth probes miss every flusher wrapped in a `FirstOf`, the authenticator `FormLoginDeps` suggests. The summary of suppressed refusals is then never written at flush, and a consumer delegate's error is lost. A nested `FirstOf` is reached through the same method. This is `UNREPRODUCED` until task 2.5's red test.
 
 The library's own flushers never fail, so with the defaults nothing changes. A consumer's authenticator, broker or policy whose flush fails is now reported instead of discarded.
 
@@ -112,11 +113,11 @@ When a consumer configures no store, the library builds these defaults in the si
 ### D4. One lifecycle: detached `Start(ctx)` and terminal `Shutdown(ctx)`
 
 This applies to `signingkey.Keys`, `session.MemoryStore`, `sweep.Sweeper` and `notify.QueuedSender`.
-- **`Start(ctx context.Context) error`** derives the work's context as `context.WithCancel(context.WithoutCancel(ctx))`, keeping the cancel function. The work therefore carries the start context's values (trace and log fields), and only Shutdown cancels it. `QueuedSender` keeps starting its workers in `NewQueuedSender`, and its workers' context is derived the same way from `context.Background()`.
+- **`Start(ctx context.Context) error`** derives the work's context as `context.WithCancel(context.WithoutCancel(ctx))`, keeping the cancel function. The work therefore carries the start context's values (trace and log fields), and only Shutdown cancels it. `QueuedSender` keeps starting its workers in `NewQueuedSender`, and has no work context to cancel: each delivery already runs under its caller's context with the cancellation removed, bounded by the send timeout. Its Shutdown closes intake and waits for the drain instead of cancelling anything, because `email-notification` requires the messages already queued to be delivered, and cancelling the workers would abort that drain.
 - **A second `Start`** returns `ErrAlreadyStarted`. A `Start` after Shutdown, and a send to a shut-down `QueuedSender`, return `ErrAlreadyShutdown`. `signingkey` and `session` declare both sentinels, following `sweep`'s existing names. `notify` declares only `ErrAlreadyShutdown`, because `QueuedSender` has no `Start`.
 - **`Shutdown(ctx context.Context) error`:**
   - marks the component shut down (terminal);
-  - cancels the work's context;
+  - cancels the work's context (for `QueuedSender`, closes intake and lets the queue drain);
   - waits for the work's `WaitGroup` inside a `select` on `ctx.Done()`;
   - returns nil once the work has ended, or `ctx.Err()` if the context is done first.
 
@@ -237,6 +238,8 @@ Every other `Enable…` function already follows the rule.
 - [errors `Join`](https://pkg.go.dev/errors#Join): one error wrapping several, nil when all are nil, each still matched by `errors.Is` and `errors.As`.
 
 The aggregators' new return value is the user's choice of 2026-10-31, reasoned from the tree: two of the ten flushers return nothing, and every probe discards a consumer flusher's error.
+
+`FirstOf` forwarding is the user's choice of 2026-10-31, reasoned from the tree: the two login probes assert on the authenticator they were given, and `FirstOf` already forwards the decoy check to its delegates.
 
 ### D3, D7, D8
 

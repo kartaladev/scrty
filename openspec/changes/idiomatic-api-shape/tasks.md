@@ -21,6 +21,11 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
   Verify: the new tests pass, the existing flush tests pass, and `golangci-lint` reports no unchecked flush error.
 - [x] 2.3 Return `*UsernamePasswordAuthenticator` and `*JWTAuthenticator` from `authenticate`, and `*MFA` and `*MFARequirement` from `policy`. Each gets a compile-time port check, and its godoc loses the type-assertion advice. `README.md`'s `requirement.(policy.LoginAdmission)` becomes a direct method call. Verify: `go test ./authenticate/... ./policy/... ./httpsec/...` passes, and the tests that type-asserted now call `FlushRefusalLogs` directly.
 - [x] 2.4 Return `*BcryptEncoder`, `*ScryptEncoder` and `*Argon2idEncoder` from `password`; `*JWTGenerator` and `*JWTVerifier` from `token`; `*StaticKeyring` and `*AEADCipher` from `seal`; and `*MemoryKeyStore` from `signingkey`. Each gets a compile-time port check. Every type renamed in 2.3 and 2.4 gets godoc saying its zero value is not usable and naming its constructor. No method is unexported, because D1's table shows each is reachable through a port or optional interface already. Verify: `go test ./...` passes in every module, and the exported method set of each type matches D1's table.
+- [ ] 2.5 Make `authenticate.FirstOf` a `logsample.Flusher` (D2). Red:
+  - form login wired with a `FirstOf` around the password authenticator, whose sampler holds suppressed refusals; assert that `Chain.FlushRefusalLogs` writes their summary;
+  - a `FirstOf` whose first delegate's flush fails; assert the error is returned and that later delegates are still flushed. This case asserts through `logsample.Flusher`, so it fails on the assertion, not on compiling.
+
+  Run them and confirm they fail because `FirstOf` does not flush. Then add the method, joining errors in delegate order, with a compile-time check. Verify: the new tests pass, and so do `go test ./authenticate/... ./httpsec/...`.
 
 ## 3. Memory stores refuse bad options (D3)
 

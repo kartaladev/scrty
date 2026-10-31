@@ -32,7 +32,7 @@
 1. **Shutdown racing Start** on every lifecycle owner. Expected: no race report and no goroutine left. Tests in 4.1, 4.2, 4.3 and 4.4.
 2. **Start with a context that is already cancelled.** Expected: the work still launches, because its context is detached. Tests in 4.1 and 4.2.
 3. **Shutdown called from inside the component's own work:** a sweep purge, a `Keys` error hook, or a wrapped sender. Expected: it returns its context's error within the bound and never deadlocks. Tests in 4.1 (error hook) and 4.3 (purge).
-4. **A consumer flusher that fails beside ones that succeed.** Expected: the aggregate returns the error, and every other flusher is still called. Test in 2.2.
+4. **A consumer flusher that fails beside ones that succeed.** Expected: the aggregate returns the error, and every other flusher is still called. Tests in 2.2 (engine and chain) and 2.5 (`FirstOf`).
 5. **A typed-nil value where a port is expected:** an authorizer, or a memory store's clock. Expected: a configuration error at construction, or no fallback, never a nil-method panic at request time. Table cases in 3.1, 3.2, 5.1 and 5.2.
 
 ---
@@ -43,6 +43,7 @@
 |---|---|---|---|---|
 | main session | 1.1 | | verification | none |
 | A | 2.1–2.4 | `pkg/logsample`, `authenticate` (root), `authenticate/password`, `policy` (root), `token`, `store/seal`, `token/signingkey/record.go`, `httpsec/chain.go`, `httpsec/login.go`, `httpsec/basic.go`, `authenticate/oidc/relying_party.go`, `README.md`, and every caller of these constructors and flush methods in every module | Opus: it changes interfaces every other lane compiles against | Opus |
+| A2 | 2.5 | `authenticate/firstof.go`, `authenticate/firstof_test.go`, and one `httpsec` test file for the chain-level case | Sonnet: one forwarding method on the pattern A settled | Sonnet |
 | B | 3.1–3.3 | `token/onetime`, `session/store_memory.go`, `session/sessions.go`, `policy/lockout`, `authenticate/passkey/passkey.go`, `recovery/hold.go`, `httpsec/mfa_begin.go`, and every caller of the three memory-store constructors in every module | Sonnet: a known construction-error pattern; its callers share test helpers, so it is one lane | Sonnet |
 | C1 | 4.1 | `token/signingkey` lifecycle files (`keys_lifecycle.go`, `doc.go`, their tests) | Opus: concurrency and ordering | Opus |
 | C2 | 4.2 | `session/store_memory.go` lifecycle, and its tests | Opus: concurrency | Opus |
@@ -57,6 +58,7 @@
 - A runs first, because every later lane compiles against its types.
 - B runs after A. Its three constructors are called from the same test helpers, including `httpsec/helpers_test.go`, `httpsec/integration_test.go`, `test/storetest/memory_test.go` and `test/httpsecconformance/scenarios.go`. One lane avoids two writers on them.
 - C1, C2, C3 and C4 then run in parallel. Their files and callers do not overlap. C2 comes after B, which owns `session/store_memory.go`'s constructor.
+- A2 was added after A, B and C had started. It touches no file of B, C or D, so it runs once C's lanes have landed, before D.
 - D runs after all of C, E after D, and F after E. E and F stay sequential so that the `httpsec` test files never have two writers.
 
 ---
@@ -106,6 +108,26 @@
   Run `go test ./authenticate/... ./policy/... ./httpsec/...`. Expected: PASS.
 - [ ] **Step 6 (2.4):** The same for `bcryptEncoder`, `scryptEncoder`, `argon2idEncoder`, `generator`→`JWTGenerator`, `verifier`→`JWTVerifier`, `keyring`→`StaticKeyring`, `aeadCipher`→`AEADCipher` and `inMemoryKeyStore`→`MemoryKeyStore`. Unexport nothing: every method is in D1's table. Run `go test -count=1 ./...` in every module and `go vet ./...`. Expected: PASS. In the report, list each type's exported methods against D1's table.
 - [ ] **Step 7:** Commit: `refactor!: return concrete types and share one flush interface`.
+
+### Task 2b: `FirstOf` forwards the flush (task 2.5, dispatch A2)
+
+**Files:**
+- Modify: `authenticate/firstof.go`
+- Test: `authenticate/firstof_test.go`, plus one case in `httpsec/chain_test.go` beside `TestChain_FlushRefusalLogs_JoinsErrors`
+
+**Interfaces:**
+- Consumes: Task 2's `logsample.Flusher`, `*UsernamePasswordAuthenticator` and `Chain.FlushRefusalLogs() error`.
+- Produces: `func (m *FirstOf) FlushRefusalLogs() error`, and `var _ logsample.Flusher = (*FirstOf)(nil)`.
+
+- [ ] **Step 1 (red):** Write `TestFirstOf_FlushRefusalLogs`, a table over `NewFirstOf(...)` whose cases reach the method through `f, ok := any(m).(logsample.Flusher)`, so that they compile today and fail on `require.True(t, ok)`:
+  - `"joins errors and still flushes later delegates"`: delegates a (flush returns `errA`), b (no flush method), c (flush returns nil). Assert `ErrorIs(err, errA)`, and that c was flushed once;
+  - `"nested FirstOf is reached"`: an outer `FirstOf` over an inner one over a flushing delegate. Assert the delegate was flushed once;
+  - `"no flusher"`: only delegates without the method. Assert nil.
+
+  Add `TestChain_FlushRefusalLogs_ReachesFirstOfDelegates` in `httpsec`: form login over `NewFirstOf(passwordAuthenticator)`, enough refused logins to leave suppressed refusals, then `Chain.FlushRefusalLogs()`. Assert that the password authenticator's summary record is written.
+- [ ] **Step 2:** `go test -run 'TestFirstOf_FlushRefusalLogs|ReachesFirstOfDelegates' -count=1 ./authenticate/ ./httpsec/`. Expected: FAIL. The table fails on `ok`, and the chain case finds no summary record.
+- [ ] **Step 3 (green):** Implement the method in `authenticate/firstof.go`: flush each delegate that is a `logsample.Flusher`, in delegate order, collect the errors, and return `errors.Join`. Add the compile-time check. Godoc: it says what is flushed and in which order, and that a failure does not stop later flushes. Drop the type assertion from Step 1 if it is no longer needed.
+- [ ] **Step 4:** `go test -count=1 ./authenticate/... ./httpsec/...`, `golangci-lint run ./...`. Expected: PASS, 0 issues. Commit: `feat: FirstOf forwards FlushRefusalLogs to its delegates`.
 
 ### Task 3: Memory stores refuse bad options (tasks 3.1–3.3, dispatch B)
 
@@ -201,7 +223,7 @@
   - "Sends racing shutdown": 100 goroutines send while Shutdown runs, under `-race`. Each Send either returned nil and its message was delivered, or returned `ErrAlreadyShutdown`, and nothing panics.
 
   To compile, add `Shutdown` as a call to `Close`, and declare `ErrAlreadyShutdown` as a new sentinel. Run. Expected: FAIL on the error identity. A racing case that passes is pinned: temporarily drop accepted messages and watch it fail.
-- [ ] **Step 2 (green):** Rename `Close` to `Shutdown` and the sentinel, and guard intake with the existing mutex. Update every caller. Run. Expected: PASS. Commit.
+- [ ] **Step 2 (green):** Rename `Close` to `Shutdown` and the sentinel, and guard intake with the existing mutex. Shutdown closes intake and waits for the drain. It cancels no work context: the workers have none, and each delivery keeps its caller's context with the cancellation removed, bounded by the send timeout (D4). Update every caller. Run. Expected: PASS. Commit.
 
 ### Task 8: Nil context on lifecycle methods (task 4.5, dispatch D)
 

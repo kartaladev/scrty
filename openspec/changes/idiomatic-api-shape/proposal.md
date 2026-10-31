@@ -33,6 +33,7 @@ Every one of these is a public API or behaviour change. Nothing is tagged yet, s
 - **One optional flush interface.** `logsample.Flusher` replaces `authenticate.RefusalLogFlusher`, `policy.RefusalLogFlusher` and `oidc`'s anonymous interface. The type-assertion advice goes from the godoc.
   - `policy.Engine.FlushRefusalLogs` and `httpsec.Chain.FlushRefusalLogs` return `error`. Today they return nothing, so they satisfy `logsample.Flusher` too.
   - They return the joined errors of everything they flush, instead of discarding them. A consumer's own flusher that fails is no longer silent.
+  - `authenticate.FirstOf` forwards `FlushRefusalLogs` to its delegates the same way, so a password authenticator wrapped in it is flushed.
 - **Memory stores refuse bad options at construction.** The three in-memory stores that take options (`onetime`, `session`, `lockout`) return `(T, error)`. They refuse a nil clock, a housekeeping interval of zero or less, and a capacity of zero or less, each with a configuration error: their package's `ErrConfig`, and `policy.ErrConfig` for `lockout`, as the rest of `lockout` already does.
   - The library builds these stores as defaults in six places: `onetime.New`, `session.New`, `lockout.New`, `passkey.New`, the recovery hold store and `httpsec.EnableMFA`. Each already returns an error and passes the store's error on.
 - **One lifecycle for background components.** `signingkey.Keys`, `session.MemoryStore`, `sweep.Sweeper` and `notify.QueuedSender` share these rules:
