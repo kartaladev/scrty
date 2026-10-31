@@ -44,7 +44,7 @@
 
 ## Execution lanes and dispatches
 
-Three lanes. Two agents never own one file. Agents that run at the same time each get **their own git worktree** branched from `feat/reauthentication-guard` (`isolation: "worktree"`), because they all compile package `httpsec`. The main session integrates each wave by merging the worktree branches. The files are disjoint, so the merges are clean. Then it verifies.
+Three lanes. Two agents never own one file. Agents that run at the same time each get **their own git worktree** branched from the implementation branch `feat/reauthentication` (`isolation: "worktree"`), because they all compile package `httpsec`. The main session integrates each wave by merging the worktree branches. The files are disjoint, so the merges are clean. Then it verifies.
 
 | Wave | Dispatch | Tasks | Owns | Model, reason | Reviewer |
 |---|---|---|---|---|---|

@@ -135,5 +135,5 @@ Each task names how it is verified. A signature change owns every caller of the 
 ## Workflow follow-up
 
 - Run one whole-branch review against every spec requirement this change covers before the final gate and before archive.
-- This change's PR owns its own branch, `feat/reauthentication-guard`, based on `main` now that `idiomatic-api-shape` has merged (PR #29) and been archived (PR #31). Rebase onto `main` again before merging if `main` moves.
+- The planning artifacts merge to `main` on their own (PR #30). Implementation runs on a new branch from `main`, `feat/reauthentication`, and owns its own PR. Rebase onto `main` again before merging if `main` moves.
 - Archive after merge.
