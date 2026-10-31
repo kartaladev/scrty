@@ -300,64 +300,45 @@ func (c *MockRunnerQueryRowCall) DoAndReturn(f func(context.Context, string, ...
 	return c
 }
 
-// MocksqlStater is a mock of sqlStater interface.
-type MocksqlStater struct {
-	ctrl     *gomock.Controller
-	recorder *MocksqlStaterMockRecorder
-	isgomock struct{}
-}
-
-// MocksqlStaterMockRecorder is the mock recorder for MocksqlStater.
-type MocksqlStaterMockRecorder struct {
-	mock *MocksqlStater
-}
-
-// NewMocksqlStater creates a new mock instance.
-func NewMocksqlStater(ctrl *gomock.Controller) *MocksqlStater {
-	mock := &MocksqlStater{ctrl: ctrl}
-	mock.recorder = &MocksqlStaterMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MocksqlStater) EXPECT() *MocksqlStaterMockRecorder {
-	return m.recorder
-}
-
-// SQLState mocks base method.
-func (m *MocksqlStater) SQLState() string {
+// QueryRowReadCommitted mocks base method.
+func (m *MockRunner) QueryRowReadCommitted(ctx context.Context, sql string, args ...any) pglimiter.Row {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SQLState")
-	ret0, _ := ret[0].(string)
+	varargs := []any{ctx, sql}
+	for _, a := range args {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "QueryRowReadCommitted", varargs...)
+	ret0, _ := ret[0].(pglimiter.Row)
 	return ret0
 }
 
-// SQLState indicates an expected call of SQLState.
-func (mr *MocksqlStaterMockRecorder) SQLState() *MocksqlStaterSQLStateCall {
+// QueryRowReadCommitted indicates an expected call of QueryRowReadCommitted.
+func (mr *MockRunnerMockRecorder) QueryRowReadCommitted(ctx, sql any, args ...any) *MockRunnerQueryRowReadCommittedCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SQLState", reflect.TypeOf((*MocksqlStater)(nil).SQLState))
-	return &MocksqlStaterSQLStateCall{Call: call}
+	varargs := append([]any{ctx, sql}, args...)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "QueryRowReadCommitted", reflect.TypeOf((*MockRunner)(nil).QueryRowReadCommitted), varargs...)
+	return &MockRunnerQueryRowReadCommittedCall{Call: call}
 }
 
-// MocksqlStaterSQLStateCall wrap *gomock.Call
-type MocksqlStaterSQLStateCall struct {
+// MockRunnerQueryRowReadCommittedCall wrap *gomock.Call
+type MockRunnerQueryRowReadCommittedCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MocksqlStaterSQLStateCall) Return(arg0 string) *MocksqlStaterSQLStateCall {
+func (c *MockRunnerQueryRowReadCommittedCall) Return(arg0 pglimiter.Row) *MockRunnerQueryRowReadCommittedCall {
 	c.Call = c.Call.Return(arg0)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MocksqlStaterSQLStateCall) Do(f func() string) *MocksqlStaterSQLStateCall {
+func (c *MockRunnerQueryRowReadCommittedCall) Do(f func(context.Context, string, ...any) pglimiter.Row) *MockRunnerQueryRowReadCommittedCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MocksqlStaterSQLStateCall) DoAndReturn(f func() string) *MocksqlStaterSQLStateCall {
+func (c *MockRunnerQueryRowReadCommittedCall) DoAndReturn(f func(context.Context, string, ...any) pglimiter.Row) *MockRunnerQueryRowReadCommittedCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

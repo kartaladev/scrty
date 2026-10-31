@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -207,8 +207,8 @@ func TestSessionStore_Durable(t *testing.T) {
 				require.NoError(t, err)
 
 				got, err := store.Load(ctx, sid)
-				require.ErrorIs(t, err, session.ErrSessionUnreadable)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrUnreadable)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assert.Nil(t, got)
 			},
 		},
@@ -226,7 +226,7 @@ func TestSessionStore_Durable(t *testing.T) {
 
 				require.NoError(t, store.Delete(ctx, sid))
 				_, err = store.Load(ctx, sid)
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				assert.Empty(t, storedSession(ctx, t, raw, sid))
 			},
 		},
@@ -256,7 +256,7 @@ func TestSessionStore_Durable(t *testing.T) {
 
 				later := newSessionStore(t, db, keys.Rotated(t), at(now.Add(6*time.Minute)))
 				_, err = later.Load(ctx, sid)
-				require.ErrorIs(t, err, session.ErrSessionExpired, "at 12:06 it is expired")
+				require.ErrorIs(t, err, session.ErrExpired, "at 12:06 it is expired")
 			},
 		},
 		{
@@ -265,7 +265,7 @@ func TestSessionStore_Durable(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context) {
 				_, err := store.Load(ctx, "sess-never")
 				require.ErrorIs(t, err, context.Canceled)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 			},
 		},
 		{

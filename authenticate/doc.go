@@ -1,6 +1,6 @@
 // Package authenticate decides who a caller is.
 //
-// A Manager runs ordered providers and returns the first answer that is not a
+// A FirstOf runs ordered providers and returns the first answer that is not a
 // refusal to handle the credentials. Providers for a username and password, and
 // for a bearer token, ship here; a consumer adds their own by implementing
 // Authenticator.

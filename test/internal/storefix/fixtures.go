@@ -11,14 +11,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/oidc"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // NewID mints a fresh identifier, failing t when the generator fails.
@@ -134,7 +134,7 @@ type SaveUpsertsStore struct{ session.Store }
 // Save saves sess, creating it when the store does not find it.
 func (s SaveUpsertsStore) Save(ctx context.Context, sess *session.Session) error {
 	err := s.Store.Save(ctx, sess)
-	if errors.Is(err, session.ErrSessionNotFound) {
+	if errors.Is(err, session.ErrNotFound) {
 		return s.Create(ctx, sess)
 	}
 	return err

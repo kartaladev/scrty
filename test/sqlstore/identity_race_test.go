@@ -15,7 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 )
 
 // These tests force the two interleavings the identity store's writes must

@@ -3,108 +3,18 @@ package policy_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
 )
-
-// mfaUser is the user every MFA case is about. The policies match it
-// byte-for-byte and never parse it, so one opaque value is enough.
-const mfaUser = identity.UserID("u-1")
-
-// mfaNow is the instant the MFA cases are judged at. The policies read it from
-// the Input rather than from a clock of their own, so it only has to be the
-// same in every case.
-var mfaNow = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-
-// errEnrolmentStore stands for a store that could not answer, and
-// errSecretUnreadable for a stored secret that would not decrypt. They are two
-// errors rather than one because the lookup contract names both, and a test
-// that used one for both could not show that either reaches the caller.
-var (
-	errEnrolmentStore   = errors.New("the enrolment store refused the connection")
-	errSecretUnreadable = errors.New("the enrolment secret could not be decrypted")
-)
-
-// The messages the two MFA policies write. A case names the record it is
-// counting through one of these, so a change to the text is a change to one
-// line rather than to every case that reads the log.
-const (
-	logSameChannelRefused = "policy: refusing a login whose second factor is same-channel with its first"
-	logSameChannelAllowed = "policy: completing a login on its first factor, its second factor being same-channel"
-	logMFASuppressed      = "policy: second-factor records suppressed"
-
-	logMFARequired             = "policy: refusing a request that is required to present a second factor"
-	logMFAEnrollmentRequired   = "policy: refusing a required user with no usable second-factor enrolment"
-	logRequirementLookupFailed = "policy: the mfa requirement lookup failed"
-	logRequirementLookupEnded  = "policy: the mfa requirement lookup ended with its request"
-	logRequirementSuppressed   = "policy: mfa requirement records suppressed"
-)
-
-// mfaMethod returns a method lookup on ch that answers every enrolment
-// question with (enrolled, err). It is named after its channel by
-// mfaMethodName, so a case that needs two methods on one channel names them
-// itself with namedMFAMethod. Every method is optional: a policy that allows
-// before it looks asks none.
-func mfaMethod(t *testing.T, ch factor.Channel, enrolled bool, err error) *MockMFAMethodLookup {
-	t.Helper()
-
-	return namedMFAMethod(t, mfaMethodName(ch), ch, enrolled, err)
-}
-
-// namedMFAMethod is mfaMethod under a name the case chooses.
-func namedMFAMethod(t *testing.T, name string, ch factor.Channel, enrolled bool, err error) *MockMFAMethodLookup {
-	t.Helper()
-
-	m := NewMockMFAMethodLookup(gomock.NewController(t))
-	m.EXPECT().Name().Return(name).AnyTimes()
-	m.EXPECT().Channel().Return(ch).AnyTimes()
-	m.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(enrolled, err).AnyTimes()
-
-	return m
-}
-
-// idleMFAMethod returns a method lookup a case never expects to be asked about
-// a user: only its name may be read, which is what a constructor does.
-func idleMFAMethod(t *testing.T, name string) *MockMFAMethodLookup {
-	t.Helper()
-
-	m := NewMockMFAMethodLookup(gomock.NewController(t))
-	m.EXPECT().Name().Return(name).AnyTimes()
-
-	return m
-}
-
-// mfaMethodName is the name mfaMethod gives a method on ch: the name scrty's
-// own methods on that channel carry, or the channel itself.
-func mfaMethodName(ch factor.Channel) string {
-	switch ch {
-	case factor.AuthenticatorApp:
-		return "totp"
-	case factor.Email:
-		return "email-code"
-	default:
-		return string(ch)
-	}
-}
-
-// mfaMethods is the set of methods a case lists, typed as the constructors
-// take it.
-func mfaMethods(methods ...policy.MFAMethodLookup) []policy.MFAMethodLookup {
-	return methods
-}
 
 // sequentialMethodLookup answers its first Enrolled call with (first,
 // firstErr) and every call after with (false, err). It is how a case reaches
@@ -132,70 +42,6 @@ func (s *sequentialMethodLookup) Enrolled(context.Context, identity.UserID) (boo
 	}
 
 	return false, s.err
-}
-
-// mfaInput is a login by kind, for the user the MFA cases are about.
-func mfaInput(kind factor.Kind) *policy.Input {
-	return &policy.Input{User: mfaUser, FirstFactor: kind, Now: mfaNow}
-}
-
-// mfaPolicyFor builds the second-factor challenge policy over a set of one
-// method, writing its records nowhere unless a case replaces the logger.
-func mfaPolicyFor(t *testing.T, method policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
-	t.Helper()
-
-	return mfaPolicyOver(t, mfaMethods(method), opts...)
-}
-
-// mfaPolicyOver builds the second-factor challenge policy over methods,
-// writing its records nowhere unless a case replaces the logger.
-func mfaPolicyOver(t *testing.T, methods []policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
-	t.Helper()
-
-	p, err := policy.NewMFAPolicy(methods,
-		append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(&bytes.Buffer{}))}, opts...)...)
-	require.NoError(t, err, "the policy under test could not be built")
-
-	return p
-}
-
-// mfaLogger writes JSON records of every level to buf, so a case can see the
-// debug records a production handler would drop.
-func mfaLogger(buf *bytes.Buffer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-// mfaRecords decodes the records written to buf, in the order they were
-// written.
-func mfaRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
-	t.Helper()
-
-	var records []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
-		if line == "" {
-			continue
-		}
-
-		record := map[string]any{}
-		require.NoError(t, json.Unmarshal([]byte(line), &record), "a written record was not JSON")
-		records = append(records, record)
-	}
-
-	return records
-}
-
-// mfaRecordsOf returns the records in buf whose message is msg.
-func mfaRecordsOf(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
-	t.Helper()
-
-	var matching []map[string]any
-	for _, record := range mfaRecords(t, buf) {
-		if record["msg"] == msg {
-			matching = append(matching, record)
-		}
-	}
-
-	return matching
 }
 
 func TestNewMFAPolicy(t *testing.T) {
@@ -301,7 +147,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		{
 			name:    "a nil clock is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithMFAPolicyClock(nil)},
+			opts:    []policy.MFAOption{policy.WithMFAClock(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -314,7 +160,7 @@ func TestNewMFAPolicy(t *testing.T) {
 			// receiver.
 			name:    "a typed-nil clock is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithMFAPolicyClock((*clockwork.FakeClock)(nil))},
+			opts:    []policy.MFAOption{policy.WithMFAClock((*clockwork.FakeClock)(nil))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -329,9 +175,9 @@ func TestNewMFAPolicy(t *testing.T) {
 			name:    "a consumer's own read-only clock is accepted and used to sample records",
 			methods: mfaMethods(mfaMethod(t, factor.Email, true, nil)),
 			opts: []policy.MFAOption{
-				policy.WithMFAPolicyClock(fixedClock{at: consumerClockAt}),
-				policy.WithMFAPolicyLogger(mfaLogger(consumerClockLogBuf)),
-				policy.WithMFAPolicyLogInterval(time.Millisecond),
+				policy.WithMFAClock(fixedClock{at: consumerClockAt}),
+				policy.WithMFALogger(mfaLogger(consumerClockLogBuf)),
+				policy.WithMFALogInterval(time.Millisecond),
 			},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				t.Helper()
@@ -351,7 +197,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		{
 			name:    "a mode naming neither constant is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithSameChannelEnrolment(policy.SameChannelMode(7))},
+			opts:    []policy.MFAOption{policy.WithMFASameChannelEnrolment(policy.SameChannelMode(7))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -370,7 +216,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		{
 			name:    "a nil logger is ignored rather than refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithMFAPolicyLogger(nil)},
+			opts:    []policy.MFAOption{policy.WithMFALogger(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.NoError(t, err, "a nil logger made configuring logging mandatory")
 				assert.NotNil(t, p)
@@ -405,7 +251,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewMFAPolicy(tc.methods, tc.opts...)
+			p, err := policy.NewMFA(tc.methods, tc.opts...)
 			tc.assert(t, p, err)
 		})
 	}
@@ -557,7 +403,7 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 				mfaMethod(t, factor.Email, true, nil)),
 			in: mfaInput(factor.MagicLink),
 			opts: []policy.MFAOption{
-				policy.WithSameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
+				policy.WithMFASameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
 			},
 			assert: allows,
 		},
@@ -598,71 +444,278 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 	}
 }
 
-func TestMFAExemptionRule(t *testing.T) {
+// TestMFAPolicy_Federated pins the second-factor challenge policy's decision
+// for a login on the federated channel: allowed by default without asking
+// anything, and judged on its provider assurance only when the consumer opts
+// in with WithMFAFederatedChallengeWhenUnmet.
+func TestMFAPolicy_Federated(t *testing.T) {
 	t.Parallel()
 
-	enforceEverything := func(factor.Kind) bool { return false }
-	exemptFederatedAndMachine := func(k factor.Kind) bool { return k == factor.OIDC || k == factor.APIKey }
-
 	type testCase struct {
-		name   string
-		kind   factor.Kind
+		name    string
+		methods func(t *testing.T) []policy.MFAMethodLookup
+		// source is the assurance source; nil wires none.
+		source func(t *testing.T) policy.FederatedAssuranceSource
 		opts   []policy.MFAOption
-		reqOpt policy.MFARequirementOption
-		assert func(t *testing.T, challenge, requirement policy.Decision)
+		in     func() *policy.Input
+		// assert receives the Input after the evaluation, so a case can show
+		// the policy wrote nothing to it.
+		assert func(t *testing.T, d policy.Decision, err error, in *policy.Input)
+	}
+
+	enrolledTOTP := func(t *testing.T) []policy.MFAMethodLookup {
+		return mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil))
+	}
+	unenrolledTOTP := func(t *testing.T) []policy.MFAMethodLookup {
+		return mfaMethods(mfaMethod(t, factor.AuthenticatorApp, false, nil))
+	}
+	failingTOTP := func(t *testing.T) []policy.MFAMethodLookup {
+		return mfaMethods(mfaMethod(t, factor.AuthenticatorApp, false, errEnrolmentStore))
+	}
+	// idleTOTP is a method no case expects to be asked about the user, so a
+	// policy that asked it anyway fails the case.
+	idleTOTP := func(t *testing.T) []policy.MFAMethodLookup {
+		return mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp)))
+	}
+	met := func(t *testing.T) policy.FederatedAssuranceSource { return assuranceSource(t, true, true, nil) }
+	notMet := func(t *testing.T) policy.FederatedAssuranceSource { return assuranceSource(t, true, false, nil) }
+	unasked := func(t *testing.T) policy.FederatedAssuranceSource { return assuranceSource(t, false, false, nil) }
+
+	challengeUnmet := []policy.MFAOption{policy.WithMFAFederatedChallengeWhenUnmet(true)}
+	oidcLogin := func() *policy.Input { return federatedInput(factor.OIDC, federatedEvidence("pwd")) }
+
+	allowed := func(t *testing.T, d policy.Decision, err error, _ *policy.Input) {
+		t.Helper()
+
+		require.NoError(t, err)
+		assert.Equal(t, policy.Allow, d.Outcome)
+		assert.NoError(t, d.Reason)
+	}
+	// allowedWithoutProof is an allow that left the login carrying no proof
+	// that its second factor was met, and no satisfied second factor: the
+	// provider's assurance is evidence, never the proof.
+	allowedWithoutProof := func(t *testing.T, d policy.Decision, err error, in *policy.Input) {
+		t.Helper()
+
+		allowed(t, d, err, in)
+		assert.False(t, in.SecondFactorAtLogin.Holds(), "federated evidence was turned into the proof")
+		assert.False(t, in.MFASatisfied, "federated evidence marked the second factor satisfied")
+	}
+	challengedForMFA := func(t *testing.T, d policy.Decision, err error, _ *policy.Input) {
+		t.Helper()
+
+		require.NoError(t, err)
+		require.Equal(t, policy.Challenge, d.Outcome, "an unmet federated login was let through")
+		assert.Equal(t, policy.ChallengeMFA, d.Challenge)
+		assert.NoError(t, d.Reason)
 	}
 
 	cases := []testCase{
 		{
-			name: "by default the identity model's own rule decides, and exempts a machine caller",
-			kind: factor.APIKey,
-			assert: func(t *testing.T, challenge, requirement policy.Decision) {
-				assert.Equal(t, policy.Allow, challenge.Outcome,
-					"the default exemption stopped exempting a machine caller")
-				assert.Equal(t, policy.Allow, requirement.Outcome)
+			name:    "default: an oidc login without accepted assurance is allowed for an enrolled user, asking no lookup",
+			methods: idleTOTP,
+			in:      oidcLogin, assert: allowedWithoutProof,
+		},
+		{
+			name:    "default: a wired source is not asked",
+			methods: idleTOTP, source: unasked,
+			in: oidcLogin, assert: allowedWithoutProof,
+		},
+		{
+			name:    "turned off explicitly, without a source: accepted, and allowed",
+			methods: idleTOTP,
+			opts:    []policy.MFAOption{policy.WithMFAFederatedChallengeWhenUnmet(false)},
+			in:      oidcLogin, assert: allowedWithoutProof,
+		},
+		{
+			name:    "opted in, not met, enrolled on totp: challenged for mfa",
+			methods: enrolledTOTP, source: notMet, opts: challengeUnmet,
+			in: oidcLogin, assert: challengedForMFA,
+		},
+		{
+			name:    "opted in, met, enrolled on totp: allowed without asking any lookup, and carries no proof",
+			methods: idleTOTP, source: met, opts: challengeUnmet,
+			in:     func() *policy.Input { return federatedInput(factor.OIDC, federatedEvidence("mfa")) },
+			assert: allowedWithoutProof,
+		},
+		{
+			name:    "opted in without a source: a configuration error",
+			methods: idleTOTP, opts: challengeUnmet,
+			in: oidcLogin,
+			assert: func(t *testing.T, _ policy.Decision, err error, _ *policy.Input) {
+				assert.ErrorIs(t, err, policy.ErrConfig)
 			},
 		},
 		{
-			// The default rule no longer exempts a federated login, so the
-			// requirement policy enforces it; the challenge policy still lets it
-			// through by its own federated rule, not by an exemption.
-			name: "by default a federated login is not exempt from the requirement",
-			kind: factor.OIDC,
-			assert: func(t *testing.T, challenge, requirement policy.Decision) {
-				assert.Equal(t, policy.Allow, challenge.Outcome)
-				assert.Equal(t, policy.Challenge, requirement.Outcome,
-					"the default exemption still exempts a federated login")
+			name:    "opted in, a source error denies with that error as the reason",
+			methods: idleTOTP, opts: challengeUnmet,
+			source: func(t *testing.T) policy.FederatedAssuranceSource {
+				return assuranceSource(t, true, true, errAssuranceSource)
+			},
+			in: oidcLogin,
+			assert: func(t *testing.T, d policy.Decision, err error, _ *policy.Input) {
+				require.NoError(t, err)
+				require.Equal(t, policy.Deny, d.Outcome, "an undecidable assurance was read as met")
+				require.ErrorIs(t, d.Reason, errAssuranceSource)
+				assert.NotContains(t, d.Reason.Error(), errAssuranceSource.Error(),
+					"the reason repeats the source's own text")
 			},
 		},
 		{
-			name:   "a consumer rule that exempts oidc restores the total exemption",
-			kind:   factor.OIDC,
-			opts:   []policy.MFAOption{policy.WithMFAExemption(exemptFederatedAndMachine)},
-			reqOpt: policy.WithMFAExemption(exemptFederatedAndMachine),
-			assert: func(t *testing.T, challenge, requirement policy.Decision) {
-				assert.Equal(t, policy.Allow, challenge.Outcome)
-				assert.Equal(t, policy.Allow, requirement.Outcome,
-					"a consumer's exemption of oidc did not reach the requirement policy")
+			name:    "opted in, zero evidence: challenged without asking the source",
+			methods: enrolledTOTP, source: unasked, opts: challengeUnmet,
+			in:     func() *policy.Input { return federatedInput(factor.OIDC, policy.FederatedAssurance{}) },
+			assert: challengedForMFA,
+		},
+		{
+			// With the option an unmet login is judged like any other, and a
+			// user enrolled on nothing has nothing to be challenged on.
+			name:    "opted in, not met, enrolled on nothing: allowed",
+			methods: unenrolledTOTP, source: notMet, opts: challengeUnmet,
+			in: oidcLogin, assert: allowedWithoutProof,
+		},
+		{
+			name:    "opted in, not met, the enrolment lookup fails: denied with a reason wrapping it",
+			methods: failingTOTP, source: notMet, opts: challengeUnmet,
+			in: oidcLogin,
+			assert: func(t *testing.T, d policy.Decision, err error, _ *policy.Input) {
+				require.NoError(t, err)
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
 			},
 		},
 		{
-			name: "by default a password login is enforced",
-			kind: factor.Password,
-			assert: func(t *testing.T, challenge, requirement policy.Decision) {
-				assert.Equal(t, policy.Challenge, challenge.Outcome)
-				assert.Equal(t, policy.Challenge, requirement.Outcome)
+			// Evidence placed on a login of another channel is not a federated
+			// login, whatever it carries.
+			name:    "opted in, a password login carrying evidence is judged by its enrolment, the source unasked",
+			methods: enrolledTOTP, source: unasked, opts: challengeUnmet,
+			in:     func() *policy.Input { return federatedInput(factor.Password, federatedEvidence("mfa")) },
+			assert: challengedForMFA,
+		},
+		{
+			name:    "opted in, a passkey proof decides before any evidence, the source unasked",
+			methods: idleTOTP, source: unasked, opts: challengeUnmet,
+			in: func() *policy.Input {
+				in := federatedInput(factor.Passkey, federatedEvidence("mfa"))
+				in.SecondFactorAtLogin = policy.MintProofForTest(factor.Passkey, mfaNow)
+
+				return in
+			},
+			assert: allowed,
+		},
+		{
+			name:    "opted in, a consumer rule exempting oidc allows before the source is asked",
+			methods: idleTOTP, source: unasked,
+			opts: []policy.MFAOption{
+				policy.WithMFAFederatedChallengeWhenUnmet(true),
+				policy.WithMFAExemption(func(k factor.Kind) bool { return k == factor.OIDC || k.MFAExempt() }),
+			},
+			in: oidcLogin, assert: allowedWithoutProof,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []policy.MFAOption{policy.WithMFALogger(mfaLogger(&bytes.Buffer{}))}
+			if tc.source != nil {
+				opts = append(opts, policy.WithFederatedAssuranceSource(tc.source(t)))
+			}
+			opts = append(opts, tc.opts...)
+
+			p, err := policy.NewMFA(tc.methods(t), opts...)
+			if err != nil {
+				tc.assert(t, policy.Decision{}, err, nil)
+
+				return
+			}
+
+			in := tc.in()
+			d := p.Evaluate(t.Context(), in)
+			tc.assert(t, d, nil, in)
+		})
+	}
+}
+
+// TestWithFederatedChallengeWhenUnmet_ChallengePolicyOnly pins that the option
+// is named for the second-factor challenge policy alone: the requirement
+// policy decides a required user's federated login by its own mode, and does
+// not accept this option.
+func TestWithFederatedChallengeWhenUnmet_ChallengePolicyOnly(t *testing.T) {
+	t.Parallel()
+
+	_, governsRequirement := any(policy.WithMFAFederatedChallengeWhenUnmet(true)).(policy.MFARequirementOption)
+
+	assert.False(t, governsRequirement, "the challenge policy's option also configures the requirement policy")
+}
+
+// TestSameChannelEnrolmentIsRefusedByDefault pins the departure, and stands
+// apart from the table below it on purpose: it is the test that was written
+// against the behaviour this change replaced, watched failing while a
+// same-channel login still completed silently, and then kept. It asserts the
+// one fact that departure turns on; the table covers each mode in full.
+//
+// The user enrolled a second factor on the very channel their first factor
+// arrived on: a magic link and an email one-time code both land in one mailbox.
+// Two factors on one channel are one factor, so the enrolment cannot be
+// challenged for — but completing anyway lowers the assurance the user chose
+// when they enrolled, and leaves no record that it happened.
+func TestSameChannelEnrolmentIsRefusedByDefault(t *testing.T) {
+	t.Parallel()
+
+	p := mfaPolicyFor(t, mfaMethod(t, factor.Email, true, nil))
+
+	d := p.Evaluate(t.Context(), mfaInput(factor.MagicLink))
+
+	require.Equal(t, policy.Deny, d.Outcome,
+		"an enrolled user completed on one channel with no second factor and no record")
+}
+
+func TestSameChannelEnrolmentModes(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []policy.MFAOption
+		assert func(t *testing.T, d policy.Decision, in *policy.Input, buf *bytes.Buffer)
+	}
+
+	cases := []testCase{
+		{
+			name: "with nothing configured the login is refused, and the refusal is recorded",
+			assert: func(t *testing.T, d policy.Decision, _ *policy.Input, buf *bytes.Buffer) {
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, policy.ErrSecondFactorSameChannel,
+					"the caller cannot tell this refusal from any other")
+
+				records := mfaRecordsOf(t, buf,
+					logSameChannelRefused)
+				require.Len(t, records, 1, "the refusal happened with no record of it")
+				assert.Equal(t, "WARN", records[0]["level"])
+				assert.Equal(t, string(factor.Email), records[0]["channel"])
 			},
 		},
 		{
-			name:   "a consumer rule that exempts nothing enforces a normally exempt kind",
-			kind:   factor.APIKey,
-			opts:   []policy.MFAOption{policy.WithMFAExemption(enforceEverything)},
-			reqOpt: policy.WithMFAExemption(enforceEverything),
-			assert: func(t *testing.T, challenge, requirement policy.Decision) {
-				assert.Equal(t, policy.Challenge, challenge.Outcome,
-					"the override did not replace the exemption rule")
-				assert.Equal(t, policy.Challenge, requirement.Outcome,
-					"one override value did not reach both policies")
+			name: "a consumer may complete such logins on the first factor, and is still warned",
+			opts: []policy.MFAOption{
+				policy.WithMFASameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
+			},
+			assert: func(t *testing.T, d policy.Decision, in *policy.Input, buf *bytes.Buffer) {
+				require.Equal(t, policy.Allow, d.Outcome)
+				assert.NoError(t, d.Reason)
+
+				// Decision carries no MFA-satisfied field, and a policy never
+				// writes to the Input it is handed. Reading it back is how a
+				// test shows the allow recorded a second factor that did not
+				// happen — it must still be false.
+				assert.False(t, in.MFASatisfied,
+					"the override recorded a second factor that never happened")
+
+				records := mfaRecordsOf(t, buf,
+					logSameChannelAllowed)
+				require.Len(t, records, 1, "the override stopped warning, so the login completes unrecorded")
+				assert.Equal(t, "WARN", records[0]["level"])
 			},
 		},
 	}
@@ -671,30 +724,253 @@ func TestMFAExemptionRule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			method := mfaMethod(t, factor.AuthenticatorApp, true, nil)
-			challenge := mfaPolicyFor(t, method, tc.opts...).
-				Evaluate(t.Context(), mfaInput(tc.kind))
+			buf := &bytes.Buffer{}
+			p, err := policy.NewMFA([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
+				append([]policy.MFAOption{policy.WithMFALogger(mfaLogger(buf))}, tc.opts...)...)
+			require.NoError(t, err)
 
-			reqOpts := []policy.MFARequirementOption{
-				policy.WithMFARequirementLogger(mfaLogger(&bytes.Buffer{})),
-				policy.WithMFARequiredForAll(),
-			}
-			if tc.reqOpt != nil {
-				reqOpts = append(reqOpts, tc.reqOpt)
-			}
+			in := mfaInput(factor.MagicLink)
+			tc.assert(t, p.Evaluate(t.Context(), in), in, buf)
+		})
+	}
+}
 
-			requirement := mfaRequirementPolicyFor(t, nil, method, reqOpts...).
-				Evaluate(mfaPhaseContext(t, policy.PerRequest), mfaInput(tc.kind))
+// TestMFAMethodLookupContract drives a method lookup through each of the three
+// answers its contract names — enrolled, not enrolled, and an error — and
+// records what each of the two MFA policies does with it.
+//
+// The rows are the contract: a confirmed enrolment whose secret opens is
+// enrolled; an enrolment that was started and never confirmed is not; a store
+// failure and a secret that will not decrypt are errors. The assertions are
+// what the contract is for: neither policy may read an error as "this user has
+// no second factor", because that would let a lost row or an unreadable secret
+// downgrade the users who had enrolled.
+func TestMFAMethodLookupContract(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		enrolled  bool
+		lookupErr error
+		assert    func(t *testing.T, challenge, requirement policy.Decision)
+	}
+
+	refusesOnError := func(t *testing.T, challenge, requirement policy.Decision, cause error) {
+		t.Helper()
+
+		require.Equal(t, policy.Deny, challenge.Outcome,
+			"the challenge policy read a failed lookup as a user with no second factor")
+		assert.ErrorIs(t, challenge.Reason, cause,
+			"the challenge policy's refusal does not say what failed")
+
+		require.Equal(t, policy.Deny, requirement.Outcome,
+			"the requirement policy read a failed lookup as a user with no second factor")
+		assert.ErrorIs(t, requirement.Reason, cause,
+			"the requirement policy's refusal does not say what failed")
+	}
+
+	cases := []testCase{
+		{
+			name:     "a confirmed enrolment whose secret opens is enrolled",
+			enrolled: true,
+			assert: func(t *testing.T, challenge, requirement policy.Decision) {
+				assert.Equal(t, policy.Challenge, challenge.Outcome,
+					"an enrolled user was not challenged at login")
+				assert.Equal(t, policy.Challenge, requirement.Outcome,
+					"a required, enrolled user was not challenged")
+			},
+		},
+		{
+			name:     "an enrolment that was never confirmed is not an enrolment",
+			enrolled: false,
+			assert: func(t *testing.T, challenge, requirement policy.Decision) {
+				assert.Equal(t, policy.Allow, challenge.Outcome,
+					"an unconfirmed enrolment was challenged for, which nobody could answer")
+				require.Equal(t, policy.Deny, requirement.Outcome)
+				assert.ErrorIs(t, requirement.Reason, policy.ErrMFAEnrolmentRequired,
+					"a required user with no confirmed enrolment was not asked to enrol")
+			},
+		},
+		{
+			name:      "a store failure is an error, never a user with no second factor",
+			lookupErr: errEnrolmentStore,
+			assert: func(t *testing.T, challenge, requirement policy.Decision) {
+				refusesOnError(t, challenge, requirement, errEnrolmentStore)
+			},
+		},
+		{
+			name:      "a secret that will not decrypt is an error, never a user with no second factor",
+			lookupErr: errSecretUnreadable,
+			assert: func(t *testing.T, challenge, requirement policy.Decision) {
+				refusesOnError(t, challenge, requirement, errSecretUnreadable)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			method := mfaMethod(t, factor.AuthenticatorApp, tc.enrolled, tc.lookupErr)
+			in := mfaInput(factor.Password)
+
+			challenge := mfaPolicyFor(t, method).Evaluate(t.Context(), in)
+
+			requirement := mfaRequirementPolicyFor(t,
+				mfaRequirementLookup(t, true, true, nil), method).
+				Evaluate(mfaPhaseContext(t, policy.PerRequest), in)
 
 			tc.assert(t, challenge, requirement)
 		})
 	}
 }
 
-// mfaPhaseContext returns a context carrying phase, which is how the
-// requirement policy learns which phase it is being asked in.
-func mfaPhaseContext(t *testing.T, phase policy.Phase) context.Context {
-	t.Helper()
+// lookupStub is a method lookup whose every answer is fixed at construction. It
+// is a value type, so a case can build a set of several in one line.
+//
+// It answers a request whose context has ended with that context's error, as a
+// store would, which is how a case shows the caller's context reaches it.
+type lookupStub struct {
+	name     string
+	channel  factor.Channel
+	enrolled bool
+	err      error
+}
 
-	return policy.ContextWithPhase(t.Context(), phase)
+func (s lookupStub) Name() string { return s.name }
+
+func (s lookupStub) Channel() factor.Channel { return s.channel }
+
+func (s lookupStub) Enrolled(ctx context.Context, _ identity.UserID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	return s.enrolled, s.err
+}
+
+// lookupNames lists the names of methods, in order, so a case compares a
+// result by what a reader recognises.
+func lookupNames(methods []policy.MFAMethodLookup) []string {
+	out := make([]string, 0, len(methods))
+	for _, m := range methods {
+		out = append(out, m.Name())
+	}
+
+	return out
+}
+
+func TestUsableMFAMethods(t *testing.T) {
+	t.Parallel()
+
+	storeDown := errors.New("store down")
+	totp := lookupStub{name: "totp", channel: factor.AuthenticatorApp, enrolled: true}
+	email := lookupStub{name: "email-code", channel: factor.Email, enrolled: true}
+
+	type testCase struct {
+		name    string
+		methods []policy.MFAMethodLookup
+		first   factor.Kind
+		ctx     func(ctx context.Context) context.Context
+		assert  func(t *testing.T, got []policy.MFAMethodLookup, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:    "usable methods in configuration order",
+			methods: []policy.MFAMethodLookup{totp, email},
+			first:   factor.Password,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"totp", "email-code"}, lookupNames(got))
+			},
+		},
+		{
+			name:    "the configuration order is kept when it is reversed",
+			methods: []policy.MFAMethodLookup{email, totp},
+			first:   factor.Password,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"email-code", "totp"}, lookupNames(got))
+			},
+		},
+		{
+			name:    "a method on the first factor's channel is not usable",
+			methods: []policy.MFAMethodLookup{totp, email},
+			first:   factor.MagicLink,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"totp"}, lookupNames(got))
+			},
+		},
+		{
+			name: "a failed lookup is an error, not a shorter list",
+			methods: []policy.MFAMethodLookup{
+				totp, lookupStub{name: "email-code", channel: factor.Email, err: storeDown},
+			},
+			first: factor.Password,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.ErrorIs(t, err, storeDown,
+					"a lost enrolment read as a shorter list would downgrade the user")
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name: "a failed lookup ahead of a usable method is an error too",
+			methods: []policy.MFAMethodLookup{
+				lookupStub{name: "email-code", channel: factor.Email, err: storeDown}, totp,
+			},
+			first: factor.Password,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.ErrorIs(t, err, storeDown)
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name:    "not enrolled anywhere is an empty list, not an error",
+			methods: []policy.MFAMethodLookup{lookupStub{name: "totp", channel: factor.AuthenticatorApp}},
+			first:   factor.Password,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name:  "no methods at all is an empty list, not an error",
+			first: factor.Password,
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name:    "the caller's context reaches every lookup",
+			methods: []policy.MFAMethodLookup{totp, email},
+			first:   factor.Password,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			assert: func(t *testing.T, got []policy.MFAMethodLookup, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			got, err := policy.UsableMFAMethods(ctx, tc.methods, mfaUser, tc.first)
+			tc.assert(t, got, err)
+		})
+	}
 }

@@ -13,16 +13,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/authenticate/passkey/webauthn"
+	"github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/passkey"
-	"github.com/kartaladev/scrty/passkey/webauthn"
-	"github.com/kartaladev/scrty/passkey/webauthn/webauthntest"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
@@ -54,8 +55,8 @@ type PasskeyFixture struct {
 	// stores sit beside.
 	Base *RecoveryFixture
 
-	// Manager runs the ceremonies the chain's endpoints serve.
-	Manager *passkey.Manager
+	// Passkeys runs the ceremonies the chain's endpoints serve.
+	Passkeys *passkey.Passkeys
 
 	// Credentials is the durable passkey store, read back by a scenario to
 	// assert what a ceremony left.
@@ -78,8 +79,8 @@ type passkeyBuild struct {
 	enrolTOTP bool
 }
 
-// newPasskeyFixture wires the durable stores and the manager.
-func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.Manager) {
+// newPasskeyFixture wires the durable stores and the passkey ceremonies.
+func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.Sessions) {
 	t.Helper()
 
 	base, sessions := newRecoveryFixture(t)
@@ -137,7 +138,7 @@ func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.
 		opts = append(opts, passkey.WithOptionalRecoveryCodes())
 	}
 
-	pf.Manager, err = passkey.New(deps, opts...)
+	pf.Passkeys, err = passkey.New(deps, opts...)
 	require.NoError(t, err)
 
 	return pf, sessions
@@ -160,10 +161,10 @@ func (pf *PasskeyFixture) totpCode(t *testing.T) string {
 // when the user enrolled one, and always the passkey.
 func (pf *PasskeyFixture) methods(withTOTP bool) []mfa.Method {
 	if withTOTP {
-		return []mfa.Method{pf.Base.TOTP, pf.Manager.MFAMethod()}
+		return []mfa.Method{pf.Base.TOTP, pf.Passkeys.MFAMethod()}
 	}
 
-	return []mfa.Method{pf.Manager.MFAMethod()}
+	return []mfa.Method{pf.Passkeys.MFAMethod()}
 }
 
 // passkeyOptions is the chain every passkey scenario shares, in the order a
@@ -175,7 +176,7 @@ func (pf *PasskeyFixture) methods(withTOTP bool) []mfa.Method {
 // request issued has to be there for a verify request served by a chain built
 // afterwards, as it is behind two replicas.
 func (pf *PasskeyFixture) options(
-	t *testing.T, e *Effects, sessions *session.Manager, withTOTP bool,
+	t *testing.T, e *Effects, sessions *session.Sessions, withTOTP bool,
 ) []httpsec.Option {
 	t.Helper()
 
@@ -184,7 +185,7 @@ func (pf *PasskeyFixture) options(
 	lookups, err := mfa.LookupsFor(methods...)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(challenge)
@@ -196,8 +197,8 @@ func (pf *PasskeyFixture) options(
 			httpsec.WithMFATokens(fixtureTokens{}),
 			httpsec.WithMFAChallengeStore(pf.Base.OneTime)),
 		httpsec.EnablePasskeys(
-			httpsec.PasskeyDeps{Passkeys: pf.Manager, Sessions: sessions, Users: fixtureUsers{}},
-			httpsec.WithPasswordlessLogin()),
+			httpsec.PasskeyDeps{Passkeys: pf.Passkeys, Sessions: sessions, Users: fixtureUsers{}},
+			httpsec.WithPasskeyPasswordlessLogin()),
 	)
 }
 
@@ -209,10 +210,10 @@ func passkeyRoutes() []Route {
 
 // passkeyEffects is the Effects of a passkey scenario. The session store is the
 // durable one, so a scenario reads sessions through Passkey.Base.
-func passkeyEffects(pf *PasskeyFixture, sessions *session.Manager) *Effects {
+func passkeyEffects(pf *PasskeyFixture, sessions *session.Sessions) *Effects {
 	return &Effects{
 		Sessions: sessions,
-		Attempts: policy.NewMemoryAttemptStore(),
+		Attempts: lockout.NewMemoryAttemptStore(),
 		Recovery: pf.Base,
 		Passkey:  pf,
 	}
@@ -220,7 +221,7 @@ func passkeyEffects(pf *PasskeyFixture, sessions *session.Manager) *Effects {
 
 // confirmedSession pre-creates the session a registration is made from: a
 // password session whose second factor is satisfied when the user has one.
-func (pf *PasskeyFixture) confirmedSession(t *testing.T, sessions *session.Manager, satisfied bool) *session.Session {
+func (pf *PasskeyFixture) confirmedSession(t *testing.T, sessions *session.Sessions, satisfied bool) *session.Session {
 	t.Helper()
 
 	s, err := sessions.Create(t.Context(), UserID, session.WithFirstFactor(factor.Password))
@@ -863,7 +864,7 @@ func passkeyRecoveryThenRegistrationReachesFullSession() Scenario {
 			coreOpts := []recovery.Option{
 				recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
 				recovery.WithRepudiationContact(recoveryRepudiationContact),
-				recovery.WithAuthenticatorKinds(pf.Manager.RecoveryKind()),
+				recovery.WithAuthenticatorKinds(pf.Passkeys.RecoveryKind()),
 				recovery.WithMessages(conformanceRecoveryMessages{}),
 				recovery.WithClock(pf.Base.Clock),
 				recovery.WithIssuedCodeStore(pf.Base.OneTime),
@@ -959,10 +960,10 @@ func passkeyEnrolmentOnlyUserRegistersWithEmailedCode() Scenario {
 			lookups, err := mfa.LookupsFor(methods...)
 			require.NoError(t, err)
 
-			challenge, err := policy.NewMFAPolicy(lookups)
+			challenge, err := policy.NewMFA(lookups)
 			require.NoError(t, err)
 
-			requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+			requirement, err := policy.NewMFARequirement(nil, lookups,
 				policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath())
 			require.NoError(t, err)
 
@@ -976,7 +977,7 @@ func passkeyEnrolmentOnlyUserRegistersWithEmailedCode() Scenario {
 						httpsec.WithMFATokens(fixtureTokens{}),
 						httpsec.WithMFAChallengeStore(pf.Base.OneTime)),
 					httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: fixtureUsers{}, Sender: pf.Base.Outbox}),
-					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pf.Manager, Sessions: sessions}),
+					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pf.Passkeys, Sessions: sessions}),
 				),
 				Effects: effects,
 				Routes:  passkeyRoutes(),

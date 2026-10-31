@@ -36,7 +36,7 @@ type Request interface {
 	// looks in the posted form first and falls back to the URL query. The
 	// library's own credential reads never use FormValue; they read the body
 	// — apart from the OIDC authorization response, whose code and state the
-	// protocol delivers in the query (see oidc_callback.go).
+	// protocol delivers in the query (see oidc_login.go).
 	//
 	// Only POST, PUT and PATCH carry a posted form, and only a body whose
 	// Content-Type parses as "application/x-www-form-urlencoded" or as

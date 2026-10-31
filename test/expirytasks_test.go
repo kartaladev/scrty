@@ -12,23 +12,24 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
-	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/expiry"
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/oidc"
-	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // expiryStores is every store an expiry sweep touches or must leave alone, as
@@ -95,14 +96,14 @@ var expiryAdapters = []struct {
 			t.Cleanup(pool.Close)
 
 			return expiryStores{
-				sessions: mustStore(pgx.NewSessionStore(pool, c, pgx.WithClock(clk))),
-				oneTime:  mustStore(pgx.NewOneTimeStore(pool, pgx.WithClock(clk))),
-				attempts: mustStore(pgx.NewAttemptStore(pool)),
-				apiKeys:  mustStore(pgx.NewAPIKeyStore(pool)),
-				links:    mustStore(pgx.NewLinkStore(pool)),
+				sessions: mustStore(pgxstore.NewSessionStore(pool, c, pgxstore.WithClock(clk))),
+				oneTime:  mustStore(pgxstore.NewOneTimeStore(pool, pgxstore.WithClock(clk))),
+				attempts: mustStore(pgxstore.NewAttemptStore(pool)),
+				apiKeys:  mustStore(pgxstore.NewAPIKeyStore(pool)),
+				links:    mustStore(pgxstore.NewLinkStore(pool)),
 				enrolments: mustStore(
-					pgx.NewEnrolmentStore(pool, c, pgx.WithClock(clk))),
-				signing: mustStore(pgx.NewSigningKeyStore(pool, c)),
+					pgxstore.NewEnrolmentStore(pool, c, pgxstore.WithClock(clk))),
+				signing: mustStore(pgxstore.NewSigningKeyStore(pool, c)),
 			}
 		},
 	},
@@ -156,10 +157,10 @@ func TestExpiryTasks(t *testing.T) {
 		name string
 		// open builds one adapter's stores over conn.
 		open   func(t *testing.T, conn test.PostgresConn, c seal.Cipher, clk clock.Clock) expiryStores
-		assert func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Manager, report expiry.Report, issuedBefore int)
+		assert func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Tokens, report expiry.Report, issuedBefore int)
 	}
 
-	assertSwept := func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Manager, report expiry.Report, issuedBefore int) {
+	assertSwept := func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Tokens, report expiry.Report, issuedBefore int) {
 		t.Helper()
 
 		// Every task ran, in the order declared, and reported what it removed.
@@ -184,7 +185,7 @@ func TestExpiryTasks(t *testing.T) {
 		_, err := st.sessions.Load(t.Context(), "live-session")
 		assert.NoError(t, err, "the live session still loads")
 		_, err = st.sessions.Load(t.Context(), "expired-session")
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "the expired session is gone, not merely expired")
+		assert.ErrorIs(t, err, session.ErrNotFound, "the expired session is gone, not merely expired")
 
 		// One-time tokens: the one past its expiry and its window is gone; the
 		// one expired but inside the window and the live one remain, and so does
@@ -225,12 +226,12 @@ func TestExpiryTasks(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(start)
 			st := tc.open(t, conn, storefix.TestCipher(t), clk)
 
-			mgr, err := onetime.NewManager(tokenPurpose, onetime.WithStore(st.oneTime), onetime.WithClock(clk))
+			mgr, err := onetime.New(tokenPurpose, onetime.WithStore(st.oneTime), onetime.WithClock(clk))
 			require.NoError(t, err)
-			lockout, err := policy.NewAccountLockoutPolicy(
-				policy.WithAttemptStore(st.attempts),
-				policy.WithLockoutClock(clk),
-				policy.WithSlidingLockout(5, lockoutWindow),
+			lockoutPolicy, err := lockout.New(
+				lockout.WithAttemptStore(st.attempts),
+				lockout.WithClock(clk),
+				lockout.WithSliding(5, lockoutWindow),
 			)
 			require.NoError(t, err)
 
@@ -245,7 +246,7 @@ func TestExpiryTasks(t *testing.T) {
 			_, _, err = mgr.Issue(ctx, tokenSubject)
 			require.NoError(t, err)
 			for range 3 {
-				require.NoError(t, lockout.RecordFailure(ctx, failedAccount))
+				require.NoError(t, lockoutPolicy.RecordFailure(ctx, failedAccount))
 			}
 			clk.Advance(90 * time.Minute)
 			_, _, err = mgr.Issue(ctx, tokenSubject)
@@ -254,7 +255,7 @@ func TestExpiryTasks(t *testing.T) {
 			_, _, err = mgr.Issue(ctx, tokenSubject)
 			require.NoError(t, err)
 			for range 2 {
-				require.NoError(t, lockout.RecordFailure(ctx, failedAccount))
+				require.NoError(t, lockoutPolicy.RecordFailure(ctx, failedAccount))
 			}
 			clk.Advance(5 * time.Minute)
 			now := clk.Now()
@@ -286,7 +287,7 @@ func TestExpiryTasks(t *testing.T) {
 			runner, err := expiry.NewRunner([]expiry.Task{
 				session.ExpiryTask(st.sessions),
 				onetime.ExpiryTask(mgr),
-				policy.LockoutExpiryTask(lockout),
+				lockout.ExpiryTask(lockoutPolicy),
 			})
 			require.NoError(t, err)
 
@@ -315,8 +316,8 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 	type env struct {
 		db      *sql.DB
-		lockout *policy.AccountLockoutPolicy
-		streaks policy.FailureStreakStore
+		lockout *lockout.Policy
+		streaks lockout.FailureStreakStore
 		clk     *clockwork.FakeClock
 	}
 
@@ -342,7 +343,7 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 				d := e.lockout.Evaluate(t.Context(), &policy.Input{Username: holdName, Now: e.clk.Now()})
 				assert.Equal(t, policy.Deny, d.Outcome)
-				assert.ErrorIs(t, d.Reason, policy.ErrAccountHeld)
+				assert.ErrorIs(t, d.Reason, lockout.ErrAccountHeld)
 				assert.Equal(t, 1, countRows(t, e.db, "login_failure_streaks", "held_at IS NOT NULL"))
 			},
 		},
@@ -387,27 +388,27 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 			store, err := sqlstore.NewAttemptStore(conn.DB)
 			require.NoError(t, err)
-			lockout, err := policy.NewAccountLockoutPolicy(
-				policy.WithAttemptStore(store),
-				policy.WithLockoutClock(clk),
-				policy.WithLockoutCap(capLimit),
+			lockoutPolicy, err := lockout.New(
+				lockout.WithAttemptStore(store),
+				lockout.WithClock(clk),
+				lockout.WithFailureStreakLimit(capLimit),
 			)
 			require.NoError(t, err)
 
 			for range tc.failures {
-				require.NoError(t, lockout.Attempts().RecordFailure(ctx, holdName, clk.Now()))
+				require.NoError(t, lockoutPolicy.Attempts().RecordFailure(ctx, holdName, clk.Now()))
 			}
 			clk.Advance(tc.newestAge)
 			require.Equal(t, now, clk.Now())
 
-			runner, err := expiry.NewRunner([]expiry.Task{policy.LockoutExpiryTask(lockout)})
+			runner, err := expiry.NewRunner([]expiry.Task{lockout.ExpiryTask(lockoutPolicy)})
 			require.NoError(t, err)
 			report, err := runner.RunOnce(ctx)
 			require.NoError(t, err)
 			require.Len(t, report.Results, 1)
 			require.NoError(t, report.Results[0].Err)
 
-			tc.assert(t, env{db: conn.DB, lockout: lockout, streaks: store, clk: clk})
+			tc.assert(t, env{db: conn.DB, lockout: lockoutPolicy, streaks: store, clk: clk})
 		})
 	}
 }

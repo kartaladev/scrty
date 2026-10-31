@@ -224,6 +224,8 @@ func TestV7Generator_ClockOption(t *testing.T) {
 	}
 }
 
+// TestV7Generator_Concurrent stands apart from the tables above: it shares one generator
+// across 64 goroutines instead of building one per case.
 func TestV7Generator_Concurrent(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +267,8 @@ func TestV7Generator_Concurrent(t *testing.T) {
 	assert.Equal(t, byBytes, byString)
 }
 
+// TestV7Generator_RandomSourceFailure stands apart from the tables above: its generator reads
+// from a failing entropy source, and it asserts the error rather than the identifier.
 func TestV7Generator_RandomSourceFailure(t *testing.T) {
 	t.Parallel()
 

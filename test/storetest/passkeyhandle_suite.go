@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/passkey"
 )
 
 // passkeyOffer returns a passkey.HandleSize offer filled with b.

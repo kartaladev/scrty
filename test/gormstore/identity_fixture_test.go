@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/migrate"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/test"
 )
 

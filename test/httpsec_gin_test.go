@@ -16,9 +16,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/factor"
-	"github.com/kartaladev/scrty/ginsec"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/ginsec"
 	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 	identitytest "github.com/kartaladev/scrty/test/identity"
@@ -163,7 +163,7 @@ func TestConformanceGin(t *testing.T) {
 // reused one revokes nothing the live one depends on.
 type sessionReferenceFixture struct {
 	chain    *httpsec.Chain
-	sessions *session.Manager
+	sessions *session.Sessions
 	live     string
 	reused   string
 	// successor is the identifier the rotation of the reused session issued;
@@ -176,7 +176,7 @@ func newSessionReferenceFixture(t *testing.T) sessionReferenceFixture {
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 
-	sessions, err := session.NewManager(session.WithClock(clk),
+	sessions, err := session.New(session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 
@@ -236,7 +236,7 @@ func TestSessionBearerGin(t *testing.T) {
 				assert.Empty(t, seen, "the route never ran")
 
 				_, err := f.sessions.Load(t.Context(), f.successor)
-				require.ErrorIs(t, err, session.ErrSessionNotFound, "the family was revoked, successor included")
+				require.ErrorIs(t, err, session.ErrNotFound, "the family was revoked, successor included")
 			},
 		},
 	}

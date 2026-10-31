@@ -13,12 +13,12 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // The library's own key manager is a key set provider, so a consumer wires the
 // one they already have rather than marshalling a set of their own.
-var _ httpsec.KeySetProvider = (*signingkey.KeyManager)(nil)
+var _ httpsec.KeySetProvider = (*signingkey.Keys)(nil)
 
 // errKeySetUnavailable is what a provider that cannot produce a key set fails
 // with, so a test can assert the chain passed that failure on rather than

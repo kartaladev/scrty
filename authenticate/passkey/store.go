@@ -1,0 +1,467 @@
+package passkey
+
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
+)
+
+// CredentialStore keeps passkey credentials.
+//
+// The library uses NewMemoryCredentialStore when a consumer supplies none.
+// Any implementation of this contract may be used in its place; durable ones
+// seal the emailed code at rest, and a read that cannot open a sealed code is
+// an error, never a missing code.
+//
+// Every state change is one conditional write, decided by the store rather
+// than by a read before it, so concurrent callers cannot both pass a guard. A
+// write that is refused changes nothing and reports false with a nil error;
+// a write to a credential that does not exist, or that is not the named
+// user's, is refused the same way. The error is reserved for the store
+// failing.
+type CredentialStore interface {
+	// Insert stores c. It returns ErrDuplicateCredential when c's credential
+	// ID, or its library ID, is already stored, whatever user holds it; the
+	// write decides, so of concurrent inserts of one credential ID exactly one
+	// succeeds.
+	Insert(ctx context.Context, c *Credential) error
+	// InsertWithin stores c only while c's user holds fewer than limit
+	// credentials in every state, as Count counts them, and reports whether
+	// it stored it. A refused insert is (false, nil) and writes nothing; it is
+	// an outcome, not a failure. A limit below one refuses every insert.
+	//
+	// The count and the insert are one decision. Of several callers racing to
+	// insert for one user, the user never ends up holding more than limit
+	// credentials through them, on this process or on another replica: a
+	// Count followed by an Insert would let every racer read the same count
+	// below the limit and all of them write. In memory the decision is taken
+	// under one lock; in SQL, under a lock of the user's own, held until the
+	// insert commits. Callers for different users do not wait for one another.
+	//
+	// Under the limit, a credential ID or library ID already stored is
+	// ErrDuplicateCredential, as for Insert. At the limit the insert is refused
+	// whatever its identifiers, and a store may report that refusal as
+	// (false, nil) without having looked them up. The library uses it for a
+	// registration finish; Insert stays for seeding and import, where no
+	// limit applies.
+	InsertWithin(ctx context.Context, c *Credential, limit int) (bool, error)
+	// FindByCredentialID returns the credential with the WebAuthn credential
+	// ID credID, or ErrNotFound.
+	FindByCredentialID(ctx context.Context, credID []byte) (*Credential, error)
+	// Find returns user's credential cid, or ErrNotFound when there is none or
+	// it is another user's.
+	Find(ctx context.Context, user identity.UserID, cid id.ID) (*Credential, error)
+	// List returns user's credentials in every state, ordered by
+	// CreatedAt, ties broken by the library ID (SQL: ORDER BY created_at, id).
+	List(ctx context.Context, user identity.UserID) ([]*Credential, error)
+	// Count counts user's credentials in every state.
+	Count(ctx context.Context, user identity.UserID) (int, error)
+	// RecordAssertion sets the counter, the backup-state flag and the last-use
+	// time of credential cid, only where it is active and its stored counter
+	// is lower than signCount or both are zero. It reports whether this call
+	// recorded it, so of concurrent recordings of one counter exactly one
+	// reports true.
+	RecordAssertion(ctx context.Context, cid id.ID, signCount uint32, backupState bool, at time.Time) (bool, error)
+	// RecordUse sets the backup-state flag and the last-use time of
+	// credential cid without touching its counter, only where it is active
+	// (SQL: UPDATE ... SET backup_state, last_used_at WHERE id = cid AND
+	// state = active). It reports whether this call changed a credential; a
+	// credential that is missing, pending or suspended is false and nil. The
+	// library calls it for an accepted assertion whose counter write was
+	// refused and then allowed as a clone.
+	RecordUse(ctx context.Context, cid id.ID, backupState bool, at time.Time) (bool, error)
+	// Suspend moves credential cid from active to suspended, and reports
+	// whether this call did. Suspension is terminal.
+	Suspend(ctx context.Context, cid id.ID) (bool, error)
+	// ClearReason clears the pending reason r of user's credential cid, only
+	// where r is exactly one reason, PendingSavedCodes or PendingEmailCode,
+	// and the credential is pending with it set; any other r, such as zero, a
+	// combination or an unknown bit, is refused and changes nothing. Clearing the last reason
+	// makes it active in the same write, and clearing PendingEmailCode drops
+	// its emailed code. It returns the state that results and true, or the
+	// zero State and false when refused.
+	ClearReason(ctx context.Context, user identity.UserID, cid id.ID, r PendingReason) (State, bool, error)
+	// ChargeEmailAttempt charges one attempt against the emailed code of
+	// user's credential cid, only where the credential is pending with
+	// PendingEmailCode set, the code is outstanding, at is before its expiry
+	// and fewer than MaxEmailCodeAttempts are charged. It returns the stored
+	// code, with the attempt counted, for the caller to compare, and true; or
+	// nil and false when refused.
+	ChargeEmailAttempt(ctx context.Context, user identity.UserID, cid id.ID, at time.Time) (*EmailCode, bool, error)
+	// Rename sets the name of user's credential cid, and reports whether it
+	// exists. The name is stored as given; callers normalise it.
+	Rename(ctx context.Context, user identity.UserID, cid id.ID, name string) (bool, error)
+	// Delete removes user's credential cid, and reports whether this call
+	// removed it.
+	Delete(ctx context.Context, user identity.UserID, cid id.ID) (bool, error)
+	// DeleteAwaitingSavedCodes removes every credential of user whose
+	// PendingSavedCodes reason is set, and reports how many it removed.
+	DeleteAwaitingSavedCodes(ctx context.Context, user identity.UserID) (int, error)
+	// DeleteUser removes every credential of user, and reports how many it
+	// removed.
+	DeleteUser(ctx context.Context, user identity.UserID) (int, error)
+}
+
+var _ CredentialStore = (*MemoryCredentialStore)(nil)
+
+// MemoryCredentialStore keeps passkey credentials in process memory. It is
+// the CredentialStore the library uses when a consumer supplies none, and it
+// is safe for concurrent use.
+//
+// Its limit is stated: it holds this process's credentials only. A restart
+// forgets every passkey, so users must register theirs again, and behind
+// several replicas each keeps its own set, so a passkey registered on one is
+// unknown to the others. Supply a durable, shared CredentialStore for anything
+// beyond a single process.
+//
+// Every conditional write runs its check and its change under one lock, so it
+// is decided by the write as the contract requires. The store keeps its own
+// copies of every byte slice, transport list and emailed code, in and out, so
+// nothing a caller holds can reach stored state. It keeps emailed codes in
+// plain memory; there is nothing at rest to seal.
+type MemoryCredentialStore struct {
+	mu    sync.Mutex
+	byID  map[id.ID]*Credential
+	index map[string]id.ID // WebAuthn credential ID, as a string copy → library ID
+}
+
+// NewMemoryCredentialStore returns an empty in-memory store.
+//
+// It takes no configuration: a deployment that needs durability replaces the
+// whole port rather than an option on this one.
+func NewMemoryCredentialStore() *MemoryCredentialStore {
+	return &MemoryCredentialStore{
+		byID:  make(map[id.ID]*Credential),
+		index: make(map[string]id.ID),
+	}
+}
+
+// Insert stores a copy of c, refusing a credential ID or library ID already
+// stored with ErrDuplicateCredential.
+func (s *MemoryCredentialStore) Insert(_ context.Context, c *Credential) error {
+	cp := copyCredential(c)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.insertLocked(cp)
+}
+
+// insertLocked stores cp, the caller's own copy, for a caller holding s.mu.
+func (s *MemoryCredentialStore) insertLocked(cp *Credential) error {
+	if _, ok := s.index[string(cp.CredentialID)]; ok {
+		return ErrDuplicateCredential
+	}
+
+	if _, ok := s.byID[cp.ID]; ok {
+		return ErrDuplicateCredential
+	}
+
+	s.byID[cp.ID] = cp
+	s.index[string(cp.CredentialID)] = cp.ID
+
+	return nil
+}
+
+// InsertWithin stores a copy of c only while c's user holds fewer than limit
+// credentials, in every state, and reports whether it did. The count and the
+// insert happen under one lock, so of several callers racing for one user no
+// more than limit are told they stored a credential. Under the limit, a
+// credential ID or library ID already stored is ErrDuplicateCredential.
+func (s *MemoryCredentialStore) InsertWithin(_ context.Context, c *Credential, limit int) (bool, error) {
+	cp := copyCredential(c)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.countLocked(cp.User) >= limit {
+		return false, nil
+	}
+	if err := s.insertLocked(cp); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
+// FindByCredentialID returns a copy of the credential with credential ID
+// credID, or ErrNotFound.
+func (s *MemoryCredentialStore) FindByCredentialID(_ context.Context, credID []byte) (*Credential, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cid, ok := s.index[string(credID)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	return copyCredential(s.byID[cid]), nil
+}
+
+// Find returns a copy of user's credential cid, or ErrNotFound.
+func (s *MemoryCredentialStore) Find(_ context.Context, user identity.UserID, cid id.ID) (*Credential, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c := s.owned(user, cid)
+	if c == nil {
+		return nil, ErrNotFound
+	}
+
+	return copyCredential(c), nil
+}
+
+// List returns copies of user's credentials, oldest CreatedAt first, ties in
+// library ID order.
+func (s *MemoryCredentialStore) List(_ context.Context, user identity.UserID) ([]*Credential, error) {
+	s.mu.Lock()
+
+	var out []*Credential
+
+	for _, c := range s.byID {
+		if c.User == user {
+			out = append(out, copyCredential(c))
+		}
+	}
+
+	s.mu.Unlock()
+
+	slices.SortFunc(out, func(a, b *Credential) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), bytes.Compare(a.ID[:], b.ID[:]))
+	})
+
+	return out, nil
+}
+
+// Count counts user's credentials.
+func (s *MemoryCredentialStore) Count(_ context.Context, user identity.UserID) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.countLocked(user), nil
+}
+
+// countLocked is Count for a caller holding s.mu.
+func (s *MemoryCredentialStore) countLocked(user identity.UserID) int {
+	n := 0
+
+	for _, c := range s.byID {
+		if c.User == user {
+			n++
+		}
+	}
+
+	return n
+}
+
+// RecordAssertion records the counter, backup state and last use of an
+// active credential whose stored counter is lower than signCount, or where
+// both are zero, and reports whether this call did.
+func (s *MemoryCredentialStore) RecordAssertion(
+	_ context.Context, cid id.ID, signCount uint32, backupState bool, at time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.byID[cid]
+	if !ok || c.State != StateActive {
+		return false, nil
+	}
+
+	if c.SignCount >= signCount && (c.SignCount != 0 || signCount != 0) {
+		return false, nil
+	}
+
+	c.SignCount = signCount
+	c.BackupState = backupState
+	c.LastUsedAt = at
+
+	return true, nil
+}
+
+// RecordUse records the backup state and last use of an active credential,
+// leaving its counter, and reports whether this call did.
+func (s *MemoryCredentialStore) RecordUse(
+	_ context.Context, cid id.ID, backupState bool, at time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.byID[cid]
+	if !ok || c.State != StateActive {
+		return false, nil
+	}
+
+	c.BackupState = backupState
+	c.LastUsedAt = at
+
+	return true, nil
+}
+
+// Suspend moves an active credential to suspended, and reports whether this
+// call did.
+func (s *MemoryCredentialStore) Suspend(_ context.Context, cid id.ID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.byID[cid]
+	if !ok || c.State != StateActive {
+		return false, nil
+	}
+
+	c.State = StateSuspended
+
+	return true, nil
+}
+
+// ClearReason clears the single reason r of user's pending credential cid
+// where it is set, activating the credential when no reason remains and
+// dropping its emailed code when r is PendingEmailCode. Any other r is
+// refused.
+func (s *MemoryCredentialStore) ClearReason(
+	_ context.Context, user identity.UserID, cid id.ID, r PendingReason,
+) (State, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c := s.owned(user, cid)
+	if (r != PendingSavedCodes && r != PendingEmailCode) || c == nil ||
+		c.State != StatePending || c.Pending&r == 0 {
+		return 0, false, nil
+	}
+
+	c.Pending &^= r
+	if r&PendingEmailCode != 0 {
+		c.EmailCode = nil
+	}
+
+	if c.Pending == 0 {
+		c.State = StateActive
+	}
+
+	return c.State, true, nil
+}
+
+// ChargeEmailAttempt charges one attempt against the outstanding, unexpired
+// emailed code of user's pending credential cid while fewer than
+// MaxEmailCodeAttempts are charged, and returns a copy of the code.
+func (s *MemoryCredentialStore) ChargeEmailAttempt(
+	_ context.Context, user identity.UserID, cid id.ID, at time.Time,
+) (*EmailCode, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c := s.owned(user, cid)
+	if c == nil || c.State != StatePending || c.Pending&PendingEmailCode == 0 || c.EmailCode == nil {
+		return nil, false, nil
+	}
+
+	code := c.EmailCode
+	if !at.Before(code.ExpiresAt) || code.Attempts >= MaxEmailCodeAttempts {
+		return nil, false, nil
+	}
+
+	code.Attempts++
+	out := *code
+
+	return &out, true, nil
+}
+
+// Rename sets the name of user's credential cid, and reports whether it
+// exists.
+func (s *MemoryCredentialStore) Rename(_ context.Context, user identity.UserID, cid id.ID, name string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c := s.owned(user, cid)
+	if c == nil {
+		return false, nil
+	}
+
+	c.Name = name
+
+	return true, nil
+}
+
+// Delete removes user's credential cid, and reports whether this call did.
+func (s *MemoryCredentialStore) Delete(_ context.Context, user identity.UserID, cid id.ID) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c := s.owned(user, cid)
+	if c == nil {
+		return false, nil
+	}
+
+	s.remove(c)
+
+	return true, nil
+}
+
+// DeleteAwaitingSavedCodes removes user's credentials with PendingSavedCodes
+// set, and reports how many.
+func (s *MemoryCredentialStore) DeleteAwaitingSavedCodes(_ context.Context, user identity.UserID) (int, error) {
+	return s.deleteWhere(func(c *Credential) bool {
+		return c.User == user && c.Pending&PendingSavedCodes != 0
+	}), nil
+}
+
+// DeleteUser removes every credential of user, and reports how many.
+func (s *MemoryCredentialStore) DeleteUser(_ context.Context, user identity.UserID) (int, error) {
+	return s.deleteWhere(func(c *Credential) bool { return c.User == user }), nil
+}
+
+// owned returns user's stored credential cid, or nil. The caller holds mu.
+func (s *MemoryCredentialStore) owned(user identity.UserID, cid id.ID) *Credential {
+	c, ok := s.byID[cid]
+	if !ok || c.User != user {
+		return nil
+	}
+
+	return c
+}
+
+// remove drops c from both maps. The caller holds mu.
+func (s *MemoryCredentialStore) remove(c *Credential) {
+	delete(s.byID, c.ID)
+	delete(s.index, string(c.CredentialID))
+}
+
+func (s *MemoryCredentialStore) deleteWhere(match func(*Credential) bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+
+	for _, c := range s.byID {
+		if match(c) {
+			s.remove(c)
+			n++
+		}
+	}
+
+	return n
+}
+
+// copyCredential returns a deep copy of c: no slice or pointer is shared.
+func copyCredential(c *Credential) *Credential {
+	cp := *c
+	cp.CredentialID = bytes.Clone(c.CredentialID)
+	cp.PublicKey = bytes.Clone(c.PublicKey)
+	cp.Transports = slices.Clone(c.Transports)
+	cp.AAGUID = bytes.Clone(c.AAGUID)
+	cp.AttestationStatement = bytes.Clone(c.AttestationStatement)
+
+	if c.EmailCode != nil {
+		code := *c.EmailCode
+		cp.EmailCode = &code
+	}
+
+	return &cp
+}

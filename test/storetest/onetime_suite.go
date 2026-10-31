@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The purpose and subject most one-time records carry. The subject has mixed

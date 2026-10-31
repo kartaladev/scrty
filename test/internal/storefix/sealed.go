@@ -13,13 +13,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // storeOver builds a store with newWith over handle and the default cipher
@@ -49,7 +49,7 @@ func SealedSessions[H any](
 		},
 		Get: func(ctx context.Context, s session.Store, owner string) ([]byte, bool, error) {
 			sess, err := s.Load(ctx, owner)
-			if errors.Is(err, session.ErrSessionNotFound) {
+			if errors.Is(err, session.ErrNotFound) {
 				return nil, false, nil
 			}
 			if err != nil {
@@ -191,7 +191,7 @@ func RunEnrolmentBindings(t *testing.T, raw *sql.DB, codes storetest.Sealed[mfa.
 	key := make([]byte, seal.KeySize)
 	_, err := rand.Read(key)
 	require.NoError(t, err)
-	kr, err := seal.NewKeyring(seal.WithEncryptionKey("k1", key))
+	kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("k1", key))
 	require.NoError(t, err)
 
 	// refused requires owner's enrolment to fail to open for its binding.

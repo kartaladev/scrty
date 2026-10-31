@@ -7,16 +7,16 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
 //go:generate mockgen -destination=userloader_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/identity UserLoader
-//go:generate mockgen -destination=encoder_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/password Encoder
+//go:generate mockgen -destination=encoder_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/authenticate/password Encoder
 //go:generate mockgen -destination=idgenerator_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/pkg/id Generator
 
 // referencePassword is the input the reference hash is produced from.
@@ -69,7 +69,7 @@ func WithPasswordIDGenerator(g id.Generator) PasswordOption {
 	return func(a *passwordAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
-// WithPasswordAuthenticatorLogInterval sets how often one refusal reason may be
+// WithPasswordLogInterval sets how often one refusal reason may be
 // recorded.
 //
 // The default is one minute. It governs this provider's refusal logs and
@@ -81,18 +81,18 @@ func WithPasswordIDGenerator(g id.Generator) PasswordOption {
 // override for a deployment that ships its logs somewhere that wants the whole
 // stream — and the stated cost is that an attacker choosing the traffic then
 // chooses the log volume.
-func WithPasswordAuthenticatorLogInterval(d time.Duration) PasswordOption {
+func WithPasswordLogInterval(d time.Duration) PasswordOption {
 	return func(a *passwordAuthenticator) { a.logEvery = d; a.logEverySet = true }
 }
 
-// WithPasswordAuthenticatorLogger replaces the logger. The default is
+// WithPasswordLogger replaces the logger. The default is
 // slog.Default().
 //
 // A nil logger is ignored rather than refused: unlike a port the provider
 // cannot work without, a nil logger has an obvious safe reading — the caller
 // does not want to choose this component's logger — and refusing it would make
 // configuring logging mandatory.
-func WithPasswordAuthenticatorLogger(l *slog.Logger) PasswordOption {
+func WithPasswordLogger(l *slog.Logger) PasswordOption {
 	return func(a *passwordAuthenticator) {
 		if l != nil {
 			a.logger = l
@@ -100,12 +100,12 @@ func WithPasswordAuthenticatorLogger(l *slog.Logger) PasswordOption {
 	}
 }
 
-// WithUsernameInRefusalLogs writes the submitted username in refusal records,
+// WithPasswordUsernameInRefusalLogs writes the submitted username in refusal records,
 // which by default carry the reason only.
 //
 // Users type email addresses, and sometimes passwords, into the username
 // field, and every unknown username then reaches the log.
-func WithUsernameInRefusalLogs() PasswordOption {
+func WithPasswordUsernameInRefusalLogs() PasswordOption {
 	return func(a *passwordAuthenticator) { a.logUsername = true }
 }
 
@@ -125,13 +125,17 @@ type RefusalLogFlusher interface {
 }
 
 // The reasons a refusal is recorded under. They are the sampler's keys, so each
-// is held back independently: a flood of unknown usernames cannot bury the one
-// record saying the user store is down. reasonUserLoadFailed also names the
-// user loader in diag.Failure's record, so its value is the word an operator
-// sees, not a synonym for it.
+// is held back independently: a flood of unknown usernames, or of clients
+// hanging up, cannot bury the one record saying the user store is down.
+// reasonUserLoadFailed also names the user loader in diag.Failure's record, so
+// its value is the word an operator sees, not a synonym for it.
 const (
-	reasonUnknownUser     = "unknown-user"
-	reasonUserLoadFailed  = "user-loader"
+	reasonUnknownUser    = "unknown-user"
+	reasonUserLoadFailed = "user-loader"
+	// reasonCallerEnded names a load the caller's own context ended. It is not
+	// an outage, so it has a key of its own.
+	reasonCallerEnded = "caller-ended"
+
 	reasonWrongPassword   = "wrong-password"
 	reasonAccountInactive = "account-inactive"
 	// reasonNoPasswordHash and reasonUnrecognisedHash name a known user whose
@@ -162,7 +166,7 @@ type passwordAuthenticator struct {
 	logEverySet bool
 
 	// logUsername writes the submitted username into a refusal record. Off by
-	// default; set by WithUsernameInRefusalLogs.
+	// default; set by WithPasswordUsernameInRefusalLogs.
 	logUsername bool
 
 	// refusals holds back repeated refusal records. Its reporter writes to the
@@ -194,7 +198,7 @@ type passwordAuthenticator struct {
 // A refusal record caused by the user loader carries a fixed reason and the
 // error's Go type, never its text: log inside your own implementation of the
 // user loader for full detail. Refusal records omit the submitted username
-// unless WithUsernameInRefusalLogs is set; see its documentation for why that
+// unless WithPasswordUsernameInRefusalLogs is set; see its documentation for why that
 // is not the default.
 func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...PasswordOption) (Authenticator, error) {
 	if nilcheck.IsNil(users) {
@@ -248,10 +252,29 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 
 // Authenticate resolves a username and password against the user loader.
 //
-// Every refusal returns the bare ErrAuthenticationFailed, with nothing wrapped
-// and nothing added, so an unknown username, a wrong password and a user store
-// that is down are one answer rather than three. What separates them goes to
-// the log, where an operator sees it and a caller does not.
+// Every refusal of the credential returns the bare ErrAuthenticationFailed,
+// with nothing wrapped and nothing added, so an unknown username, a wrong
+// password and an inactive account are one answer rather than three. What
+// separates them goes to the log, where an operator sees it and a caller does
+// not.
+//
+// A user loader that fails with anything other than identity.ErrUserNotFound
+// is not a refusal: the credential was never judged. That returns the bare
+// ErrUnavailable, with none of the loader's text, and an error-level record
+// naming the failure's Go type. It costs the same verification against the
+// reference hash as an unknown username, so its timing tells nothing either.
+// See ErrUnavailable for what it reveals and how httpsec answers it.
+//
+// The one load failure that is not an outage is the caller's own: when ctx has
+// ended and the loader's error is, or wraps, ctx's own error or its cause, the
+// store did not fail, the caller left. That returns the uniform failure joined
+// with ctx's error, and with its cause when that differs, so the error matches
+// ErrAuthenticationFailed and ctx.Err() alike, and nothing of the loader's own
+// error. A caller that charges refusals can charge it, so a client that hangs
+// up mid-login cannot spend password work that nothing counts, and can tell
+// from the error that no password was compared. A loader that fails with some
+// other error after the caller left, or with a deadline of its own while the
+// caller still waits, is still unavailable.
 //
 // A username the store does not know is still verified, against the reference
 // hash built at construction. Returning early there would make the unknown-user
@@ -298,23 +321,41 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 		// Deliberately unused: the verification is the point, not its verdict.
 		_ = a.enc.Match(presented, a.reference)
 
-		switch {
-		case err == nil, errors.Is(err, identity.ErrUserNotFound):
+		if err == nil || errors.Is(err, identity.ErrUserNotFound) {
 			// Routine: someone mistyped a username, or is guessing at them.
 			a.refuse(ctx, slog.LevelDebug, reasonUnknownUser, creds.Username,
 				slog.String("reason", reasonUnknownUser))
-		default:
-			// Not routine: the store could not answer, so nobody can log in
-			// and an operator has something to fix. diag.Failure names the
-			// failure and the error's Go type, never its text: the store's
-			// error can quote another column of the row, or a value the
-			// library never saw, and a consumer who wants that detail logs
-			// it inside their own implementation of the user loader.
-			a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
-				diag.Failure(reasonUserLoadFailed, err)...)
+
+			return nil, ErrAuthenticationFailed
 		}
 
-		return nil, ErrAuthenticationFailed
+		// A load the caller's own cancellation or deadline ended judged
+		// nothing, and the store did not fail: the caller left. It is recorded
+		// at debug, under a key of its own so a burst of hang-ups cannot take
+		// the outage's place in the sampled window. It stays the uniform
+		// failure, which the endpoints charge to the source, so a client that
+		// hangs up mid-login cannot spend password work no throttle pays for;
+		// joined with the context's error, so they can tell no password was
+		// compared and record nothing for the username.
+		if causedByCaller(ctx, err) {
+			a.refuse(ctx, slog.LevelDebug, reasonCallerEnded, creds.Username,
+				diag.Failure(reasonCallerEnded, err)...)
+
+			return nil, endedByCaller(ctx)
+		}
+
+		// Not routine: the store could not answer, so nobody can log in and an
+		// operator has something to fix. diag.Failure names the failure and
+		// the error's Go type, never its text: the store's error can quote
+		// another column of the row, or a value the library never saw, and a
+		// consumer who wants that detail logs it inside their own
+		// implementation of the user loader.
+		a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
+			diag.Failure(reasonUserLoadFailed, err)...)
+
+		// Bare: the loader's text stays out of the error as it stays out of
+		// the log.
+		return nil, ErrUnavailable
 	}
 
 	if reason, level, usable := a.usableHash(details.Password); !usable {
@@ -378,6 +419,30 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 	}, nil
 }
 
+// causedByCaller reports whether err is the caller's own context ending, rather
+// than the user loader failing on its own: ctx has ended, and err is or wraps
+// ctx's error or its cause. A cancellation or deadline the loader met on a
+// context of its own does not count, since the caller was still waiting.
+func causedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil &&
+		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
+}
+
+// endedByCaller is the uniform failure for a load ctx's own end cut short:
+// ErrAuthenticationFailed joined with ctx's error, and with its cause when
+// that is a different error. It carries nothing of the loader's own error,
+// whose text may quote what the store holds.
+func endedByCaller(ctx context.Context) error {
+	ctxErr := ctx.Err()
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(ctxErr, cause) {
+		return errors.Join(ErrAuthenticationFailed, ctxErr, cause)
+	}
+
+	return errors.Join(ErrAuthenticationFailed, ctxErr)
+}
+
 // usableHash reports whether the stored hash is one the encoder would verify,
 // and when it is not, the refusal reason and level to record it under.
 //
@@ -413,7 +478,7 @@ func (a *passwordAuthenticator) usableHash(stored []byte) (reason string, level 
 // the reason it is keyed by: what a refusal reveals belongs in the log, not in
 // the error, and a record that quoted the secret would move the secret into
 // every system the logs are shipped to. It also never carries the submitted
-// username, unless the consumer set WithUsernameInRefusalLogs: users type
+// username, unless the consumer set WithPasswordUsernameInRefusalLogs: users type
 // email addresses, and sometimes passwords, into that field, and every
 // unknown username would otherwise reach the log.
 //

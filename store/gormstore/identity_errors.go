@@ -1,0 +1,54 @@
+package gormstore
+
+import (
+	"context"
+	"database/sql"
+	"regexp"
+
+	"github.com/kartaladev/scrty/internal/storekit"
+)
+
+// dbFailed wraps err, a failure of a database call the identity store made,
+// like failed, but first cuts it from the driver's error value
+// ([storekit.Detached]). The identity store returns only this for a database
+// failure: its tables hold usernames and password hashes, which a driver
+// error's detail fields can carry, and gorm hands the driver's error back as
+// it is. The security-state stores keep the driver error in the chain; their
+// rows hold neither.
+func dbFailed(op string, err error) error {
+	return failed(op, storekit.Detached(err, detachedKept))
+}
+
+// scanColumnErr matches the prefix database/sql's Rows.Scan gives a
+// column-conversion failure: "sql: Scan error on column index N, name "col":
+// ...". The text after that colon can quote the offending value, the only
+// place a Scan call's error text can carry one. database/sql quotes the name
+// with %q, so a quote inside it arrives backslash-escaped; the second group
+// spans such escapes and captures the quoted name, quotes included, ready to
+// reuse as it stands.
+var scanColumnErr = regexp.MustCompile(`^sql: Scan error on column index (\d+), name ("(?:[^"\\]|\\.)*"):`)
+
+// scanFailed wraps err, a failure of a Scan call the identity store made,
+// like dbFailed. When err is a database/sql column-conversion failure, its
+// text is replaced with the column's index and name alone, dropping the value
+// database/sql's own error text would otherwise quote; any other failure a
+// Scan call can return (a canceled context, a lost connection) is wrapped
+// exactly as dbFailed would wrap it, since none of those carry a scanned
+// value.
+func scanFailed(op string, err error) error {
+	// The text is parsed, never returned: database/sql writes this prefix in
+	// a fixed format, and only the column index and the column name, which
+	// is the library's own statement's, are taken from it.
+	m := scanColumnErr.FindStringSubmatch(err.Error()) //nolint:forbidigo // fixed database/sql format; only the index and library-owned column name are kept
+	if m == nil {
+		return dbFailed(op, err)
+	}
+
+	text := "scan error on column index " + m[1] + ", name " + m[2]
+
+	return failed(op, storekit.DetachedText(err, text, detachedKept))
+}
+
+// detachedKept is the sentinels a detached error stays matchable against when
+// the driver's error matched them. None carries a value.
+var detachedKept = []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, sql.ErrConnDone}

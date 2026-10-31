@@ -30,13 +30,13 @@ func OptionalDigestArg(b []byte) any {
 
 // NotFoundUnless is the outcome of a conditional session write that changed
 // no row, given whether the session is stored: err when reading that failed,
-// nil when the session is stored, and session.ErrSessionNotFound when not.
+// nil when the session is stored, and session.ErrNotFound when not.
 func NotFoundUnless(exists bool, err error) error {
 	if err != nil {
 		return err
 	}
 	if !exists {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 
 	return nil
@@ -44,33 +44,33 @@ func NotFoundUnless(exists bool, err error) error {
 
 // SupersedeRefusal is the outcome of a supersession whose conditional update
 // of the old session changed no row, given the cause pgschema's
-// SessionSupersedeRefusal read: session.ErrSessionNotFound when the session
+// SessionSupersedeRefusal read: session.ErrNotFound when the session
 // is not stored, noFamily when it is stored in no family, and
-// session.ErrSessionRenewalConflict otherwise. noFamily is the adapter's own
+// session.ErrRenewalConflict otherwise. noFamily is the adapter's own
 // error, returned as it is.
 func SupersedeRefusal(cause int, noFamily error) error {
 	switch cause {
 	case pgschema.SupersedeRefusalMissing:
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	case pgschema.SupersedeRefusalNoFamily:
 		return noFamily
 	default:
-		return session.ErrSessionRenewalConflict
+		return session.ErrRenewalConflict
 	}
 }
 
 // PresentationRefusal is the outcome of a first-presentation mark that
-// changed no row: err when reading why failed, session.ErrSessionNotFound
-// when the session is not stored, session.ErrSessionSuperseded when it is
+// changed no row: err when reading why failed, session.ErrNotFound
+// when the session is not stored, session.ErrSuperseded when it is
 // superseded, and nil when its first presentation is recorded already.
 func PresentationRefusal(exists, superseded bool, err error) error {
 	switch {
 	case err != nil:
 		return err
 	case !exists:
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	case superseded:
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	default:
 		return nil
 	}
@@ -104,4 +104,34 @@ func DecodeSessionData(raw []byte) (map[string]string, error) {
 	}
 
 	return data, nil
+}
+
+// MaxDeletePasses bounds the passes of a user-wide session delete, as
+// pgschema.StreakAddMaxRuns bounds a streak write's runs. A pass that removes
+// something is followed by another only to reach the successor an in-flight
+// supersession inserted, which one more pass does; sessions created as fast
+// as the passes remove them would otherwise keep the delete running until its
+// context ends, and the library's callers pass contexts that do not end.
+const MaxDeletePasses = 64
+
+// UntilSettled runs pass, a user-wide delete of sessions for op, until it
+// removes nothing, at most MaxDeletePasses times, and returns what every pass
+// removed, those before an error included. A pass's error is returned as it
+// is. When every pass removed something, the error is
+// session.ErrDeleteDidNotSettle wrapped by wrap with op, the adapter's own
+// wrapping of a failure.
+func UntilSettled(op string, pass func() (int, error), wrap func(op string, err error) error) (int, error) {
+	total := 0
+	for range MaxDeletePasses {
+		n, err := pass()
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, nil
+		}
+		total += n
+	}
+
+	return total, wrap(op, session.ErrDeleteDidNotSettle)
 }

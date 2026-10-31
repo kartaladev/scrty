@@ -1,6 +1,6 @@
 // Package session keeps an authenticated caller's session between requests.
 //
-// A Manager mints session identifiers from crypto/rand, holds sessions in a
+// A Sessions value mints session identifiers from crypto/rand, holds sessions in a
 // Store, and enforces two deadlines: an idle one that activity extends and an
 // absolute one that nothing extends. Extending the idle deadline is capped at
 // the absolute deadline, so a session in constant use still ends at the hour
@@ -29,12 +29,12 @@
 //
 // A consumer who wires nothing gets a working manager:
 //
-//	m, err := session.NewManager()
+//	m, err := session.New()
 //
 // and a consumer who wires everything replaces each default in place:
 //
 //	sealing, err := session.NewEncryptedStore(myStore, myCipher)
-//	m, err := session.NewManager(
+//	m, err := session.New(
 //		session.WithStore(sealing),
 //		session.WithIdleTimeout(15*time.Minute),
 //		session.WithAbsoluteTimeout(8*time.Hour),

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/ratelimit"
-	scrtyredis "github.com/kartaladev/scrty/redis"
+	"github.com/kartaladev/scrty/ratelimit/redisstore"
 	"github.com/kartaladev/scrty/test/ratelimittest"
 )
 
@@ -78,11 +78,11 @@ func (h *redisHarness) clearNamespace(t *testing.T, prefix, namespace string) {
 func (h *redisHarness) build(t *testing.T, prefix, namespace string, limit int, window time.Duration) ratelimit.Limiter {
 	t.Helper()
 
-	l, err := scrtyredis.NewLimiter(h.client, namespace, limit, window,
-		scrtyredis.WithKeyPrefix(prefix),
-		scrtyredis.WithLimiterClock(h.clock),
-		scrtyredis.WithOperationTimeout(redisTestTimeout),
-		scrtyredis.WithLogger(slog.New(slog.DiscardHandler)))
+	l, err := redisstore.NewLimiter(h.client, namespace, limit, window,
+		redisstore.WithKeyPrefix(prefix),
+		redisstore.WithClock(h.clock),
+		redisstore.WithOperationTimeout(redisTestTimeout),
+		redisstore.WithLogger(slog.New(slog.DiscardHandler)))
 	require.NoError(t, err)
 	return l
 }

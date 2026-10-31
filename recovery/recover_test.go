@@ -2,130 +2,32 @@ package recovery_test
 
 import (
 	"context"
+	"encoding/base32"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 )
 
-const anaPassword = "correct horse"
-
 // withCancelLink is the cancel link every hold needs.
 var withCancelLink = recovery.WithCancelLink("https://app.example.com/recovery/cancel")
-
-// recoverEnv is one recovery case's world: ana holds a saved set and one
-// issued code, TOTP and email-code enrolments, and a password.
-type recoverEnv struct {
-	*fixture
-
-	tokens *onetime.MemoryStore
-	mint   *onetime.Manager
-	saved  []string
-	issued string
-	// issuedU2 is an issued code minted for another user, u-2.
-	issuedU2 string
-	totp     *MockMethod
-	limiter  *MockLimiter
-
-	// passwordErr, when set, is what the password check returns for any
-	// password; otherwise it accepts anaPassword only.
-	passwordErr   error
-	passwordCalls atomic.Int32
-	failures      atomic.Int32
-}
-
-func newRecoverEnv(t *testing.T) *recoverEnv {
-	t.Helper()
-
-	f := newFixture(t)
-	e := &recoverEnv{fixture: f, tokens: onetime.NewMemoryStore(), limiter: NewMockLimiter(f.ctrl)}
-	e.totp = formMethod(f.ctrl, "totp")
-
-	mint, err := onetime.NewManager(recovery.IssuedCodePurpose, onetime.WithStore(e.tokens), onetime.WithClock(f.clock))
-	require.NoError(t, err)
-	e.mint = mint
-
-	e.saved, err = f.codes.Generate(t.Context(), anaID)
-	require.NoError(t, err)
-
-	e.issued = e.issueFor(t, anaID)
-	e.issuedU2 = e.issueFor(t, "u-2")
-
-	return e
-}
-
-// issueFor mints an issued recovery code for user, as Start would.
-func (e *recoverEnv) issueFor(t *testing.T, user identity.UserID) string {
-	t.Helper()
-
-	code, _, err := e.mint.Issue(t.Context(), string(user))
-	require.NoError(t, err)
-
-	return code
-}
-
-func (e *recoverEnv) passwordCheck(_ context.Context, username string, password []byte) error {
-	e.passwordCalls.Add(1)
-
-	if e.passwordErr != nil {
-		return e.passwordErr
-	}
-	if username == anaUsername && string(password) == anaPassword {
-		return nil
-	}
-
-	return fmt.Errorf("bad password: %w", authenticate.ErrAuthenticationFailed)
-}
-
-// opts enables all four proof kinds over the env's ports, followed by extra.
-func (e *recoverEnv) opts(extra ...recovery.Option) []recovery.Option {
-	return e.fixture.opts(append([]recovery.Option{
-		recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued, recovery.ProofPassword, recovery.ProofMFA),
-		recovery.WithPasswordCheck(e.passwordCheck),
-		recovery.WithMFAMethods(e.totp, challengeMethod(e.ctrl, "passkey")),
-		recovery.WithIssuedCodeStore(e.tokens),
-		recovery.WithUserLimiter(e.limiter),
-	}, extra...)...)
-}
-
-// defaults sets the expectations every case shares, after the case's own, so
-// a case's expectation is matched first.
-func (e *recoverEnv) defaults() {
-	e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(anaDetails(), nil).AnyTimes()
-	e.kind.EXPECT().Held(gomock.Any(), anaID).Return([]recovery.AuthenticatorRef{refTOTP, refEmail}, nil).AnyTimes()
-	e.limiter.EXPECT().Exceeded(gomock.Any(), recovery.UserThrottleKey(anaID)).Return(false, nil).AnyTimes()
-	e.limiter.EXPECT().RecordFailure(gomock.Any(), recovery.UserThrottleKey(anaID)).DoAndReturn(func(context.Context, string) error {
-		e.failures.Add(1)
-
-		return nil
-	}).AnyTimes()
-}
-
-// savedUsable reports whether code is still an unspent saved code of ana's.
-func (e *recoverEnv) savedUsable(ctx context.Context, t *testing.T, code string) bool {
-	t.Helper()
-
-	return e.codes.Confirm(ctx, anaID, code) == nil
-}
-
-// issuedUsable reports whether code is still an unspent issued code for user.
-func (e *recoverEnv) issuedUsable(ctx context.Context, t *testing.T, r *recovery.Recoverer, user identity.UserID, code string) bool {
-	t.Helper()
-
-	return r.CheckIssued(ctx, user, code) == nil
-}
 
 // recoverOnce runs the check phase and, when it passes, the spend phase.
 func recoverOnce(ctx context.Context, r *recovery.Recoverer, req recovery.Request) (*recovery.Verified, error) {
@@ -137,6 +39,8 @@ func recoverOnce(ctx context.Context, r *recovery.Recoverer, req recovery.Reques
 	return v, r.Spend(ctx, v)
 }
 
+// TestRecoverer_Shape stands apart from TestRecoverer_Verify because every case
+// shares one malformed-request assertion and sets no port expectation.
 func TestRecoverer_Shape(t *testing.T) {
 	t.Parallel()
 
@@ -230,6 +134,7 @@ func TestRecoverer_Verify(t *testing.T) {
 	t.Parallel()
 
 	errOutage := errors.New("store unreachable: ana@example.com row 42")
+	errCallerLeft := errors.New("the caller left")
 	errConsumer := errors.New("consumer says no")
 
 	type testCase struct {
@@ -332,7 +237,7 @@ func TestRecoverer_Verify(t *testing.T) {
 			name: "an unknown user with a password is refused before the password check",
 			setup: func(e *recoverEnv) {
 				e.users.EXPECT().LoadByUsername(gomock.Any(), "bob@example.com").Return(nil, identity.ErrUserNotFound)
-				e.passwordErr = policy.ErrAccountLocked
+				e.passwordErr = lockout.ErrAccountLocked
 			},
 			req: func(e *recoverEnv) recovery.Request {
 				return recovery.Request{Username: "bob@example.com", Saved: e.saved[0], Password: []byte("x")}
@@ -383,11 +288,11 @@ func TestRecoverer_Verify(t *testing.T) {
 		},
 		{
 			name:  "a locked account: the lockout error comes back unchanged and nothing is spent",
-			setup: func(e *recoverEnv) { e.passwordErr = policy.ErrAccountLocked },
+			setup: func(e *recoverEnv) { e.passwordErr = lockout.ErrAccountLocked },
 			req:   savedAndPassword(anaPassword),
 			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
-				require.ErrorIs(t, err, policy.ErrAccountLocked)
-				assert.Equal(t, policy.ErrAccountLocked.Error(), err.Error())
+				require.ErrorIs(t, err, lockout.ErrAccountLocked)
+				assert.Equal(t, lockout.ErrAccountLocked.Error(), err.Error())
 				assert.True(t, recovery.RefusedAfterValidCode(err))
 				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]))
 				assert.Equal(t, int32(1), e.failures.Load())
@@ -397,12 +302,12 @@ func TestRecoverer_Verify(t *testing.T) {
 			name: "a lock concealed as a failed authentication is refused behind fixed text and stays identifiable",
 			setup: func(e *recoverEnv) {
 				e.passwordErr = fmt.Errorf("check for ana@example.com: %w",
-					errors.Join(authenticate.ErrAuthenticationFailed, policy.ErrAccountLocked))
+					errors.Join(authenticate.ErrAuthenticationFailed, lockout.ErrAccountLocked))
 			},
 			req: savedAndPassword(anaPassword),
 			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
 				refused(t, err)
-				require.ErrorIs(t, err, policy.ErrAccountLocked, "the consumer's handler can still tell it is a lock")
+				require.ErrorIs(t, err, lockout.ErrAccountLocked, "the consumer's handler can still tell it is a lock")
 				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the check's own text stays beneath")
 				assert.True(t, recovery.RefusedAfterValidCode(err))
 				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]))
@@ -417,6 +322,72 @@ func TestRecoverer_Verify(t *testing.T) {
 				refused(t, err)
 				assert.Equal(t, recovery.ErrRefused.Error(), err.Error())
 				assert.Equal(t, int32(1), e.failures.Load())
+			},
+		},
+		{
+			name:  "an unavailable user store is not a failed proof",
+			setup: func(e *recoverEnv) { e.passwordErr = authenticate.ErrUnavailable },
+			req:   savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				require.ErrorIs(t, err, authenticate.ErrUnavailable)
+				assert.NotErrorIs(t, err, recovery.ErrRefused, "an outage read as a refused proof")
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed, "an outage read as a refused proof")
+				assert.False(t, recovery.RefusedAfterValidCode(err),
+					"the outage was marked as a refusal after a valid code")
+				assert.Zero(t, e.failures.Load(), "the outage was counted against the user's recovery limit")
+				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]), "the saved code stays redeemable")
+			},
+		},
+		{
+			name: "a password load the caller's context ended is refused, marked, and not counted against the user",
+			setup: func(e *recoverEnv) {
+				e.passwordErr = errors.Join(authenticate.ErrAuthenticationFailed, context.Canceled)
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			req: savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				assert.ErrorIs(t, err, context.Canceled, "the check's error stays beneath the refusal")
+				assert.True(t, recovery.RefusedAfterValidCode(err),
+					"not marked, so the HTTP layer would not charge the source")
+				assert.Zero(t, e.failures.Load(),
+					"counted against the user's recovery limit, though no password was compared")
+				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]), "the saved code stays redeemable")
+			},
+		},
+		{
+			name: "a refusal naming a cancellation the caller never made is counted against the user",
+			setup: func(e *recoverEnv) {
+				e.passwordErr = errors.Join(authenticate.ErrAuthenticationFailed, context.Canceled)
+			},
+			req: savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				assert.True(t, recovery.RefusedAfterValidCode(err))
+				assert.Equal(t, int32(1), e.failures.Load(),
+					"a check's error was read as the caller leaving while the caller still waited")
+			},
+		},
+		{
+			name:  "a bare authentication failure while the caller's context has ended is counted against the user",
+			setup: func(e *recoverEnv) { e.passwordErr = authenticate.ErrAuthenticationFailed },
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			req: savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				assert.True(t, recovery.RefusedAfterValidCode(err))
+				assert.Equal(t, int32(1), e.failures.Load(),
+					"a password refused before the caller left was read as a load the caller cut short")
 			},
 		},
 		{
@@ -509,7 +480,7 @@ func TestRecoverer_Verify(t *testing.T) {
 			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
 				require.ErrorIs(t, err, errOutage)
 				assert.NotContains(t, err.Error(), "row 42")
-				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not counted against the source")
+				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not marked as a refusal after a valid code")
 				assert.True(t, e.issuedUsable(t.Context(), t, r, anaID, e.issued))
 				assert.Zero(t, e.failures.Load())
 			},
@@ -662,9 +633,10 @@ func TestRecoverer_Verify(t *testing.T) {
 			name: "saved-code throttling is refused like a wrong code",
 			opts: func(e *recoverEnv) []recovery.Option {
 				codeLimiter := NewMockLimiter(e.ctrl)
-				codeLimiter.EXPECT().Exceeded(gomock.Any(), recovery.CodeThrottleKey(anaID)).Return(true, nil).AnyTimes()
+				codeLimiter.EXPECT().Charge(gomock.Any(), recovery.CodeThrottleKey(anaID)).
+					Return(ratelimit.Receipt{}, true, nil).AnyTimes()
 				// The limiter is valid, so construction cannot fail.
-				e.codes, _ = recovery.NewCodes(recovery.WithCodeLimiter(codeLimiter))
+				e.codes, _ = recovery.NewCodes(recovery.WithCodesLimiter(codeLimiter))
 
 				return e.opts()
 			},
@@ -676,17 +648,42 @@ func TestRecoverer_Verify(t *testing.T) {
 			},
 		},
 		{
-			name: "a user lookup failure is an error behind fixed text, not a refusal",
+			name: "a user lookup failure is an outage with none of the driver's text, not a refusal",
 			setup: func(e *recoverEnv) {
 				e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(nil, errOutage)
 			},
 			req: savedAndIssued,
 			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
-				require.ErrorIs(t, err, errOutage)
+				require.ErrorIs(t, err, authenticate.ErrUnavailable)
 				assert.NotErrorIs(t, err, recovery.ErrRefused)
+				assert.NotErrorIs(t, err, errOutage, "the driver's error reached the caller")
+				assert.NotContains(t, err.Error(), errOutage.Error())
 				assert.NotContains(t, err.Error(), "ana@example.com")
+				assert.False(t, recovery.RefusedAfterValidCode(err))
 				nothingSpent(t, e, r)
 				assert.Zero(t, e.failures.Load())
+			},
+		},
+		{
+			name: "a lookup the caller's context ended with a cause is not an outage",
+			setup: func(e *recoverEnv) {
+				e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).DoAndReturn(
+					func(ctx context.Context, _ string) (*identity.Details, error) {
+						return nil, context.Cause(ctx)
+					})
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerLeft)
+
+				return cctx
+			},
+			req: savedAndIssued,
+			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
+				require.ErrorIs(t, err, errCallerLeft)
+				assert.NotErrorIs(t, err, authenticate.ErrUnavailable,
+					"the caller leaving was read as the user store failing")
+				nothingSpent(t, e, r)
 			},
 		},
 		{
@@ -825,12 +822,12 @@ func newMockedStoresEnv(t *testing.T) (*recoverEnv, *MockTokenStore, *MockCodeSt
 	codeStore := NewMockCodeStore(e.ctrl)
 
 	mem := recovery.NewMemoryCodeStore()
-	codes, err := recovery.NewCodes(recovery.WithCodeStore(mem), recovery.WithCodesClock(e.clock))
+	codes, err := recovery.NewCodes(recovery.WithCodesStore(mem), recovery.WithCodesClock(e.clock))
 	require.NoError(t, err)
 	e.saved, err = codes.Generate(t.Context(), anaID)
 	require.NoError(t, err)
 
-	spending, err := recovery.NewCodes(recovery.WithCodeStore(codeStore), recovery.WithCodesClock(e.clock))
+	spending, err := recovery.NewCodes(recovery.WithCodesStore(codeStore), recovery.WithCodesClock(e.clock))
 	require.NoError(t, err)
 	e.codes = spending
 
@@ -844,6 +841,8 @@ func delegateChecks(e *recoverEnv, tokens *MockTokenStore, codes *MockCodeStore,
 	codes.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(mem.Match).AnyTimes()
 }
 
+// TestRecoverer_SpendFailure stands apart from TestRecoverer_SpendOrder because
+// its cases end the recovery's context and assert the error.
 func TestRecoverer_SpendFailure(t *testing.T) {
 	t.Parallel()
 
@@ -867,7 +866,7 @@ func TestRecoverer_SpendFailure(t *testing.T) {
 			assert: func(t *testing.T, e *recoverEnv, err error) {
 				require.ErrorIs(t, err, errDown)
 				assert.NotErrorIs(t, err, recovery.ErrRefused, "an outage is not a refusal")
-				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not counted against the source")
+				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not marked as a refusal after a valid code")
 				assert.NotContains(t, err.Error(), "row 42")
 				assert.Zero(t, e.failures.Load(), "an outage is not counted against the user")
 			},
@@ -950,36 +949,123 @@ func TestRefusedAfterValidCode(t *testing.T) {
 	}
 }
 
-// TestRecoverer_Enabled pins that the recoverer reports exactly the proof
-// kinds WithProofs enabled, so a caller offers only those.
-func TestRecoverer_Enabled(t *testing.T) {
+// TestRecoverer_RacingRecoveries releases 16 recoveries of ana at once, all
+// presenting the same saved and issued codes, over the real in-memory stores.
+// Exactly one may succeed. Run it with -race -count=3.
+// It stands apart from TestRecoverer_Verify because it runs sixteen goroutines
+// against one recoverer.
+func TestRecoverer_RacingRecoveries(t *testing.T) {
+	t.Parallel()
+
+	const racers = 16
+
+	e := newRecoverEnv(t)
+	e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(anaDetails(), nil).AnyTimes()
+	e.kind.EXPECT().Held(gomock.Any(), anaID).Return([]recovery.AuthenticatorRef{refTOTP}, nil).AnyTimes()
+
+	// A limit no racer reaches, so losing is decided by the spends alone.
+	limiter, err := ratelimit.NewMemoryLimiter(1000, time.Hour)
+	require.NoError(t, err)
+
+	r, err := recovery.NewRecoverer(e.deps(), e.opts(recovery.WithUserLimiter(limiter))...)
+	require.NoError(t, err)
+
+	req := recovery.Request{Username: anaUsername, Saved: e.saved[0], Issued: e.issued}
+
+	var (
+		start     = make(chan struct{})
+		wg        sync.WaitGroup
+		successes atomic.Int32
+		refusals  atomic.Int32
+		others    atomic.Int32
+	)
+
+	for range racers {
+		wg.Go(func() {
+			<-start
+
+			_, err := recoverOnce(t.Context(), r, req)
+
+			switch {
+			case err == nil:
+				successes.Add(1)
+			case assert.ErrorIs(t, err, recovery.ErrRefused):
+				refusals.Add(1)
+			default:
+				others.Add(1)
+			}
+		})
+	}
+
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), successes.Load(), "exactly one recovery succeeds")
+	assert.Equal(t, int32(racers-1), refusals.Load(), "every other recovery is refused")
+	assert.Zero(t, others.Load())
+	assert.False(t, e.savedUsable(t.Context(), t, e.saved[0]))
+	assert.False(t, e.issuedUsable(t.Context(), t, r, anaID, e.issued))
+}
+
+// TestRecoverer_ProofChannels pins that the two proofs of a recovery never
+// share a delivery channel: an issued code arrives by email, so it does not
+// pair with an MFA method whose codes arrive by email, while a saved code does.
+// It stands apart from TestRecoverer_Verify because every case adds an emailed
+// MFA method beside the fixture's TOTP.
+func TestRecoverer_ProofChannels(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
-		proofs []recovery.ProofKind
-		assert func(t *testing.T, r *recovery.Recoverer)
+		setup  func(e *recoverEnv, email *MockMethod)
+		req    func(e *recoverEnv) recovery.Request
+		assert func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, v *recovery.Verified, err error)
 	}
 
 	cases := []testCase{
 		{
-			name:   "saved and issued codes",
-			proofs: []recovery.ProofKind{recovery.ProofSaved, recovery.ProofIssued},
-			assert: func(t *testing.T, r *recovery.Recoverer) {
-				assert.True(t, r.Enabled(recovery.ProofSaved))
-				assert.True(t, r.Enabled(recovery.ProofIssued))
-				assert.False(t, r.Enabled(recovery.ProofPassword))
-				assert.False(t, r.Enabled(recovery.ProofMFA))
+			// The email method mock has no Enrolled or Verify expectation, so
+			// a check of the MFA proof would fail the test on its own.
+			name: "an issued code with an emailed MFA code is malformed, and nothing is checked or spent",
+			req: func(e *recoverEnv) recovery.Request {
+				return recovery.Request{Username: anaUsername, Issued: e.issued, MFAMethod: "email-code", MFACode: "123456"}
+			},
+			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
+				require.ErrorIs(t, err, recovery.ErrMalformed, "an emailed recovery code plus an emailed MFA code recovered the account")
+				assert.False(t, recovery.RefusedAfterValidCode(err))
+				assert.True(t, e.issuedUsable(t.Context(), t, r, anaID, e.issued), "the issued code stays redeemable")
+				assert.Zero(t, e.failures.Load(), "a malformed recovery counts nothing")
 			},
 		},
 		{
-			name:   "a saved code and the password: no issued codes",
-			proofs: []recovery.ProofKind{recovery.ProofSaved, recovery.ProofPassword},
-			assert: func(t *testing.T, r *recovery.Recoverer) {
-				assert.True(t, r.Enabled(recovery.ProofSaved))
-				assert.True(t, r.Enabled(recovery.ProofPassword))
-				assert.False(t, r.Enabled(recovery.ProofIssued))
-				assert.False(t, r.Enabled(recovery.ProofKind("unknown")))
+			name: "saved code with an emailed MFA code still recovers",
+			setup: func(_ *recoverEnv, email *MockMethod) {
+				email.EXPECT().Enrolled(gomock.Any(), anaID).Return(true, nil)
+				email.EXPECT().Verify(gomock.Any(), anaID, []byte("123456")).Return(nil)
+			},
+			req: func(e *recoverEnv) recovery.Request {
+				return recovery.Request{Username: anaUsername, Saved: e.saved[0], MFAMethod: "email-code", MFACode: "123456"}
+			},
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, v *recovery.Verified, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.ProofKind{recovery.ProofSaved, recovery.ProofMFA}, v.Proofs())
+				assert.Equal(t, []recovery.AuthenticatorRef{refEmail}, v.Proven())
+				assert.False(t, e.savedUsable(t.Context(), t, e.saved[0]), "the saved code is spent")
+			},
+		},
+		{
+			name: "an issued code with TOTP still recovers",
+			setup: func(e *recoverEnv, _ *MockMethod) {
+				e.totp.EXPECT().Enrolled(gomock.Any(), anaID).Return(true, nil)
+				e.totp.EXPECT().Verify(gomock.Any(), anaID, []byte("123456")).Return(nil)
+			},
+			req: func(e *recoverEnv) recovery.Request {
+				return recovery.Request{Username: anaUsername, Issued: e.issued, MFAMethod: "totp", MFACode: "123456"}
+			},
+			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, v *recovery.Verified, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.ProofKind{recovery.ProofIssued, recovery.ProofMFA}, v.Proofs())
+				assert.False(t, e.issuedUsable(t.Context(), t, r, anaID, e.issued), "the issued code is spent")
 			},
 		},
 	}
@@ -989,10 +1075,98 @@ func TestRecoverer_Enabled(t *testing.T) {
 			t.Parallel()
 
 			e := newRecoverEnv(t)
-			r, err := recovery.NewRecoverer(e.deps(), e.opts(recovery.WithProofs(tc.proofs...))...)
+			email := declaredMethod(e.ctrl, "email-code", factor.Email)
+			if tc.setup != nil {
+				tc.setup(e, email)
+			}
+			e.defaults()
+
+			r, err := recovery.NewRecoverer(e.deps(), e.opts(recovery.WithMFAMethods(e.totp, email))...)
 			require.NoError(t, err)
 
-			tc.assert(t, r)
+			v, err := recoverOnce(t.Context(), r, tc.req(e))
+			tc.assert(t, e, r, v, err)
 		})
 	}
+}
+
+// totpCodeAt computes the code an authenticator holding secret shows at at,
+// straight from the RFC 6238 generator rather than through mfa.
+func totpCodeAt(t *testing.T, secret []byte, at time.Time) string {
+	t.Helper()
+
+	code, err := totp.GenerateCodeCustom(
+		base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret), at,
+		totp.ValidateOpts{Period: 30, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
+	require.NoError(t, err)
+
+	return code
+}
+
+// A recovery that proves the account with a TOTP code calls the method's
+// Verify directly, so it is bound by the same per-enrolment attempt charge as
+// a login: a wrong code is charged, and a valid one gives its own charge back.
+// It stands apart from TestRecoverer_Verify because it drives a real TOTP
+// method on a fake clock.
+func TestRecoverer_TOTPProofIsCharged(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	e := newRecoverEnv(t)
+
+	secret := []byte("recovery-totp-secret")
+	store := mfa.NewMemoryEnrolmentStore()
+	gen := id.MustParse("01920000-0000-7000-8000-0000000000f1")
+	require.NoError(t, store.PutPending(ctx, mfa.Enrolment{User: anaID, Secret: secret, Generation: gen}))
+	confirmed, err := store.Confirm(ctx, anaID, gen, 0, e.clock.Now())
+	require.NoError(t, err)
+	require.True(t, confirmed)
+
+	method, err := mfa.NewTOTP(store, "scrty-test", mfa.WithClock(e.clock))
+	require.NoError(t, err)
+
+	e.defaults()
+
+	r, err := recovery.NewRecoverer(e.deps(), e.fixture.opts(
+		recovery.WithProofs(recovery.ProofIssued, recovery.ProofMFA),
+		recovery.WithMFAMethods(method),
+		recovery.WithIssuedCodeStore(e.tokens),
+		recovery.WithUserLimiter(e.limiter),
+	)...)
+	require.NoError(t, err)
+
+	accepted := map[string]bool{}
+	for _, d := range []time.Duration{-30 * time.Second, 0, 30 * time.Second} {
+		accepted[totpCodeAt(t, secret, e.clock.Now().Add(d))] = true
+	}
+
+	wrong := "000000"
+	for _, c := range []string{"000000", "111111", "222222"} {
+		if !accepted[c] {
+			wrong = c
+
+			break
+		}
+	}
+
+	attempts := func() int {
+		got, ok, err := store.Get(ctx, anaID)
+		require.NoError(t, err)
+		require.True(t, ok)
+
+		return got.VerifyAttempts
+	}
+
+	_, err = recoverOnce(ctx, r, recovery.Request{
+		Username: anaUsername, Issued: e.issued, MFAMethod: "totp", MFACode: wrong,
+	})
+	require.ErrorIs(t, err, recovery.ErrRefused)
+	assert.Equal(t, 1, attempts(), "the wrong code was charged against the enrolment")
+
+	v, err := recoverOnce(ctx, r, recovery.Request{
+		Username: anaUsername, Issued: e.issued, MFAMethod: "totp", MFACode: totpCodeAt(t, secret, e.clock.Now()),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []recovery.ProofKind{recovery.ProofIssued, recovery.ProofMFA}, v.Proofs())
+	assert.Equal(t, 1, attempts(), "the valid code gave its own charge back")
 }

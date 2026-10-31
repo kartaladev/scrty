@@ -10,14 +10,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/onetime"
-	pgxstore "github.com/kartaladev/scrty/pgx"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // runAmbient runs the ambient suite over the store newWith builds, on db.
@@ -37,7 +37,7 @@ func TestAmbientTx(t *testing.T) {
 	db := migrated(t)
 	c := storefix.TestCipher(t)
 
-	foreign := storefix.CipherOf(t, seal.WithEncryptionKey("k-foreign", storefix.SealKey(t)))
+	foreign := storefix.CipherOf(t, seal.WithKeyringEncryptionKey("k-foreign", storefix.SealKey(t)))
 
 	t.Run("sessions", runAmbient(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
 		return newSessionStore(t, pool, c, opts...)
@@ -86,7 +86,7 @@ func TestAmbientTx_Scenarios(t *testing.T) {
 				require.NoError(t, tx.Rollback(ctx))
 
 				_, err := sessions.Load(ctx, "scenario-rolled-back")
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 			},
 		},
 		{

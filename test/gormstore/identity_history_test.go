@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/store/gormstore"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )

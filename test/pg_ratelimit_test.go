@@ -22,11 +22,11 @@ import (
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
-	"github.com/kartaladev/scrty/migrate"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/ratelimittest"
 )
@@ -36,6 +36,13 @@ import (
 // detector and a busy Docker host a healthy call can take longer, and a call
 // cut off would be taken for an outage the test did not stage.
 const pgTestTimeout = 5 * time.Second
+
+// pgConformanceTimeout is the operation timeout of the limiters the
+// conformance harnesses build. The concurrent-charge case queues 64 charges on
+// one row, each holding it through its statement and commit; under a loaded
+// runner the last of them waits longer than pgTestTimeout, and a charge cut off
+// fails closed, which the case's exact count does not allow for.
+const pgConformanceTimeout = 30 * time.Second
 
 // pgLimiterBuilder builds one backend's PostgreSQL limiter over the database
 // db reaches, which dsn names too, so a backend that opens its own pool (pgx)
@@ -69,10 +76,11 @@ type pgBackend struct {
 }
 
 // pgLimiterOptions are the options every sqlstore limiter in these tests
-// takes: the test timeout, a discarded log and, when clk is set, that clock.
+// takes: the conformance timeout, a discarded log and, when clk is set, that
+// clock.
 func pgLimiterOptions(clk clock.Clock) []sqlstore.LimiterOption {
 	opts := []sqlstore.LimiterOption{
-		sqlstore.WithLimiterOperationTimeout(pgTestTimeout),
+		sqlstore.WithLimiterOperationTimeout(pgConformanceTimeout),
 		sqlstore.WithLimiterLogger(slog.New(slog.DiscardHandler)),
 	}
 	if clk != nil {
@@ -109,7 +117,7 @@ var sqlstoreBackend = pgBackend{
 // the counterpart of pgLimiterOptions.
 func pgxLimiterOptions(clk clock.Clock) []pgxstore.LimiterOption {
 	opts := []pgxstore.LimiterOption{
-		pgxstore.WithLimiterOperationTimeout(pgTestTimeout),
+		pgxstore.WithLimiterOperationTimeout(pgConformanceTimeout),
 		pgxstore.WithLimiterLogger(slog.New(slog.DiscardHandler)),
 	}
 	if clk != nil {

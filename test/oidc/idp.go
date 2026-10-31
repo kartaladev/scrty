@@ -20,8 +20,8 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/outbound"
 )
 
@@ -117,7 +117,7 @@ func (p *IdentityProvider) Issuer() string { return p.srv.URL }
 
 // Provider returns an unpinned registration for name, authenticating at the
 // token endpoint with auth. Discovery, not a pinned endpoint, is what a
-// caller's oidc.Manager uses to reach this provider.
+// caller's oidc.RelyingParty uses to reach this provider.
 //
 // The client id and secret are deterministic from name, so a later call
 // naming the same provider, and the token endpoint's own credential check,

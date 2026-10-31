@@ -14,12 +14,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // keycloakBackchannelPrefix is the path prefix the realm's back-channel logout
@@ -80,19 +80,19 @@ func TestKeycloak(t *testing.T) {
 	broker, err := oidc.NewBroker(links, users)
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(kc.Outbound))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(kc.Outbound))
 	require.NoError(t, err)
 
-	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 	require.NoError(t, err)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
-	keys, err := signingkey.NewKeyManager(t.Context())
+	keys, err := signingkey.New(t.Context())
 	require.NoError(t, err)
 
-	tokens, err := token.NewGenerator(keys)
+	tokens, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience())
 	require.NoError(t, err)
 
 	chain, err := httpsec.New(httpsec.EnableOIDCLogin(manager, handoffs,
@@ -136,7 +136,7 @@ func TestKeycloak(t *testing.T) {
 			"the session outlived Keycloak's back-channel logout")
 
 		_, err := sessions.Load(t.Context(), res.session.ID)
-		require.ErrorIs(t, err, session.ErrSessionNotFound)
+		require.ErrorIs(t, err, session.ErrNotFound)
 	}
 
 	cases := []testCase{
@@ -235,6 +235,7 @@ func keycloakBrowser(t *testing.T) *http.Client {
 	require.NoError(t, err)
 
 	return &http.Client{
+		Transport:     ownTransport(t),
 		Jar:           jar,
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

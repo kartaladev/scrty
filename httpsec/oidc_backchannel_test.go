@@ -22,10 +22,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -127,7 +127,7 @@ func (h *backchannelHarness) alive(t *testing.T, label string) bool {
 	require.True(t, ok, "no session labelled %q", label)
 
 	_, err := h.sessions.Load(t.Context(), id)
-	if errors.Is(err, session.ErrSessionNotFound) {
+	if errors.Is(err, session.ErrNotFound) {
 		return false
 	}
 	require.NoError(t, err)
@@ -343,7 +343,7 @@ func TestOIDCBackchannel(t *testing.T) {
 				h.password(t, "password")
 				h.federated(t, "federated", testOIDCProvider, h.issuer(), "abc")
 
-				return []httpsec.OIDCOption{httpsec.WithBackchannelLogoutScope(httpsec.AllSessions)}
+				return []httpsec.OIDCOption{httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll)}
 			},
 			act: subjectOnly,
 			assert: func(t *testing.T, h *backchannelHarness, s served) {
@@ -391,7 +391,7 @@ func TestOIDCBackchannel(t *testing.T) {
 				store := NewMockStore(gomock.NewController(t))
 				store.EXPECT().DeleteByExternalSession(gomock.Any(), gomock.Any(), "abc").Return(0, errOutage)
 
-				m, err := session.NewManager(session.WithStore(store))
+				m, err := session.New(session.WithStore(store))
 				require.NoError(t, err)
 
 				return []httpsec.OIDCOption{httpsec.WithOIDCSessions(m)}
@@ -410,7 +410,7 @@ func TestOIDCBackchannel(t *testing.T) {
 				store.EXPECT().DeleteByUserAndExternalIssuer(gomock.Any(), oidcTestUserID, gomock.Any()).
 					Return(0, errOutage)
 
-				m, err := session.NewManager(session.WithStore(store))
+				m, err := session.New(session.WithStore(store))
 				require.NoError(t, err)
 
 				return []httpsec.OIDCOption{httpsec.WithOIDCSessions(m)}
@@ -426,12 +426,12 @@ func TestOIDCBackchannel(t *testing.T) {
 				store := NewMockStore(gomock.NewController(t))
 				store.EXPECT().DeleteByUser(gomock.Any(), oidcTestUserID).Return(errOutage)
 
-				m, err := session.NewManager(session.WithStore(store))
+				m, err := session.New(session.WithStore(store))
 				require.NoError(t, err)
 
 				return []httpsec.OIDCOption{
 					httpsec.WithOIDCSessions(m),
-					httpsec.WithBackchannelLogoutScope(httpsec.AllSessions),
+					httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll),
 				}
 			},
 			act: subjectOnly,
@@ -746,7 +746,7 @@ func TestOIDCBackchannel(t *testing.T) {
 						return 1, ctx.Err()
 					})
 
-				m, err := session.NewManager(session.WithStore(store))
+				m, err := session.New(session.WithStore(store))
 				require.NoError(t, err)
 
 				h.cancelDuringVerification()
@@ -780,7 +780,7 @@ func TestOIDCBackchannel(t *testing.T) {
 						return 1, ctx.Err()
 					})
 
-				m, err := session.NewManager(session.WithStore(store))
+				m, err := session.New(session.WithStore(store))
 				require.NoError(t, err)
 
 				h.cancelDuringVerification()

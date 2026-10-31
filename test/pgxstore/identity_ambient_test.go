@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 )
 

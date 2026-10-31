@@ -435,6 +435,9 @@ func loopingHandler(w http.ResponseWriter, r *http.Request) {
 // the whole reason WithHTTPClient takes an *http.Client, whose redirect policy
 // can be replaced, and not an interface with a Do method, whose redirect
 // handling is out of reach.
+//
+// It stands apart from the PostForm table: it needs two servers, one
+// redirecting to the other, and a client trusting both.
 func TestOutboundNoBodyReplay(t *testing.T) {
 	t.Parallel()
 

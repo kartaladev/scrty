@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // oneTimeDefect is one deliberate flaw a oneTimeStore can carry.

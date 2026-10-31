@@ -21,10 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/internal/unavailable"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
@@ -69,6 +69,17 @@ func (e pgPruneEnv) rows(t *testing.T, ns string) int {
 	return n
 }
 
+// pruneHeldRowDeadline is the deadline of the prune that meets a held row.
+// A prune that waits for the row instead of skipping it is held to it, so
+// the case can tell waiting from skipping by elapsed time alone.
+const pruneHeldRowDeadline = 10 * time.Second
+
+// pruneRaceWait is how long the uncommitted-record case waits for the prune
+// to return or be seen waiting, and then to return once the record commits.
+// Each is an outcome that comes on its own, so the wait bounds only a hung
+// prune, and a loaded host gets as long as it needs.
+const pruneRaceWait = 30 * time.Second
+
 // runPGPrune pins the prune through ratelimit.ExpiryTask(factory): the
 // longest window a key was recorded with protects it, an idle key is removed
 // and counted, a row another session holds is skipped without waiting, one
@@ -79,8 +90,11 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 	t.Helper()
 
 	type testCase struct {
-		name   string
-		assert func(t *testing.T, e pgPruneEnv)
+		name string
+		// timeout, when set, replaces pgTestTimeout as the operation
+		// timeout of the case's factories.
+		timeout time.Duration
+		assert  func(t *testing.T, e pgPruneEnv)
 	}
 
 	cases := []testCase{
@@ -135,14 +149,18 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 				require.NoError(t, holder.QueryRowContext(t.Context(),
 					`SELECT 1 FROM rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&one))
 
-				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				// A prune that waits for the row waits until ctx ends, so
+				// the bound sits at a fifth of ctx's deadline: far enough
+				// below it to tell the two apart, and far enough above a
+				// prune's few round trips for a loaded server to keep it.
+				ctx, cancel := context.WithTimeout(t.Context(), pruneHeldRowDeadline)
 				defer cancel()
 				start := time.Now()
 				removed, err := ratelimit.ExpiryTask(e.factory).Run(ctx)
 				elapsed := time.Since(start)
 				t.Logf("prune with a held row returned after %s", elapsed)
 				// Checked before the error: a prune that waits ends with ctx's.
-				assert.Less(t, elapsed, 500*time.Millisecond, "the prune waited on the held row")
+				assert.Less(t, elapsed, pruneHeldRowDeadline/5, "the prune waited on the held row")
 				require.NoError(t, err)
 				assert.Equal(t, 0, removed)
 				assert.Equal(t, 1, e.rows(t, ns), "the held row was removed")
@@ -212,7 +230,7 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 					res      result
 					finished bool
 				)
-				deadline := time.After(5 * time.Second)
+				deadline := time.After(pruneRaceWait)
 			wait:
 				for {
 					select {
@@ -233,7 +251,7 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 				if !finished {
 					select {
 					case res = <-done:
-					case <-time.After(5 * time.Second):
+					case <-time.After(pruneRaceWait):
 						t.Fatal("the prune did not return after the record committed")
 					}
 				}
@@ -251,6 +269,13 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 			// exceeded. It does not reliably reach the interleaving that
 			// loses a count; the case above pins that.
 			name: "records and prunes running together raise no error",
+			// The 50 records queue on one row, as the conformance suite's
+			// concurrent charges do, and on a loaded server the last of
+			// them can wait longer than pgTestTimeout. A record cut off fails
+			// closed and opens the breaker for the rest, which this case
+			// would report as contention. Deadlocks are still raised by the
+			// server whatever the timeout.
+			timeout: pgConformanceTimeout,
 			assert: func(t *testing.T, e pgPruneEnv) {
 				const racers = 50
 				ns := e.ns("api-key")
@@ -311,7 +336,7 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 
 			conn := migratedLimiterDB(t)
 			clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC))
-			o := pgFaultOptions{clock: clk}
+			o := pgFaultOptions{clock: clk, timeout: tc.timeout}
 			newFactory := func() pgFactory { return b.factory(t, conn, o) }
 			tc.assert(t, pgPruneEnv{
 				conn:       conn,
@@ -441,8 +466,8 @@ func TestPGLimiter_PruneCatchesBrokenVariants(t *testing.T) {
 // clock and prune batches of 1,000 keys, over conn's handle or a pool of the
 // factory's own.
 type pruneFactoryOptions struct {
-	// clock, when set, is the factory's clock, and the test timeout replaces
-	// the default operation timeout, as the other builders give it.
+	// clock, when set, is the factory's clock, and the conformance timeout
+	// replaces the default operation timeout, as the other builders give it.
 	clock clock.Clock
 	// batch, when set, is the prune batch size.
 	batch int

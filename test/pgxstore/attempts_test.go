@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -21,7 +22,7 @@ import (
 // The durable login-attempt store carries the reaper as well as the store.
 var _ interface {
 	policy.AttemptStore
-	policy.AttemptReaper
+	lockout.AttemptReaper
 } = (*pgxstore.AttemptStore)(nil)
 
 // newAttemptStore builds the login-attempt store over pool, failing t on a
@@ -48,7 +49,7 @@ func TestAttemptStore(t *testing.T) {
 }
 
 // The durable login-attempt store keeps consecutive-failure streaks too.
-var _ policy.FailureStreakStore = (*pgxstore.AttemptStore)(nil)
+var _ lockout.FailureStreakStore = (*pgxstore.AttemptStore)(nil)
 
 // TestFailureStreakStore runs the streak conformance suite and its race
 // against the store, each case on emptied attempt and streak tables.
@@ -165,7 +166,7 @@ func TestAttemptStore_Refusals(t *testing.T) {
 			name: "a zero cutoff is refused",
 			assert: func(t *testing.T, ctx context.Context) {
 				n, err := s.DeleteAttemptsBefore(ctx, time.Time{})
-				require.ErrorIs(t, err, policy.ErrRetainSinceRequired)
+				require.ErrorIs(t, err, lockout.ErrRetainSinceRequired)
 				assert.Zero(t, n)
 			},
 		},
@@ -192,7 +193,7 @@ func TestAttemptStore_Refusals(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context) {
 				_, err := s.FailureCount(ctx, "alice", time.Time{})
 				require.ErrorIs(t, err, context.Canceled)
-				assert.ErrorContains(t, err, "pgx: count login failures")
+				assert.ErrorContains(t, err, "pgxstore: count login failures")
 			},
 		},
 	}

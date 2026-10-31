@@ -37,12 +37,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authorize"
-	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -120,7 +121,7 @@ type Effects struct {
 	// Sessions is the manager every scenario's chain is wired with, and Store
 	// is the store underneath it, held separately because counting a user's
 	// live sessions is what a scenario asserts on.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 	Store    *session.MemoryStore
 
 	// Attempts is the failed-login counter the chain records against.
@@ -238,13 +239,13 @@ func newEffects(t *testing.T) *Effects {
 
 	store := session.NewMemoryStore()
 
-	manager, err := session.NewManager(session.WithStore(store))
+	manager, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	return &Effects{
 		Sessions: manager,
 		Store:    store,
-		Attempts: policy.NewMemoryAttemptStore(),
+		Attempts: lockout.NewMemoryAttemptStore(),
 	}
 }
 
@@ -645,7 +646,7 @@ func lockedAccountIsRefused() Scenario {
 			// lock to the consumer's own handler.
 			assert.Equal(t, http.StatusUnauthorized, res.Status)
 			assert.Empty(t, res.Body)
-			require.ErrorIs(t, res.Refusal, policy.ErrAccountLocked)
+			require.ErrorIs(t, res.Refusal, lockout.ErrAccountLocked)
 			require.ErrorIs(t, res.Refusal, authenticate.ErrAuthenticationFailed)
 
 			assert.Equal(t, 0, res.Effects.AuthenticatorCalls(),
@@ -1101,7 +1102,7 @@ func (fixtureTokens) Generate(
 ) (string, error) {
 	if id == "" || p == nil || p.Username == "" {
 		return "", fmt.Errorf("httpsecconformance: %w: nothing to identify the token by",
-			token.ErrTokenInvalid)
+			token.ErrInvalid)
 	}
 
 	return issuedTokenFor(p.Username, id), nil
@@ -1111,13 +1112,13 @@ func (fixtureTokens) Verify(_ context.Context, presented string) (*token.Claims,
 	rest, ok := strings.CutPrefix(presented, tokenPrefix)
 	if !ok {
 		return nil, fmt.Errorf("httpsecconformance: %w: not a token this fixture issued",
-			token.ErrTokenInvalid)
+			token.ErrInvalid)
 	}
 
 	subject, id, ok := strings.Cut(rest, ".")
 	if !ok || subject == "" || id == "" {
 		return nil, fmt.Errorf("httpsecconformance: %w: the token names no session",
-			token.ErrTokenInvalid)
+			token.ErrInvalid)
 	}
 
 	return token.NewClaims(subject, id), nil
@@ -1178,7 +1179,7 @@ func (lockedPolicy) Name() string { return "httpsecconformance/locked" }
 func (lockedPolicy) Phases() []policy.Phase { return []policy.Phase{policy.PreAuthentication} }
 
 func (lockedPolicy) Evaluate(context.Context, *policy.Input) policy.Decision {
-	return policy.Decision{Outcome: policy.Deny, Reason: policy.ErrAccountLocked}
+	return policy.Decision{Outcome: policy.Deny, Reason: lockout.ErrAccountLocked}
 }
 
 // challengingPolicy asks a successful login for a second factor.
@@ -1250,6 +1251,6 @@ func MisconfiguredFormLogin() httpsec.Option {
 	return httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 		Authenticator: &fixtureAuthenticator{calls: new(atomic.Int64)},
 		Tokens:        fixtureTokens{},
-		Attempts:      policy.NewMemoryAttemptStore(),
+		Attempts:      lockout.NewMemoryAttemptStore(),
 	})
 }

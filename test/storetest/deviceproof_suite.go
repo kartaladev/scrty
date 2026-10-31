@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -116,7 +116,7 @@ func refuseCharge(ctx context.Context, t *testing.T, s mfa.DeviceProofStore, gen
 // generation, once, at a later step; a completion confirms only a proven
 // enrolment on its generation, once, clearing the code and keeping its expiry;
 // a charge counts an attempt only against an outstanding, unexpired code on
-// its generation, at most mfa.MaxEmailCodeFailures times; and the nil
+// its generation, at most mfa.MaxEmailCodeAttempts times; and the nil
 // generation matches nothing, even an enrolment stored without one. Every
 // refused write changes nothing. The cases are sequential; RunCompleteRace and
 // RunChargeRace hold the same writes under contention.
@@ -276,16 +276,16 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
-				for want := 1; want <= mfa.MaxEmailCodeFailures; want++ {
+				for want := 1; want <= mfa.MaxEmailCodeAttempts; want++ {
 					count, charged, err := s.ChargeEmailCode(ctx, mfaUser, g1, chargeAt)
 					require.NoError(t, err)
-					assert.True(t, charged, "charge %d of %d must succeed", want, mfa.MaxEmailCodeFailures)
+					assert.True(t, charged, "charge %d of %d must succeed", want, mfa.MaxEmailCodeAttempts)
 					assert.Equal(t, want, count, "the count after charge %d", want)
 				}
 
 				refuseCharge(ctx, t, s, g1, chargeAt, "a charge past the cap")
 
-				e.EmailCodeAttempts = mfa.MaxEmailCodeFailures
+				e.EmailCodeAttempts = mfa.MaxEmailCodeAttempts
 				assertEnrolment(ctx, t, s, e)
 			},
 		},

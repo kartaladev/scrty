@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
 )
@@ -105,7 +105,7 @@ func ExampleNewWayBackCheck() {
 // factor.
 //
 // The answer is the requirement policy's alone. A consumer who also sets
-// policy.WithFederatedChallengeWhenUnmet(true) on the second-factor challenge
+// policy.WithMFAFederatedChallengeWhenUnmet(true) on the second-factor challenge
 // policy has a policy that can still challenge an enrolled user's OIDC login
 // this answer admits, and wires an Admits that answers false for such users.
 func ExampleWayBackDeps_admits() {
@@ -130,9 +130,9 @@ func ExampleWayBackDeps_admits() {
 		panic(err)
 	}
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+	requirement, err := policy.NewMFARequirement(nil, lookups,
 		policy.WithMFARequiredForAll(),
-		policy.WithFederatedAssurance(policy.FederatedAssuranceExempt),
+		policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt),
 	)
 	if err != nil {
 		panic(err)

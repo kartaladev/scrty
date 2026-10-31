@@ -23,7 +23,7 @@ const DefaultBearerScheme = "Bearer"
 // bearerToken authenticates a token against a live session and a live user.
 type bearerToken struct {
 	verifier token.Verifier
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    identity.UserLoader
 
 	// log is the chain's logger, handed over by wire.
@@ -150,3 +150,123 @@ func presentedCredential(header, scheme string, allowEmptyScheme bool) (string, 
 // msgBearerNotVerified reports a token that did not verify. It is at debug
 // because a stream of expired tokens is ordinary traffic.
 const msgBearerNotVerified = "httpsec: a bearer token did not verify" //nolint:gosec // G101: a log message naming what failed, not a credential
+
+// BearerTokenDeps are the collaborators bearer authentication is wired to.
+//
+// All three are required. The session manager and the user loader are what make
+// a bearer token a reference to live state rather than a self-contained grant:
+// without them a revoked session and a revoked role would both be honoured for
+// the rest of the token's life.
+type BearerTokenDeps struct {
+	// Verifier checks the presented token and reports its claims.
+	Verifier token.Verifier
+
+	// Sessions loads the session the token's jti names.
+	Sessions *session.Sessions
+
+	// Users reloads the user the token's subject names, so the roles the
+	// request is judged on are the ones the store holds now.
+	Users identity.UserLoader
+}
+
+// BearerTokenOption configures bearer authentication.
+type BearerTokenOption func(*bearerToken) error
+
+// EnableBearerToken authenticates bearer tokens at the bearer slot.
+//
+// Default: the scheme DefaultBearerScheme, matched without regard to case, and
+// a token presented with no scheme at all is ignored. Requests carrying another
+// scheme, or no Authorization header, pass through untouched.
+//
+// A token that fails verification is recorded at debug with the verifier's own
+// text, kept on purpose: it is the library's own protocol-failure text, not a
+// dependency's, and names the check the token failed (expired, wrong
+// signature, wrong audience), which an operator chasing a rejected client
+// needs. Every other dependency failure — an unreadable session, a failed
+// save while marking a challenge — is recorded by a fixed reason and the
+// error's Go type, never its text, and a failed save is returned wrapped in
+// fixed library text, its error still matching through errors.Is and
+// errors.As. A consumer who wants a store's full error logs it inside their
+// own implementation of BearerTokenDeps.
+func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
+	const option = "EnableBearerToken"
+
+	return func(c *config) error {
+		b := &bearerToken{
+			verifier: d.Verifier,
+			sessions: d.Sessions,
+			users:    d.Users,
+			now:      c.now,
+			scheme:   DefaultBearerScheme,
+		}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(b); err != nil {
+				return err
+			}
+		}
+
+		c.enable(option, func() error {
+			if err := requireDep(option, "token verifier", d.Verifier); err != nil {
+				return err
+			}
+			if err := requireDep(option, "session manager", d.Sessions); err != nil {
+				return err
+			}
+
+			return requireDep(option, "user loader", d.Users)
+		})
+
+		c.useSessions(d.Sessions)
+		c.wire(b.wire)
+		// The renewal endpoint may be enabled after this option, so it is
+		// handed to the core once every option has been applied.
+		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
+		c.register(b, OrderBearerToken)
+
+		return nil
+	}
+}
+
+// WithBearerScheme presents tokens under scheme instead.
+//
+// Default: DefaultBearerScheme. The scheme is matched without regard to case
+// either way. An empty scheme is refused: it would claim every Authorization
+// header, including those of the schemes at neighbouring slots. Use
+// WithBearerAllowEmptyScheme to accept a bare token as well.
+func WithBearerScheme(scheme string) BearerTokenOption {
+	return func(b *bearerToken) error {
+		if strings.TrimSpace(scheme) == "" {
+			return newConfigError("WithBearerScheme was given no scheme, which would claim " +
+				"every Authorization header")
+		}
+
+		if strings.ContainsAny(scheme, " \t") {
+			return newConfigError("WithBearerScheme was given %q, and a scheme is the one token "+
+				"before the credential, so it can hold no space", scheme)
+		}
+
+		b.scheme = scheme
+		return nil
+	}
+}
+
+// WithBearerAllowEmptyScheme also accepts a token presented with no scheme.
+//
+// Default: off, so an Authorization header carrying a bare credential is left
+// for whichever interceptor claims it. Turn it on for clients that send the
+// token alone; it does not stop the configured scheme being accepted.
+//
+// The line it does not cross: a bare credential is indistinguishable from
+// another scheme's opaque token, so a chain that enables this and another
+// credential-bearing scheme hands both to whichever slot runs first. Enable it
+// only where bearer tokens are the one thing that header carries.
+func WithBearerAllowEmptyScheme() BearerTokenOption {
+	return func(b *bearerToken) error {
+		b.allowEmptyScheme = true
+		return nil
+	}
+}

@@ -8,13 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // streakStore is a login-attempt store that keeps consecutive-failure streaks,
 // as every durable backend's is.
 type streakStore interface {
 	policy.AttemptStore
-	policy.FailureStreakStore
+	lockout.FailureStreakStore
 }
 
 // streakStoreOf builds the named backend's login-attempt store, as a streak
@@ -83,7 +84,7 @@ func TestCrossBackendFailureStreak(t *testing.T) {
 				require.NoError(t, rd.Reset(ctx, username))
 				cleared, err := w.FailureStreak(ctx, username, since)
 				require.NoError(t, err)
-				assert.Equal(t, policy.FailureStreak{}, cleared, "a Reset through %s lifts the hold for %s", reader, writer)
+				assert.Equal(t, lockout.FailureStreak{}, cleared, "a Reset through %s lifts the hold for %s", reader, writer)
 			})
 		}
 	}

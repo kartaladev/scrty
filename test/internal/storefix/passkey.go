@@ -18,10 +18,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -72,7 +72,7 @@ func PasskeyCredential(cid id.ID, user identity.UserID, credID string) *passkey.
 // ten minutes after PasskeyCreated.
 func PasskeyAwaitingCode(c *passkey.Credential, code string) *passkey.Credential {
 	c.State = passkey.StatePending
-	c.Pending = passkey.AwaitingEmailCode
+	c.Pending = passkey.PendingEmailCode
 	c.EmailCode = &passkey.EmailCode{Code: code, ExpiresAt: PasskeyCreated.Add(10 * time.Minute)}
 
 	return c
@@ -482,7 +482,7 @@ func RunPasskeyClearedCodeRow(t *testing.T, raw *sql.DB, s passkey.CredentialSto
 		row()
 		require.True(t, code && until, "the awaiting credential stores no code or no expiry")
 
-		state, ok, err := s.ClearReason(ctx, c.User, c.ID, passkey.AwaitingEmailCode)
+		state, ok, err := s.ClearReason(ctx, c.User, c.ID, passkey.PendingEmailCode)
 		require.NoError(t, err)
 		require.True(t, ok)
 		assert.Equal(t, passkey.StateActive, state)

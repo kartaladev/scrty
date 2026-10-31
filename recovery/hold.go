@@ -15,8 +15,8 @@ import (
 	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The one-time purposes of a held recovery's two tokens. Each token's subject
@@ -46,19 +46,19 @@ type Hold struct {
 	CompletableAt   time.Time
 }
 
-// WithDelay holds every recovery for d before it can complete. There is no
+// WithHoldDelay holds every recovery for d before it can complete. There is no
 // default: a recovery completes at once. Zero or less is a configuration
 // error. With WithRisk as well, the hold is the longer of the two.
 //
 // A hold needs WithCancelLink.
-func WithDelay(d time.Duration) Option {
+func WithHoldDelay(d time.Duration) Option {
 	return func(c *config) { c.delay, c.delaySet = d, true }
 }
 
-// WithCompletionWindow replaces how long after its hold a held recovery can
+// WithHoldCompletionWindow replaces how long after its hold a held recovery can
 // still be finished. The default is 24 hours. Zero or less is a configuration
 // error.
-func WithCompletionWindow(d time.Duration) Option {
+func WithHoldCompletionWindow(d time.Duration) Option {
 	return func(c *config) { c.window = d }
 }
 
@@ -82,7 +82,7 @@ func WithCancelLink(baseURL string) Option {
 // Nothing purges the default store: every hold adds two tokens, which stay in
 // memory, spent or expired, for the life of the process. A consumer who holds
 // recoveries in a long-running process supplies a store here and sweeps it,
-// for example with onetime.Manager.PurgeExpired from a manager over this
+// for example with onetime.Tokens.PurgeExpired from a manager over this
 // store for each of FinishTokenPurpose and CancelTokenPurpose, since the
 // default store is not reachable from outside the Recoverer.
 func WithHoldTokenStore(s onetime.Store) Option {
@@ -138,9 +138,9 @@ func (r *Recoverer) validateHolds(c *config) error {
 
 // holdTokens builds a manager of purpose over the hold token store, issuing
 // tokens that live for ttl.
-func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Manager, error) {
-	m, err := onetime.NewManager(purpose,
-		onetime.WithStore(r.holdStore), onetime.WithTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
+func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
+	m, err := onetime.New(purpose,
+		onetime.WithStore(r.holdStore), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
 	}
@@ -375,7 +375,7 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 // pending are all ErrRefused; a record store outage is
 // returned behind fixed text. refused is the message a refusal is logged
 // under.
-func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Manager, token, refused string) (onetime.Checked, *Record, error) {
+func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Tokens, token, refused string) (onetime.Checked, *Record, error) {
 	checked, err := m.Check(ctx, token, "")
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, refused, slog.String("reason", "token"), slog.String("purpose", m.Purpose()))
@@ -413,7 +413,7 @@ func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Manager, token, ref
 // consumeHoldToken spends a hold token once its record has been decided. The
 // record's conditional write is what decided the race, and it already refuses
 // the token's every later use, so a consume that fails is logged and ignored.
-func (r *Recoverer) consumeHoldToken(ctx context.Context, m *onetime.Manager, checked onetime.Checked) {
+func (r *Recoverer) consumeHoldToken(ctx context.Context, m *onetime.Tokens, checked onetime.Checked) {
 	if err := m.Consume(ctx, checked); err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgHoldTokenConsume, diag.Failure("token-consume", err)...)
 	}

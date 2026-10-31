@@ -14,13 +14,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/passkey"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/storeerr"
+	"github.com/kartaladev/scrty/store"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // Isolation names a transaction isolation level, spelled as PostgreSQL's
@@ -56,7 +56,7 @@ type CallerTx struct {
 // a fixture with one missing fails at once, naming it.
 type IsolationFixture struct {
 	// Streaks returns a failure-streak store on the database.
-	Streaks func(t *testing.T) policy.FailureStreakStore
+	Streaks func(t *testing.T) lockout.FailureStreakStore
 	// RecoveryCodes returns a saved-code store on the database.
 	RecoveryCodes func(t *testing.T) recovery.CodeStore
 	// Identities returns an identity store on the database, which holds the
@@ -210,6 +210,23 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			})
 
 			assertNoErrors(t, errs, "a concurrent limiter record")
+		}},
+		{"concurrent limiter charges and refunds report no failure", func(t *testing.T) {
+			l := f.Limiter(t)
+			require.NoError(t, l.RecordFailure(t.Context(), "iso-charge"))
+
+			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, _ int) error {
+				r, exceeded, err := l.Charge(ctx, "iso-charge")
+				if err != nil {
+					return err
+				}
+				if exceeded {
+					return fmt.Errorf("a charge was refused below the limit")
+				}
+				return l.Refund(ctx, r)
+			})
+
+			assertNoErrors(t, errs, "a concurrent limiter charge or refund")
 		}},
 		{"a caller's repeatable-read transaction refuses a saved-code replacement", func(t *testing.T) {
 			s := f.RecoveryCodes(t)
@@ -405,13 +422,13 @@ func assertNoErrors(t *testing.T, errs []error, what string) {
 
 // assertIsolationRefused requires err to be the backend's refusal of a
 // caller's stronger transaction, naming the level it found. The refusal
-// matches both the backend's own name for it and storeerr's, so a consumer
+// matches both the backend's own name for it and store's, so a consumer
 // matches it whichever backend runs.
 func assertIsolationRefused(t *testing.T, f IsolationFixture, err error) {
 	t.Helper()
 
 	require.ErrorIs(t, err, f.IsolationRefused, "the operation ran in the caller's REPEATABLE READ transaction")
-	require.ErrorIs(t, err, storeerr.ErrIsolationTooStrong, "the backend's refusal is not storeerr's")
+	require.ErrorIs(t, err, store.ErrIsolationTooStrong, "the backend's refusal is not store's")
 	assert.Contains(t, strings.ToLower(err.Error()), string(RepeatableRead), "the refusal does not name the level")
 }
 

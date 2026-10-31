@@ -1,0 +1,4 @@
+AttestationNone
+AttestationPacked
+Authenticator
+New

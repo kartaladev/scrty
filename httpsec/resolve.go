@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
@@ -25,7 +25,7 @@ import (
 // Every authenticator that resolves a session through it refuses the same
 // way, with the same errors and the same records, whatever its credential.
 type sessionResolver struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    identity.UserLoader
 	log      *slog.Logger
 
@@ -103,7 +103,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 
 	s, err := r.sessions.Load(ctx, id)
 	if err != nil {
-		if errors.Is(err, session.ErrSessionUnreadable) {
+		if errors.Is(err, session.ErrUnreadable) {
 			// Visible to an operator, because it means a sealing key was
 			// retired while sessions sealed under it were still live. The
 			// caller is answered "log in again", because that is the remedy
@@ -123,7 +123,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 		// and no handler sees it authenticated; the endpoint, which always
 		// answers its own requests, loads it for renewal. Every other request
 		// is refused as for any ended session.
-		if errors.Is(err, session.ErrSessionRenewalRequired) &&
+		if errors.Is(err, session.ErrRenewalRequired) &&
 			r.renewal != nil && r.renewal.answers(ex.Request) {
 			ex.renewal = id
 
@@ -136,7 +136,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 		// its request transaction back on a refusal can tell this is the one
 		// refusal it must commit, or it would roll the revocation back too.
 		// The manager's error names no identifier.
-		if errors.Is(err, session.ErrSessionReused) {
+		if errors.Is(err, session.ErrReused) {
 			return errors.Join(ErrAuthenticationRequired, err)
 		}
 
@@ -177,7 +177,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 // is judged at.
 type perRequestPhase struct {
 	engine   *policy.Engine
-	sessions *session.Manager
+	sessions *session.Sessions
 
 	// enrolmentLifetime is how long a session marked for an enrolment
 	// challenge may live.

@@ -12,9 +12,9 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
-	scrtyredis "github.com/kartaladev/scrty/redis"
+	"github.com/kartaladev/scrty/ratelimit/redisstore"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -34,7 +34,7 @@ func (fixedTokens) Generate(context.Context, string, *identity.Principal) (strin
 }
 
 func (fixedTokens) Verify(context.Context, string) (*token.Claims, error) {
-	return nil, token.ErrTokenInvalid
+	return nil, token.ErrInvalid
 }
 
 var _ token.Generator = fixedTokens{}
@@ -105,13 +105,13 @@ func TestLoginOwnLimiterUnderRedisFactory(t *testing.T) {
 			client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0", ContextTimeoutEnabled: true})
 			t.Cleanup(func() { _ = client.Close() })
 
-			factory, err := scrtyredis.NewLimiterFactory(client)
+			factory, err := redisstore.NewLimiterFactory(client)
 			require.NoError(t, err)
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
-			attempts := policy.NewMemoryAttemptStore()
+			attempts := lockout.NewMemoryAttemptStore()
 
 			var (
 				loginOpts []httpsec.LoginOption

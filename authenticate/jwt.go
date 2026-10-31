@@ -13,15 +13,16 @@ import (
 	"github.com/kartaladev/scrty/token"
 )
 
+//go:generate mockgen -source=jwt.go -package=authenticate_test -destination=jwt_mock_test.go -typed
 //go:generate mockgen -destination=verifier_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/token Verifier
 
-// JwtOption configures the bearer-token provider.
+// JWTOption configures the bearer-token provider.
 //
 // A nil option is skipped, so a consumer who builds the slice conditionally
 // need not filter it first.
-type JwtOption func(*jwtAuthenticator)
+type JWTOption func(*jwtAuthenticator)
 
-// WithJwtVerifier supplies the verifier every presented token is checked by.
+// WithJWTVerifier supplies the verifier every presented token is checked by.
 //
 // It is required and has no default. A verifier decides which issuers, which
 // signing keys, which audience and which clock skew are acceptable, and there
@@ -31,11 +32,11 @@ type JwtOption func(*jwtAuthenticator)
 //
 // A nil verifier, including a non-nil interface holding a nil pointer, is the
 // same as supplying none.
-func WithJwtVerifier(v token.Verifier) JwtOption {
+func WithJWTVerifier(v token.Verifier) JWTOption {
 	return func(a *jwtAuthenticator) { a.verifier = v }
 }
 
-// WithJwtIDGenerator replaces the generator that names an authentication whose
+// WithJWTIDGenerator replaces the generator that names an authentication whose
 // token carries no identifier this library can use.
 //
 // The default is id.NewV7Generator. It is consulted only as a fallback: a token
@@ -45,7 +46,7 @@ func WithJwtVerifier(v token.Verifier) JwtOption {
 // A nil generator is a configuration error rather than a silent return to the
 // default, because a consumer supplying one means their records are keyed by
 // its identifiers.
-func WithJwtIDGenerator(g id.Generator) JwtOption {
+func WithJWTIDGenerator(g id.Generator) JWTOption {
 	return func(a *jwtAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
@@ -59,16 +60,16 @@ type jwtAuthenticator struct {
 	idsSet bool
 }
 
-// NewJwtAuthenticator returns a provider that resolves BearerCredentials
+// NewJWTAuthenticator returns a provider that resolves BearerCredentials
 // through a token verifier.
 //
-// WithJwtVerifier is required. Defaults: id.NewV7Generator, for the identifier
+// WithJWTVerifier is required. Defaults: id.NewV7Generator, for the identifier
 // an authentication takes when its token carries none this library can use.
 //
 // Nothing here parses or trusts a token itself. The verifier is the only thing
 // that reads one, and this provider builds a principal only from what the
 // verifier reported — never from an unverified segment of the presented string.
-func NewJwtAuthenticator(opts ...JwtOption) (Authenticator, error) {
+func NewJWTAuthenticator(opts ...JWTOption) (Authenticator, error) {
 	a := &jwtAuthenticator{}
 	for _, opt := range opts {
 		if opt != nil {
@@ -77,7 +78,7 @@ func NewJwtAuthenticator(opts ...JwtOption) (Authenticator, error) {
 	}
 
 	if nilcheck.IsNil(a.verifier) {
-		return nil, fmt.Errorf("%w: a token verifier is required; supply WithJwtVerifier", ErrConfig)
+		return nil, fmt.Errorf("%w: a token verifier is required; supply WithJWTVerifier", ErrConfig)
 	}
 	if a.idsSet && nilcheck.IsNil(a.ids) {
 		return nil, fmt.Errorf("%w: the authentication identifier generator is nil", ErrConfig)
@@ -158,3 +159,69 @@ func (a *jwtAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 }
 
 var _ Authenticator = (*jwtAuthenticator)(nil)
+
+// BearerCredentials is the shape the bearer-token provider reads a token from.
+//
+// It is an interface rather than a concrete type so a consumer whose transport
+// already has its own credential type — one that carries a scheme, a source
+// header or a tenant alongside the token — can present that type directly
+// instead of copying the token into one of this library's.
+type BearerCredentials interface {
+	identity.Credentials
+
+	// Token reports the token exactly as it was presented, with no scheme,
+	// whitespace or quoting around it. A verifier accepts only the string that
+	// was issued, so anything this returns but the token itself is rejected.
+	Token() string
+}
+
+// BearerToken is a token presented as a bearer credential.
+type BearerToken struct {
+	token string
+}
+
+// NewBearerToken returns credentials carrying token.
+//
+// The caller strips the transport's framing — the "Bearer " prefix of an
+// Authorization header, say — before calling this. Doing it here would mean
+// guessing at a framing this package cannot see, and a token that survived the
+// wrong guess would be one the verifier refuses for reasons that point at the
+// issuer.
+func NewBearerToken(token string) *BearerToken {
+	return &BearerToken{token: token}
+}
+
+// Token reports the presented token.
+func (c *BearerToken) Token() string {
+	if c == nil {
+		return ""
+	}
+
+	return c.token
+}
+
+// Type reports identity.CredentialsJWT.
+func (c *BearerToken) Type() identity.CredentialsType { return identity.CredentialsJWT }
+
+// Cleanup drops the token and reports no error.
+//
+// It cannot wipe it. A Go string is immutable, so unlike the byte slice behind
+// a password there is nothing to overwrite in place: the bytes stay resident
+// until the garbage collector reclaims them, and a token that was also read
+// from a request header is resident there too. That is the stated limit of this
+// cleanup. A bearer token is short-lived and the issuer can revoke it, which is
+// what the design relies on instead.
+//
+// Cleaning up an absent credential does nothing and reports no error, so a
+// provider's deferred cleanup is safe whether or not it produced a credential.
+func (c *BearerToken) Cleanup() error {
+	if c == nil {
+		return nil
+	}
+
+	c.token = ""
+
+	return nil
+}
+
+var _ BearerCredentials = (*BearerToken)(nil)

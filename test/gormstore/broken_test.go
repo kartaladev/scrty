@@ -10,21 +10,21 @@ import (
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/oidc"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // brokenVar names the environment variable that selects the one broken
@@ -33,7 +33,7 @@ import (
 const brokenVar = "GORMSTORE_BROKEN"
 
 // brokenVariants are the defects the gorm runs must catch. None of them is
-// exported from the gorm module: each is built here, over the exported store
+// exported from the gormstore module: each is built here, over the exported store
 // or through the test's own *gorm.DB.
 var brokenVariants = []storefix.BrokenVariant{
 	{
@@ -358,7 +358,7 @@ type gormSaveStore struct {
 
 func (s gormSaveStore) Save(ctx context.Context, sess *session.Session) error {
 	err := s.Store.Save(ctx, sess)
-	if !errors.Is(err, session.ErrSessionNotFound) {
+	if !errors.Is(err, session.ErrNotFound) {
 		return err
 	}
 
@@ -548,7 +548,7 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 		return err
 	}
 	if superseded {
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	}
 	return s.db.WithContext(ctx).Exec(
 		`UPDATE sessions SET first_presented_at = ? WHERE id_digest = ? AND first_presented_at IS NULL`,

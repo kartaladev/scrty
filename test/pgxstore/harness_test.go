@@ -1,4 +1,4 @@
-// Package pgxstore_test runs the native pgx stores of the scrty pgx module
+// Package pgxstore_test runs the native pgx stores of the pgxstore module
 // against PostgreSQL: the portable conformance suites, the durable suites, and
 // the cases only a real database can show.
 //
@@ -19,8 +19,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/migrate"
-	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
@@ -116,7 +116,7 @@ func unreachablePool(t *testing.T) *pgxpool.Pool {
 // refusedConfig asserts a constructor refused its configuration with exactly
 // text, and returned no store.
 func refusedConfig[S any](text string) func(t *testing.T, s S, err error) {
-	return storefix.RefusedConfig[S](pgxstore.ErrConfig, "pgx", text)
+	return storefix.RefusedConfig[S](pgxstore.ErrConfig, "pgxstore", text)
 }
 
 // beginTx begins a transaction of pool for a table case, and rolls it back at

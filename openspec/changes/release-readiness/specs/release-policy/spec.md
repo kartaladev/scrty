@@ -5,11 +5,11 @@ Defines how scrty versions, gates, tags and announces its releases, and how vuln
 ## ADDED Requirements
 
 ### Requirement: Modules are released in lockstep with directory-prefixed tags
-Every release SHALL give all published modules the same semantic version. The root module SHALL be tagged `vX.Y.Z`, and each nested module SHALL be tagged with its directory path as prefix, `<dir>/vX.Y.Z`, at the same commit. The published modules SHALL be the root, `fibersec`, `ginsec`, `gorm`, `passkey/webauthn`, `pgx`, `redis`, `sweep` and `test`. The `tools` module SHALL never be tagged.
+Every release SHALL give all published modules the same semantic version. The root module SHALL be tagged `vX.Y.Z`, and each nested module SHALL be tagged with its directory path as prefix, `<dir>/vX.Y.Z`, at the same commit. The published modules SHALL be the root, `httpsec/fibersec`, `httpsec/ginsec`, `store/gormstore`, `authenticate/passkey/webauthn`, `store/pgxstore`, `ratelimit/redisstore`, `expiry/sweep` and `test`. The `tools` module SHALL never be tagged.
 
 #### Scenario: First release
 - **WHEN** version `v0.1.0` is released
-- **THEN** the tags `v0.1.0`, `fibersec/v0.1.0`, `ginsec/v0.1.0`, `gorm/v0.1.0`, `passkey/webauthn/v0.1.0`, `pgx/v0.1.0`, `redis/v0.1.0`, `sweep/v0.1.0` and `test/v0.1.0` exist and name one commit
+- **THEN** the tags `v0.1.0`, `httpsec/fibersec/v0.1.0`, `httpsec/ginsec/v0.1.0`, `store/gormstore/v0.1.0`, `authenticate/passkey/webauthn/v0.1.0`, `store/pgxstore/v0.1.0`, `ratelimit/redisstore/v0.1.0`, `expiry/sweep/v0.1.0` and `test/v0.1.0` exist and name one commit
 - **AND** no tag carries the `tools/` prefix
 
 #### Scenario: A module without changes
@@ -33,8 +33,8 @@ Before any tag is created, the release gate SHALL pass on the release commit:
 A failure SHALL stop the release.
 
 #### Scenario: Stale requirement stops the release
-- **WHEN** the gate runs on a commit where `sweep/go.mod` requires the root at `v0.0.0` and the release version is `v0.1.0`
-- **THEN** the gate fails and names `sweep` and the requirement
+- **WHEN** the gate runs on a commit where `expiry/sweep/go.mod` requires the root at `v0.0.0` and the release version is `v0.1.0`
+- **THEN** the gate fails and names `expiry/sweep` and the requirement
 
 #### Scenario: API report for the first release
 - **WHEN** the gate runs for `v0.1.0`

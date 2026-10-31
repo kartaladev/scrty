@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/oidc"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 	"github.com/kartaladev/scrty/test/storetest"

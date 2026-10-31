@@ -3,9 +3,9 @@ package httpsec_test
 import (
 	"fmt"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -22,7 +22,7 @@ func ExampleEnableAccountRecovery() {
 		ID: "u-1", Username: "grace@example.com", Active: true,
 	}}
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	if err != nil {
 		panic(err)
 	}
@@ -44,7 +44,7 @@ func ExampleEnableAccountRecovery() {
 
 	chain, err := httpsec.New(
 		httpsec.EnablePasswordChangeGate(sessions,
-			httpsec.WithChangePasswordEndpoint("/account/password", func(_ *httpsec.Exchange) error {
+			httpsec.WithPasswordChangeEndpoint("/account/password", func(_ *httpsec.Exchange) error {
 				return nil // the consumer's own password-change logic
 			}),
 		),

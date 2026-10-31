@@ -5,18 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -24,7 +23,7 @@ import (
 
 //go:generate mockgen -destination=authenticator_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate Authenticator
 //go:generate mockgen -destination=attemptstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/policy AttemptStore
-//go:generate mockgen -destination=encoder_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/password Encoder
+//go:generate mockgen -destination=encoder_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/password Encoder
 
 // The conventions form login follows when the consumer names none. They are
 // constants rather than bare literals so a consumer who wants to follow the
@@ -97,7 +96,7 @@ type LoginResponder func(ex *Exchange, result LoginResult) error
 // through.
 type formLogin struct {
 	authn    authenticate.Authenticator
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 	attempts policy.AttemptStore
 
@@ -267,7 +266,7 @@ func (c *config) warnWithoutDecoy(option string, authn authenticate.Authenticato
 
 // offersDecoy reports whether authn may spend a decoy verification: it is an
 // authenticate.DecoyVerifier and, if it can also say whether any of its own
-// delegates offers one, as authenticate.Manager can, it says so. A Manager is
+// delegates offers one, as authenticate.FirstOf can, it says so. A FirstOf is
 // always a DecoyVerifier, so the type alone does not tell.
 func offersDecoy(authn authenticate.Authenticator) bool {
 	if _, ok := authn.(authenticate.DecoyVerifier); !ok {
@@ -332,7 +331,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	}
 
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if !errors.Is(err, policy.ErrAccountLocked) {
+		if !errors.Is(err, lockout.ErrAccountLocked) {
 			return err
 		}
 
@@ -345,6 +344,11 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	auth, err := l.verifyPassword(ctx, username, password, now)
 	if err != nil {
+		// Every refusal is charged to the source, an unavailable user store
+		// and a load the client's own hang-up ended included: verifyPassword
+		// recorded nothing for the username then, and the source still pays
+		// for the password work it spent, so an outage or a client timing its
+		// hang-ups cannot spend work no throttle bounds.
 		recordSourceFailure(ctx, l.guard, src)
 
 		return err
@@ -394,9 +398,12 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // differently for a right guess than for a wrong one. A lock is refused as
 // login refuses it (refuseLocked): concealed behind a decoy by default, the
 // lock alone when the consumer discloses locks. A credential the
-// authenticator refuses is recorded as a failed attempt. Clearing the failures
-// a success supersedes is left to the caller, because only a login is a
-// success in that sense.
+// authenticator refuses is recorded as a failed attempt; a user store that
+// could not answer (authenticate.ErrUnavailable), and a load the request's own
+// context ended, are returned as they are and recorded as nothing for the
+// username, for the caller to charge to its source. Clearing the failures a
+// success supersedes is left to the caller, because only a login is a success
+// in that sense.
 //
 // There is no source check here. The login endpoint checks the
 // password-login guard before calling the two steps itself, and account
@@ -408,7 +415,7 @@ func (l *formLogin) authenticatePassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if errors.Is(err, policy.ErrAccountLocked) {
+		if errors.Is(err, lockout.ErrAccountLocked) {
 			return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
 				identity.NewUsernamePassword(username, password), err)
 		}
@@ -432,6 +439,15 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 
 // verifyPassword checks the password, recording a refused one as a failed
 // attempt against the account.
+//
+// A user store that could not answer (authenticate.ErrUnavailable) is returned
+// as it is and recorded as nothing against the account: no credential was
+// judged, and counting it would let an outage lock or hold accounts whose
+// owners typed the right password. Nor is a load the request's own context
+// ended (see loadEndedByCaller) recorded against the account: no password was
+// compared, and recording it would let client timeouts in front of a slow
+// store hold an account. Both are returned as they are, for the caller to
+// charge to the source.
 func (l *formLogin) verifyPassword(
 	ctx context.Context,
 	username string,
@@ -439,6 +455,9 @@ func (l *formLogin) verifyPassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	if errors.Is(err, authenticate.ErrUnavailable) || loadEndedByCaller(ctx, err) {
+		return nil, err
+	}
 	if err != nil {
 		l.recordFailure(ctx, username, now)
 
@@ -446,6 +465,21 @@ func (l *formLogin) verifyPassword(
 	}
 
 	return auth, nil
+}
+
+// loadEndedByCaller reports whether err is the authenticator's uniform failure
+// for a user load the request's own context ended, so that no password was
+// compared: ctx has ended, and err matches authenticate.ErrAuthenticationFailed
+// and ctx's error or its cause, as the password provider's joined failure
+// does. It decides from the error, never from ctx alone: a password compared
+// and refused before the client left is a failed attempt like any other.
+func loadEndedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+	if ctxErr == nil || !errors.Is(err, authenticate.ErrAuthenticationFailed) {
+		return false
+	}
+
+	return errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx))
 }
 
 // checkPassword is account recovery's password proof (recovery.PasswordCheck):
@@ -559,17 +593,6 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 	}
 
 	return fields, nil
-}
-
-// declaresJSON reports whether a content type names JSON, ignoring parameters
-// such as a charset and accepting the +json structured suffix.
-func declaresJSON(contentType string) bool {
-	media, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
-	}
-
-	return media == "application/json" || strings.HasSuffix(media, "+json")
 }
 
 // recordFailure counts one failed attempt, logging a store that could not.

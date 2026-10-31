@@ -7,16 +7,17 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/apikey"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // The in-memory defaults each run the portable suite for their contract. The
@@ -97,7 +98,7 @@ func TestMemoryAttemptStore(t *testing.T) {
 
 	storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
 		t.Helper()
-		return policy.NewMemoryAttemptStore()
+		return lockout.NewMemoryAttemptStore()
 	})
 }
 
@@ -105,7 +106,7 @@ func TestMemoryAttemptStore(t *testing.T) {
 func TestMemoryFailureStreak(t *testing.T) {
 	t.Parallel()
 
-	newStore := func(*testing.T) storetest.StreakStore { return policy.NewMemoryAttemptStore() }
+	newStore := func(*testing.T) storetest.StreakStore { return lockout.NewMemoryAttemptStore() }
 	storetest.RunFailureStreakSuite(t, newStore)
 	storetest.RunFailureStreakRace(t, newStore)
 }
@@ -115,7 +116,7 @@ func TestMemorySigningKeyStore(t *testing.T) {
 
 	storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
 		t.Helper()
-		return signingkey.NewInMemoryKeyStore()
+		return signingkey.NewMemoryKeyStore()
 	})
 }
 

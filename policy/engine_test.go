@@ -10,9 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -423,7 +424,7 @@ func TestEngineDeniesAnUnrecognisedOutcome(t *testing.T) {
 
 		require.Equal(t, policy.Deny, d.Outcome,
 			"an outcome the engine cannot interpret was passed over, and the phase allowed")
-		assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+		assert.ErrorIs(t, d.Reason, policy.ErrDenied)
 	}
 
 	cases := []testCase{
@@ -567,10 +568,10 @@ func (s viewRequirerStub) RequiredAttemptView() (policy.AttemptStore, bool) {
 func TestRequiredAttemptViews(t *testing.T) {
 	t.Parallel()
 
-	newLockout := func(t *testing.T, opts ...policy.LockoutOption) *policy.AccountLockoutPolicy {
+	newLockout := func(t *testing.T, opts ...lockout.Option) *lockout.Policy {
 		t.Helper()
 
-		p, err := policy.NewAccountLockoutPolicy(opts...)
+		p, err := lockout.New(opts...)
 		require.NoError(t, err)
 
 		return p
@@ -605,7 +606,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 		{
 			name: "a capped lockout policy requires its view",
 			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
-				p := newLockout(t, policy.WithLockoutCap(20))
+				p := newLockout(t, lockout.WithFailureStreakLimit(20))
 
 				return []policy.Policy{p}, []policy.RequiredAttemptView{{Policy: p.Name(), View: p.Attempts()}}
 			},
@@ -630,10 +631,10 @@ func TestRequiredAttemptViews(t *testing.T) {
 			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				own := viewRequirerStub{
 					stubPolicy: stubPolicy{name: "own", phases: pre},
-					view:       policy.NewMemoryAttemptStore(),
+					view:       lockout.NewMemoryAttemptStore(),
 					required:   true,
 				}
-				p := newLockout(t, policy.WithLockoutCap(20))
+				p := newLockout(t, lockout.WithFailureStreakLimit(20))
 
 				return []policy.Policy{own, newLockout(t), p}, []policy.RequiredAttemptView{
 					{Policy: "own", View: own.view},
@@ -647,7 +648,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				return []policy.Policy{viewRequirerStub{
 					stubPolicy: stubPolicy{phases: pre},
-					view:       policy.NewMemoryAttemptStore(),
+					view:       lockout.NewMemoryAttemptStore(),
 				}}, nil
 			},
 			assert: none,
@@ -656,7 +657,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			name: "a requirer asked in no phase is never reported",
 			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				return []policy.Policy{viewRequirerStub{
-					view:     policy.NewMemoryAttemptStore(),
+					view:     lockout.NewMemoryAttemptStore(),
 					required: true,
 				}}, nil
 			},
@@ -692,10 +693,10 @@ func TestEngineIdleTimeouts(t *testing.T) {
 
 	pre := []policy.Phase{policy.PerRequest}
 
-	idlePolicy := func(t *testing.T, d time.Duration) *policy.IdleTimeoutPolicy {
+	idlePolicy := func(t *testing.T, d time.Duration) *policy.IdleTimeout {
 		t.Helper()
 
-		p, err := policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyTimeout(d))
+		p, err := policy.NewIdleTimeout(policy.WithIdleTimeout(d))
 		require.NoError(t, err)
 
 		return p
@@ -771,6 +772,559 @@ func TestEngine_NilInputDeniesRatherThanPanics(t *testing.T) {
 	var d policy.Decision
 	require.NotPanics(t, func() { d = e.EvaluatePhase(t.Context(), policy.PerRequest, nil) })
 	require.Equal(t, policy.Deny, d.Outcome, "a phase with no input was allowed")
-	require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+	require.ErrorIs(t, d.Reason, policy.ErrDenied)
 	assert.False(t, called, "a policy was handed a nil input")
+}
+
+// challengingStub is a policy that declares the challenges it can raise. It
+// stands in for a consumer's own rule, which is the case the optional interface
+// exists for.
+type challengingStub struct {
+	stubPolicy
+
+	kinds []policy.ChallengeKind
+}
+
+func (c challengingStub) Challenges() []policy.ChallengeKind { return c.kinds }
+
+// TestEngineCanChallenge pins what an engine will say about the challenges its
+// policies can raise, which is what a chain checks its own wiring against: a
+// challenge nothing enforces is a session marked pending forever and a caller
+// served anyway.
+func TestEngineCanChallenge(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		policies func(t *testing.T) []policy.Policy
+		assert   func(t *testing.T, e *policy.Engine)
+	}
+
+	secondFactor := func(t *testing.T) policy.Policy {
+		t.Helper()
+
+		p, err := policy.NewMFA([]policy.MFAMethodLookup{idleMFAMethod(t, "totp")})
+		require.NoError(t, err)
+
+		return p
+	}
+
+	requirement := func(t *testing.T) policy.Policy {
+		t.Helper()
+
+		ctrl := gomock.NewController(t)
+
+		p, err := policy.NewMFARequirement(
+			NewMockMFARequirementLookup(ctrl), mfaMethods(idleMFAMethod(t, "totp")))
+		require.NoError(t, err)
+
+		return p
+	}
+
+	passwordAge := func(t *testing.T) policy.Policy {
+		t.Helper()
+
+		p, err := policy.NewPasswordAge()
+		require.NoError(t, err)
+
+		return p
+	}
+
+	cases := []testCase{
+		{
+			name:     "an engine with no policies",
+			policies: func(*testing.T) []policy.Policy { return nil },
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.False(t, e.CanChallenge(policy.ChallengeMFA))
+				assert.False(t, e.CanChallenge(policy.ChallengePasswordChange))
+			},
+		},
+		{
+			name: "the second-factor challenge policy",
+			policies: func(t *testing.T) []policy.Policy {
+				t.Helper()
+
+				return []policy.Policy{secondFactor(t)}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.True(t, e.CanChallenge(policy.ChallengeMFA))
+				assert.False(t, e.CanChallenge(policy.ChallengePasswordChange),
+					"it raises one kind, and says so")
+			},
+		},
+		{
+			name: "the requirement policy",
+			policies: func(t *testing.T) []policy.Policy {
+				t.Helper()
+
+				return []policy.Policy{requirement(t)}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.True(t, e.CanChallenge(policy.ChallengeMFA))
+				assert.False(t, e.CanChallenge(policy.ChallengePasswordChange))
+			},
+		},
+		{
+			name: "the password-age policy",
+			policies: func(t *testing.T) []policy.Policy {
+				t.Helper()
+
+				return []policy.Policy{passwordAge(t)}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.True(t, e.CanChallenge(policy.ChallengePasswordChange))
+				assert.False(t, e.CanChallenge(policy.ChallengeMFA),
+					"a password change is not a second factor")
+			},
+		},
+		{
+			name: "several policies, one of which challenges for a second factor",
+			policies: func(t *testing.T) []policy.Policy {
+				t.Helper()
+
+				return []policy.Policy{passwordAge(t), secondFactor(t)}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.True(t, e.CanChallenge(policy.ChallengeMFA))
+				assert.True(t, e.CanChallenge(policy.ChallengePasswordChange))
+			},
+		},
+		{
+			name: "a consumer's policy that declares the challenges it raises",
+			policies: func(*testing.T) []policy.Policy {
+				return []policy.Policy{challengingStub{
+					stubPolicy: stubPolicy{
+						name:     "consumer rule",
+						phases:   []policy.Phase{policy.PostAuthentication},
+						decision: policy.Decision{Outcome: policy.Allow},
+					},
+					kinds: []policy.ChallengeKind{
+						policy.ChallengePasswordChange,
+						policy.ChallengeMFA,
+					},
+				}}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.True(t, e.CanChallenge(policy.ChallengeMFA))
+				assert.True(t, e.CanChallenge(policy.ChallengePasswordChange))
+			},
+		},
+		{
+			// The documented limit of the answer: a policy that does not
+			// declare its challenges is taken to raise none, so a consumer
+			// whose own rule challenges has to implement Challenger for a
+			// chain to be able to check their wiring.
+			name: "a policy that challenges without declaring it",
+			policies: func(*testing.T) []policy.Policy {
+				return []policy.Policy{stubPolicy{
+					name:   "undeclared",
+					phases: []policy.Phase{policy.PostAuthentication},
+					decision: policy.Decision{
+						Outcome:   policy.Challenge,
+						Challenge: policy.ChallengeMFA,
+					},
+				}}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.False(t, e.CanChallenge(policy.ChallengeMFA),
+					"silence is read as raising nothing, not as raising anything")
+			},
+		},
+		{
+			name: "a policy registered in no phase at all",
+			policies: func(*testing.T) []policy.Policy {
+				return []policy.Policy{challengingStub{
+					stubPolicy: stubPolicy{name: "never asked"},
+					kinds:      []policy.ChallengeKind{policy.ChallengeMFA},
+				}}
+			},
+			assert: func(t *testing.T, e *policy.Engine) {
+				assert.False(t, e.CanChallenge(policy.ChallengeMFA),
+					"a policy no phase asks cannot raise anything")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.policies(t)...)
+			require.NoError(t, err)
+
+			tc.assert(t, e)
+		})
+	}
+}
+
+// Compile-time proof that the stub satisfies both ports it stands in for.
+var (
+	_ policy.Policy     = challengingStub{}
+	_ policy.Challenger = challengingStub{}
+)
+
+// flushablePolicy is a stubPolicy that also implements
+// policy.RefusalLogFlusher, counting how many times FlushRefusalLogs was
+// called on it. It shares stubPolicy's value semantics, so it registers on
+// the engine exactly as any other policy in this file's tests does.
+type flushablePolicy struct {
+	stubPolicy
+	flushes *int
+}
+
+func (p flushablePolicy) FlushRefusalLogs() error {
+	*p.flushes++
+
+	return nil
+}
+
+var _ policy.RefusalLogFlusher = flushablePolicy{}
+
+// newFlushablePolicy returns a flushable policy registered for phases and a
+// pointer to its own flush counter.
+func newFlushablePolicy(name string, phases ...policy.Phase) (flushablePolicy, *int) {
+	n := 0
+
+	return flushablePolicy{stubPolicy: stubPolicy{name: name, phases: phases}, flushes: &n}, &n
+}
+
+// TestEngineFlushRefusalLogs pins spec http-security-chain scenario
+// "Registered policy flushed": the engine reaches every registered policy
+// that can flush, once each, skips one that cannot without panicking, and
+// flushes a policy registered for more than one phase only once.
+func TestEngineFlushRefusalLogs(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) (e *policy.Engine, counts []*int)
+		assert func(t *testing.T, counts []*int)
+	}
+
+	cases := []testCase{
+		{
+			name: "two flushable policies are each flushed once",
+			build: func(t *testing.T) (*policy.Engine, []*int) {
+				t.Helper()
+
+				a, countA := newFlushablePolicy("a", policy.PerRequest)
+				b, countB := newFlushablePolicy("b", policy.PerRequest)
+
+				e, err := policy.NewEngine(a, b)
+				require.NoError(t, err)
+
+				return e, []*int{countA, countB}
+			},
+			assert: func(t *testing.T, counts []*int) {
+				require.Len(t, counts, 2)
+				assert.Equal(t, 1, *counts[0])
+				assert.Equal(t, 1, *counts[1])
+			},
+		},
+		{
+			name: "a policy without a flush is skipped without a panic",
+			build: func(t *testing.T) (*policy.Engine, []*int) {
+				t.Helper()
+
+				e, err := policy.NewEngine(stubPolicy{name: "no flush", phases: []policy.Phase{policy.PerRequest}})
+				require.NoError(t, err)
+
+				return e, nil
+			},
+			assert: func(t *testing.T, _ []*int) {
+				t.Helper()
+				// Reaching this closure at all is the assertion: a policy
+				// with no RefusalLogFlusher must not panic the flush.
+			},
+		},
+		{
+			name: "a policy registered for two phases is flushed once",
+			build: func(t *testing.T) (*policy.Engine, []*int) {
+				t.Helper()
+
+				p, count := newFlushablePolicy("both-phases", policy.PreAuthentication, policy.PostAuthentication)
+
+				e, err := policy.NewEngine(p)
+				require.NoError(t, err)
+
+				return e, []*int{count}
+			},
+			assert: func(t *testing.T, counts []*int) {
+				require.Len(t, counts, 1)
+				assert.Equal(t, 1, *counts[0],
+					"a policy registered for two phases must be flushed once, from asked, not once per phase")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, counts := tc.build(t)
+			e.FlushRefusalLogs()
+			tc.assert(t, counts)
+		})
+	}
+
+	t.Run("a policy added after a first flush is flushed by the next", func(t *testing.T) {
+		t.Parallel()
+
+		e, err := policy.NewEngine()
+		require.NoError(t, err)
+
+		e.FlushRefusalLogs() // nothing registered yet; must not panic
+
+		p, count := newFlushablePolicy("added-later", policy.PerRequest)
+		require.NoError(t, e.Add(p))
+
+		e.FlushRefusalLogs()
+		assert.Equal(t, 1, *count, "the policy added after construction was never flushed")
+
+		e.FlushRefusalLogs()
+		assert.Equal(t, 2, *count, "a second flush must reach the same policy again")
+	})
+}
+
+// TestEngineTellsPolicyItsPhase pins that a policy whose answer depends on the
+// phase learns the phase from the engine that is asking, with nothing added to
+// the context by the consumer.
+//
+// The real MFA requirement policy is driven through a real Engine here, rather
+// than evaluated directly as the requirement policy's own table does, because
+// what is under test is the engine's side of the arrangement: Input carries no
+// phase, so an engine that passed its context through unchanged would leave
+// every phase-sensitive policy unable to tell a login from a stateless request
+// — and that policy fails closed, refusing users the phase says to challenge or
+// allow.
+func TestEngineTellsPolicyItsPhase(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		phase  policy.Phase
+		assert func(t *testing.T, d policy.Decision)
+	}
+
+	cases := []testCase{
+		{
+			// The "Flagged mid-session" scenario: a user becomes required
+			// during a session that has not satisfied a second factor, and is
+			// enrolled on a usable method.
+			name:  "a required, enrolled user is challenged in the per-request phase",
+			phase: policy.PerRequest,
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Challenge, d.Outcome,
+					"a required user the engine could have challenged answered %v (%v)",
+					d.Outcome, d.Reason)
+				assert.Equal(t, policy.ChallengeMFA, d.Challenge)
+			},
+		},
+		{
+			// Post-authentication leaves the login challenge to the
+			// second-factor challenge policy, so this one raises no objection.
+			name:  "a required, enrolled user is allowed in the post-authentication phase",
+			phase: policy.PostAuthentication,
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Allow, d.Outcome,
+					"a login the challenge policy owns answered %v (%v)", d.Outcome, d.Reason)
+				assert.NoError(t, d.Reason)
+				assert.Equal(t, policy.ChallengeNone, d.Challenge)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := mfaRequirementPolicyFor(t,
+				mfaRequirementLookup(t, true, true, nil),
+				mfaMethod(t, factor.AuthenticatorApp, true, nil))
+
+			e, err := policy.NewEngine(p)
+			require.NoError(t, err)
+
+			in := &policy.Input{
+				User:         mfaUser,
+				Session:      &session.Session{ID: "s-1", UserID: mfaUser},
+				FirstFactor:  factor.Password,
+				MFASatisfied: false,
+				Now:          mfaNow,
+			}
+
+			// A plain context: a consumer that registered the policy with an
+			// engine has said which phase it is evaluating by calling
+			// EvaluatePhase, and should not have to say it twice.
+			tc.assert(t, e.EvaluatePhase(t.Context(), tc.phase, in))
+		})
+	}
+}
+
+// TestEngine_UnwiredFederatedAssurance pins which registered policies report
+// that they decide federated logins on provider assurance with no source to
+// decide by: the requirement policy, unless it is given a source or exempts
+// federated logins outright, and never a policy that decides nothing on it.
+func TestEngine_UnwiredFederatedAssurance(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		policies func(t *testing.T) []policy.Policy
+		assert   func(t *testing.T, unwired []string)
+	}
+
+	requirement := func(opts ...policy.MFARequirementOption) func(t *testing.T) []policy.Policy {
+		return func(t *testing.T) []policy.Policy {
+			p, err := policy.NewMFARequirement(nil,
+				mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))),
+				append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, opts...)...)
+			require.NoError(t, err)
+
+			return []policy.Policy{p}
+		}
+	}
+
+	unwired := func(t *testing.T, got []string) {
+		t.Helper()
+		assert.Equal(t, []string{"mfa-requirement"}, got)
+	}
+	wired := func(t *testing.T, got []string) {
+		t.Helper()
+		assert.Empty(t, got)
+	}
+
+	cases := []testCase{
+		{
+			name:     "the requirement policy in the default mode without a source",
+			policies: requirement(),
+			assert:   unwired,
+		},
+		{
+			name:     "the requirement policy in refuse mode without a source",
+			policies: requirement(policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)),
+			assert:   unwired,
+		},
+		{
+			name: "the requirement policy with a source",
+			policies: func(t *testing.T) []policy.Policy {
+				return requirement(policy.WithFederatedAssuranceSource(assuranceSource(t, false, false, nil)))(t)
+			},
+			assert: wired,
+		},
+		{
+			name:     "the requirement policy in exempt mode needs no source",
+			policies: requirement(policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)),
+			assert:   wired,
+		},
+		{
+			name: "the requirement policy under an exemption rule exempting oidc needs no source",
+			policies: requirement(policy.WithMFAExemption(func(k factor.Kind) bool {
+				return k == factor.OIDC || k.MFAExempt()
+			})),
+			assert: wired,
+		},
+		{
+			name: "the challenge policy without its opt-in needs no source",
+			policies: func(t *testing.T) []policy.Policy {
+				p, err := policy.NewMFA(mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))))
+				require.NoError(t, err)
+
+				return []policy.Policy{p}
+			},
+			assert: wired,
+		},
+		{
+			name: "every unwired registration is reported, in registration order",
+			policies: func(t *testing.T) []policy.Policy {
+				return append(requirement()(t), requirement()(t)...)
+			},
+			assert: func(t *testing.T, got []string) {
+				assert.Equal(t, []string{"mfa-requirement", "mfa-requirement"}, got,
+					"one entry per registered policy, so two registrations are both reported")
+			},
+		},
+		{
+			name:     "an engine with no policies reports none",
+			policies: func(*testing.T) []policy.Policy { return nil },
+			assert:   wired,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.policies(t)...)
+			require.NoError(t, err)
+
+			tc.assert(t, e.UnwiredFederatedAssurance())
+		})
+	}
+}
+
+// TestADeny pins that the engine never hands back a deny without a reason, and
+// never replaces a reason a policy gave.
+func TestADeny(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		policy stubPolicy
+		assert func(t *testing.T, d policy.Decision)
+	}
+
+	cases := []testCase{
+		{
+			// A stateless first factor has no later phase to refuse in: it turns the
+			// phase's decision into its own error and returns that. A deny carrying no
+			// reason therefore hands it nil, which every caller in Go reads as success, and
+			// the request the policy meant to refuse is served.
+			//
+			// The engine substitutes ErrDenied so that this cannot happen, whichever
+			// policy did the denying — closing it once here rather than asking every policy
+			// that will ever be written to remember.
+			name: "always carries a reason",
+			policy: stubPolicy{
+				name:     "reasonless",
+				phases:   []policy.Phase{policy.StatelessAuthentication},
+				decision: policy.Decision{Outcome: policy.Deny}, // Reason left nil.
+			},
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome)
+				require.Error(t, d.Reason,
+					"a deny with no reason is indistinguishable from success to the caller that reports it")
+				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
+			},
+		},
+		{
+			// The other half: the substitution is a floor, not a replacement. A
+			// policy that explained its refusal keeps that explanation, or a consumer
+			// could no longer tell an account lockout from a failed second factor.
+			name: "carries its own reason unchanged",
+			policy: stubPolicy{
+				name:     "explained",
+				phases:   []policy.Phase{policy.StatelessAuthentication},
+				decision: policy.Decision{Outcome: policy.Deny, Reason: errDenied},
+			},
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, errDenied, "the policy's own reason was replaced")
+				assert.NotErrorIs(t, d.Reason, policy.ErrDenied,
+					"a policy that explained itself was reported as an unexplained refusal")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.policy)
+			require.NoError(t, err)
+
+			d := e.EvaluatePhase(t.Context(), policy.StatelessAuthentication, &policy.Input{})
+			tc.assert(t, d)
+		})
+	}
 }

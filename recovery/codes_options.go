@@ -39,7 +39,7 @@ const (
 // replaces, and every default works with no configuration at all.
 type CodesOption func(*Codes)
 
-// WithCodeStore replaces where code hashes are kept. The default is
+// WithCodesStore replaces where code hashes are kept. The default is
 // NewMemoryCodeStore, which holds one process's codes and forgets them on
 // restart.
 //
@@ -47,72 +47,75 @@ type CodesOption func(*Codes)
 // silent fallback to memory: a consumer who passed one meant to supply their
 // own, and quietly keeping their users' recovery codes in process memory is
 // not a failure they would find out about until a deploy.
-func WithCodeStore(s CodeStore) CodesOption { return func(c *Codes) { c.store = s } }
+func WithCodesStore(s CodeStore) CodesOption { return func(c *Codes) { c.store = s } }
 
-// WithSetSize replaces how many codes one set holds. The default is 10.
+// WithCodesSetSize replaces how many codes one set holds. The default is 10.
 //
 // It must be between 1 and 100; anything else is a configuration error. Zero
 // codes is no set at all, and the upper bound only caps the work one
 // generation does.
-func WithSetSize(n int) CodesOption { return func(c *Codes) { c.setSize = n } }
+func WithCodesSetSize(n int) CodesOption { return func(c *Codes) { c.setSize = n } }
 
-// WithLowThreshold replaces the remaining count at or below which a set is
+// WithCodesLowThreshold replaces the remaining count at or below which a set is
 // reported as low. The default is 2.
 //
 // Zero reports only an exhausted set as low. A threshold below zero is a
 // configuration error, because no count could ever reach it. A threshold at or
 // above the set size is accepted, and reports a fresh set as low: that is the
 // consumer's call to make, not a contradiction.
-func WithLowThreshold(n int) CodesOption { return func(c *Codes) { c.lowThreshold = n } }
+func WithCodesLowThreshold(n int) CodesOption { return func(c *Codes) { c.lowThreshold = n } }
 
-// WithCodeLimiter replaces the limiter that counts failed presentations. The
+// WithCodesLimiter replaces the limiter that counts failed presentations. The
 // default is a ratelimit.MemoryLimiter allowing 5 failures per 15 minutes, per
 // process.
 //
-// Failures are counted under CodeThrottleKey(user), and every check and every
-// failure goes to this limiter, so a consumer can share one limiter across
-// replicas, or across flows, and still find these counts. A limiter that
-// cannot answer refuses the presentation.
+// Failures are counted under CodeThrottleKey(user), and every charge and every
+// refund goes to this limiter, so a consumer can share one limiter across
+// replicas, or across flows, and still find these counts. Each presentation is
+// charged with the limiter's Charge before its code is looked up, and refunded
+// when the code is valid, so the limit holds under concurrent presentations
+// only as far as the limiter's Charge is one indivisible step. A limiter that
+// cannot charge refuses the presentation.
 //
-// Both the check and the recording are given the caller's context with its
-// cancellation stripped, so a client that hangs up can neither skip the check
-// nor avoid the charge. A limiter that reaches a remote store must therefore
+// Both the charge and the refund are given the caller's context with its
+// cancellation stripped, so a client that hangs up can neither skip the charge
+// nor take it back. A limiter that reaches a remote store must therefore
 // bound its own I/O with its own timeout, rather than rely on the caller's
 // deadline.
 //
-// It takes precedence over WithCodeLimiterFactory.
+// It takes precedence over WithCodesLimiterFactory.
 //
 // For this second-factor flow, a shared limiter in
-// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
 // outage of the shared store each replica still bounds guessing on its own, and
 // users are not locked out of sign-in.
 //
 // A nil limiter, typed nil included, is a configuration error rather than a
 // fallback to the default: a consumer who passed one meant to replace it.
-func WithCodeLimiter(l ratelimit.Limiter) CodesOption {
+func WithCodesLimiter(l ratelimit.Limiter) CodesOption {
 	return func(c *Codes) {
 		c.limiter = l
 		c.limiterSet = true
 	}
 }
 
-// WithCodeLimiterFactory builds the limiter that counts failed saved-code
+// WithCodesLimiterFactory builds the limiter that counts failed saved-code
 // presentations per user through f, under the namespace "recovery-codes" with
 // this flow's own limit and window: 5 failures per 15 minutes.
 //
 // Default: ratelimit.MemoryLimiterFactory, logging through the manager's logger
 // and clock, so the limit holds in this process alone. Precedence: a limiter
-// given with WithCodeLimiter wins, and f is then never asked; then f; then the
+// given with WithCodesLimiter wins, and f is then never asked; then f; then the
 // in-memory default.
 //
 // For this second-factor flow, a shared limiter in
-// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
 // outage of the shared store each replica still bounds guessing on its own, and
 // users are not locked out of sign-in.
 //
 // A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
 // error from f, which names the namespace.
-func WithCodeLimiterFactory(f ratelimit.LimiterFactory) CodesOption {
+func WithCodesLimiterFactory(f ratelimit.LimiterFactory) CodesOption {
 	return func(c *Codes) {
 		c.factory = f
 		c.factorySet = true

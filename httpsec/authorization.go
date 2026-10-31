@@ -71,3 +71,40 @@ func authenticationRequired(cause error) error {
 
 	return fmt.Errorf("%w: %w", ErrAuthenticationRequired, cause)
 }
+
+// EnableAuthorization judges requests through az, applying rules centrally.
+//
+// Default: without this option the chain still runs its authorization stage,
+// but publishes no authorizer and enforces nothing, so every per-endpoint
+// guard behind it fails closed. With it and no rules, the authorizer reaches
+// the route and the guards there decide alone.
+//
+// The rules are an ordered set: the first whose matcher accepts the request
+// decides, and a request no rule matches is denied, so an endpoint added
+// without a rule is closed rather than open. A consumer opts out of that
+// default with a trailing rule that matches everything and requires
+// authorize.PermitAll — one line, visible where the rules are read.
+//
+// Calling it more than once appends: the rules of every call form one set in
+// the order the calls were made, so wiring split across modules still reads top
+// to bottom. The authorizer of the last call is the one the chain judges by,
+// because a chain has one authorizer and a second call is the consumer
+// replacing their first choice rather than adding a second judge.
+//
+// A matcher sees the whole Request — path, method, headers — through the same
+// abstraction every interceptor reads, so one rule set is written once and
+// applies behind whichever framework the chain is mounted on.
+func EnableAuthorization(az authorize.Authorizer, rules ...authorize.Rule[Request]) Option {
+	const option = "EnableAuthorization"
+
+	return func(c *config) error {
+		c.authorizer = az
+		c.authzRules = append(c.authzRules, rules...)
+
+		c.enable(option, func() error {
+			return requireDep(option, "authorizer", c.authorizer)
+		})
+
+		return nil
+	}
+}

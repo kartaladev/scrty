@@ -27,8 +27,8 @@ import (
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/kartaladev/scrty/migrate"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/migrate"
 )
 
 func TestRunTestPostgres(t *testing.T) {

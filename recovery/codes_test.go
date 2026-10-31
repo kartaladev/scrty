@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,18 +17,15 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 )
-
-// codesTime is the instant the fake clock of every Codes test reads.
-var codesTime = time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
 
 // generousLimiter lets a test present many wrong codes without the default
 // presentation limit getting in the way of what it is testing.
@@ -39,37 +38,6 @@ func generousLimiter(t *testing.T) ratelimit.Limiter {
 	return l
 }
 
-// newCodes builds a manager with the fake clock and the given options.
-func newCodes(t *testing.T, opts ...recovery.CodesOption) *recovery.Codes {
-	t.Helper()
-
-	opts = append([]recovery.CodesOption{recovery.WithCodesClock(clockwork.NewFakeClockAt(codesTime))}, opts...)
-	c, err := recovery.NewCodes(opts...)
-	require.NoError(t, err)
-
-	return c
-}
-
-// spendCode spends one generated code through the flow's check and spend.
-func spendCode(t *testing.T, c *recovery.Codes, user identity.UserID, code string) {
-	t.Helper()
-
-	hash, err := c.Check(t.Context(), user, code)
-	require.NoError(t, err)
-	require.NoError(t, c.Spend(t.Context(), user, hash))
-}
-
-// mustGenerate generates a set for user and requires that it holds codes.
-func mustGenerate(t *testing.T, c *recovery.Codes, user identity.UserID) []string {
-	t.Helper()
-
-	codes, err := c.Generate(t.Context(), user)
-	require.NoError(t, err)
-	require.NotEmpty(t, codes)
-
-	return codes
-}
-
 // hashOf is the hash a code is stored under.
 func hashOf(t *testing.T, code string) []byte {
 	t.Helper()
@@ -79,9 +47,6 @@ func hashOf(t *testing.T, code string) []byte {
 
 	return h[:]
 }
-
-// wrongCode is well formed but belongs to no set.
-const wrongCode = "0000-0000-0000-0000-0000-0000-00"
 
 // switchReader draws from crypto/rand until it is told to fail.
 type switchReader struct{ fail atomic.Bool }
@@ -109,19 +74,19 @@ func TestNewCodes_Config(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "set size 0", options: []recovery.CodesOption{recovery.WithSetSize(0)}, assert: refused},
-		{name: "set size -1", options: []recovery.CodesOption{recovery.WithSetSize(-1)}, assert: refused},
-		{name: "set size 101", options: []recovery.CodesOption{recovery.WithSetSize(101)}, assert: refused},
-		{name: "low threshold -1", options: []recovery.CodesOption{recovery.WithLowThreshold(-1)}, assert: refused},
-		{name: "nil store", options: []recovery.CodesOption{recovery.WithCodeStore(nil)}, assert: refused},
-		{name: "typed nil store", options: []recovery.CodesOption{recovery.WithCodeStore((*recovery.MemoryCodeStore)(nil))}, assert: refused},
-		{name: "nil limiter", options: []recovery.CodesOption{recovery.WithCodeLimiter(nil)}, assert: refused},
-		{name: "typed nil limiter", options: []recovery.CodesOption{recovery.WithCodeLimiter((*ratelimit.MemoryLimiter)(nil))}, assert: refused},
+		{name: "set size 0", options: []recovery.CodesOption{recovery.WithCodesSetSize(0)}, assert: refused},
+		{name: "set size -1", options: []recovery.CodesOption{recovery.WithCodesSetSize(-1)}, assert: refused},
+		{name: "set size 101", options: []recovery.CodesOption{recovery.WithCodesSetSize(101)}, assert: refused},
+		{name: "low threshold -1", options: []recovery.CodesOption{recovery.WithCodesLowThreshold(-1)}, assert: refused},
+		{name: "nil store", options: []recovery.CodesOption{recovery.WithCodesStore(nil)}, assert: refused},
+		{name: "typed nil store", options: []recovery.CodesOption{recovery.WithCodesStore((*recovery.MemoryCodeStore)(nil))}, assert: refused},
+		{name: "nil limiter", options: []recovery.CodesOption{recovery.WithCodesLimiter(nil)}, assert: refused},
+		{name: "typed nil limiter", options: []recovery.CodesOption{recovery.WithCodesLimiter((*ratelimit.MemoryLimiter)(nil))}, assert: refused},
 		{name: "nil clock", options: []recovery.CodesOption{recovery.WithCodesClock(nil)}, assert: refused},
 		{name: "nil random", options: []recovery.CodesOption{recovery.WithCodesRandom(nil)}, assert: refused},
 		{
 			name:    "set size 1 and 100 are the bounds, both allowed",
-			options: []recovery.CodesOption{recovery.WithSetSize(1), recovery.WithSetSize(100)},
+			options: []recovery.CodesOption{recovery.WithCodesSetSize(1), recovery.WithCodesSetSize(100)},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
 				require.NoError(t, err)
 
@@ -131,7 +96,7 @@ func TestNewCodes_Config(t *testing.T) {
 		},
 		{
 			name:    "low threshold 0 flags only an exhausted set",
-			options: []recovery.CodesOption{recovery.WithSetSize(1), recovery.WithLowThreshold(0)},
+			options: []recovery.CodesOption{recovery.WithCodesSetSize(1), recovery.WithCodesLowThreshold(0)},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
 				require.NoError(t, err)
 
@@ -139,13 +104,13 @@ func TestNewCodes_Config(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 1, Low: false}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 1, Low: false}, count)
 
 				spendCode(t, c, "u-1", codes[0])
 
 				count, err = c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 0, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 0, Low: true}, count)
 			},
 		},
 		{
@@ -170,13 +135,13 @@ func TestNewCodes_Config(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 3, Low: false}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 3, Low: false}, count)
 
 				spendCode(t, c, "u-1", codes[7])
 
 				count, err = c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 2, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 2, Low: true}, count)
 			},
 		},
 	}
@@ -210,6 +175,7 @@ func TestCodes(t *testing.T) {
 	}
 
 	key := recovery.CodeThrottleKey("u-1")
+	receipt := ratelimit.NewReceipt(key, time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC))
 	storeFault := errors.New("store fault: row u-1 holds 7ZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZ")
 
 	cases := []testCase{
@@ -231,7 +197,7 @@ func TestCodes(t *testing.T) {
 		{
 			name: "consumer count of 16",
 			options: func(*testing.T, *gomock.Controller) []recovery.CodesOption {
-				return []recovery.CodesOption{recovery.WithSetSize(16)}
+				return []recovery.CodesOption{recovery.WithCodesSetSize(16)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				codes := mustGenerate(t, c, "u-1")
@@ -255,7 +221,7 @@ func TestCodes(t *testing.T) {
 							return nil
 						}).Times(1)
 
-					return []recovery.CodesOption{recovery.WithCodeStore(store)}
+					return []recovery.CodesOption{recovery.WithCodesStore(store)}
 				},
 				assert: func(t *testing.T, c *recovery.Codes) {
 					codes := mustGenerate(t, c, "u-1")
@@ -274,7 +240,7 @@ func TestCodes(t *testing.T) {
 		{
 			name: "regeneration voids the old set, spent codes and unspent alike",
 			options: func(t *testing.T, _ *gomock.Controller) []recovery.CodesOption {
-				return []recovery.CodesOption{recovery.WithCodeLimiter(generousLimiter(t))}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(generousLimiter(t))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				old := mustGenerate(t, c, "u-1")
@@ -313,7 +279,7 @@ func TestCodes(t *testing.T) {
 				store.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(mem.Match).Times(3)
 				// No Spend, DeleteUser or further ReplaceSet: the mock fails on any.
 
-				return []recovery.CodesOption{recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				codes := mustGenerate(t, c, "u-1")
@@ -390,7 +356,7 @@ func TestCodes(t *testing.T) {
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().Spend(gomock.Any(), identity.UserID("u-1"), gomock.Len(32), codesTime).Return(true, nil)
 
-				return []recovery.CodesOption{recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				require.NoError(t, c.Spend(t.Context(), "u-1", [32]byte{1}))
@@ -415,13 +381,13 @@ func TestCodes(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 2, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 2, Low: true}, count)
 			},
 		},
 		{
 			name: "consumer threshold 4: 4 left is low, 5 is not",
 			options: func(*testing.T, *gomock.Controller) []recovery.CodesOption {
-				return []recovery.CodesOption{recovery.WithLowThreshold(4)}
+				return []recovery.CodesOption{recovery.WithCodesLowThreshold(4)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				codes := mustGenerate(t, c, "u-1")
@@ -432,13 +398,13 @@ func TestCodes(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 5, Low: false}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 5, Low: false}, count)
 
 				spendCode(t, c, "u-1", codes[5])
 
 				count, err = c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 4, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 4, Low: true}, count)
 			},
 		},
 		{
@@ -446,7 +412,7 @@ func TestCodes(t *testing.T) {
 			assert: func(t *testing.T, c *recovery.Codes) {
 				count, err := c.Remaining(t.Context(), "nobody")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 0, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 0, Low: true}, count)
 			},
 		},
 		{
@@ -471,36 +437,53 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "the limiter is asked before the store, and a wrong code is charged under the user's key",
+			name: "the presentation is charged under the user's key before the store is asked, and a wrong code keeps its charge",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
+				// No Refund is expected: gomock fails the case if one is made.
 				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil),
+					limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil),
 					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).Return(false, nil),
-					limiter.EXPECT().RecordFailure(gomock.Any(), key).Return(nil),
 				)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				assert.ErrorIs(t, c.Confirm(t.Context(), "u-1", wrongCode), recovery.ErrRefused)
 			},
 		},
 		{
-			name: "a good code is not charged",
-			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
+			name: "a good code has its charge refunded, by the charge's receipt",
+			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
 				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil),
-					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).Return(true, nil),
+					limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil),
+					// The client hangs up as the code matches: the request's
+					// context ends before the refund is made.
+					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Len(32)).
+						DoAndReturn(func(ctx context.Context, _ identity.UserID, _ []byte) (bool, error) {
+							ctx.Value(hangUpKey{}).(context.CancelFunc)()
+							return true, nil
+						}),
+					limiter.EXPECT().Refund(gomock.Any(), receipt).
+						DoAndReturn(func(ctx context.Context, _ ratelimit.Receipt) error {
+							assert.NoError(t, ctx.Err(), "the refund inherited the request's cancellation")
+							return nil
+						}),
 				)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
-				hash, err := c.Check(t.Context(), "u-1", wrongCode)
+				// The client hangs up once the code has matched: the refund is
+				// still made, on a context that no longer carries the hang-up.
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				ctx = context.WithValue(ctx, hangUpKey{}, cancel)
+
+				hash, err := c.Check(ctx, "u-1", wrongCode)
 				require.NoError(t, err)
 				assert.Equal(t, hashOf(t, wrongCode), hash[:])
 			},
@@ -509,43 +492,35 @@ func TestCodes(t *testing.T) {
 			name: "a throttled user is refused without the code being looked up or charged",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(true, nil)
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(ratelimit.Receipt{}, true, nil)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(NewMockCodeStore(ctrl))}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				assert.ErrorIs(t, c.Confirm(t.Context(), "u-1", wrongCode), recovery.ErrCodeThrottled)
 			},
 		},
 		{
-			name: "a malformed code is charged and the store is not asked",
+			name: "a malformed code keeps its charge and the store is not asked",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil),
-					limiter.EXPECT().RecordFailure(gomock.Any(), key).Return(nil),
-				)
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(NewMockCodeStore(ctrl))}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				assert.ErrorIs(t, c.Confirm(t.Context(), "u-1", "UUUU-0000"), recovery.ErrRefused)
 			},
 		},
 		{
-			name: "an already cancelled context still records the failure",
-			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
+			name: "an already cancelled context is still charged",
+			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				// A limiter that honours its context cannot answer on an ended
+				// A limiter that honours its context cannot charge on an ended
 				// one, as the port says to expect.
-				limiter.EXPECT().Exceeded(gomock.Any(), key).DoAndReturn(honouringExceeded)
-				limiter.EXPECT().RecordFailure(gomock.Any(), key).
-					DoAndReturn(func(ctx context.Context, _ string) error {
-						assert.NoError(t, ctx.Err())
-						return nil
-					})
+				limiter.EXPECT().Charge(gomock.Any(), key).DoAndReturn(honouringCharge)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(NewMockCodeStore(ctrl))}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -556,11 +531,12 @@ func TestCodes(t *testing.T) {
 		},
 		{
 			name: "a client hanging up during the lookup is still charged",
-			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
+			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
+				// No Refund is expected: gomock fails the case if one is made.
 				gomock.InOrder(
-					limiter.EXPECT().Exceeded(gomock.Any(), key).DoAndReturn(honouringExceeded),
+					limiter.EXPECT().Charge(gomock.Any(), key).DoAndReturn(honouringCharge),
 					// A store that honours its context abandons the lookup with the
 					// context's error, as a database driver does.
 					store.EXPECT().Match(gomock.Any(), identity.UserID("u-1"), gomock.Any()).
@@ -568,14 +544,9 @@ func TestCodes(t *testing.T) {
 							ctx.Value(hangUpKey{}).(context.CancelFunc)()
 							return false, ctx.Err()
 						}),
-					limiter.EXPECT().RecordFailure(gomock.Any(), key).
-						DoAndReturn(func(ctx context.Context, _ string) error {
-							assert.NoError(t, ctx.Err())
-							return nil
-						}),
 				)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -610,8 +581,8 @@ func TestCodes(t *testing.T) {
 				name: "a store abandoning the lookup because the client hung up still charges the user",
 				options: func(*testing.T, *gomock.Controller) []recovery.CodesOption {
 					return []recovery.CodesOption{
-						recovery.WithCodeLimiter(limiter),
-						recovery.WithCodeStore(hangingUpStore{recovery.NewMemoryCodeStore()}),
+						recovery.WithCodesLimiter(limiter),
+						recovery.WithCodesStore(hangingUpStore{recovery.NewMemoryCodeStore()}),
 					}
 				},
 				assert: func(t *testing.T, c *recovery.Codes) {
@@ -631,9 +602,11 @@ func TestCodes(t *testing.T) {
 			name: "a limiter that cannot decide refuses without a lookup",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, errors.New("limiter unreachable"))
+				// The limiter reports the key below its limit beside the error:
+				// the error alone must refuse.
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, errors.New("limiter unreachable"))
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(NewMockCodeStore(ctrl))}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				err := c.Confirm(t.Context(), "u-1", wrongCode)
@@ -642,29 +615,30 @@ func TestCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "a limiter that cannot record leaves the refusal as it was",
+			name: "a limiter that cannot refund leaves a valid code accepted",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil)
-				limiter.EXPECT().RecordFailure(gomock.Any(), key).Return(errors.New("limiter unreachable"))
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil)
+				limiter.EXPECT().Refund(gomock.Any(), receipt).Return(errors.New("limiter unreachable"))
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
-				err := c.Confirm(t.Context(), "u-1", wrongCode)
-				require.ErrorIs(t, err, recovery.ErrRefused)
-				assert.NotContains(t, err.Error(), "limiter unreachable")
+				codes := mustGenerate(t, c, "u-1")
+
+				assert.NoError(t, c.Confirm(t.Context(), "u-1", codes[0]))
 			},
 		},
 		{
-			name: "a store that cannot answer is an error, not a refusal, and nobody is charged",
+			name: "a store that cannot answer is an error, not a refusal, and its charge stands",
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), key).Return(false, nil)
+				// No Refund is expected: gomock fails the case if one is made.
+				limiter.EXPECT().Charge(gomock.Any(), key).Return(receipt, false, nil)
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, storeFault)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter), recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter), recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				_, err := c.Check(t.Context(), "u-1", wrongCode)
@@ -679,7 +653,7 @@ func TestCodes(t *testing.T) {
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().Spend(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(false, storeFault)
 
-				return []recovery.CodesOption{recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				err := c.Spend(t.Context(), "u-1", [32]byte{1})
@@ -694,7 +668,7 @@ func TestCodes(t *testing.T) {
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().ReplaceSet(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(storeFault)
 
-				return []recovery.CodesOption{recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				codes, err := c.Generate(t.Context(), "u-1")
@@ -709,12 +683,12 @@ func TestCodes(t *testing.T) {
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().Remaining(gomock.Any(), identity.UserID("u-1")).Return(0, storeFault)
 
-				return []recovery.CodesOption{recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesStore(store)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.ErrorIs(t, err, storeFault)
-				assert.Equal(t, recovery.Count{}, count)
+				assert.Equal(t, recovery.RemainingCodes{}, count)
 				assert.NotContains(t, err.Error(), storeFault.Error())
 			},
 		},
@@ -750,7 +724,7 @@ func TestCodes(t *testing.T) {
 			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				partial := io.MultiReader(bytes.NewReader(make([]byte, 3*recovery.CodeBytes)), iotest.ErrReader(errors.New("entropy exhausted")))
 				// No ReplaceSet expected: the mock fails on any store call.
-				return []recovery.CodesOption{recovery.WithCodesRandom(partial), recovery.WithCodeStore(NewMockCodeStore(ctrl))}
+				return []recovery.CodesOption{recovery.WithCodesRandom(partial), recovery.WithCodesStore(NewMockCodeStore(ctrl))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes) {
 				codes, err := c.Generate(t.Context(), "u-1")
@@ -781,14 +755,28 @@ func TestCodes(t *testing.T) {
 // client hanging up mid-lookup.
 type hangUpKey struct{}
 
-// honouringExceeded is what a limiter that honours its context answers: an
-// error on an ended context, true beside it, and otherwise not exceeded.
-func honouringExceeded(ctx context.Context, key string) (bool, error) {
+// errClientLeft is the cause a request's context is cancelled with when its
+// client leaves.
+var errClientLeft = errors.New("client left")
+
+// honouringCharge is what a limiter that honours its context answers: an
+// error on an ended context, exceeded beside it, and otherwise an accepted
+// charge.
+func honouringCharge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return true, fmt.Errorf("check %q: %w", key, err)
+		return ratelimit.Receipt{}, true, fmt.Errorf("charge %q: %w", key, err)
 	}
 
-	return false, nil
+	return ratelimit.NewReceipt(key, time.Now()), false, nil
+}
+
+// refusingCharger is a limiter refusing every charge, expected to be charged
+// under key at least once.
+func refusingCharger(ctrl *gomock.Controller, key string) *MockLimiter {
+	l := NewMockLimiter(ctrl)
+	l.EXPECT().Charge(gomock.Any(), key).Return(ratelimit.Receipt{}, true, nil).MinTimes(1)
+
+	return l
 }
 
 // hangingUpStore is a memory store whose lookup simulates the client hanging up
@@ -831,14 +819,17 @@ func TestCodes_NoCodesInLogs(t *testing.T) {
 	)
 
 	limiter := NewMockLimiter(ctrl)
-	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).Times(3)
-	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, errors.New("limiter down"))
-	limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(errors.New("record failed")).AnyTimes()
+	limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, key string) (ratelimit.Receipt, bool, error) {
+			return ratelimit.NewReceipt(key, time.Now()), false, nil
+		}).Times(3)
+	limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).Return(ratelimit.Receipt{}, true, errors.New("limiter down"))
+	limiter.EXPECT().Refund(gomock.Any(), gomock.Any()).Return(errors.New("refund failed")).AnyTimes()
 
 	c := newCodes(t,
 		recovery.WithCodesLogger(logger),
-		recovery.WithCodeStore(store),
-		recovery.WithCodeLimiter(limiter),
+		recovery.WithCodesStore(store),
+		recovery.WithCodesLimiter(limiter),
 	)
 
 	codes = mustGenerate(t, c, "u-1")
@@ -953,11 +944,31 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 			name: "a lookup abandoned because the client hung up is written at debug",
 			options: func(*gomock.Controller) []recovery.CodesOption {
 				return []recovery.CodesOption{
-					recovery.WithCodeLimiter(generousLimiter(t)),
-					recovery.WithCodeStore(hangingUpStore{recovery.NewMemoryCodeStore()}),
+					recovery.WithCodesLimiter(generousLimiter(t)),
+					recovery.WithCodesStore(hangingUpStore{recovery.NewMemoryCodeStore()}),
 				}
 			},
 			ctx:    hangingUp,
+			msg:    msgStore,
+			assert: atLevel(slog.LevelDebug),
+		},
+		{
+			name: "a lookup abandoned with the cause the client hung up with is written at debug",
+			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
+				store := NewMockCodeStore(ctrl)
+				store.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ identity.UserID, _ []byte) (bool, error) {
+						ctx.Value(hangUpKey{}).(context.CancelCauseFunc)(errClientLeft)
+						return false, context.Cause(ctx)
+					})
+
+				return []recovery.CodesOption{recovery.WithCodesLimiter(generousLimiter(t)), recovery.WithCodesStore(store)}
+			},
+			ctx: func(ctx context.Context) context.Context {
+				ctx, cancel := context.WithCancelCause(ctx)
+
+				return context.WithValue(ctx, hangUpKey{}, cancel)
+			},
 			msg:    msgStore,
 			assert: atLevel(slog.LevelDebug),
 		},
@@ -967,7 +978,7 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 				store := NewMockCodeStore(ctrl)
 				store.EXPECT().Match(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, errors.New("store down"))
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(generousLimiter(t)), recovery.WithCodeStore(store)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(generousLimiter(t)), recovery.WithCodesStore(store)}
 			},
 			msg:    msgStore,
 			assert: atLevel(slog.LevelError),
@@ -976,10 +987,10 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 			name: "a limiter failing with the caller's own cancellation is written at debug",
 			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).
-					Return(true, fmt.Errorf("limiter call: %w", context.Canceled))
+				limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).
+					Return(ratelimit.Receipt{}, true, fmt.Errorf("limiter call: %w", context.Canceled))
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter)}
 			},
 			ctx:    ended,
 			msg:    msgLimiter,
@@ -989,9 +1000,10 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 			name: "a limiter outage on an ended context is still written at error",
 			options: func(ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
-				limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, errors.New("limiter down"))
+				limiter.EXPECT().Charge(gomock.Any(), gomock.Any()).
+					Return(ratelimit.Receipt{}, true, errors.New("limiter down"))
 
-				return []recovery.CodesOption{recovery.WithCodeLimiter(limiter)}
+				return []recovery.CodesOption{recovery.WithCodesLimiter(limiter)}
 			},
 			ctx:    ended,
 			msg:    msgLimiter,
@@ -1014,6 +1026,641 @@ func TestCodes_FailureLogLevel(t *testing.T) {
 
 			require.Error(t, c.Confirm(ctx, "u-1", wrongCode))
 			tc.assert(t, rec.levels(tc.msg))
+		})
+	}
+}
+
+// codeShape is the only shape a generated code may take: 26 Crockford base32
+// characters grouped in fours with dashes, the first in 0–7 because 128 bits
+// fill 130 bits of capacity with two leading zeros.
+var codeShape = regexp.MustCompile(`^[0-7][0-9A-HJKMNP-TV-Z]{3}(-[0-9A-HJKMNP-TV-Z]{4}){5}-[0-9A-HJKMNP-TV-Z]{2}$`)
+
+// TestCodeBytesPinned pins the entropy of a saved code. The constant is the
+// whole guarantee that codes carry 128 bits, so a change that shortens it must
+// fail here rather than ship.
+func TestCodeBytesPinned(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 16, recovery.CodeBytes)
+}
+
+func TestNewCode(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		random io.Reader
+		assert func(t *testing.T, text string, hash [32]byte, err error)
+	}
+
+	fixed := func(b ...byte) []byte {
+		out := make([]byte, 16)
+		copy(out[16-len(b):], b)
+
+		return out
+	}
+	allOnes := bytes.Repeat([]byte{0xFF}, 16)
+
+	cases := []testCase{
+		{
+			name:   "all zero bytes encode to all zeros",
+			random: bytes.NewReader(fixed()),
+			assert: func(t *testing.T, text string, hash [32]byte, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "0000-0000-0000-0000-0000-0000-00", text)
+				assert.Equal(t, sha256.Sum256(fixed()), hash)
+			},
+		},
+		{
+			name:   "a value of one encodes to a trailing one",
+			random: bytes.NewReader(fixed(0x01)),
+			assert: func(t *testing.T, text string, hash [32]byte, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "0000-0000-0000-0000-0000-0000-01", text)
+				assert.Equal(t, sha256.Sum256(fixed(0x01)), hash)
+			},
+		},
+		{
+			name:   "all one bits start with 7 and fill with Z",
+			random: bytes.NewReader(allOnes),
+			assert: func(t *testing.T, text string, hash [32]byte, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "7ZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZ", text)
+				assert.Equal(t, sha256.Sum256(allOnes), hash)
+			},
+		},
+		{
+			name:   "the hash is SHA-256 of the 16 bytes read, not of the text",
+			random: bytes.NewReader([]byte("0123456789abcdef")),
+			assert: func(t *testing.T, text string, hash [32]byte, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, sha256.Sum256([]byte("0123456789abcdef")), hash)
+				assert.NotEqual(t, sha256.Sum256([]byte(text)), hash)
+			},
+		},
+		{
+			name:   "a failing random source is an error with no code",
+			random: iotest.ErrReader(errors.New("entropy exhausted")),
+			assert: func(t *testing.T, text string, hash [32]byte, err error) {
+				require.Error(t, err)
+				assert.Empty(t, text)
+				assert.Equal(t, [32]byte{}, hash)
+			},
+		},
+		{
+			name:   "a random source that runs short is an error with no code",
+			random: bytes.NewReader(make([]byte, 10)),
+			assert: func(t *testing.T, text string, hash [32]byte, err error) {
+				require.Error(t, err)
+				assert.Empty(t, text)
+				assert.Equal(t, [32]byte{}, hash)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			text, hash, err := recovery.NewCode(tc.random)
+			tc.assert(t, text, hash, err)
+		})
+	}
+}
+
+// TestNewCode_Shape generates many codes from the real random source and holds
+// every one to the pinned shape: grouped, 26 alphabet characters, decoding to
+// the 16 bytes whose hash it was stored under.
+// It stands apart from TestNewCode because it loops over the real random source
+// and round-trips each code through ParseCode.
+func TestNewCode_Shape(t *testing.T) {
+	t.Parallel()
+
+	for range 1000 {
+		text, hash, err := recovery.NewCode(rand.Reader)
+		require.NoError(t, err)
+
+		require.Regexp(t, codeShape, text)
+		assert.Len(t, strings.ReplaceAll(text, "-", ""), 26)
+
+		parsed, err := recovery.ParseCode(text)
+		require.NoError(t, err)
+		require.Equal(t, hash, parsed)
+	}
+}
+
+func TestParseCode(t *testing.T) {
+	t.Parallel()
+
+	// A code built from a value of one holds both 0 and 1, which is what the
+	// look-alike row needs.
+	oneBytes := make([]byte, 16)
+	oneBytes[15] = 0x01
+	oneText, oneHash, err := recovery.NewCode(bytes.NewReader(oneBytes))
+	require.NoError(t, err)
+	require.Equal(t, "0000-0000-0000-0000-0000-0000-01", oneText)
+
+	text, hash, err := recovery.NewCode(rand.Reader)
+	require.NoError(t, err)
+
+	dashless := strings.ReplaceAll(text, "-", "")
+
+	type testCase struct {
+		name      string
+		presented string
+		assert    func(t *testing.T, got [32]byte, err error)
+	}
+
+	matches := func(want [32]byte) func(t *testing.T, got [32]byte, err error) {
+		return func(t *testing.T, got [32]byte, err error) {
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		}
+	}
+	refused := func(t *testing.T, got [32]byte, err error) {
+		require.ErrorIs(t, err, recovery.ErrRefused)
+		require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+		assert.Equal(t, [32]byte{}, got)
+	}
+
+	cases := []testCase{
+		{name: "canonical", presented: text, assert: matches(hash)},
+		{name: "lower case, no dashes", presented: strings.ToLower(dashless), assert: matches(hash)},
+		{name: "dashes anywhere", presented: "-" + dashless[:2] + "-" + dashless[2:7] + "--" + dashless[7:] + "-", assert: matches(hash)},
+		{name: "O for 0 and l for 1", presented: "oooo-OOOO-0000-oOoO-0000-0000-Ol", assert: matches(oneHash)},
+		{name: "I for 1", presented: "0000-0000-0000-0000-0000-0000-0I", assert: matches(oneHash)},
+		{name: "25 characters", presented: dashless[:25], assert: refused},
+		{name: "27 characters", presented: dashless + "0", assert: refused},
+		{name: "contains U", presented: "U" + dashless[1:], assert: refused},
+		{name: "contains u", presented: "0000-0000-0000-0000-0000-0000-0u", assert: refused},
+		{name: "first character 8", presented: "8" + dashless[1:], assert: refused},
+		{name: "first character Z", presented: "Z" + dashless[1:], assert: refused},
+		{name: "empty", presented: "", assert: refused},
+		{name: "only dashes", presented: "----", assert: refused},
+		{name: "space inside", presented: dashless[:13] + " " + dashless[13:], assert: refused},
+		{name: "non-ASCII look-alike", presented: "０" + dashless[1:], assert: refused},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := recovery.ParseCode(tc.presented)
+			tc.assert(t, got, err)
+
+			// No spelling of a presented code may reach a refusal's text.
+			if err != nil && tc.presented != "" {
+				assert.NotContains(t, err.Error(), tc.presented)
+			}
+		})
+	}
+}
+
+// codeStoreCase is one case of the CodeStore contract. It receives a fresh,
+// empty store and exercises it through the contract alone, so any
+// implementation can be held to it.
+type codeStoreCase struct {
+	name string
+	run  func(t *testing.T, s recovery.CodeStore)
+}
+
+// storeTime is the instant every case stamps its writes with.
+var storeTime = time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
+
+// testHashes returns n distinct 32-byte hashes, derived from label so two sets
+// built with different labels share none.
+func testHashes(label string, n int) [][]byte {
+	out := make([][]byte, n)
+	for i := range out {
+		h := sha256.Sum256(fmt.Appendf(nil, "%s-%d", label, i))
+		out[i] = h[:]
+	}
+
+	return out
+}
+
+// codeStoreCases is the CodeStore contract, one case per behaviour the
+// security-state-stores specification requires of a saved-code store. The
+// cases are kept here, apart from any one store, because they are the seed of
+// the conformance suite every durable store runs.
+func codeStoreCases() []codeStoreCase {
+	return []codeStoreCase{
+		{
+			name: "concurrent spends: exactly one of 8 succeeds, the rest look like an unknown code",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("race", 10)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+
+				const callers = 8
+
+				var (
+					start = make(chan struct{})
+					wg    sync.WaitGroup
+					mu    sync.Mutex
+					spent int
+					errs  []error
+				)
+
+				for range callers {
+					wg.Go(func() {
+						<-start
+
+						ok, err := s.Spend(ctx, "u-1", hashes[0], storeTime)
+
+						mu.Lock()
+						defer mu.Unlock()
+
+						if err != nil {
+							errs = append(errs, err)
+						}
+						if ok {
+							spent++
+						}
+					})
+				}
+
+				close(start)
+				wg.Wait()
+
+				assert.Empty(t, errs)
+				assert.Equal(t, 1, spent)
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 9, n)
+			},
+		},
+		{
+			name: "another user's hash is refused and the owner's code stays unspent",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("owner", 1)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+
+				matched, err := s.Match(ctx, "u-2", hashes[0])
+				require.NoError(t, err)
+				assert.False(t, matched)
+
+				ok, err := s.Spend(ctx, "u-2", hashes[0], storeTime)
+				require.NoError(t, err)
+				assert.False(t, ok)
+
+				matched, err = s.Match(ctx, "u-1", hashes[0])
+				require.NoError(t, err)
+				assert.True(t, matched)
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 1, n)
+			},
+		},
+		{
+			name: "replacement is whole: no old code, spent or not, survives",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				old := testHashes("old", 10)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", old, storeTime))
+
+				for _, h := range old[:3] {
+					ok, err := s.Spend(ctx, "u-1", h, storeTime)
+					require.NoError(t, err)
+					require.True(t, ok)
+				}
+
+				fresh := testHashes("new", 10)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", fresh, storeTime.Add(time.Minute)))
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 10, n)
+
+				for _, h := range old {
+					matched, err := s.Match(ctx, "u-1", h)
+					require.NoError(t, err)
+					assert.False(t, matched)
+
+					ok, err := s.Spend(ctx, "u-1", h, storeTime)
+					require.NoError(t, err)
+					assert.False(t, ok)
+				}
+
+				for _, h := range fresh {
+					matched, err := s.Match(ctx, "u-1", h)
+					require.NoError(t, err)
+					assert.True(t, matched)
+				}
+			},
+		},
+		{
+			name: "replacement touches no other user's set",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", testHashes("one", 3), storeTime))
+				require.NoError(t, s.ReplaceSet(ctx, "u-2", testHashes("two", 5), storeTime))
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 3, n)
+			},
+		},
+		{
+			name: "replacing with an empty set leaves the user none",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", testHashes("gone", 4), storeTime))
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", nil, storeTime))
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Zero(t, n)
+			},
+		},
+		{
+			name: "match writes nothing: three matches, then the code is still spendable",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("match", 3)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+
+				for range 3 {
+					matched, err := s.Match(ctx, "u-1", hashes[0])
+					require.NoError(t, err)
+					assert.True(t, matched)
+				}
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 3, n)
+
+				ok, err := s.Spend(ctx, "u-1", hashes[0], storeTime)
+				require.NoError(t, err)
+				assert.True(t, ok)
+			},
+		},
+		{
+			name: "a spent code neither matches nor spends again",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("spent", 2)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+
+				ok, err := s.Spend(ctx, "u-1", hashes[0], storeTime)
+				require.NoError(t, err)
+				require.True(t, ok)
+
+				matched, err := s.Match(ctx, "u-1", hashes[0])
+				require.NoError(t, err)
+				assert.False(t, matched)
+
+				ok, err = s.Spend(ctx, "u-1", hashes[0], storeTime.Add(time.Minute))
+				require.NoError(t, err)
+				assert.False(t, ok)
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 1, n)
+			},
+		},
+		{
+			name: "an unknown code and an unknown user are refused without error",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", testHashes("known", 2), storeTime))
+				unknown := testHashes("unknown", 1)[0]
+
+				matched, err := s.Match(ctx, "u-1", unknown)
+				require.NoError(t, err)
+				assert.False(t, matched)
+
+				ok, err := s.Spend(ctx, "u-1", unknown, storeTime)
+				require.NoError(t, err)
+				assert.False(t, ok)
+
+				n, err := s.Remaining(ctx, "nobody")
+				require.NoError(t, err)
+				assert.Zero(t, n)
+			},
+		},
+		{
+			name: "the caller's slices mutated after ReplaceSet leave the stored set unchanged",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("owned", 2)
+				original := append([]byte(nil), hashes[0]...)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+
+				hashes[0][0] ^= 0xFF
+				hashes[1] = original // reusing the outer slice must not matter either
+
+				matched, err := s.Match(ctx, "u-1", original)
+				require.NoError(t, err)
+				assert.True(t, matched)
+
+				matched, err = s.Match(ctx, "u-1", hashes[0])
+				require.NoError(t, err)
+				assert.False(t, matched)
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 2, n)
+			},
+		},
+		{
+			name: "the presented hash slice mutated after a spend does not unspend the code",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("presented", 1)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+
+				presented := append([]byte(nil), hashes[0]...)
+				ok, err := s.Spend(ctx, "u-1", presented, storeTime)
+				require.NoError(t, err)
+				require.True(t, ok)
+
+				presented[0] ^= 0xFF
+
+				ok, err = s.Spend(ctx, "u-1", hashes[0], storeTime)
+				require.NoError(t, err)
+				assert.False(t, ok)
+			},
+		},
+		{
+			name: "delete user removes every code, spent or not, and reports how many",
+			run: func(t *testing.T, s recovery.CodeStore) {
+				ctx := t.Context()
+				hashes := testHashes("delete", 4)
+				require.NoError(t, s.ReplaceSet(ctx, "u-1", hashes, storeTime))
+				require.NoError(t, s.ReplaceSet(ctx, "u-2", testHashes("kept", 2), storeTime))
+
+				ok, err := s.Spend(ctx, "u-1", hashes[0], storeTime)
+				require.NoError(t, err)
+				require.True(t, ok)
+
+				removed, err := s.DeleteUser(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 4, removed)
+
+				n, err := s.Remaining(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Zero(t, n)
+
+				matched, err := s.Match(ctx, "u-1", hashes[1])
+				require.NoError(t, err)
+				assert.False(t, matched)
+
+				n, err = s.Remaining(ctx, "u-2")
+				require.NoError(t, err)
+				assert.Equal(t, 2, n)
+
+				removed, err = s.DeleteUser(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Zero(t, removed)
+			},
+		},
+	}
+}
+
+func TestMemoryCodeStore(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range codeStoreCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.run(t, recovery.NewMemoryCodeStore())
+		})
+	}
+}
+
+// TestNewCodes_LimiterFactory pins where the code-presentation limiter comes
+// from: the explicit limiter, then the factory, then the in-memory default.
+// It is a table of its own because Codes and Recoverer are built over different
+// fixtures.
+// It stands apart from TestNewCodes_Config because each case builds its mocked
+// factory on a controller of its own.
+func TestNewCodes_LimiterFactory(t *testing.T) {
+	t.Parallel()
+
+	key := recovery.CodeThrottleKey(anaID)
+
+	type testCase struct {
+		name   string
+		opts   func(t *testing.T) []recovery.CodesOption
+		assert func(t *testing.T, c *recovery.Codes, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "default builds in-memory",
+			opts: func(*testing.T) []recovery.CodesOption { return nil },
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.NoError(t, err)
+
+				for range 5 {
+					require.ErrorIs(t, c.Confirm(t.Context(), anaID, wrongCode), recovery.ErrRefused)
+				}
+
+				_, err = c.Check(t.Context(), anaID, wrongCode)
+				assert.ErrorIs(t, err, recovery.ErrCodeThrottled, "the default counts 5 failures per 15 minutes")
+			},
+		},
+		{
+			name: "factory asked with namespace, limit, window",
+			opts: func(t *testing.T) []recovery.CodesOption {
+				ctrl := gomock.NewController(t)
+				f := NewMockLimiterFactory(ctrl)
+				f.EXPECT().NewLimiter("recovery-codes", 5, 15*time.Minute).
+					Return(refusingCharger(ctrl, key), nil).Times(1)
+
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(f)}
+			},
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.NoError(t, err)
+
+				_, err = c.Check(t.Context(), anaID, wrongCode)
+				assert.ErrorIs(t, err, recovery.ErrCodeThrottled,
+					"the presentation is counted through the limiter the factory built")
+			},
+		},
+		{
+			name: "explicit limiter wins and factory not asked",
+			opts: func(t *testing.T) []recovery.CodesOption {
+				ctrl := gomock.NewController(t)
+
+				// No expectation: gomock fails the case if the factory is asked.
+				f := NewMockLimiterFactory(ctrl)
+
+				return []recovery.CodesOption{
+					recovery.WithCodesLimiter(refusingCharger(ctrl, key)),
+					recovery.WithCodesLimiterFactory(f),
+				}
+			},
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.NoError(t, err)
+
+				_, err = c.Check(t.Context(), anaID, wrongCode)
+				assert.ErrorIs(t, err, recovery.ErrCodeThrottled)
+			},
+		},
+		{
+			name: "nil factory refused",
+			opts: func(*testing.T) []recovery.CodesOption {
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(nil)}
+			},
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.ErrorIs(t, err, recovery.ErrConfig)
+				assert.Nil(t, c)
+			},
+		},
+		{
+			name: "typed-nil factory refused",
+			opts: func(*testing.T) []recovery.CodesOption {
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory((*MockLimiterFactory)(nil))}
+			},
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.ErrorIs(t, err, recovery.ErrConfig)
+				assert.Nil(t, c)
+			},
+		},
+		{
+			// The explicit limiter wins, but a factory replaced with nothing is
+			// a wiring mistake whatever else was given.
+			name: "typed-nil factory refused beside an explicit limiter",
+			opts: func(t *testing.T) []recovery.CodesOption {
+				return []recovery.CodesOption{
+					recovery.WithCodesLimiter(NewMockLimiter(gomock.NewController(t))),
+					recovery.WithCodesLimiterFactory((*MockLimiterFactory)(nil)),
+				}
+			},
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.ErrorIs(t, err, recovery.ErrConfig)
+				assert.Nil(t, c)
+			},
+		},
+		{
+			name: "factory error fails construction",
+			opts: func(t *testing.T) []recovery.CodesOption {
+				f := NewMockLimiterFactory(gomock.NewController(t))
+				f.EXPECT().NewLimiter("recovery-codes", 5, 15*time.Minute).Return(nil, errFactory)
+
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(f)}
+			},
+			assert: func(t *testing.T, c *recovery.Codes, err error) {
+				require.ErrorIs(t, err, recovery.ErrConfig)
+				require.ErrorIs(t, err, errFactory)
+				assert.Contains(t, err.Error(), `"recovery-codes"`, "the error names the namespace")
+				assert.Nil(t, c)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, err := recovery.NewCodes(tc.opts(t)...)
+			tc.assert(t, c, err)
 		})
 	}
 }

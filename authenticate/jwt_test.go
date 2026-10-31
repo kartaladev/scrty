@@ -15,16 +15,12 @@ import (
 	"github.com/kartaladev/scrty/token"
 )
 
-// presentedToken stands for a compact JWS a caller presents. Nothing here
-// parses it: the verifier is the only thing that reads a token.
-const presentedToken = "header.payload.signature"
-
 func TestNewJwtAuthenticator(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
-		opts   func(t *testing.T, ctrl *gomock.Controller) []authenticate.JwtOption
+		opts   func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption
 		assert func(t *testing.T, a authenticate.Authenticator, err error)
 	}
 
@@ -38,10 +34,10 @@ func TestNewJwtAuthenticator(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "a verifier alone constructs",
-			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JwtOption {
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption {
 				t.Helper()
 
-				return []authenticate.JwtOption{authenticate.WithJwtVerifier(NewMockVerifier(ctrl))}
+				return []authenticate.JWTOption{authenticate.WithJWTVerifier(NewMockVerifier(ctrl))}
 			},
 			assert: func(t *testing.T, a authenticate.Authenticator, err error) {
 				t.Helper()
@@ -56,42 +52,42 @@ func TestNewJwtAuthenticator(t *testing.T) {
 		},
 		{
 			name: "a nil verifier is refused",
-			opts: func(t *testing.T, _ *gomock.Controller) []authenticate.JwtOption {
+			opts: func(t *testing.T, _ *gomock.Controller) []authenticate.JWTOption {
 				t.Helper()
 
-				return []authenticate.JwtOption{authenticate.WithJwtVerifier(nil)}
+				return []authenticate.JWTOption{authenticate.WithJWTVerifier(nil)}
 			},
 			assert: configError,
 		},
 		{
 			name: "a non-nil interface holding a nil pointer is refused too",
-			opts: func(t *testing.T, _ *gomock.Controller) []authenticate.JwtOption {
+			opts: func(t *testing.T, _ *gomock.Controller) []authenticate.JWTOption {
 				t.Helper()
 
 				var unchecked *MockVerifier
 
-				return []authenticate.JwtOption{authenticate.WithJwtVerifier(unchecked)}
+				return []authenticate.JWTOption{authenticate.WithJWTVerifier(unchecked)}
 			},
 			assert: configError,
 		},
 		{
 			name: "a nil identifier generator is refused rather than quietly restoring the default",
-			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JwtOption {
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption {
 				t.Helper()
 
-				return []authenticate.JwtOption{
-					authenticate.WithJwtVerifier(NewMockVerifier(ctrl)),
-					authenticate.WithJwtIDGenerator(nil),
+				return []authenticate.JWTOption{
+					authenticate.WithJWTVerifier(NewMockVerifier(ctrl)),
+					authenticate.WithJWTIDGenerator(nil),
 				}
 			},
 			assert: configError,
 		},
 		{
 			name: "a nil option is skipped, so a conditionally built slice need not be filtered",
-			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JwtOption {
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption {
 				t.Helper()
 
-				return []authenticate.JwtOption{nil, authenticate.WithJwtVerifier(NewMockVerifier(ctrl))}
+				return []authenticate.JWTOption{nil, authenticate.WithJWTVerifier(NewMockVerifier(ctrl))}
 			},
 			assert: func(t *testing.T, a authenticate.Authenticator, err error) {
 				t.Helper()
@@ -108,12 +104,12 @@ func TestNewJwtAuthenticator(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 
-			var opts []authenticate.JwtOption
+			var opts []authenticate.JWTOption
 			if tc.opts != nil {
 				opts = tc.opts(t, ctrl)
 			}
 
-			a, err := authenticate.NewJwtAuthenticator(opts...)
+			a, err := authenticate.NewJWTAuthenticator(opts...)
 			tc.assert(t, a, err)
 		})
 	}
@@ -126,7 +122,7 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 		name     string
 		creds    func(t *testing.T) identity.Credentials
 		verifier func(t *testing.T, ctrl *gomock.Controller) token.Verifier
-		opts     func(t *testing.T, ctrl *gomock.Controller) []authenticate.JwtOption
+		opts     func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption
 		assert   func(t *testing.T, got *authenticate.Authentication, err error)
 	}
 
@@ -256,13 +252,13 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 		{
 			name:     "a generator failure is an error, never a result with no identifier",
 			verifier: verifies(token.NewClaims("ada", "opaque-issuer-reference")),
-			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JwtOption {
+			opts: func(t *testing.T, ctrl *gomock.Controller) []authenticate.JWTOption {
 				t.Helper()
 
 				ids := NewMockGenerator(ctrl)
 				ids.EXPECT().NewID().Return(id.Nil, errNoIdentifier)
 
-				return []authenticate.JwtOption{authenticate.WithJwtIDGenerator(ids)}
+				return []authenticate.JWTOption{authenticate.WithJWTIDGenerator(ids)}
 			},
 			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
 				t.Helper()
@@ -281,12 +277,12 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 
-			opts := []authenticate.JwtOption{authenticate.WithJwtVerifier(tc.verifier(t, ctrl))}
+			opts := []authenticate.JWTOption{authenticate.WithJWTVerifier(tc.verifier(t, ctrl))}
 			if tc.opts != nil {
 				opts = append(opts, tc.opts(t, ctrl)...)
 			}
 
-			auth, err := authenticate.NewJwtAuthenticator(opts...)
+			auth, err := authenticate.NewJWTAuthenticator(opts...)
 			require.NoError(t, err)
 
 			creds := identity.Credentials(authenticate.NewBearerToken(presentedToken))
@@ -327,10 +323,6 @@ func TestBearerToken(t *testing.T) {
 		assert.Empty(t, absent.Token())
 	})
 }
-
-// tokenID is the identifier a verified token carries as jti, in the canonical
-// layout a consumer's own records would key on.
-var tokenID = id.MustParse("0192f3a4-5b6c-7d8e-9f01-fedcba987654")
 
 // errTokenExpired stands for a verifier's own refusal, which must stay
 // matchable alongside the uniform failure.

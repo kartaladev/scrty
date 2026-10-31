@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	oidc "github.com/kartaladev/scrty/oidc"
+	oidc "github.com/kartaladev/scrty/authenticate/oidc"
 	gomock "go.uber.org/mock/gomock"
 )
 

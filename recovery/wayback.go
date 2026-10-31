@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -62,7 +62,7 @@ type WayBackDeps struct {
 	// provider's word it has not yet given.
 	//
 	// The answer is the requirement policy's alone. The second-factor
-	// challenge policy under policy.WithFederatedChallengeWhenUnmet(true)
+	// challenge policy under policy.WithMFAFederatedChallengeWhenUnmet(true)
 	// still challenges an enrolled user's federated login whose provider
 	// assurance is not met, required or not. A consumer who sets that option
 	// wires an Admits that answers false for such users, or the check may

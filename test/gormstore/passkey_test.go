@@ -8,12 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -196,7 +196,7 @@ func TestPasskeyCredentialStore_Rows(t *testing.T) {
 				err := s.Insert(ctx, storefix.PasskeyCredential(id.Nil, "rows-zero", "rows-zero"))
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, passkey.ErrDuplicateCredential)
-				assert.ErrorContains(t, err, "gorm: insert passkey credential")
+				assert.ErrorContains(t, err, "gormstore: insert passkey credential")
 			},
 		},
 		{

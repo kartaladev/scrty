@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	factor "github.com/kartaladev/scrty/factor"
+	factor "github.com/kartaladev/scrty/authenticate/factor"
 	identity "github.com/kartaladev/scrty/identity"
 	gomock "go.uber.org/mock/gomock"
 )

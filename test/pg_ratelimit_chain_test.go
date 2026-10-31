@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/migrate"
-	pgxstore "github.com/kartaladev/scrty/pgx"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 )
 
@@ -119,7 +119,7 @@ func TestPGLimiter_DefaultChainBuilds(t *testing.T) {
 			conn := test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
 			f := &capturingFactory{LimiterFactory: tc.factory(t, conn), built: map[string]capturedLimiter{}}
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 			_, err = httpsec.New(
 				httpsec.WithRateLimiterFactory(f),
@@ -127,7 +127,7 @@ func TestPGLimiter_DefaultChainBuilds(t *testing.T) {
 					Authenticator: refusingAuthenticator{},
 					Sessions:      sessions,
 					Tokens:        fixedTokens{},
-					Attempts:      policy.NewMemoryAttemptStore(),
+					Attempts:      lockout.NewMemoryAttemptStore(),
 				}),
 			)
 			tc.assert(t, f, err)

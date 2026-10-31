@@ -43,12 +43,12 @@ registry, err := oidc.NewRegistry(oidc.Provider{
 })
 
 broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
-manager, err := oidc.NewManager(registry, broker)
-handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+relyingParty, err := oidc.NewRelyingParty(registry, broker)
+handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 
 chain, err := httpsec.New(
 	// ... your other chain options ...
-	httpsec.EnableOIDCLogin(manager, handoffs,
+	httpsec.EnableOIDCLogin(relyingParty, handoffs,
 		httpsec.WithOIDCTokens(tokens),
 		httpsec.WithOIDCSessions(sessions),
 	),
@@ -56,8 +56,8 @@ chain, err := httpsec.New(
 ```
 
 `users` is your `identity.UserLoader` (and `identity.UserProvisioner`, if you enable just-in-time
-provisioning with `oidc.WithJIT`); `tokens` and `sessions` are the `token.Generator` and
-`*session.Manager` the rest of your chain already issues through. `oidc.NewMemoryLinkStore` and
+provisioning with `oidc.WithBrokerJIT`); `tokens` and `sessions` are the `token.Generator` and
+`*session.Sessions` the rest of your chain already issues through. `oidc.NewMemoryLinkStore` and
 `oidc.NewMemoryHandoffStore` are the zero-configuration, per-process defaults; a multi-replica
 deployment supplies durable stores instead. Every constructor's godoc names its remaining defaults,
 and every option names the default it replaces.
@@ -69,7 +69,7 @@ and every option names the default it replaces.
 | `/oauth2/authorization/{provider}` | GET | starts a login | `httpsec.WithOIDCAuthorizePath` |
 | `/login/oauth2/callback/{provider}` | GET | the provider's callback | `httpsec.WithOIDCCallbackPath` |
 | `/login/oauth2/handoff` | POST | redeems the handoff code | `httpsec.WithOIDCHandoffPath` |
-| `/logout/oauth2/backchannel/{provider}` | POST | back-channel logout | `httpsec.WithBackchannelLogoutPath` |
+| `/logout/oauth2/backchannel/{provider}` | POST | back-channel logout | `httpsec.WithOIDCBackchannelLogoutPath` |
 
 `{provider}` is the one path segment naming a provider registered with `oidc.NewRegistry`.
 
@@ -94,7 +94,7 @@ could read the URL through its own request or the `Referer` header):
 and only then POST the code as the `handoff` form field to `/login/oauth2/handoff` (or your
 `httpsec.WithOIDCHandoffPath`), which answers with the session's access token, refresh token and
 the destination to send the user on to. A consumer who conveys the login another way (a
-backend-for-frontend, say) replaces this whole step with `httpsec.WithCallbackSuccess`, and no
+backend-for-frontend, say) replaces this whole step with `httpsec.WithOIDCCallbackSuccess`, and no
 handoff code is issued.
 
 ### Logout
@@ -122,17 +122,17 @@ because on their own they do not show that a second factor was used. Replace the
 provider, as a whole, with `oidc.WithProviderAssurance`:
 
 ```go
-manager, err := oidc.NewManager(registry, broker,
+relyingParty, err := oidc.NewRelyingParty(registry, broker,
 	oidc.WithProviderAssurance("corp", oidc.Assurance{
 		AcceptedAMR: []string{"mfa", "hwk"},
 		AcceptedACR: []string{"gold"},
 		RequestACR:  []string{"gold"},
-		Match:       oidc.MatchAny,
+		Match:       oidc.AssuranceMatchAny,
 	}),
 )
 ```
 
-- `Match` is `MatchAny` by default (any configured criterion is enough) or `MatchAll`.
+- `Match` is `AssuranceMatchAny` by default (any configured criterion is enough) or `AssuranceMatchAll`.
 - `acr` is matched as a set, never as a minimum: its values are the provider's and have no order
   scrty knows. To accept "silver or above", list every value at or above silver.
 - `RequestACR` is sent to the provider as `acr_values`. It is a request the provider may ignore,
@@ -141,7 +141,7 @@ manager, err := oidc.NewManager(registry, broker,
   "always use the local second factor". A claim that is absent, empty or malformed counts as
   nothing asserted, so providers that emit no `amr` fall back to the local second factor.
 - A configuration for a provider that is not registered, an empty value in a list, a `RequestACR`
-  value containing whitespace, or an unknown `Match` fails `oidc.NewManager` with `oidc.ErrConfig`.
+  value containing whitespace, or an unknown `Match` fails `oidc.NewRelyingParty` with `oidc.ErrConfig`.
 
 **Per-user rules.** `oidc.WithAssuranceEvaluator` replaces the matching step with your own rule,
 for example "administrators need `hwk`". It receives the user, the provider, the verified issuer
@@ -162,11 +162,11 @@ func (e adminsNeedAHardwareKey) MeetsAssurance(_ context.Context, in oidc.Assura
 
 evaluator := adminsNeedAHardwareKey{admins: []identity.UserID{"root"}}
 
-manager, err := oidc.NewManager(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
+relyingParty, err := oidc.NewRelyingParty(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
 ```
 
 **What happens when assurance is not met.** The requirement policy has three modes for a required
-user's OIDC login, chosen with `policy.WithFederatedAssurance`:
+user's OIDC login, chosen with `policy.WithMFARequirementFederatedAssurance`:
 
 | Mode | Assurance met | Assurance not met |
 |---|---|---|
@@ -179,25 +179,25 @@ only when you accept the bypass it is: a required user is let in on the provider
 whatever the provider asserted, with no look at the requirement, the assurance or any enrolment.
 A provider that does not enforce a second factor then lets required users in without one. Marking
 `factor.OIDC` exempt with `policy.WithMFAExemption` is the same bypass. The mode governs the
-requirement policy only; `policy.WithFederatedChallengeWhenUnmet(true)` on the second-factor
+requirement policy only; `policy.WithMFAFederatedChallengeWhenUnmet(true)` on the second-factor
 challenge policy separately challenges an enrolled user's unmet OIDC login, required or not.
 
-**Wire the source into the requirement policy.** Policy matches nothing itself: the OIDC manager
+**Wire the source into the requirement policy.** Policy matches nothing itself: the OIDC relying party
 is the `policy.FederatedAssuranceSource`. Give it to the policies you build, then put them in the
 chain's engine:
 
 ```go
-source := policy.WithFederatedAssuranceSource(manager)
+source := policy.WithFederatedAssuranceSource(relyingParty)
 
-requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+requirement, err := policy.NewMFARequirement(nil, lookups,
 	policy.WithMFARequiredForAll(),
-	policy.WithFederatedAssurance(mode),
+	policy.WithMFARequirementFederatedAssurance(mode),
 	source,
 )
 ```
 
 `httpsec.New` refuses to assemble a chain with OIDC login enabled and a requirement policy in
-Challenge or Refuse mode that has no source. Fix it with `WithFederatedAssuranceSource(manager)`,
+Challenge or Refuse mode that has no source. Fix it with `WithFederatedAssuranceSource(relyingParty)`,
 with Exempt mode, or with a `WithMFAExemption` rule that exempts `oidc`. Wire `httpsec.EnableMFA`
 on the same chain, since the policies can raise a challenge.
 
@@ -206,7 +206,7 @@ it does not store a verdict. Every request of a federated session matches them a
 provider's current configuration. Tightening a provider's accepted set therefore takes effect on
 existing sessions at their next request, and a provider removed from the registry never matches.
 A session whose local second factor was satisfied stays allowed. A consumer who creates sessions
-in `httpsec.WithCallbackSuccess` records all three of `session.WithFirstFactor(factor.OIDC)`,
+in `httpsec.WithOIDCCallbackSuccess` records all three of `session.WithFirstFactor(factor.OIDC)`,
 `session.WithExternalSession` (the result's provider, issuer, session ID and ID token) and
 `session.WithFederatedAssurance` (its `AMR` and `ACR`). Without any one of them the session carries
 no assurance, so a required user is challenged or refused on every request.
@@ -227,7 +227,7 @@ no assurance, so a required user is challenged or refused on every request.
   deps.Admits = requirement.(policy.LoginAdmission).AdmitsWithoutLocalSecondFactor
   ```
 
-  That answer is the requirement policy's alone, so under `WithFederatedChallengeWhenUnmet(true)`
+  That answer is the requirement policy's alone, so under `WithMFAFederatedChallengeWhenUnmet(true)`
   the check may count a login the challenge policy then challenges; wire an `Admits` that answers
   false for such users.
 
@@ -237,7 +237,7 @@ no assurance, so a required user is challenged or refused on every request.
   and every outbound request, to whatever host they name.
 - The discovery/key-set cache, the default flow store and the default handoff rate limiter are
   per process; a multi-replica deployment needs a shared `oidc.FlowStore` and a shared
-  `httpsec.WithHandoffLimiter`.
+  `httpsec.WithOIDCHandoffLimiter`.
 - A handoff code is fixed at 60 seconds and travels in a URL; a refused code stays redeemable for
   the rest of that window.
 - Back-channel logout-token replay is bounded by the token's issued-at time, not a used-once store,
@@ -248,7 +248,7 @@ no assurance, so a required user is challenged or refused on every request.
   influence over local roles and a standby credential; see their godoc before enabling them.
 
 The full list, with the reasoning behind each one, is in the `oidc` package's "Limits" godoc
-(`go doc github.com/kartaladev/scrty/oidc`).
+(`go doc github.com/kartaladev/scrty/authenticate/oidc`).
 
 ## Letting required users enrol
 
@@ -268,7 +268,7 @@ methods := []mfa.Method{totp} // one mfa.Method per second factor offered, e.g. 
 
 lookups, err := mfa.LookupsFor(methods...)
 
-requirement, err := policy.NewMFARequirementPolicy(requirementLookup, lookups,
+requirement, err := policy.NewMFARequirement(requirementLookup, lookups,
 	policy.WithMFAEnrolmentPath(), // policy.WithEnrolmentFirstFactors, policy.WithEnrolmentPathUntil
 )
 
@@ -312,12 +312,12 @@ only logout is let through as well.
 | Endpoint path prefixes | `/mfa/enrol/begin`, `/mfa/enrol/confirm`, `/mfa/enrol/confirm-email`, each with `/<name>` appended per method | `httpsec.WithEnrolmentBeginPrefix`, `WithEnrolmentConfirmPrefix`, `WithEnrolmentEmailConfirmPrefix` |
 | Methods enrolled | every method `EnableMFA` was given that implements `mfa.Enroller` and supports the path | `httpsec.WithEnrolmentMethods` |
 | First factors admitted | `password`, `magic-link`, unrecorded | `policy.WithEnrolmentFirstFactors` |
-| Confined session lifetime | 15 minutes | `httpsec.WithEnrolmentSessionTTL` |
+| Confined session lifetime | 15 minutes | `httpsec.WithEnrolmentSessionLifetime` |
 | Begin limit | 5 per hour, per user, in-memory | `httpsec.WithEnrolmentBeginLimiter` |
 | Confirmation failure limit | 5 per 15 minutes, per user, in-memory | `httpsec.WithEnrolmentConfirmLimiter` |
-| Emailed-code confirmation | on | `httpsec.WithoutEmailConfirmation` |
+| Emailed-code confirmation | on | `httpsec.WithoutEnrolmentEmailConfirmation` |
 | Notification on completion | on | `httpsec.WithoutEnrolmentNotification` |
-| Contact address / provisioning label | the username | `httpsec.WithContactResolver` / `WithLabelResolver` |
+| Contact address / provisioning label | the username | `httpsec.WithEnrolmentContactResolver` / `WithEnrolmentLabelResolver` |
 | Rollout deadline | none (path stays open) | `policy.WithEnrolmentPathUntil` |
 
 ### Stated limits
@@ -353,7 +353,7 @@ two independent proofs, never one; `httpsec.EnableAccountRecovery` answers the H
 it. Wire the pieces in order:
 
 ```go
-codes, err := recovery.NewCodes() // WithSetSize, WithLowThreshold, WithCodeStore, WithCodeLimiter, ...
+codes, err := recovery.NewCodes() // WithCodesSetSize, WithCodesLowThreshold, WithCodesStore, WithCodesLimiter, ...
 
 mfaReset, err := recovery.MFAEnrolments(totp) // one AuthenticatorKind per kind of authenticator recovery resets
 
@@ -361,7 +361,7 @@ chain, err := httpsec.New(
 	// ... your other chain options, including a binding route (see below) ...
 	httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
 		Users:    users,        // identity.UserLoader
-		Sessions: sessions,     // *session.Manager
+		Sessions: sessions,     // *session.Sessions
 		Sender:   queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
 		Codes:    codes,
 	},
@@ -400,7 +400,7 @@ confinement pattern (above). `EnableAccountRecovery` fails construction without 
 - the MFA enrolment path (`httpsec.EnableMFAEnrolment`), whose verify endpoint resolves the
   binding, exactly as it does for an ordinary enrolment; or
 - a password-change resolve endpoint (`httpsec.EnablePasswordChangeGate` with
-  `httpsec.WithChangePasswordEndpoint`), whose success clears the confinement without rotating the
+  `httpsec.WithPasswordChangeEndpoint`), whose success clears the confinement without rotating the
   session — the recovery minted it for this caller already.
 
 Passkey registration (see [Passkeys](#passkeys)) is a third binding route.
@@ -440,7 +440,7 @@ proved they kept it.
 ### Holds, cool-down and regeneration
 
 - **No waiting period by default.** A recovery that presents its two proofs completes at once.
-  `recovery.WithDelay` holds every recovery for a fixed time before it can complete, and
+  `recovery.WithHoldDelay` holds every recovery for a fixed time before it can complete, and
   `recovery.WithCancelLink` is required with any hold — a delay or `recovery.WithRisk`'s hook: the
   held-recovery notice links to it, so a normal login, or the link itself, cancels a recovery the
   real user did not make.
@@ -457,13 +457,13 @@ proved they kept it.
 
 | What | Default | Replaced by |
 |---|---|---|
-| Codes per set | 10 | `recovery.WithSetSize` |
+| Codes per set | 10 | `recovery.WithCodesSetSize` |
 | Issued code lifetime | 15 minutes | `recovery.WithIssuedCodeTTL` |
-| Recovery-pending session lifetime | 15 minutes | `recovery.WithSessionLifetime` (via `httpsec.WithRecoveryCore`) |
-| Regeneration freshness window | 15 minutes | `httpsec.WithRegenerationFreshness` |
+| Recovery-pending session lifetime | 15 minutes | `recovery.WithPendingSessionLifetime` (via `httpsec.WithRecoveryCore`) |
+| Regeneration freshness window | 15 minutes | `httpsec.WithRecoveryRegenerationFreshness` |
 | Authenticator reset | everything held, except what was proved | `recovery.WithResetReported`, `recovery.WithResetPolicy` |
 | Other sessions of the user | ended on recovery | `recovery.WithoutSessionRevocation` |
-| Waiting period | none | `recovery.WithDelay`, `recovery.WithRisk` |
+| Waiting period | none | `recovery.WithHoldDelay`, `recovery.WithRisk` |
 | Cool-down after recovery | off | `httpsec.EnableRecoveryCooldown` |
 | Recovery record store (`RecoveryDeps.Records`) | in-memory, one process only | `recovery.NewMemoryRecordStore` replaced by a durable `recovery.RecordStore` |
 | Issued-code token store | in-memory, one process only | `recovery.WithIssuedCodeStore` |
@@ -471,9 +471,9 @@ proved they kept it.
 
 Each in-memory default above holds its state in the process that created it and forgets it on
 restart; a second replica never sees the first one's records or tokens. A deployment running more
-than one replica supplies durable stores instead: `pgx.NewRecoveryRecordStore`,
-`gorm.NewRecoveryRecordStore` or `sqlstore.NewRecoveryRecordStore` for `RecoveryDeps.Records`, and
-`pgx.NewOneTimeStore`, `gorm.NewOneTimeStore` or `sqlstore.NewOneTimeStore` — the same `onetime.Store`
+than one replica supplies durable stores instead: `pgxstore.NewRecoveryRecordStore`,
+`gormstore.NewRecoveryRecordStore` or `sqlstore.NewRecoveryRecordStore` for `RecoveryDeps.Records`, and
+`pgxstore.NewOneTimeStore`, `gormstore.NewOneTimeStore` or `sqlstore.NewOneTimeStore` — the same `onetime.Store`
 implementation — for both `recovery.WithIssuedCodeStore` and `recovery.WithHoldTokenStore`.
 
 ## Passkeys
@@ -481,8 +481,8 @@ implementation — for both `recovery.WithIssuedCodeStore` and `recovery.WithHol
 `passkey` adds WebAuthn passkeys: registration and management, passwordless login, the passkey as a
 second factor, and clone handling. The core package has no WebAuthn dependency; the verifier
 behind the `passkey.Verifier` port lives in the nested module
-`github.com/kartaladev/scrty/passkey/webauthn`, which you add to your own `go.mod` and pass in.
-Each snippet below is mirrored by an `Example` function in `passkey` or `passkey/webauthn` that
+`github.com/kartaladev/scrty/authenticate/passkey/webauthn`, which you add to your own `go.mod` and pass in.
+Each snippet below is mirrored by an `Example` function in `authenticate/passkey` and `authenticate/passkey/webauthn` that
 compiles and runs in this repository's tests.
 
 ### The relying party
@@ -509,13 +509,13 @@ account recovery (above) are the way back when both are gone.
 ### Wiring the adapter and the manager
 
 ```go
-verifier, err := webauthn.New(rp) // github.com/kartaladev/scrty/passkey/webauthn
+verifier, err := webauthn.New(rp) // github.com/kartaladev/scrty/authenticate/passkey/webauthn
 
 manager, err := passkey.New(passkey.Deps{
 	Verifier: verifier,
 	Users:    users,       // identity.UserLoader
 	Sender:   queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
-	Sessions: sessions,     // the *session.Manager the chain uses (httpsec.PasskeyDeps.Sessions)
+	Sessions: sessions,     // the *session.Sessions the chain uses (httpsec.PasskeyDeps.Sessions)
 },
 	passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
 )
@@ -535,10 +535,10 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Other sessions of the user when a passkey is removed | ended; the removing session stays | `passkey.WithoutSessionRevocationOnRemoval`, or per request the posted `other_sessions` field (`keep` or `end`; anything else, an empty value or a repeated field is a 400, `httpsec.ErrMalformedRequest`) |
 | Sessions of the user when a passkey is suspended as a clone | every session ended | `passkey.WithoutSessionRevocationOnClone` |
 | Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |
-| Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasswordlessPrefix` |
+| Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasskeyPasswordlessPrefix` |
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
-| Passkeys per user | 25, every state counted | `passkey.WithPasskeyLimit` |
+| Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
 | Freshness to register or remove a passkey | latest authentication within 15 minutes | `passkey.WithManagementFreshness` |
 | Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session steps up through the passkey method; a passkey-first session cannot (same channel) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
 | User verification | required | `passkey.WithUserVerification` |
@@ -582,7 +582,7 @@ passkey.WithoutSecondFactorAtLogin()
 The in-memory stores hold one process's records and forget them on restart; behind several replicas
 a ceremony must also finish on the replica that began it. A deployment that runs more than one
 replica supplies durable stores. The credential store seals the emailed confirmation code at rest,
-so it takes a `seal.Cipher`; `sqlstore`, `pgx` and `gorm` each have the two constructors:
+so it takes a `seal.Cipher`; `sqlstore`, `pgxstore` and `gormstore` each have the two constructors:
 
 ```go
 credentials, err := sqlstore.NewPasskeyCredentialStore(db, cipher) // cipher: seal.NewAEADCipher over a seal.Keyring
@@ -653,7 +653,7 @@ chain, err := httpsec.New(
 	),
 	httpsec.EnablePasskeys(
 		httpsec.PasskeyDeps{Passkeys: manager, Sessions: sessions, Users: users},
-		httpsec.WithPasswordlessLogin(httpsec.PasswordlessTokens(tokens)),
+		httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(tokens)),
 	),
 )
 ```
@@ -661,7 +661,7 @@ chain, err := httpsec.New(
 - `EnablePasskeys` alone serves registration and management for a signed-in session:
   `POST /passkey/register/begin` and `/finish` (plus `/confirm` and `/confirm-email`
   for a pending passkey), and `GET /passkey/credentials` with `POST .../rename` and `.../remove`.
-- `WithPasswordlessLogin` is off unless given. It adds `POST /passkey/login/begin` and `/finish`,
+- `WithPasskeyPasswordlessLogin` is off unless given. It adds `POST /passkey/login/begin` and `/finish`,
   tied together by an `HttpOnly`, `Secure`, `SameSite=Strict` ceremony cookie, and signs a user in
   with a discoverable passkey alone. `PasswordlessTokens` names the token generator, and may be
   left out when the chain has form login to take one from.

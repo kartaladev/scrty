@@ -8,12 +8,12 @@ import (
 	"net/url"
 	"slices"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/oidc"
 )
 
-//go:generate mockgen -destination=linkstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/oidc LinkStore
-//go:generate mockgen -destination=identitybroker_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/oidc IdentityBroker
+//go:generate mockgen -destination=linkstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc LinkStore
+//go:generate mockgen -destination=identitybroker_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc IdentityBroker
 
 // logoutTokenParam is the form field a provider posts a back-channel logout
 // token under, as OpenID Connect Back-Channel Logout names it.
@@ -160,7 +160,7 @@ func (i *oidcInterceptor) endBackchannelSessions(
 		return errNilLink
 	}
 
-	if i.scope == AllSessions {
+	if i.scope == BackchannelLogoutScopeAll {
 		if err := i.sessions.DeleteByUser(ctx, link.UserID); err != nil {
 			return err
 		}

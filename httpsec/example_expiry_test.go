@@ -4,10 +4,10 @@ import (
 	"context"
 	"log"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -21,7 +21,7 @@ import (
 func ExampleChain_ExpiryTasks() {
 	sessionStore := session.NewMemoryStore()
 
-	sessions, err := session.NewManager(session.WithStore(sessionStore))
+	sessions, err := session.New(session.WithStore(sessionStore))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func ExampleChain_ExpiryTasks() {
 
 	chain, err := httpsec.New(
 		httpsec.EnablePasswordChangeGate(sessions,
-			httpsec.WithChangePasswordEndpoint("/account/password", func(*httpsec.Exchange) error { return nil }),
+			httpsec.WithPasswordChangeEndpoint("/account/password", func(*httpsec.Exchange) error { return nil }),
 		),
 		httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
 			Users: exampleUserLoader{details: &identity.Details{

@@ -14,11 +14,11 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -264,7 +264,7 @@ func TestRecoveryCodeStore_Rows(t *testing.T) {
 
 				err := s.ReplaceSet(ctx, user, recoveryHashes(string(user), 1), recoveryAt)
 				require.ErrorIs(t, err, gormstore.ErrNilTransaction)
-				assert.ErrorContains(t, err, "gorm: replace recovery codes")
+				assert.ErrorContains(t, err, "gormstore: replace recovery codes")
 			},
 		},
 		{
@@ -414,7 +414,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ context.Context, _ *gormstore.RecoveryRecordStore, _ recovery.Record, err error) {
 				require.Error(t, err)
-				assert.ErrorContains(t, err, "gorm: insert recovery record")
+				assert.ErrorContains(t, err, "gormstore: insert recovery record")
 			},
 		},
 		{
@@ -432,7 +432,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 				got, err := s.Find(ctx, r.ID)
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, recovery.ErrRecordNotFound)
-				assert.ErrorContains(t, err, "gorm: find recovery record")
+				assert.ErrorContains(t, err, "gormstore: find recovery record")
 				assert.Nil(t, got)
 			},
 		},

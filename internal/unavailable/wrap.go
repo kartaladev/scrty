@@ -12,7 +12,7 @@
 // module's own options, never directly. It starts no goroutine and needs
 // nothing stopped.
 //
-//go:generate mockgen -source=../../ratelimit/limiter.go -package=unavailable_test -destination=limiter_mock_test.go -typed
+//go:generate mockgen -source=../../ratelimit/limiter.go -package=unavailable_test -destination=limiter_mock_test.go -exclude_interfaces=LimiterFactory,Verifier,PolicyReporter,Pruner -typed
 package unavailable
 
 import (
@@ -125,7 +125,7 @@ func Wrap(backend ratelimit.Limiter, namespace string, limit int, window time.Du
 		l.sampler = logsample.New(cfg.LogInterval, logsample.WithReporter(l.reportSuppressed))
 	}
 
-	if cfg.Mode == ratelimit.UnavailableFallBackToLocal {
+	if cfg.Mode == ratelimit.UnavailableFallbackToLocal {
 		// The local limiter's per-replica warning is silenced: its
 		// multiplication applies only while the backend is down, and the
 		// transition records say so when it does.
@@ -183,7 +183,7 @@ func ValidateConfig(cfg Config) error {
 
 func knownMode(m ratelimit.UnavailableMode) bool {
 	switch m {
-	case ratelimit.UnavailableRefuse, ratelimit.UnavailableFallBackToLocal, ratelimit.UnavailableAllow:
+	case ratelimit.UnavailableRefuse, ratelimit.UnavailableFallbackToLocal, ratelimit.UnavailableAllow:
 		return true
 	default:
 		return false
@@ -366,7 +366,7 @@ func (l *limiter) localExceeded(ctx context.Context, key string) (bool, error) {
 // so the next outage would go unlogged.
 func (l *limiter) degradedExceeded(ctx context.Context, key string, err error, outage bool) (bool, error) {
 	switch l.mode {
-	case ratelimit.UnavailableFallBackToLocal:
+	case ratelimit.UnavailableFallbackToLocal:
 		return l.localExceeded(ctx, key)
 	case ratelimit.UnavailableAllow:
 		if outage {
@@ -384,7 +384,7 @@ func (l *limiter) degradedExceeded(ctx context.Context, key string, err error, o
 // degradedExceeded.
 func (l *limiter) degradedRecord(ctx context.Context, key string, err error, outage bool) error {
 	switch l.mode {
-	case ratelimit.UnavailableFallBackToLocal:
+	case ratelimit.UnavailableFallbackToLocal:
 		if err := l.local.RecordFailure(ctx, key); err != nil {
 			return diag.Wrap(err, "ratelimit: local count failed")
 		}
@@ -409,7 +409,7 @@ func (l *limiter) degradedRecord(ctx context.Context, key string, err error, out
 // each refusal.
 func (l *limiter) failed(ctx context.Context, adm admission, err error) (current bool) {
 	opened, current := l.breaker.failure(adm)
-	if !opened || l.mode != ratelimit.UnavailableFallBackToLocal {
+	if !opened || l.mode != ratelimit.UnavailableFallbackToLocal {
 		return current
 	}
 
@@ -466,6 +466,173 @@ func (l *limiter) reportSuppressed(namespace string, suppressed int) {
 // through errors.Is and errors.As but never in the text.
 func unavailableError(err error) error {
 	return diag.Wrap(err, "ratelimit: backend unavailable", ratelimit.ErrBackendUnavailable)
+}
+
+// Charge charges the backend under the operation timeout, or charges
+// according to the mode while the breaker is open or the backend fails. The
+// backend's own charge is what makes the step indivisible; the decorator adds
+// no step between its check and its record.
+//
+// A caller context that has already ended is refused with its error, before
+// anything else and in every mode, and nothing is charged: the charge gates
+// work, and a caller that hung up is not an outage. The caller's cancellation
+// bounds the backend call too, as for a check; one that ends the call first is
+// refused and leaves the breaker as it was.
+//
+// Refuse mode refuses a key whose failure could not be recorded within the
+// last window, as Exceeded does, and refuses every charge the backend cannot
+// answer with an error wrapping ratelimit.ErrBackendUnavailable. Fall-back mode
+// charges the local count while the backend is unavailable, and while it is
+// available first refuses a key the local count holds at the limit from the
+// outage, without charging the backend. Allow mode accepts the charge, records
+// nothing and returns the zero Receipt.
+func (l *limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ratelimit.Receipt{}, true, fmt.Errorf("ratelimit: charge abandoned: %w", err)
+	}
+
+	if l.mode == ratelimit.UnavailableRefuse && l.hold.held(key) {
+		return ratelimit.Receipt{}, true, errHeld
+	}
+
+	if l.local != nil {
+		// The local count grows only while the backend is unavailable, so
+		// reading it ahead of the backend's charge adds refusals and never
+		// admits a charge the backend's own step would refuse.
+		exceeded, err := l.localExceeded(ctx, key)
+		switch {
+		case errors.Is(err, ratelimit.ErrLimiterFull):
+		case err != nil || exceeded:
+			return ratelimit.Receipt{}, true, err
+		}
+	}
+
+	adm, pass := l.breaker.allow()
+	if !pass {
+		return l.degradedCharge(ctx, key, ratelimit.ErrBackendUnavailable, true)
+	}
+
+	r, exceeded, err := l.chargeBackend(ctx, key, adm)
+	switch {
+	case err == nil:
+		l.succeeded(ctx, adm)
+		return r, exceeded, nil
+	case ctx.Err() != nil:
+		l.breaker.abandon(adm)
+		return ratelimit.Receipt{}, true, diag.Wrap(err, "ratelimit: charge abandoned: the caller's context ended")
+	default:
+		current := l.failed(ctx, adm, err)
+		return l.degradedCharge(ctx, key, unavailableError(err), current)
+	}
+}
+
+// chargeBackend charges the backend under the operation timeout. A backend call
+// that panics abandons adm before the panic continues, as in checkBackend.
+func (l *limiter) chargeBackend(ctx context.Context, key string, adm admission) (r ratelimit.Receipt, exceeded bool, err error) {
+	callCtx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	returned := false
+	defer func() {
+		if !returned {
+			l.breaker.abandon(adm)
+		}
+	}()
+
+	r, exceeded, err = l.backend.Charge(callCtx, key)
+	returned = true
+
+	return r, exceeded, err
+}
+
+// degradedCharge answers a charge the backend cannot: refuse mode refuses with
+// err; fall-back mode charges the local count, which refuses a key it does not
+// hold once it is full; allow mode accepts it and records nothing, writing its
+// outage record only when outage is set, as in degradedExceeded.
+func (l *limiter) degradedCharge(ctx context.Context, key string, err error, outage bool) (ratelimit.Receipt, bool, error) {
+	switch l.mode {
+	case ratelimit.UnavailableFallbackToLocal:
+		r, exceeded, err := l.local.Charge(ctx, key)
+		switch {
+		case err == nil:
+			return r, exceeded, nil
+		case errors.Is(err, ratelimit.ErrLimiterFull):
+			return ratelimit.Receipt{}, true, diag.Wrap(err, "ratelimit: the local count is holding its maximum number of keys")
+		default:
+			return ratelimit.Receipt{}, true, diag.Wrap(err, "ratelimit: charge abandoned: the caller's context ended")
+		}
+	case ratelimit.UnavailableAllow:
+		if outage {
+			l.logAllowing(ctx)
+		}
+		return ratelimit.Receipt{}, false, nil
+	default:
+		return ratelimit.Receipt{}, true, err
+	}
+}
+
+// Refund refunds through the backend under the operation timeout alone, or
+// according to the mode while the breaker is open. The caller's cancellation
+// is stripped, as for a record, because a refund owed for a successful attempt
+// must still be made when the caller hangs up. The zero Receipt does nothing.
+//
+// While the breaker is open, fall-back mode refunds the local count, where
+// the charges made during the outage are; refuse mode returns an error
+// wrapping ratelimit.ErrBackendUnavailable; allow mode, which recorded nothing,
+// does nothing. A backend refund that fails is an error wrapping
+// ratelimit.ErrBackendUnavailable in every mode, and the local count is left
+// alone: the receipt names a failure the backend holds.
+//
+// The receipt carries no mark of where its failure was recorded, so the
+// breaker's state at the refund decides where it goes. A receipt charged on
+// one side of an outage's start or end and refunded on the other is refunded
+// where its failure is not, and removes nothing there unless that side holds
+// a failure of the same key at the same microsecond; it never removes more than
+// one failure.
+func (l *limiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+
+	adm, pass := l.breaker.allow()
+	if !pass {
+		switch l.mode {
+		case ratelimit.UnavailableFallbackToLocal:
+			return l.local.Refund(ctx, r)
+		case ratelimit.UnavailableAllow:
+			return nil
+		default:
+			return ratelimit.ErrBackendUnavailable
+		}
+	}
+
+	if err := l.refundBackend(ctx, r, adm); err != nil {
+		l.failed(ctx, adm, err)
+		return unavailableError(err)
+	}
+	l.succeeded(ctx, adm)
+
+	return nil
+}
+
+// refundBackend refunds through the backend under the operation timeout alone.
+// A backend call that panics abandons adm before the panic continues, as in
+// checkBackend.
+func (l *limiter) refundBackend(ctx context.Context, r ratelimit.Receipt, adm admission) error {
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.timeout)
+	defer cancel()
+
+	returned := false
+	defer func() {
+		if !returned {
+			l.breaker.abandon(adm)
+		}
+	}()
+
+	err := l.backend.Refund(callCtx, r)
+	returned = true
+
+	return err
 }
 
 var _ ratelimit.Limiter = (*limiter)(nil)

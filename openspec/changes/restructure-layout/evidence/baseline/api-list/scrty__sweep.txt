@@ -1,0 +1,14 @@
+ErrAlreadyShutdown
+ErrAlreadyStarted
+ErrInvalidOption
+ErrNoInterval
+JobPrefix
+New
+Option
+Sweeper
+WithClock
+WithDefaultInterval
+WithDistributedLocker
+WithLogger
+WithRunImmediately
+WithStopTimeout

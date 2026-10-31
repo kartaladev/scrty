@@ -44,7 +44,7 @@ func storeFailureTextStaysOutOfTheRefusal() Scenario {
 		Build: func(t *testing.T) ChainSpec {
 			effects := newEffects(t)
 
-			manager, err := session.NewManager(session.WithStore(failingCreateStore{MemoryStore: effects.Store}))
+			manager, err := session.New(session.WithStore(failingCreateStore{MemoryStore: effects.Store}))
 			require.NoError(t, err)
 
 			effects.Sessions = manager

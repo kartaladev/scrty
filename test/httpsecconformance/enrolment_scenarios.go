@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -136,10 +136,10 @@ func enrolmentOptions(t *testing.T, e *Effects) []httpsec.Option {
 	lookups, err := mfa.LookupsFor(fx.TOTP)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+	requirement, err := policy.NewMFARequirement(nil, lookups,
 		policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 

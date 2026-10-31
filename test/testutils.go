@@ -44,7 +44,7 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/outbound"
 )
 
@@ -113,7 +113,8 @@ type SMTPConn struct {
 	Password string
 	RootCAs  *x509.CertPool
 
-	api string // the container's HTTP API, for reading received messages
+	api    string       // the container's HTTP API, for reading received messages
+	client *http.Client // reads api, on a transport of its own
 }
 
 // ReceivedMessage is one message the test server accepted, as it arrived on
@@ -221,6 +222,7 @@ func RunTestSMTP(t *testing.T, opts ...TestOption) SMTPConn {
 		Password: cfg.password,
 		RootCAs:  pool,
 		api:      strings.TrimSuffix(api, "/"),
+		client:   smtpAPIClient(t),
 	}
 }
 
@@ -267,13 +269,34 @@ func (c SMTPConn) Messages(t *testing.T) []ReceivedMessage {
 	return out
 }
 
+// ownTransport returns a clone of the default HTTP transport that closes its
+// idle connections when t ends. A client built on it keeps connections no
+// other test can clear: httptest.Server.Close closes the idle connections of
+// the default transport.
+func ownTransport(t *testing.T) *http.Transport {
+	t.Helper()
+
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(tr.CloseIdleConnections)
+
+	return tr
+}
+
+// smtpAPIClient returns the HTTP client a SMTPConn reads the message API
+// with, on a transport of its own that is released when t ends.
+func smtpAPIClient(t *testing.T) *http.Client {
+	t.Helper()
+
+	return &http.Client{Transport: ownTransport(t)}
+}
+
 func (c SMTPConn) get(t *testing.T, url string) []byte {
 	t.Helper()
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.client.Do(req)
 	require.NoError(t, err, "message API request to %s failed", url)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1195,9 +1218,7 @@ func RunTestKeycloak(t *testing.T, opts ...TestOption) KeycloakConn {
 	port, err := ctr.MappedPort(ctx, keycloakHTTPSPort)
 	require.NoError(t, err, "failed to read the Keycloak port")
 
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-	}
+	transport := keycloakTransport(t, pool)
 
 	out, err := outbound.New(outbound.WithHTTPClient(&http.Client{Transport: transport}))
 	require.NoError(t, err, "failed to build the outbound client")
@@ -1264,6 +1285,20 @@ var keycloakLoginForm = regexp.MustCompile(`(?s)<form[^>]*\bid="kc-form-login"[^
 
 // keycloakFormAction reads the action attribute out of a form tag.
 var keycloakFormAction = regexp.MustCompile(`\baction="([^"]+)"`)
+
+// keycloakTransport returns a transport of its own that trusts roots and
+// closes its idle connections when t ends. Keycloak's clients keep connections
+// no other test can clear, so the transport must not outlive the test that
+// built it. It is a bare transport, not a clone of the default one, so no
+// proxy from the environment sits between a test and its container.
+func keycloakTransport(t *testing.T, roots *x509.CertPool) *http.Transport {
+	t.Helper()
+
+	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	t.Cleanup(tr.CloseIdleConnections)
+
+	return tr
+}
 
 // keycloakLogin returns KeycloakConn.Login over transport. Each call keeps its
 // own cookie jar, as a fresh browser would, so two logins never share a

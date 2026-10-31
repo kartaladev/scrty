@@ -3,7 +3,10 @@
 //
 // A backend adapts itself to a Harness and calls Run. The suite pins the
 // threshold, key separation, the strictly-after window boundary, boundary
-// straddling, the newest-stamp cap, ended contexts and concurrent use. When
+// straddling, the newest-stamp cap, ended contexts and concurrent use. It
+// also pins charging: concurrent charges released together stop exactly at
+// the limit, a refused charge records nothing, and a refund removes its own
+// failure and no other. When
 // the Harness can build a second instance over the same backend scope, Run
 // also checks the cross-instance scenarios that make a limiter shared:
 // two replicas sharing one limit, a shorter-window replica never disarming a

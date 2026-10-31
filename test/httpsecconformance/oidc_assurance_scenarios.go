@@ -10,16 +10,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
 
 // assuranceOptions is the wiring the assurance scenarios share: a user who is
-// required to use a second factor and is enrolled on TOTP, the OIDC manager as
-// the source of provider assurance, and the requirement policy in mode.
+// required to use a second factor and is enrolled on TOTP, the OIDC relying
+// party as the source of provider assurance, and the requirement policy in
+// mode.
 func assuranceOptions(t *testing.T, e *Effects, mode policy.FederatedAssuranceMode) []httpsec.Option {
 	t.Helper()
 
@@ -36,13 +37,13 @@ func assuranceOptions(t *testing.T, e *Effects, mode policy.FederatedAssuranceMo
 	lookups, err := mfa.LookupsFor(method)
 	require.NoError(t, err)
 
-	source := policy.WithFederatedAssuranceSource(e.OIDC.Manager)
+	source := policy.WithFederatedAssuranceSource(e.OIDC.RelyingParty)
 
-	challenge, err := policy.NewMFAPolicy(lookups, source)
+	challenge, err := policy.NewMFA(lookups, source)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
-		policy.WithMFARequiredForAll(), policy.WithFederatedAssurance(mode), source)
+	requirement, err := policy.NewMFARequirement(nil, lookups,
+		policy.WithMFARequiredForAll(), policy.WithMFARequirementFederatedAssurance(mode), source)
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(challenge, requirement)
@@ -62,7 +63,7 @@ func assertedLogin(claims map[string]any) func(t *testing.T, e *Effects) {
 
 		fx := e.OIDC
 
-		auth, err := fx.Manager.Authorize(t.Context(), OIDCProvider, "")
+		auth, err := fx.RelyingParty.Authorize(t.Context(), OIDCProvider, "")
 		require.NoError(t, err)
 
 		all := map[string]any{"sub": OIDCSubject}
@@ -75,7 +76,7 @@ func assertedLogin(claims map[string]any) func(t *testing.T, e *Effects) {
 
 		q := callbackQuery(t, fx.CallbackPath)
 
-		res, err := fx.Manager.Callback(t.Context(), OIDCProvider, q.Get("code"), q.Get("state"), fx.FlowHandle)
+		res, err := fx.RelyingParty.Callback(t.Context(), OIDCProvider, q.Get("code"), q.Get("state"), fx.FlowHandle)
 		require.NoError(t, err)
 
 		fx.HandoffCode, err = fx.Handoffs.Issue(t.Context(), res)

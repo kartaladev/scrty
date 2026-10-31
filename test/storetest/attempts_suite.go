@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // recordFailures records a failure for username at each instant.
@@ -42,7 +43,7 @@ func assertFailureCount(
 // refused, with errors that do not echo it, or counted as given, and never
 // altered into another.
 //
-// When the store also implements policy.AttemptReaper, the suite checks that a
+// When the store also implements lockout.AttemptReaper, the suite checks that a
 // zero cutoff is refused and deletes nothing, and that a purge removes exactly
 // the failures recorded strictly before its cutoff, whoever they belong to.
 // For a store without a reaper, those cases log that they did not run and
@@ -148,11 +149,11 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		optionalCase(
 			cfg.requireReaper,
 			"a purge with a zero cutoff is refused and deletes nothing",
-			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper policy.AttemptReaper, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper lockout.AttemptReaper, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", suiteStart, since)
 
 				n, err := reaper.DeleteAttemptsBefore(ctx, time.Time{})
-				require.ErrorIs(t, err, policy.ErrRetainSinceRequired)
+				require.ErrorIs(t, err, lockout.ErrRetainSinceRequired)
 				assert.Zero(t, n)
 				assertFailureCount(ctx, t, s, "alice", suiteStart.Add(-time.Second), 2)
 			},
@@ -160,7 +161,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		optionalCase(
 			cfg.requireReaper,
 			"a purge removes exactly the failures recorded strictly before the cutoff, for every identifier",
-			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper policy.AttemptReaper, _ *clockwork.FakeClock) {
+			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper lockout.AttemptReaper, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", since.Add(-time.Second), since, since.Add(time.Second))
 				recordFailures(ctx, t, s, "bob", since.Add(-time.Minute))
 

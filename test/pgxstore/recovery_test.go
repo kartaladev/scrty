@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -263,7 +263,7 @@ func TestRecoveryCodeStore_Rows(t *testing.T) {
 
 				err := s.ReplaceSet(ctx, user, recoveryHashes(string(user), 1), recoveryAt)
 				require.ErrorIs(t, err, pgxstore.ErrNilTransaction)
-				assert.ErrorContains(t, err, "pgx: replace recovery codes")
+				assert.ErrorContains(t, err, "pgxstore: replace recovery codes")
 			},
 		},
 		{
@@ -413,7 +413,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ context.Context, _ *pgxstore.RecoveryRecordStore, _ recovery.Record, err error) {
 				require.Error(t, err)
-				assert.ErrorContains(t, err, "pgx: insert recovery record")
+				assert.ErrorContains(t, err, "pgxstore: insert recovery record")
 			},
 		},
 		{
@@ -431,7 +431,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 				got, err := s.Find(ctx, r.ID)
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, recovery.ErrRecordNotFound)
-				assert.ErrorContains(t, err, "pgx: find recovery record")
+				assert.ErrorContains(t, err, "pgxstore: find recovery record")
 				assert.Nil(t, got)
 			},
 		},
@@ -446,7 +446,7 @@ func TestRecoveryRecordStore_Rows(t *testing.T) {
 				got, err := s.Find(ctx, r.ID)
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, recovery.ErrRecordNotFound)
-				assert.ErrorContains(t, err, "pgx: find recovery record")
+				assert.ErrorContains(t, err, "pgxstore: find recovery record")
 				assert.Nil(t, got)
 			},
 		},

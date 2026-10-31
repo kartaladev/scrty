@@ -11,11 +11,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/seal"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // The sealed-column fake is seal's real enrolment wrapper over an in-memory
@@ -210,7 +210,7 @@ func sealedKeysVariant(d sealedDefect, failsCase string) brokenVariant {
 	return brokenVariant{
 		name: "sealed-keys-" + string(d),
 		run: func(t *testing.T) {
-			table := signingkey.NewInMemoryKeyStore()
+			table := signingkey.NewMemoryKeyStore()
 			h := fakeHarness(func(*testing.T) signingkey.KeyStore { return table })
 			storetest.RunSealedColumns(t, h, sealedKeysFake(table, d))
 		},

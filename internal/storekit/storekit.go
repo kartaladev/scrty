@@ -7,14 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // Storable reports whether PostgreSQL text can hold every one of values: none
@@ -212,4 +214,236 @@ func SessionDigest(sessionID string) []byte {
 	sum := sha256.Sum256([]byte(sessionID))
 
 	return sum[:]
+}
+
+// ErrIdentifierInUse is why a bounded insert (OneTimeStore.InsertWithin) of
+// an identifier already stored fails. It carries no adapter prefix; the
+// adapter wraps it with its own and the operation's name.
+var ErrIdentifierInUse = errors.New("the identifier is already in use")
+
+// ErrPasskeyHandleHeld is the refusal of an offered handle another user
+// holds. With 64 random bytes it does not happen by chance; it names no part
+// of the handle. It carries no adapter prefix; the adapter wraps it with its
+// own and the operation's name.
+var ErrPasskeyHandleHeld = errors.New("the offered user handle is held by another user")
+
+// ErrStreakContended is AddStreakFailure's error when every run of the upsert
+// lost a race to create the streak. It names no identifier, and carries no
+// adapter prefix; the adapter wraps it with its own and the operation's name.
+var ErrStreakContended = errors.New("the streak was created and deleted concurrently on every run")
+
+// ParseUserID is ref as the identifier it names, or false when ref is not the
+// canonical lowercase UUID string the identity stores hand out. pkg/id
+// accepts either letter case; a reference is opaque and matched byte for
+// byte, so another spelling of the same UUID names no user.
+func ParseUserID(ref identity.UserID) (id.ID, bool) {
+	uid, err := id.Parse(string(ref))
+	if err != nil || uid.String() != string(ref) {
+		return id.Nil, false
+	}
+
+	return uid, true
+}
+
+// CheckUser refuses text PostgreSQL cannot store, naming the field and never
+// its value.
+func CheckUser(username string, u *identity.UserChange) error {
+	fields := []Field{Text("username", username), Text("name", u.Name)}
+	for _, r := range u.Roles {
+		fields = append(fields, Text("role", r))
+	}
+
+	return CheckStorable(fields...)
+}
+
+// SurvivingRoles applies the update's role rules: empty names are skipped and
+// a repeated name collapses to its first occurrence. No survivor means the
+// grants are left as stored.
+func SurvivingRoles(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+
+	return out
+}
+
+// BestEffort runs f, recovering any panic it raises. It is only for cleanup
+// that runs while another panic is already unwinding, where f's own panic
+// would otherwise replace that one.
+func BestEffort(f func()) {
+	defer func() { _ = recover() }()
+	f()
+}
+
+// SQLStater is the method PostgreSQL drivers' errors report their SQLSTATE
+// through: pgconn.PgError and lib/pq's Error both provide it.
+type SQLStater interface{ SQLState() string }
+
+// DetachedError is a database failure cut from the driver's error: fixed
+// text and the sentinels it matched, nothing else. DetachedText makes one.
+type DetachedError struct {
+	text string
+	kept []error
+}
+
+func (e *DetachedError) Error() string   { return e.text }
+func (e *DetachedError) Unwrap() []error { return e.kept }
+
+// DetachedText is err with the driver's error value left out of its chain and
+// text in place of err's own text. It stays matchable against each sentinel
+// of kept that err matched, whatever text says, and against nothing else.
+// kept is the adapter's own list of sentinels that carry no value: the
+// context errors and its driver's closed-transaction and closed-connection
+// errors.
+func DetachedText(err error, text string, kept []error) error {
+	var matched []error
+	for _, s := range kept {
+		if errors.Is(err, s) {
+			matched = append(matched, s)
+		}
+	}
+
+	return &DetachedError{text: text, kept: matched}
+}
+
+// Detached is err with the driver's error value left out of its chain and
+// its text replaced with the library's own: "database failure", followed by
+// the SQLSTATE when err is or wraps an error reporting one through a
+// SQLState method and ValidSQLState accepts it. No other text of err's chain
+// is kept, neither the driver's message, since a PostgreSQL primary message
+// can quote a value, nor any text a library between the driver and the
+// adapter adds. It stays matchable against each sentinel of kept that err
+// matched, as DetachedText describes, so a caller still tells a
+// cancellation from a failure.
+func Detached(err error, kept []error) error {
+	text := "database failure"
+
+	var st SQLStater
+	if errors.As(err, &st) {
+		if code := st.SQLState(); ValidSQLState(code) {
+			text += " (SQLSTATE " + code + ")"
+		}
+	}
+
+	return DetachedText(err, text, kept)
+}
+
+// ValidSQLState reports whether code has the shape of a SQLSTATE: five digits
+// or upper-case letters. A driver, or a consumer's error, reporting anything
+// else through its SQLState method adds no text of its own.
+func ValidSQLState(code string) bool {
+	if len(code) != 5 {
+		return false
+	}
+	for _, c := range []byte(code) {
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+
+	return true
+}
+
+// LookupMiss reports whether err, the failure of a lookup by value, means the
+// database cannot hold value, so that no row can match it. It is true when
+// value holds a non-ASCII byte and err's chain holds an error reporting,
+// through a SQLState method, SQLSTATE 22021 (a character not in the
+// database's encoding repertoire) or 22P05 (a character with no equivalent in
+// the database's encoding). A lookup treats such a failure as a miss.
+//
+// Every server encoding is a superset of ASCII, so a value of ASCII bytes
+// alone cannot cause either failure; it comes from a stored row the
+// connection cannot encode, and stays a failure. So do any other failure, a
+// cancellation and nil.
+func LookupMiss(value string, err error) bool {
+	if !hasNonASCII(value) {
+		return false
+	}
+
+	var st SQLStater
+	if !errors.As(err, &st) {
+		return false
+	}
+
+	switch st.SQLState() {
+	case "22021", "22P05":
+		return true
+	default:
+		return false
+	}
+}
+
+// hasNonASCII reports whether s holds a byte outside ASCII.
+func hasNonASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Column is one users column an update writes, and the value it binds. Its
+// name is unexported: a Column comes only from UserColumns or RoleColumn, so
+// the column names that reach the SQL text are the ones this package fixes.
+type Column struct {
+	name  string
+	value any
+}
+
+// RoleColumn is the users column holding the primary role, bound to value.
+func RoleColumn(value any) Column { return Column{name: "role", value: value} }
+
+// UserColumns is the users columns an update writes for the fields u names,
+// in a fixed order. Column names come only from this allow-list, never from
+// input. A field is written when it was named, whatever its value, and left
+// alone otherwise. The email has no column and writes nothing; the roles are
+// written by the grant rebuild. The password-changed-at time is its own
+// field: naming the password alone never writes it. org is the bound value
+// of organization_id, and ts converts the password-changed-at time to the
+// value the adapter's driver binds.
+func UserColumns(u *identity.UserChange, org any, ts func(time.Time) any) []Column {
+	var set []Column
+	if u.IsSet(identity.FieldName) {
+		set = append(set, Column{name: "name", value: u.Name})
+	}
+	if u.IsSet(identity.FieldPassword) {
+		set = append(set, Column{name: "password", value: OrEmpty(u.Password)})
+	}
+	if u.IsSet(identity.FieldOrganization) {
+		set = append(set, Column{name: "organization_id", value: org})
+	}
+	if u.IsSet(identity.FieldPasswordChangedAt) {
+		set = append(set, Column{name: "password_changed_at", value: ts(u.PasswordChangedAt)})
+	}
+
+	return set
+}
+
+// UpdateUserQuery is the partial UPDATE of user userID writing set and
+// updated_at, with its arguments. userID is bound as given, in the form the
+// adapter's driver takes. Each column name is written into the SQL text as it
+// is, and a Column carries only names this package fixes.
+func UpdateUserQuery(set []Column, now time.Time, userID any) (string, []any) {
+	var b strings.Builder
+	args := make([]any, 0, len(set)+2)
+
+	b.WriteString("UPDATE users SET ")
+	for _, c := range set {
+		args = append(args, c.value)
+		b.WriteString(c.name + " = $" + strconv.Itoa(len(args)) + ", ")
+	}
+	args = append(args, now)
+	b.WriteString("updated_at = $" + strconv.Itoa(len(args)))
+	args = append(args, userID)
+	b.WriteString(" WHERE id = $" + strconv.Itoa(len(args)))
+
+	return b.String(), args
 }

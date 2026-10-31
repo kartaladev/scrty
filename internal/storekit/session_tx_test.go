@@ -103,9 +103,9 @@ func TestAtomically(t *testing.T) {
 					m.EXPECT().Rollback(gomock.Any()),
 				)
 			},
-			fn: func(handle) error { return session.ErrSessionRenewalConflict },
+			fn: func(handle) error { return session.ErrRenewalConflict },
 			assert: func(t *testing.T, _ []handle, err error, _ any) {
-				assert.Equal(t, session.ErrSessionRenewalConflict, err)
+				assert.Equal(t, session.ErrRenewalConflict, err)
 			},
 		},
 		{
@@ -514,7 +514,7 @@ func TestSupersede(t *testing.T) {
 				)
 			},
 			assert: func(t *testing.T, err error) {
-				assert.Equal(t, session.ErrSessionRenewalConflict, err)
+				assert.Equal(t, session.ErrRenewalConflict, err)
 			},
 		},
 		{
@@ -529,7 +529,7 @@ func TestSupersede(t *testing.T) {
 				)
 			},
 			assert: func(t *testing.T, err error) {
-				assert.Equal(t, session.ErrSessionNotFound, err)
+				assert.Equal(t, session.ErrNotFound, err)
 			},
 		},
 		{

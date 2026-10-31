@@ -3,12 +3,14 @@ package scrty_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
 	"io/fs"
 	"os"
@@ -455,7 +457,7 @@ const redisClient = "github.com/redis/go-redis"
 // redisClientOwners lists the workspace modules, by directory relative to the
 // repository root, that may require redisClient: the Redis module itself, and
 // the test module that runs it against real servers.
-var redisClientOwners = []string{"redis", "test"}
+var redisClientOwners = []string{"ratelimit/redisstore", "test"}
 
 // redisClientViolations reports a requirement on redisClient in the go.mod of
 // the workspace module at dir, unless dir is one of redisClientOwners.
@@ -473,23 +475,16 @@ func redisClientViolations(dir string, reqs []requirement) []violation {
 }
 
 // workspaceModules returns the directory of every module the go.work file at
-// root uses, relative to root.
+// root uses, as the file writes it: relative to root for a relative use entry.
+// The go tool parses the file, so both forms of the use directive are read.
 func workspaceModules(t *testing.T, root string) []string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(root, "go.work")) //nolint:gosec // G304: test-constructed path
-	require.NoError(t, err)
-	var dirs []string
-	inBlock := false
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		switch {
-		case line == "use (":
-			inBlock = true
-		case inBlock && line == ")":
-			inBlock = false
-		case inBlock && line != "" && !strings.HasPrefix(line, "//"):
-			dirs = append(dirs, filepath.Clean(strings.Fields(line)[0]))
-		}
+	out := goCmd(t, root, nil, "work", "edit", "-json", "go.work")
+	var work struct{ Use []struct{ DiskPath string } }
+	require.NoError(t, json.Unmarshal([]byte(out), &work))
+	dirs := make([]string, 0, len(work.Use))
+	for _, u := range work.Use {
+		dirs = append(dirs, filepath.Clean(u.DiskPath))
 	}
 	return dirs
 }
@@ -521,4 +516,146 @@ func workspaceViolations(t *testing.T, root string) []violation {
 		}
 	}
 	return vs
+}
+
+// discoverModules returns the directory of every module found by walking root
+// for go.mod files, relative to root and in lexical order. It skips testdata and
+// dot-directories below root, and does not depend on any go.work file.
+func discoverModules(t *testing.T, root string) []string {
+	t.Helper()
+	var dirs []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "go.mod" {
+			rel, relErr := filepath.Rel(root, filepath.Dir(path))
+			if relErr != nil {
+				return relErr
+			}
+			dirs = append(dirs, rel)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	return dirs
+}
+
+// integrationEntry describes one integration module: the directory it is
+// published under, the package it declares, and a name for its test case.
+type integrationEntry struct {
+	dir, pkg, name string
+}
+
+// integrationTable is the single table of integrations. Every workspace
+// module other than the core, test and tools modules must appear here.
+var integrationTable = []integrationEntry{
+	{"authenticate/passkey/webauthn", "webauthn", "the WebAuthn adapter extends passkey"},
+	{"store/pgxstore", "pgxstore", "the pgx backend extends store"},
+	{"store/gormstore", "gormstore", "the GORM backend extends store"},
+	{"ratelimit/redisstore", "redisstore", "the Redis limiter store extends ratelimit"},
+	{"expiry/sweep", "sweep", "the sweeper extends expiry"},
+	{"httpsec/ginsec", "ginsec", "the Gin adapter extends httpsec"},
+	{"httpsec/fibersec", "fibersec", "the Fiber adapter extends httpsec"},
+}
+
+// integrationDirs lists, by directory relative to the repository root, every
+// workspace module other than the core, test and tools modules. Each one is an
+// integration published under the concept it extends.
+var integrationDirs = func() []string {
+	dirs := make([]string, 0, len(integrationTable))
+	for _, m := range integrationTable {
+		dirs = append(dirs, m.dir)
+	}
+	return dirs
+}()
+
+// modulePath returns the path the module line of dir's go.mod declares, or the
+// empty string when dir holds no go.mod.
+func modulePath(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod")) //nolint:gosec // G304: test-constructed path
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	require.NoError(t, err)
+	for _, raw := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(raw), "module "); ok {
+			return strings.Trim(strings.TrimSpace(rest), `"`)
+		}
+	}
+	return ""
+}
+
+// goDirective returns the version the go directive of dir's go.mod declares,
+// as written there.
+func goDirective(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod")) //nolint:gosec // G304: test-constructed path
+	require.NoError(t, err)
+	for _, raw := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(raw), "go "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	require.Failf(t, "no go directive", "%s/go.mod declares no go version", dir)
+	return ""
+}
+
+// packageClause returns the package name of the first non-test Go file in dir,
+// or the empty string when dir holds none.
+func packageClause(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	require.NoError(t, err)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, parseErr := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.PackageClauseOnly)
+		require.NoError(t, parseErr)
+		return f.Name.Name
+	}
+	return ""
+}
+
+// unlistedModules returns the modules found under root, by
+// directory relative to root, that are neither the core module, the test or
+// tools module, nor one of listed.
+func unlistedModules(t *testing.T, root string, listed []string) []string {
+	t.Helper()
+	var unlisted []string
+	for _, dir := range discoverModules(t, root) {
+		dir = filepath.ToSlash(dir)
+		if dir == "." || dir == "test" || dir == "tools" || slices.Contains(listed, dir) {
+			continue
+		}
+		unlisted = append(unlisted, dir)
+	}
+	return unlisted
+}
+
+// offGoMinimum returns the modules under root, by directory relative to root,
+// whose go directive is not the supported minimum, each mapped to the version it
+// declares.
+func offGoMinimum(t *testing.T, root string) map[string]string {
+	t.Helper()
+	off := map[string]string{}
+	for _, dir := range discoverModules(t, root) {
+		declared := goDirective(t, filepath.Join(root, dir))
+		if version.Lang("go"+declared) != "go1.27" {
+			off[filepath.ToSlash(dir)] = declared
+		}
+	}
+	return off
 }

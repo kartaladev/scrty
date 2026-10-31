@@ -16,7 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
-	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/store/pgxstore"
 )
 
 // These tests force the two interleavings the identity store's writes must

@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/fibersec"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/fibersec"
 	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 )
@@ -235,7 +235,7 @@ func TestSessionBearerFiber(t *testing.T) {
 				assert.Empty(t, seen, "the route never ran")
 
 				_, err := f.sessions.Load(t.Context(), f.successor)
-				require.ErrorIs(t, err, session.ErrSessionNotFound, "the family was revoked, successor included")
+				require.ErrorIs(t, err, session.ErrNotFound, "the family was revoked, successor included")
 			},
 		},
 	}

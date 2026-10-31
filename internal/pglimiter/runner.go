@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -47,11 +48,14 @@ type Runner interface {
 	// QueryRow runs a statement that returns at most one row. Its error, if
 	// any, is reported by the row's Scan.
 	QueryRow(ctx context.Context, sql string, args ...any) Row
+	// QueryRowReadCommitted runs a statement that returns exactly one row as
+	// the only statement of a READ COMMITTED transaction of its own, as
+	// ExecReadCommitted does, and commits it once the row is read. Nothing
+	// runs until the row's Scan is called, which reports every error: the
+	// begin's, the statement's, the scan's and the commit's. A row never
+	// scanned leaves no transaction behind.
+	QueryRowReadCommitted(ctx context.Context, sql string, args ...any) Row
 }
-
-// sqlStater is a driver error that reports its SQLSTATE, as *pgconn.PgError
-// does, under either adapter.
-type sqlStater interface{ SQLState() string }
 
 // sqlStateInsufficientPrivilege is the SQLSTATE of a statement the role may
 // not run (insufficient_privilege).
@@ -111,6 +115,49 @@ func (b *backend) RecordFailure(ctx context.Context, key string) error {
 	return nil
 }
 
+// Charge records one failure for key if, and only if, key holds fewer than
+// the limit's failures within the window, in one conditional upsert
+// (pgschema.LimiterCharge) run as the only statement of a READ COMMITTED
+// transaction of its own, so concurrent charges of one key are decided one
+// after another on its row. The receipt carries the stamp exactly as stored,
+// to the microsecond, and the caller's key. A refused charge returns the zero
+// Receipt.
+//
+// It takes its time and lock timeout as RecordFailure does. An error answers
+// true, wrapped as "<prefix>: rate-limit charge"; the charge may or may not
+// have been recorded.
+func (b *backend) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	var (
+		recorded bool
+		stamp    time.Time
+	)
+	err := b.r.QueryRowReadCommitted(ctx, pgschema.LimiterCharge,
+		b.namespace, pgschema.LimiterKey(key), b.limit, b.windowUS, Now(b.clock), b.lockTimeout).Scan(&recorded, &stamp)
+	switch {
+	case err != nil:
+		return ratelimit.Receipt{}, true, fmt.Errorf("%s: rate-limit charge: %w", b.prefix, err)
+	case !recorded:
+		return ratelimit.Receipt{}, true, nil
+	}
+	return ratelimit.NewReceipt(key, stamp), false, nil
+}
+
+// Refund removes one stamp equal to r's from r's key, while it is still within
+// the window (pgschema.LimiterRefund), in a READ COMMITTED transaction of its
+// own, with RecordFailure's time and lock timeout. The zero Receipt runs
+// nothing. An error is wrapped as "<prefix>: rate-limit refund".
+func (b *backend) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+	err := b.r.ExecReadCommitted(ctx, pgschema.LimiterRefund,
+		b.namespace, pgschema.LimiterKey(r.Key()), r.Stamp(), b.windowUS, Now(b.clock), b.lockTimeout)
+	if err != nil {
+		return fmt.Errorf("%s: rate-limit refund: %w", b.prefix, err)
+	}
+	return nil
+}
+
 // Verify checks, through r, that the database can hold the limiter's limits,
 // as the adapters' Verify methods document: it reads the server's facts and
 // refuses them (Facts.Check), then probes the limiter's record, check and
@@ -163,10 +210,97 @@ func probe(ctx context.Context, r Runner, prefix string, now any, lockTimeout st
 // anything else, a server that cannot be reached included, is not. Neither
 // repeats the server's text.
 func probeError(err error, prefix, step string) error {
-	var st sqlStater
+	var st storekit.SQLStater
 	if errors.As(err, &st) && st.SQLState() == sqlStateInsufficientPrivilege {
 		return diag.Wrap(err, fmt.Sprintf("ratelimit: invalid configuration: the role may not run the limiter's %s statement on %s; "+
 			"grant it SELECT, INSERT, UPDATE and DELETE on the table", step, pgschema.LimiterTable), ratelimit.ErrConfig)
 	}
 	return diag.Wrap(err, fmt.Sprintf("%s: verify: the limiter's %s statement could not run on a probe key", prefix, step))
+}
+
+// Facts is what Verify reads about the server, in one query
+// (pgschema.LimiterServerFacts).
+type Facts struct {
+	// InRecovery is whether the server is a standby.
+	InRecovery bool
+	// Version is the server's server_version_num.
+	Version int
+	// Encoding is the database's server_encoding.
+	Encoding string
+	// Persistence is the relpersistence of the bucket table that resolves
+	// through the connection's search_path: "p" permanent, "u" unlogged, "t"
+	// temporary, or "" when no such table resolves.
+	Persistence string
+}
+
+// Check refuses the facts of a server the limiter cannot hold its limits on,
+// in this order: a standby, a server older than PostgreSQL 15, a database whose
+// encoding is not UTF8, a bucket table that does not resolve through
+// search_path, a temporary one and an unlogged one. Every
+// refusal wraps ratelimit.ErrConfig.
+func (f Facts) Check() error {
+	switch {
+	case f.InRecovery:
+		return fmt.Errorf("%w: the server is a standby (in recovery); the limiter must run on the primary, "+
+			"because a standby lags, so it undercounts, and refuses writes", ratelimit.ErrConfig)
+	case f.Version < pgschema.LimiterMinServerVersion:
+		return fmt.Errorf("%w: the server's server_version_num is %d, older than PostgreSQL 15 (%d), the oldest the limiter supports",
+			ratelimit.ErrConfig, f.Version, pgschema.LimiterMinServerVersion)
+	case f.Encoding != "UTF8":
+		return fmt.Errorf("%w: the database's server encoding is %s; the limiter needs UTF8, "+
+			"the encoding every key and namespace is stored in", ratelimit.ErrConfig, f.Encoding)
+	case f.Persistence == "":
+		return fmt.Errorf("%w: the table %s does not resolve through the connection's search_path; "+
+			"apply the security-state migration set (migrate.SecurityState) to this database",
+			ratelimit.ErrConfig, pgschema.LimiterTable)
+	case f.Persistence == "t":
+		return fmt.Errorf("%w: the table %s resolves to a temporary table, which shadows the migration's "+
+			"and lasts only for its session; drop it", ratelimit.ErrConfig, pgschema.LimiterTable)
+	case f.Persistence == "u":
+		return fmt.Errorf("%w: the table %s is unlogged, so a crash or a failover would reset every limit to zero; "+
+			"make it logged again with ALTER TABLE %s SET LOGGED",
+			ratelimit.ErrConfig, pgschema.LimiterTable, pgschema.LimiterTable)
+	}
+	return nil
+}
+
+// DefaultPruneBatchSize is how many keys one prune batch deletes at most when
+// no option sets it.
+const DefaultPruneBatchSize = 1000
+
+// Prune deletes idle keys in batches of cfg.PruneBatchSize, each its own
+// statement and so its own transaction, and returns how many keys the batches
+// that committed removed. The time is read once, before the first batch: the
+// configured clock, or the database's. It stops on a short batch, on an ended
+// ctx, or on the first failed batch; the count it returns with an error is a
+// lower bound, every key of it removed. Its errors start with prefix, and none
+// repeats the server's text.
+func Prune(ctx context.Context, r Runner, prefix string, cfg Config) (int, error) {
+	now := Now(cfg.Clock)
+	if now == nil {
+		var t time.Time
+		if err := r.QueryRow(ctx, pgschema.LimiterClock).Scan(&t); err != nil {
+			return 0, diag.Wrap(err, prefix+": rate-limit prune: the database clock could not be read")
+		}
+		now = t
+	}
+
+	total := 0
+	for {
+		res, err := r.Exec(ctx, pgschema.LimiterPrune, now, cfg.PruneBatchSize)
+		if err != nil {
+			return total, diag.Wrap(err, prefix+": rate-limit prune: a batch could not be deleted")
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, diag.Wrap(err, prefix+": rate-limit prune: a batch's row count could not be read")
+		}
+		total += int(n)
+		if n < int64(cfg.PruneBatchSize) {
+			return total, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return total, fmt.Errorf("%s: rate-limit prune: stopped after %d keys: %w", prefix, total, err)
+		}
+	}
 }

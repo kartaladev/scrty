@@ -12,13 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // StreakStore is what the failure-streak suite drives: a login-attempt store
 // that also keeps consecutive-failure streaks.
 type StreakStore interface {
 	policy.AttemptStore
-	policy.FailureStreakStore
+	lockout.FailureStreakStore
 }
 
 // The streak suite's fixed values.
@@ -71,12 +72,12 @@ var (
 // addStreak adds a failure for username at each instant, against since and
 // limit, and returns the streak after the last.
 func addStreak(
-	ctx context.Context, t *testing.T, s policy.FailureStreakStore,
+	ctx context.Context, t *testing.T, s lockout.FailureStreakStore,
 	username string, since time.Time, limit int, at ...time.Time,
-) policy.FailureStreak {
+) lockout.FailureStreak {
 	t.Helper()
 
-	var got policy.FailureStreak
+	var got lockout.FailureStreak
 	for _, when := range at {
 		var err error
 		got, _, err = s.AddStreakFailure(ctx, username, when, since, limit)
@@ -98,8 +99,8 @@ func repeat(at time.Time, n int) []time.Time {
 
 // readStreak reads username's streak against since.
 func readStreak(
-	ctx context.Context, t *testing.T, s policy.FailureStreakStore, username string, since time.Time,
-) policy.FailureStreak {
+	ctx context.Context, t *testing.T, s lockout.FailureStreakStore, username string, since time.Time,
+) lockout.FailureStreak {
 	t.Helper()
 
 	got, err := s.FailureStreak(ctx, username, since)
@@ -111,7 +112,7 @@ func readStreak(
 // assertStreak requires got to hold failures, newest and heldAt, comparing
 // instants by Equal so a store returning another location still conforms. A
 // zero heldAt requires the streak not to be held.
-func assertStreak(t *testing.T, got policy.FailureStreak, failures int, newest, heldAt time.Time) {
+func assertStreak(t *testing.T, got lockout.FailureStreak, failures int, newest, heldAt time.Time) {
 	t.Helper()
 
 	assert.Equal(t, failures, got.Failures, "failures")
@@ -124,7 +125,7 @@ func assertStreak(t *testing.T, got policy.FailureStreak, failures int, newest, 
 }
 
 // assertStreakEmpty requires got to be the zero streak.
-func assertStreakEmpty(t *testing.T, got policy.FailureStreak) {
+func assertStreakEmpty(t *testing.T, got lockout.FailureStreak) {
 	t.Helper()
 
 	assert.Zero(t, got.Failures, "failures")
@@ -133,7 +134,7 @@ func assertStreakEmpty(t *testing.T, got policy.FailureStreak) {
 }
 
 // RunFailureStreakSuite checks a store that is both a policy.AttemptStore and
-// a policy.FailureStreakStore against the contract the lockout cap relies on:
+// a lockout.FailureStreakStore against the contract the lockout cap relies on:
 //
 //   - a streak counts from one and advances by one per add;
 //   - one that is not held and whose newest failure is at or before the
@@ -361,7 +362,7 @@ func RunFailureStreakSuite(t *testing.T, newStore func(t *testing.T) StreakStore
 				addStreak(ctx, t, s, "ada", streakOldSince, streakLimit, streakOld)
 
 				n, err := s.DeleteStreaksBefore(ctx, time.Time{})
-				require.ErrorIs(t, err, policy.ErrRetainSinceRequired)
+				require.ErrorIs(t, err, lockout.ErrRetainSinceRequired)
 				assert.Zero(t, n)
 				assertStreak(t, readStreak(ctx, t, s, "ada", streakOldSince), 1, streakOld, time.Time{})
 			},

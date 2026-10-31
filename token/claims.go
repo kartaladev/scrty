@@ -14,9 +14,18 @@
 //
 // Expiry is always required, and every time comparison is made at the
 // resolution the configured clock reports: no skew is tolerated, and no
-// process-global setting in the underlying JOSE library can widen that. The
-// issuer and the audience are enforced exactly when the consumer configured
-// one.
+// process-global setting in the underlying JOSE library can widen that.
+//
+// A verifier checks the issuer and the audience of every token. NewVerifier
+// refuses to construct one that is given neither an issuer nor an explicit
+// waiver of the issuer check, and likewise for the audience, so two services
+// sharing a key source do not accept each other's tokens because one of them
+// left a claim unconfigured. A consumer that does not want a check waives it by
+// name, with WithoutVerifyIssuer or WithoutVerifyAudience, and accepts in
+// writing what that gives up. A generator verifies the tokens it issues, so
+// NewGenerator applies the same rule through WithIssuer or WithoutIssuer, and
+// WithAudience or WithoutAudience; a waived claim is then neither issued nor
+// checked.
 //
 // A token must be presented exactly as it was issued — one compact JWS, three
 // unpadded base64url segments, nothing around it — so one issued token has one
@@ -55,19 +64,19 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwt"
 )
 
-// ErrTokenInvalid identifies every rejection of a token. The specific cause is
-// wrapped, so errors.Is(err, ErrTokenInvalid) answers "was this token
+// ErrInvalid identifies every rejection of a token. The specific cause is
+// wrapped, so errors.Is(err, ErrInvalid) answers "was this token
 // refused?" while the wrapped error says why.
 //
 // A failure to obtain the key set, and a context cancelled before the check
 // finished, are not rejections: each is returned as itself and deliberately
-// does not match ErrTokenInvalid, so an outage is never reported as a failed
+// does not match ErrInvalid, so an outage is never reported as a failed
 // authentication.
 //
-// Nothing on the issue path matches it either. ErrTokenInvalid is the verdict
+// Nothing on the issue path matches it either. ErrInvalid is the verdict
 // on a token a caller presented, and issuing has no such token: a consumer who
 // maps it to "credential refused" must never see it from Generate.
-var ErrTokenInvalid = errors.New("token: invalid")
+var ErrInvalid = errors.New("token: invalid")
 
 // ErrNoSubject reports that Generate was handed a principal with no username,
 // so there is no subject to name. identity.Principal is a plain struct, so a
@@ -76,7 +85,7 @@ var ErrTokenInvalid = errors.New("token: invalid")
 // subject at all.
 //
 // Like every failure on the issue path it deliberately does not match
-// ErrTokenInvalid: there is no presented token to pass a verdict on.
+// ErrInvalid: there is no presented token to pass a verdict on.
 var ErrNoSubject = errors.New("token: principal has no username to name as subject")
 
 // ErrNoTokenID reports that Generate was handed an empty token identifier.
@@ -85,13 +94,13 @@ var ErrNoSubject = errors.New("token: principal has no username to name as subje
 // identifier at all.
 //
 // Like every failure on the issue path it deliberately does not match
-// ErrTokenInvalid.
+// ErrInvalid.
 var ErrNoTokenID = errors.New("token: no token identifier to carry as jti")
 
 // ErrNoVerificationKeys reports that the key source supplied nothing to verify
 // against: no keys at all, or an empty list of them. The verifier has then
 // reached no verdict on the token, so this deliberately does not match
-// ErrTokenInvalid — a consumer who maps every refusal to "credential refused"
+// ErrInvalid — a consumer who maps every refusal to "credential refused"
 // must not show a key-service outage as a failed login.
 var ErrNoVerificationKeys = errors.New("token: key source supplied no verification keys")
 

@@ -104,7 +104,8 @@ const fullWarning = "ratelimit: the in-memory limiter is holding its maximum num
 // attempt in the burst may read the count before any of them has recorded. The
 // limit holds against sustained pressure, which is what it is for; it is not a
 // semaphore. See SourceGuard for the same bound stated where the two steps are
-// called.
+// called. A flow that cannot accept the bound uses Charge, which checks and
+// records in one step, and Refund, so the limit holds under any concurrency.
 //
 // A MemoryLimiter is safe for concurrent use.
 type MemoryLimiter struct {
@@ -190,6 +191,85 @@ func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*M
 	for i := range l.shards {
 		l.shards[i].keys = map[string][]time.Time{}
 		l.shards[i].sweptAt = now
+	}
+
+	return l, nil
+}
+
+// MemoryOption configures a MemoryLimiter. Every default NewMemoryLimiter
+// applies has an option here that replaces it.
+type MemoryOption func(*MemoryLimiter)
+
+// WithMemoryLimiterClock sets the time source failures are stamped from and the
+// window is measured against. Default: clock.System().
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// limiter with no clock could not stamp a failure at all.
+func WithMemoryLimiterClock(clk clock.Clock) MemoryOption {
+	return func(l *MemoryLimiter) { l.clock = clk }
+}
+
+// WithMemoryLimiterLogger sets where the limiter writes its per-replica warning.
+// Default: slog.Default.
+//
+// The warning is written once, on first use. Sending it to a logger the consumer
+// controls is what lets it be routed or silenced; it is not suppressible by
+// option, because a limit that is silently multiplied by the replica count is
+// exactly the misunderstanding worth one record.
+func WithMemoryLimiterLogger(logger *slog.Logger) MemoryOption {
+	return func(l *MemoryLimiter) { l.logger = logger }
+}
+
+// DefaultMemoryLimiterMaxKeys is how many keys a MemoryLimiter holds at most
+// when WithMemoryLimiterMaxKeys is not given: about 37 MiB at the measured cost
+// of at most 157 bytes a key. 250,000 distinct sources failing inside one window
+// is far beyond what one replica sees in normal traffic; a deployment that
+// large belongs on a shared Limiter.
+const DefaultMemoryLimiterMaxKeys = 250_000
+
+// WithMemoryLimiterMaxKeys sets how many keys the limiter holds at most.
+// Default: DefaultMemoryLimiterMaxKeys (250,000), about 37 MiB at the measured
+// cost of at most 157 bytes a key.
+//
+// At the maximum, a key the limiter does not already hold is refused: Exceeded
+// reports it as exceeded with an error wrapping ErrLimiterFull, and
+// RecordFailure stores nothing and returns that error. Keys already held are
+// checked and recorded as before, and nothing is evicted to make room, because
+// evicting a key would reset a live count. A key frees its place only when a
+// sweep or Prune removes it, and the limiter writes a warning through its
+// logger while it is full.
+//
+// A value of zero or less fails construction with ErrConfig. There is no
+// unbounded mode, because unbounded memory is what the cap exists to prevent; a
+// consumer who accepts that cost passes math.MaxInt. MemoryLimiterFactory
+// applies the option to every limiter it builds, so one option sets the cap
+// for every flow the factory serves.
+func WithMemoryLimiterMaxKeys(n int) MemoryOption {
+	return func(l *MemoryLimiter) { l.maxKeys = n }
+}
+
+// MemoryLimiterFactory returns a factory of in-memory limiters. It is the
+// default every built-in flow uses when the consumer supplies neither a limiter
+// nor a factory.
+//
+// Every call builds a new MemoryLimiter with separate buckets; the namespace is
+// not needed to keep them apart and is ignored. opts apply to every limiter
+// built, so WithMemoryLimiterMaxKeys caps each of them separately: every limiter
+// holds at most DefaultMemoryLimiterMaxKeys keys of its own unless that option
+// says otherwise. A non-positive limit or window, or an option NewMemoryLimiter refuses,
+// is an error wrapping ErrConfig.
+func MemoryLimiterFactory(opts ...MemoryOption) LimiterFactory {
+	return memoryFactory{opts: slices.Clone(opts)}
+}
+
+type memoryFactory struct{ opts []MemoryOption }
+
+// NewLimiter builds a MemoryLimiter, returning a nil Limiter, never a typed
+// nil, when construction fails.
+func (f memoryFactory) NewLimiter(_ string, limit int, window time.Duration) (Limiter, error) {
+	l, err := NewMemoryLimiter(limit, window, f.opts...)
+	if err != nil {
+		return nil, err
 	}
 
 	return l, nil
@@ -410,3 +490,97 @@ func (l *MemoryLimiter) Policy() (limit int, window time.Duration) {
 }
 
 var _ PolicyReporter = (*MemoryLimiter)(nil)
+
+var _ Pruner = (*MemoryLimiter)(nil)
+
+// Charge records one failure for key and reports the key below its limit, or
+// reports it at its limit and records nothing, under the one hold of key's
+// shard lock that also guards Exceeded and RecordFailure, so concurrent
+// charges of one key never hold more failures in the window than the limit.
+// It implements Charger.
+//
+// The receipt of an accepted charge carries the stamp exactly as stored. A
+// refused charge returns the zero Receipt.
+//
+// A context that has already ended is refused with an error, and nothing is
+// recorded, as Exceeded refuses it: no attempt is made without its charge. A
+// caller that must charge for an attempt whose client may hang up strips the
+// cancellation first.
+//
+// A key the limiter does not hold, charged while it holds its maximum number
+// of keys, is refused with an error wrapping ErrLimiterFull, and nothing is
+// stored. A key it holds is charged as below the maximum.
+func (l *MemoryLimiter) Charge(ctx context.Context, key string) (Receipt, bool, error) {
+	l.warnOnce.Do(l.warnPerReplica)
+
+	if err := ctx.Err(); err != nil {
+		return Receipt{}, true, fmt.Errorf("ratelimit: charge %q: %w", key, err)
+	}
+
+	now := l.clock.Now()
+	s := l.shardFor(key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l.release(s.sweepLocked(now, l.window))
+
+	if _, ok := s.keys[key]; ok {
+		if s.countLocked(key, now.Add(-l.window)) >= l.limit {
+			return Receipt{}, true, nil
+		}
+	} else if !l.reserve() {
+		l.warnFull(now)
+
+		return Receipt{}, true, fmt.Errorf("ratelimit: charge %q: %w", key, ErrLimiterFull)
+	}
+	s.recordLocked(key, now, l.limit)
+
+	return NewReceipt(key, now), false, nil
+}
+
+// Refund removes the one stamp r names from r's key, while the window still
+// counts it, and nothing else. It implements Charger.
+//
+// A stamp is matched with time.Time.Equal. Two charges at the same instant
+// store two equal stamps, and a refund removes one of them. A receipt whose
+// stamp has left the window, or was never stored, removes nothing, and so does
+// the zero Receipt. A key left with no stamps gives back its place under the
+// key cap.
+//
+// It ignores ctx, as RecordFailure does: the work is in memory, and there is
+// nothing to abandon. It never returns an error.
+func (l *MemoryLimiter) Refund(_ context.Context, r Receipt) error {
+	if r.stamp.IsZero() {
+		return nil
+	}
+
+	now := l.clock.Now()
+	s := l.shardFor(r.key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !r.stamp.After(now.Add(-l.window)) {
+		return nil
+	}
+	stamps, held := s.keys[r.key]
+	if !held {
+		return nil
+	}
+	i := slices.IndexFunc(stamps, r.stamp.Equal)
+	if i < 0 {
+		return nil
+	}
+	if stamps = slices.Delete(stamps, i, i+1); len(stamps) > 0 {
+		s.keys[r.key] = stamps
+
+		return nil
+	}
+	delete(s.keys, r.key)
+	l.release(1)
+
+	return nil
+}
+
+var _ Charger = (*MemoryLimiter)(nil)

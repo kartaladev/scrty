@@ -1,11 +1,13 @@
 package oidctest_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"testing"
@@ -14,13 +16,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // testProviderName is the provider name every case in this file registers
@@ -35,11 +37,11 @@ const (
 )
 
 // loginHarness is a full federated-login chain over one IdentityProvider: a
-// real oidc.Manager, broker, handoff manager and session manager, wired
+// real oidc.RelyingParty, broker, handoff manager and session manager, wired
 // through httpsec.EnableOIDCLogin and served over net/http.
 type loginHarness struct {
 	provider *oidctest.IdentityProvider
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 	srv      *httptest.Server
 }
@@ -71,19 +73,19 @@ func newLoginHarness(t *testing.T, auth oidc.ClientAuthMethod) *loginHarness {
 	registry, err := oidc.NewRegistry(p.Provider(testProviderName, auth))
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(p.Outbound(t)))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(p.Outbound(t)))
 	require.NoError(t, err)
 
-	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 	require.NoError(t, err)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
-	keys, err := signingkey.NewKeyManager(t.Context())
+	keys, err := signingkey.New(t.Context())
 	require.NoError(t, err)
 
-	tokens, err := token.NewGenerator(keys)
+	tokens, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience())
 	require.NoError(t, err)
 
 	chain, err := httpsec.New(httpsec.EnableOIDCLogin(manager, handoffs,
@@ -100,14 +102,20 @@ func newLoginHarness(t *testing.T, auth oidc.ClientAuthMethod) *loginHarness {
 
 // httpClient is a client that never follows a redirect on its own, so a test
 // can read a 302's Location and cookies for itself, and that keeps cookies
-// across requests the way a browser would.
+// across requests the way a browser would. It owns a clone of the default
+// transport, closed when t ends, because another test's httptest.Server.Close
+// clears the default transport's idle connections.
 func httpClient(t *testing.T) *http.Client {
 	t.Helper()
 
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(tr.CloseIdleConnections)
+
 	return &http.Client{
+		Transport:     tr,
 		Jar:           jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -380,7 +388,7 @@ func TestTestIdentityProviderLogoutToken(t *testing.T) {
 	broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(h.provider.Outbound(t)))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(h.provider.Outbound(t)))
 	require.NoError(t, err)
 
 	type testCase struct {
@@ -429,4 +437,60 @@ func TestTestIdentityProviderLogoutToken(t *testing.T) {
 			tc.assert(t, claims, err)
 		})
 	}
+}
+
+// okServer is an httptest server answering 200, closed when t ends.
+func okServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+// tracedGet sends GET to url under ctx, drains and closes the body, and
+// reports whether the request reused an existing connection.
+func tracedGet(ctx context.Context, t *testing.T, client *http.Client, url string) (reused bool) {
+	t.Helper()
+
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(i httptrace.GotConnInfo) { reused = i.Reused },
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	require.NoError(t, err)
+
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	return reused
+}
+
+func TestHTTPClientKeepsItsConnectionsWhenAnotherServerCloses(t *testing.T) {
+	own, other := okServer(t), okServer(t)
+	client := httpClient(t)
+
+	tracedGet(t.Context(), t, client, own.URL)
+	other.Close()
+	reused := tracedGet(t.Context(), t, client, own.URL)
+
+	assert.True(t, reused, "the second request to its own server opened a new connection after another server closed")
+}
+
+func TestHTTPClientReleasesItsConnectionsWhenItsTestEnds(t *testing.T) {
+	own := okServer(t)
+	var client *http.Client
+
+	t.Run("build", func(t *testing.T) {
+		client = httpClient(t)
+		tracedGet(t.Context(), t, client, own.URL)
+	})
+	reused := tracedGet(t.Context(), t, client, own.URL)
+
+	assert.False(t, reused, "the client kept a connection after the test that built it ended")
 }

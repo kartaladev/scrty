@@ -112,7 +112,7 @@ func TestConcurrentSessionPolicyEvaluate(t *testing.T) {
 			counter := NewMockSessionCounter(gomock.NewController(t))
 			counter.EXPECT().CountActiveByUser(gomock.Any(), concurrentUser).Return(tc.count, tc.err)
 
-			p, err := policy.NewConcurrentSessionPolicy(counter, 3)
+			p, err := policy.NewConcurrentSessions(counter, 3)
 			require.NoError(t, err)
 
 			tc.assert(t, p.Evaluate(ctx, &policy.Input{User: concurrentUser}))
@@ -123,7 +123,7 @@ func TestConcurrentSessionPolicyEvaluate(t *testing.T) {
 func TestConcurrentSessionPolicyPhases(t *testing.T) {
 	t.Parallel()
 
-	p, err := policy.NewConcurrentSessionPolicy(NewMockSessionCounter(gomock.NewController(t)), 1)
+	p, err := policy.NewConcurrentSessions(NewMockSessionCounter(gomock.NewController(t)), 1)
 	require.NoError(t, err)
 
 	assert.Equal(t, []policy.Phase{policy.PostAuthentication}, p.Phases(),
@@ -140,7 +140,7 @@ func TestConcurrentSessionPolicyTakesASessionStore(t *testing.T) {
 
 	var store session.Store = session.NewMemoryStore()
 
-	p, err := policy.NewConcurrentSessionPolicy(store, 1)
+	p, err := policy.NewConcurrentSessions(store, 1)
 	require.NoError(t, err)
 
 	d := p.Evaluate(t.Context(), &policy.Input{User: concurrentUser})

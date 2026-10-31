@@ -6,13 +6,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/session"
 )
 
-//go:generate mockgen -source=policy.go -package=policy_test -destination=mocks_test.go -typed
+//go:generate mockgen -source=policy.go -package=policy_test -destination=policy_mock_test.go -typed -exclude_interfaces=LoginAdmission
 
 // ErrConfig is wrapped by every error a constructor in this package returns for
 // a configuration it will not accept.
@@ -24,14 +24,14 @@ import (
 // reading message text.
 var ErrConfig = errors.New("policy: invalid configuration")
 
-// ErrPolicyDenied is the reason an Engine substitutes when a policy denies
+// ErrDenied is the reason an Engine substitutes when a policy denies
 // without giving one.
 //
 // A caller that refuses a request by returning the decision's reason as its own
 // error returns nil for a reasonless deny, and so completes the very request it
 // was refusing. Every deny therefore leaves the engine carrying a reason, and
 // this is the one used when the policy supplied none.
-var ErrPolicyDenied = errors.New("policy: denied by policy")
+var ErrDenied = errors.New("policy: denied by policy")
 
 // DefaultLogInterval is how long one written refusal record suppresses further
 // records about the same thing, for the policies here that sample their logs.
@@ -270,7 +270,7 @@ type Decision struct {
 	// Reason says why a Deny refused, and is what a caller reports when it
 	// turns the denial into an error of its own. A Deny returned by an Engine
 	// always carries one: where the policy left it nil the engine substitutes
-	// ErrPolicyDenied. It is nil on an Allow, and on a Challenge, which refuses
+	// ErrDenied. It is nil on an Allow, and on a Challenge, which refuses
 	// nothing.
 	Reason error
 
@@ -404,4 +404,25 @@ type SecondFactorProof = assurance.Proof
 // as one it does.
 func unnamed(kind string, value int) string {
 	return kind + "(" + strconv.Itoa(value) + ")"
+}
+
+// LoginAdmission answers, ahead of any login, whether a login of a given kind
+// would be admitted without a local second factor. A component that must
+// judge a login it is not evaluating, such as the account-recovery way-back
+// check, asks it rather than repeating the policy's rules, so the two cannot
+// disagree.
+//
+// The requirement policy NewMFARequirement returns implements it, and
+// answers for itself alone: the challenge policy under
+// WithMFAFederatedChallengeWhenUnmet(true) may still challenge a federated login
+// this answer admits.
+type LoginAdmission interface {
+	// AdmitsWithoutLocalSecondFactor reports whether a login of kind for user
+	// would be admitted without a local second factor, whatever its provider
+	// asserts. Provider assurance is never assumed: it is known only at a
+	// login, so an answer that would depend on it is false.
+	//
+	// A lookup the answer depends on that fails is returned as an error,
+	// never as false or true.
+	AdmitsWithoutLocalSecondFactor(ctx context.Context, user identity.UserID, kind factor.Kind) (bool, error)
 }

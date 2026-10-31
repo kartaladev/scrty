@@ -376,7 +376,7 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 
 	stored, exists := s.records[sess.ID]
 	if !exists {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 	// Only Create writes the marker: a conforming save keeps the stored one.
 	// Each marker defect lets one direction of change through, and only
@@ -479,9 +479,9 @@ func (s *sessionStore) Load(_ context.Context, sessionID string) (*session.Sessi
 	stored, exists := s.records[sessionID]
 	switch {
 	case !exists:
-		return nil, session.ErrSessionNotFound
+		return nil, session.ErrNotFound
 	case staleSession(stored, s.clock.Now(), s.defect == sessionLoadSupersededByDeadlines):
-		return nil, session.ErrSessionExpired
+		return nil, session.ErrExpired
 	}
 	out := cloneSession(stored)
 	s.loaded[sessionID] = cloneSession(stored)
@@ -650,7 +650,7 @@ func (s *sessionStore) RecordActivity(
 	stored, exists := s.records[sessionID]
 	if !exists {
 		s.mu.Unlock()
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 	if s.defect == sessionWholeRecordActivity {
 		whole := cloneSession(stored)
@@ -690,13 +690,13 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	}
 	old, exists := s.records[op.Old]
 	if !exists {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 	if old.FamilyID.IsZero() {
 		return errors.New("a session with no family cannot be superseded")
 	}
 	if s.defect != sessionSupersedeKnockedOut && len(op.ObservedSuccessor) == 0 && !old.SupersededAt.IsZero() {
-		return session.ErrSessionRenewalConflict
+		return session.ErrRenewalConflict
 	}
 	if s.defect == sessionSupersedeAdvancedBeforeConflict && len(old.SuccessorDigest) > 0 {
 		if current := s.successorOf(old); current == nil || !current.SupersededAt.IsZero() {
@@ -704,7 +704,7 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 		}
 	}
 	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) {
-		return session.ErrSessionRenewalConflict
+		return session.ErrRenewalConflict
 	}
 	if err := s.successorAdvanced(old, op); err != nil {
 		return err
@@ -717,7 +717,7 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 		s.mu.Lock()
 		old, exists = s.records[op.Old]
 		if !exists {
-			return session.ErrSessionNotFound
+			return session.ErrNotFound
 		}
 	}
 	if _, taken := s.records[op.Successor.ID]; taken {
@@ -858,10 +858,10 @@ func (s *sessionStore) MarkPresented(_ context.Context, sessionID string, at tim
 
 	stored, exists := s.records[sessionID]
 	if !exists {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 	if !stored.SupersededAt.IsZero() && s.defect != sessionMarkPresentedSuperseded {
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	}
 	if !stored.FirstPresentedAt.IsZero() {
 		return nil
@@ -877,7 +877,7 @@ func (s *sessionStore) SuccessorPresented(_ context.Context, sessionID string) (
 	now := s.clock.Now()
 	stored, exists := s.records[sessionID]
 	if !exists || (s.defect != sessionSuccessorReadsStaleRecord && staleSession(stored, now, false)) {
-		return false, session.ErrSessionNotFound
+		return false, session.ErrNotFound
 	}
 	if len(stored.SuccessorDigest) == 0 {
 		return false, nil

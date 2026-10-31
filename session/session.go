@@ -5,14 +5,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // MFAState is how far a second-factor challenge has got on one session.
 //
-// It is library-owned state: a Manager writes it, and nothing reads it out of
+// It is library-owned state: a Sessions value writes it, and nothing reads it out of
 // the consumer's data map, so no key a consumer happens to choose can forge or
 // erase it. The zero value is MFANone, which is what a session established with
 // a single factor reports.
@@ -39,7 +39,7 @@ const (
 
 	// MFARecoveryPending means the session was produced by an account
 	// recovery and has not yet been bound to a working second factor or a new
-	// password. Manager.MarkRecoveryPending confines it as it confines an
+	// password. Sessions.MarkRecoveryPending confines it as it confines an
 	// enrolment-only session. It is appended after MFAEnrolmentPending, never
 	// inserted among the states, because a durable store keeps the ordinal.
 	MFARecoveryPending
@@ -68,7 +68,7 @@ func (s MFAState) String() string {
 // Session is one authenticated caller's session.
 //
 // Every field below the consumer's Data map belongs to the library: the
-// Manager writes them and the Store persists them unchanged. Data belongs to
+// Sessions writes them and the Store persists them unchanged. Data belongs to
 // the consumer, and nothing here reads it — see its own contract.
 type Session struct {
 	// ID is the bearer identifier the caller presents. It is 32 bytes from the
@@ -94,8 +94,8 @@ type Session struct {
 
 	// AbsoluteExpiresAt is the deadline activity never extends. A session in
 	// constant use still ends at the hour it was always going to end.
-	// Manager.MarkEnrolmentPending and Manager.MarkRecoveryPending lower it
-	// for a confined session, and Manager.RestoreEnrolmentDeadlines gives it
+	// Sessions.MarkEnrolmentPending and Sessions.MarkRecoveryPending lower it
+	// for a confined session, and Sessions.RestoreEnrolmentDeadlines gives it
 	// back on the upgrade, to exactly EnrolmentOriginDeadline, the deadline
 	// held before the mark.
 	AbsoluteExpiresAt time.Time
@@ -118,7 +118,7 @@ type Session struct {
 
 	// AuthenticatedAt is when the user last proved who they are, read from
 	// the manager's clock: the time the authentication occurred, as the
-	// OpenID Connect auth_time claim means it. Manager.Create sets it to
+	// OpenID Connect auth_time claim means it. Sessions.Create sets it to
 	// CreatedAt, before the create options run, so a CreateOption may still
 	// set another time; it is refreshed when a second factor is satisfied.
 	// No renewal moves it: RotateWithGrace carries the stored value over,
@@ -164,11 +164,11 @@ type Session struct {
 	PasswordChangePending bool
 
 	// EnrolmentOriginDeadline is the confinement marker, set by the enrolment
-	// path (Manager.MarkEnrolmentPending) or by an account recovery
-	// (Manager.MarkRecoveryPending). A non-zero value means this session was
+	// path (Sessions.MarkEnrolmentPending) or by an account recovery
+	// (Sessions.MarkRecoveryPending). A non-zero value means this session was
 	// confined, which lowered its absolute deadline; the value is the
 	// absolute deadline the session held immediately before it was marked,
-	// the latest Manager.RestoreEnrolmentDeadlines may give back. The zero
+	// the latest Sessions.RestoreEnrolmentDeadlines may give back. The zero
 	// value means the session was never marked. It stays set after an
 	// enrolment is confirmed and the session moves to MFAPending, until the
 	// restore clears it on the upgrade. The name predates recovery and is
@@ -183,13 +183,13 @@ type Session struct {
 
 	// RecoveredAt is when an account recovery produced this session, read
 	// from the manager's clock, and is zero for a session no recovery
-	// produced. Manager.MarkRecoveryPending sets it; it is kept when the
+	// produced. Sessions.MarkRecoveryPending sets it; it is kept when the
 	// session leaves the recovery-pending state, and Rotate carries it over.
 	// Library-owned: a consumer cannot set it through Data.
 	RecoveredAt time.Time
 
 	// FamilyID identifies the family this session belongs to: the chain of
-	// sessions one sign-in started, linked by rotation. Manager.Create starts
+	// sessions one sign-in started, linked by rotation. Sessions.Create starts
 	// a new family from the manager's identifier generator, and every
 	// rotation keeps it, so revoking the family ends every session the
 	// sign-in produced. It is not a secret and is never a bearer credential.

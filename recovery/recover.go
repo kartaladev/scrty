@@ -1,7 +1,7 @@
 package recovery
 
-//go:generate mockgen -destination=tokenstore_mock_test.go -package=recovery_test -typed -mock_names=Store=MockTokenStore github.com/kartaladev/scrty/onetime Store
-//go:generate mockgen -destination=challenge_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/mfa ChallengeMethod
+//go:generate mockgen -destination=tokenstore_mock_test.go -package=recovery_test -typed -mock_names=Store=MockTokenStore github.com/kartaladev/scrty/token/onetime Store
+//go:generate mockgen -destination=challenge_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/authenticate/mfa ChallengeMethod
 
 import (
 	"context"
@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // userThrottleFlow prefixes every per-user recovery bucket key.
@@ -86,10 +86,24 @@ type Request struct {
 // returned by the recovery unchanged, so a lock returned alone is disclosed as
 // itself. Either way it is counted against the user, and marked as a
 // refusal after a valid code (see RefusedAfterValidCode), so it is counted
-// against the source too. The recovery cannot tell a check that met an outage
-// from one that refused: an implementation should return a lockout or a
-// refusal only for a genuine refusal, and let an outage be seen as one, by
-// its own logging and monitoring, rather than disguise it as a wrong password.
+// against the source too.
+//
+// A refused password whose error also matches the request context's error or
+// its cause, with that context ended, is the check reporting a user load the
+// caller's own context cut short, as the password provider does by joining
+// the two: no password was compared. It is refused and marked as above, so
+// the source pays for it, but it is not counted against the user's recovery
+// limit. A refusal whose error names a cancellation while the caller still
+// waits is counted against the user as any other.
+//
+// An error matching authenticate.ErrUnavailable is the one exception: the
+// check could not judge the password, because the user store could not
+// answer. The recovery returns it unchanged and unmarked, counts nothing
+// against the user's recovery limit, and spends nothing. httpsec answers it
+// 401, as a refused proof is answered, and charges it to the request's source,
+// which bounds the password work an outage costs. A check that meets an outage
+// should return that error, and never disguise the outage as a wrong password
+// or a lock, which would count it against the user as a guess.
 type PasswordCheck func(ctx context.Context, username string, password []byte) error
 
 // Check is a consumer's refusal check. It runs after every proof has been
@@ -145,7 +159,8 @@ func (e *refusedAfterCode) Unwrap() error { return e.err }
 // RefusedAfterValidCode reports whether err refused a recovery after the
 // recovery codes it presented had passed their check. It marks exactly these:
 //   - any error from the password check, whether a wrong password, a lockout
-//     or an outage the check reports (see PasswordCheck);
+//     or another failure the check reports, except authenticate.ErrUnavailable
+//     (see PasswordCheck);
 //   - an MFA method the user is not enrolled on;
 //   - in the reported mode, a reported loss the user does not hold;
 //   - a reset policy error;
@@ -161,7 +176,7 @@ func (e *refusedAfterCode) Unwrap() error { return e.err }
 // (including the reported mode's empty report and a reported loss the request
 // also proves), and a dependency outage the recovery can tell apart, such as a
 // user lookup, MFA enrolment lookup, authenticator listing or saved-code store
-// failure.
+// failure, or a password check returning authenticate.ErrUnavailable.
 //
 // The error it looks for wraps the refusal without changing it: its text is
 // the refusal's own, and errors.Is and errors.As find the refusal, a consumer
@@ -205,11 +220,25 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 
 	if v.has(ProofPassword) {
 		if err := r.passwordCheck(ctx, req.Username, req.Password); err != nil {
-			if errors.Is(err, authenticate.ErrAuthenticationFailed) {
-				err = refusedByCheck(err)
+			// The user store could not answer, so no proof was refused:
+			// returned as it is, unmarked, and nothing is counted against
+			// the user. The HTTP layer charges it to the source.
+			if errors.Is(err, authenticate.ErrUnavailable) {
+				return nil, err
 			}
 
-			return nil, r.refuse(ctx, v.user, err, true)
+			if !errors.Is(err, authenticate.ErrAuthenticationFailed) {
+				return nil, r.refuse(ctx, v.user, err, true)
+			}
+
+			// The caller's own context ended the check's user load, so no
+			// password was compared: refused and marked, so the source pays
+			// for it, but not counted against the user's recovery limit.
+			if passwordLoadEndedByCaller(ctx, err) {
+				return nil, &refusedAfterCode{err: refusedByCheck(err)}
+			}
+
+			return nil, r.refuse(ctx, v.user, refusedByCheck(err), true)
 		}
 	}
 
@@ -218,6 +247,24 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 	}
 
 	return v, nil
+}
+
+// passwordLoadEndedByCaller reports whether a password check's error is the
+// uniform failure for a load ctx's own end cut short: ctx has ended, and err
+// matches authenticate.ErrAuthenticationFailed and ctx's error or its cause.
+// It decides from the error, not from ctx alone: a password compared and
+// refused before the caller left is a failed proof like any other.
+func passwordLoadEndedByCaller(ctx context.Context, err error) bool {
+	return errors.Is(err, authenticate.ErrAuthenticationFailed) && loadEndedByCaller(ctx, err)
+}
+
+// loadEndedByCaller reports whether err is the caller's own context ending a
+// load, rather than a dependency failing on its own: ctx has ended, and err
+// matches ctx's error or its cause.
+func loadEndedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil && (errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // refusedByCheck turns a password check's authentication failure into
@@ -320,20 +367,33 @@ func (r *Recoverer) shape(req Request) ([]ProofKind, mfa.Method, []Authenticator
 // particular the password check never runs for it, since a known user with a
 // wrong recovery code never reaches that check either, and a hash paid only
 // for unknown usernames would make them the slow ones.
+//
+// A load that fails for any other reason, which the caller's own context did
+// not end, is authenticate.ErrUnavailable with none of the loader's text: the
+// failure is logged, and the caller answers it as it answers an unknown user,
+// so a user store that fails for some usernames and not others does not tell
+// them apart. A load the caller's context ended returns that error behind
+// fixed text.
 func (r *Recoverer) resolveForRecover(ctx context.Context, username string) (*identity.Details, error) {
 	details, err := r.users.LoadByUsername(ctx, username)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound), err == nil && (details == nil || !details.Active):
 	case err != nil:
+		endedByCaller := loadEndedByCaller(ctx, err)
+
 		level := slog.LevelError
-		if causedByCaller(ctx, err) {
+		if endedByCaller {
 			level = slog.LevelDebug
 		}
 
 		r.logger.LogAttrs(ctx, level, msgRecoverLookupFailed, diag.Failure("user-loader", err)...)
 
-		return nil, diag.Wrap(err, errTextUserLookup)
+		if endedByCaller {
+			return nil, diag.Wrap(err, errTextUserLookup)
+		}
+
+		return nil, authenticate.ErrUnavailable
 	case details.ID == "":
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecoverNoReference)
 	default:

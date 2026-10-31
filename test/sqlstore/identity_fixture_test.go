@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/migrate"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 )
 

@@ -10,21 +10,21 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/oidc"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // brokenVar names the environment variable that selects the one broken
@@ -500,7 +500,7 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 		return err
 	}
 	if superseded {
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL`,

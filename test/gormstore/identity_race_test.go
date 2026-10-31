@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/store/gormstore"
 )
 
 // These tests force the two interleavings the identity store's writes must

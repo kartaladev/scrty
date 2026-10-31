@@ -1,0 +1,15 @@
+APIKey
+AuthenticatorApp
+Basic
+Channel
+Email
+Federated
+Kind
+Knowledge
+Machine
+MagicLink
+OIDC
+Passkey
+Password
+PublicKey
+Recovery

@@ -20,13 +20,6 @@ import (
 func Run(t *testing.T, h Harness) {
 	t.Helper()
 
-	type testCase struct {
-		name   string
-		limit  int
-		window time.Duration
-		assert func(t *testing.T, h Harness, l ratelimit.Limiter)
-	}
-
 	cases := []testCase{
 		{
 			name: "no failures is not exceeded", limit: 3, window: time.Minute,
@@ -134,6 +127,7 @@ func Run(t *testing.T, h Harness) {
 			},
 		},
 	}
+	cases = append(cases, chargeCases()...)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,6 +137,15 @@ func Run(t *testing.T, h Harness) {
 	}
 
 	runShared(t, h)
+}
+
+// testCase is one single-instance scenario: a fresh limiter with limit and
+// window from Harness.New, and what must hold of it.
+type testCase struct {
+	name   string
+	limit  int
+	window time.Duration
+	assert func(t *testing.T, h Harness, l ratelimit.Limiter)
 }
 
 func endedContext(t *testing.T) context.Context {

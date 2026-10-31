@@ -4,7 +4,7 @@ Go checks are test-first: write the failing test, run it, and confirm it fails f
 
 ## 1. `gorelease` against a module with `replace` (design: Risks, decision 3)
 
-- [ ] 1.1 Add `golang.org/x/exp/cmd/gorelease` as a `tool` directive in `tools/go.mod`, and verify `make tools` installs it into `.bin/`. Run `GOWORK=off gorelease -base=none -version=v0.1.0` inside `pgx/` and record the exact output.
+- [ ] 1.1 Add `golang.org/x/exp/cmd/gorelease` as a `tool` directive in `tools/go.mod`, and verify `make tools` installs it into `.bin/`. Run `GOWORK=off gorelease -base=none -version=v0.1.0` inside `store/pgxstore/` and record the exact output.
   - If it reports the module's API and exits 0, the gate runs it in place.
   - If it refuses because of the `replace` directive, record the error text. The gate then runs it on a temporary copy of the module with the scrty `replace` lines dropped and the workspace-built versions supplied. Report the outcome so the main session records it in `design.md`'s risk entry before group 3.
 

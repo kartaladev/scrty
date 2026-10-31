@@ -11,15 +11,16 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
-//go:generate mockgen -destination=keysource_mock_test.go -package=token_test -typed github.com/kartaladev/scrty/signingkey KeySource
+//go:generate mockgen -destination=keysource_mock_test.go -package=token_test -typed github.com/kartaladev/scrty/token/signingkey KeySource
 
 // Verifier checks a token and returns its claims.
 type Verifier interface {
 	// Verify reports the claims of a token that passed every check. Every
-	// rejection is an error matching ErrTokenInvalid that wraps the cause; a
+	// rejection is an error matching ErrInvalid that wraps the cause; a
 	// failure to obtain the key set, and a context cancelled before the check
 	// finished, do not match it. A key-source failure comes back behind fixed
 	// library text rather than as itself, with the key source's own error
@@ -35,19 +36,98 @@ type Verifier interface {
 	Verify(ctx context.Context, token string) (*Claims, error)
 }
 
+// VerifyOption configures a Verifier. Every default NewVerifier applies has an
+// option here that replaces it. The key source, the issuer and the audience
+// have no default: the key source must be supplied, and the issuer and the
+// audience must each be configured or explicitly waived.
+type VerifyOption func(*config)
+
+// WithVerifyKeySource sets where verification keys come from. Required: there
+// is no default, because something has to hold the keys, so constructing a
+// verifier without it is a configuration error.
+func WithVerifyKeySource(keys signingkey.KeySource) VerifyOption {
+	return func(c *config) { c.keys = keys }
+}
+
+// WithVerifyIssuer enforces iss: a token whose issuer is absent or different is
+// rejected. There is no default issuer: NewVerifier fails with ErrConfig unless
+// it is given either this option or WithoutVerifyIssuer, and fails when it is
+// given both. An empty or blank iss (one made only of white space) is refused
+// at construction with ErrConfig; any other value is enforced exactly as given,
+// white space around it included. A verifier meant to accept any issuer uses
+// WithoutVerifyIssuer.
+func WithVerifyIssuer(iss string) VerifyOption { return VerifyOption(setIssuer(iss)) }
+
+// WithVerifyAudience enforces aud: a token whose audience is absent or does not
+// contain it is rejected. There is no default audience: NewVerifier fails with
+// ErrConfig unless it is given either this option or WithoutVerifyAudience, and
+// fails when it is given both. An empty or blank aud (one made only of white
+// space) is refused at construction with ErrConfig; any other value is enforced
+// exactly as given, white space around it included. A verifier meant to accept
+// any audience uses WithoutVerifyAudience.
+func WithVerifyAudience(aud string) VerifyOption { return VerifyOption(setAudience(aud)) }
+
+// WithoutVerifyIssuer waives the issuer check, which NewVerifier otherwise
+// requires through WithVerifyIssuer. It gives that check up entirely: any token
+// signed by a key in the source is accepted whatever its issuer, including a
+// token that carries none.
+//
+// Waive it only when every token signed by a key in the source is meant for
+// this verifier. Given together with WithVerifyIssuer, it fails construction
+// with ErrConfig.
+func WithoutVerifyIssuer() VerifyOption { return VerifyOption(waiveIssuer()) }
+
+// WithoutVerifyAudience waives the audience check, which NewVerifier otherwise
+// requires through WithVerifyAudience. It gives that check up entirely: any
+// token signed by a key in the source is accepted whatever its audience,
+// including a token that carries none, so a token minted for another service
+// that shares the key source verifies here.
+//
+// Waive it only when every token signed by a key in the source is meant for
+// this verifier. Given together with WithVerifyAudience, it fails construction
+// with ErrConfig.
+func WithoutVerifyAudience() VerifyOption { return VerifyOption(waiveAudience()) }
+
+// WithVerifyMaxTokenSize sets the largest token, in bytes, that Verify will
+// look at. Default: 8192, which is generous for a compact JWS carrying an
+// RS256 signature.
+//
+// A longer string is refused as an invalid token before anything is decoded
+// and before the key source is consulted, so the work an unauthenticated
+// request can buy stays bounded. Raise it for a consumer whose own claims are
+// large; a size of zero or less fails construction, because a verifier that
+// accepts nothing is a wiring mistake rather than a policy.
+func WithVerifyMaxTokenSize(size int) VerifyOption {
+	return func(c *config) { c.maxTokenSize = size }
+}
+
+// WithVerifyClock sets the time source for every time check. Default:
+// clock.System(). No clock skew is tolerated, so this is the only way to move
+// the instant a token is judged against.
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// verifier with no clock could not judge exp, nbf or iat at all.
+func WithVerifyClock(clk clock.Clock) VerifyOption { return VerifyOption(setClock(clk)) }
+
 type verifier struct{ cfg *config }
 
 // NewVerifier returns a Verifier.
 //
-// VerifyWithKeySource is required. Defaults: no issuer enforced; no audience
-// enforced; the system clock; an 8192-byte maximum token size. Each is a
-// VerifyOption naming its own default.
+// WithVerifyKeySource is required. So is a decision on the issuer and on the
+// audience: each is enforced, with WithVerifyIssuer and WithVerifyAudience, or
+// waived by name, with WithoutVerifyIssuer and WithoutVerifyAudience. There is
+// no default that checks neither. Defaults: the system clock; an 8192-byte
+// maximum token size. Each is a VerifyOption naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
-// Construction fails when no key source is supplied, when the clock is nil,
-// and when the maximum token size is not positive. A port given as a non-nil
-// interface holding a nil pointer — what an unchecked constructor error hands
-// over — counts as absent.
+// Construction fails with ErrConfig when no key source is supplied, when the
+// clock is nil, when the maximum token size is not positive, when the issuer
+// or the audience is neither configured nor waived, when either is both
+// configured and waived, and when either is configured empty or blank (the
+// empty string, or white space alone; the refusal names the waiver to use
+// instead). A port given as a non-nil interface holding a nil
+// pointer — what an unchecked constructor error hands over — counts as
+// absent.
 func NewVerifier(opts ...VerifyOption) (Verifier, error) {
 	cfg := newConfig()
 	for _, opt := range opts {
@@ -59,6 +139,9 @@ func NewVerifier(opts ...VerifyOption) (Verifier, error) {
 		}
 	}
 	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateClaims(verifierClaims); err != nil {
 		return nil, err
 	}
 
@@ -78,19 +161,19 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	// unauthenticated request.
 	if len(raw) > c.maxTokenSize {
 		return nil, fmt.Errorf("%w: longer than the %d-byte maximum",
-			ErrTokenInvalid, c.maxTokenSize)
+			ErrInvalid, c.maxTokenSize)
 	}
 
 	// Before the keys, because this is decidable from the string alone and
 	// says nothing about the key source.
 	if !canonicalCompact(raw) {
-		return nil, fmt.Errorf("%w: not a canonical compact JWS", ErrTokenInvalid)
+		return nil, fmt.Errorf("%w: not a canonical compact JWS", ErrInvalid)
 	}
 
 	keys, err := c.keys.VerificationKeys()
 	if err != nil {
 		// Not a rejection of the token: the keys could not be obtained. This
-		// deliberately does not match ErrTokenInvalid, so a key-service
+		// deliberately does not match ErrInvalid, so a key-service
 		// outage is never reported as a failed authentication. The key
 		// source's own error is returned behind fixed library text; it stays
 		// reachable through errors.Is and errors.As, but its text never is.
@@ -192,7 +275,7 @@ func classify(err error) error {
 		}
 	}
 
-	return fmt.Errorf("%w: %w", ErrTokenInvalid, err)
+	return fmt.Errorf("%w: %w", ErrInvalid, err)
 }
 
 // canonicalCompact reports whether raw is the single presentation of a compact

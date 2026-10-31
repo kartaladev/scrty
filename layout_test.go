@@ -1,12 +1,14 @@
 package scrty_test
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestModuleLayout(t *testing.T) {
@@ -242,6 +244,36 @@ func TestCoreDependencies(t *testing.T) {
 			assert: hasViolation("go.mod", "github.com/go-co-op/gocron/v2"),
 		},
 		{
+			name:   "the Fiber framework is an integration module",
+			reqs:   []requirement{{Path: "github.com/gofiber/fiber/v3"}},
+			assert: hasViolation("go.mod", "github.com/gofiber/fiber/v3"),
+		},
+		{
+			name:   "the GORM ORM is an integration module",
+			reqs:   []requirement{{Path: "gorm.io/gorm"}},
+			assert: hasViolation("go.mod", "gorm.io/gorm"),
+		},
+		{
+			name:   "the samber do container is an integration module",
+			reqs:   []requirement{{Path: "github.com/samber/do/v2"}},
+			assert: hasViolation("go.mod", "github.com/samber/do/v2"),
+		},
+		{
+			name:   "the goose migrator is an integration module",
+			reqs:   []requirement{{Path: "github.com/pressly/goose/v3"}},
+			assert: hasViolation("go.mod", "github.com/pressly/goose/v3"),
+		},
+		{
+			name:   "the PostgreSQL test container module is an integration module",
+			reqs:   []requirement{{Path: "github.com/testcontainers/testcontainers-go/modules/postgres"}},
+			assert: hasViolation("go.mod", "github.com/testcontainers/testcontainers-go/modules/postgres"),
+		},
+		{
+			name:   "a major-version path of a listed driver is refused",
+			reqs:   []requirement{{Path: "github.com/jackc/pgx/v5"}},
+			assert: hasViolation("go.mod", "github.com/jackc/pgx/v5"),
+		},
+		{
 			name: "an indirect requirement is left to the import walk",
 			reqs: []requirement{{Path: "github.com/go-webauthn/webauthn", Indirect: true}},
 			assert: func(t *testing.T, vs []violation) {
@@ -275,7 +307,7 @@ func TestWebAuthnTypesStayInsideTheAdapter(t *testing.T) {
 	cases := []testCase{
 		{
 			name:      "the adapter module exposes no WebAuthn library type",
-			dir:       "passkey/webauthn",
+			dir:       "authenticate/passkey/webauthn",
 			forbidden: "github.com/go-webauthn/",
 			assert: func(t *testing.T, vs []violation) {
 				assert.Empty(t, vs)
@@ -315,9 +347,9 @@ func TestWebAuthnTypesStayInsideTheAdapter(t *testing.T) {
 func TestSoftwareAuthenticatorStaysOutOfProduction(t *testing.T) {
 	t.Parallel()
 
-	const helper = "github.com/kartaladev/scrty/passkey/webauthn/webauthntest"
+	const helper = "github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 
-	for _, dir := range []string{".", "passkey/webauthn"} {
+	for _, dir := range []string{".", "authenticate/passkey/webauthn"} {
 		for _, p := range listDeps(t, dir) {
 			if p.ImportPath == helper {
 				continue
@@ -338,7 +370,7 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "no workspace module outside redis and test requires the client",
+			name: "no workspace module outside redisstore and test requires the client",
 			check: func(t *testing.T) []violation {
 				var vs []violation
 				for _, dir := range workspaceModules(t, ".") {
@@ -353,15 +385,15 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 		{
 			name: "control: an adapter module requiring the client indirectly is caught",
 			check: func(*testing.T) []violation {
-				return redisClientViolations("ginsec", []requirement{{Path: "github.com/redis/go-redis/v9", Indirect: true}})
+				return redisClientViolations("httpsec/ginsec", []requirement{{Path: "github.com/redis/go-redis/v9", Indirect: true}})
 			},
-			assert: hasViolation("ginsec/go.mod", "github.com/redis/go-redis/v9"),
+			assert: hasViolation("httpsec/ginsec/go.mod", "github.com/redis/go-redis/v9"),
 		},
 		{
-			name: "the redis and test modules may require the client",
+			name: "the redisstore and test modules may require the client",
 			check: func(*testing.T) []violation {
 				reqs := []requirement{{Path: "github.com/redis/go-redis/v9"}}
-				return append(redisClientViolations("redis", reqs), redisClientViolations("test", reqs)...)
+				return append(redisClientViolations("ratelimit/redisstore", reqs), redisClientViolations("test", reqs)...)
 			},
 			assert: func(t *testing.T, vs []violation) {
 				assert.Empty(t, vs)
@@ -374,6 +406,202 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, tc.check(t))
+		})
+	}
+}
+
+// underConcept asserts that the module at dir is used by the workspace, is
+// published at the path its directory names, and declares package pkg.
+func underConcept(dir, pkg string) func(t *testing.T, inWorkspace bool, path, name string) {
+	return func(t *testing.T, inWorkspace bool, path, name string) {
+		t.Helper()
+		assert.True(t, inWorkspace, "go.work does not use %s", dir)
+		assert.Equal(t, "github.com/kartaladev/scrty/"+dir, path, "module path of %s", dir)
+		assert.Equal(t, pkg, name, "package clause of %s", dir)
+	}
+}
+
+func TestIntegrationModulesUnderTheirConcept(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		dir    string
+		assert func(t *testing.T, inWorkspace bool, path, name string)
+	}
+
+	cases := make([]testCase, 0, len(integrationTable))
+	for _, m := range integrationTable {
+		cases = append(cases, testCase{name: m.name, dir: m.dir, assert: underConcept(m.dir, m.pkg)})
+	}
+
+	modules := workspaceModules(t, ".")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, slices.Contains(modules, filepath.FromSlash(tc.dir)), modulePath(t, tc.dir), packageClause(t, tc.dir))
+		})
+	}
+}
+
+func TestNoUnlistedIntegrationModule(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		root   string
+		assert func(t *testing.T, unlisted []string)
+	}
+
+	cases := []testCase{
+		{
+			name: "every workspace module is a listed integration, the core, test or tools",
+			root: ".",
+			assert: func(t *testing.T, unlisted []string) {
+				assert.Empty(t, unlisted)
+			},
+		},
+		{
+			name: "control: a module outside the list is named by its directory",
+			root: "testdata/layout/wsunlisted",
+			assert: func(t *testing.T, unlisted []string) {
+				assert.Equal(t, []string{"pgx"}, unlisted)
+			},
+		},
+		{
+			name: "control: a module no go.work lists is named by its directory",
+			root: "testdata/layout/wsstray",
+			assert: func(t *testing.T, unlisted []string) {
+				assert.Equal(t, []string{"pgx"}, unlisted)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, unlistedModules(t, tc.root, integrationDirs))
+		})
+	}
+}
+
+func TestGoWorkListsEveryModule(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		root   string
+		assert func(t *testing.T, found, listed []string)
+	}
+
+	cases := []testCase{
+		{
+			name: "go.work uses every module in the tree except tools",
+			root: ".",
+			assert: func(t *testing.T, found, listed []string) {
+				assert.ElementsMatch(t, listed, slices.DeleteFunc(found, func(dir string) bool { return dir == "tools" }))
+			},
+		},
+		{
+			name: "control: a module in the tree but not in go.work is detected",
+			root: "testdata/layout/wsstray",
+			assert: func(t *testing.T, found, listed []string) {
+				assert.Equal(t, []string{"."}, listed)
+				assert.ElementsMatch(t, []string{".", "pgx"}, found)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, discoverModules(t, tc.root), workspaceModules(t, tc.root))
+		})
+	}
+}
+
+// TestWorkspaceModulesReadsSingleLineUse pins that workspaceModules reads both
+// forms of the go.work use directive.
+func TestWorkspaceModulesReadsSingleLineUse(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	work := "go 1.27\n\nuse ./a\n\nuse (\n\t./b\n)\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.work"), []byte(work), 0o600))
+	for _, dir := range []string{"a", "b"} {
+		require.NoError(t, os.Mkdir(filepath.Join(root, dir), 0o750))
+		mod := "module example.com/" + dir + "\n\ngo 1.27\n"
+		require.NoError(t, os.WriteFile(filepath.Join(root, dir, "go.mod"), []byte(mod), 0o600))
+	}
+
+	assert.ElementsMatch(t, []string{"a", "b"}, workspaceModules(t, root))
+}
+
+// TestBackendDoesNotShadowDriver pins that each backend's package name differs
+// from the name of the driver package it wraps. The names differ exactly when a
+// file can import both without an import alias.
+func TestBackendDoesNotShadowDriver(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		dir    string
+		driver string
+	}
+
+	cases := []testCase{
+		{name: "pgxstore beside pgx", dir: "store/pgxstore", driver: "github.com/jackc/pgx/v5"},
+		{name: "gormstore beside gorm", dir: "store/gormstore", driver: "gorm.io/gorm"},
+		{name: "redisstore beside go-redis", dir: "ratelimit/redisstore", driver: "github.com/redis/go-redis/v9"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			driverName := strings.TrimSpace(goCmd(t, tc.dir, nil, "list", "-f", "{{.Name}}", tc.driver))
+			clause := packageClause(t, tc.dir)
+			require.NotEmpty(t, clause, "no package clause in %s", tc.dir)
+			assert.NotEqual(t, driverName, clause)
+		})
+	}
+}
+
+func TestModulesDeclareGoMinimum(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		root   string
+		assert func(t *testing.T, off map[string]string)
+	}
+
+	cases := []testCase{
+		{
+			name: "every module declares the minimum",
+			root: ".",
+			assert: func(t *testing.T, off map[string]string) {
+				assert.Empty(t, off, "modules declaring another go version: %v", off)
+			},
+		},
+		{
+			name: "control: a module no go.work lists is named when it declares less",
+			root: "testdata/layout/wsstray",
+			assert: func(t *testing.T, off map[string]string) {
+				assert.Equal(t, map[string]string{"pgx": "1.21"}, off)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, offGoMinimum(t, tc.root))
 		})
 	}
 }

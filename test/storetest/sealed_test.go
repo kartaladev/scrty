@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // fullSealed returns probes with every input present. They are never called:

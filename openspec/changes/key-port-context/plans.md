@@ -26,7 +26,7 @@
   - `seal.ErrUnavailable = errors.New("seal: keys unavailable")`.
 
   None of them matches any existing sentinel.
-- **Table tests** follow `.claude/skills/table-test`: the `assert` closure, a `ctx` modifier where context matters, and `t.Context()`. Test doubles come from `use-mockgen`, by regenerating the existing directives (for example `store/seal`'s `cipher_mock_test.go` and `keyring_mock_test.go`, `session`'s `cipher_mock_test.go`, `token`'s `keysource_mock_test.go`). The Docker suites use `use-testcontainers` helpers.
+- **Table tests** follow `.claude/skills/table-test`: the `assert` closure, a `ctx` modifier where context matters, and `t.Context()`. Test doubles come from `use-mockgen`, by regenerating the existing directives (for example `store/seal`'s `cipher_mock_test.go` and `keyring_mock_test.go`, `session`'s `store_encrypted_mock_test.go`, `token`'s `keysource_mock_test.go`). The Docker suites use `use-testcontainers` helpers.
 - **Never run** `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`.
 - **Agents never edit `openspec/`,** and never read, copy or cite `.claude/.legacy`.
 - **A defect found in passing** is reported `REPRODUCED` with its failing test (`defect-claims.md`). It is not fixed in passing.
@@ -50,7 +50,7 @@
 | A2 | 2.2–2.4 | `httpsec` resolution (`resolve.go`) and its tests | Opus: refusal logic on a security path, written for the first time | Opus |
 | B | 3.1–3.3 | `store/seal` (all files), the passkey credential stores in `store/sqlstore`, `store/gormstore` and `store/pgxstore`, `internal/storekit` if it calls the cipher, `test/internal/storefix/ciphers.go` | Opus: an interface other packages and modules compile against | Opus |
 | D | 5.1–5.4 | `token/signingkey` (`KeySource`, `Keys`), `token` generator and verifier, every other `KeySource` caller or implementation `gopls` finds (including in `httpsec` and `test/`) | Opus: an interface several packages compile against | Opus |
-| C | 4.1–4.4 | `session.Cipher` and the sealing store file, `store/seal/session.go`, `store/seal` errors file, `session` and `store/seal` cipher mocks, `test/internal/storefix/ciphers.go` | Opus: an interface two packages compile against, and outage classification | Opus |
+| C | 4.1–4.4 | `session.Cipher` and the sealing store file, `store/seal/cipher.go`, `store/seal` errors file, `session` and `store/seal` cipher mocks, `test/internal/storefix/ciphers.go` | Opus: an interface two packages compile against, and outage classification | Opus |
 | main session + Opus reviewer | 6.1–6.2 | whole branch | | Opus |
 
 **Order:**
@@ -60,7 +60,7 @@
    - Their files do not overlap.
    - `store/seal` imports `token/signingkey` only for `Record` and `KeyStore`, which D does not change.
    - Each runs only its own packages' tests while the other works. The test module is built only after both have landed.
-4. **C runs after B and A1.** It changes `store/seal/session.go` (B's file) and the sealing store file (A1's file).
+4. **C runs after B and A1.** It changes `store/seal/cipher.go` (B's file) and the sealing store file (A1's file).
 
 ---
 
@@ -119,7 +119,7 @@
 ### Task 4: Context on `seal.Keyring` and `seal.Cipher` (tasks 3.1–3.3, dispatch B)
 
 **Files:**
-- Modify: `store/seal/keyring.go`, `store/seal/aead.go`, the `store/seal` enrolment and signing-key store files, `store/seal/session.go` (it calls `seal.Cipher`, and keeps its `session.Cipher` signature until Task 6)
+- Modify: `store/seal/keyring.go`, `store/seal/cipher.go` (the AEAD cipher, and `SessionCipher`, which calls `seal.Cipher` and keeps its `session.Cipher` signature until Task 6), the `store/seal` enrolment and signing-key store files
 - Modify: the passkey credential files in `store/sqlstore`, `store/gormstore` and `store/pgxstore`; `test/internal/storefix/ciphers.go`; every other caller `gopls references` finds
 - Regenerate: `store/seal`'s `cipher_mock_test.go` and `keyring_mock_test.go`
 
@@ -177,8 +177,8 @@
 ### Task 6: Context on `session.Cipher`, and the outage marker (tasks 4.1–4.4, dispatch C)
 
 **Files:**
-- Modify: `session.Cipher` and the sealing store; the `session` errors file; `store/seal/session.go`; the `store/seal` errors file; `test/internal/storefix/ciphers.go`
-- Regenerate: `session`'s `cipher_mock_test.go`
+- Modify: `session.Cipher` and the sealing store; the `session` errors file; `store/seal/cipher.go`; the `store/seal` errors file; `test/internal/storefix/ciphers.go`
+- Regenerate: `session`'s `store_encrypted_mock_test.go`
 
 **Interfaces:**
 - Consumes: Task 4's `seal.Cipher`, and Task 2's context classification.

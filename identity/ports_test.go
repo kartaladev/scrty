@@ -3,6 +3,11 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,13 +37,13 @@ func TestApplyUserOptions(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []identity.UserOption
-		assert func(t *testing.T, u *identity.NewUser)
+		assert func(t *testing.T, u *identity.UserChange)
 	}
 
 	cases := []testCase{
 		{
 			name: "no options sets no field",
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				for _, f := range allUserFields {
 					assert.False(t, u.IsSet(f), "field %d was never named", f)
 				}
@@ -47,7 +52,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "an option records itself even when its value is empty",
 			opts: []identity.UserOption{identity.WithUserName("")},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.True(t, u.IsSet(identity.FieldName),
 					"IsSet follows the option being applied, never the value's emptiness")
 				assert.Empty(t, u.Name)
@@ -58,7 +63,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "an empty role list still counts as naming roles",
 			opts: []identity.UserOption{identity.WithUserRoles()},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.True(t, u.IsSet(identity.FieldRoles),
 					"Update decides from IsSet, so it must see that roles were named at all")
 				assert.Empty(t, u.Roles)
@@ -67,7 +72,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "a nil organization still counts as naming the organization",
 			opts: []identity.UserOption{identity.WithUserOrganization(nil)},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.True(t, u.IsSet(identity.FieldOrganization))
 				assert.Nil(t, u.Organization)
 			},
@@ -82,7 +87,7 @@ func TestApplyUserOptions(t *testing.T) {
 				identity.WithUserPassword([]byte("H")),
 				identity.WithUserPasswordChangedAt(changedAt),
 			},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				for _, f := range allUserFields {
 					assert.True(t, u.IsSet(f), "field %d was named but reports unset", f)
 				}
@@ -101,7 +106,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "a named password-changed time is set and carried",
 			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(changedAt)},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.True(t, u.IsSet(identity.FieldPasswordChangedAt))
 				assert.Equal(t, changedAt, u.PasswordChangedAt)
 				assert.False(t, u.IsSet(identity.FieldPassword),
@@ -111,7 +116,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "the zero time still names the field, a request to clear it",
 			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(time.Time{})},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.True(t, u.IsSet(identity.FieldPasswordChangedAt))
 				assert.True(t, u.PasswordChangedAt.IsZero())
 			},
@@ -119,7 +124,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "the local-change option names the password and the time",
 			opts: []identity.UserOption{identity.WithUserPasswordChange([]byte("h"), changedAt)},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				for _, f := range allUserFields {
 					want := f == identity.FieldPassword || f == identity.FieldPasswordChangedAt
 					assert.Equal(t, want, u.IsSet(f),
@@ -133,7 +138,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "a password named alone does not name the time",
 			opts: []identity.UserOption{identity.WithUserPassword([]byte("h"))},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.True(t, u.IsSet(identity.FieldPassword))
 				assert.False(t, u.IsSet(identity.FieldPasswordChangedAt),
 					"a mirrored password must never move the password-changed time")
@@ -145,7 +150,7 @@ func TestApplyUserOptions(t *testing.T) {
 				identity.WithUserName("first"),
 				identity.WithUserName("second"),
 			},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.Equal(t, "second", u.Name)
 				assert.True(t, u.IsSet(identity.FieldName))
 			},
@@ -153,7 +158,7 @@ func TestApplyUserOptions(t *testing.T) {
 		{
 			name: "a nil option is ignored rather than panicking",
 			opts: []identity.UserOption{nil, identity.WithUserName("alice")},
-			assert: func(t *testing.T, u *identity.NewUser) {
+			assert: func(t *testing.T, u *identity.UserChange) {
 				assert.Equal(t, "alice", u.Name)
 			},
 		},
@@ -272,4 +277,61 @@ func TestUserLoaderLoadByUserID(t *testing.T) {
 			tc.assert(t, d, err)
 		})
 	}
+}
+
+// portMethods maps a method name to the port it would implement. A production
+// type in this package declaring any of them means scrty has started shipping an
+// identity port implementation.
+var portMethods = map[string]string{
+	"LoadByUsername": "UserLoader",
+	"LoadByUserID":   "UserLoader",
+	"LoadPrivileges": "RoleLoader",
+	"Provision":      "UserProvisioner",
+	"Update":         "UserProvisioner",
+	"Required":       "MFARequirementLookup",
+}
+
+// TestIdentityShipsNoPortImplementation pins the half of "no silent defaults"
+// that this package owns: it defines the ports as contracts and ships no
+// implementation of them, so a component given no port cannot quietly fall back
+// to one.
+//
+// Go cannot enumerate a package's types at run time, so this reads the package's
+// own source. Only non-test files are scanned: the conformance suite's in-memory
+// store is exactly what is allowed to exist, and it lives in the test module.
+func TestIdentityShipsNoPortImplementation(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	fset := token.NewFileSet()
+	scanned := 0
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+
+		file, parseErr := parser.ParseFile(fset, name, nil, 0)
+		require.NoError(t, parseErr, "parsing %s", name)
+		scanned++
+
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil {
+				continue // a plain function implements no interface
+			}
+
+			if port, implements := portMethods[fn.Name.Name]; implements {
+				t.Errorf(
+					"%s declares method %s, which implements %s: identity defines the ports "+
+						"and ships no implementation of them, so this belongs in the test module",
+					name, fn.Name.Name, port)
+			}
+		}
+	}
+
+	require.Positive(t, scanned, "scanned no production files, so this guard proved nothing")
 }

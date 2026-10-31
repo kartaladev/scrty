@@ -5,11 +5,12 @@ import (
 	"fmt"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/session"
@@ -96,13 +97,13 @@ func ExampleEnableMFAEnrolment() {
 		panic(err)
 	}
 
-	requirementPolicy, err := policy.NewMFARequirementPolicy(exampleRequirement{}, lookups,
+	requirementPolicy, err := policy.NewMFARequirement(exampleRequirement{}, lookups,
 		policy.WithMFAEnrolmentPath())
 	if err != nil {
 		panic(err)
 	}
 
-	challengePolicy, err := policy.NewMFAPolicy(lookups)
+	challengePolicy, err := policy.NewMFA(lookups)
 	if err != nil {
 		panic(err)
 	}
@@ -112,7 +113,7 @@ func ExampleEnableMFAEnrolment() {
 		panic(err)
 	}
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	if err != nil {
 		panic(err)
 	}
@@ -128,7 +129,7 @@ func ExampleEnableMFAEnrolment() {
 			Authenticator: authn,
 			Sessions:      sessions,
 			Tokens:        exampleTokens{},
-			Attempts:      policy.NewMemoryAttemptStore(),
+			Attempts:      lockout.NewMemoryAttemptStore(),
 		}),
 		httpsec.EnableMFA([]mfa.Method{totp}, httpsec.WithMFATokens(exampleTokens{})),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: users, Sender: exampleSender{}}),

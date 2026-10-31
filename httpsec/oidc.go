@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/origin"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -81,7 +81,7 @@ type CallbackSuccess func(ex *Exchange, res oidc.CallbackResult, next string) er
 // HandoffRedeemer is the redemption step the handoff endpoint calls,
 // replaceable by a consumer.
 //
-// The default is the *oidc.HandoffManager given to EnableOIDCLogin, which
+// The default is the *oidc.Handoff given to EnableOIDCLogin, which
 // runs every check before it consumes the code. A replacement takes on that
 // contract: it must run the checks it is handed, against the user it will
 // return and that user's password-change time, return the first check's error
@@ -92,7 +92,7 @@ type CallbackSuccess func(ex *Exchange, res oidc.CallbackResult, next string) er
 // the post-authentication policies a second time after the code is spent, so
 // a policy lookup failure never spends it. That decision is only reused for
 // the login it was made about. After a replacement reports success, the
-// endpoint refuses the request with policy.ErrPolicyDenied, and establishes
+// endpoint refuses the request with policy.ErrDenied, and establishes
 // no session, when that check never ran, or when the replacement returns a
 // user with a different reference (identity.Principal.ID) or a
 // password-change time that is not the same instant as the one the check was
@@ -111,38 +111,38 @@ type HandoffRedeemer interface {
 type BackchannelLogoutScope uint8
 
 const (
-	// IssuerSessions ends only the user's sessions that were created by a login
+	// BackchannelLogoutScopeIssuer ends only the user's sessions that were created by a login
 	// through the token's issuer. It is the default: a provider asserts a fact
 	// about its own session, and has no authority over a password login or
 	// another provider's session.
-	IssuerSessions BackchannelLogoutScope = iota
+	BackchannelLogoutScopeIssuer BackchannelLogoutScope = iota
 
-	// AllSessions ends every session of the user, whatever created it. It
+	// BackchannelLogoutScopeAll ends every session of the user, whatever created it. It
 	// widens the provider's authority: a subject-only token from that provider
 	// then ends sessions it did not establish, including the user's password
 	// sessions and sessions opened through other providers. Choose it only
 	// when the application trusts that provider to sign the user out
 	// everywhere.
-	AllSessions
+	BackchannelLogoutScopeAll
 )
 
 // valid reports whether s is one of the defined scopes.
-func (s BackchannelLogoutScope) valid() bool { return s <= AllSessions }
+func (s BackchannelLogoutScope) valid() bool { return s <= BackchannelLogoutScopeAll }
 
 // oidcInterceptor answers the federated-login endpoints: the authorize
 // redirect, the callback, handoff redemption and back-channel logout.
 type oidcInterceptor struct {
-	manager  *oidc.Manager
-	handoffs *oidc.HandoffManager
+	manager  *oidc.RelyingParty
+	handoffs *oidc.Handoff
 
-	// redeemer is what redemption calls: WithHandoffRedeemer's, or the handoff
+	// redeemer is what redemption calls: WithOIDCHandoffRedeemer's, or the handoff
 	// manager when the consumer supplied none. It stays nil only when neither
 	// exists, which construction allows only with a CallbackSuccess conveying
 	// the login instead, and then the redemption endpoint is not answered.
 	redeemer        HandoffRedeemer
 	callbackSuccess CallbackSuccess
 
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 
 	// issue issues a redeemed handoff's credential as the chain's bearer
@@ -178,7 +178,7 @@ type oidcInterceptor struct {
 	countRefusals bool
 
 	// The *Set fields record whether the option beside them ran, so check can
-	// refuse it precisely when it was given beside WithCallbackSuccess,
+	// refuse it precisely when it was given beside WithOIDCCallbackSuccess,
 	// which makes it meaningless: no handoff code is ever issued for a
 	// redemption-only option to govern. A zero value cannot stand in for
 	// "not given" here, because several of these options' zero values (the
@@ -221,7 +221,7 @@ func (i *oidcInterceptor) wire(c *Chain) {
 
 // flushRefusalLogs reports what the redemption source guard, the OIDC manager
 // (and through it a broker that can flush) and the handoff manager are holding
-// back. A login conveyed by WithCallbackSuccess has neither a guard nor a
+// back. A login conveyed by WithOIDCCallbackSuccess has neither a guard nor a
 // handoff manager, so each is flushed only when it exists.
 func (i *oidcInterceptor) flushRefusalLogs() {
 	if i.guard != nil {

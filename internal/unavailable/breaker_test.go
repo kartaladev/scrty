@@ -15,14 +15,6 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-// refusedUnavailable asserts a fail-closed answer that names the outage.
-func refusedUnavailable(t *testing.T, exceeded bool, err error) {
-	t.Helper()
-
-	require.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
-	assert.True(t, exceeded)
-}
-
 // TestUnavailable_Breaker covers task 4.2: an unavailable error opens the
 // breaker, an open breaker answers without calling the backend, and after the
 // probe interval exactly one call probes, closing the breaker on success and
@@ -334,7 +326,7 @@ func TestUnavailable_PanickingProbe(t *testing.T) {
 		{name: "allow mode, a panicking check probe", mode: ratelimit.UnavailableAllow, probe: panickingCheck},
 		{name: "allow mode, a panicking record probe", mode: ratelimit.UnavailableAllow, probe: panickingRecord},
 		{name: "refuse mode, a panicking check probe", mode: ratelimit.UnavailableRefuse, probe: panickingCheck},
-		{name: "fall-back mode, a panicking record probe", mode: ratelimit.UnavailableFallBackToLocal, probe: panickingRecord},
+		{name: "fall-back mode, a panicking record probe", mode: ratelimit.UnavailableFallbackToLocal, probe: panickingRecord},
 	}
 
 	for _, tc := range cases {
@@ -440,7 +432,7 @@ func TestUnavailable_StaleCalls(t *testing.T) {
 		},
 		{
 			name:  "fall-back mode, a stale failed check writes no second move to local counting",
-			mode:  ratelimit.UnavailableFallBackToLocal,
+			mode:  ratelimit.UnavailableFallbackToLocal,
 			stale: staleCheck,
 			assert: func(t *testing.T, h *harness) {
 				assertRecords(t, h, slog.LevelError, msgFallBack, 1)
@@ -448,7 +440,7 @@ func TestUnavailable_StaleCalls(t *testing.T) {
 		},
 		{
 			name:  "fall-back mode, a stale failed record is still counted locally, with no second ERROR",
-			mode:  ratelimit.UnavailableFallBackToLocal,
+			mode:  ratelimit.UnavailableFallbackToLocal,
 			stale: staleRecord,
 			assert: func(t *testing.T, h *harness) {
 				assertRecords(t, h, slog.LevelError, msgFallBack, 1)
@@ -547,7 +539,7 @@ func TestUnavailable_LateFailureWhileOpen(t *testing.T) {
 			t.Parallel()
 
 			synctest.Test(t, func(t *testing.T) {
-				h := newHarness(t, ratelimit.UnavailableFallBackToLocal)
+				h := newHarness(t, ratelimit.UnavailableFallbackToLocal)
 
 				release := make(chan struct{})
 				var wg sync.WaitGroup

@@ -1,17 +1,18 @@
 package httpsec
 
-//go:generate mockgen -destination=passkeyverifier_mock_test.go -package=httpsec_test -typed -mock_names=Verifier=MockPasskeyVerifier,ParsedRegistration=MockParsedRegistration,ParsedAssertion=MockParsedAssertion github.com/kartaladev/scrty/passkey Verifier,ParsedRegistration,ParsedAssertion
-
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
+
+//go:generate mockgen -destination=passkeyverifier_mock_test.go -package=httpsec_test -typed -mock_names=Verifier=MockPasskeyVerifier,ParsedRegistration=MockParsedRegistration,ParsedAssertion=MockParsedAssertion github.com/kartaladev/scrty/authenticate/passkey Verifier,ParsedRegistration,ParsedAssertion
 
 // The default paths of the passkey endpoints. Each group is replaced by its
 // prefix option.
@@ -48,12 +49,12 @@ const (
 // PasskeyDeps are what EnablePasskeys works over.
 type PasskeyDeps struct {
 	// Passkeys runs the ceremonies. Required.
-	Passkeys *passkey.Manager
+	Passkeys *passkey.Passkeys
 
 	// Sessions is the session manager a confined session is saved through
 	// when a passkey bound on it becomes active. Required, and it should be
 	// the one the chain resolves sessions through.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Users loads the user a passwordless login names. The registration and
 	// management endpoints do not use it.
@@ -72,11 +73,11 @@ type passkeyInterceptor struct {
 	credPrefix string
 
 	// loginPrefix is the passwordless prefix, and loginPrefixSet reports
-	// that WithPasswordlessPrefix moved it.
+	// that WithPasskeyPasswordlessPrefix moved it.
 	loginPrefix    string
 	loginPrefixSet bool
 
-	// passwordless holds the passwordless settings when WithPasswordlessLogin
+	// passwordless holds the passwordless settings when WithPasskeyPasswordlessLogin
 	// was given, and login the passwordless endpoints built from them.
 	passwordless *passwordlessConfig
 	login        *passwordlessInterceptor
@@ -150,10 +151,10 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // the registration prefix, DefaultPasskeyRegistrationPrefix by default
 // (WithPasskeyRegistrationPrefix):
 //
-//   - "<prefix>/begin" admits the session (passkey.Manager.BeginRegistration),
+//   - "<prefix>/begin" admits the session (passkey.Passkeys.BeginRegistration),
 //     deciding whether it owes a second factor over the MFA slot's methods,
 //     the passkey method among them when it is there, and over the user's own
-//     active passkeys when that method is there or WithPasswordlessLogin is
+//     active passkeys when that method is there or WithPasskeyPasswordlessLogin is
 //     given and its login proves the second factor. A password session steps
 //     up through the passkey MFA method (recognised by identity: a wrapped
 //     method opens no route); a passkey-first session cannot, and signs in
@@ -180,16 +181,16 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // DefaultPasskeyCredentialsPrefix by default (WithPasskeyCredentialsPrefix):
 //
 //   - GET "<prefix>" lists the session user's passkeys in every state, with
-//     no public key (passkey.Manager.List), answering 200 with
+//     no public key (passkey.Passkeys.List), answering 200 with
 //     {"passkeys":[…]} and Cache-Control: no-store
 //     (WithPasskeyListResponder);
 //   - POST "<prefix>/rename" reads the "id" and "name" fields of a
 //     URL-encoded body and names the passkey under the registration's name
-//     rules (passkey.Manager.Rename), answering 204
+//     rules (passkey.Passkeys.Rename), answering 204
 //     (WithPasskeyRenameResponder);
 //   - POST "<prefix>/remove" reads the "id" field likewise and removes the
 //     passkey, in any state, under the registration's assurance and
-//     freshness (passkey.Manager.Remove), answering 204
+//     freshness (passkey.Passkeys.Remove), answering 204
 //     (WithPasskeyRemoveResponder). A stale or under-assured session is
 //     refused with passkey.ErrReauthenticationRequired (403). Removing a
 //     passwordless-only user's last active passkey leaves them only account
@@ -208,7 +209,7 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // none is passkey.ErrNotFound (404), and nothing changes.
 //
 // Passwordless login is off by default and is enabled with
-// WithPasswordlessLogin, which serves its own two endpoints as a first
+// WithPasskeyPasswordlessLogin, which serves its own two endpoints as a first
 // factor at OrderPasskeyLogin.
 //
 // Any other method on these paths passes through untouched, and so does
@@ -232,8 +233,8 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // bound could never be proven. An enrolment-only session reaches them only
 // when the passkey MFA method is among the enrolment path's enrolling
 // methods (EnableMFAEnrolment, WithEnrolmentMethods); its registration then
-// follows the path's email confirmation (WithoutEmailConfirmation), contact
-// resolver (WithContactResolver) and confirmation limiter
+// follows the path's email confirmation (WithoutEnrolmentEmailConfirmation), contact
+// resolver (WithEnrolmentContactResolver) and confirmation limiter
 // (WithEnrolmentConfirmLimiter), so the user's budget is shared with the
 // path. When a passkey becomes active for a recovery-pending or enrolment-only
 // session — at finish, or at the confirmation that activates it — the session
@@ -331,7 +332,7 @@ func (c *config) passkeysOf() *passkeyInterceptor {
 }
 
 // servedByPasskeys reports whether m is the library's passkey MFA method,
-// the one passkey registration enrols (passkey.Manager.MFAMethod). It is
+// the one passkey registration enrols (passkey.Passkeys.MFAMethod). It is
 // recognised by its type, never by its shape: a consumer's method that also
 // declares it serves the enrolment path without being an mfa.Enroller is
 // not enrolled by passkey registration, and is judged as any other method.
@@ -371,7 +372,7 @@ func (c *config) wirePasskeys() error {
 	}
 
 	if p.loginPrefixSet && p.passwordless == nil {
-		return newConfigError("%s was given WithPasswordlessPrefix without WithPasswordlessLogin, "+
+		return newConfigError("%s was given WithPasskeyPasswordlessPrefix without WithPasskeyPasswordlessLogin, "+
 			"so the prefix would move no endpoint", option)
 	}
 
@@ -553,4 +554,101 @@ func (p *passkeyInterceptor) registrationContext(s *session.Session) passkey.Reg
 	rc.ConfirmLimiter = p.enrolment.confirmLimiter
 
 	return rc
+}
+
+// PasskeyBeginResponder writes a ceremony begin's answer: options are the
+// creation or request options for the browser, as the verifier rendered them
+// (the members of navigator.credentials' publicKey argument).
+//
+// It is called instead of the downstream handler. An error it returns leaves
+// the chain as the request's refusal; the challenge in the options has
+// already been issued and will expire unused.
+type PasskeyBeginResponder func(ex *Exchange, options json.RawMessage) error
+
+// PasskeyRegistrationResponder writes a finished registration. res carries
+// the stored passkey, whether it is active, and the saved recovery codes when
+// it awaits their confirmation, which is the only time they are readable: a
+// responder that drops them leaves the user unable to confirm.
+//
+// It is called instead of the downstream handler, after the passkey is
+// stored and, when it became active, after a confined session has been moved
+// on to its second factor.
+type PasskeyRegistrationResponder func(ex *Exchange, res *passkey.RegistrationResult) error
+
+// WithPasskeyRegistrationPrefix answers the registration endpoints under
+// prefix instead: POST "<prefix>/begin", "<prefix>/finish", "<prefix>/confirm"
+// and "<prefix>/confirm-email".
+//
+// Default: DefaultPasskeyRegistrationPrefix. A trailing slash is dropped. An
+// empty prefix, one that does not start with "/", and the root "/" are
+// refused; New also refuses a prefix whose paths collide with another
+// endpoint's (see EnablePasskeys). The recovery and enrolment gates exempt
+// the moved paths, not the defaults.
+func WithPasskeyRegistrationPrefix(prefix string) PasskeyOption {
+	return func(p *passkeyInterceptor) error {
+		trimmed, err := passkeyPrefix("WithPasskeyRegistrationPrefix", prefix)
+		if err != nil {
+			return err
+		}
+
+		p.regPrefix = trimmed
+
+		return nil
+	}
+}
+
+// WithPasskeyCredentialsPrefix answers the management endpoints under prefix
+// instead: GET "<prefix>" lists, POST "<prefix>/rename" renames and POST
+// "<prefix>/remove" removes.
+//
+// Default: DefaultPasskeyCredentialsPrefix. It is validated as
+// WithPasskeyRegistrationPrefix's is.
+func WithPasskeyCredentialsPrefix(prefix string) PasskeyOption {
+	return func(p *passkeyInterceptor) error {
+		trimmed, err := passkeyPrefix("WithPasskeyCredentialsPrefix", prefix)
+		if err != nil {
+			return err
+		}
+
+		p.credPrefix = trimmed
+
+		return nil
+	}
+}
+
+// WithPasskeyBeginResponder replaces how a registration begin is answered.
+//
+// Default: 200 with {"publicKey":<options>} as JSON, and Cache-Control:
+// no-store. A nil function is refused; omit the option to keep the default.
+func WithPasskeyBeginResponder(fn PasskeyBeginResponder) PasskeyOption {
+	return func(p *passkeyInterceptor) error {
+		if fn == nil {
+			return newConfigError("WithPasskeyBeginResponder was given no function; omit the " +
+				"option to keep the default document")
+		}
+
+		p.respondBegin = fn
+
+		return nil
+	}
+}
+
+// WithPasskeyRegistrationResponder replaces how a finished registration is
+// answered.
+//
+// Default: 200 with {"id","name","state","pending","recovery_codes",
+// "backup_eligible","no_synced_passkey","recovery_not_set_up"} as JSON, and
+// Cache-Control: no-store (see EnablePasskeys). A nil function is refused;
+// omit the option to keep the default.
+func WithPasskeyRegistrationResponder(fn PasskeyRegistrationResponder) PasskeyOption {
+	return func(p *passkeyInterceptor) error {
+		if fn == nil {
+			return newConfigError("WithPasskeyRegistrationResponder was given no function; omit " +
+				"the option to keep the default document")
+		}
+
+		p.respondRegistration = fn
+
+		return nil
+	}
 }

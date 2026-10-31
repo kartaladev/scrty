@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // consumerKeySourceFile is this file, and josePath is the import prefix every
@@ -24,7 +24,7 @@ const (
 )
 
 // externalKeySource is the shape a consumer's own key source takes: one key,
-// no KeyManager anywhere, and deliberately no LifetimeReporter, so a source
+// no Keys anywhere, and deliberately no LifetimeReporter, so a source
 // that cannot report its lifetimes gets no lifetime cap.
 //
 // It is hand-written rather than generated because the tests need it to sign
@@ -42,7 +42,7 @@ type externalKeySource struct {
 // tests that use it.
 var _ signingkey.KeySource = (*externalKeySource)(nil)
 
-func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (s *externalKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
 	if alg != signingkey.RS256 {
 		return "", nil, false
 	}

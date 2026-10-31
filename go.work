@@ -2,12 +2,12 @@ go 1.27
 
 use (
 	.
-	./fibersec
-	./ginsec
-	./gorm
-	./passkey/webauthn
-	./pgx
-	./redis
-	./sweep
+	./authenticate/passkey/webauthn
+	./expiry/sweep
+	./httpsec/fibersec
+	./httpsec/ginsec
+	./ratelimit/redisstore
+	./store/gormstore
+	./store/pgxstore
 	./test
 )

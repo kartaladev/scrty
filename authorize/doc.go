@@ -1,6 +1,6 @@
 // Package authorize decides whether a caller may do what they are asking to do.
 //
-// A Manager runs ordered authorizers and lets the first one that does not
+// A FirstOf runs ordered authorizers and lets the first one that does not
 // decline the attributes decide; when every one declines, the answer is a
 // denial rather than an allow by default. Authorizers for the privileges of a
 // caller's active role and for ownership of the record being acted on ship

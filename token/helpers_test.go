@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // fixedClock is a consumer's own read-only clock: the "Read-only source for a
@@ -38,13 +39,13 @@ func accepted(t *testing.T, claims *token.Claims, err error) {
 func rejected(t *testing.T, claims *token.Claims, err error) {
 	t.Helper()
 
-	require.ErrorIs(t, err, token.ErrTokenInvalid)
+	require.ErrorIs(t, err, token.ErrInvalid)
 	assert.Nil(t, claims)
 }
 
 // newKeySource returns a real key manager to sign with. It is never started,
 // so no goroutine outlives the test.
-func newKeySource(t *testing.T, algs ...signingkey.Alg) *signingkey.KeyManager {
+func newKeySource(t *testing.T, algs ...signingkey.Alg) *signingkey.Keys {
 	t.Helper()
 
 	var opts []signingkey.Option
@@ -58,12 +59,12 @@ func newKeySource(t *testing.T, algs ...signingkey.Alg) *signingkey.KeyManager {
 // newKeySourceWith is the one place a key manager is built for these tests. It
 // always uses the in-memory store and never calls Start, which is what keeps
 // TestMain's goleak check meaningful.
-func newKeySourceWith(t *testing.T, opts ...signingkey.Option) *signingkey.KeyManager {
+func newKeySourceWith(t *testing.T, opts ...signingkey.Option) *signingkey.Keys {
 	t.Helper()
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		append([]signingkey.Option{
-			signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+			signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 		}, opts...)...)
 	require.NoError(t, err)
 
@@ -150,7 +151,7 @@ func signRaw(t *testing.T, signer crypto.Signer, kid string, alg signingkey.Alg,
 func signClaims(t *testing.T, keys signingkey.KeySource, claims map[string]any) string {
 	t.Helper()
 
-	kid, signer, ok := keys.GetSigner(signingkey.RS256)
+	kid, signer, ok := keys.Signer(signingkey.RS256)
 	require.True(t, ok)
 
 	return signRaw(t, signer, kid, signingkey.RS256, claims)
@@ -206,3 +207,8 @@ func verificationKeySet(t *testing.T, source signingkey.KeySource) jwk.Set {
 
 	return set
 }
+
+// errKeySourceFixture is the fixture every leak row in this change is proven
+// against: a dependency's error quoting an address and a user reference the
+// returned error must never repeat.
+var errKeySourceFixture = errors.New("store: Key (username)=(alice@example.com) for user u-123")

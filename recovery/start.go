@@ -10,7 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The messages Start writes. They are constants because a consumer may route

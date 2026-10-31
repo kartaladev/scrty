@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,24 +16,9 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 )
-
-// basicRequest builds a request carrying the credential as a client would, and
-// rawBasicRequest one carrying whatever a test wants after the prefix.
-func basicRequest(ctx context.Context, username, password string) *http.Request {
-	return rawBasicRequest(ctx, "Basic "+
-		base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
-}
-
-func rawBasicRequest(ctx context.Context, header string) *http.Request {
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/orders", nil)
-	if header != "" {
-		req.Header.Set("Authorization", header)
-	}
-
-	return req
-}
 
 // TestBasicAuth pins that Basic authentication judges a credential on every
 // request and leaves nothing behind: no session, no token, nothing to come
@@ -170,7 +154,7 @@ func TestBasicAuth(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				return denyingIn(t, policy.PreAuthentication, policy.ErrAccountLocked)
+				return denyingIn(t, policy.PreAuthentication, lockout.ErrAccountLocked)
 			},
 			// No expectation on the authenticator: a locked account is never
 			// probed over Basic either.
@@ -179,7 +163,7 @@ func TestBasicAuth(t *testing.T) {
 			assert: func(t *testing.T, s served) {
 				// By default a lock is concealed as a wrong password, and stays
 				// identifiable as a lock to the consumer's own handler.
-				require.ErrorIs(t, s.err, policy.ErrAccountLocked)
+				require.ErrorIs(t, s.err, lockout.ErrAccountLocked)
 				require.ErrorIs(t, s.err, authenticate.ErrAuthenticationFailed)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 				assert.Equal(t, `Basic realm="Restricted"`, s.rec.Header().Get("WWW-Authenticate"),
@@ -229,12 +213,12 @@ func TestBasicAuth(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				return denyingIn(t, policy.PreAuthentication, policy.ErrPolicyDenied)
+				return denyingIn(t, policy.PreAuthentication, policy.ErrDenied)
 			},
 			wire:    func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
 			assert: func(t *testing.T, s served) {
-				require.ErrorIs(t, s.err, policy.ErrPolicyDenied)
+				require.ErrorIs(t, s.err, policy.ErrDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
 				assert.Empty(t, s.rec.Header().Get("WWW-Authenticate"), "a 403 carries no challenge")
 			},

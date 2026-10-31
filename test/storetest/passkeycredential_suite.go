@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -44,11 +44,11 @@ func passkeyCredential(n int, user identity.UserID, credID string) *passkey.Cred
 var passkeyCodeExpiry = suiteStart.Add(time.Hour)
 
 // passkeyPending returns c pending on reasons, with an emailed code when
-// AwaitingEmailCode is among them.
+// PendingEmailCode is among them.
 func passkeyPending(c *passkey.Credential, reasons passkey.PendingReason) *passkey.Credential {
 	c.State = passkey.StatePending
 	c.Pending = reasons
-	if reasons&passkey.AwaitingEmailCode != 0 {
+	if reasons&passkey.PendingEmailCode != 0 {
 		c.EmailCode = &passkey.EmailCode{Code: "123456", ExpiresAt: passkeyCodeExpiry}
 	}
 
@@ -63,7 +63,7 @@ func passkeySuspended(c *passkey.Credential) *passkey.Credential {
 }
 
 // passkeyBoth is both pending reasons.
-const passkeyBoth = passkey.AwaitingSavedCodes | passkey.AwaitingEmailCode
+const passkeyBoth = passkey.PendingSavedCodes | passkey.PendingEmailCode
 
 // insertCredentials stores every credential, failing the case at the first
 // error.
@@ -374,7 +374,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "the store keeps its own copy of what was inserted",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				c := passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode)
+				c := passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode)
 				insertCredentials(ctx, t, s, c)
 
 				c.CredentialID[0] = 'X'
@@ -384,7 +384,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 				c.AttestationStatement[0] = 'X'
 				c.EmailCode.Code = "000000"
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode),
 					storedCredential(ctx, t, s, "C"))
 			},
 		},
@@ -456,7 +456,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
 					passkeyCredential(1, "u-1", "C1"),
-					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
 					passkeySuspended(passkeyCredential(3, "u-1", "C3")),
 					passkeyCredential(4, "u-2", "C4"),
 				)
@@ -468,7 +468,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "a returned credential is the caller's own copy",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode))
+				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode))
 
 				c := storedCredential(ctx, t, s, "C")
 				c.CredentialID[0] = 'X'
@@ -487,7 +487,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 				list[0].AttestationStatement[0] = 'X'
 				list[0].EmailCode.Attempts = 4
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode),
 					storedCredential(ctx, t, s, "C"))
 			},
 		},
@@ -556,7 +556,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			name: "a pending or suspended credential is not recorded",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
-					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingSavedCodes),
 					passkeySuspended(passkeyCredential(2, "u-1", "C2")),
 				)
 
@@ -566,7 +566,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 					assert.False(t, ok, "credential %d must not be recorded", n)
 				}
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingSavedCodes),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingSavedCodes),
 					storedCredential(ctx, t, s, "C1"))
 				assertCredential(t, passkeySuspended(passkeyCredential(2, "u-1", "C2")), storedCredential(ctx, t, s, "C2"))
 			},
@@ -587,7 +587,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
 					passkeyCredential(1, "u-1", "C1"),
-					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
 					passkeySuspended(passkeyCredential(3, "u-1", "C3")),
 				)
 
@@ -603,7 +603,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 					require.NoError(t, err)
 					assert.False(t, ok, "credential %d must not record its use", n)
 				}
-				assertCredential(t, passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes),
+				assertCredential(t, passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
 					storedCredential(ctx, t, s, "C2"))
 				assertCredential(t, passkeySuspended(passkeyCredential(3, "u-1", "C3")), storedCredential(ctx, t, s, "C3"))
 			},
@@ -626,7 +626,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			name: "a pending or suspended credential is not suspended",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
-					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingSavedCodes),
 					passkeySuspended(passkeyCredential(2, "u-1", "C2")),
 				)
 
@@ -636,7 +636,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 					assert.False(t, ok, "credential %d must not be suspended", n)
 				}
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingSavedCodes),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingSavedCodes),
 					storedCredential(ctx, t, s, "C1"))
 			},
 		},
@@ -645,17 +645,17 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkeyBoth))
 
-				state, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), passkey.AwaitingEmailCode)
+				state, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), passkey.PendingEmailCode)
 				require.NoError(t, err)
 				assert.True(t, ok)
 				assert.Equal(t, passkey.StatePending, state)
 
 				mid := storedCredential(ctx, t, s, "C")
 				assert.Equal(t, passkey.StatePending, mid.State)
-				assert.Equal(t, passkey.AwaitingSavedCodes, mid.Pending)
+				assert.Equal(t, passkey.PendingSavedCodes, mid.Pending)
 				assert.Nil(t, mid.EmailCode, "clearing the emailed-code reason drops the code")
 
-				state, ok, err = s.ClearReason(ctx, "u-1", suiteID(1), passkey.AwaitingSavedCodes)
+				state, ok, err = s.ClearReason(ctx, "u-1", suiteID(1), passkey.PendingSavedCodes)
 				require.NoError(t, err)
 				assert.True(t, ok)
 				assert.Equal(t, passkey.StateActive, state)
@@ -668,25 +668,25 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
 					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkeyBoth),
-					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
 				)
 
-				_, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), passkey.AwaitingSavedCodes)
+				_, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), passkey.PendingSavedCodes)
 				require.NoError(t, err)
 				require.True(t, ok)
-				state, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), passkey.AwaitingSavedCodes)
+				state, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), passkey.PendingSavedCodes)
 				require.NoError(t, err)
 				assert.False(t, ok, "a reason cleared twice")
 				assert.Zero(t, state)
 
-				state, ok, err = s.ClearReason(ctx, "u-1", suiteID(2), passkey.AwaitingEmailCode)
+				state, ok, err = s.ClearReason(ctx, "u-1", suiteID(2), passkey.PendingEmailCode)
 				require.NoError(t, err)
 				assert.False(t, ok, "a reason not set")
 				assert.Zero(t, state)
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingEmailCode),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingEmailCode),
 					storedCredential(ctx, t, s, "C1"))
-				assertCredential(t, passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes),
+				assertCredential(t, passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
 					storedCredential(ctx, t, s, "C2"))
 			},
 		},
@@ -695,7 +695,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkeyBoth))
 
-				for _, r := range []passkey.PendingReason{passkeyBoth, 0, 4, passkey.AwaitingSavedCodes | 4, 0x80} {
+				for _, r := range []passkey.PendingReason{passkeyBoth, 0, 4, passkey.PendingSavedCodes | 4, 0x80} {
 					state, ok, err := s.ClearReason(ctx, "u-1", suiteID(1), r)
 					require.NoError(t, err)
 					assert.False(t, ok, "reason %#x must be refused", uint8(r))
@@ -709,21 +709,21 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "another user's or a suspended credential's reason is refused",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				gone := passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes)
+				gone := passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes)
 				gone.State = passkey.StateSuspended
-				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingSavedCodes), gone)
+				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingSavedCodes), gone)
 
-				_, ok, err := s.ClearReason(ctx, "u-2", suiteID(1), passkey.AwaitingSavedCodes)
+				_, ok, err := s.ClearReason(ctx, "u-2", suiteID(1), passkey.PendingSavedCodes)
 				require.NoError(t, err)
 				assert.False(t, ok, "another user's credential")
-				_, ok, err = s.ClearReason(ctx, "u-1", suiteID(2), passkey.AwaitingSavedCodes)
+				_, ok, err = s.ClearReason(ctx, "u-1", suiteID(2), passkey.PendingSavedCodes)
 				require.NoError(t, err)
 				assert.False(t, ok, "a suspended credential")
-				_, ok, err = s.ClearReason(ctx, "u-1", suiteID(9), passkey.AwaitingSavedCodes)
+				_, ok, err = s.ClearReason(ctx, "u-1", suiteID(9), passkey.PendingSavedCodes)
 				require.NoError(t, err)
 				assert.False(t, ok, "an unknown credential")
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingSavedCodes),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingSavedCodes),
 					storedCredential(ctx, t, s, "C1"))
 				assertCredential(t, gone, storedCredential(ctx, t, s, "C2"))
 			},
@@ -731,7 +731,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "a charge counts one attempt and returns the code",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode))
+				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode))
 
 				code, ok, err := s.ChargeEmailAttempt(ctx, "u-1", suiteID(1), before)
 				require.NoError(t, err)
@@ -741,7 +741,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 				assert.Equal(t, 1, code.Attempts)
 				assertTimeEqual(t, passkeyCodeExpiry, code.ExpiresAt, "ExpiresAt")
 
-				want := passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode)
+				want := passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode)
 				want.EmailCode.Attempts = 1
 				assertCredential(t, want, storedCredential(ctx, t, s, "C"))
 
@@ -752,7 +752,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "20 concurrent charges: exactly five succeed",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode))
+				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode))
 
 				wins := concurrently(t, 20, func() (bool, error) {
 					code, ok, err := s.ChargeEmailAttempt(ctx, "u-1", suiteID(1), before)
@@ -769,7 +769,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "the fifth attempt is the last, and a sixth is refused",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				c := passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode)
+				c := passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode)
 				c.EmailCode.Attempts = passkey.MaxEmailCodeAttempts - 1
 				insertCredentials(ctx, t, s, c)
 
@@ -788,7 +788,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 		{
 			name: "a charge at the expiry is refused",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode))
+				insertCredentials(ctx, t, s, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode))
 
 				for _, when := range []time.Time{passkeyCodeExpiry, passkeyCodeExpiry.Add(time.Second)} {
 					code, ok, err := s.ChargeEmailAttempt(ctx, "u-1", suiteID(1), when)
@@ -797,21 +797,21 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 					assert.Nil(t, code)
 				}
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.AwaitingEmailCode),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C"), passkey.PendingEmailCode),
 					storedCredential(ctx, t, s, "C"))
 			},
 		},
 		{
 			name: "a charge is refused for another user, without an outstanding code, or not pending on it",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				noCode := passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingEmailCode)
+				noCode := passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingEmailCode)
 				noCode.EmailCode = nil
-				suspended := passkeyPending(passkeyCredential(4, "u-1", "C4"), passkey.AwaitingEmailCode)
+				suspended := passkeyPending(passkeyCredential(4, "u-1", "C4"), passkey.PendingEmailCode)
 				suspended.State = passkey.StateSuspended
 				insertCredentials(ctx, t, s,
-					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingEmailCode),
+					passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingEmailCode),
 					noCode,
-					passkeyPending(passkeyCredential(3, "u-1", "C3"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(3, "u-1", "C3"), passkey.PendingSavedCodes),
 					suspended,
 				)
 
@@ -825,7 +825,7 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 					assert.Nil(t, code)
 				}
 
-				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.AwaitingEmailCode),
+				assertCredential(t, passkeyPending(passkeyCredential(1, "u-1", "C1"), passkey.PendingEmailCode),
 					storedCredential(ctx, t, s, "C1"))
 				assertCredential(t, suspended, storedCredential(ctx, t, s, "C4"))
 			},
@@ -877,11 +877,11 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
 					passkeyCredential(1, "u-1", "C1"),
-					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
 					passkeyPending(passkeyCredential(3, "u-1", "C3"), passkeyBoth),
-					passkeyPending(passkeyCredential(4, "u-1", "C4"), passkey.AwaitingEmailCode),
+					passkeyPending(passkeyCredential(4, "u-1", "C4"), passkey.PendingEmailCode),
 					passkeyCredential(5, "u-2", "C5"),
-					passkeyPending(passkeyCredential(6, "u-2", "C6"), passkey.AwaitingSavedCodes),
+					passkeyPending(passkeyCredential(6, "u-2", "C6"), passkey.PendingSavedCodes),
 				)
 
 				n, err := s.DeleteAwaitingSavedCodes(ctx, "u-1")

@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/passkey"
-	pgxstore "github.com/kartaladev/scrty/pgx"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 )
 
 // passkeyCredentialStore builds the passkey credential store of the named
@@ -86,7 +86,7 @@ func crossBackendPasskey(seed string) *passkey.Credential {
 		CreatedAt:            created,
 		LastUsedAt:           created.Add(time.Hour),
 		State:                passkey.StatePending,
-		Pending:              passkey.AwaitingSavedCodes | passkey.AwaitingEmailCode,
+		Pending:              passkey.PendingSavedCodes | passkey.PendingEmailCode,
 		EmailCode:            &passkey.EmailCode{Code: "314159", ExpiresAt: created.Add(10 * time.Minute), Attempts: 2},
 	}
 }

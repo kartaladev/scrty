@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The durable one-time token store carries the reaper as well as the store.
@@ -90,7 +90,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				// A closed *sql.DB under gorm reports database/sql's own
 				// unexported error.
 				assert.ErrorContains(t, err, "sql: database is closed")
-				assert.ErrorContains(t, err, "gorm: consume one-time token")
+				assert.ErrorContains(t, err, "gormstore: consume one-time token")
 			},
 		},
 		{
@@ -102,7 +102,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				err := s.Consume(ctx, storefix.RaceToken(1).ID, time.Now())
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
-				assert.ErrorContains(t, err, "gorm: consume one-time token")
+				assert.ErrorContains(t, err, "gormstore: consume one-time token")
 			},
 		},
 		{

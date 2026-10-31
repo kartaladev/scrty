@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
@@ -332,14 +332,14 @@ func (s *credFake) ClearReason(
 	s.table.mu.Lock()
 	defer s.table.mu.Unlock()
 
-	single := r == passkey.AwaitingSavedCodes || r == passkey.AwaitingEmailCode
+	single := r == passkey.PendingSavedCodes || r == passkey.PendingEmailCode
 	c := s.table.rows[cid]
 	if (!single && s.defect != credClearCombination) || c == nil || c.User != user ||
 		c.State != passkey.StatePending || c.Pending&r == 0 {
 		return 0, false, nil
 	}
 	c.Pending &^= r
-	if r&passkey.AwaitingEmailCode != 0 && s.defect != credClearKeepsCode {
+	if r&passkey.PendingEmailCode != 0 && s.defect != credClearKeepsCode {
 		c.EmailCode = nil
 	}
 	if c.Pending == 0 {
@@ -355,7 +355,7 @@ func (s *credFake) ChargeEmailAttempt(
 		s.table.mu.Lock()
 		c := s.table.rows[cid]
 		ok := c != nil && c.User == user && c.State == passkey.StatePending &&
-			c.Pending&passkey.AwaitingEmailCode != 0 && c.EmailCode != nil &&
+			c.Pending&passkey.PendingEmailCode != 0 && c.EmailCode != nil &&
 			at.Before(c.EmailCode.ExpiresAt) && c.EmailCode.Attempts < passkey.MaxEmailCodeAttempts
 		s.table.mu.Unlock()
 		if !ok {
@@ -375,7 +375,7 @@ func (s *credFake) ChargeEmailAttempt(
 
 	c := s.table.rows[cid]
 	if c == nil || c.User != user || c.State != passkey.StatePending ||
-		c.Pending&passkey.AwaitingEmailCode == 0 || c.EmailCode == nil {
+		c.Pending&passkey.PendingEmailCode == 0 || c.EmailCode == nil {
 		return nil, false, nil
 	}
 	code := c.EmailCode
@@ -431,7 +431,7 @@ func (s *credFake) deleteWhere(match func(*passkey.Credential) bool) int {
 
 func (s *credFake) DeleteAwaitingSavedCodes(_ context.Context, user identity.UserID) (int, error) {
 	return s.deleteWhere(func(c *passkey.Credential) bool {
-		return (c.User == user || s.defect == credDeleteAwaitingAll) && c.Pending&passkey.AwaitingSavedCodes != 0
+		return (c.User == user || s.defect == credDeleteAwaitingAll) && c.Pending&passkey.PendingSavedCodes != 0
 	}), nil
 }
 

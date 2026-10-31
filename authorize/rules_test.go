@@ -260,6 +260,7 @@ func TestRulesEvaluate(t *testing.T) {
 	}
 }
 
+// Standalone: it mutates the caller's slice between construction and the call.
 func TestRulesHoldTheirOwnSlice(t *testing.T) {
 	t.Parallel()
 
@@ -279,6 +280,7 @@ func TestRulesHoldTheirOwnSlice(t *testing.T) {
 		authorize.ErrAccessDenied)
 }
 
+// Standalone: each rule set is instantiated over a different request type.
 func TestRulesInstantiateOverAnyRequestType(t *testing.T) {
 	t.Parallel()
 

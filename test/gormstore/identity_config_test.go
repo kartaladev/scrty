@@ -12,9 +12,9 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
@@ -106,7 +106,7 @@ func TestIdentityStore_ConsumerGormConfig(t *testing.T) {
 				_, err = s.Provision(ctx, "translated-taken")
 				require.ErrorIs(t, err, identity.ErrUserExists)
 				cutFromDriver(t, err, "translated-taken")
-				assert.Equal(t, "gorm: provision user: "+identity.ErrUserExists.Error(), err.Error(),
+				assert.Equal(t, "gormstore: provision user: "+identity.ErrUserExists.Error(), err.Error(),
 					"the collision's text is fixed library text")
 			},
 		},
@@ -123,7 +123,7 @@ func TestIdentityStore_ConsumerGormConfig(t *testing.T) {
 				assert.NotErrorIs(t, err, identity.ErrUserExists,
 					"a colliding identifier is a database failure, not the username decision")
 				cutFromDriver(t, err, "translated-collides")
-				assert.Equal(t, "gorm: provision user: database failure (SQLSTATE 23505)", err.Error(),
+				assert.Equal(t, "gormstore: provision user: database failure (SQLSTATE 23505)", err.Error(),
 					"neither gorm's translated text nor the driver's message is kept")
 				assert.Zero(t, userRowCount(ctx, t, d.conn.DB, "translated-collides"))
 			},

@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/oidc"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // ConsumeRace is the race over consume, of any store that consumes like the
@@ -132,7 +132,7 @@ func CompleteRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 // enrolment on a generation of its own and proves its device with an emailed
 // code, and every racer charges an attempt against that code before it
 // expires. Check then requires each enrolment to hold exactly
-// mfa.MaxEmailCodeFailures attempts and its code, still stored with its
+// mfa.MaxEmailCodeAttempts attempts and its code, still stored with its
 // expiry.
 func ChargeRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 	gen := id.NewV7Generator()
@@ -156,7 +156,7 @@ func ChargeRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 			e, ok, err := s.Get(ctx, user)
 			require.NoError(t, err)
 			require.True(t, ok, "the enrolment of %q must be present after the race", user)
-			assert.Equal(t, mfa.MaxEmailCodeFailures, e.EmailCodeAttempts,
+			assert.Equal(t, mfa.MaxEmailCodeAttempts, e.EmailCodeAttempts,
 				"%q: EmailCodeAttempts after the race must be the cap", user)
 			assert.Equal(t, []byte(RaceEmailCode), e.EmailCode,
 				"%q: EmailCode must still be stored after the race", user)

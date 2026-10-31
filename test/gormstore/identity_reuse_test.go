@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/password"
+	"github.com/kartaladev/scrty/store/gormstore"
 )
 
 // TestIdentityReuse_GuardOverStore runs the reuse guard end to end over the

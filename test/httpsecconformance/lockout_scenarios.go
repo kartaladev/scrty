@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // lockoutScenarios is every lockout behaviour that must be identical on every
@@ -29,9 +30,9 @@ func unknownAndKnownUsernamesLockAlike() Scenario {
 		Build: func(t *testing.T) ChainSpec {
 			effects := newEffects(t)
 
-			lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(effects.Attempts))
+			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(effects.Attempts))
 			require.NoError(t, err)
-			engine, err := policy.NewEngine(lockout)
+			engine, err := policy.NewEngine(lockoutPolicy)
 			require.NoError(t, err)
 
 			return ChainSpec{
@@ -46,7 +47,7 @@ func unknownAndKnownUsernamesLockAlike() Scenario {
 				for range 5 {
 					res := send(formBody("username=" + user + "&password=wrong"))
 					require.ErrorIs(t, res.Refusal, authenticate.ErrAuthenticationFailed)
-					require.NotErrorIs(t, res.Refusal, policy.ErrAccountLocked, "five failures are still free")
+					require.NotErrorIs(t, res.Refusal, lockout.ErrAccountLocked, "five failures are still free")
 				}
 
 				sixth[user] = send(formBody("username=" + user + "&password=wrong"))
@@ -55,8 +56,8 @@ func unknownAndKnownUsernamesLockAlike() Scenario {
 			known, other := sixth[Username], sixth[unknown]
 			assert.Equal(t, known.Status, other.Status)
 			assert.Equal(t, http.StatusUnauthorized, other.Status)
-			require.ErrorIs(t, known.Refusal, policy.ErrAccountLocked)
-			require.ErrorIs(t, other.Refusal, policy.ErrAccountLocked)
+			require.ErrorIs(t, known.Refusal, lockout.ErrAccountLocked)
+			require.ErrorIs(t, other.Refusal, lockout.ErrAccountLocked)
 			assert.Equal(t, known.Refusal.Error(), other.Refusal.Error())
 			assert.Equal(t, 10, known.Effects.AuthenticatorCalls(),
 				"the sixth request of each was refused before any password was checked")
