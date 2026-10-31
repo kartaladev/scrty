@@ -1,9 +1,7 @@
 package httpsec
 
 import (
-	"context"
 	"errors"
-	"log/slog"
 	"slices"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
@@ -77,7 +75,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 	}
 
 	if cm, ok := method.(mfa.ChallengeMethod); ok {
-		if err := i.spendChallenge(ctx, cm, s, response); err != nil {
+		if err := spendChallenge(ctx, i.challenges[cm.Name()], cm, s, response); err != nil {
 			throttle.RecordFailure(ctx, user)
 
 			return err
@@ -122,7 +120,8 @@ func (i *reauthInterceptor) begin(ex *Exchange) error {
 	cm := method.(mfa.ChallengeMethod) // admitMethod checked it
 	mgr := i.challenges[method.Name()]
 
-	i.sweepExpired(ctx, method.Name(), mgr)
+	sweepExpired(ctx, mgr, i.sweeps[method.Name()], i.now, reauthChallengeSweepFlow, msgReauthChallengesNotPurged,
+		method.Name(), i.sampler, i.log)
 
 	challenge, _, err := mgr.IssueWithin(ctx, string(s.UserID), i.challengeCap, onetime.WithBinding(s.ID))
 
@@ -175,66 +174,6 @@ func (i *reauthInterceptor) admitMethod(
 	}
 
 	return s, method, nil
-}
-
-// spendChallenge checks the re-proof challenge a challenge method's response
-// presents against those issued to session s, and spends it. Only a nil return
-// lets the method verify the response. Every failure, a store that could not
-// answer included, is mfa.ErrInvalidCode, so it fails closed and a caller
-// learns only that the answer was not good.
-func (i *reauthInterceptor) spendChallenge(
-	ctx context.Context,
-	cm mfa.ChallengeMethod,
-	s *session.Session,
-	response []byte,
-) error {
-	presented, err := cm.PresentedChallenge(response)
-	if err != nil || presented == "" {
-		return mfa.ErrInvalidCode
-	}
-
-	mgr := i.challenges[cm.Name()]
-
-	checked, err := mgr.Check(ctx, presented, s.ID)
-	if err != nil {
-		return mfa.ErrInvalidCode
-	}
-
-	if err := mgr.Consume(ctx, checked); err != nil {
-		return mfa.ErrInvalidCode
-	}
-
-	return nil
-}
-
-// sweepExpired purges method's expired re-proof challenges from the store when
-// a sweep is due, at most once per issuance window per method. A sweep that
-// fails is logged through the chain's sampler and otherwise ignored; one that
-// failed for any reason but the store's inability to purge gives its turn
-// back.
-func (i *reauthInterceptor) sweepExpired(ctx context.Context, method string, mgr *onetime.Tokens) {
-	clock := i.sweeps[method]
-
-	claimed, due := clock.claim(i.now(), mgr.IssuanceWindow())
-	if !due {
-		return
-	}
-
-	_, err := mgr.PurgeExpired(ctx)
-	if err == nil {
-		return
-	}
-
-	reason := reasonStoreUnavailable
-	if errors.Is(err, onetime.ErrReapUnsupported) {
-		reason = reasonPurgeUnsupported
-	} else {
-		clock.release(claimed)
-	}
-
-	logSampled(ctx, i.sampler, i.log, slog.LevelWarn, i.now(),
-		reauthChallengeSweepFlow+sampleKeySeparator+method+sampleKeySeparator+reason, msgReauthChallengesNotPurged,
-		slog.String("method", method), slog.String("reason", reason))
 }
 
 // expiryTasks returns a task per challenge method, over the manager its
