@@ -75,6 +75,70 @@ ON CONFLICT (namespace, key) DO UPDATE SET
   newest_at = GREATEST(b.newest_at, EXCLUDED.newest_at),
   longest_window_us = GREATEST(b.longest_window_us, EXCLUDED.longest_window_us)`
 
+	// LimiterCharge records one failure stamp for a key only while the key
+	// holds fewer than the limit within the window, deciding and recording in
+	// one statement. Its parameters are LimiterRecord's: $1 namespace, $2 key,
+	// $3 limit (int), $4 window in microseconds (int64), $5 now or NULL, $6
+	// lock timeout as text. It returns one row: whether the stamp was recorded,
+	// and the now it read, which is the stamp when it was.
+	//
+	// It is LimiterRecord's upsert, kept stamps, newest_at and
+	// longest_window_us alike, with a condition on the update: the stored
+	// stamps strictly after now minus the window number fewer than $3. A new
+	// key always takes its stamp, the limit being at least one. On an existing
+	// key ON CONFLICT DO UPDATE locks the row and evaluates the condition on
+	// its latest committed version, so at READ COMMITTED concurrent charges of
+	// one key are decided one after another and never hold more than $3
+	// stamps in the window. A refused charge leaves the row as it was.
+	//
+	// An accepted stamp is always among the $3 newest the row keeps: every
+	// stored stamp at or after now is inside the window, and fewer than $3
+	// are.
+	//
+	// The CTE t is read once, by the insert and by the result row, so the
+	// stamp returned is the stamp stored. lock_timeout is set as in
+	// LimiterRecord, before ON CONFLICT waits on a held row.
+	LimiterCharge = `WITH t AS (SELECT coalesce($5::timestamptz, clock_timestamp()) AS now),
+c AS (
+INSERT INTO rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
+SELECT $1, $2, ARRAY[t.now], t.now, $4::bigint
+FROM t CROSS JOIN (SELECT set_config('lock_timeout', $6::text, true)) AS lt
+ON CONFLICT (namespace, key) DO UPDATE SET
+  stamps = (SELECT array_agg(n.s ORDER BY n.s) FROM
+            (SELECT s FROM unnest(b.stamps || EXCLUDED.stamps) AS u(s) ORDER BY s DESC LIMIT $3::int) AS n),
+  newest_at = GREATEST(b.newest_at, EXCLUDED.newest_at),
+  longest_window_us = GREATEST(b.longest_window_us, EXCLUDED.longest_window_us)
+WHERE (SELECT count(*) FROM unnest(b.stamps) AS w(s)
+       WHERE w.s > EXCLUDED.newest_at - $4::bigint * interval '1 microsecond') < $3::int
+RETURNING 1)
+SELECT EXISTS (SELECT 1 FROM c), t.now FROM t`
+
+	// LimiterRefund removes one stamp equal to $3 from a key, while $3 is
+	// still inside the window: $1 namespace, $2 key, $3 the stamp
+	// (timestamptz), $4 window in microseconds (int64), $5 now or NULL, $6
+	// lock timeout as text.
+	//
+	// The first element equal to $3 is cut out of the array, and the rest
+	// keep their order; equal stamps, from charges at one instant, lose one
+	// each refund. A stamp no longer in the window, or not stored, changes
+	// nothing, and neither does a key with no row. A row left with no stamps
+	// stays until the prune removes it; newest_at and longest_window_us are
+	// unchanged, so the prune still waits the longest window.
+	//
+	// lock_timeout is set by the CTE lt, which the update joins, so it is in
+	// force before the update waits on a row another transaction holds. At
+	// READ COMMITTED the update rereads a row that changed while it waited,
+	// and finds the stamp again in its latest version.
+	LimiterRefund = `WITH t AS (SELECT coalesce($5::timestamptz, clock_timestamp()) AS now),
+lt AS (SELECT set_config('lock_timeout', $6::text, true) AS v)
+UPDATE rate_limit_buckets AS b
+SET stamps = b.stamps[:array_position(b.stamps, $3::timestamptz) - 1]
+          || b.stamps[array_position(b.stamps, $3::timestamptz) + 1:]
+FROM t, lt
+WHERE b.namespace = $1 AND b.key = $2
+  AND $3::timestamptz > t.now - $4::bigint * interval '1 microsecond'
+  AND array_position(b.stamps, $3::timestamptz) IS NOT NULL`
+
 	// LimiterPrune deletes one batch of idle keys: those whose newest stamp
 	// plus the longest window recorded for them is at or before $1, at most
 	// $2 of them. It locks each victim (FOR UPDATE), and the lock rechecks

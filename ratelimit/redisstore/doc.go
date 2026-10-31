@@ -68,8 +68,10 @@
 //	+time +zrange +zadd +zremrangebyrank +zrem +pttl +pexpire +zcount
 //	+info +config|get
 //
-// Verify runs both scripts once, so a missing permission fails it, with
-// ratelimit.ErrConfig naming what is missing, rather than every record.
+// Verify runs the record and check scripts once, which between them run every
+// command the charge and refund scripts run too, so a missing permission fails
+// it, with ratelimit.ErrConfig naming what is missing, rather than every
+// record.
 //
 // On a cluster, Verify reads INFO and CONFIG GET from one node only, so it
 // checks that node's version and eviction policy alone: every node must be

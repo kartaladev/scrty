@@ -33,13 +33,17 @@ var (
 //     maxmemory-policy noeviction can evict a live key and disarm its limit.
 //     A policy that cannot be read writes one WARN and passes.
 //     WithEvictionPolicyCheck(false) skips this check;
-//   - that both of the limiter's scripts load, with SCRIPT LOAD;
+//   - that the record and check scripts load, with SCRIPT LOAD; the charge
+//     and refund scripts are sent with EVAL whenever the server does not hold
+//     them yet, as any script is;
 //   - that they run: the record script, then the check script, once on a
 //     probe key of their own, the prefix, an empty namespace, "verify" and a
 //     random suffix, which no limiter key can be. Its window is one
 //     millisecond, so the key expires at once. The server checks the commands
 //     a script runs against the caller's ACL only when it runs, so this is
-//     what catches a user that may load the scripts but not run them.
+//     what catches a user that may load the scripts but not run them. The
+//     charge and refund scripts run no command these two do not, so the
+//     probe covers them too.
 //
 // A server that fails a check, an ACL that refuses the probe included, is an
 // error wrapping ratelimit.ErrConfig; an ACL refusal names what is missing

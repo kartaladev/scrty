@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
+	"github.com/kartaladev/scrty/internal/unavailable"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -48,6 +49,13 @@ type Runner interface {
 	// QueryRow runs a statement that returns at most one row. Its error, if
 	// any, is reported by the row's Scan.
 	QueryRow(ctx context.Context, sql string, args ...any) Row
+	// QueryRowReadCommitted runs a statement that returns exactly one row as
+	// the only statement of a READ COMMITTED transaction of its own, as
+	// ExecReadCommitted does, and commits it once the row is read. Nothing
+	// runs until the row's Scan is called, which reports every error: the
+	// begin's, the statement's, the scan's and the commit's. A row never
+	// scanned leaves no transaction behind.
+	QueryRowReadCommitted(ctx context.Context, sql string, args ...any) Row
 }
 
 // sqlStateInsufficientPrivilege is the SQLSTATE of a statement the role may
@@ -71,7 +79,7 @@ type backend struct {
 // clock and the lock timeout of cfg's operation timeout. Its errors start
 // with prefix. The window must already be in whole microseconds, and the
 // policy and cfg already validated (ValidatePolicy, Config.Validate).
-func NewBackend(r Runner, prefix, namespace string, limit int, window time.Duration, cfg Config) ratelimit.Limiter {
+func NewBackend(r Runner, prefix, namespace string, limit int, window time.Duration, cfg Config) unavailable.Limiter {
 	return &backend{
 		r:           r,
 		prefix:      prefix,
@@ -104,6 +112,49 @@ func (b *backend) RecordFailure(ctx context.Context, key string) error {
 		b.namespace, pgschema.LimiterKey(key), b.limit, b.windowUS, Now(b.clock), b.lockTimeout)
 	if err != nil {
 		return fmt.Errorf("%s: rate-limit record: %w", b.prefix, err)
+	}
+	return nil
+}
+
+// Charge records one failure for key if, and only if, key holds fewer than
+// the limit's failures within the window, in one conditional upsert
+// (pgschema.LimiterCharge) run as the only statement of a READ COMMITTED
+// transaction of its own, so concurrent charges of one key are decided one
+// after another on its row. The receipt carries the stamp exactly as stored,
+// to the microsecond, and the caller's key. A refused charge returns the zero
+// Receipt.
+//
+// It takes its time and lock timeout as RecordFailure does. An error answers
+// true, wrapped as "<prefix>: rate-limit charge"; the charge may or may not
+// have been recorded.
+func (b *backend) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	var (
+		recorded bool
+		stamp    time.Time
+	)
+	err := b.r.QueryRowReadCommitted(ctx, pgschema.LimiterCharge,
+		b.namespace, pgschema.LimiterKey(key), b.limit, b.windowUS, Now(b.clock), b.lockTimeout).Scan(&recorded, &stamp)
+	switch {
+	case err != nil:
+		return ratelimit.Receipt{}, true, fmt.Errorf("%s: rate-limit charge: %w", b.prefix, err)
+	case !recorded:
+		return ratelimit.Receipt{}, true, nil
+	}
+	return ratelimit.NewReceipt(key, stamp), false, nil
+}
+
+// Refund removes one stamp equal to r's from r's key, while it is still within
+// the window (pgschema.LimiterRefund), in a READ COMMITTED transaction of its
+// own, with RecordFailure's time and lock timeout. The zero Receipt runs
+// nothing. An error is wrapped as "<prefix>: rate-limit refund".
+func (b *backend) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+	err := b.r.ExecReadCommitted(ctx, pgschema.LimiterRefund,
+		b.namespace, pgschema.LimiterKey(r.Key()), r.Stamp(), b.windowUS, Now(b.clock), b.lockTimeout)
+	if err != nil {
+		return fmt.Errorf("%s: rate-limit refund: %w", b.prefix, err)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package ratelimittest_test
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -34,6 +35,26 @@ const (
 	flawKeepOldest       = "keep-oldest"
 	flawFailOpen         = "fail-open"
 	flawRecordHonoursCtx = "record-honours-context"
+
+	// flawCheckThenRecord charges by calling Exceeded, yielding, then calling
+	// RecordFailure, so a charge is two steps where it must be one.
+	flawCheckThenRecord = "check-then-record"
+	// flawRefusedChargeRecords records the attempt of a charge it refuses.
+	flawRefusedChargeRecords = "refused-charge-records"
+	// flawChargeFailOpen reports a charge it could not decide as below the
+	// limit.
+	flawChargeFailOpen = "charge-fail-open"
+	// flawRefundNothing accepts a refund and removes nothing.
+	flawRefundNothing = "refund-removes-nothing"
+	// flawRefundEveryEqual removes every stamp equal to the receipt's, so one
+	// receipt refunds every charge made at the same instant.
+	flawRefundEveryEqual = "refund-removes-every-equal-stamp"
+	// flawRefundAnyFailure removes some other counted failure when the
+	// receipt's own is no longer there to remove.
+	flawRefundAnyFailure = "refund-removes-another-failure"
+	// flawRefundNewest checks that the receipt's failure is still counted,
+	// then removes the key's newest counted failure instead of that one.
+	flawRefundNewest = "refund-removes-newest-instead"
 )
 
 // stampLimiter is a sliding-window limiter that is correct unless flaw names
@@ -83,8 +104,10 @@ func (l *stampLimiter) Exceeded(ctx context.Context, key string) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.clk.Now()
-	key = l.keyOf(key)
+	return l.exceededLocked(l.keyOf(key), l.clk.Now()), nil
+}
+
+func (l *stampLimiter) exceededLocked(key string, now time.Time) bool {
 	stamps := l.keys[key]
 
 	if l.flaw == flawPruneByOldest && len(stamps) > 0 && !l.counts(slices.MinFunc(stamps, time.Time.Compare), now) {
@@ -114,7 +137,7 @@ func (l *stampLimiter) Exceeded(ctx context.Context, key string) (bool, error) {
 		}
 	}
 
-	return exceeded, nil
+	return exceeded
 }
 
 func (l *stampLimiter) RecordFailure(ctx context.Context, key string) error {
@@ -127,8 +150,13 @@ func (l *stampLimiter) RecordFailure(ctx context.Context, key string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	key = l.keyOf(key)
-	stamps := append(l.keys[key], l.clk.Now())
+	l.recordLocked(l.keyOf(key), l.clk.Now())
+
+	return nil
+}
+
+func (l *stampLimiter) recordLocked(key string, now time.Time) {
+	stamps := append(l.keys[key], now)
 	if len(stamps) > l.limit && l.flaw != flawPruneByOldest {
 		if l.flaw == flawKeepOldest {
 			stamps = stamps[:len(stamps)-1] // drops the newest stamp: the cap's range is wrong
@@ -137,6 +165,85 @@ func (l *stampLimiter) RecordFailure(ctx context.Context, key string) error {
 		}
 	}
 	l.keys[key] = stamps
+}
+
+// Charge decides and records under one hold of the lock, unless flaw names a
+// defect of charging.
+func (l *stampLimiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return ratelimit.Receipt{}, l.flaw != flawChargeFailOpen, err
+	}
+	if l.flaw == flawCheckThenRecord {
+		return l.chargeInTwoSteps(ctx, key)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.clk.Now()
+	if l.exceededLocked(l.keyOf(key), now) {
+		if l.flaw == flawRefusedChargeRecords {
+			l.recordLocked(l.keyOf(key), now)
+		}
+
+		return ratelimit.Receipt{}, true, nil
+	}
+	l.recordLocked(l.keyOf(key), now)
+
+	return ratelimit.NewReceipt(key, now), false, nil
+}
+
+// chargeInTwoSteps checks with Exceeded, yields, then records with
+// RecordFailure: each step holds the lock, but nothing holds it across both,
+// so concurrent charges all pass the check before any of them records.
+func (l *stampLimiter) chargeInTwoSteps(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	exceeded, err := l.Exceeded(ctx, key)
+	if err != nil || exceeded {
+		return ratelimit.Receipt{}, true, err
+	}
+	runtime.Gosched()
+	now := l.clk.Now()
+	if err := l.RecordFailure(ctx, key); err != nil {
+		return ratelimit.Receipt{}, true, err
+	}
+
+	return ratelimit.NewReceipt(key, now), false, nil
+}
+
+// Refund removes one stamp equal to the receipt's, while it is in the window,
+// unless flaw names a defect of refunding.
+func (l *stampLimiter) Refund(_ context.Context, r ratelimit.Receipt) error {
+	if l.flaw == flawRefundNothing || r.Stamp().IsZero() {
+		return nil
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.clk.Now()
+	key := l.keyOf(r.Key())
+	stamps := l.keys[key]
+	own := func(s time.Time) bool { return s.Equal(r.Stamp()) }
+
+	if l.flaw == flawRefundEveryEqual {
+		l.keys[key] = slices.DeleteFunc(stamps, own)
+
+		return nil
+	}
+
+	i := -1
+	if l.counts(r.Stamp(), now) {
+		i = slices.IndexFunc(stamps, own)
+	}
+	if i >= 0 && l.flaw == flawRefundNewest {
+		i = len(stamps) - 1 // stamps are appended in time order
+	}
+	if i < 0 && l.flaw == flawRefundAnyFailure {
+		i = slices.IndexFunc(stamps, func(s time.Time) bool { return l.counts(s, now) })
+	}
+	if i >= 0 {
+		l.keys[key] = slices.Delete(stamps, i, i+1)
+	}
 
 	return nil
 }

@@ -26,7 +26,10 @@ import (
 // number of the newest failure stamps; a failure counts while it is strictly
 // younger than the window; a key is exceeded once it holds the limit. Stamps
 // are stored to the microsecond. A check is one primary-key read, and a
-// record one upsert, each one round trip. It is safe for concurrent use.
+// record one upsert, each one round trip. A charge is one conditional upsert
+// that decides and records in one statement, and a refund one update, so a
+// flow that charges first holds its limit under any concurrency (Charge). It
+// is safe for concurrent use.
 //
 // # Primary only
 //
@@ -59,7 +62,7 @@ import (
 // limiters with NewLimiter only builds a factory over the same pool for the
 // prune.
 type Limiter struct {
-	limiter ratelimit.Limiter
+	limiter unavailable.Limiter
 	check   limiterCheck
 
 	// limit and window are the policy NewLimiter was given, kept so Policy
@@ -70,6 +73,7 @@ type Limiter struct {
 
 var (
 	_ ratelimit.Limiter        = (*Limiter)(nil)
+	_ ratelimit.Charger        = (*Limiter)(nil)
 	_ ratelimit.PolicyReporter = (*Limiter)(nil)
 )
 
@@ -170,6 +174,38 @@ func (l *Limiter) RecordFailure(ctx context.Context, key string) error {
 	return l.limiter.RecordFailure(ctx, key)
 }
 
+// Charge records one failure for key and reports the key below its limit, or
+// reports it at its limit and records nothing, in one conditional upsert on
+// the key's row: concurrent charges of one key, from any replica, never hold
+// more failures in the window than the limit. It implements ratelimit.Charger.
+// The receipt carries the stamp as stored, to the microsecond; a refused charge
+// returns the zero Receipt.
+//
+// An ended context is refused with its error before any I/O, and nothing is
+// recorded. The caller's cancellation bounds the call, as for Exceeded, and so
+// does the operation timeout (WithLimiterOperationTimeout), which is also the
+// statement's lock timeout. While the database cannot be reached the answer
+// comes from the unavailable mode (WithLimiterOnUnavailable): by default true,
+// with an error wrapping ratelimit.ErrBackendUnavailable; in fall-back mode
+// the charge is made on this replica's local count.
+func (l *Limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	return l.limiter.Charge(ctx, key)
+}
+
+// Refund removes the one failure r recorded, while it is still in the
+// window, in one statement on the key's row; of two failures stamped at the
+// same instant it removes one. The zero Receipt does nothing. It implements
+// ratelimit.Charger.
+//
+// The caller's cancellation is ignored, as for RecordFailure, and the call is
+// bounded by the operation timeout instead. A refund that cannot reach the
+// database is an error wrapping ratelimit.ErrBackendUnavailable, and the
+// failure stays counted; in fall-back mode, during an outage, the refund is
+// made on this replica's local count.
+func (l *Limiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	return l.limiter.Refund(ctx, r)
+}
+
 // Policy reports the limit and window the limiter was built with
 // (NewLimiter's arguments), the window in the whole microseconds it is
 // counted in. Both are fixed at construction.
@@ -218,6 +254,31 @@ func (c commandResult) RowsAffected() (int64, error) { return pgconn.CommandTag(
 func (r limiterRunner) QueryRow(ctx context.Context, q string, args ...any) pglimiter.Row {
 	return r.pool.QueryRow(ctx, q, args...)
 }
+
+// QueryRowReadCommitted returns a row that, when scanned, runs q as the only
+// statement of a READ COMMITTED transaction of its own on the pool, scans its
+// one row and commits. The transaction is rolled back on every other way out,
+// even when ctx is done.
+func (r limiterRunner) QueryRowReadCommitted(ctx context.Context, q string, args ...any) pglimiter.Row {
+	return readCommittedRow(func(dest ...any) error {
+		tx, err := beginReadCommitted(ctx, r.pool)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+		if err := tx.QueryRow(ctx, q, args...).Scan(dest...); err != nil {
+			return err
+		}
+
+		return tx.Commit(ctx)
+	})
+}
+
+// readCommittedRow is a row whose Scan runs the statement it stands for.
+type readCommittedRow func(dest ...any) error
+
+func (f readCommittedRow) Scan(dest ...any) error { return f(dest...) }
 
 // LimiterOption configures a Limiter or a LimiterFactory. Every default
 // NewLimiter applies has an option here that replaces it. A nil LimiterOption

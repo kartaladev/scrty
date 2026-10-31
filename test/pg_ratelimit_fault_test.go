@@ -268,6 +268,8 @@ const (
 	pgRecordName = "LimiterRecord"
 	pgCheckName  = "LimiterCheck"
 	pgPruneName  = "LimiterPrune"
+	pgChargeName = "LimiterCharge"
+	pgRefundName = "LimiterRefund"
 )
 
 // pgSchemaStatements parses pgSchemaSource once and returns its string
@@ -357,7 +359,7 @@ func TestPGLimiter_StatementEditsApply(t *testing.T) {
 			e.apply(t)
 		})
 	}
-	for _, name := range []string{pgRecordName, pgCheckName, pgPruneName} {
+	for _, name := range []string{pgRecordName, pgCheckName, pgPruneName, pgChargeName, pgRefundName} {
 		assert.NotEmpty(t, pgStatement(t, name))
 	}
 }
@@ -497,63 +499,109 @@ const (
 	heldRowBound   = 750 * time.Millisecond
 )
 
-// runPGHeldRow pins that a record gives up on a row another session holds
-// within its operation timeout, and that the server stops waiting for the row
-// too, by the record's own lock timeout.
+// runPGHeldRow pins that a record, a charge and a refund each give up on a
+// row another session holds within the operation timeout, and that the server
+// stops waiting for the row too, by the statement's own lock timeout.
 //
-// The record's lock timeout equals its operation timeout, so the client's
-// deadline ends the call first, a few milliseconds ahead of the server: the
-// error is the deadline's, and SQLSTATE 55P03 never reaches the caller. What
-// the lock timeout adds is on the server. A driver's cancel request needs a
-// new connection, so once the record is under way the test refuses every
-// further dial of the limiter's handle: only the lock timeout can then end
-// the server's wait, and without it the session would wait on the row for as
-// long as the holder keeps it.
+// The lock timeout equals the operation timeout, so the client's deadline ends
+// the call first, a few milliseconds ahead of the server: the error is the
+// deadline's, and SQLSTATE 55P03 never reaches the caller. What the lock
+// timeout adds is on the server. A driver's cancel request needs a new
+// connection, so once the call is under way the test refuses every further
+// dial of the limiter's handle: only the lock timeout can then end the
+// server's wait, and without it the session would wait on the row for as long
+// as the holder keeps it.
+//
+// The charge and refund cases run only against a limiter that implements
+// ratelimit.Charger.
 func runPGHeldRow(t *testing.T, b pgFaultBackend) {
 	t.Helper()
 
-	t.Run("record gives up on a held row within its timeout", func(t *testing.T) {
-		conn := migratedLimiterDB(t)
-		ns := pgScopedNamespace(t, "held")
-		dialer := &pgDialer{}
-		handles := &pgHandles{}
-		l := b.limiter(t, conn, ns, 3, time.Minute, pgFaultOptions{timeout: heldRowTimeout, dialer: dialer, handles: handles})
-		// The row is created out of band, and the limiter's handles are
-		// warmed with the generous test timeout: the timed record then waits
-		// on the row rather than on a dial. A setup record through the
-		// limiter itself would run under the 250ms timeout, dial included,
-		// and a slow dial would open the breaker before the case began.
-		_, err := conn.DB.ExecContext(t.Context(), pgStatement(t, pgRecordName),
-			ns, pgStoredKey("k"), 3, time.Minute.Microseconds(), nil, "5000ms")
-		require.NoError(t, err)
-		handles.warm(t)
+	type testCase struct {
+		name string
+		// call runs the statement under test against the held row; stamp is
+		// the stamp the row holds.
+		call func(t *testing.T, l ratelimit.Limiter, stamp time.Time) error
+	}
 
-		holder, err := conn.DB.BeginTx(t.Context(), nil)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = holder.Rollback() })
-		var one int
-		require.NoError(t, holder.QueryRowContext(t.Context(),
-			`SELECT 1 FROM rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&one))
+	charger := func(t *testing.T, l ratelimit.Limiter) ratelimit.Charger {
+		t.Helper()
+		c, ok := l.(ratelimit.Charger)
+		if !ok {
+			t.Skipf("%T does not implement ratelimit.Charger", l)
+		}
+		return c
+	}
 
-		dialer.refuse.Store(true)
-		start := time.Now()
-		err = l.RecordFailure(t.Context(), "k")
-		elapsed := time.Since(start)
-		t.Logf("record against the held row returned after %s: %v (SQLSTATE %q)", elapsed, err, pgSQLState(err))
+	cases := []testCase{
+		{
+			name: "record gives up on a held row within its timeout",
+			call: func(t *testing.T, l ratelimit.Limiter, _ time.Time) error {
+				return l.RecordFailure(t.Context(), "k")
+			},
+		},
+		{
+			name: "charge gives up on a held row within its timeout",
+			call: func(t *testing.T, l ratelimit.Limiter, _ time.Time) error {
+				r, exceeded, err := charger(t, l).Charge(t.Context(), "k")
+				assert.True(t, exceeded, "a charge that could not be decided reported the key below its limit")
+				assert.Zero(t, r)
+				return err
+			},
+		},
+		{
+			name: "refund gives up on a held row within its timeout",
+			call: func(t *testing.T, l ratelimit.Limiter, stamp time.Time) error {
+				return charger(t, l).Refund(t.Context(), ratelimit.NewReceipt("k", stamp))
+			},
+		},
+	}
 
-		require.Error(t, err, "the record succeeded through a held row")
-		assert.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
-		assert.Less(t, elapsed, heldRowBound, "the record waited past its timeout")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := migratedLimiterDB(t)
+			ns := pgScopedNamespace(t, "held")
+			dialer := &pgDialer{}
+			handles := &pgHandles{}
+			l := b.limiter(t, conn, ns, 3, time.Minute, pgFaultOptions{timeout: heldRowTimeout, dialer: dialer, handles: handles})
+			// The row is created out of band, and the limiter's handles are
+			// warmed with the generous test timeout: the timed call then
+			// waits on the row rather than on a dial. A setup record through
+			// the limiter itself would run under the 250ms timeout, dial
+			// included, and a slow dial would open the breaker before the
+			// case began.
+			_, err := conn.DB.ExecContext(t.Context(), pgStatement(t, pgRecordName),
+				ns, pgStoredKey("k"), 3, time.Minute.Microseconds(), nil, "5000ms")
+			require.NoError(t, err)
+			handles.warm(t)
 
-		// The condition runs on a goroutine of its own, so it reports a
-		// failed query as "not yet" rather than failing the test there.
-		assert.Eventually(t, func() bool {
-			var waiting int
-			err := conn.DB.QueryRowContext(t.Context(),
-				`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting)
-			return err == nil && waiting == 0
-		}, time.Second, 20*time.Millisecond, "the server still has a session waiting on the held row")
-	})
+			holder, err := conn.DB.BeginTx(t.Context(), nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = holder.Rollback() })
+			var stamp time.Time
+			require.NoError(t, holder.QueryRowContext(t.Context(),
+				`SELECT stamps[1] FROM rate_limit_buckets WHERE namespace = $1 AND key = $2 FOR UPDATE`, ns, "k").Scan(&stamp))
+
+			dialer.refuse.Store(true)
+			start := time.Now()
+			err = tc.call(t, l, stamp)
+			elapsed := time.Since(start)
+			t.Logf("the call against the held row returned after %s: %v (SQLSTATE %q)", elapsed, err, pgSQLState(err))
+
+			require.Error(t, err, "the call succeeded through a held row")
+			assert.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
+			assert.Less(t, elapsed, heldRowBound, "the call waited past its timeout")
+
+			// The condition runs on a goroutine of its own, so it reports a
+			// failed query as "not yet" rather than failing the test there.
+			assert.Eventually(t, func() bool {
+				var waiting int
+				err := conn.DB.QueryRowContext(t.Context(),
+					`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting)
+				return err == nil && waiting == 0
+			}, time.Second, 20*time.Millisecond, "the server still has a session waiting on the held row")
+		})
+	}
 }
 
 func TestPGLimiter_HeldRow(t *testing.T) {
@@ -658,6 +706,43 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 			},
 		},
 		{
+			name: "refuse while stopped: a charge is refused as the backend unavailable",
+			assert: func(t *testing.T, e pgOutage) {
+				c := requirePGCharger(t, e.build(ratelimit.UnavailableRefuse))
+				e.conn.Stop(t)
+
+				r, exceeded, err := c.Charge(t.Context(), pgOutageSource)
+				assert.True(t, exceeded, "refuse mode accepted a charge while the server was stopped")
+				assert.Zero(t, r)
+				require.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
+			},
+		},
+		{
+			name: "fall back while stopped: charges count locally, stop at the limit, and a refund returns one",
+			assert: func(t *testing.T, e pgOutage) {
+				c := requirePGCharger(t, e.build(ratelimit.UnavailableFallbackToLocal))
+				e.conn.Stop(t)
+
+				var first ratelimit.Receipt
+				for i := range pgOutageLimit {
+					r, exceeded, err := c.Charge(t.Context(), pgOutageSource)
+					require.NoError(t, err, "charge %d was not counted locally", i+1)
+					require.False(t, exceeded, "charge %d of a limit of three was refused", i+1)
+					if i == 0 {
+						first = r
+					}
+				}
+				_, exceeded, err := c.Charge(t.Context(), pgOutageSource)
+				require.NoError(t, err)
+				assert.True(t, exceeded, "a fourth local charge passed a limit of three")
+
+				require.NoError(t, c.Refund(t.Context(), first))
+				_, exceeded, err = c.Charge(t.Context(), pgOutageSource)
+				require.NoError(t, err)
+				assert.False(t, exceeded, "the refund did not return a local charge's allowance")
+			},
+		},
+		{
 			name: "allow while stopped: not exceeded, and no error",
 			assert: func(t *testing.T, e pgOutage) {
 				l := e.build(ratelimit.UnavailableAllow)
@@ -735,6 +820,16 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 			})
 		})
 	}
+}
+
+// requirePGCharger returns l as a ratelimit.Charger, failing the test when it
+// is not one.
+func requirePGCharger(t *testing.T, l ratelimit.Limiter) ratelimit.Charger {
+	t.Helper()
+
+	c, ok := l.(ratelimit.Charger)
+	require.True(t, ok, "%T does not implement ratelimit.Charger", l)
+	return c
 }
 
 func TestPGLimiter_Unavailable(t *testing.T) {

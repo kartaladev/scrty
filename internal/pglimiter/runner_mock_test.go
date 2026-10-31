@@ -299,3 +299,46 @@ func (c *MockRunnerQueryRowCall) DoAndReturn(f func(context.Context, string, ...
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// QueryRowReadCommitted mocks base method.
+func (m *MockRunner) QueryRowReadCommitted(ctx context.Context, sql string, args ...any) pglimiter.Row {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, sql}
+	for _, a := range args {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "QueryRowReadCommitted", varargs...)
+	ret0, _ := ret[0].(pglimiter.Row)
+	return ret0
+}
+
+// QueryRowReadCommitted indicates an expected call of QueryRowReadCommitted.
+func (mr *MockRunnerMockRecorder) QueryRowReadCommitted(ctx, sql any, args ...any) *MockRunnerQueryRowReadCommittedCall {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, sql}, args...)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "QueryRowReadCommitted", reflect.TypeOf((*MockRunner)(nil).QueryRowReadCommitted), varargs...)
+	return &MockRunnerQueryRowReadCommittedCall{Call: call}
+}
+
+// MockRunnerQueryRowReadCommittedCall wrap *gomock.Call
+type MockRunnerQueryRowReadCommittedCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockRunnerQueryRowReadCommittedCall) Return(arg0 pglimiter.Row) *MockRunnerQueryRowReadCommittedCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockRunnerQueryRowReadCommittedCall) Do(f func(context.Context, string, ...any) pglimiter.Row) *MockRunnerQueryRowReadCommittedCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockRunnerQueryRowReadCommittedCall) DoAndReturn(f func(context.Context, string, ...any) pglimiter.Row) *MockRunnerQueryRowReadCommittedCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

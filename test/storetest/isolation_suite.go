@@ -211,6 +211,27 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 
 			assertNoErrors(t, errs, "a concurrent limiter record")
 		}},
+		{"concurrent limiter charges and refunds report no failure", func(t *testing.T) {
+			l := f.Limiter(t)
+			c, ok := l.(ratelimit.Charger)
+			if !ok {
+				t.Skipf("%T does not implement ratelimit.Charger", l)
+			}
+			require.NoError(t, l.RecordFailure(t.Context(), "iso-charge"))
+
+			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, _ int) error {
+				r, exceeded, err := c.Charge(ctx, "iso-charge")
+				if err != nil {
+					return err
+				}
+				if exceeded {
+					return fmt.Errorf("a charge was refused below the limit")
+				}
+				return c.Refund(ctx, r)
+			})
+
+			assertNoErrors(t, errs, "a concurrent limiter charge or refund")
+		}},
 		{"a caller's repeatable-read transaction refuses a saved-code replacement", func(t *testing.T) {
 			s := f.RecoveryCodes(t)
 			user := identity.UserID("iso-codes-refused")

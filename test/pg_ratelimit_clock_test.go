@@ -138,6 +138,39 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 			},
 		},
 		{
+			// The receipt must carry the stamp the database stored, to the
+			// microsecond, or the refund finds nothing to remove. The
+			// arguments show neither statement passed a time of its own.
+			name:   "a refund removes the stamp its charge stored by the database clock",
+			limit:  1,
+			window: time.Minute,
+			assert: func(t *testing.T, e pgClockEnv) {
+				c, ok := e.l.(ratelimit.Charger)
+				require.True(t, ok, "%T does not implement ratelimit.Charger", e.l)
+
+				r, exceeded, err := c.Charge(t.Context(), "k")
+				require.NoError(t, err)
+				require.False(t, exceeded)
+				_, exceeded, err = c.Charge(t.Context(), "k")
+				require.NoError(t, err)
+				require.True(t, exceeded, "a second charge passed a limit of one")
+
+				require.NoError(t, c.Refund(t.Context(), r))
+				_, exceeded, err = c.Charge(t.Context(), "k")
+				require.NoError(t, err)
+				assert.False(t, exceeded, "the refund did not find the stamp its charge stored")
+
+				for _, name := range []string{pgChargeName, pgRefundName} {
+					runs := e.tracer.args(pgStatement(t, name))
+					require.NotEmpty(t, runs, "no %s statement was traced", name)
+					for _, args := range runs {
+						require.Len(t, args, 6)
+						assert.Nil(t, args[4], "%s passed an application time with no clock configured", name)
+					}
+				}
+			},
+		},
+		{
 			name:   "each record leaves newest_at at its newest stamp",
 			limit:  20,
 			window: time.Minute,

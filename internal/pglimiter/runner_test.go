@@ -456,6 +456,176 @@ func TestBackend_RecordFailure(t *testing.T) {
 	}
 }
 
+func TestBackend_Charge(t *testing.T) {
+	t.Parallel()
+
+	longKey := strings.Repeat("k", 600)
+	stamp := testNow.Add(-time.Microsecond)
+	errCharge := errors.New("canceling statement due to lock timeout")
+
+	type testCase struct {
+		name   string
+		prefix string
+		key    string
+		cfg    func(c pglimiter.Config) pglimiter.Config
+		script func(ctrl *gomock.Controller, r *MockRunner, key string)
+		assert func(t *testing.T, r ratelimit.Receipt, exceeded bool, err error)
+	}
+
+	// expectCharge scripts the charge statement with the application clock
+	// and the default lock timeout, answering recorded and at.
+	expectCharge := func(recorded bool, at time.Time, err error) func(ctrl *gomock.Controller, r *MockRunner, key string) {
+		return func(ctrl *gomock.Controller, r *MockRunner, key string) {
+			r.EXPECT().QueryRowReadCommitted(gomock.Any(), pgschema.LimiterCharge,
+				backendNamespace, pgschema.LimiterKey(key), backendLimit, backendWindowUS, testNow, "250ms").
+				Return(rowScanning(ctrl, err, recorded, at))
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "an accepted charge returns the stored stamp under the caller's key", prefix: "pgxstore", key: "k",
+			cfg: withClock, script: expectCharge(true, stamp, nil),
+			assert: func(t *testing.T, r ratelimit.Receipt, exceeded bool, err error) {
+				require.NoError(t, err)
+				assert.False(t, exceeded)
+				assert.Equal(t, ratelimit.NewReceipt("k", stamp), r)
+			},
+		},
+		{
+			name: "a refused charge returns the zero receipt", prefix: "pgxstore", key: "k",
+			cfg: withClock, script: expectCharge(false, stamp, nil),
+			assert: func(t *testing.T, r ratelimit.Receipt, exceeded bool, err error) {
+				require.NoError(t, err)
+				assert.True(t, exceeded)
+				assert.Zero(t, r)
+			},
+		},
+		{
+			name: "a long key is charged in its stored form, and its receipt keeps the caller's key", prefix: "sqlstore",
+			key: longKey, cfg: withClock, script: expectCharge(true, stamp, nil),
+			assert: func(t *testing.T, r ratelimit.Receipt, _ bool, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, longKey, r.Key())
+			},
+		},
+		{
+			name: "the database clock is a nil now, and the operation timeout the lock timeout", prefix: "sqlstore", key: "k",
+			cfg: func(c pglimiter.Config) pglimiter.Config {
+				c.Unavailable.Timeout = 400 * time.Millisecond
+				return c
+			},
+			script: func(ctrl *gomock.Controller, r *MockRunner, key string) {
+				r.EXPECT().QueryRowReadCommitted(gomock.Any(), pgschema.LimiterCharge,
+					backendNamespace, pgschema.LimiterKey(key), backendLimit, backendWindowUS, gomock.Nil(), "400ms").
+					Return(rowScanning(ctrl, nil, true, stamp))
+			},
+			assert: func(t *testing.T, r ratelimit.Receipt, exceeded bool, err error) {
+				require.NoError(t, err)
+				assert.False(t, exceeded)
+				assert.True(t, stamp.Equal(r.Stamp()))
+			},
+		},
+		{
+			name: "a charge error refuses, wrapped with the prefix", prefix: "sqlstore", key: "k",
+			cfg: withClock, script: expectCharge(false, time.Time{}, errCharge),
+			assert: func(t *testing.T, r ratelimit.Receipt, exceeded bool, err error) {
+				assert.True(t, exceeded)
+				assert.Zero(t, r)
+				require.ErrorIs(t, err, errCharge)
+				assert.EqualError(t, err, "sqlstore: rate-limit charge: canceling statement due to lock timeout")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := pglimiter.DefaultConfig()
+			if tc.cfg != nil {
+				cfg = tc.cfg(cfg)
+			}
+			ctrl := gomock.NewController(t)
+			r := NewMockRunner(ctrl)
+			tc.script(ctrl, r, tc.key)
+			b := pglimiter.NewBackend(r, tc.prefix, backendNamespace, backendLimit, backendWindow, cfg)
+
+			receipt, exceeded, err := b.Charge(t.Context(), tc.key)
+			tc.assert(t, receipt, exceeded, err)
+		})
+	}
+}
+
+func TestBackend_Refund(t *testing.T) {
+	t.Parallel()
+
+	stamp := testNow.Add(-time.Second)
+	errRefund := errors.New("conn reset")
+
+	type testCase struct {
+		name    string
+		prefix  string
+		receipt ratelimit.Receipt
+		cfg     func(c pglimiter.Config) pglimiter.Config
+		script  func(r *MockRunner)
+		assert  func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "refunds the receipt's stamp from its key's stored form", prefix: "pgxstore",
+			receipt: ratelimit.NewReceipt(strings.Repeat("k", 600), stamp), cfg: withClock,
+			script: func(r *MockRunner) {
+				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRefund,
+					backendNamespace, pgschema.LimiterKey(strings.Repeat("k", 600)), stamp, backendWindowUS, testNow, "250ms").
+					Return(nil)
+			},
+			assert: accepted,
+		},
+		{
+			name: "the database clock is a nil now", prefix: "sqlstore", receipt: ratelimit.NewReceipt("k", stamp),
+			script: func(r *MockRunner) {
+				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRefund,
+					backendNamespace, "k", stamp, backendWindowUS, gomock.Nil(), "250ms").Return(nil)
+			},
+			assert: accepted,
+		},
+		{
+			name: "the zero receipt runs nothing", prefix: "sqlstore",
+			script: func(*MockRunner) {}, // any call fails the mock
+			assert: accepted,
+		},
+		{
+			name: "a refund error is wrapped with the prefix", prefix: "sqlstore", receipt: ratelimit.NewReceipt("k", stamp),
+			script: func(r *MockRunner) {
+				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRefund, gomock.Any(), gomock.Any(), gomock.Any(),
+					gomock.Any(), gomock.Any(), gomock.Any()).Return(errRefund)
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, errRefund)
+				assert.EqualError(t, err, "sqlstore: rate-limit refund: conn reset")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := pglimiter.DefaultConfig()
+			if tc.cfg != nil {
+				cfg = tc.cfg(cfg)
+			}
+			r := NewMockRunner(gomock.NewController(t))
+			tc.script(r)
+			b := pglimiter.NewBackend(r, tc.prefix, backendNamespace, backendLimit, backendWindow, cfg)
+
+			tc.assert(t, b.Refund(t.Context(), tc.receipt))
+		})
+	}
+}
+
 // TestFactsCheck pins the order Verify refuses a server's facts in, their
 // messages, and the version floor, which no supported server can be made to
 // fail.

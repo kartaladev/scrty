@@ -104,7 +104,8 @@ const fullWarning = "ratelimit: the in-memory limiter is holding its maximum num
 // attempt in the burst may read the count before any of them has recorded. The
 // limit holds against sustained pressure, which is what it is for; it is not a
 // semaphore. See SourceGuard for the same bound stated where the two steps are
-// called.
+// called. A flow that cannot accept the bound uses Charge, which checks and
+// records in one step, and Refund, so the limit holds under any concurrency.
 //
 // A MemoryLimiter is safe for concurrent use.
 type MemoryLimiter struct {
@@ -491,3 +492,95 @@ func (l *MemoryLimiter) Policy() (limit int, window time.Duration) {
 var _ PolicyReporter = (*MemoryLimiter)(nil)
 
 var _ Pruner = (*MemoryLimiter)(nil)
+
+// Charge records one failure for key and reports the key below its limit, or
+// reports it at its limit and records nothing, under the one hold of key's
+// shard lock that also guards Exceeded and RecordFailure, so concurrent
+// charges of one key never hold more failures in the window than the limit.
+// It implements Charger.
+//
+// The receipt of an accepted charge carries the stamp exactly as stored. A
+// refused charge returns the zero Receipt.
+//
+// A context that has already ended is refused with an error, and nothing is
+// recorded, as Exceeded refuses it: no attempt is made without its charge. A
+// caller that must charge for an attempt whose client may hang up strips the
+// cancellation first.
+//
+// A key the limiter does not hold, charged while it holds its maximum number
+// of keys, is refused with an error wrapping ErrLimiterFull, and nothing is
+// stored. A key it holds is charged as below the maximum.
+func (l *MemoryLimiter) Charge(ctx context.Context, key string) (Receipt, bool, error) {
+	l.warnOnce.Do(l.warnPerReplica)
+
+	if err := ctx.Err(); err != nil {
+		return Receipt{}, true, fmt.Errorf("ratelimit: charge %q: %w", key, err)
+	}
+
+	now := l.clock.Now()
+	s := l.shardFor(key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l.release(s.sweepLocked(now, l.window))
+
+	if _, ok := s.keys[key]; ok {
+		if s.countLocked(key, now.Add(-l.window)) >= l.limit {
+			return Receipt{}, true, nil
+		}
+	} else if !l.reserve() {
+		l.warnFull(now)
+
+		return Receipt{}, true, fmt.Errorf("ratelimit: charge %q: %w", key, ErrLimiterFull)
+	}
+	s.recordLocked(key, now, l.limit)
+
+	return NewReceipt(key, now), false, nil
+}
+
+// Refund removes the one stamp r names from r's key, while the window still
+// counts it, and nothing else. It implements Charger.
+//
+// A stamp is matched with time.Time.Equal. Two charges at the same instant
+// store two equal stamps, and a refund removes one of them. A receipt whose
+// stamp has left the window, or was never stored, removes nothing, and so does
+// the zero Receipt. A key left with no stamps gives back its place under the
+// key cap.
+//
+// It ignores ctx, as RecordFailure does: the work is in memory, and there is
+// nothing to abandon. It never returns an error.
+func (l *MemoryLimiter) Refund(_ context.Context, r Receipt) error {
+	if r.stamp.IsZero() {
+		return nil
+	}
+
+	now := l.clock.Now()
+	s := l.shardFor(r.key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !r.stamp.After(now.Add(-l.window)) {
+		return nil
+	}
+	stamps, held := s.keys[r.key]
+	if !held {
+		return nil
+	}
+	i := slices.IndexFunc(stamps, r.stamp.Equal)
+	if i < 0 {
+		return nil
+	}
+	if stamps = slices.Delete(stamps, i, i+1); len(stamps) > 0 {
+		s.keys[r.key] = stamps
+
+		return nil
+	}
+	delete(s.keys, r.key)
+	l.release(1)
+
+	return nil
+}
+
+var _ Charger = (*MemoryLimiter)(nil)

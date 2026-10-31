@@ -28,9 +28,11 @@ const maxRawKeyLen = 512
 // It keeps the in-memory limiter's semantics: per key, at most the limit's
 // number of the newest failure stamps; a failure counts while it is strictly
 // younger than the window; a key is exceeded once it holds the limit. Stamps
-// are stored to the microsecond. It is safe for concurrent use.
+// are stored to the microsecond. A charge decides and records in one script,
+// so a flow that charges first holds its limit under any concurrency
+// (Charge). It is safe for concurrent use.
 type Limiter struct {
-	limiter ratelimit.Limiter
+	limiter unavailable.Limiter
 	check   serverCheck
 
 	// limit and window are the policy NewLimiter was given, kept so Policy can
@@ -41,6 +43,7 @@ type Limiter struct {
 
 var (
 	_ ratelimit.Limiter        = (*Limiter)(nil)
+	_ ratelimit.Charger        = (*Limiter)(nil)
 	_ ratelimit.PolicyReporter = (*Limiter)(nil)
 )
 
@@ -209,6 +212,38 @@ func (l *Limiter) RecordFailure(ctx context.Context, key string) error {
 	return l.limiter.RecordFailure(ctx, key)
 }
 
+// Charge records one failure for key and reports the key below its limit, or
+// reports it at its limit and records nothing, in one script the server runs
+// without interleaving any other command: concurrent charges of one key, from
+// any replica, never hold more failures in the window than the limit. It
+// implements ratelimit.Charger. An accepted charge also keeps the key at least
+// one window from now, as RecordFailure does. The receipt carries the stamp as
+// stored, to the microsecond; a refused charge returns the zero Receipt.
+//
+// An ended context is refused with its error before any I/O, and nothing is
+// recorded. The caller's cancellation bounds the call, as for Exceeded, and so
+// does the operation timeout (WithOperationTimeout). While the server cannot
+// be reached the answer comes from the unavailable mode (WithOnUnavailable):
+// by default true, with an error wrapping ratelimit.ErrBackendUnavailable; in
+// fall-back mode the charge is made on this replica's local count.
+func (l *Limiter) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	return l.limiter.Charge(ctx, key)
+}
+
+// Refund removes the one failure r recorded, while it is still in the window,
+// in one script; of two failures stamped in the same microsecond it removes
+// one. It leaves the key's lifetime as it is. The zero Receipt does nothing.
+// It implements ratelimit.Charger.
+//
+// The caller's cancellation is ignored, as for RecordFailure, and the call is
+// bounded by the operation timeout instead. A refund that cannot reach the
+// server is an error wrapping ratelimit.ErrBackendUnavailable, and the failure
+// stays counted; in fall-back mode, during an outage, the refund is made on
+// this replica's local count.
+func (l *Limiter) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	return l.limiter.Refund(ctx, r)
+}
+
 // Policy reports the limit and window the limiter was built with
 // (NewLimiter's arguments), the window in the whole microseconds it is counted
 // in. Both are fixed at construction.
@@ -250,6 +285,29 @@ func (b *backend) RecordFailure(ctx context.Context, key string) error {
 	return recordScript.Run(ctx, b.client, []string{b.key(key)}, b.now(), b.windowUS, b.limit, memberSuffix()).Err()
 }
 
+// Charge runs chargeScript. A refusal is the zero Receipt; an accepted charge
+// carries the stored stamp, in whole microseconds, and the caller's key.
+func (b *backend) Charge(ctx context.Context, key string) (ratelimit.Receipt, bool, error) {
+	stamp, err := chargeScript.Run(ctx, b.client, []string{b.key(key)}, b.now(), b.windowUS, b.limit, memberSuffix()).Int64()
+	switch {
+	case err != nil:
+		return ratelimit.Receipt{}, true, err
+	case stamp < 0:
+		return ratelimit.Receipt{}, true, nil
+	}
+	return ratelimit.NewReceipt(key, time.UnixMicro(stamp)), false, nil
+}
+
+// Refund runs refundScript for r's stamp in whole microseconds. The zero
+// Receipt sends nothing.
+func (b *backend) Refund(ctx context.Context, r ratelimit.Receipt) error {
+	if r.Stamp().IsZero() {
+		return nil
+	}
+	return refundScript.Run(ctx, b.client, []string{b.key(r.Key())}, b.now(), b.windowUS,
+		strconv.FormatInt(r.Stamp().UnixMicro(), 10)).Err()
+}
+
 func (b *backend) key(key string) string {
 	return b.prefix + mappedKey(key)
 }
@@ -286,11 +344,12 @@ func storageKey(prefix, namespace, key string) string {
 // stamp in microseconds. Each member is "<stamp>:<carried window>:<suffix>":
 // the stamp, the longest window in microseconds any instance had recorded the
 // key with when this member was added, and a random suffix, so two failures in
-// the same microsecond are two members. Only recordScript reads a member; a
-// member that does not have that shape is ignored. Each script touches only
-// the one key it declares, so it runs on Redis Cluster without hash tags.
+// the same microsecond are two members. Only the scripts that record or refund
+// read a member's carried window; a member that does not have that shape is
+// ignored. Each script touches only the one key it declares, so it runs on
+// Redis Cluster without hash tags.
 //
-// Both read "now" from ARGV[1], or from the server's TIME when ARGV[1] is
+// Each reads "now" from ARGV[1], or from the server's TIME when ARGV[1] is
 // empty, and the window in microseconds from ARGV[2].
 //
 // A stamp is about 1.7e15 microseconds, exact in Lua's double but not in its
@@ -331,7 +390,12 @@ func storageKey(prefix, namespace, key string) string {
 // key with no lifetime at all, which is shorter, so such a key gains one;
 // PEXPIRE ... GT alone would leave it without, because GT reads no lifetime as
 // an infinite one.
-var recordScript = redis.NewScript(`
+var recordScript = redis.NewScript(luaNow + luaRecord + `
+return 1
+`)
+
+// luaNow sets now from ARGV[1], or from the server's TIME when it is empty.
+const luaNow = `
 local now
 if ARGV[1] == '' then
   local t = redis.call('TIME')
@@ -339,16 +403,21 @@ if ARGV[1] == '' then
 else
   now = tonumber(ARGV[1])
 end
-local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
+`
+
+// luaCarriedWindow sets carried to the largest of window and the window every
+// member of KEYS[1] carries.
+const luaCarriedWindow = `
 local carried = window
 for _, m in ipairs(redis.call('ZRANGE', KEYS[1], 0, -1)) do
   local w = tonumber(string.match(m, '^[^:]+:([^:]+):'))
   if w and w > carried then carried = w end
 end
-redis.call('ZADD', KEYS[1], now,
-  string.format('%.0f', now) .. ':' .. string.format('%.0f', carried) .. ':' .. ARGV[4])
-redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(limit + 1))
+`
+
+// luaCarryOnNewest rewrites the newest member of KEYS[1], same score, stamp
+// and suffix, to carry the carried window if it carries less.
+const luaCarryOnNewest = `
 local newest = redis.call('ZRANGE', KEYS[1], -1, -1, 'WITHSCORES')
 if newest[1] then
   local stamp, w, suffix = string.match(newest[1], '^([^:]+):([^:]+):(.*)$')
@@ -359,10 +428,67 @@ if newest[1] then
       stamp .. ':' .. string.format('%.0f', carried) .. ':' .. suffix)
   end
 end
+`
+
+// luaRecord is recordScript's body after now is set: it adds now, keeps the
+// newest limit stamps, keeps the carried window on the newest member and
+// extends the key's lifetime, as recordScript's comment describes.
+const luaRecord = `
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+` + luaCarriedWindow + `
+redis.call('ZADD', KEYS[1], now,
+  string.format('%.0f', now) .. ':' .. string.format('%.0f', carried) .. ':' .. ARGV[4])
+redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(limit + 1))
+` + luaCarryOnNewest + `
 local ttl_ms = math.ceil(carried / 1000)
 if redis.call('PTTL', KEYS[1]) < ttl_ms then
   redis.call('PEXPIRE', KEYS[1], ttl_ms)
 end
+`
+
+// chargeScript records one failure only while the key holds fewer than the
+// limit within the window, deciding and recording in one script, which the
+// server runs without interleaving any other command. Its arguments are
+// recordScript's. It counts the stamps strictly after now - window, as
+// exceededScript does; at the limit it returns -1 and writes nothing, the
+// key's lifetime included. Below it, it records exactly as recordScript does
+// and returns now, the stamp it stored, in microseconds.
+//
+// Like recordScript it does not drop stamps older than its own window, so a
+// longer-window replica keeps counting them. The stamp it adds is never the
+// one the newest-limit trim removes: every member at or after now is inside
+// the window, and fewer than limit are.
+var chargeScript = redis.NewScript(luaNow + `
+if redis.call('ZCOUNT', KEYS[1], string.format('(%.0f', now - tonumber(ARGV[2])), '+inf') >= tonumber(ARGV[3]) then
+  return -1
+end
+` + luaRecord + `
+return now
+`)
+
+// refundScript removes one member whose stamp is ARGV[3], in microseconds,
+// while that stamp is strictly after now - window, and returns how many it
+// removed: 1, or 0 when the stamp has left the window or is not held. Of two
+// members with one stamp it removes one. It reads now and the window as the
+// other scripts do.
+//
+// The member it removes may be the one carrying the longest window, so, as
+// after recordScript's trim, the newest survivor is rewritten to carry the
+// window the members carried before the removal. It leaves the key's
+// lifetime as it is: lifetimes are only ever extended.
+var refundScript = redis.NewScript(luaNow + `
+local window = tonumber(ARGV[2])
+if tonumber(ARGV[3]) <= now - window then
+  return 0
+end
+local victim = redis.call('ZRANGE', KEYS[1], ARGV[3], ARGV[3], 'BYSCORE', 'LIMIT', 0, 1)
+if not victim[1] then
+  return 0
+end
+` + luaCarriedWindow + `
+redis.call('ZREM', KEYS[1], victim[1])
+` + luaCarryOnNewest + `
 return 1
 `)
 

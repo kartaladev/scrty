@@ -416,6 +416,130 @@ func TestLimiter_ScriptCalls(t *testing.T) {
 	}
 }
 
+// TestLimiter_ChargeScripts pins what Charge and Refund send, without a
+// server: one script call each, declaring the one key, with the arguments the
+// scripts read, and the receipt Charge builds from the script's answer.
+func TestLimiter_ChargeScripts(t *testing.T) {
+	t.Parallel()
+
+	at := time.Unix(1_700_000_000, 123_456_000)
+	stampUS := at.UnixMicro()
+	const key = "scrty:ratelimit:api-key:k"
+
+	type outcome struct {
+		receipt  ratelimit.Receipt
+		exceeded bool
+		err      error
+	}
+
+	type testCase struct {
+		name   string
+		reply  any
+		opts   []redisstore.Option
+		call   func(t *testing.T, l *redisstore.Limiter) outcome
+		assert func(t *testing.T, cmds [][]any, o outcome)
+	}
+
+	charge := func(t *testing.T, l *redisstore.Limiter) outcome {
+		r, exceeded, err := l.Charge(t.Context(), "k")
+		return outcome{receipt: r, exceeded: exceeded, err: err}
+	}
+	refund := func(r ratelimit.Receipt) func(t *testing.T, l *redisstore.Limiter) outcome {
+		return func(t *testing.T, l *redisstore.Limiter) outcome {
+			return outcome{err: l.Refund(t.Context(), r)}
+		}
+	}
+	// script returns the command name, the declared keys and the arguments.
+	script := func(t *testing.T, cmds [][]any) (string, []any, []any) {
+		t.Helper()
+		require.Len(t, cmds, 1)
+		cmd := cmds[0]
+		require.GreaterOrEqual(t, len(cmd), 3)
+		n, ok := cmd[2].(int)
+		require.True(t, ok, "numkeys %v", cmd[2])
+		return strings.ToLower(cmd[0].(string)), cmd[3 : 3+n], cmd[3+n:]
+	}
+
+	cases := []testCase{
+		{
+			name: "charge, server clock: the script's stamp is the receipt's", reply: stampUS, call: charge,
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.NoError(t, o.err)
+				assert.False(t, o.exceeded)
+				assert.Equal(t, "k", o.receipt.Key())
+				assert.True(t, time.UnixMicro(stampUS).Equal(o.receipt.Stamp()), "stamp %s", o.receipt.Stamp())
+				name, keys, args := script(t, cmds)
+				assert.Equal(t, "evalsha", name)
+				assert.Equal(t, []any{key}, keys)
+				require.Len(t, args, 4)
+				assert.Equal(t, "", args[0], "the host clock was sent instead of the server's TIME")
+				assert.Equal(t, "60000000", args[1], "window in microseconds")
+				assert.Equal(t, "3", args[2], "limit")
+				assert.Len(t, args[3], 16, "member suffix")
+			},
+		},
+		{
+			name: "charge, application clock", reply: stampUS, call: charge,
+			opts: []redisstore.Option{redisstore.WithClock(clockwork.NewFakeClockAt(at))},
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.NoError(t, o.err)
+				_, _, args := script(t, cmds)
+				assert.Equal(t, strconv.FormatInt(stampUS, 10), args[0])
+			},
+		},
+		{
+			name: "a refused charge returns the zero receipt", reply: int64(-1), call: charge,
+			assert: func(t *testing.T, _ [][]any, o outcome) {
+				require.NoError(t, o.err)
+				assert.True(t, o.exceeded)
+				assert.Zero(t, o.receipt)
+			},
+		},
+		{
+			name: "refund, server clock: the receipt's stamp in microseconds", reply: int64(1),
+			call: refund(ratelimit.NewReceipt("k", time.UnixMicro(stampUS))),
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.NoError(t, o.err)
+				name, keys, args := script(t, cmds)
+				assert.Equal(t, "evalsha", name)
+				assert.Equal(t, []any{key}, keys)
+				assert.Equal(t, []any{"", "60000000", strconv.FormatInt(stampUS, 10)}, args)
+			},
+		},
+		{
+			name: "refund, application clock", reply: int64(0),
+			opts: []redisstore.Option{redisstore.WithClock(clockwork.NewFakeClockAt(at))},
+			call: refund(ratelimit.NewReceipt("k", time.UnixMicro(stampUS))),
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.NoError(t, o.err, "a stamp no longer held is not an error")
+				_, _, args := script(t, cmds)
+				assert.Equal(t, strconv.FormatInt(stampUS, 10), args[0])
+			},
+		},
+		{
+			name: "refunding the zero receipt sends nothing", call: refund(ratelimit.Receipt{}),
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.NoError(t, o.err)
+				assert.Empty(t, cmds)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, rec := recordingClient(t, tc.reply)
+			opts := append([]redisstore.Option{redisstore.WithLogger(quietLogger())}, tc.opts...)
+			l, err := redisstore.NewLimiter(client, "api-key", 3, time.Minute, opts...)
+			require.NoError(t, err)
+
+			o := tc.call(t, l)
+			tc.assert(t, rec.commands(), o)
+		})
+	}
+}
+
 // TestLimiter_Policy pins the "Shared limiter" scenario: the limiter reports,
 // through the optional contract, the limit and window it was built with, the
 // window as the backend counts it. Construction does no I/O, so a client
