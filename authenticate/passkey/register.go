@@ -30,8 +30,9 @@ import (
 // is refused with ErrReauthenticationRequired. A password session that owes a
 // challenge steps up through the passkey MFA method; a session whose first
 // factor is a passkey cannot meet the second factor through it (a same-channel
-// re-proof refreshes freshness only), and signs in again with user verification, or by password and then
-// the passkey step-up. A nil entry in rc.MFAMethods is ErrConfig, whatever the
+// re-proof refreshes freshness only), and signs in again with user
+// verification, or by password and then the passkey step-up, or re-proves with
+// a second factor on another channel. A nil entry in rc.MFAMethods is ErrConfig, whatever the
 // session's MFA state. A user issued the registration challenge limit
 // within the hour is refused with ErrRegistrationThrottled, as is one the
 // challenge store cannot decide the issue for. The count and the issue are one

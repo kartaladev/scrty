@@ -154,13 +154,14 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //   - "<prefix>/begin" admits the session (passkey.Passkeys.BeginRegistration),
 //     deciding whether it owes a second factor over the MFA slot's methods,
 //     the passkey method among them when it is there, and over the user's own
-//     active passkeys when that method is there or WithPasskeyPasswordlessLogin is
-//     given and its login proves the second factor. A password session steps
+//     active passkeys when that method is there or
+//     WithPasskeyPasswordlessLogin is given and its login proves the second
+//     factor. A password session steps
 //     up through the passkey MFA method (recognised by identity: a wrapped
 //     method opens no route); a passkey-first session cannot meet the second
-//     factor through it (a same-channel re-proof refreshes freshness only), and signs in
-//     again with user verification, or by password and then the passkey
-//     step-up. It answers 200 with
+//     factor through it (a same-channel re-proof refreshes freshness only),
+//     and signs in again with user verification, by password and then the
+//     passkey step-up, or by a re-proof on another channel. It answers 200 with
 //     {"publicKey":{…creation options…}} and Cache-Control: no-store
 //     (WithPasskeyBeginResponder);
 //   - "<prefix>/finish" reads the authenticator's response as a JSON body of

@@ -58,7 +58,9 @@
 // second factor through the passkey method: it is on the same channel, which
 // the security policies never offer as that session's second factor, and a
 // same-channel re-proof refreshes the authentication time only. It signs in
-// again with user verification, or by password and then the passkey step-up.
+// again with user verification, or by password and then the passkey step-up,
+// or re-proves at the re-authentication endpoints with a second factor on
+// another channel, such as TOTP.
 // With no route a passkey meets no second factor, and counting it would leave
 // its holder unable ever to manage passkeys. Pending and suspended passkeys
 // never count.
@@ -66,9 +68,10 @@
 // One limit is accepted and fails closed. When WithoutSecondFactorAtLogin is
 // set, this manager's passkey MFA method is on the MFA slot, and a policy
 // completes a passkey-first session without a second factor, that session
-// cannot register or remove a passkey, and no re-proof changes that: a
-// passkey re-proof refreshes freshness without meeting the second factor. It
-// is refused, never admitted.
+// cannot register or remove a passkey until it meets the second factor on
+// another channel: a passkey re-proof refreshes freshness without meeting it,
+// so a user whose only second factor is the passkey cannot. It is refused,
+// never admitted.
 //
 // The passkey MFA method is recognised as this manager's route by identity:
 // the MFAMethod that (*Passkeys).MFAMethod returned, not a method that wraps or
