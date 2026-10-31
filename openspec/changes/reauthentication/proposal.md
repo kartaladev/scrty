@@ -44,8 +44,8 @@ OWASP asks for re-authentication before sensitive changes, and services such as 
 
 ### Modified Capabilities
 
-- `sessions`: the authentication time is also refreshed by a re-authentication, and one shared check decides whether a session authenticated within a window.
-- `multi-factor-auth`: the verify and begin endpoints serve only a session that owes a second-factor challenge.
+- `sessions`: the authentication time is also refreshed by a re-authentication, one shared check decides whether a session authenticated within a window, and a strict rotation that lost a race within one manager is a renewal conflict rather than not-found (design D10).
+- `multi-factor-auth`: the verify and begin endpoints serve only a session that owes a second-factor challenge, and concurrent verifications of one pending session yield one success and one renewal conflict.
 - `account-recovery`: regeneration freshness reads the session's authentication time, wording only (the code already reads it).
 - `passkey-authentication`: registration and removal freshness read the session's authentication time, wording only.
 - `http-error-propagation`: the new refusals join the public contract and the status table.
