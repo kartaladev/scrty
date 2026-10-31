@@ -128,6 +128,8 @@ type ReauthenticationRequiredError struct{ Window time.Duration }
   - An adversary-in-the-middle phisher holds the password and the session cookie, but not a fresh TOTP code, which scrty's replay guard refuses once used.
   - This is the line the library-design rule asks to state: the option would weaken a documented guarantee, so it does not exist.
 - **Enrolment lookup failure** refuses the request, and never falls back to the password. Otherwise an outage of the enrolment store would downgrade every user.
+  - **Which lookups each endpoint needs.** The password endpoint and the listing must know that the user holds *none* of the configured methods, so they look up every method, and any failure refuses. Second-factor begin and verify name their method; the user presenting an enrolled second factor is already the strongest proof the policy can ask for, so they look up only the named method's enrolment, and a failure of that lookup refuses. A failure of an unrelated method's lookup cannot cause a downgrade on that path, so it no longer refuses a TOTP re-proof because the passkey store is down. The password path keeps its full lookup, so the downgrade guard is unchanged.
+  - **Reproduced:** `TestReproReauthTOTPIgnoresUnrelatedMethodEnrolmentFailure`. With TOTP enrolled and a second method whose enrolment lookup fails, a valid TOTP code at `/reauth/verify/totp` is refused with "the re-authentication methods could not be looked up". It is task 9.5's red step. The existing row "a lookup failure refuses and verifies nothing" in `reauth_verify_test.go` pinned the old behaviour on this path and moves to the named method's own lookup.
 - **Email-channel methods** that a consumer supplies count like any enrolled method. No built-in one exists.
 - **Users with no password** cannot be told apart without loading the user. The listing reports the password as accepted for anyone with no second factor. Their password re-proof then fails as a wrong password would, after the authenticator's decoy comparison. A consumer listing responder can filter it out (Risks).
 
@@ -151,6 +153,11 @@ type ReauthenticationRequiredError struct{ Window time.Duration }
 - **Classification:** this is unpinned behaviour, not a reported defect. No test or scenario covers it. The first task writes the failing test that shows a full session accepted today, then turns it into the refusal.
 - **Default:** refuse. **Override:** none. Re-proof is `/reauth`.
 - **Migration:** a consumer who posted codes to `/mfa/verify` from a full session moves to `/reauth/verify/{method}`. Nothing is tagged yet.
+- **Passkey management needs re-authentication on an MFA chain (wiring rule).** A full session that has not met its second factor (an `MFANone` session of a user who enrolled after signing in, or whose policy asked for none at sign-in) can reach "second factor met" only through a re-proof once this refusal lands. Passkey registration and removal require that state for a user enrolled on an MFA method on the slot. A chain with the MFA slot and passkeys but without `EnableReauthentication` would therefore build, and then refuse that user's passkey management for good, with no route to repair it short of a sign-in the policy may never challenge. Before this change, `/mfa/verify` was that route, as it is in the established design.
+  - **Decision:** `New` fails with `ErrConfig` when the chain has the MFA slot and passkeys and not `EnableReauthentication`, naming the missing option. A wiring that leaves a user unable to reach a state a feature requires is a configuration error (library-design rule 6), and re-proof keeps one home.
+  - **Default:** the refusal. **Override:** enabling re-authentication, which is the remedy. Recovery-code regeneration needs freshness only, which a new sign-in gives, so it is not part of the rule.
+  - **Reproduced:** `TestRepro_FullSessionStepsUpAtMFAVerifyWithoutReauthentication`. On a chain with MFA and passkeys and no re-authentication, an `MFANone` session's valid TOTP code at `/mfa/verify/totp` is refused with `ErrNoMFAChallengePending`, and passkey `begin` stays refused with `passkey.ErrReauthenticationRequired`. It becomes the red step of task 9.2, reworded to assert the construction refusal.
+  - **Alternatives rejected:** *enabling re-authentication by default whenever MFA is on*, which registers endpoints the consumer never asked for and needs an off switch of its own; *restoring step-up at `/mfa/verify` while re-authentication is off*, which gives re-proof two homes with different rules in that configuration.
 
 ### D6. The re-authentication interceptor
 
@@ -190,12 +197,13 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
   - **Password re-proof uses the form login's** password path: its pre-authentication step (lockout), the decoy-even authenticator and failure recording on the attempt store, and the form login's own source guard, charged exactly as a login charges it (a lock and a refused password; never a policy refusal). Success clears the user's lockout failures, as a login does.
   - **The proved account must be the session's.** The username comes from the resolved caller, so the endpoint refuses, as authentication failed, a caller whose ID is not the session's user before any password is checked, and a password that proved an account other than the session's user before anything is reset or refreshed. The second refusal is reachable only through a consumer interceptor that rewrites the caller's username, a wiring fault rather than a request, so it records no failure and charges no source: a failure would count a correct password against the other account's lockout.
 - **One implementation per control.** Re-proof calls the same code as the paths it mirrors, never a copy: one challenge spend and one expiry sweep shared with the MFA slot (the purpose and log names as parameters), and one form-login method for the whole password order (source throttle, pre-authentication and lock refusal, source charging, the password check) shared by login and the password re-proof. A fix to either path then reaches both, so re-proof never becomes a weaker pathway (OWASP ASVS 4.0 §1.2.4; CWE-1041). Behaviour is unchanged.
+  - **The second-factor response check and challenge issue, too.** After task 6.8 the MFA slot's `verify`, `begin` and `wireChallenges` and re-proof's `verify`, `begin` and `buildChallenges` still repeat the same order: the throttle check, the response reader, the challenge spend, the classification of a failed `Verify` (not counted for `mfa.ErrAuthenticatorRefused` or `mfa.ErrVerifyThrottled`), the sweep, `IssueWithin` with its `ErrIssueLimitReached` mapping, `BeginChallenge`, and the per-method manager construction. They become one response check and one challenge issue taking the throttle, the manager and the method, and one manager builder taking a purpose function. Admission and resolve stay each path's own, because they differ. Behaviour is unchanged; this is a refactor, not a defect claim.
 - **Admission:** a session with a resolved caller, and `MFA` in {`MFANone`, `MFASatisfied`}. It must have no `PasswordChangePending`, no enrolment or recovery marker (`EnrolmentOriginDeadline`; `RecoveredAt` is history, not a marker), and no challenge a consumer gate raised on the request (`Exchange.RaisedChallenge`), as the recovery-code endpoint already checks. Otherwise it is refused as authentication required. A fresh session is served: re-proving early is harmless and throttled.
   - The raised-challenge check means a consumer gate registered after slot 655 still cannot let a session owing its challenge become fresh. The alternative, documenting that consumer gates must sit before 655, was rejected: it leaves the spec's "no pending challenge of any kind" true only for a correctly ordered chain.
 - **Verify order:**
   1. admission;
   2. method name;
-  3. the factor policy (D3, D4) through the enrolment lookups, where a failure refuses;
+  3. the factor policy (D3, D4) through the named method's own enrolment lookup, where a failure refuses (D3, "Which lookups each endpoint needs");
   4. throttle check;
   5. read the response with the method's reader;
   6. spend the re-proof challenge for a challenge method;
@@ -210,7 +218,10 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
   3. bind only `password`, from the form field or a JSON body, under the login body limit. A missing field is `ErrCredentialsMissing` (400);
   4. the username comes from `ex.Authentication.Principal.Username`, never the request. An empty username refuses as authentication failed;
   5. the form login's `attemptPassword`, the order login itself runs (source throttle, pre-authentication and lock refusal, the password check, each refusal charged as login charges it), then the check that the proved account is the session's user;
-  6. on success, reset failures and resolve.
+  6. the post-authentication policy phase, with the input a login builds for the same principal, first factor, username and password-change time, read at the chain's time. A deny refuses with the policy's reason, as a login is refused. A challenge refuses with a `*ChallengeError` of that kind carrying no session: re-proof never marks or rotates a session into a pending state, so the user meets the challenge by signing in. Neither outcome resets failures, rotates or refreshes anything;
+  7. on success, reset failures and resolve.
+  - **Why the phase runs.** A password re-proof is a first-factor authentication, and the post-authentication phase is where a consumer refuses one: a suspended account, a disallowed network, an expired password. Without it, a user that login refuses could still make an existing session fresh and pass every recency-guarded route. The pre-authentication phase is already shared through `attemptPassword`, so this closes the same gap for the phase after it (OWASP ASVS 4.0 §1.2.4). A second-factor re-proof does not run it, as MFA verify does not: the phase judges the first factor, and the session's first factor already passed it at sign-in.
+  - **Reproduced:** `TestReproPasswordReproofAppliesPostAuthenticationPolicy`. With a policy denying in `PostAuthentication`, login for the user is refused, and `POST /reauth/password` with the correct password succeeds and rotates the session. It is task 9.4's red step.
 - **Resolve:**
   1. Set `AuthenticatedAt = now` from the chain's time source.
   2. For a second factor, also set `MFA = MFASatisfied` and `MFASatisfiedAt = now`.
@@ -224,16 +235,25 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
   - Each challenge's subject is the user and it is bound to the session ID. It expires after 5 minutes, with an issuance limit of 10 per user and method per hour.
   - The default store is in memory, documented as single-process, and the chain's expiry sweep covers it as it covers the MFA challenges.
   - These settings are separate options because the project rule says one option never silently governs two subsystems. The defaults are the MFA slot's values.
+  - **A shared MFA store without a re-proof store is a wiring error.** When the MFA slot was given a store (`WithMFAChallengeStore`) and re-authentication was not (`WithReauthenticationChallengeStore`), the consumer has said that challenges must outlive one process, and the re-proof default contradicts it: a challenge begun on one replica is unknown to the next, its verify fails with `mfa.ErrInvalidCode` and counts against the user's throttle. `New` fails with `ErrConfig` naming both options. Single-process chains, which set neither, keep the in-memory default. The re-proof store does not follow the MFA store silently, because that would let one option govern two subsystems; the consumer passes the same store to both if that is what they want.
+  - **Reproduced:** `TestReproReauthChallengeStoreFollowsSharedMFAStore`. Two chains share an MFA challenge store and a session store, with no re-proof store; a re-proof begun on one is refused on the other with `mfa: invalid code`, and the failure is recorded. It is task 9.3's red step, reworded to assert the construction refusal.
 - **Responses.** The default verify and password responder writes the same credential document as MFA verify, with `Cache-Control: no-store`. The default listing writes `{"methods":[{"name","channel","begins"}],"password":bool}`. Each responder is replaceable, and a consumer responder owns its headers.
 - **Construction errors (`ErrConfig`):**
   - neither the MFA slot nor form login;
   - second-factor-only without the MFA slot;
   - an empty prefix;
-  - a path colliding with logout, form login, the MFA verify or begin prefix, or the MFA listing path;
+  - a re-proof path colliding with a path another enabled endpoint answers (below);
   - enabling twice;
   - a token-bearer chain without `WithReauthenticationTokens`;
   - a zero or negative challenge lifetime or limit;
-  - a nil store or responder.
+  - a nil store or responder;
+  - an MFA challenge store without a re-proof challenge store (Challenges, above).
+- **Path collisions, by how each endpoint matches.** Two paths collide when they are equal, or when one lies under the other and the other is matched by prefix. Re-proof's begin and verify are matched by prefix; its listing and password paths are exact. Checked against every endpoint the chain enabled, in both directions:
+  - matched by prefix: the MFA verify and begin prefixes, the MFA enrolment prefixes (begin, confirm, email), the passkey registration and credentials prefixes;
+  - exact: logout, form login, the MFA listing, session renewal, the password-change endpoint, and every account recovery path (start, finish, complete, cancel, codes);
+  - and every other endpoint the chain can enable (magic-link login, OIDC login and callback, passwordless passkey login), each as its own `Intercept` matches it.
+  - So `/login/reauth` is accepted, because form login and logout answer only their own path, and `/passkey/register` as the prefix is refused, because re-proof begin would answer `/passkey/register/begin`. The check reads the other endpoints' paths at construction, so a later endpoint with a configurable path joins it in the same pass.
+  - **Reproduced:** `TestReproReauthPathCollisionRefused` (six families accepted unrefused: passkey registration, passkey credentials, MFA enrolment, session renewal, password change, account recovery start) and `TestReproReauthPrefixUnderFormLoginPathIsAllowed` (`/login/reauth` and `/logout/reauth` refused as collisions). Both are task 9.1's red steps. The existing rows `the_prefix_is_the_form_login_path` and `the_prefix_is_the_logout_path` in `TestEnableReauthentication` pinned the over-strict check and are rewritten with them.
 - **Logs** go through the chain's sampled refusal logging, with reasons and never secrets.
 - **Default:** off. **Override:** `EnableReauthentication`. The guard works without the endpoints, and a stale user then signs in again.
 - **Alternatives rejected:**
@@ -255,7 +275,7 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 ### D8. Adapters
 
 `ginsec` and `fibersec` gain the same three options, two methods and validation, following their existing re-implemented judges.
-- The recency decision is already single: every adapter calls `(*session.Session).AuthenticatedWithin` (D1) and builds the same error type, so no new internal package is added beside `internal/guardauth`. The validation (window above zero, non-nil clock and time source, typed nil included) is three lines each, and each adapter words its configuration error in its own terms, as `guardauth` leaves error text to the adapter.
+- **One recency judge in `internal/guardauth` (revised).** The first cut kept the decision single only at `(*session.Session).AuthenticatedWithin` (D1) and left each adapter its own copy of the rest: the window, clock and time-source state, the option validation, the session-or-consumer time lookup, and the refusal. That is about 150 lines repeated three times, and a change to how a missing session or a zero time is judged has to be made in each. `internal/guardauth`, which already holds the one decision the adapters must make identically (where a guard finds its authorizer), gains a recency type holding the window, the clock and the time source, with its validation and one check taking the context and an optional per-route window and returning whether the caller is recent and the window it was judged against. `httpsec` imports `guardauth`, so `guardauth` cannot name `httpsec`'s error type or its session lookup: the default time source (the session's authentication time through `httpsec.SessionFromContext`) is handed to it by each adapter, and each adapter builds the `*httpsec.ReauthenticationRequiredError` from the verdict. Each adapter keeps only its options' surface, its handler wrapper, that error and its refusal path (gin's error channel, fiber's error handler), and words its configuration errors in its own terms from the reason the shared validation returns, as `guardauth` already leaves error text to the adapter. No new internal package is added. Behaviour is unchanged; this is a refactor, not a defect claim (CWE-1041).
 - They read the session through `httpsec.SessionFromContext` on the request context: gin's `gc.Request.Context()`, and fiber's route context that the middleware writes back.
 - They build the same `*httpsec.ReauthenticationRequiredError`.
 - gin refuses through its error-channel path. fiber returns the refusal to `fiber.Config.ErrorHandler` and gains no error-handler option, as settled.
@@ -269,18 +289,30 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
   - a full session refused at `/mfa/verify`.
 - The README gains a re-authentication section: the guard, the endpoints, the factor policy and its missing "any factor" option, the windows, the clock note, OIDC users, and the three reauthentication sentinels. The defaults table gains the new defaults.
 
-### D10. A strict rotation that lost a race is a renewal conflict, within one manager
+### D10. A strict rotation that lost a race is a renewal conflict, decided by the store
 
-- **Problem.** `Sessions.Rotate` (strict, no grace) settles concurrent rotations of one handle in one manager with a per-session lock, then deletes the old record. The loser of two concurrent re-proofs, or of two concurrent MFA verifications, waits on the lock, finds the record gone and gets `session.ErrNotFound`, which `httpsec` answers as 401. A client then believes it was signed out, although the winner already holds a valid credential, and a revoked session cannot be told apart from a lost race.
-- **Decision.** For the in-flight window after a strict rotation (`DefaultRenewalGrace`, 30 seconds, capped at the absolute deadline), the manager remembers the rotated handle's digest. A strict rotation of that handle which then finds no record fails with `session.ErrRenewalConflict`, so `httpsec` answers 409 through the existing `rotationRefusal`. Past the window, an unknown, revoked or deleted handle is `ErrNotFound` and an expired one `ErrExpired`, as today.
-  - The memory is the manager's own: no store write, no `judge`, so reuse detection never fires on the loser and the winner's family is never revoked. The old handle still stops working at once for `Load`.
-  - The table holds only open windows and drops ended ones, earliest end first, at each use. It orders by window end, not by insertion, because a window capped at the absolute deadline can end before one recorded earlier.
-- **Default:** on, with the in-flight window. **Override:** none. It changes only which refusal a lost race receives, never whether a rotation succeeds.
-- **The line, stated (library-design rule 4).** The guarantee holds within one manager. Across replicas sharing a store, a loser that reads the session after the winner removed it still gets `ErrNotFound`; that case stays timing-dependent and is documented on `Rotate`.
+- **Problem.** `Sessions.Rotate` (strict, no grace) supersedes the old record and then deletes it. The loser of two concurrent re-proofs, or of two concurrent MFA verifications, that reads the session after the delete finds no record and gets `session.ErrNotFound`, which `httpsec` answers as 401. A client then believes it was signed out, although the winner already holds a valid credential, and a revoked session cannot be told apart from a lost race. A renewal (`RotateWithGrace`) racing a strict rotation loses the same way.
+- **First cut, replaced.** Task 7.1 made the manager remember, in process, the digests it had rotated away, so a strict `Rotate` of one of them answered `ErrRenewalConflict`. Review reproduced two gaps: `RotateWithGrace` never consulted that memory (`TestRepro_RotateWithGraceAfterStrictRotationIsRenewalConflict`), and two managers sharing one store still gave the loser `ErrNotFound` (`TestRepro_RotateOnSecondManagerAfterStrictRotationIsRenewalConflict`). Both fail on the first cut with `session not found` where `the session was renewed concurrently` is expected, and become the red steps of tasks 10.3 and 10.4. The user chose to close both here, with the store deciding, rather than leave the cross-replica case to `release-readiness`.
+- **Decision: the old row stays, marked, until its in-flight window ends.**
+  - `session.Supersession` gains `Strict bool`, and `session.Session` gains `RotatedStrictly bool`, a store-owned field that `Create` and `Save` never write, like the other supersession fields.
+  - A strict `Rotate` supersedes with `Strict: true`, the in-flight window as `AcceptUntil` (`DefaultRenewalGrace`, 30 seconds, capped at the absolute deadline) and that same window end as `RetainUntil`, and **does not delete** the old row. The expiry sweep removes it once its retention deadline passes.
+  - Which rotation wins is already decided by the store: `Supersede` is conditional on the observed successor, so a loser that read the session before the winner wrote gets `ErrRenewalConflict` from the store with nothing written. The marker keeps that evidence for a loser that reads after the winner wrote, on any manager sharing the store.
+  - The manager reads the marker before anything else is judged:
+    - `Load` of a strictly rotated record fails with `ErrNotFound`, at once and at any time, and is never judged as reuse. The old identifier stops working the moment the rotation succeeds, as it did when the row was deleted.
+    - `Rotate` or `RotateWithGrace` of a strictly rotated record fails with `ErrRenewalConflict` inside its window, writing nothing and revoking nothing, and with `ErrNotFound` after it.
+  - The in-process `rotatedHandles` memory and its heap are removed; the per-session lock in `Rotate` stays as an in-process shortcut, no longer the guarantee.
+  - The manager still never judges a strictly rotated record, so reuse detection cannot fire on a loser and the winner's family is never revoked.
+- **Stores.** Every store persists and returns the marker: the in-memory default, `sqlstore`, `pgxstore` and `gormstore` through `internal/pgschema` and `internal/storekit`, and the encrypting decorator unchanged by passing it through. The `Store` interface keeps its method set, so the generated mocks do not change; the contract godoc names the new field. A third-party store that drops the marker fails the conformance suite (store-conformance delta), so the guarantee's dependency on it is checked, not assumed.
+- **Schema.** A new security-state migration adds `rotated_strictly boolean NOT NULL DEFAULT false` to the sessions table. Existing rows read back unmarked, an older writer's insert that names no such column still succeeds, and rolling it back drops the column. No released migration is edited.
+- **Rolling upgrade.** A build without the marker would load a marked row inside its window as a grace-superseded session, and judge it as reuse after the window. No version of scrty is tagged, so no deployment runs such a build against a migrated table. After the first tag this would need the migration and a reader of the marker to ship before any writer of it; that is recorded here so the release does not reintroduce the case.
+- **Default:** on. **Override:** none. It changes which refusal a lost race receives and how long an old strict row is kept (its window, at most 30 seconds), never whether a rotation succeeds.
+- **The line, stated (library-design rule 4).** The guarantee now holds across managers sharing a store, for strict rotation and renewal alike, as long as the store honours the marker, which the conformance suite checks. Past the in-flight window, an old identifier is `ErrNotFound`, as before.
+- **Settled requirements this revises (sessions):** "Rotation at second-factor verification keeps the old identifier only in flight" (the old identifier no longer loads between two writes, because there is one write), "A failed delete does not fail a second-factor rotation" (removed, as there is no delete), "A superseded identifier presented after its window revokes its family" (a strictly rotated record is excluded), and the last sentence of "Rotation with a grace window keeps the old identifier usable until the window ends". `security-state-stores` gains the marker's persistence, `schema-migrations` the column, and `store-conformance` the cases.
 - **Alternatives rejected:**
-  - *A "strictly rotated" marker kept on the old row, with the store's conditional write choosing the winner.* It extends the guarantee across replicas, but needs a schema migration, changes to every store, storekit, the conformance suite and two more capabilities, and rolling-upgrade care. Recorded as a follow-up in `release-readiness`.
-  - *Superseding with a zero window instead of deleting.* Every later load of the old handle would be judged as reuse and revoke the winner's family.
-  - *A separate tombstone table with new `Store` methods.* The largest change, and it breaks third-party stores.
+  - *Keeping the first cut's per-manager memory and extending it to `RotateWithGrace`.* It closes the renewal gap on one manager only.
+  - *Superseding with a zero window instead of deleting, with no marker.* Every later load of the old handle would be judged as reuse and revoke the winner's family.
+  - *Keeping the superseded row with a live window, with no marker.* The old handle would keep loading for the window, which breaks strict rotation's defence against fixation.
+  - *A separate tombstone table with new `Store` methods.* The largest change, and it breaks third-party stores' method sets.
   - *Accepting 401 and revising the scenario.* Rejected by the user: a client told 401 drops a credential the winner just made valid.
 
 ## Risks / Trade-offs
@@ -291,16 +323,20 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 - [A window longer than the session's absolute lifetime can never be reached] → It is harmless. The guard cannot see the session manager's configuration, and the godoc states the relation.
 - [An OIDC session's authentication time is its local sign-in. A silent single sign-on at the provider makes a session "fresh" without the user proving anything] → This is documented. The follow-up reads `auth_time` and sends `max_age`. Consumers can shorten their provider's session meanwhile.
 - [Within 30 seconds of a strict rotation, a rotation of the old handle that is then revoked answers 409 instead of 401 (D10)] → The client retries and gets 401. Harmless.
-- [Across replicas, a lost strict-rotation race can still answer 401 (D10)] → Documented on `Rotate`. The store-decided follow-up removes it.
-- [D5 breaks a consumer who used `/mfa/verify` for step-up] → Nothing is tagged yet, and the migration is one path.
-- [Re-proof challenges in the in-memory store do not survive across replicas] → Same as the MFA challenges. `WithReauthenticationChallengeStore` takes a durable `onetime.Store`.
+- [A strictly rotated row stays stored for its in-flight window, at most 30 seconds, instead of being deleted at once (D10)] → It never loads and is never judged; the sweep removes it. A user-wide delete or a family revocation removes it with the rest.
+- [A third-party session store that does not persist the strict-rotation marker turns a lost race back into 401 and lets the old identifier load for its window (D10)] → The store-conformance suite fails such a store, and the `Store` contract godoc names the field.
+- [A chain with MFA and passkeys now needs `EnableReauthentication` to build (D5)] → The construction error names the option. Nothing is tagged yet.
+- [A chain that gave MFA a challenge store must give re-authentication one too (D6)] → The construction error names both options; passing the same store to both is allowed.
+- [D5 breaks a consumer who used `/mfa/verify` for step-up] → Nothing is tagged yet, and the migration is one path. A chain that would leave such a user stranded fails at construction (D5).
+- [Re-proof challenges in the in-memory store do not survive across replicas] → Same as the MFA challenges. `WithReauthenticationChallengeStore` takes a durable `onetime.Store`, and a chain that gave MFA a shared store without one fails at construction (D6).
 
 ## Migration Plan
 
 - This change builds on `NewGuards` returning an error and on the adapter guard shape from `idiomatic-api-shape`, merged in PR #29 and archived in PR #31. Its branch is rebased onto `main` after both.
-- There is no data or schema migration. The re-proof endpoints are off until enabled. The guard is new API.
-- D5 is the only behaviour change for existing chains, and it is recorded in the changelog as breaking before the first tag.
-- Rollback is a revert of the change. No stored state depends on it.
+- **Schema:** one new security-state migration adds the `rotated_strictly` column (D10). Consumers apply it with the rest of the set before running this version. Existing rows need no backfill.
+- The re-proof endpoints are off until enabled. The guard is new API.
+- **Behaviour changes for existing chains**, recorded in the changelog as breaking before the first tag: D5's pending-only MFA endpoints; a chain with MFA and passkeys and no re-authentication failing construction (D5); a strict rotation keeping its old row, marked, for its window (D10).
+- **Rollback** is a revert of the change and a rollback of the migration, which drops the column. Marked rows left behind expire within 30 seconds and are swept as superseded sessions.
 
 ## References
 
@@ -335,6 +371,10 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 
 **D1, D5, D7, D8, D9, D10**
 - Reasoned from scrty's own settled specs (`sessions`, `http-security-chain`, `multi-factor-auth`, `account-recovery`, `passkey-authentication`, `http-error-propagation`, `framework-adapters`, `time-source`), the accepted `idiomatic-api-shape` design, and the established design.
+
+**Review findings folded in (accessed 2026-11-01)**
+- D3 (named-method lookup), D5 (passkey wiring rule), D6 (path collisions, challenge-store wiring, the post-authentication phase), D10 (the store-decided marker, now with `security-state-stores`, `schema-migrations` and `store-conformance`): reasoned from scrty's own settled specs and the established design, each backed by the reproducing test named in its decision.
+- D6 (the post-authentication phase) and D6, D8 (one response check, one recency judge): [OWASP ASVS 4.0 §1.2.4](https://owasp-aasvs4.readthedocs.io/en/latest/1.2.4.html) and [CWE-1041](https://cwe.mitre.org/data/definitions/1041.html), as for D6's one implementation per control above.
 
 ### Primary documentation
 

@@ -9,10 +9,11 @@
 - The guard is a judge on the existing `Guards.guard` path in `httpsec`, `ginsec` and `fibersec`.
 - The endpoints are one new interceptor at slot 655. It reuses the MFA slot's methods and throttle, and the form login's password path.
 - The MFA verify and begin endpoints stop serving sessions that owe no challenge.
+- Review findings (tasks 9.x) tighten wiring checks, add the post-authentication phase to the password re-proof, and finish the one-implementation-per-control refactors. A strict rotation's lost race is decided by the store through a mark kept on the old row (tasks 10.x).
 
 **Tech Stack:** Go 1.27; `net/http`, gin, fiber v3; testify, gomock (`use-mockgen`), testcontainers (`use-testcontainers`).
 
-**Spec:** `openspec/changes/reauthentication/`. It holds `proposal.md`, `design.md` (D1–D10), `specs/{reauthentication,sessions,multi-factor-auth,account-recovery,passkey-authentication,http-error-propagation,framework-adapters}/spec.md` and `tasks.md`. Task numbers (1.1 … 8.2) below are `tasks.md`'s. Every plan task names the ones it implements.
+**Spec:** `openspec/changes/reauthentication/`. It holds `proposal.md`, `design.md` (D1–D10), `specs/{reauthentication,sessions,multi-factor-auth,account-recovery,passkey-authentication,http-error-propagation,framework-adapters,security-state-stores,schema-migrations,store-conformance}/spec.md` and `tasks.md`. Task numbers (1.1 … 11.2) below are `tasks.md`'s. Every plan task names the ones it implements.
 
 ## Global Constraints
 
@@ -33,6 +34,8 @@
 - D5 is **unpinned behaviour, not a defect** (`defect-claims.md`). Task 5's red test shows today's acceptance, and nothing calls it a bug.
 - The project's reference-material rule binds every dispatch: consult it only on demand, never copy from it, never cite it.
 - Agents never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`, and never edit `openspec/`.
+- Tasks 9.1–9.5, 10.3 and 10.4 fix **reproduced** defects (`defect-claims.md`). Each red step is the named reproduction, rewritten in the package's own test file and table form; the originals live in disposable worktrees under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/5335ea06-576b-4616-b14e-50643ee94c82/scratchpad/repro/` and are read, never copied. Tasks 9.6 and 9.7 are refactors with no defect claim.
+- Strict-rotation mark: Go fields `Supersession.Strict bool`, `Session.RotatedStrictly bool`; column `rotated_strictly boolean NOT NULL DEFAULT false`; retention of a strictly rotated row = its in-flight window end (`DefaultRenewalGrace`, 30 s, capped at the absolute deadline).
 
 ## Review Focus
 
@@ -41,7 +44,10 @@
 - An authentication time hours ahead of the guard's clock is fresh (D1). It is pinned explicitly so a later "fix" to refuse it is a visible decision. Added to Task 1 (1.1) and Task 3 (3.2).
 - A re-proof on a session-reference bearer chain returns a new reference, and the old reference is refused. On a JWT chain it returns a new token whose session loads. Added to Task 8 (6.5).
 - A passkey-only session where a passkey sign-in is one factor re-proves with that passkey: it becomes fresh but never "second factor met" (D4). Added to Task 14 (6.7).
-- Two valid re-proofs, or two valid MFA verifications, from one session at once on one server: one wins and the other gets 409, never 401 (D10). Added to Task 13 (7.1).
+- Two valid re-proofs, or two valid MFA verifications, from one session at once on one server: one wins and the other gets 409, never 401 (D10). Added to Task 13 (7.1), and across two chains sharing a session store in Task 22 (10.4).
+- A re-proof prefix with a trailing slash (`/passkey/register/`) collides as its slash-free form does. Added to Task 16 (9.1).
+- A post-authentication policy that allows but raises nothing leaves the password re-proof's outcome unchanged (the phase is not a silent refusal). Added to Task 18 (9.4).
+- A strictly rotated identifier presented long after its window, after the sweep, is `ErrNotFound` and never `ErrReused`; before the sweep, the same. Added to Task 21 (10.3).
 - A re-proof racing a renewal of the same session: one wins, and the other is refused with the renewal-conflict error (409), leaving the winner's session in place. A GET to `/reauth/verify/totp` passes through untouched. Added to Task 8 (6.5) and Task 6 (6.1).
 
 ## Execution lanes and dispatches
@@ -65,6 +71,23 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 7 | E2 | 6.8 (password order) | `httpsec/login.go` (the handler's order and a new method), `httpsec/reauth_password.go` (`reprove`) | Opus: a behaviour-preserving extraction in the login hot path | Opus |
 | 6 | D1 | 8.1 | `test/httpsecconformance/reauth_scenarios.go` (new), its registration in `scenarios.go` | Sonnet: conformance cases in an existing suite | Sonnet |
 | 6 | main | 8.2 | runs the gate; edits nothing | — | whole-branch review: Opus |
+
+**Review-findings waves (tasks 9–11).** Wave 8 runs lanes F, G, H, I and J in parallel worktrees; lane K (section 10) starts with them, because its files are disjoint, and its 10.4 waits for wave 8's merge. Wave 9 is conformance and the gate.
+
+| Wave | Dispatch | Tasks | Owns | Model, reason | Reviewer |
+|---|---|---|---|---|---|
+| 8 | F1 → F2 | 9.1, then 9.3 | `httpsec/reauth_options.go`, `httpsec/reauth_test.go`; for 9.3 also the `WithMFAChallengeStore` option in `httpsec/mfa_begin.go` (a "given" flag) and README defaults rows | Sonnet: the rules and tests are stated | Sonnet |
+| 8 | G1 → G2 | 9.5, then 9.6 | `httpsec/reauth.go`, `httpsec/reauth_verify.go`, `httpsec/reauth_verify_test.go`; for 9.6 also `httpsec/mfa_verify.go`, `httpsec/mfa_begin.go` (not the store option), `httpsec/challenge_spend.go` | G1 Sonnet: a stated single-seam change; G2 Opus: behaviour-preserving extraction across two hot paths | G1 Sonnet; G2 Opus |
+| 8 | H1 | 9.4 | `httpsec/reauth_password.go`, `httpsec/reauth_password_test.go` | Opus: policy refusal logic written for the first time | Opus |
+| 8 | I1 | 9.2 | `httpsec/passkey.go` (`wirePasskeys`), the chain's interceptor lookup in `httpsec/options.go`, every test, Example and conformance harness chain that wires MFA and passkeys without re-authentication, README snippets | Sonnet: a stated wiring rule plus its callers | Sonnet |
+| 8 | J1 | 9.7 | `internal/guardauth/*`, `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`, their tests | Opus: refactor extracting shared code across three packages | Opus |
+| 8 | K1 → K2 → K3 | 10.1, 10.2, 10.3 | `session/store.go`, `session/session.go`, `session/store_memory.go`, `session/store_encrypted.go`, `session/sessions.go`, `session/reuse.go`, their tests; `test/storetest/*`; `store/migrate/securitystate/` (new file); `internal/pgschema/sessions.go`, `internal/storekit/*`; `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/{session,models}.go`; `test/migrate_securitystate_test.go`, `test/gormstore/statements_test.go`, `test/*/session_test.go` | K1 Opus: an interface every store compiles against; K2 Sonnet: the known column pattern across stores; K3 Opus: ordering under races | Opus, Sonnet, Opus |
+| 8b | K4 | 10.4 | `test/storetest/session_suite.go` (the two-manager case), `httpsec/reauth_resolve_test.go`, `httpsec/session_renewal_test.go` | Sonnet: conformance and test rows against stated outcomes | Sonnet |
+| 9 | D2 | 11.1 | `test/httpsecconformance/reauth_scenarios.go` | Sonnet: conformance cases in an existing suite | Sonnet |
+| 9 | main | 11.2 | runs the gate; edits nothing | — | whole-branch review: Opus |
+
+- I1 touches test files other lanes may also edit (chains built in shared fixtures); its worktree merges last in wave 8 and the main session resolves any overlap.
+- K4 runs after wave 8 is merged, because its `httpsec` rows sit beside G and H's.
 
 **As run:** waves 1–4 ran as above. Worktrees created with `isolation: "worktree"` started from `main`, so every dispatch's first step fast-forwards to the head of `feat/reauthentication`. C4 runs on its branch until Task 13 lands on it, so wave 4 and wave 5 merge together.
 
@@ -392,6 +415,8 @@ Two parallel dispatches, one per module.
 
 ### Task 13: A lost strict rotation is a renewal conflict (tasks.md 7.1)
 
+Done. Its in-process memory is the first cut that Tasks 19–22 (section 10) replace with the store-decided mark; its within-window outcomes stay pinned.
+
 **Files:**
 - Modify: `session/sessions.go` (`Sessions` fields beside `rotating`, `Rotate`, its godoc), `session/store.go` (`ErrRenewalConflict` godoc: "a concurrent rotation")
 - Modify, godoc only: `httpsec/reauth_resolve.go`, `httpsec/reauth_options.go`, `httpsec/mfa_verify.go` (`rotationRefusal`), `httpsec/errors.go` (`ErrSessionRenewalConflict`)
@@ -451,6 +476,156 @@ Two parallel dispatches. Behaviour is unchanged, so existing tests are the safet
 - [ ] **Step 3: Run.** `go test -race -count=1 ./httpsec/...`, `go vet ./httpsec/`, `golangci-lint run ./httpsec/`, and `go test ./...` in `test`.
 - [ ] **Step 4: Commit** `refactor(httpsec): one challenge spend and sweep for MFA and re-proof` (E1) and `refactor(httpsec): one password order for login and re-proof` (E2).
 
+### Task 16: Re-proof paths are checked by how each endpoint matches (tasks.md 9.1)
+
+**Files:**
+- Modify: `httpsec/reauth_options.go` (`checkPaths(c *config, option string) error`, ~272)
+- Test: `httpsec/reauth_test.go` (`TestEnableReauthentication`)
+
+**Interfaces:**
+- Consumes: `eachInterceptor[T](c, fn)` (`options.go:300`); `*passkeyInterceptor` `regPrefix`, `credPrefix`; `*enrolmentInterceptor` `beginPrefix`, `confirmPrefix`, `emailPrefix`; `*sessionRenewal` `path`; `*passwordChangeGate` `path` (when set); `*recoveryInterceptor` `startPath`, `finishPath`, `completePath`, `cancelPath`, `codesPath`; `*magicLinkInterceptor`, `*oidcInterceptor` and `*passwordlessInterceptor` paths, each marked prefix or exact as its `Intercept` matches; the existing logout, form-login, MFA verify, begin and listing entries.
+- Produces: no new name. Each entry carries `prefix bool` (matched by prefix); `collides(a, b)` is true when `a == b`, or `b` is a prefix entry and `a` lies under it, or the reverse.
+
+- [ ] **Step 1: Write the failing rows** in `TestEnableReauthentication`:
+  - six refusals, `require.ErrorIs(err, ErrConfig)` and the message names the other endpoint: prefix `/passkey/register`; prefix `/passkey/credentials`; prefix `/mfa/enrol`; `WithRenewalPath("/reauth/password")`; `WithPasswordChangeEndpoint("/reauth/password", …)`; `WithRecoveryStartPath("/reauth/password")`;
+  - prefix `/passkey/register/` refused like `/passkey/register` (Review Focus);
+  - `the_prefix_is_the_form_login_path` and `the_prefix_is_the_logout_path` rewritten: prefix `/login/reauth` and `/logout/reauth` build, `/login` reaches form login and `/login/reauth/methods` the listing.
+- [ ] **Step 2: Run** `go test -run TestEnableReauthentication -count=1 ./httpsec/` and see six "expected an error but got nil" and two "collides with the form login path"/"logout path" failures, as `TestReproReauthPathCollisionRefused` and `TestReproReauthPrefixUnderFormLoginPathIsAllowed` showed.
+- [ ] **Step 3: Implement** the entries above with logout and form login exact (`prefix: false`), and `collides` in both directions.
+- [ ] **Step 4: Run** `go test -race -count=1 -run 'TestEnableReauthentication|TestReauth' ./httpsec/`: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): re-proof paths collide by how each endpoint matches`.
+
+### Task 17: MFA and passkeys need re-authentication (tasks.md 9.2)
+
+**Files:**
+- Modify: `httpsec/passkey.go` (`(*config).wirePasskeys`), `httpsec/options.go` (a `reauthOf() *reauthInterceptor` lookup beside `mfaOf`, if absent)
+- Modify, callers: every chain in `httpsec` tests and Examples, `test/httpsecconformance` harnesses and README snippets that enable MFA and passkeys without `EnableReauthentication`
+- Test: `httpsec/passkey_register_test.go` (or the passkey wiring test file)
+
+**Interfaces:**
+- Produces: `New` returns `ErrConfig` with a message naming `EnableReauthentication` when `c.mfaOf() != nil && c.reauthOf() == nil` and passkeys are enabled.
+
+- [ ] **Step 1: Write the failing rows:** MFA + passkeys, no re-authentication → `ErrorIs(err, ErrConfig)` and `ErrorContains(err, "EnableReauthentication")`; MFA without passkeys → builds; MFA + passkeys + re-authentication: an `MFANone` session of a TOTP holder posts a valid code to `/reauth/verify/totp`, then `MFA == MFASatisfied` and passkey registration begin is served.
+- [ ] **Step 2: Run** and see the first row fail with no error (the chain builds), as `TestRepro_FullSessionStepsUpAtMFAVerifyWithoutReauthentication` showed the stranded state.
+- [ ] **Step 3: Implement** the check in `wirePasskeys`; then fix every caller chain the run breaks by adding `EnableReauthentication()` (with `WithReauthenticationTokens` on token-bearer chains).
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...` and `go test ./...` in `test`: PASS.
+- [ ] **Step 5: Commit** `feat(httpsec)!: passkey management on an MFA chain needs re-authentication`.
+
+### Task 18: The password re-proof applies the post-authentication phase (tasks.md 9.4)
+
+**Files:**
+- Modify: `httpsec/reauth_password.go` (`reprove`)
+- Test: `httpsec/reauth_password_test.go`
+
+**Interfaces:**
+- Consumes: `evaluatePhase(ctx, e *policy.Engine, phase policy.Phase, in *policy.Input) policy.Decision` (`login.go:694`), `postAuthenticationInput(p, first factor.Kind, username string, passwordChangedAt, now time.Time) *policy.Input` (`complete.go:138`), `policyDenyReason(d)`, `*ChallengeError{Kind}`; the login's engine through `i.login`.
+- Produces: no new name.
+
+- [ ] **Step 1: Write the failing rows** (table, `denyingIn`-style policy fixtures): deny in `PostAuthentication` → `ErrorIs(err, denyErr)`, session handle and `AuthenticatedAt` unchanged, `ResetFailures` not called; a password-change challenge → `errors.As(err, &ce)`, `ce.Kind == policy.ChallengePasswordChange`, `ce.Session == nil`, session unchanged; an allowing policy → re-authenticated (Review Focus).
+- [ ] **Step 2: Run** `go test -run TestReauthPassword -count=1 ./httpsec/` and see the deny row fail with "expected error … but got nil", as `TestReproPasswordReproofAppliesPostAuthenticationPolicy` showed.
+- [ ] **Step 3: Implement** step 6 of D6's password order: after the proved-account check, evaluate `PostAuthentication` with `postAuthenticationInput(auth.Principal, factor.Password, username, auth.PasswordChangedAt, i.now())`; return on deny or challenge before resetting failures.
+- [ ] **Step 4: Run** `go test -race -count=1 -run 'TestReauthPassword|TestReauth' ./httpsec/`: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): a password re-proof applies the post-authentication policy`.
+
+### Task 19: The strict-rotation mark in the contract and the memory store (tasks.md 10.1)
+
+**Files:**
+- Modify: `session/store.go` (`Supersession`, the `Store` godoc), `session/session.go` (`Session`), `session/store_memory.go` (`Supersede`, `Load`, `Create`, `Save`), `session/store_encrypted.go` (pass-through)
+- Modify: `test/storetest/session_suite.go`, `test/storetest/broken_session_test.go`
+- Test: `test/storetest/memory_test.go`
+
+**Interfaces:**
+- Produces: `Supersession.Strict bool` ("the supersession is a rotation without grace"); `Session.RotatedStrictly bool` (store-owned, never written by `Create` or `Save`). `Store`'s method set is unchanged, so mocks are not regenerated.
+
+- [ ] **Step 1: Write the failing suite cases:** supersede with `Strict: true` → `Load` returns `RotatedStrictly == true`; with a grace window → false; `Save` of a session with `RotatedStrictly` set → loads false; `DeleteExpired` past a strict row's `RetainUntil` → `ErrNotFound`. Broken variants: one that drops the mark, one whose `Save` writes it; the suite must fail on each.
+- [ ] **Step 2: Run** `go test -run 'TestMemory.*Session' -count=1 ./test/storetest/` and see the mark cases fail (the field is never set). Adding the fields alone is the compile step, not the red step.
+- [ ] **Step 3: Implement** the fields, the memory store's record and read, and the decorator pass-through.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/ ./test/storetest/`: PASS.
+- [ ] **Step 5: Commit** `feat(session): stores keep whether a supersession was strict`.
+
+### Task 20: The durable stores and the migration (tasks.md 10.2)
+
+**Files:**
+- Create: `store/migrate/securitystate/<timestamp>_session_strict_rotation.sql` (goose `Up`: `ALTER TABLE sessions ADD COLUMN rotated_strictly boolean NOT NULL DEFAULT false`; `Down`: `DROP COLUMN IF EXISTS rotated_strictly`)
+- Modify: `internal/pgschema/sessions.go` (supersede and load statements), `internal/storekit/session_tx.go`, `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, `store/gormstore/models.go` (`sessionRow`)
+- Test: `test/migrate_securitystate_test.go` (a version constant and column rows), `test/gormstore/statements_test.go`, the backends' `session_test.go` running the 10.1 cases
+
+**Interfaces:**
+- Consumes: Task 19's fields.
+
+- [ ] **Step 1: Write the failing migration rows:** column present, non-null, default false; a pre-migration superseded row reads back unmarked; an insert naming no such column succeeds; rollback leaves the pre-migration columns.
+- [ ] **Step 2: Run** `go test -run 'TestMigrate|Session' -count=1 ./...` in `test` (Docker) and see the 10.1 mark cases fail on each durable backend and the migration rows fail with the column missing.
+- [ ] **Step 3: Implement** the migration and the column in each statement and row model.
+- [ ] **Step 4: Run** `go test -race -count=1 ./...` in the root, `store/pgxstore`, `store/gormstore` and `test` modules: PASS. If Docker is unavailable, report it and stop.
+- [ ] **Step 5: Commit** `feat(store): persist the strict-rotation mark`.
+
+### Task 21: The manager reads the mark (tasks.md 10.3)
+
+**Files:**
+- Modify: `session/sessions.go` (`Rotate`, `Load`; remove `rotated rotatedHandles` and its type), `session/reuse.go` (`RotateWithGrace`, `judge`'s callers)
+- Test: `session/sessions_test.go`, `session/sessions_internal_test.go`
+
+**Interfaces:**
+- Consumes: Task 19's fields.
+- Produces: no new name. `Rotate` supersedes with `Strict: true`, `AcceptUntil = min(now+DefaultRenewalGrace, stored.AbsoluteExpiresAt)`, `RetainUntil = AcceptUntil`, and no `store.Delete`.
+
+- [ ] **Step 1: Write the failing rows:** strict `Rotate` at 09:00:00 then `RotateWithGrace(old, 10s)` at 09:00:05 → `ErrRenewalConflict`, nothing stored (`TestRepro_RotateWithGraceAfterStrictRotationIsRenewalConflict`); `Load(old)` at once → `ErrNotFound`, successor loads; `Load(old)` at 09:00:40 before the sweep and after it → `ErrNotFound`, never `ErrReused` (Review Focus); strict `Rotate(old)` at 09:00:31 → `ErrNotFound`; a strict row's `RetainUntil == AcceptUntil`. Remove the failed-delete test; change "load between the writes" rows to "load after the write".
+- [ ] **Step 2: Run** `go test -run 'TestManager|TestRotate' -count=1 ./session/` and see `session not found` where `the session was renewed concurrently` is expected.
+- [ ] **Step 3: Implement:** read `RotatedStrictly` right after `loadStored` in `Load`, `Rotate` and `RotateWithGrace`, before `judge`: `Load` → `ErrNotFound`; the rotations → `ErrRenewalConflict` inside the window, `ErrNotFound` after. Delete `rotatedHandles`; keep `rotating`. Godoc on `Rotate` and `RotateWithGrace` states the store-decided guarantee.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/ ./httpsec/`: PASS.
+- [ ] **Step 5: Commit** `feat(session)!: a strict rotation's lost race is decided by the store`.
+
+### Task 22: Across managers sharing a store (tasks.md 10.4)
+
+**Files:**
+- Modify: `test/storetest/session_suite.go` (a case taking two managers over one store)
+- Test: `httpsec/reauth_resolve_test.go`, `httpsec/session_renewal_test.go`
+
+- [ ] **Step 1: Write the failing cases:** the suite rotates through manager A, then the old identifier through manager B over the same store → `ErrRenewalConflict` (`TestRepro_RotateOnSecondManagerAfterStrictRotationIsRenewalConflict`); in `httpsec`, a renewal that loses to a re-proof → `ErrSessionRenewalConflict` and 409; two re-proofs through two chains sharing a session store → one success and one 409.
+- [ ] **Step 2: Run** on the tree *before* Task 21 merges, where they fail with `session not found` / 401; after Task 21 they must pass. If Task 21 has merged, show the red step by temporarily skipping the mark check in `Rotate` and restoring it.
+- [ ] **Step 3: Run** `go test -race -count=1 ./session/ ./httpsec/` and `go test -race ./...` in `test` (Docker): PASS.
+- [ ] **Step 4: Commit** `test: a lost strict rotation is a conflict across managers`.
+
+### Task 23: Remaining wiring and lookups (tasks.md 9.3, 9.5)
+
+**9.3 (lane F, after Task 16).** Files: `httpsec/reauth_options.go` (`buildChallenges`), `httpsec/mfa_begin.go` (the `WithMFAChallengeStore` option sets `challengeStoreGiven bool` on `mfaInterceptor`), `httpsec/reauth_test.go`, README defaults table.
+- [ ] Red: a row with `WithMFAChallengeStore(st)` and re-authentication without a store → `ErrorIs(err, ErrConfig)`, message naming `WithReauthenticationChallengeStore` and `WithMFAChallengeStore`; it fails with nil today. A row giving `st` to both keeps `TestReproReauthChallengeStoreFollowsSharedMFAStore`'s two-chain begin-on-A, verify-on-B proof and passes. Implement in `buildChallenges` when `i.mfa != nil && i.mfa.challengeStoreGiven && i.challengeStore == nil`. Run `go test -race -count=1 -run 'TestEnableReauthentication|TestReauth' ./httpsec/`. Commit `fix(httpsec): a shared MFA challenge store needs a re-proof store`.
+
+**9.5 (lane G, before Task 24).** Files: `httpsec/reauth_verify.go` (`admitMethod`), `httpsec/reauth.go` (`offered` keeps its full lookup for the password path and listing), `httpsec/reauth_verify_test.go`.
+- [ ] Red: TOTP enrolled, a second `challengeStub` whose `enrolledErr` is set; a valid code at `/reauth/verify/totp` re-authenticates; it fails today with "the re-authentication methods could not be looked up" (`TestReproReauthTOTPIgnoresUnrelatedMethodEnrolmentFailure`). Move "a lookup failure refuses and verifies nothing" to the TOTP method's own `enrolledErr`: refused, nothing counted. Implement: `admitMethod` asks only `method.Enrolled(ctx, s.UserID)`; not enrolled → `ErrReauthenticationMethodNotUsable`; `secondFactorOnly` and the password path unchanged. Run `go test -race -count=1 -run TestReauth ./httpsec/`. Commit `fix(httpsec): a second-factor re-proof looks up only its own method`.
+
+### Task 24: One second-factor response check and challenge issue (tasks.md 9.6)
+
+**Files:**
+- Modify: `httpsec/mfa_verify.go` (`verify`), `httpsec/mfa_begin.go` (`begin`, `wireChallenges`), `httpsec/reauth_verify.go` (`verify`, `begin`), `httpsec/reauth_options.go` (`buildChallenges`), `httpsec/challenge_spend.go`
+
+**Interfaces:**
+- Produces, package-level in `challenge_spend.go`: `checkResponse(ex *Exchange, throttle *mfa.VerifyThrottle, mgr *onetime.Tokens, method mfa.Method, s *session.Session) error` (throttle check, reader, spend for a challenge method, `Verify`, failure recording except `mfa.ErrAuthenticatorRefused` and `mfa.ErrVerifyThrottled`); `issueChallenge(ex *Exchange, mgr *onetime.Tokens, method mfa.ChallengeMethod, s *session.Session, respond MFABeginResponder) error` (sweep, `IssueWithin` with the `ErrIssueLimitReached` mapping, `BeginChallenge`); `challengeManagers(methods []mfa.Method, store onetime.Store, ttl time.Duration, limit int, purpose func(name string) string, ...) (map[string]*onetime.Tokens, error)`. Exact trailing parameters follow the current bodies.
+
+- [ ] **Step 1: Red by divergence:** in the shared `checkResponse`, temporarily count `mfa.ErrAuthenticatorRefused`; see an MFA verify clone row and a re-proof clone row both fail. Restore. In `issueChallenge`, temporarily drop the limit mapping; see an MFA begin and a re-proof begin limit row both fail. Restore.
+- [ ] **Step 2: Extract** and delete the copies; admission and resolve stay each path's own.
+- [ ] **Step 3: Run** `go test -race -count=1 ./httpsec/...`, `go vet ./httpsec/`, `golangci-lint run ./httpsec/`: PASS.
+- [ ] **Step 4: Commit** `refactor(httpsec): one response check and challenge issue for MFA and re-proof`.
+
+### Task 25: One recency judge in `internal/guardauth` (tasks.md 9.7)
+
+**Files:**
+- Modify: `internal/guardauth/guardauth.go`, `internal/guardauth/guardauth_test.go`
+- Modify: `httpsec/guards.go` (`checkRecency`, `recent`, `authenticationTime`), `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`
+
+**Interfaces:**
+- Produces: `type Recency struct{...}`; `func NewRecency(window time.Duration, clk clock.Clock, clockSet bool, authTime func(context.Context) (time.Time, bool)) (*Recency, string)` returning a reason string the adapter words as its own configuration error (empty when valid); `func (r *Recency) Judge(ctx context.Context, window time.Duration) (recent bool, judged time.Duration)` where `window == 0` means the guards-wide window. `guardauth` imports no `httpsec`; each adapter passes the session-based default time source and builds `&httpsec.ReauthenticationRequiredError{Window: judged}`.
+
+- [ ] **Step 1: Write the failing `guardauth` table test** for `Judge` (fresh, at the window's end, stale, zero time, consumer source reporting none, per-route window) and `NewRecency` (window ≤ 0, nil and typed-nil clock, nil source); it fails because `Recency` does not exist yet — that is the compile step; the red step is each row failing against a stub `Judge` returning `true, 0`.
+- [ ] **Step 2: Implement** `Recency`, then move each adapter onto it. For each adapter, red by divergence: temporarily make `Judge` treat a zero time as recent and see that adapter's "zero authentication time" row fail. Restore.
+- [ ] **Step 3: Run** `go test -race -count=1 ./internal/guardauth/ ./httpsec/` and `go test -race ./...` in `httpsec/ginsec` and `httpsec/fibersec`: PASS.
+- [ ] **Step 4: Commit** `refactor: one recency judge for every adapter`.
+
+### Task 26: Conformance and the gate, again (tasks.md 11.1, 11.2)
+
+- [ ] **11.1:** add to `test/httpsecconformance/reauth_scenarios.go`, on net/http, gin and fiber: `ReauthPrefixUnderFormLogin` (builds, both endpoints answer), `RenewalLostToReproofIs409`, `ReauthPasswordRefusedByPostAuthenticationDeny`. Red: register each before its harness wiring and see it fail. Run `go vet ./...` and `go test -race ./...` in `test`. Commit `test(conformance): review findings across adapters`.
+- [ ] **11.2:** the main session reruns Task 12's gate and the whole-branch Opus review against all ten spec files, then `openspec validate reauthentication --strict`.
+
 ### Task 11: Conformance (tasks.md 8.1)
 
 **Files:**
@@ -497,5 +672,17 @@ Run by the main session. It edits nothing.
 | 7.1 | Task 13 |
 | 8.1 | Task 11 |
 | 8.2 | Task 12 |
+| 9.1 | Task 16 |
+| 9.2 | Task 17 |
+| 9.3 | Task 23 |
+| 9.4 | Task 18 |
+| 9.5 | Task 23 |
+| 9.6 | Task 24 |
+| 9.7 | Task 25 |
+| 10.1 | Task 19 |
+| 10.2 | Task 20 |
+| 10.3 | Task 21 |
+| 10.4 | Task 22 |
+| 11.1–11.2 | Task 26 |
 
 The plan tasks are numbered by component, and the waves above set the execution order.

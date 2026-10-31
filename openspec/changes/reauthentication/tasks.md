@@ -138,7 +138,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - the memory is bounded and pruned as entries expire;
   - `Rotate`'s godoc states the guarantee and that across managers sharing a store a loser may still get `ErrNotFound`; `ErrRenewalConflict`'s godoc says "a concurrent rotation".
 
-  Change the tests that pin today's not-found: `session/sessions_test.go` "a handle already rotated away cannot be rotated again" splits into inside and after the window, and `TestManagerRotateConcurrent` expects every loser to be `ErrRenewalConflict`. In `httpsec`, the concurrent re-proof row in `TestReauthResolve` expects `ErrSessionRenewalConflict` (409), and `TestMFAVerifyRotationRefusals` gains two valid codes at once, one 409. (D10; ADDED sessions "A strict rotation that lost a race within one manager is a renewal conflict", every scenario; ADDED multi-factor-auth "Concurrent verifications of one pending session yield one success"; reauthentication scenario "Concurrent re-proofs".) Verify with `go test -race -count=1 ./session/ ./httpsec/` and `go test ./...` in the `test` module
+  Change the tests that pin today's not-found: `session/sessions_test.go` "a handle already rotated away cannot be rotated again" splits into inside and after the window, and `TestManagerRotateConcurrent` expects every loser to be `ErrRenewalConflict`. In `httpsec`, the concurrent re-proof row in `TestReauthResolve` expects `ErrSessionRenewalConflict` (409), and `TestMFAVerifyRotationRefusals` gains two valid codes at once, one 409. (D10's first cut, replaced by section 10; ADDED sessions "A strict rotation that lost a race within one manager is a renewal conflict", since revised; ADDED multi-factor-auth "Concurrent verifications of one pending session yield one success"; reauthentication scenario "Concurrent re-proofs".) Verify with `go test -race -count=1 ./session/ ./httpsec/` and `go test ./...` in the `test` module
 
 ## 8. Conformance and close-out
 
@@ -157,8 +157,87 @@ Each task names how it is verified. A signature change owns every caller of the 
 
   Verify that every command exits 0 and its output is recorded.
 
+## 9. Review findings: wiring, policy and one implementation (`reauthentication`, `multi-factor-auth`, `framework-adapters`)
+
+Each defect task's red step is the reproducing test named in its design decision, rewritten into the package's own test file and the `table-test` form; the reproductions themselves live in disposable worktrees under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/5335ea06-576b-4616-b14e-50643ee94c82/scratchpad/repro/` and are not copied as they are.
+
+- [ ] 9.1 Re-proof paths are checked by how each endpoint matches (D6 "Path collisions"):
+  - two paths collide when equal, or when one lies under the other and the other is prefix-matched; re-proof begin and verify are prefix-matched, its listing and password exact;
+  - checked against every enabled endpoint: the MFA verify, begin and enrolment prefixes and the passkey registration and credentials prefixes (prefix); logout, form login, the MFA listing, session renewal, password change and every account recovery path (exact); magic-link, OIDC and passwordless passkey login, each as its own `Intercept` matches;
+  - red: the six collision rows of `TestReproReauthPathCollisionRefused` and the two rows of `TestReproReauthPrefixUnderFormLoginPathIsAllowed`; the rows `the_prefix_is_the_form_login_path` and `the_prefix_is_the_logout_path` in `TestEnableReauthentication` are rewritten to the accepted outcome.
+
+  (Reauthentication "Re-proof paths are checked against every endpoint the chain answers", every scenario; "Re-authentication wiring mistakes fail at construction".) Verify with `go test -race -count=1 -run 'TestEnableReauthentication|TestReauth' ./httpsec/`
+- [ ] 9.2 A chain with the MFA slot and passkeys and no `EnableReauthentication` fails `New` with `ErrConfig` naming the option (D5 "Passkey management needs re-authentication"):
+  - red: `TestRepro_FullSessionStepsUpAtMFAVerifyWithoutReauthentication`, rewritten to assert the construction refusal, plus the accepted rows (with re-authentication, and MFA without passkeys); the "With re-authentication" scenario drives an `MFANone` TOTP holder through `/reauth/verify/totp` to passkey `begin`;
+  - the task owns every chain in the workspace that wires MFA and passkeys without re-authentication: `httpsec` tests and Examples, `test/httpsecconformance`, and README snippets.
+
+  (ADDED multi-factor-auth "Passkey management on an MFA chain needs re-authentication", every scenario.) Verify with `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...` and `go test ./...` in the `test` module
+- [ ] 9.3 An MFA challenge store without a re-proof challenge store fails `New` with `ErrConfig` naming both options; the same store given to both is accepted (D6 "A shared MFA store without a re-proof store"):
+  - red: `TestReproReauthChallengeStoreFollowsSharedMFAStore`, rewritten to assert the refusal; the "One store for both" row keeps its two-chain begin-on-one, verify-on-the-other proof;
+  - godoc on `WithReauthenticationChallengeStore` and `WithMFAChallengeStore`, and the README defaults table, name the rule.
+
+  (Reauthentication scenarios "A shared MFA challenge store needs a re-proof store" and "One store for both".) Verify with `go test -race -count=1 -run 'TestEnableReauthentication|TestReauth' ./httpsec/`
+- [ ] 9.4 The password re-proof runs the post-authentication phase after `attemptPassword` and the proved-account check, before failures are reset (D6 Password order, step 6):
+  - a deny refuses with the policy's reason; a challenge refuses with a `*ChallengeError` of that kind and no session; neither resets, rotates nor refreshes;
+  - red: `TestReproPasswordReproofAppliesPostAuthenticationPolicy` (the deny row) and a challenge row.
+
+  (ADDED reauthentication "A password re-proof applies the post-authentication policy as a login does", every scenario.) Verify with `go test -race -count=1 -run 'TestReauthPassword' ./httpsec/`
+- [ ] 9.5 Second-factor begin and verify look up only the named method's enrolment; the password endpoint and the listing keep the full lookup (D3 "Which lookups each endpoint needs"):
+  - red: `TestReproReauthTOTPIgnoresUnrelatedMethodEnrolmentFailure`; the row "a lookup failure refuses and verifies nothing" in `reauth_verify_test.go` moves to a failure of the named method's own lookup, and the password and listing lookup-failure rows stay.
+
+  (ADDED reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", every scenario; "A user re-proves with the strongest factor they hold, by default" scenario "Lookup failure does not downgrade".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
+- [ ] 9.6 One second-factor response check, one challenge issue and one challenge-manager builder, shared by the MFA slot and re-proof, behaviour unchanged (D6 "The second-factor response check and challenge issue, too"):
+  - the throttle check, response reader, challenge spend, failure classification, sweep, `IssueWithin` with its limit mapping and `BeginChallenge` run in one place, taking the throttle, the manager and the method; the managers come from one builder taking a purpose function;
+  - admission and resolve stay each path's own.
+
+  Existing tests are the safety net; the red step for each extraction is a temporary divergence in the shared code that both an MFA test and a re-proof test catch, as in 6.8. Verify with `go test -race -count=1 ./httpsec/...`, `go vet ./httpsec/` and `golangci-lint run ./httpsec/`
+- [ ] 9.7 One recency judge in `internal/guardauth`, used by `httpsec`, `ginsec` and `fibersec`, behaviour unchanged (D8, revised):
+  - it holds the window, clock and time source, validates them, and judges a context against an optional per-route window, returning the verdict and the window; each adapter hands it the session-based default time source, builds `*httpsec.ReauthenticationRequiredError` and refuses on its own path;
+  - each adapter's options, configuration-error wording and refusal path are unchanged.
+
+  Red: a `guardauth` table test of the judge first; then, for each adapter, a temporary divergence in the shared judge that the adapter's recency tests catch. Verify with `go test -race -count=1 ./internal/guardauth/ ./httpsec/` and `go test -race ./...` in `httpsec/ginsec` and `httpsec/fibersec`
+
+## 10. A strict rotation that lost a race is a renewal conflict, decided by the store (`sessions`, `security-state-stores`, `schema-migrations`, `store-conformance`)
+
+Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store compiles against.
+
+- [ ] 10.1 The mark in the store contract and the in-memory store (D10 "Stores"):
+  - `session.Supersession.Strict` and `session.Session.RotatedStrictly`, documented as store-owned and never written by `Create` or `Save`; the `Store` godoc names them;
+  - `MemoryStore` records the mark on `Supersede`, returns it on `Load`, and keeps it out of `Create` and `Save`; the encrypting decorator passes it through;
+  - `test/storetest` session suite cases for the mark: recorded without grace, not with a grace window, returned on load, untouched by create and save, swept with the session at its retention deadline; and broken variants that drop the mark and that save it.
+
+  Red: the new suite cases fail on the memory store before it records the mark. (ADDED security-state-stores "Session stores keep whether a supersession was a rotation without grace"; ADDED store-conformance "The session suite covers the strict-rotation mark", the store-variant scenarios.) Verify with `go test -race -count=1 ./session/ ./test/storetest/`
+- [ ] 10.2 The durable stores and the migration (D10 "Schema", "Stores"):
+  - a new migration in `store/migrate/securitystate` adding `rotated_strictly boolean NOT NULL DEFAULT false`, with a `Down` that drops it;
+  - `internal/pgschema` and `internal/storekit` write and read it in the supersession and load statements; `sqlstore`, `pgxstore` and `gormstore` (`models.go`) carry it;
+  - migration tests: the column, existing rows unmarked, an older writer's insert, rollback; the gorm statement pins.
+
+  Red: the 10.1 suite cases fail on each durable backend, and the new migration-test rows fail before the migration exists. (ADDED schema-migrations "The security-state set adds the session strict-rotation mark", every scenario; the 10.1 requirements on every backend.) Verify with `go test -race -count=1 ./...` in the root, `store/pgxstore`, `store/gormstore` and `test` modules (needs Docker)
+- [ ] 10.3 The manager reads the mark (D10 "Decision"):
+  - a strict `Rotate` supersedes with `Strict: true`, `AcceptUntil` the in-flight window and `RetainUntil` the same end, and no longer deletes the old row;
+  - `Load` of a marked record is `ErrNotFound`, never judged; `Rotate` and `RotateWithGrace` of one are `ErrRenewalConflict` inside the window, writing nothing, and `ErrNotFound` after;
+  - `rotatedHandles` and its heap are removed; `Rotate`'s and `RotateWithGrace`'s godoc state the store-decided guarantee;
+  - the tests pinning the delete change with it: the failed-delete test is removed, the "load between the writes" tests become "load after the write", and 7.1's within-window tests keep their outcomes.
+
+  Red: `TestRepro_RotateWithGraceAfterStrictRotationIsRenewalConflict` and a load-after-the-window row. (MODIFIED sessions "Rotation with a grace window keeps the old identifier usable until the window ends", "A superseded identifier presented after its window revokes its family"; ADDED "Rotation at second-factor verification keeps the old session only until its in-flight window ends" and "A strict rotation that lost a race is a renewal conflict, decided by the store", every scenario; REMOVED "A failed delete does not fail a second-factor rotation" and "Rotation at second-factor verification keeps the old identifier only in flight".) Verify with `go test -race -count=1 ./session/ ./httpsec/`
+- [ ] 10.4 Across managers sharing a store, on every backend (D10 "The line, stated"):
+  - a `test/storetest` case rotating through one manager and again through a second over the same store, expecting `ErrRenewalConflict`; run on the memory store and every durable backend;
+  - in `httpsec`, a renewal that loses to a re-proof on one server answers 409 (`ErrSessionRenewalConflict`), and two re-proofs through two chains sharing a session store yield one success and one 409.
+
+  Red: `TestRepro_RotateOnSecondManagerAfterStrictRotationIsRenewalConflict`, rewritten as the suite case. (ADDED store-conformance scenario "Managers sharing a store"; sessions scenarios "Two managers sharing a store" and "A renewal that lost to a strict rotation".) Verify with `go test -race -count=1 ./session/ ./httpsec/` and `go test -race ./...` in the `test` module (needs Docker)
+
+## 11. Conformance and close-out, again
+
+- [ ] 11.1 `test/httpsecconformance` on net/http, gin and fiber gains: a re-proof prefix under the form login path accepted; a renewal that lost to a re-proof answered 409; a password re-proof refused by a post-authentication deny. (D9; the scenarios named.) Verify with `go vet ./...` and `go test -race ./...` in the `test` module (needs Docker)
+- [ ] 11.2 The whole-workspace gate, as 8.2:
+  - `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module listed by `go list -m`;
+  - `gofmt -l` empty over tracked Go files;
+  - `openspec validate reauthentication --strict`.
+
+  Verify that every command exits 0 and its output is recorded.
+
 ## Workflow follow-up
 
-- Run one whole-branch review against every spec requirement this change covers before the final gate and before archive.
+- Run one whole-branch review against every spec requirement this change covers before the final gate (8.2, and again before 11.2) and before archive.
 - The planning artifacts merge to `main` on their own (PR #30). Implementation runs on a new branch from `main`, `feat/reauthentication`, and owns its own PR. Rebase onto `main` again before merging if `main` moves.
 - Archive after merge.

@@ -211,7 +211,6 @@ Open follow-ups from the archived changes that are not needed for `v0.1.0`. None
   - Per-user MFA grace windows (mfa-enrolment-path; additive through an optional interface).
   - Storing and enforcing the provider's `auth_time` and `max_age` (oidc-mfa-assurance; a later migration adds the column).
   - A constant-work decoy for magic-link requests (auth-methods).
-  - A store-decided conflict for a strict rotation that lost a race, so it answers 409 across replicas sharing a store, not only within one manager (reauthentication; a marker column on the old row, kept briefly instead of deleted).
 - **Refactors** (first-party-sessions): the `gorm` session save through the shared column map; one savepoint protocol in `storekit`; one written form of the `stale` rule; `DeleteFamily`'s empty second pass.
 - **Unmeasured or unreproduced**
   - Possible deadlocks (`40P01`) between user-wide deletes or the sweep and a re-rotation (first-party-sessions; fails loudly and safely).

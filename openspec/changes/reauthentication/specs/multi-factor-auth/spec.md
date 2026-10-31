@@ -33,3 +33,18 @@ When one session pending a second factor posts two valid verifications at once t
 - **THEN** one succeeds and the other is refused with the renewal-conflict error
 - **AND** the winner's credential authenticates the next request
 
+
+### Requirement: Passkey management on an MFA chain needs re-authentication
+Because the verify and begin endpoints serve only a session that owes a second factor, a full session can meet its second factor only by re-authenticating. A chain with the MFA slot and passkeys SHALL therefore fail construction with a configuration error naming the re-authentication option when re-authentication is not enabled, so no wiring leaves a user unable to reach the state passkey registration and removal require.
+
+#### Scenario: MFA and passkeys without re-authentication
+- **WHEN** a chain enables the MFA slot and passkeys and does not enable re-authentication
+- **THEN** construction fails with a configuration error naming the re-authentication option
+
+#### Scenario: With re-authentication
+- **WHEN** the same chain also enables re-authentication, and a session of a user enrolled on TOTP after signing in, which owes no challenge, re-proves with a valid code at `/reauth/verify/totp`
+- **THEN** its second factor is recorded as satisfied and passkey registration begin is served
+
+#### Scenario: MFA without passkeys
+- **WHEN** a chain enables the MFA slot and not passkeys, without re-authentication
+- **THEN** construction succeeds

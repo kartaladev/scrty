@@ -143,9 +143,10 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - neither the MFA slot nor form login is enabled;
 - second-factor-only re-proof is required without the MFA slot;
 - the prefix is empty;
-- a re-proof path equals or lies under the logout path, the form login path, the MFA verify or begin prefix, or equals the MFA listing path;
+- a re-proof path collides with a path another enabled endpoint answers;
 - it is enabled twice;
-- no credential can be issued for the rotated session.
+- no credential can be issued for the rotated session;
+- the MFA slot was given a challenge store and re-authentication was not.
 
 #### Scenario: Nothing to re-prove with
 - **WHEN** re-authentication is enabled on a chain without the MFA slot and without form login
@@ -163,6 +164,14 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - **WHEN** the re-authentication prefix is set to `/mfa/verify`
 - **THEN** construction fails with a configuration error
 
+#### Scenario: A shared MFA challenge store needs a re-proof store
+- **WHEN** the MFA slot is given a challenge store and re-authentication is enabled without one
+- **THEN** construction fails with a configuration error naming both options
+
+#### Scenario: One store for both
+- **WHEN** the MFA slot and re-authentication are given the same challenge store
+- **THEN** construction succeeds, and a re-proof begun through one server is verified through another server sharing that store
+
 #### Scenario: Enabled twice
 - **WHEN** re-authentication is enabled twice on one chain
 - **THEN** construction fails with a configuration error
@@ -170,6 +179,21 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 #### Scenario: No credential to issue
 - **WHEN** re-authentication is enabled on a token-bearer chain without a token generator for it
 - **THEN** construction fails with a configuration error
+
+### Requirement: Re-proof paths are checked against every endpoint the chain answers
+Construction SHALL fail with a configuration error when a re-proof path collides with a path any enabled endpoint answers. Two paths collide when they are equal, or when one lies under the other and the other is matched by prefix. Each path is judged as its endpoint matches requests: re-proof begin and verify by prefix, the listing and password exactly, every other endpoint as it matches its own.
+
+#### Scenario: Prefix collides with passkey registration
+- **WHEN** passkeys are enabled and the re-authentication prefix is set to `/passkey/register`
+- **THEN** construction fails with a configuration error naming the passkey registration prefix
+
+#### Scenario: Another endpoint's exact path collides
+- **WHEN** the session renewal path is set to `/reauth/password`
+- **THEN** construction fails with a configuration error
+
+#### Scenario: A prefix under an exact path is accepted
+- **WHEN** form login answers `/login` and the re-authentication prefix is set to `/login/reauth`
+- **THEN** construction succeeds, `/login` is answered by form login and `/login/reauth/methods` by re-authentication
 
 ### Requirement: Only a full session may re-prove
 Every re-proof endpoint SHALL serve only a full session: one with a resolved caller, no pending challenge of any kind, and not confined. A request with no session or no resolved caller SHALL be refused as authentication required. A session owing a challenge SHALL be refused by that challenge's gate before the endpoint. A session that is still fresh SHALL be served.
@@ -220,6 +244,17 @@ By default a user who holds a usable re-proof second factor SHALL re-prove with 
 #### Scenario: A passkey login re-proves with the passkey
 - **WHEN** `u-3` signed in with a passkey, the passkey MFA method is configured, and `u-3` re-proves through `/reauth/begin/passkey` and `/reauth/verify/passkey`
 - **THEN** `u-3`'s session is re-authenticated, although the passkey shares the first factor's channel
+
+### Requirement: Each re-proof endpoint looks up only the enrolments its decision needs
+The password endpoint and the method listing SHALL look up every configured method, because they decide that the user holds none. Second-factor begin and verify SHALL look up only the method they name, so a failed lookup of another method SHALL NOT refuse them, and a failed lookup of the named method SHALL.
+
+#### Scenario: Another method's lookup failure does not refuse a second-factor re-proof
+- **WHEN** `u-1` is enrolled on TOTP, the passkey enrolment lookup fails, and `u-1` posts a valid code to `/reauth/verify/totp`
+- **THEN** `u-1`'s session is re-authenticated
+
+#### Scenario: The named method's lookup failure refuses
+- **WHEN** the TOTP enrolment lookup fails for `u-1` and `u-1` posts a code to `/reauth/verify/totp`
+- **THEN** the request is refused with the lookup failure, the code is not checked and nothing is counted
 
 ### Requirement: A consumer can require a second factor for every re-proof
 A consumer SHALL be able to require a second factor for every re-proof. A user with no usable second factor SHALL then be refused at the password endpoint with the re-proof-method-not-usable error, and SHALL be offered no re-proof method; they become fresh only by signing in again. No option SHALL let a user who holds a usable second factor re-prove with the password.
@@ -358,6 +393,17 @@ The password endpoint SHALL read only the password, from the `password` form fie
 #### Scenario: User store unavailable
 - **WHEN** the user store cannot answer during a password re-proof
 - **THEN** it is refused with the unavailable error and no failure is recorded
+
+### Requirement: A password re-proof applies the post-authentication policy as a login does
+After the password is proved, the post-authentication policy phase SHALL be applied as a login applies it. A deny SHALL refuse with the policy's reason, and a challenge SHALL refuse with that challenge, carrying no session. Neither SHALL clear failures, rotate the session or refresh its authentication time.
+
+#### Scenario: Post-authentication deny
+- **WHEN** a consumer policy denies `u-2` in the post-authentication phase, and `u-2`'s session posts the correct password
+- **THEN** it is refused with the policy's reason, as `u-2`'s login is refused, and the session and its authentication time are unchanged
+
+#### Scenario: Post-authentication challenge
+- **WHEN** a consumer policy raises a password-change challenge for `u-2` in the post-authentication phase, and `u-2`'s session posts the correct password
+- **THEN** it is refused with the password-change challenge, no session is marked pending, and the session is unchanged
 
 ### Requirement: A successful re-proof refreshes the authentication time and rotates the session
 A successful re-proof SHALL set the authentication time to now from the chain's time source; a second-factor re-proof SHALL also record the second factor as satisfied then, except as the same-channel requirement below states. It SHALL rotate the session, so the previous handle stops working, and answer with the rotated session's credential through a replaceable responder, without passing the request on. A failure SHALL change neither the session nor its handle.
