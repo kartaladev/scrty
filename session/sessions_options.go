@@ -12,9 +12,11 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrConfig is wrapped by every error New and NewEncryptedStore return
-// for a wiring mistake, so a consumer can tell a contradictory configuration
-// from a failure at request time without matching on message text.
+// ErrConfig is wrapped by every error New, NewEncryptedStore and
+// NewMemoryStore return for a wiring mistake, and by the error
+// MemoryStore.Start and MemoryStore.Shutdown return when given a nil context,
+// so a consumer can tell a contradictory configuration from a failure at
+// request time without matching on message text.
 var ErrConfig = errors.New("session: invalid configuration")
 
 const (

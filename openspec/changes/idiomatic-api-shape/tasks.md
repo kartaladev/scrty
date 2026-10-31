@@ -80,11 +80,11 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
 The pull request's code review found these, and the user chose on 2026-10-31 to fold all but one into this change. The declined one is recorded in design D5. Task 8.2 closes only after this group lands, with a fresh review of it and green CI.
 
 - [x] 9.1 Red: a `QueuedSender` whose logger blocks while a `Send` to a full queue logs the drop; `Shutdown` with a short context returns that context's error within its bound. Run it and confirm it fails because `Shutdown` waits for the lock. Then make `Send` decide under the lock and log after releasing it. Verify: the test passes under `-race`, and so do the queued-sender scenarios.
-- [x] 9.2 Move D4's shutdown wait (completion wins a tie, then wait under the context) into one internal helper that the four `Shutdown` methods share. Each keeps its current result: `sweep` still wraps the context's error, and the other three return it as it is. This is a refactor with no red step. Verify: every existing lifecycle test passes unchanged under `-race`.
+- [x] 9.2 Move D4's shutdown wait (completion wins a tie, then wait under the context) into one internal helper that the four `Shutdown` methods share. Each keeps its current result: `sweep` still wraps the context's error, and the other three return it as it is. The struct fields named `lifecycle` become `lifecycleMu`, so they do not read as the new package. This is a refactor with no red step. The sweeper's tests gain the completion-wins case and the wrapping assertion that the other three already had. Verify: every existing lifecycle test passes unchanged under `-race`.
 - [x] 9.3 Move D5's construction rule and the authorizer resolution of guards into one internal helper that `httpsec`, `ginsec` and `fibersec` share. Each package keeps its error text and the request-time typed-nil check. This is a refactor with no red step. Verify: every existing guard test passes unchanged in the three modules.
 - [x] 9.4 Small fixes:
-  - `EnableOIDCLogin`'s error names `OIDCDeps.RelyingParty` instead of "an OIDC manager";
-  - the godoc of `notify.ErrConfig` and `signingkey.ErrConfig` includes the lifecycle methods that now return them;
+  - `EnableOIDCLogin`'s errors name the `OIDCDeps` fields (`RelyingParty`, `Handoff`) instead of "an OIDC manager" and "a handoff manager";
+  - the godoc of `notify.ErrConfig`, `signingkey.ErrConfig` and `session.ErrConfig` includes the lifecycle methods that now return them;
   - a table test for `internal/must`, seen to fail against a broken `Must`;
   - `FirstOf.FlushRefusalLogs` collects only non-nil errors, as the other aggregators do;
   - the default scopes are copied once, not twice, when a registry is built.

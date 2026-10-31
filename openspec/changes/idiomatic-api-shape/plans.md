@@ -304,7 +304,9 @@
 
 - [ ] **Step 1:** Write `TestAwait`, a table with three cases: "done already closed with ctx already done gives nil", "ctx ends first gives its error", "done closes first gives nil". Implement `Await`, run the test, and see "done already closed with ctx already done" fail when the pre-check is removed. Restore the pre-check.
 - [ ] **Step 2:** Replace the hand-written wait in `Keys.Shutdown`, `MemoryStore.Shutdown`, `QueuedSender.Shutdown` and `Sweeper.Shutdown` with `Await`. `sweep` keeps wrapping the error it returns. No test changes.
-- [ ] **Step 3:** `go test -race -count=3` on `./token/signingkey/ ./session/ ./notify/ ./internal/lifecycle/`, then inside `expiry/sweep`. Expected: PASS, with no test file changed except the new one.
+- [ ] **Step 3:** Rename the struct fields `Keys.lifecycle` and `MemoryStore.lifecycle` to `lifecycleMu` with gopls, so they do not read as the package.
+- [ ] **Step 4:** Add to `TestSweeper_SecondShutdownWaitsForTheFirst` the case "a finished shutdown wins over a context that is already done": 100 calls, each nil. Add `ErrorContains(err, "sweep: shutting down")` to the sweeper's bounded-shutdown cases. Bypass the pre-check, and then the wrapping, and see each fail.
+- [ ] **Step 5:** `go test -race -count=3` on `./token/signingkey/ ./session/ ./notify/ ./internal/lifecycle/`, then inside `expiry/sweep`. Expected: PASS. Only the new lifecycle test and the sweeper's test file change.
 
 #### G2 (9.3): one guard rule
 
@@ -321,8 +323,8 @@
 
 #### G3 (9.4): small fixes
 
-- [ ] **Step 1:** The `EnableOIDCLogin` refusal names `OIDCDeps.RelyingParty`. Update the assertion in `TestEnableOIDCLoginConstruction`, run it, and see it fail on the old text first.
-- [ ] **Step 2:** The godoc of `notify.ErrConfig` and `signingkey.ErrConfig` lists the lifecycle methods that return them.
+- [ ] **Step 1:** The `EnableOIDCLogin` refusals name `OIDCDeps.RelyingParty` and `OIDCDeps.Handoff`. Update the three assertions in `TestEnableOIDCLoginConstruction`, run them, and see them fail on the old text first.
+- [ ] **Step 2:** The godoc of `notify.ErrConfig`, `signingkey.ErrConfig` and `session.ErrConfig` lists the lifecycle methods (and, for `session`, `NewMemoryStore`) that return them.
 - [ ] **Step 3:** Write `TestMust`, a table with two cases: "value passes through" and "error panics with that error". Use `require.PanicsWithError`, or recover and `ErrorIs`. Make `Must` ignore the error temporarily, see the panic case fail, then restore it.
 - [ ] **Step 4:** `FirstOf.FlushRefusalLogs` appends only non-nil errors. `TestFirstOf_FlushRefusalLogs` passes unchanged.
 - [ ] **Step 5:** `resolveProvider` copies the default scopes once. `registry_test.go` passes unchanged.
