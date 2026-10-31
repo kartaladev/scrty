@@ -481,6 +481,25 @@ func TestReauthPassword(t *testing.T) {
 			request: passwordOf(reauthOtherPassword),
 			assert:  unchecked(authenticate.ErrAuthenticationFailed),
 		},
+		{
+			// A rewrite of the username alone still names another account;
+			// the password it proves is that account's, not the session's.
+			name: "a caller whose username names another user is refused",
+			wire: func(_ *testing.T, f *pwFixture) {
+				swap := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if ex.Authentication != nil && ex.Authentication.Principal != nil {
+						p := *ex.Authentication.Principal
+						p.Username = reauthOtherUsername
+						ex.Authentication = &authenticate.Authentication{Principal: &p, Time: ex.Authentication.Time}
+					}
+
+					return next(ex)
+				})
+				f.chainOpts = append(f.chainOpts, httpsec.RegisterInterceptor(swap, httpsec.After(httpsec.OrderPasswordChange)))
+			},
+			request: passwordOf(reauthOtherPassword),
+			assert:  unchecked(authenticate.ErrAuthenticationFailed),
+		},
 	}
 
 	for _, tc := range cases {

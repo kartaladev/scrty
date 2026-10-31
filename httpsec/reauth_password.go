@@ -85,10 +85,17 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 			identity.NewUsernamePassword(username, password), err)
 	}
 
-	if _, err := l.verifyPassword(ctx, username, password, now); err != nil {
+	auth, err := l.verifyPassword(ctx, username, password, now)
+	if err != nil {
 		recordSourceFailure(ctx, l.guard, src)
 
 		return err
+	}
+
+	// The username is the caller's as published, so the account it proved is
+	// confirmed to be the session's own before anything is reset or refreshed.
+	if auth == nil || auth.Principal == nil || auth.Principal.ID != s.UserID {
+		return authenticate.ErrAuthenticationFailed
 	}
 
 	l.resetFailures(ctx, username)
