@@ -523,8 +523,8 @@ const mfaChallengeTaskPrefix = "mfa-challenges:"
 // The tasks run over the very managers that serve the chain's requests, so a
 // sweep reaches the state those requests issued, whether it lives in the
 // default in-memory stores or in the stores given to WithMFAChallengeStore,
-// WithReauthenticationChallengeStore, WithRecoveryCore's recovery.WithIssuedCodeStore or
-// recovery.WithHoldTokenStore. Each purges through its own manager, which
+// WithReauthenticationChallengeStore, WithRecoveryCore's
+// recovery.WithIssuedCodeStore or recovery.WithHoldTokenStore. Each purges through its own manager, which
 // removes only tokens that are expired and older than that manager's issuance
 // window, so a sweep never frees the challenge limit or the issued-code limit.
 // The sweep EnableMFA's begin runs inline, at most once per issuance window per
