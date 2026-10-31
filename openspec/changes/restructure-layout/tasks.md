@@ -205,7 +205,7 @@ Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md
 
 Proven by `TestAPIKey_RefusesKeyOfInactiveOwner`. One lane, Opus, because it is refusal logic written for the first time. It owns `httpsec/apikey*.go`. It starts after group 13, because it returns 13's `ErrUnavailable`.
 
-- [ ] 14.1 Add `httpsec.WithAPIKeyOwners(identity.UserLoader)` (D17). Red step: a table test in `httpsec` over the `api-keys` delta's scenarios:
+- [x] 14.1 Add `httpsec.WithAPIKeyOwners(identity.UserLoader)` (D17). Red step: a table test in `httpsec` over the `api-keys` delta's scenarios:
   - with no loader, a key authenticates and the loader mock expects no call;
   - an inactive owner and a missing owner are refused exactly as a wrong key is, and counted against the source;
   - an active owner authenticates as the key's service principal;
@@ -214,8 +214,8 @@ Proven by `TestAPIKey_RefusesKeyOfInactiveOwner`. One lane, Opus, because it is 
   - `WithAPIKeyOwners(nil)` is a configuration error from `New`.
 
   Declare the option as a no-op first, and see the inactive, missing, outage and nil rows fail. Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/...` passes.
-- [ ] 14.2 State the default in `EnableAPIKey`'s godoc (D17): without `WithAPIKeyOwners`, deactivating a user stops none of the keys issued for that user's reference. Verify: `go doc ./httpsec EnableAPIKey` says so and names the option.
-- [ ] 14.3 Fold the K1 review (D17, mismatch bullet). Red step: a row in `TestAPIKeyOwners` where the loader returns an active user whose ID differs from the key's principal reference; it expects the wrong-key refusal, one source charge and one error-level record with reason `owner-mismatch`. See it fail. Also:
+- [x] 14.2 State the default in `EnableAPIKey`'s godoc (D17): without `WithAPIKeyOwners`, deactivating a user stops none of the keys issued for that user's reference. Verify: `go doc ./httpsec EnableAPIKey` says so and names the option.
+- [x] 14.3 Fold the K1 review (D17, mismatch bullet). Red step: a row in `TestAPIKeyOwners` where the loader returns an active user whose ID differs from the key's principal reference; it expects the wrong-key refusal, one source charge and one error-level record with reason `owner-mismatch`. See it fail. Also:
   - the caller-left rows assert `ErrAuthenticationFailed`, `StatusForError` 401 and exactly one debug-level record;
   - a row pins a loader answering `(nil, nil)`: refused as a wrong key and counted;
   - `WithAPIKeyOwners`' godoc names the mismatch refusal and that a refused key keeps its last-use time.

@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -47,6 +50,10 @@ type apiKeyInterceptor struct {
 	guard   sourceGuard
 
 	limiter ratelimit.Limiter
+
+	// owners loads a verified key's principal reference as a user; nil means
+	// no owner is looked up.
+	owners identity.UserLoader
 
 	now func() time.Time
 
@@ -96,10 +103,13 @@ func (i *apiKeyInterceptor) flushRefusalLogs() {
 //     bucket read rather than a store round trip.
 //  3. Verify. A failure records against the source and returns the same error a
 //     throttled source gets, so the two cannot be told apart.
-//  4. The stateless phase. A deny here is not recorded: the credential was
+//  4. Check the key's owner, when the consumer gave a user loader. A missing or
+//     inactive owner is refused and recorded as a wrong key is; a loader that
+//     could not answer, or a caller that left, is not recorded.
+//  5. The stateless phase. A deny here is not recorded: the credential was
 //     valid, and counting it would let a policy misconfiguration lock out the
 //     caller's own machines.
-//  5. Publish the caller with no session. A machine has nobody to prompt and
+//  6. Publish the caller with no session. A machine has nobody to prompt and
 //     nothing to keep between requests.
 func (i *apiKeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	presented, claimed := strings.CutPrefix(ex.Request.Header("Authorization"), i.scheme)
@@ -127,6 +137,10 @@ func (i *apiKeyInterceptor) Intercept(ex *Exchange, next Next) error {
 		return refusedAPIKey()
 	}
 
+	if err := i.checkOwner(ctx, p.ID, src, now); err != nil {
+		return err
+	}
+
 	auth := &authenticate.Authentication{Principal: &p, Time: now}
 
 	// Stateless: there is no later request in which this caller could answer a
@@ -152,7 +166,109 @@ func (i *apiKeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	return next(ex)
 }
 
-// refusedAPIKey is the one answer every refusal on this path gives.
+// The sampler keys and messages of the owner check's records.
+const (
+	reasonOwnerUnavailable = "owner-unavailable"
+	reasonOwnerCallerEnded = "owner-caller-ended"
+	reasonOwnerMismatch    = "owner-mismatch"
+
+	msgAPIKeyOwnerUnavailable = "httpsec: an API key's owner could not be loaded"
+	msgAPIKeyOwnerCallerEnded = "httpsec: the caller left while an API key's owner was loaded"
+	msgAPIKeyOwnerMismatch    = "httpsec: the user loader answered for another user than an API key's owner"
+)
+
+// checkOwner refuses a verified key whose owner the consumer's user loader
+// does not hold as an active user. With no loader it checks nothing.
+//
+// A missing or inactive owner writes no record of its own and records a
+// failure against the source, as a wrong key does, so nothing on either side
+// of the chain tells the two apart. A loader that answers for another user
+// than the one asked about is refused and recorded the same way, and logged
+// at error level under a reason of its own, naming neither user, since the
+// loader is the consumer's to fix. An outage is logged, since an operator has
+// something to fix, and a caller that left is logged at debug under a key of
+// its own, so a burst of hang-ups cannot crowd the outage records out of the
+// sampled window. Neither is recorded against the source: the key verified.
+func (i *apiKeyInterceptor) checkOwner(
+	ctx context.Context,
+	owner identity.UserID,
+	src ratelimit.Source,
+	now time.Time,
+) error {
+	if i.owners == nil {
+		return nil
+	}
+
+	details, err := i.owners.LoadByUserID(ctx, owner)
+
+	switch {
+	case err == nil && details != nil && details.ID != owner:
+		recordSourceFailure(ctx, i.guard, src)
+
+		logSampled(ctx, i.sampler, i.log, slog.LevelError, now,
+			apiKeyFlow+sampleKeySeparator+reasonOwnerMismatch, msgAPIKeyOwnerMismatch,
+			slog.String("flow", apiKeyFlow), slog.String("reason", reasonOwnerMismatch))
+
+		return refusedAPIKey()
+
+	case err == nil && details != nil && details.Active:
+		return nil
+
+	case err == nil || errors.Is(err, identity.ErrUserNotFound):
+		recordSourceFailure(ctx, i.guard, src)
+
+		return refusedAPIKey()
+
+	case ownerLoadEndedByCaller(ctx, err):
+		logSampled(ctx, i.sampler, i.log, slog.LevelDebug, now,
+			apiKeyFlow+sampleKeySeparator+reasonOwnerCallerEnded, msgAPIKeyOwnerCallerEnded,
+			append([]slog.Attr{slog.String("flow", apiKeyFlow)},
+				diag.Failure(reasonOwnerCallerEnded, err)...)...)
+
+		return callerEndedAPIKey(ctx)
+
+	default:
+		// diag.Failure names the error's Go type, never its text: a store's
+		// error can quote a row or an address, and a consumer who wants that
+		// detail logs it inside their own user loader.
+		logSampled(ctx, i.sampler, i.log, slog.LevelError, now,
+			apiKeyFlow+sampleKeySeparator+reasonOwnerUnavailable, msgAPIKeyOwnerUnavailable,
+			append([]slog.Attr{slog.String("flow", apiKeyFlow)},
+				diag.Failure(reasonOwnerUnavailable, err)...)...)
+
+		// Bare: the loader's text stays out of the error as it stays out of
+		// the log.
+		return authenticate.ErrUnavailable
+	}
+}
+
+// ownerLoadEndedByCaller reports whether err is the request's own context
+// ending rather than the user loader failing on its own: ctx has ended, and
+// err is or wraps ctx's error or its cause. A deadline the loader met on a
+// context of its own is an outage, since the caller was still waiting.
+func ownerLoadEndedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil &&
+		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
+}
+
+// callerEndedAPIKey is the refusal of a request whose client left while its
+// key's owner was loaded: the wrong-key refusal, joined with the request
+// context's error and, when it differs, that context's cause, so a consumer can
+// tell that the client left.
+func callerEndedAPIKey(ctx context.Context) error {
+	ctxErr := ctx.Err()
+	errs := []error{refusedAPIKey(), ctxErr}
+
+	if cause := context.Cause(ctx); !errors.Is(cause, ctxErr) {
+		errs = append(errs, cause)
+	}
+
+	return errors.Join(errs...)
+}
+
+// refusedAPIKey is the one answer every refusal of a presented key gives.
 //
 // It joins rather than wraps, so a consumer matching the chain's own
 // "authentication failed" and one matching apikey's verification failure both
@@ -168,9 +284,14 @@ type APIKeyOption func(*apiKeyInterceptor) error
 // EnableAPIKey authenticates machine callers by key at the API key slot.
 //
 // Defaults: a key is read from the Authorization header after the literal
-// DefaultAPIKeyScheme prefix (WithAPIKeyScheme), and a source that presents
-// wrong keys is cut off after 20 failures a minute by a limiter this flow alone
-// uses (WithAPIKeyLimiter).
+// DefaultAPIKeyScheme prefix (WithAPIKeyScheme); a source that presents wrong
+// keys is cut off after 20 failures a minute by a limiter this flow alone uses
+// (WithAPIKeyLimiter); and no owner is looked up (WithAPIKeyOwners).
+//
+// Without WithAPIKeyOwners, a key's principal reference is taken as the
+// consumer's own and never loaded, so deactivating a user stops none of the
+// keys issued for that user's reference: each must be revoked, or the flow
+// given a user loader with WithAPIKeyOwners.
 //
 // A request that does not carry the scheme passes through untouched and
 // consults nothing: ordinary unauthenticated traffic is not a failed attempt,
@@ -261,6 +382,53 @@ func WithAPIKeyLimiter(l ratelimit.Limiter) APIKeyOption {
 		}
 
 		i.limiter = l
+
+		return nil
+	}
+}
+
+// WithAPIKeyOwners requires the owner of every verified key to be an active
+// user that users holds.
+//
+// Default: no lookup. A key's principal reference is the consumer's own and
+// need not name a user, so without this option deactivating a user stops none
+// of the keys issued for that user's reference.
+//
+// With it, a key that verifies has its principal reference loaded with
+// users.LoadByUserID, before the stateless policy phase:
+//
+//   - an owner the loader does not find (identity.ErrUserNotFound), or finds
+//     not active, is refused exactly as a wrong key is, with the same error,
+//     and counted against the source the same way;
+//   - a loader that answers with a user other than the one asked for is
+//     refused the same way and counted as a missing owner is, and is logged
+//     at error level under the reason "owner-mismatch", since the loader is
+//     what needs fixing; the record names neither user;
+//   - an active owner leaves the request authenticated as the key's service
+//     principal, unchanged;
+//   - any other loader failure is refused with authenticate.ErrUnavailable,
+//     which carries none of the loader's text and which StatusForError
+//     answers 503. It is logged at error level, naming the error's Go type,
+//     and not counted against the source: the key was not refused;
+//   - a load the request's own context ended, when the loader's error is or
+//     wraps that context's error or its cause, is refused with the wrong-key
+//     error joined with that context's error, not ErrUnavailable. It is not
+//     counted either: the key was verified, and the client has left.
+//
+// Every request that presents a valid key then costs one load. A loader that
+// caches decides for itself how soon a deactivation takes effect.
+//
+// The key's verification stamps its last-use time before the owner is loaded,
+// so a key refused for its owner keeps that stamp.
+//
+// A nil loader, including an interface holding a nil pointer, is refused.
+func WithAPIKeyOwners(users identity.UserLoader) APIKeyOption {
+	return func(i *apiKeyInterceptor) error {
+		if err := requireDep("WithAPIKeyOwners", "user loader", users); err != nil {
+			return err
+		}
+
+		i.owners = users
 
 		return nil
 	}

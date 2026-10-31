@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -391,6 +392,356 @@ func TestAPIKeyThrottleLogSampling(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, throttled, "one record stands for every refusal in the window")
+}
+
+// errOwnerClientGone is the cause a departing client's request ends with.
+var errOwnerClientGone = errors.New("apikey_test: the client went away")
+
+// apiKeyLeaveKey carries, in a request's context, the function that ends it,
+// so a user loader can end the request mid-load as a departing client does.
+type apiKeyLeaveKey struct{}
+
+// leavable gives a request a context its user loader can end.
+func leavable(ctx context.Context) context.Context {
+	ctx, leave := context.WithCancelCause(ctx)
+
+	return context.WithValue(ctx, apiKeyLeaveKey{}, leave)
+}
+
+// leave ends the request whose context ctx is, with cause.
+func leave(ctx context.Context, cause error) {
+	ctx.Value(apiKeyLeaveKey{}).(context.CancelCauseFunc)(cause)
+}
+
+// apiKeyOwnerOutcome is what one request to an owner-checking chain produced.
+type apiKeyOwnerOutcome struct {
+	served
+
+	// logs are the records written while the request was served, not while
+	// the chain was built.
+	logs []slog.Record
+}
+
+// TestAPIKeyOwners pins the owner check: with a user loader, a verified key
+// whose owner is missing or inactive, or whom the loader answers for as
+// another user, is refused as a wrong key is, an outage is unavailable and
+// uncounted, and a client that leaves mid-load is not
+// counted either. Without one, nothing is looked up.
+func TestAPIKeyOwners(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		ctx  func(ctx context.Context) context.Context
+
+		// owners sets what the loader expects and returns the options that
+		// wire it, if any.
+		owners func(m *MockUserLoader) []httpsec.APIKeyOption
+
+		// failures is how many failures the source limiter is to record.
+		failures int
+
+		assert func(t *testing.T, out apiKeyOwnerOutcome, err error)
+	}
+
+	owned := func(m *MockUserLoader) []httpsec.APIKeyOption {
+		return []httpsec.APIKeyOption{httpsec.WithAPIKeyOwners(m)}
+	}
+
+	loads := func(details *identity.Details, err error) func(*MockUserLoader) []httpsec.APIKeyOption {
+		return func(m *MockUserLoader) []httpsec.APIKeyOption {
+			m.EXPECT().LoadByUserID(gomock.Any(), apiKeyPrincipal).Return(details, err)
+
+			return owned(m)
+		}
+	}
+
+	// What a wrong key is refused with, which a missing or inactive owner
+	// must not be told apart from.
+	wrongKey := func() error {
+		h := newAPIKeyHarness(t)
+
+		return h.withKey(t, h.chain(t), apiKeySource, "sk_0199a0e1-0000-7000-8000-000000000000.bm9wZQ").err
+	}()
+	require.Error(t, wrongKey)
+
+	authenticated := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		require.NoError(t, err)
+		require.True(t, out.handlerRan)
+		require.NotNil(t, out.handled.Authentication)
+
+		p := out.handled.Authentication.Principal
+		require.NotNil(t, p)
+		assert.Equal(t, apiKeyPrincipal, p.ID)
+		assert.True(t, p.IsService(), "the key's service principal, not the owner as a user")
+	}
+
+	refusedWrongKeyError := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		require.Error(t, err)
+		assert.Equal(t, wrongKey.Error(), err.Error(), "the error a wrong key gets")
+		require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+		require.ErrorIs(t, err, apikey.ErrVerificationFailed)
+		assert.NotErrorIs(t, err, authenticate.ErrUnavailable)
+		assert.Equal(t, httpsec.StatusForError(wrongKey), httpsec.StatusForError(err))
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(err))
+		assert.False(t, out.handlerRan)
+	}
+
+	refusedAsWrongKey := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		refusedWrongKeyError(t, out, err)
+		assert.Empty(t, out.logs, "and the chain writes what it writes for a wrong key: nothing")
+	}
+
+	// A loader that answers for another user is a fault the operator can fix,
+	// so it is logged once, under its own reason, with nothing about the user.
+	refusedAsMismatch := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		refusedWrongKeyError(t, out, err)
+
+		require.Len(t, out.logs, 1, "one record for the one refusal")
+
+		r := out.logs[0]
+		assert.Equal(t, slog.LevelError, r.Level)
+
+		attrs := map[string]string{}
+
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.String()
+
+			return true
+		})
+
+		assert.Equal(t, "owner-mismatch", attrs["reason"])
+		assert.NotContains(t, r.Message, string(apiKeyPrincipal))
+		assert.NotContains(t, r.Message, "another-user")
+
+		for _, v := range attrs {
+			assert.NotContains(t, v, string(apiKeyPrincipal), "no record names the key's owner")
+			assert.NotContains(t, v, "another-user", "or the user the loader answered for")
+		}
+	}
+
+	unavailable := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, authenticate.ErrUnavailable)
+		assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed, "no key was refused")
+		assert.NotContains(t, err.Error(), "10.0.0.5", "the loader's text stays out")
+		assert.Equal(t, http.StatusServiceUnavailable, httpsec.StatusForError(err))
+		assert.False(t, out.handlerRan)
+
+		var faults int
+
+		for _, r := range out.logs {
+			if r.Level == slog.LevelError {
+				faults++
+			}
+
+			assert.NotContains(t, r.Message, "10.0.0.5")
+
+			r.Attrs(func(a slog.Attr) bool {
+				assert.NotContains(t, a.Value.String(), "10.0.0.5", "no record carries the loader's text")
+
+				return true
+			})
+		}
+
+		assert.Equal(t, 1, faults, "the operator is told the store could not answer")
+	}
+
+	callerLeft := func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, context.Canceled, "the request's own context's error")
+		require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed, "refused as a wrong key is")
+		assert.NotErrorIs(t, err, authenticate.ErrUnavailable, "a client leaving is not an outage")
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(err))
+		assert.False(t, out.handlerRan)
+
+		var debugs int
+
+		for _, r := range out.logs {
+			assert.NotEqual(t, slog.LevelError, r.Level, "nothing an operator can act on: %s", r.Message)
+
+			if r.Level == slog.LevelDebug {
+				debugs++
+			}
+		}
+
+		assert.Equal(t, 1, debugs, "the one debug record of the one hang-up")
+	}
+
+	configError := func(t *testing.T, _ apiKeyOwnerOutcome, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, httpsec.ErrConfig)
+	}
+
+	cases := []testCase{
+		{
+			name:   "no loader looks nothing up",
+			owners: func(*MockUserLoader) []httpsec.APIKeyOption { return nil },
+			assert: authenticated,
+		},
+		{
+			name:     "inactive owner",
+			owners:   loads(&identity.Details{ID: apiKeyPrincipal, Active: false}, nil),
+			failures: 1,
+			assert:   refusedAsWrongKey,
+		},
+		{
+			name:     "missing owner",
+			owners:   loads(nil, fmt.Errorf("users: %w", identity.ErrUserNotFound)),
+			failures: 1,
+			assert:   refusedAsWrongKey,
+		},
+		{
+			name:     "loader answers nothing",
+			owners:   loads(nil, nil),
+			failures: 1,
+			assert:   refusedAsWrongKey,
+		},
+		{
+			name:     "loader answers for another user",
+			owners:   loads(&identity.Details{ID: "another-user", Active: true}, nil),
+			failures: 1,
+			assert:   refusedAsMismatch,
+		},
+		{
+			name:   "active owner",
+			owners: loads(&identity.Details{ID: apiKeyPrincipal, Active: true}, nil),
+			assert: authenticated,
+		},
+		{
+			name:   "loader outage",
+			owners: loads(nil, errors.New("dial tcp 10.0.0.5:5432: connection refused")),
+			assert: unavailable,
+		},
+		{
+			name: "a deadline the loader met on its own is an outage",
+			owners: loads(nil, fmt.Errorf("users: query: %w",
+				context.DeadlineExceeded)),
+			assert: func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+				t.Helper()
+
+				unavailable(t, out, err)
+				assert.NotContains(t, err.Error(), "query", "the loader's text stays out")
+			},
+		},
+		{
+			name: "caller left during the owner load",
+			ctx:  leavable,
+			owners: func(m *MockUserLoader) []httpsec.APIKeyOption {
+				m.EXPECT().LoadByUserID(gomock.Any(), apiKeyPrincipal).DoAndReturn(
+					func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+						leave(ctx, nil)
+
+						return nil, fmt.Errorf("users: %w", ctx.Err())
+					})
+
+				return owned(m)
+			},
+			assert: callerLeft,
+		},
+		{
+			name: "caller left with a cause during the owner load",
+			ctx:  leavable,
+			owners: func(m *MockUserLoader) []httpsec.APIKeyOption {
+				m.EXPECT().LoadByUserID(gomock.Any(), apiKeyPrincipal).DoAndReturn(
+					func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+						leave(ctx, errOwnerClientGone)
+
+						return nil, context.Cause(ctx)
+					})
+
+				return owned(m)
+			},
+			assert: func(t *testing.T, out apiKeyOwnerOutcome, err error) {
+				t.Helper()
+
+				callerLeft(t, out, err)
+				assert.ErrorIs(t, err, errOwnerClientGone, "and the cause it ended with")
+			},
+		},
+		{
+			name: "nil loader",
+			owners: func(*MockUserLoader) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyOwners(nil)}
+			},
+			assert: configError,
+		},
+		{
+			name: "a loader interface holding a nil pointer",
+			owners: func(*MockUserLoader) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyOwners((*MockUserLoader)(nil))}
+			},
+			assert: configError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			ctrl := gomock.NewController(t)
+
+			limiter := NewMockLimiter(ctrl)
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).Times(tc.failures)
+
+			h := newAPIKeyHarness(t)
+			logs := &capturingHandler{}
+
+			opts := append([]httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(limiter)},
+				tc.owners(NewMockUserLoader(ctrl))...)
+
+			c, err := httpsec.New(httpsec.WithLogger(slog.New(logs)),
+				httpsec.EnableAPIKey(h.keys, opts...))
+			if err != nil {
+				tc.assert(t, apiKeyOwnerOutcome{}, err)
+
+				return
+			}
+
+			built := len(logs.records())
+			out := serveAPIKey(ctx, c, httpsec.DefaultAPIKeyScheme+h.valid)
+
+			tc.assert(t, apiKeyOwnerOutcome{served: out, logs: logs.records()[built:]}, out.err)
+		})
+	}
+}
+
+// serveAPIKey sends a request carrying header from apiKeySource, on ctx, so a
+// test can end the request while the chain is serving it.
+func serveAPIKey(ctx context.Context, c *httpsec.Chain, header string) served {
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/invoices", nil)
+	req.RemoteAddr = apiKeySource + ":51000"
+	req.Header.Set("Authorization", header)
+
+	out := served{rec: httptest.NewRecorder()}
+	run := c.Assemble(func(ex *httpsec.Exchange) error {
+		out.handlerRan = true
+		out.handled = ex
+
+		return nil
+	})
+
+	ex := httpsec.NewExchange(ctx, httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(out.rec))
+	out.err = run(ex)
+
+	return out
 }
 
 // statelessDenyingEngine refuses in the stateless phase, which is the one a
