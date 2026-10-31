@@ -8,12 +8,16 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
 // FirstOf resolves credentials by offering them to ordered providers.
 //
 // It is safe for concurrent use: the provider list is fixed at construction and
 // never written afterwards.
+//
+// It forwards the decoy check and the refusal-log flush to its delegates: it is
+// a logsample.Flusher, and FlushRefusalLogs reaches every delegate that is one.
 type FirstOf struct {
 	delegates []Authenticator
 }
@@ -136,3 +140,25 @@ func offersDecoy(a Authenticator) bool {
 
 	return true
 }
+
+// FlushRefusalLogs flushes each delegate that implements logsample.Flusher, in
+// the order the delegates were given, so a delegate's suppressed refusals are
+// reported when the FirstOf is flushed. A nested FirstOf is a flusher too, so
+// the flush reaches delegates however deep they sit. Delegates that do not
+// implement logsample.Flusher are skipped.
+//
+// A delegate whose flush fails does not stop the later ones: every flusher is
+// called, and the errors come back joined. It returns nil when every flush
+// succeeded or no delegate flushes.
+func (m *FirstOf) FlushRefusalLogs() error {
+	var errs []error
+	for _, d := range m.delegates {
+		if f, ok := d.(logsample.Flusher); ok {
+			errs = append(errs, f.FlushRefusalLogs())
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+var _ logsample.Flusher = (*FirstOf)(nil)

@@ -1948,6 +1948,34 @@ func TestChain_FlushRefusalLogs_JoinsErrors(t *testing.T) {
 		"the API key guard, flushed after the failing authenticator, was not flushed")
 }
 
+// TestChain_FlushRefusalLogs_ReachesFirstOfDelegates pins design D2, that
+// FirstOf forwards a flush to its delegates: a form login whose authenticator
+// is a FirstOf over the password authenticator still gets that authenticator's
+// suppressed refusals reported by one Chain.FlushRefusalLogs call.
+func TestChain_FlushRefusalLogs_ReachesFirstOfDelegates(t *testing.T) {
+	t.Parallel()
+
+	logs := &capturingHandler{}
+	log := slog.New(logs)
+
+	// refusingAuthenticator already holds two suppressed refusals.
+	first, err := authenticate.NewFirstOf(refusingAuthenticator(t, log))
+	require.NoError(t, err)
+
+	loginDeps := newAuthHarness(t).formLoginDeps()
+	loginDeps.Authenticator = first
+
+	c, err := httpsec.New(httpsec.WithLogger(log), httpsec.EnableFormLogin(loginDeps))
+	require.NoError(t, err)
+
+	before := len(logs.records())
+
+	require.NoError(t, c.FlushRefusalLogs())
+
+	assert.Equal(t, []int64{2}, summaries(t, logs.records()[before:], summaryAuthn, "", ""),
+		"the password authenticator behind FirstOf was not flushed")
+}
+
 // errBrokerFlush is the failure a consumer's identity broker reports from its
 // own refusal-log flush.
 var errBrokerFlush = errors.New("chain_test: broker flush failure fixture")
