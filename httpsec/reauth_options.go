@@ -52,8 +52,9 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // carries the rotated session's credential: by default the JSON document a
 // login answers with, marked Cache-Control: no-store
 // (WithReauthenticationResponder replaces it). A rotation a concurrent renewal
-// won is refused with ErrSessionRenewalConflict, and a failed re-proof changes
-// neither the session nor its handle.
+// won, or that lost to a concurrent re-proof of the same session on the same
+// server, is refused with ErrSessionRenewalConflict (409), and a failed
+// re-proof changes neither the session nor its handle.
 //
 // # Who may re-prove
 //

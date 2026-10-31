@@ -17,8 +17,11 @@ import (
 // obtained before the re-proof does not answer after it. When it fails, every
 // field set here is put back, so the caller is left exactly as they were
 // found, and the failure is refused as rotationRefusal words it: a renewal
-// that superseded the session inside its window is ErrSessionRenewalConflict
-// (409), and a session no longer held is ErrAuthenticationRequired. A spent
+// that superseded the session inside its window, or a concurrent re-proof or
+// second-factor verification of the same session on this server that rotated
+// it first, is ErrSessionRenewalConflict (409), and a session no longer held
+// is ErrAuthenticationRequired. Across servers sharing a store, the loser of
+// such a race may still be refused as no longer holding a session. A spent
 // TOTP step or re-proof challenge stays spent.
 //
 // The rotated session is published on the exchange and its context, its

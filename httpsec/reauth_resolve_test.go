@@ -244,9 +244,10 @@ func TestReauthResolve(t *testing.T) {
 			// "Concurrent re-proofs": both requests hold the session before
 			// either rotates it. One manager serialises the two strict
 			// rotations of one handle, so the loser finds the handle already
-			// moved and is refused as no longer holding a session; nothing is
-			// rotated twice.
-			name: "two concurrent re-proofs: one succeeds, the other is refused and the winner's session stands",
+			// moved inside the winner's in-flight window and is refused as a
+			// renewal conflict (409), not as signed out; nothing is rotated
+			// twice and nothing is revoked.
+			name: "two concurrent re-proofs: one succeeds, the other is a renewal conflict and the winner's session stands",
 			wire: func(_ *testing.T, f *pwFixture) {
 				f.noCarrier = true
 				f.totpUnenrolled = false
@@ -288,9 +289,10 @@ func TestReauthResolve(t *testing.T) {
 				return outs[0]
 			},
 			assert: func(t *testing.T, f *pwFixture, _ *httpsec.Chain, s *session.Session, out served) {
-				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
-				require.ErrorIs(t, out.err, session.ErrNotFound)
-				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the loser is not signed out")
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
 
 				winner, ok := f.issuedFor.Load().(string)
 				require.True(t, ok)

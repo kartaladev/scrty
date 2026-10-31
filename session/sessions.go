@@ -1,6 +1,7 @@
 package session
 
 import (
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -91,11 +92,102 @@ type Sessions struct {
 	// this process more gently. Without it the second could read the old
 	// record between the first's supersession and its delete, find a window
 	// that has already ended, and revoke the family as reuse; with it, the
-	// second finds the record deleted and is refused with
-	// ErrNotFound. The lock follows the session rather than the
-	// manager, so two users completing a second factor at the same moment do
-	// not take turns.
+	// second finds the record deleted, recognises it in rotated below, and
+	// is refused with ErrRenewalConflict. The lock follows the session rather
+	// than the manager, so two users completing a second factor at the same
+	// moment do not take turns.
 	rotating keyedMutex
+
+	// rotated remembers, for the in-flight window of each strict rotation
+	// through this manager, the digest of the handle it rotated away, so a
+	// rotation that lost the race to it is told so rather than told the
+	// session is gone.
+	rotated rotatedHandles
+}
+
+// rotatedHandles remembers the digests of handles a strict rotation removed,
+// each until the end of that rotation's in-flight window, and forgets each one
+// as its window ends.
+//
+// The zero value is ready to use. It holds only the windows still open, so it
+// grows with the rotations of the last DefaultRenewalGrace and no further:
+// every call first drops the entries whose window has ended, earliest end
+// first. It is the manager's own memory, never the store's, which is why its
+// guarantee holds within one manager only.
+type rotatedHandles struct {
+	mu sync.Mutex
+	// until maps a handle's digest to the end of its window.
+	until map[string]time.Time
+	// byEnd orders the same entries by the end of their window, earliest
+	// first, so pruning never scans entries whose window is still open.
+	byEnd rotatedByEnd
+}
+
+// rotatedEntry is one remembered handle and the end of its window.
+type rotatedEntry struct {
+	digest string
+	until  time.Time
+}
+
+// rotatedByEnd is a min-heap of remembered handles by the end of their window.
+// Windows usually end in the order they began, but one capped at an earlier
+// absolute deadline ends sooner, so a plain queue would keep it past its end.
+type rotatedByEnd []rotatedEntry
+
+func (h rotatedByEnd) Len() int           { return len(h) }
+func (h rotatedByEnd) Less(i, j int) bool { return h[i].until.Before(h[j].until) }
+func (h rotatedByEnd) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *rotatedByEnd) Push(x any)        { *h = append(*h, x.(rotatedEntry)) }
+
+func (h *rotatedByEnd) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+
+	return last
+}
+
+// remember records that the handle with this digest was rotated away and that
+// a rotation of it losing the race is told so until until. A window that has
+// already ended at now is not recorded.
+func (r *rotatedHandles) remember(digest []byte, until, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.prune(now)
+	if !now.Before(until) {
+		return
+	}
+	if r.until == nil {
+		r.until = make(map[string]time.Time)
+	}
+	key := string(digest)
+	r.until[key] = until
+	heap.Push(&r.byEnd, rotatedEntry{digest: key, until: until})
+}
+
+// recent reports whether the handle with this digest was rotated away by a
+// rotation whose in-flight window is still open at now.
+func (r *rotatedHandles) recent(digest []byte, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.prune(now)
+	until, found := r.until[string(digest)]
+
+	return found && now.Before(until)
+}
+
+// prune forgets every handle whose window has ended at now. The caller holds
+// r.mu. A heap entry whose digest was remembered again with another end is
+// dropped without touching the map, which belongs to the later entry.
+func (r *rotatedHandles) prune(now time.Time) {
+	for len(r.byEnd) > 0 && !now.Before(r.byEnd[0].until) {
+		e := heap.Pop(&r.byEnd).(rotatedEntry)
+		if until, found := r.until[e.digest]; found && until.Equal(e.until) {
+			delete(r.until, e.digest)
+		}
+	}
 }
 
 // keyedMutex hands out one mutex per key and keeps none it is not using.
@@ -681,9 +773,18 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // refused with the store's sentinel, as itself, and nothing is written:
 // rotation is a move, not a way to bring a revoked session back under a fresh
 // handle. Two rotations of one handle through one manager are serialised on
-// that identifier, so the second finds the old entry already gone and is
-// refused with ErrNotFound. Rotations of different sessions do not
-// wait for each other.
+// that identifier. The manager remembers the handle it rotated away until that
+// rotation's in-flight window ends (DefaultRenewalGrace, never past the
+// absolute deadline), so the second finds the old entry gone, recognises it,
+// and is refused with ErrRenewalConflict: it lost a concurrent rotation, and
+// its caller should carry on with the credential the winner was handed.
+// Nothing is written on that path and nothing is judged, so no reuse is
+// detected and the winner's family is left as it is. Past the window, or for
+// a session this manager never rotated, a missing session is still
+// ErrNotFound. The memory is this manager's alone: across managers sharing a
+// store, a losing Rotate that reads the session only after the winner deleted
+// it may still get ErrNotFound. Rotations of different sessions do not wait
+// for each other.
 //
 // Racing rotations that the lock does not see — a RotateWithGrace of the
 // same session, or a Rotate on another manager over the same store — are
@@ -725,6 +826,14 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 
 	stored, err := m.loadStored(ctx, s.ID, "session: the session to rotate could not be loaded")
 	if err != nil {
+		// A handle this manager rotated away moments ago lost a race to that
+		// rotation; it is not a session that was never there or was revoked.
+		// Nothing is written and nothing judged, so the winner's family is
+		// left as it is.
+		if errors.Is(err, ErrNotFound) && m.rotated.recent(sessionDigest(s.ID), m.clock.Now()) {
+			return nil, ErrRenewalConflict
+		}
+
 		return nil, err
 	}
 	now := m.clock.Now()
@@ -773,6 +882,9 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	if err != nil {
 		return nil, storeFailed(err, "session: the rotated session could not be created")
 	}
+	// Remembered while the lock is still held, so a rotation of the same
+	// handle waiting on it finds the handle remembered once it finds it gone.
+	m.rotated.remember(sessionDigest(stored.ID), acceptUntil, now)
 
 	// The successor is stored, so the rotation has happened: failing it now
 	// would leave the caller holding the old identifier, whose next request
