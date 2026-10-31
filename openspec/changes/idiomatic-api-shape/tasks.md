@@ -73,7 +73,7 @@ Some scenarios pin behaviour the code already has ("Keys served after shutdown",
   - the claim that guards have nothing to misconfigure.
 
   Verify: a search for each finds no stale use.
-- [ ] 8.2 Run the whole-branch review against the eight deltas and D1–D8. Then run `make check`, push, and confirm CI is green, including the Docker suites, and `openspec validate idiomatic-api-shape --strict`. Verify: a clean review, a green CI run on the final head, and a valid change.
+- [x] 8.2 Run the whole-branch review against the eight deltas and D1–D8. Then run `make check`, push, and confirm CI is green, including the Docker suites, and `openspec validate idiomatic-api-shape --strict`. Verify: a clean review, a green CI run on the final head, and a valid change.
 
 ## 9. Review follow-ups
 
