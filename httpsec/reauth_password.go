@@ -1,7 +1,11 @@
 package httpsec
 
 import (
+	"errors"
+
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // reprove answers a password re-proof at POST <prefix>/password.
@@ -19,13 +23,17 @@ import (
 //     ErrCredentialsMissing, an oversized body ErrRequestTooLarge.
 //  4. The username is the resolved caller's, never the request's: a username
 //     the request names is ignored, so a session cannot check, or lock, another
-//     user's password. A caller with no username is refused as
-//     authenticate.ErrAuthenticationFailed.
-//  5. Form login's password-login source guard, then its password path
-//     (authenticatePassword): the pre-authentication lockout, a lock refused as
-//     a login refuses it, the password check, and a refused password recorded
-//     against the user. Every refusal there is charged to the source, as at
-//     login.
+//     user's password. A resolved caller who is not the session's own user (a
+//     consumer interceptor past the gates published another) or who has no
+//     username is refused as authenticate.ErrAuthenticationFailed, before the
+//     password is checked or anything is recorded.
+//  5. Form login's password-login source guard, then its password path: the
+//     pre-authentication phase, a lock refused as a login refuses it, the
+//     password check, and a refused password recorded against the user. The
+//     source is charged what form login charges: a lock and a refused
+//     password check, an unavailable user store included. Any other
+//     pre-authentication refusal, a policy deny or an unenforced challenge,
+//     is not.
 //  6. Success clears the user's recorded failures, as a login does, and
 //     resolves the re-proof.
 func (i *reauthInterceptor) reprove(ex *Exchange) error {
@@ -49,7 +57,12 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return err
 	}
 
-	username := ex.Authentication.Principal.Username
+	principal := ex.Authentication.Principal
+	if principal.ID != s.UserID {
+		return authenticate.ErrAuthenticationFailed
+	}
+
+	username := principal.Username
 	if username == "" {
 		return authenticate.ErrAuthenticationFailed
 	}
@@ -61,7 +74,18 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return err
 	}
 
-	if _, err := l.authenticatePassword(ctx, username, password, now); err != nil {
+	if err := l.preAuthenticate(ctx, username, now); err != nil {
+		if !errors.Is(err, lockout.ErrAccountLocked) {
+			return err
+		}
+
+		recordSourceFailure(ctx, l.guard, src)
+
+		return refuseLocked(ctx, l.authn, l.discloseLocks,
+			identity.NewUsernamePassword(username, password), err)
+	}
+
+	if _, err := l.verifyPassword(ctx, username, password, now); err != nil {
 		recordSourceFailure(ctx, l.guard, src)
 
 		return err

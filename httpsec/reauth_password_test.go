@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -42,6 +43,8 @@ var (
 )
 
 // errReauthUserStore is the user store's outage, whose text no refusal carries.
+var errReauthDenied = errors.New("reauthpassword_test: pre-authentication denies")
+
 var errReauthUserStore = errors.New("reauthpassword_test: user store down, dsn=secret")
 
 // pwFixture is the bearer re-authentication harness with form login judging
@@ -56,6 +59,10 @@ type pwFixture struct {
 
 	// adaMatches counts comparisons against ada's hash.
 	adaMatches atomic.Int32
+
+	// decoyMatches counts comparisons against the reference hash a decoy
+	// verification spends.
+	decoyMatches atomic.Int32
 
 	// noHash makes the store report ada with no password, and storeDown makes
 	// it fail.
@@ -88,6 +95,10 @@ func newPwFixtureOn(t *testing.T, h *reauthHarness) *pwFixture {
 				return input == reauthAdaPassword
 			case bytes.Equal(encoded, reauthOtherHash):
 				return input == reauthOtherPassword
+			case bytes.Equal(encoded, reauthReferenceHash):
+				f.decoyMatches.Add(1)
+
+				return false
 			default:
 				return false
 			}
@@ -320,6 +331,7 @@ func TestReauthPassword(t *testing.T) {
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				unchecked(authenticate.ErrAuthenticationFailed)(t, f, s, out)
 				require.ErrorIs(t, out.err, lockout.ErrAccountLocked, "the lock stays reachable")
+				assert.Positive(t, f.decoyMatches.Load(), "the refusal was concealed behind a decoy verification")
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 			},
 		},
@@ -430,6 +442,44 @@ func TestReauthPassword(t *testing.T) {
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				unchecked(ratelimit.ErrThrottled)(t, f, s, out)
 			},
+		},
+		{
+			// Form login charges a pre-authentication refusal to the source
+			// only when it is a lock.
+			name: "a pre-authentication policy refusal is not charged to the source",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.loginOpts = append(f.loginOpts, httpsec.WithLoginLimiter(memLimiter(t, 1, time.Hour)))
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(denyingIn(t, policy.PreAuthentication, errReauthDenied)))
+			},
+			before: func(t *testing.T, _ *pwFixture, c *httpsec.Chain, tok string) {
+				out := serve(t, c, passwordOf(reauthAdaPassword)(t.Context(), t, tok))
+				require.ErrorIs(t, out.err, errReauthDenied)
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				unchecked(errReauthDenied)(t, f, s, out)
+				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "a policy refusal spent the source's allowance")
+			},
+		},
+		{
+			// The check is the session's own user's, whatever a consumer's
+			// interceptor past the gates published as the caller.
+			name: "a caller who is not the session's user is refused before any password is checked",
+			wire: func(_ *testing.T, f *pwFixture) {
+				swap := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if ex.Authentication != nil && ex.Authentication.Principal != nil {
+						p := *ex.Authentication.Principal
+						p.ID = identity.UserID("u-9")
+						p.Username = reauthOtherUsername
+						ex.Authentication = &authenticate.Authentication{Principal: &p, Time: ex.Authentication.Time}
+					}
+
+					return next(ex)
+				})
+				f.chainOpts = append(f.chainOpts, httpsec.RegisterInterceptor(swap, httpsec.After(httpsec.OrderPasswordChange)))
+			},
+			request: passwordOf(reauthOtherPassword),
+			assert:  unchecked(authenticate.ErrAuthenticationFailed),
 		},
 	}
 

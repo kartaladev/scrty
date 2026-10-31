@@ -523,17 +523,25 @@ func TestReauthResolve(t *testing.T) {
 			wire: func(_ *testing.T, f *pwFixture) {
 				f.totpUnenrolled = false
 				f.allows().refuses().recordsFailure()
+				f.throttles()
 			},
 			state: session.MFASatisfied,
 			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
 				f.clock.Advance(time.Minute)
 
+				out := totp(t, f, c, s)
+				require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
+
+				// The user is now at their limit, which the throttle records.
 				return totp(t, f, c, s)
 			},
 			assert: func(t *testing.T, f *pwFixture, c *httpsec.Chain, _ *session.Session, out served) {
-				require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
+				require.Error(t, out.err)
 				require.NoError(t, c.FlushRefusalLogs())
-				assert.NotContains(t, f.recordsText(), testMFACode)
+
+				text := f.recordsText()
+				require.NotEmpty(t, text, "the refusal was recorded")
+				assert.NotContains(t, text, testMFACode)
 			},
 		},
 	}
