@@ -109,10 +109,10 @@ type Sessions struct {
 // each until the end of that rotation's in-flight window, and forgets each one
 // as its window ends.
 //
-// The zero value is ready to use. It holds only the windows still open, so it
-// grows with the rotations of the last DefaultRenewalGrace and no further:
-// every call first drops the entries whose window has ended, earliest end
-// first. It is the manager's own memory, never the store's, which is why its
+// The zero value is ready to use. Every call first drops the entries whose
+// window has ended, earliest end first, so at its next use it holds only the
+// rotations of the last DefaultRenewalGrace; ended entries linger only until
+// then. It is the manager's own memory, never the store's, which is why its
 // guarantee holds within one manager only.
 type rotatedHandles struct {
 	mu sync.Mutex
