@@ -115,7 +115,8 @@
 | L2b | 16.3 | `test/ratelimittest/charge.go`, `test/ratelimittest/doubles_test.go`, `test/ratelimittest/broken_test.go`, godoc in `ratelimit/charge.go`, `ratelimit/memory.go`, `ratelimit/redisstore/limiter.go`, `internal/unavailable/wrap.go` | Sonnet: the case, the flaw and the wording are given by the review | Opus, inside the 16.5 group review |
 | L3 | 16.4 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
 | L4 | 16.5 | the files of Task 52a | Sonnet: test additions whose rows are given | Opus, inside the 16.6 group review |
-| main session | 12.3, 13.12, 14.4, 15.7, 16.6, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| L5 | 16.6 | the files of Task 52b | Sonnet: test-harness changes whose values the review gives | Sonnet |
+| main session | 12.3, 13.12, 14.4, 15.7, 16.7, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
 The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3. K1 then runs in its own worktree off the U commit, in parallel with U5 on the branch: both compile in `httpsec` but own disjoint files. L3 runs on the branch after K1 lands. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
@@ -935,7 +936,17 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 2: Run** both. Expected: PASS. Invert each pinned branch (return `exceeded=false`, or charge the local count anyway), see the row fail, and edit it back. Record the lines.
 - [ ] **Step 3: Verify.** `go test -count=1 -race ./internal/unavailable/` and `cd ratelimit/redisstore && go test -count=1 -race ./...`. Expected: PASS.
 
-### Task 53: Group-16 gate (task 16.6, main session)
+### Task 52b: Fold the group-16 review (task 16.6, L5, after Task 52a)
+
+**Files:** the PostgreSQL limiter conformance tests of the test module (`test/pg_ratelimit_test.go` and the `sqlstore` and `pgx` harnesses), `test/pg_ratelimit_fault_test.go` (`TestPGLimiter_HeldRow`), `test/ratelimittest/charge.go` (the concurrent case's failure message), `recovery/codes_test.go`, and the `causedByCaller` godoc in `recovery/codes.go`.
+
+- [ ] **Step 1:** Raise the PostgreSQL harnesses' operation timeout to 30 seconds (the constant `pgTestTimeout`, or a limiter option the harness passes); the concurrent case's message counts errors and names the timeout.
+- [ ] **Step 2:** `TestPGLimiter_HeldRow`'s wait for the dropped session becomes 5 seconds, and its failure logs the `pg_stat_activity` rows of the test database. Run `TestPGLimiter_HeldRowCatchesBrokenVariants` and see the `lock-timeout-off` variant still caught.
+- [ ] **Step 3:** In the `TestCodes` case, the `Match` mock cancels the context. Mutate the refund to pass `ctx` and see the case fail with the refund handed a cancelled context; edit it back.
+- [ ] **Step 4:** The `causedByCaller` godoc sentence.
+- [ ] **Step 5: Verify** as task 16.6 lists. Expected: PASS, under load.
+
+### Task 53: Group-16 gate (task 16.7, main session)
 
 - [ ] As Task 44, with `Receipt`, `NewReceipt`, its accessors, `Charger` and each limiter's two methods as `added` rows. An Opus review of L1–L3 and L2b against D20 and the `rate-limiting` and `account-recovery` deltas covers refund precision, the decorator's degraded paths, and the conditional statement under PostgreSQL's default isolation. Commit `fix(recovery)!: saved codes hold their limit under concurrency`.
 
