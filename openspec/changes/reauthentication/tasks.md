@@ -59,7 +59,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 5. The MFA endpoints serve only a pending session (`multi-factor-auth`)
 
-- [ ] 5.1 Red first: a test showing that a full session posting a valid code to `/mfa/verify/totp` is accepted today, which the new requirement inverts. Then `verify` and `begin` refuse `s.MFA != session.MFAPending` with `ErrNoMFAChallengePending`:
+- [x] 5.1 Red first: a test showing that a full session posting a valid code to `/mfa/verify/totp` is accepted today, which the new requirement inverts. Then `verify` and `begin` refuse `s.MFA != session.MFAPending` with `ErrNoMFAChallengePending`:
   - after the session and caller refusals;
   - before the method name, the throttle, the body and any challenge issue;
   - counting nothing and leaving the handle unchanged.
