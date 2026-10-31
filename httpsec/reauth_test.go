@@ -40,6 +40,11 @@ type reauthHarness struct {
 	// re-authentication itself out.
 	noMFA, noLogin, off bool
 
+	// sessionBearer builds the chain on EnableSessionBearer, which issues the
+	// session reference itself, so the second factor and form login are given
+	// no token generator.
+	sessionBearer bool
+
 	// noReauthTokens leaves WithReauthenticationTokens out.
 	noReauthTokens bool
 
@@ -69,21 +74,25 @@ func (h *reauthHarness) options(s *session.Session) []httpsec.Option {
 	opts := append(h.clockOpt(), h.carries(s))
 
 	if !h.noMFA {
-		mfaOpts := append([]httpsec.MFAOption{
-			httpsec.WithMFAVerifyLimiter(h.limiter),
-			httpsec.WithMFATokens(h.tokens),
-		}, h.mfaOpts...)
+		mfaOpts := append([]httpsec.MFAOption{httpsec.WithMFAVerifyLimiter(h.limiter)}, h.mfaOpts...)
+		if !h.sessionBearer {
+			mfaOpts = append(mfaOpts, httpsec.WithMFATokens(h.tokens))
+		}
 
 		opts = append(opts, httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...))
 	}
 
 	if !h.noLogin {
-		opts = append(opts, httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+		deps := httpsec.FormLoginDeps{
 			Authenticator: h.authn,
 			Sessions:      h.sessions,
-			Tokens:        h.tokens,
 			Attempts:      h.attempts,
-		}))
+		}
+		if !h.sessionBearer {
+			deps.Tokens = h.tokens
+		}
+
+		opts = append(opts, httpsec.EnableFormLogin(deps))
 	}
 
 	opts = append(opts, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...))
@@ -236,6 +245,46 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: passed,
 		},
 		{
+			name: "a GET to the password path passes through",
+			wire: func(*reauthHarness) {},
+			request: func(r *http.Request) *http.Request {
+				return get(r, reauthPasswordPath)
+			},
+			assert: passed,
+		},
+		{
+			name: "a GET to a begin path passes through",
+			wire: func(*reauthHarness) {},
+			request: func(r *http.Request) *http.Request {
+				return get(r, httpsec.DefaultReauthenticationPrefix+"/begin/totp")
+			},
+			assert: passed,
+		},
+		{
+			name: "a POST to a path that only starts like the verify path passes through",
+			wire: func(*reauthHarness) {},
+			request: func(r *http.Request) *http.Request {
+				return formRequest(r.Context(), httpsec.DefaultReauthenticationPrefix+"/verifyX", "")
+			},
+			assert: passed,
+		},
+		{
+			name: "a GET to a path that only starts like the prefix passes through",
+			wire: func(*reauthHarness) {},
+			request: func(r *http.Request) *http.Request {
+				return get(r, httpsec.DefaultReauthenticationPrefix+"X/methods")
+			},
+			assert: passed,
+		},
+		{
+			name: "a POST to a path that only starts like the password path passes through",
+			wire: func(*reauthHarness) {},
+			request: func(r *http.Request) *http.Request {
+				return formRequest(r.Context(), reauthPasswordPath+"X", "")
+			},
+			assert: passed,
+		},
+		{
 			// The re-proofs themselves are not carried out yet; an admitted
 			// one is still the endpoint's, never the application's.
 			name: "an admitted re-proof never reaches the application",
@@ -378,6 +427,30 @@ func TestEnableReauthentication(t *testing.T) {
 				})}
 			},
 			assert: refusedConfig("WithReauthenticationTokens"),
+		},
+		{
+			// A session-bearer chain issues the session reference itself.
+			name: "a session-bearer chain with a token generator",
+			wire: func(h *reauthHarness) {
+				h.sessionBearer = true
+				h.chainOpts = []httpsec.Option{httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
+					Sessions: h.sessions,
+					Users:    h.users,
+				})}
+			},
+			assert: refusedConfig("WithReauthenticationTokens"),
+		},
+		{
+			name: "a session-bearer chain without a token generator builds",
+			wire: func(h *reauthHarness) {
+				h.sessionBearer = true
+				h.noReauthTokens = true
+				h.chainOpts = []httpsec.Option{httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
+					Sessions: h.sessions,
+					Users:    h.users,
+				})}
+			},
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
 		},
 		{
 			name:   "an absent token generator",
@@ -684,6 +757,79 @@ func TestReauthAdmission(t *testing.T) {
 
 			base := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 			tc.assert(t, serve(t, h.chain(t, carried), tc.request(base)))
+		})
+	}
+}
+
+// TestReauthAdmissionRaisedChallenge pins that a request on which the policy
+// phase raised a challenge of the consumer's own is not served, though the
+// session itself is full: the endpoints refuse it as authentication required,
+// and the gate enforcing the challenge stays the consumer's. It runs on a real
+// bearer, whose per-request policy phase is what raises the challenge.
+func TestReauthAdmissionRaisedChallenge(t *testing.T) {
+	t.Parallel()
+
+	const consumerChallenge = policy.ChallengeKind(100)
+
+	type testCase struct {
+		name   string
+		raises bool
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a full session on a request carrying a consumer's raised challenge is refused",
+			raises: true,
+			assert: func(t *testing.T, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, out.rec.Body.Len(), "nothing was written")
+			},
+		},
+		{
+			name: "the same session with nothing raised is served",
+			assert: func(t *testing.T, out served) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.False(t, out.handlerRan, "the listing answered")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp)
+			s := h.newSession(t, factor.Password, session.MFASatisfied)
+
+			var policies []policy.Policy
+			if tc.raises {
+				policies = append(policies, raisingDeclared{kind: consumerChallenge, phase: policy.PerRequest})
+			} else {
+				policies = append(policies, raisingDeclared{kind: consumerChallenge, phase: policy.PreAuthentication})
+			}
+
+			opts := append(h.clockOpt(),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: h.tokens, Sessions: h.sessions, Users: h.users}),
+				httpsec.WithPolicyEngine(engineOf(t, policies...)),
+				httpsec.WithChallengeEnforcer(consumerChallenge),
+				httpsec.EnableMFA([]mfa.Method{h.method}, httpsec.WithMFAVerifyLimiter(h.limiter), httpsec.WithMFATokens(h.tokens)),
+				httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+
+			c, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			req := get(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil), reauthMethodsPath)
+			req.Header.Set("Authorization", "Bearer "+mfaTokenFor(s.ID))
+
+			tc.assert(t, serve(t, c, req))
 		})
 	}
 }

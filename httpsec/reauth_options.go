@@ -40,9 +40,11 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //
 // Only a full session: one with a resolved caller, whose second factor is
 // satisfied or was never asked for, that owes no password change and is not
-// confined to enrolment or recovery. A session owing a challenge is refused by
-// that challenge's gate, which runs first; any other request the endpoints
-// cannot serve is refused with ErrAuthenticationRequired. A session that is
+// confined to enrolment or recovery, on a request no consumer challenge was
+// raised for (Exchange.RaisedChallenge). A session owing a challenge is refused
+// by that challenge's gate, which runs first; any other request the endpoints
+// cannot serve, a raised consumer challenge included, is refused with
+// ErrAuthenticationRequired. A session that is
 // still fresh is served.
 //
 // # With what: the factor policy

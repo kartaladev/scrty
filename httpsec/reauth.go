@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -216,6 +217,9 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 // challenge, or confined to enrolment or recovery, never gets here, because
 // its gate (598 to 650) refuses it first; this refusal covers a consumer who
 // registered an interceptor that publishes a session past those gates. A
+// request on which the policy phase raised a challenge of the consumer's own
+// (Exchange.RaisedChallenge) is refused the same way: the gate enforcing it is
+// the consumer's, and a pending challenge of any kind is not a full session. A
 // session that is still fresh is served: re-proving early is harmless, and
 // throttled like any other attempt.
 func (i *reauthInterceptor) admit(ex *Exchange) (*session.Session, error) {
@@ -230,7 +234,7 @@ func (i *reauthInterceptor) admit(ex *Exchange) (*session.Session, error) {
 		return nil, ErrAuthenticationRequired
 	}
 
-	if !isFullSession(s) {
+	if !isFullSession(s) || ex.RaisedChallenge() != policy.ChallengeNone {
 		return nil, ErrAuthenticationRequired
 	}
 
