@@ -710,6 +710,50 @@ passkeys, which carry no attestation. `webauthn.MetadataBlob` takes a BLOB you f
 - **Counters are judged by the store's write.** Authenticators that always report zero, as synced
   passkeys do, are never treated as clones.
 
+## Per-route guards
+
+`httpsec.NewGuards` builds the guards a consumer puts in front of one net/http route, on top of
+the chain's rules. Every guard fails closed: a request with no caller is refused 401, one with no
+authorizer 403, and only then is the guard's own question asked.
+
+### Recent authentication
+
+`RequireRecentAuthentication()` lets a route run only when the caller proved their identity
+recently: the session's authentication time (sign-in, satisfied second factor or
+re-authentication) is within the window, its end included. `RequireAuthenticationWithin(d)` sets
+the window for one route. A stale session, a session with no recorded authentication time, and a
+caller with no session at all (an API key, Basic) are refused with a
+`*httpsec.ReauthenticationRequiredError` (403, `httpsec.ErrReauthenticationRequired`) that carries
+the window, so an error handler can tell the client how recent a proof it needs.
+
+- **The window is fixed.** Calling the route does not extend it, nor does a session renewal; only
+  an authentication moves the time.
+- **Stack it inside the privilege guards**, `privileged(recent(route))`, so a caller who may not
+  act at all is told access denied rather than sent to re-authenticate.
+- **Use the chain's clock.** A consumer who sets `httpsec.WithClock` passes the same clock to
+  `httpsec.WithGuardClock`.
+- **A window longer than the session's absolute lifetime is never reached**: the session ends
+  first.
+
+```go
+guards, err := httpsec.NewGuards(nil, httpsec.WithChainAuthorizer())
+if err != nil {
+	return err
+}
+
+privileged := guards.ResourcePrivileges("projects", "project").RequireAny("delete")
+mux.Handle("DELETE /projects/{id}", privileged(guards.RequireRecentAuthentication()(deleteProject)))
+```
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Recency window | 15 minutes (`httpsec.DefaultRecentAuthenticationWindow`) | `httpsec.WithRecentAuthenticationWindow`, per route `RequireAuthenticationWithin` |
+| Guard clock | system clock | `httpsec.WithGuardClock` |
+| Authentication time | the request's session | `httpsec.WithAuthenticationTime` |
+| Refusal response | the refusal's status, no body | `httpsec.WithGuardErrorHandler` |
+
 ## Development
 
 ```sh

@@ -3,11 +3,14 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -16,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/session"
 )
 
 // The errors a guard's collaborators fail with, each distinct so a test can say
@@ -105,14 +109,34 @@ func throughChain(t *testing.T, chainAz authorize.Authorizer, mw func(http.Handl
 	return out
 }
 
-// TestNewGuards_Authorizer pins where guards are told their judge comes from:
-// an authorizer at construction, a declared reliance on the chain's, or both.
-// Guards given neither are a wiring mistake refused before traffic, and a typed
-// nil beside the declaration is no judge at all rather than a nil-method panic.
-func TestNewGuards_Authorizer(t *testing.T) {
+// TestNewGuards pins what guards are built from and what they refuse to be
+// built from.
+//
+// Guards are told where their judge comes from: an authorizer at
+// construction, a declared reliance on the chain's, or both. Guards given
+// neither are a wiring mistake refused before traffic, and a typed nil beside
+// the declaration is no judge at all rather than a nil-method panic. The
+// recency options are refused the same way when what they were given could
+// only make every recency guard refuse, or panic, at run time: a window of
+// zero or less, no clock, or no authentication-time source.
+func TestNewGuards(t *testing.T) {
 	t.Parallel()
 
-	var typedNil *MockAuthorizer
+	var (
+		typedNil      *MockAuthorizer
+		typedNilClock *clockwork.FakeClock
+	)
+
+	// refusedNaming is a row refused as a configuration error whose message
+	// names the option the consumer got wrong.
+	refusedNaming := func(option string) func(*testing.T, *httpsec.Guards, error, *guardRun) {
+		return func(t *testing.T, g *httpsec.Guards, err error, _ *guardRun) {
+			t.Helper()
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.ErrorContains(t, err, option)
+			assert.Nil(t, g)
+		}
+	}
 
 	type testCase struct {
 		name   string
@@ -122,6 +146,44 @@ func TestNewGuards_Authorizer(t *testing.T) {
 	}
 
 	cases := []testCase{
+		{
+			name: "defaults",
+			az:   func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			assert: func(t *testing.T, g *httpsec.Guards, err error, _ *guardRun) {
+				require.NoError(t, err)
+				assert.NotNil(t, g)
+			},
+		},
+		{
+			name:   "zero recency window",
+			az:     func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			opts:   []httpsec.GuardOption{httpsec.WithRecentAuthenticationWindow(0)},
+			assert: refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
+			name:   "negative recency window",
+			az:     func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			opts:   []httpsec.GuardOption{httpsec.WithRecentAuthenticationWindow(-time.Second)},
+			assert: refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
+			name:   "nil guard clock",
+			az:     func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			opts:   []httpsec.GuardOption{httpsec.WithGuardClock(nil)},
+			assert: refusedNaming("WithGuardClock"),
+		},
+		{
+			name:   "typed-nil guard clock",
+			az:     func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			opts:   []httpsec.GuardOption{httpsec.WithGuardClock(typedNilClock)},
+			assert: refusedNaming("WithGuardClock"),
+		},
+		{
+			name:   "nil authentication-time source",
+			az:     func(t *testing.T) authorize.Authorizer { return permittingAuthorizer(t) },
+			opts:   []httpsec.GuardOption{httpsec.WithAuthenticationTime(nil)},
+			assert: refusedNaming("WithAuthenticationTime"),
+		},
 		{
 			name: "nil authorizer",
 			az:   func(*testing.T) authorize.Authorizer { return nil },
@@ -820,10 +882,11 @@ func TestConsumerFirstFactorPublishesCaller(t *testing.T) {
 	}
 }
 
-// TestOwnershipGuard_WiringPanics pins that an ownership guard with no
-// question to ask, or no way to find the record, fails when the consumer wires
-// it, before any traffic, rather than refusing every request it ever sees.
-func TestOwnershipGuard_WiringPanics(t *testing.T) {
+// TestGuardsWiringPanics pins that a guard with no question to ask, no way to
+// find the record, or a recency window no session could meet fails when the
+// consumer wires it, before any traffic, rather than refusing every request it
+// ever sees.
+func TestGuardsWiringPanics(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
@@ -836,6 +899,22 @@ func TestOwnershipGuard_WiringPanics(t *testing.T) {
 		return func(t *testing.T, wire func()) {
 			t.Helper()
 			assert.PanicsWithValue(t, msg, wire)
+		}
+	}
+
+	panicsNaming := func(word string) func(t *testing.T, wire func()) {
+		return func(t *testing.T, wire func()) {
+			t.Helper()
+
+			var got any
+
+			func() {
+				defer func() { got = recover() }()
+				wire()
+			}()
+
+			require.NotNil(t, got, "wiring must panic")
+			assert.Contains(t, fmt.Sprint(got), word)
 		}
 	}
 
@@ -862,6 +941,43 @@ func TestOwnershipGuard_WiringPanics(t *testing.T) {
 				g.RequireAuthenticated()
 			},
 			assert: panics("httpsec: RequireAuthenticated needs non-nil Guards"),
+		},
+		{
+			name: "RequireRecentAuthentication on a nil Guards",
+			wire: func(*httpsec.Guards) {
+				var g *httpsec.Guards
+				g.RequireRecentAuthentication()
+			},
+			assert: panics("httpsec: RequireRecentAuthentication needs non-nil Guards"),
+		},
+		{
+			name: "RequireAuthenticationWithin on a nil Guards",
+			wire: func(*httpsec.Guards) {
+				var g *httpsec.Guards
+				g.RequireAuthenticationWithin(time.Minute)
+			},
+			assert: panics("httpsec: RequireAuthenticationWithin needs non-nil Guards"),
+		},
+		{
+			name:   "a per-route window of zero",
+			wire:   func(g *httpsec.Guards) { g.RequireAuthenticationWithin(0) },
+			assert: panicsNaming("window"),
+		},
+		{
+			name:   "a negative per-route window",
+			wire:   func(g *httpsec.Guards) { g.RequireAuthenticationWithin(-time.Second) },
+			assert: panicsNaming("window"),
+		},
+		{
+			name: "recency guards wire without a panic",
+			wire: func(g *httpsec.Guards) {
+				g.RequireRecentAuthentication()
+				g.RequireAuthenticationWithin(time.Minute)
+			},
+			assert: func(t *testing.T, wire func()) {
+				t.Helper()
+				assert.NotPanics(t, wire)
+			},
 		},
 		{
 			name: "a nil checker",
@@ -895,6 +1011,397 @@ func TestOwnershipGuard_WiringPanics(t *testing.T) {
 
 			g := mustGuards(t, authorize.NewOwnershipAuthorizer())
 			tc.assert(t, func() { tc.wire(g) })
+		})
+	}
+}
+
+// TestRecencyGuard pins when a recency guard lets a session through: only when
+// it authenticated no longer ago than the route's window, by the guards' own
+// clock, with nothing but an authentication moving that time.
+//
+// Every row runs its calls in order against one set of guards over a
+// controlled clock starting at 09:00, advancing the clock to each call's time
+// first, and asserts on what the calls produced. A row with no calls makes one
+// at the clock's current time.
+func TestRecencyGuard(t *testing.T) {
+	t.Parallel()
+
+	clockAt := func(hour, minute int) time.Time {
+		return time.Date(2026, 10, 23, hour, minute, 0, 0, time.UTC)
+	}
+
+	// authenticatedAt is a session whose last proof of identity was at authAt
+	// and which was itself issued at issuedAt: a renewal or a re-authentication
+	// issues a new session, and only the second moves authAt.
+	authenticatedAt := func(authAt, issuedAt time.Time) *session.Session {
+		return &session.Session{
+			ID:                "s-1",
+			UserID:            "u-1",
+			CreatedAt:         issuedAt,
+			LastAccessedAt:    issuedAt,
+			AuthenticatedAt:   authAt,
+			IdleExpiresAt:     issuedAt.Add(30 * time.Minute),
+			AbsoluteExpiresAt: issuedAt.Add(12 * time.Hour),
+		}
+	}
+
+	nineOClock := authenticatedAt(clockAt(9, 0), clockAt(9, 0))
+
+	type testCase struct {
+		name string
+
+		// opts are the guards' options beyond the clock and the error handler.
+		opts []httpsec.GuardOption
+
+		// systemClock builds the guards without WithGuardClock, and
+		// defaultResponse without an error handler.
+		systemClock     bool
+		defaultResponse bool
+
+		// az is the guards' authorizer, nil meaning one that permits
+		// everything; noAuthorizer builds them relying on a chain that
+		// publishes none.
+		az           func(t *testing.T) authorize.Authorizer
+		noAuthorizer bool
+
+		// mw is the guard under test, nil meaning RequireRecentAuthentication.
+		mw func(g *httpsec.Guards) func(http.Handler) http.Handler
+
+		noPrincipal bool
+		session     *session.Session
+		calls       []time.Time
+
+		assert func(t *testing.T, runs []guardRun)
+	}
+
+	last := func(runs []guardRun) guardRun { return runs[len(runs)-1] }
+
+	letThrough := func(t *testing.T, runs []guardRun) {
+		t.Helper()
+
+		run := last(runs)
+		require.NoError(t, run.refusal)
+		assert.True(t, run.routeRan, "the route runs for a recent authentication")
+		assert.Equal(t, http.StatusOK, run.rec.Code)
+	}
+
+	refusedWithin := func(window time.Duration) func(*testing.T, []guardRun) {
+		return func(t *testing.T, runs []guardRun) {
+			t.Helper()
+
+			run := last(runs)
+			require.ErrorIs(t, run.refusal, httpsec.ErrReauthenticationRequired)
+
+			var refusal *httpsec.ReauthenticationRequiredError
+			require.ErrorAs(t, run.refusal, &refusal)
+			assert.Equal(t, window, refusal.Window, "the refusal names the window the route needed")
+
+			assert.False(t, run.routeRan, "the route is not called")
+			assert.Equal(t, http.StatusForbidden, run.rec.Code)
+		}
+	}
+
+	within := func(window time.Duration) func(g *httpsec.Guards) func(http.Handler) http.Handler {
+		return func(g *httpsec.Guards) func(http.Handler) http.Handler {
+			return g.RequireAuthenticationWithin(window)
+		}
+	}
+
+	// privilegedThenRecent stacks the recency guard inside a privilege guard,
+	// as the godoc says to.
+	privilegedThenRecent := func(g *httpsec.Guards) func(http.Handler) http.Handler {
+		privileged := g.ResourcePrivileges("projects", "project").RequireAny("delete")
+		recent := g.RequireRecentAuthentication()
+
+		return func(route http.Handler) http.Handler { return privileged(recent(route)) }
+	}
+
+	cases := []testCase{
+		{
+			name:    "fresh session",
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 10)},
+			assert:  letThrough,
+		},
+		{
+			name:    "stale session",
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 16)},
+			assert:  refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:    "at the window's end",
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 15)},
+			assert:  letThrough,
+		},
+		{
+			name:    "a renewal does not make a session fresh",
+			session: authenticatedAt(clockAt(9, 0), clockAt(9, 10)),
+			calls:   []time.Time{clockAt(9, 20)},
+			assert:  refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:        "no principal",
+			noPrincipal: true,
+			session:     nineOClock,
+			calls:       []time.Time{clockAt(9, 10)},
+			assert: func(t *testing.T, runs []guardRun) {
+				run := last(runs)
+				require.ErrorIs(t, run.refusal, httpsec.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, run.refusal, httpsec.ErrReauthenticationRequired)
+				assert.False(t, run.routeRan)
+				assert.Equal(t, http.StatusUnauthorized, run.rec.Code)
+			},
+		},
+		{
+			name:         "no authorizer",
+			noAuthorizer: true,
+			session:      nineOClock,
+			calls:        []time.Time{clockAt(9, 10)},
+			assert: func(t *testing.T, runs []guardRun) {
+				run := last(runs)
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied)
+				assert.NotErrorIs(t, run.refusal, httpsec.ErrReauthenticationRequired)
+				assert.False(t, run.routeRan)
+			},
+		},
+		{
+			name: "behind a privilege guard the caller lacks",
+			az: func(t *testing.T) authorize.Authorizer {
+				return refusingAuthorizer(t, fmt.Errorf("%w: no delete on projects/project",
+					authorize.ErrAccessDenied))
+			},
+			mw:      privilegedThenRecent,
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 16)},
+			assert: func(t *testing.T, runs []guardRun) {
+				run := last(runs)
+				require.ErrorIs(t, run.refusal, authorize.ErrAccessDenied,
+					"an unprivileged caller is told access denied, not to re-authenticate")
+				assert.NotErrorIs(t, run.refusal, httpsec.ErrReauthenticationRequired)
+				assert.False(t, run.routeRan)
+			},
+		},
+		{
+			name:    "behind a privilege guard the caller holds",
+			mw:      privilegedThenRecent,
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 16)},
+			assert:  refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:    "zero authentication time",
+			mw:      within(24 * time.Hour),
+			session: authenticatedAt(time.Time{}, clockAt(9, 0)),
+			calls:   []time.Time{clockAt(9, 1)},
+			assert:  refusedWithin(24 * time.Hour),
+		},
+		{
+			name:    "repeated use does not slide the window",
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 5), clockAt(9, 10), clockAt(9, 14), clockAt(9, 16)},
+			assert: func(t *testing.T, runs []guardRun) {
+				for _, run := range runs[:3] {
+					assert.True(t, run.routeRan, "each call inside the window runs")
+				}
+
+				refusedWithin(httpsec.DefaultRecentAuthenticationWindow)(t, runs)
+			},
+		},
+		{
+			name:    "a re-authentication makes it fresh",
+			session: authenticatedAt(clockAt(9, 30), clockAt(9, 30)),
+			calls:   []time.Time{clockAt(9, 40)},
+			assert:  letThrough,
+		},
+		{
+			name:    "consumer guards-wide window",
+			opts:    []httpsec.GuardOption{httpsec.WithRecentAuthenticationWindow(2 * time.Hour)},
+			session: nineOClock,
+			calls:   []time.Time{clockAt(10, 30)},
+			assert:  letThrough,
+		},
+		{
+			name:    "consumer guards-wide window on the refusal",
+			opts:    []httpsec.GuardOption{httpsec.WithRecentAuthenticationWindow(2 * time.Hour)},
+			session: nineOClock,
+			calls:   []time.Time{clockAt(11, 1)},
+			assert:  refusedWithin(2 * time.Hour),
+		},
+		{
+			name:    "a route's own window wins",
+			mw:      within(5 * time.Minute),
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 6)},
+			assert:  refusedWithin(5 * time.Minute),
+		},
+		{
+			name:        "system clock by default",
+			systemClock: true,
+			session:     authenticatedAt(time.Now().Add(-time.Minute), time.Now().Add(-time.Minute)),
+			assert:      letThrough,
+		},
+		{
+			name:        "system clock by default, stale",
+			systemClock: true,
+			session: authenticatedAt(time.Now().Add(-16*time.Minute),
+				time.Now().Add(-16*time.Minute)),
+			assert: refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:    "consumer time source",
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 0), clockAt(9, 16)},
+			assert: func(t *testing.T, runs []guardRun) {
+				assert.True(t, runs[0].routeRan, "the first call, at the source's 09:00, runs")
+				refusedWithin(httpsec.DefaultRecentAuthenticationWindow)(t, runs)
+			},
+		},
+		{
+			// A principal and no session, as an API key, HTTP Basic or a
+			// consumer's own first factor publishes.
+			name:   "API key caller",
+			calls:  []time.Time{clockAt(9, 10)},
+			assert: refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name: "consumer authentication time",
+			opts: []httpsec.GuardOption{httpsec.WithAuthenticationTime(
+				func(ctx context.Context) (time.Time, bool) {
+					if _, ok := identity.PrincipalFromContext(ctx); !ok {
+						return time.Time{}, false
+					}
+
+					return clockAt(9, 0), true
+				})},
+			calls:  []time.Time{clockAt(9, 10)},
+			assert: letThrough,
+		},
+		{
+			name: "consumer source reports none",
+			opts: []httpsec.GuardOption{httpsec.WithAuthenticationTime(
+				func(context.Context) (time.Time, bool) { return time.Time{}, false })},
+			// A fresh session is on the request, and still the consumer's
+			// source is the only one asked.
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 10)},
+			assert:  refusedWithin(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			// A source that reports a time but a zero one is absent all the
+			// same, even against the largest window a guard can be given.
+			name: "consumer source reports a zero time",
+			opts: []httpsec.GuardOption{
+				httpsec.WithRecentAuthenticationWindow(time.Duration(math.MaxInt64)),
+				httpsec.WithAuthenticationTime(
+					func(context.Context) (time.Time, bool) { return time.Time{}, true }),
+			},
+			calls:  []time.Time{clockAt(9, 10)},
+			assert: refusedWithin(time.Duration(math.MaxInt64)),
+		},
+		{
+			// Pinned deliberately: replicas' clocks disagree by seconds, and a
+			// session that just signed in must not be refused for it.
+			name:    "an authentication time ahead of the clock",
+			session: authenticatedAt(clockAt(12, 0), clockAt(12, 0)),
+			calls:   []time.Time{clockAt(9, 0)},
+			assert:  letThrough,
+		},
+		{
+			name:            "default response",
+			defaultResponse: true,
+			session:         nineOClock,
+			calls:           []time.Time{clockAt(9, 16)},
+			assert: func(t *testing.T, runs []guardRun) {
+				run := last(runs)
+				assert.False(t, run.routeRan)
+				assert.Equal(t, http.StatusForbidden, run.rec.Code)
+				assert.Empty(t, run.rec.Body.String(), "the default response carries no body")
+			},
+		},
+		{
+			name:    "consumer error handler",
+			mw:      within(5 * time.Minute),
+			session: nineOClock,
+			calls:   []time.Time{clockAt(9, 6)},
+			assert: func(t *testing.T, runs []guardRun) {
+				run := last(runs)
+				require.Error(t, run.refusal, "the handler received the refusal")
+
+				var refusal *httpsec.ReauthenticationRequiredError
+				require.ErrorAs(t, run.refusal, &refusal)
+				assert.Equal(t, 5*time.Minute, refusal.Window)
+				assert.False(t, run.routeRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(clockAt(9, 0))
+
+			// refusal is what the consumer's error handler last received; it
+			// is reset before every call.
+			var refusal error
+
+			opts := append([]httpsec.GuardOption(nil), tc.opts...)
+			if !tc.systemClock {
+				opts = append(opts, httpsec.WithGuardClock(clk))
+			}
+			if !tc.defaultResponse {
+				opts = append(opts, httpsec.WithGuardErrorHandler(
+					func(w http.ResponseWriter, _ *http.Request, err error) {
+						refusal = err
+
+						w.WriteHeader(httpsec.StatusForError(err))
+					}))
+			}
+
+			var az authorize.Authorizer
+			switch {
+			case tc.noAuthorizer:
+				opts = append(opts, httpsec.WithChainAuthorizer())
+			case tc.az != nil:
+				az = tc.az(t)
+			default:
+				az = permittingAuthorizer(t)
+			}
+
+			g := mustGuards(t, az, opts...)
+
+			mw := g.RequireRecentAuthentication()
+			if tc.mw != nil {
+				mw = tc.mw(g)
+			}
+
+			ctx := t.Context()
+			if !tc.noPrincipal {
+				ctx = identity.WithPrincipal(ctx, testPrincipal())
+			}
+			if tc.session != nil {
+				ctx = httpsec.WithSession(ctx, tc.session)
+			}
+
+			calls := tc.calls
+			if len(calls) == 0 {
+				calls = []time.Time{clk.Now()}
+			}
+
+			runs := make([]guardRun, 0, len(calls))
+			for _, at := range calls {
+				clk.Advance(at.Sub(clk.Now()))
+				refusal = nil
+
+				run := runGuard(t, mw,
+					httptest.NewRequestWithContext(ctx, http.MethodGet, "/projects/p-1", nil))
+				run.refusal = refusal
+				runs = append(runs, run)
+			}
+
+			tc.assert(t, runs)
 		})
 	}
 }
