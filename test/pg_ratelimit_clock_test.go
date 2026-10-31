@@ -77,6 +77,16 @@ type pgClockEnv struct {
 	tracer *pgArgsTracer
 }
 
+// pgClockExpiryWindow is the window of the database-clock case that waits a
+// failure out in real time. The check right after the record must still
+// count the failure, so the window must outlast the time between the two
+// statements. On a loaded host one call can outlast two seconds, and a
+// window that short would read such a delay as the failure expiring. The
+// window's length is not what the case proves: a clock frozen at
+// construction keeps the failure counted after any window, so that variant
+// is caught at any length.
+const pgClockExpiryWindow = 5 * time.Second
+
 // runPGDatabaseClock pins the default time source, the database's
 // clock_timestamp(), with no application clock configured: the record and the
 // check pass no time of their own, a failure stops counting one window after
@@ -123,7 +133,7 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 		{
 			name:   "a failure stops counting one window later",
 			limit:  1,
-			window: 2 * time.Second,
+			window: pgClockExpiryWindow,
 			assert: func(t *testing.T, e pgClockEnv) {
 				l := e.l
 				require.NoError(t, l.RecordFailure(t.Context(), "k"))
@@ -131,7 +141,7 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 				require.NoError(t, err)
 				assert.True(t, exceeded, "the failure just recorded does not count")
 
-				time.Sleep(2100 * time.Millisecond)
+				time.Sleep(pgClockExpiryWindow + 100*time.Millisecond)
 				exceeded, err = l.Exceeded(t.Context(), "k")
 				require.NoError(t, err)
 				assert.False(t, exceeded, "the failure still counts a window after it was recorded")
