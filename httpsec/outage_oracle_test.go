@@ -341,7 +341,7 @@ func TestRecoveryCompleteOutageAnswersEveryUsernameAlike(t *testing.T) {
 			assert: alike,
 		},
 		{
-			name: "every user answers a total outage as an unknown user does",
+			name: "every user answers a total outage alike",
 			users: func(m *MockUserLoader) {
 				m.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
 					Return(nil, errUserStoreRefused).AnyTimes()
