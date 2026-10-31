@@ -445,6 +445,25 @@ func TestReauthPassword(t *testing.T) {
 			},
 		},
 		{
+			// A source hammering a locked account spends its own allowance,
+			// as at form login, so the lock is charged and the next attempt
+			// is throttled rather than refused as locked again.
+			name: "a locked account is charged to the source, which is then throttled",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.loginOpts = append(f.loginOpts, httpsec.WithLoginLimiter(memLimiter(t, 1, time.Hour)))
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(lockingAda(t)))
+			},
+			before: func(t *testing.T, _ *pwFixture, c *httpsec.Chain, tok string) {
+				out := serve(t, c, passwordOf(reauthAdaPassword)(t.Context(), t, tok))
+				require.ErrorIs(t, out.err, lockout.ErrAccountLocked)
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				unchecked(ratelimit.ErrThrottled)(t, f, s, out)
+				assert.NotErrorIs(t, out.err, lockout.ErrAccountLocked, "the lock did not spend the source's allowance")
+			},
+		},
+		{
 			// Form login charges a pre-authentication refusal to the source
 			// only when it is a lock.
 			name: "a pre-authentication policy refusal is not charged to the source",

@@ -1,11 +1,7 @@
 package httpsec
 
 import (
-	"errors"
-
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // reprove answers a password re-proof at POST <prefix>/password.
@@ -27,13 +23,13 @@ import (
 //     consumer interceptor past the gates published another) or who has no
 //     username is refused as authenticate.ErrAuthenticationFailed, before the
 //     password is checked or anything is recorded.
-//  5. Form login's password-login source guard, then its password path: the
-//     pre-authentication phase, a lock refused as a login refuses it, the
-//     password check, and a refused password recorded against the user. The
-//     source is charged what form login charges: a lock and a refused
-//     password check, an unavailable user store included. Any other
-//     pre-authentication refusal, a policy deny or an unenforced challenge,
-//     is not.
+//  5. Form login's own password order (attemptPassword), the one a login
+//     runs: the password-login source guard, the pre-authentication phase, a
+//     lock refused as a login refuses it, the password check, and a refused
+//     password recorded against the user. The source is charged what a login
+//     charges: a lock and a refused password check, an unavailable user
+//     store included. Any other pre-authentication refusal, a policy deny or
+//     an unenforced challenge, is not.
 //  6. Success clears the user's recorded failures, as a login does, and
 //     resolves the re-proof.
 func (i *reauthInterceptor) reprove(ex *Exchange) error {
@@ -67,28 +63,8 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return authenticate.ErrAuthenticationFailed
 	}
 
-	now := i.now()
-
-	src, err := sourceThrottled(ctx, l.guard, ex.Request.ClientIP(), l.flow, l.sampler, l.log, now)
+	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, i.now())
 	if err != nil {
-		return err
-	}
-
-	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if !errors.Is(err, lockout.ErrAccountLocked) {
-			return err
-		}
-
-		recordSourceFailure(ctx, l.guard, src)
-
-		return refuseLocked(ctx, l.authn, l.discloseLocks,
-			identity.NewUsernamePassword(username, password), err)
-	}
-
-	auth, err := l.verifyPassword(ctx, username, password, now)
-	if err != nil {
-		recordSourceFailure(ctx, l.guard, src)
-
 		return err
 	}
 
