@@ -68,7 +68,9 @@ func newConfig(opts ...Option) config {
 //
 // The chain's own WithErrorHandler is the net/http entrypoint's, and does not
 // run here: on gin the refusal goes to gin's error channel instead, which is
-// where a gin consumer already handles every other error.
+// where a gin consumer already handles every other error. An error middleware
+// that answers authenticate.ErrUnavailable with 503 reopens the oracles
+// httpsec.StatusForError warns of.
 //
 // Handlers registered after this one do not run for a refused or self-answered
 // request, so logging and metrics belong before it.

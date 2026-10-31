@@ -255,12 +255,16 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 // It decides from the error, not from ctx alone: a password compared and
 // refused before the caller left is a failed proof like any other.
 func passwordLoadEndedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-	if ctxErr == nil || !errors.Is(err, authenticate.ErrAuthenticationFailed) {
-		return false
-	}
+	return errors.Is(err, authenticate.ErrAuthenticationFailed) && loadEndedByCaller(ctx, err)
+}
 
-	return errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx))
+// loadEndedByCaller reports whether err is the caller's own context ending a
+// load, rather than a dependency failing on its own: ctx has ended, and err
+// matches ctx's error or its cause.
+func loadEndedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil && (errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // refusedByCheck turns a password check's authentication failure into
@@ -363,20 +367,33 @@ func (r *Recoverer) shape(req Request) ([]ProofKind, mfa.Method, []Authenticator
 // particular the password check never runs for it, since a known user with a
 // wrong recovery code never reaches that check either, and a hash paid only
 // for unknown usernames would make them the slow ones.
+//
+// A load that fails for any other reason, which the caller's own context did
+// not end, is authenticate.ErrUnavailable with none of the loader's text: the
+// failure is logged, and the caller answers it as it answers an unknown user,
+// so a user store that fails for some usernames and not others does not tell
+// them apart. A load the caller's context ended returns that error behind
+// fixed text.
 func (r *Recoverer) resolveForRecover(ctx context.Context, username string) (*identity.Details, error) {
 	details, err := r.users.LoadByUsername(ctx, username)
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound), err == nil && (details == nil || !details.Active):
 	case err != nil:
+		endedByCaller := loadEndedByCaller(ctx, err)
+
 		level := slog.LevelError
-		if causedByCaller(ctx, err) {
+		if endedByCaller {
 			level = slog.LevelDebug
 		}
 
 		r.logger.LogAttrs(ctx, level, msgRecoverLookupFailed, diag.Failure("user-loader", err)...)
 
-		return nil, diag.Wrap(err, errTextUserLookup)
+		if endedByCaller {
+			return nil, diag.Wrap(err, errTextUserLookup)
+		}
+
+		return nil, authenticate.ErrUnavailable
 	case details.ID == "":
 		r.logger.LogAttrs(ctx, slog.LevelError, msgRecoverNoReference)
 	default:

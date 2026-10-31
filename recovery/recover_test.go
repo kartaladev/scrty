@@ -134,6 +134,7 @@ func TestRecoverer_Verify(t *testing.T) {
 	t.Parallel()
 
 	errOutage := errors.New("store unreachable: ana@example.com row 42")
+	errCallerLeft := errors.New("the caller left")
 	errConsumer := errors.New("consumer says no")
 
 	type testCase struct {
@@ -370,6 +371,23 @@ func TestRecoverer_Verify(t *testing.T) {
 				assert.True(t, recovery.RefusedAfterValidCode(err))
 				assert.Equal(t, int32(1), e.failures.Load(),
 					"a check's error was read as the caller leaving while the caller still waited")
+			},
+		},
+		{
+			name:  "a bare authentication failure while the caller's context has ended is counted against the user",
+			setup: func(e *recoverEnv) { e.passwordErr = authenticate.ErrAuthenticationFailed },
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			req: savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				assert.True(t, recovery.RefusedAfterValidCode(err))
+				assert.Equal(t, int32(1), e.failures.Load(),
+					"a password refused before the caller left was read as a load the caller cut short")
 			},
 		},
 		{
@@ -629,17 +647,42 @@ func TestRecoverer_Verify(t *testing.T) {
 			},
 		},
 		{
-			name: "a user lookup failure is an error behind fixed text, not a refusal",
+			name: "a user lookup failure is an outage with none of the driver's text, not a refusal",
 			setup: func(e *recoverEnv) {
 				e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(nil, errOutage)
 			},
 			req: savedAndIssued,
 			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
-				require.ErrorIs(t, err, errOutage)
+				require.ErrorIs(t, err, authenticate.ErrUnavailable)
 				assert.NotErrorIs(t, err, recovery.ErrRefused)
+				assert.NotErrorIs(t, err, errOutage, "the driver's error reached the caller")
+				assert.NotContains(t, err.Error(), errOutage.Error())
 				assert.NotContains(t, err.Error(), "ana@example.com")
+				assert.False(t, recovery.RefusedAfterValidCode(err))
 				nothingSpent(t, e, r)
 				assert.Zero(t, e.failures.Load())
+			},
+		},
+		{
+			name: "a lookup the caller's context ended with a cause is not an outage",
+			setup: func(e *recoverEnv) {
+				e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).DoAndReturn(
+					func(ctx context.Context, _ string) (*identity.Details, error) {
+						return nil, context.Cause(ctx)
+					})
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerLeft)
+
+				return cctx
+			},
+			req: savedAndIssued,
+			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
+				require.ErrorIs(t, err, errCallerLeft)
+				assert.NotErrorIs(t, err, authenticate.ErrUnavailable,
+					"the caller leaving was read as the user store failing")
+				nothingSpent(t, e, r)
 			},
 		},
 		{

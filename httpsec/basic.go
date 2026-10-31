@@ -180,6 +180,7 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		// The record carries a fixed reason and the attempt store's error
 		// type, never its text: a consumer who wants that detail logs it
 		// inside their own policy.AttemptStore.
+		//
 		// The client's cancellation is not passed on: a client that hangs up
 		// after its password was compared must still be charged for it, and
 		// an attempt store that honours cancellation would otherwise drop the

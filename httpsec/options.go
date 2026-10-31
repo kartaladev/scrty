@@ -994,6 +994,9 @@ func WithLockDisclosure() Option {
 // Pass the same function to WithGuardErrorHandler so a chain refusal and a
 // per-endpoint guard's refusal are rendered alike.
 //
+// A handler that answers authenticate.ErrUnavailable with 503 reopens the
+// oracles StatusForError warns of.
+//
 // It governs the net/http chain and nothing else, by design. A framework that
 // already owns how a request is refused keeps that ownership: on gin the
 // refusal goes to gin's error channel, so the consumer's own error middleware

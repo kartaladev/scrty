@@ -276,6 +276,28 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
+			name: "with refusal counting off, an unavailable user store during the password proof is still charged to its source",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.authn = unavailableAuthenticator(t)
+				h.recOpts = []httpsec.RecoveryOption{
+					httpsec.WithRecoveryLimiter(countingLimiter(t, 1)),
+					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)),
+					httpsec.WithRecoveryCountRefusals(false),
+				}
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				return h.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, h.saved(t),
+					httpsec.RecoveryPasswordParam, e2ePassword))
+			},
+			assert: func(t *testing.T, _ *recoveryHarness, out served) {
+				require.ErrorIs(t, out.err, authenticate.ErrUnavailable)
+				assert.False(t, recovery.RefusedAfterValidCode(out.err),
+					"the outage was marked as a refusal, which the option would stop counting")
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
 			name: "a caller that hangs up during the password proof is refused and charged to its source only",
 			arrange: func(t *testing.T, h *recoveryHarness) {
 				h.authn = hangUpAuthenticator(t)

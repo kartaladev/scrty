@@ -161,17 +161,22 @@ type RecoveryOption func(*recoveryInterceptor) error
 // The password proof is always checked by this chain's form login: its
 // pre-authentication policy phase first, so a locked account is refused
 // before its password is tested, then FormLoginDeps.Authenticator, recording
-// a failure in FormLoginDeps.Attempts exactly as a failed login does. A user
-// store that could not answer (authenticate.ErrUnavailable) is refused with
-// that error and answered 401, as a refused proof is. It is counted once
+// a failure in FormLoginDeps.Attempts exactly as a failed login does.
+//
+// A user store that could not answer (authenticate.ErrUnavailable) is refused
+// with that error and answered 401, as a refused proof is. It is counted once
 // against the source, as form login counts it, whatever
 // WithRecoveryCountRefusals says, and against neither the account nor the
-// user's recovery limit, because no password was compared. A load the
-// request's own context ended is refused as a refused proof is, and charged
-// to the source only, as a refusal after the codes passed
+// user's recovery limit, because no password was compared. The recovery's own
+// user lookup meeting such an outage is answered and counted the same way, so
+// an unknown username and one whose load fails answer alike.
+//
+// A load the request's own context ended is refused as a refused proof is, and
+// charged to the source only, as a refusal after the codes passed
 // (WithRecoveryCountRefusals): nothing is recorded against the account or the
 // user's recovery limit. Both charges are made on a context with the client's
 // cancellation stripped.
+//
 // A consumer never supplies that check through the chain; a
 // recovery.WithPasswordCheck given through WithRecoveryCore is replaced by the
 // chain's own. Enabling recovery.ProofPassword without EnableFormLogin on the

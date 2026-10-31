@@ -61,7 +61,9 @@ func newRefusal(err error) error {
 // It writes no body of its own, and it leaves whatever an interceptor already
 // wrote — a WWW-Authenticate header, say — in place. A consumer who wants a
 // rendered body writes their own handler and calls MapError, or reads the
-// refusal with errors.Is and errors.As and renders from that.
+// refusal with errors.Is and errors.As and renders from that. A handler that
+// answers authenticate.ErrUnavailable with 503 reopens the oracles
+// httpsec.StatusForError warns of.
 func ErrorHandler(c fiber.Ctx, err error) error {
 	var refusal *RefusalError
 

@@ -295,6 +295,128 @@ func TestPasswordLoginOutageAnswersEveryUsernameAlike(t *testing.T) {
 	}
 }
 
+// TestRecoveryCompleteOutageAnswersEveryUsernameAlike pins that a recovery
+// whose own user lookup meets a user store that cannot answer tells a client
+// nothing about the username it probed: a known user whose load fails answers
+// as an unknown user whose load misses does. Both answer as a refused proof
+// does, with the same status and headers, and each is charged once to the
+// source.
+func TestRecoveryCompleteOutageAnswersEveryUsernameAlike(t *testing.T) {
+	t.Parallel()
+
+	const unknownAddress = "nobody@example.com"
+
+	type testCase struct {
+		name string
+
+		// users answers the user loader for the probed usernames.
+		users func(m *MockUserLoader)
+
+		assert func(t *testing.T, known, unknown probeAnswer)
+	}
+
+	// alike is what every row asserts: both probes answered as a refused
+	// proof is, identically, and each charged once to the source.
+	alike := func(t *testing.T, known, unknown probeAnswer) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusUnauthorized, unknown.rec.Code, "the unknown user")
+		assert.Equal(t, unknown.rec.Code, known.rec.Code,
+			"the outage told the two usernames apart by status")
+		assert.Equal(t, unknown.rec.Header(), known.rec.Header(),
+			"the outage told the two usernames apart by headers")
+		assert.Equal(t, int32(1), known.charged, "the known user was not charged once to the source")
+		assert.Equal(t, int32(1), unknown.charged, "the unknown user was not charged once to the source")
+	}
+
+	cases := []testCase{
+		{
+			name: "known and unknown users answer a partial outage alike",
+			users: func(m *MockUserLoader) {
+				m.EXPECT().LoadByUsername(gomock.Any(), e2eAddress).
+					Return(nil, errUserStoreRefused).AnyTimes()
+				m.EXPECT().LoadByUsername(gomock.Any(), unknownAddress).
+					Return(nil, identity.ErrUserNotFound).AnyTimes()
+			},
+			assert: alike,
+		},
+		{
+			name: "every user answers a total outage as an unknown user does",
+			users: func(m *MockUserLoader) {
+				m.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+					Return(nil, errUserStoreRefused).AnyTimes()
+			},
+			assert: func(t *testing.T, known, unknown probeAnswer) {
+				t.Helper()
+
+				alike(t, known, unknown)
+				assert.NotContains(t, known.rec.Body.String(), "connection refused",
+					"the outage's driver text reached the client")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newRecoveryHarness(t)
+
+			ctrl := gomock.NewController(t)
+
+			users := NewMockUserLoader(ctrl)
+			tc.users(users)
+
+			h.users = users
+
+			var err error
+
+			h.authn, err = authenticate.NewUsernamePasswordAuthenticator(users,
+				authenticate.WithPasswordEncoder(e2eEncoder(t)),
+				authenticate.WithPasswordLogger(discardLogger()))
+			require.NoError(t, err)
+
+			var charged atomic.Int32
+
+			limiter := NewMockLimiter(ctrl)
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, string) error {
+					charged.Add(1)
+
+					return nil
+				}).AnyTimes()
+
+			h.recOpts = []httpsec.RecoveryOption{
+				httpsec.WithRecoveryLimiter(limiter),
+				httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)),
+			}
+
+			h.build(t)
+
+			saved := h.saved(t)
+
+			probe := func(username string) probeAnswer {
+				before := charged.Load()
+
+				rec := h.through(postValues(t.Context(), httpsec.DefaultRecoveryCompletePath, e2eSource,
+					url.Values{
+						httpsec.RecoveryUsernameParam:  {username},
+						httpsec.RecoverySavedCodeParam: {saved},
+						httpsec.RecoveryPasswordParam:  {e2ePassword},
+					}))
+
+				return probeAnswer{rec: rec, charged: charged.Load() - before}
+			}
+
+			known := probe(e2eAddress)
+			unknown := probe(unknownAddress)
+
+			tc.assert(t, known, unknown)
+		})
+	}
+}
+
 // TestPasswordLoginOutageIsChargedToTheSource pins that an outage costs its
 // source: with the store failing every load, the source guard refuses the
 // requests beyond its limit, and no password work is spent on them.

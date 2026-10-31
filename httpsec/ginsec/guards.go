@@ -80,6 +80,9 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) *Guards {
 // errors still sees it, and the remaining gin handlers are still stopped, so
 // the route never runs whoever writes the answer. A handler that writes nothing
 // therefore answers 200, which is a refusal served as a success.
+//
+// A handler that answers authenticate.ErrUnavailable with 503 reopens the
+// oracles httpsec.StatusForError warns of.
 func WithGuardErrorHandler(fn func(gc *gin.Context, err error)) GuardOption {
 	return func(g *Guards) { g.onError = fn }
 }
