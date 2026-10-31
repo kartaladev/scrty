@@ -11,6 +11,8 @@ Facts that shape the approach:
 - **The standard library's `crypto.Signer` and `crypto.MessageSigner` take no context.** A context-aware signer (golang/go#56508) is accepted but unimplemented. jwx v4 signs through a `crypto.Signer`, and its `WithContext` applies to verification only.
 - **The sealing session store maps every open failure to `session.ErrUnreadable`.** `httpsec` logs that error as a retired sealing key and answers it with "log in again". The `seal` stores for MFA enrolments, signing keys and passkeys already return any cipher error as a store error.
 - **A remote service's quotas make a call on every session read or every token issue impractical at scale.** AWS KMS, for example, allows 1,000 asymmetric signs per second per account and Region by default.
+- **`token.NewGenerator` and `token.NewVerifier` refuse construction without an issuer and an audience,** unless each is explicitly waived (`restructure-layout` D18). Every generator and verifier the tests of D2 build therefore configures both claims, or waives the ones the test is not about.
+- **A user-store outage during a password login answers as a wrong password** (`restructure-layout` D19): `authenticate.ErrUnavailable`, mapped to 401, charged to the source. D4's session resolution is a separate path, reached only after a secret session identifier has loaded, so its 500 for a reload outage and D4's recorded trade-off stand. `identity-model` also reports input a store cannot represent as "user not found", which D4's reliance on the loader contract keeps.
 
 ## Goals / Non-Goals
 
