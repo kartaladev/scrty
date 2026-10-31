@@ -42,9 +42,10 @@ var (
 	reauthReferenceHash = []byte("hash-of-the-reference")
 )
 
-// errReauthUserStore is the user store's outage, whose text no refusal carries.
+// errReauthDenied is a pre-authentication policy's refusal.
 var errReauthDenied = errors.New("reauthpassword_test: pre-authentication denies")
 
+// errReauthUserStore is the user store's outage, whose text no refusal carries.
 var errReauthUserStore = errors.New("reauthpassword_test: user store down, dsn=secret")
 
 // pwFixture is the bearer re-authentication harness with form login judging
