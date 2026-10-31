@@ -43,6 +43,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
@@ -148,6 +149,12 @@ type Effects struct {
 	// SessionID is the session Build pre-created, for the scenarios that need a
 	// request to arrive already authenticated. It is empty where none was.
 	SessionID string
+
+	// totpSecret and totpClock are a re-authentication scenario's enrolled
+	// TOTP secret and the controlled clock the whole run shares, so a code can
+	// be minted for the moment a request arrives.
+	totpSecret string
+	totpClock  clock.Clock
 
 	// authCalls counts the times the authenticator was asked anything, so a
 	// scenario can pin that a password was never checked.
@@ -265,6 +272,10 @@ const (
 	// GuardPrivilege mounts a privilege guard over GuardGroup and
 	// GuardResource, requiring GuardPrivilegeName.
 	GuardPrivilege
+
+	// GuardRecent mounts the recency guard, with GuardSpec.Clock as its clock
+	// when one is given, and the guards' default window otherwise.
+	GuardRecent
 )
 
 // The resource a privilege guard is built over. They are spelled as a
@@ -288,6 +299,12 @@ type GuardSpec struct {
 	// leaves the guards relying on whatever the chain published, which is the
 	// wiring a deployment that mounts the chain uses.
 	Authorizer authorize.Authorizer
+
+	// Clock is the clock a recency guard judges with. Nil keeps the guards'
+	// default, the system clock. A scenario that controls the chain's clock
+	// passes the same one here, because the guard compares the time the chain
+	// recorded against its own now.
+	Clock clock.Clock
 }
 
 // Route is an application route mounted behind the chain.
@@ -485,7 +502,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios())...)
+	}, slices.Concat(reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.
