@@ -7,7 +7,7 @@ The library SHALL provide a sender that wraps any other sender, queues each mess
 - keep the caller's context values but not its cancellation, and bound each delivery by its own send timeout;
 - when the queue is full, drop the message, log an error and return a queue-full error, never waiting for space;
 - log delivery failures and recover from a panic in the wrapped sender without stopping the worker;
-- after shutdown, refuse new messages with a shut-down error;
+- after shutdown, refuse new messages with a shut-down error. A message sent while shutdown begins SHALL either be queued and delivered by the drain, or be refused with the shut-down error; it SHALL never be accepted and then dropped;
 - on shutdown, deliver messages already queued, waiting no longer than the context given to shutdown allows, and return that context's error if the drain has not finished by then.
 
 Shutdown SHALL be terminal and idempotent: a later shutdown SHALL return no error once the drain has finished. The defaults SHALL be 2 workers, a queue of 256 messages and a 30-second send timeout, each replaceable by an option. Construction SHALL fail with a configuration error for an absent wrapped sender, or a worker count, queue size or send timeout of zero or less.
@@ -36,6 +36,11 @@ Shutdown SHALL be terminal and idempotent: a later shutdown SHALL return no erro
 #### Scenario: Shutdown twice
 - **WHEN** a queued sender that has finished draining is shut down again
 - **THEN** the second shutdown returns no error
+
+#### Scenario: Sends racing shutdown
+- **WHEN** many messages are sent concurrently while the sender is shut down with a context that allows the drain to finish
+- **THEN** every send either returned no error and its message was delivered, or returned the shut-down error
+- **AND** no send panics
 
 #### Scenario: Wrapped sender panics
 - **WHEN** the wrapped sender panics while delivering one message and a second message is then queued

@@ -31,7 +31,7 @@ Construction SHALL start no goroutine. Starting SHALL launch the rotation, reloa
 - **THEN** start fails with the already-shut-down error and launches no goroutine
 
 ### Requirement: Shutdown leaves no goroutine behind
-Shutdown SHALL end the background work and SHALL be terminal. It SHALL wait for the work to end, including any in-flight key generation or store write, but no longer than the context given to it allows. It SHALL return no error once the work has ended, and that context's error if the context is done first. A later shutdown SHALL wait again under its own context. Shutting down a manager that was never started SHALL return at once. Concurrent start and shutdown SHALL be free of data races and SHALL leave no goroutine behind.
+Shutdown SHALL end the background work and SHALL be terminal. It SHALL wait for the work to end, including any in-flight key generation or store write, but no longer than the context given to it allows. It SHALL return no error once the work has ended, and that context's error if the context is done first. A later shutdown SHALL wait again under its own context. Shutting down a manager that was never started SHALL return at once. Shutdown SHALL end the background work only: a shut-down manager SHALL keep serving its current signers and verification keys, and SHALL rotate, reload and clean up no more. Concurrent start and shutdown SHALL be free of data races and SHALL leave no goroutine behind.
 
 #### Scenario: Clean shutdown
 - **WHEN** a key manager is started, its loops run several times, and it is shut down
@@ -50,6 +50,11 @@ Shutdown SHALL end the background work and SHALL be terminal. It SHALL wait for 
 #### Scenario: Shutdown twice
 - **WHEN** a started key manager is shut down twice
 - **THEN** both calls return no error and no goroutine remains
+
+#### Scenario: Keys served after shutdown
+- **WHEN** a started key manager is shut down, and a token is then issued and verified with its keys
+- **THEN** issuing and verifying succeed with the keys held at shutdown
+- **AND** no rotation happens however much time passes
 
 #### Scenario: Concurrent start and stop
 - **WHEN** start and shutdown are called concurrently under the race detector
