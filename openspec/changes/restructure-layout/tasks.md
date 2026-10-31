@@ -140,7 +140,7 @@ The naming sweep of 2026-10-31 found names that do not say what they bound, star
 - [x] 11.2 Rename the rest of D15's table the same way: `passkey` (`WithLimit`, `ErrLimitReached`), `recovery` (`WithDelay`, `WithCompletionWindow`, `WithSessionLifetime`, `Count`), `token.WithLifetime`, `signingkey` (`WithLifetime`, `WithLogSampleWindow`), `onetime` (`WithTTL`, `TTL`), `policy.(*IdleTimeout).Thresholds`, `mfa.WithPeriod`, `oidc.MaxLogoutTokenMaxAge`, `notify` (`WithQueueSize`, `QueueSize`) and `httpsec.WithEnrolmentSessionTTL`. Leave the session timeouts and `policy.WithIdleAbsoluteTimeout` as they are (D15, vocabulary rules). Verify: as 11.1, over every module, with `go test -count=1 -race ./...` in the core module.
 - [x] 11.3 Text sweep (D12): `rg` for every old name of 11.1–11.2 outside `.claude/.legacy`, in godoc, comments, README, strings, `%T` output and test-case names that are not D13-frozen function names. The agent fixes the Go and README hits and reports the hits under `openspec/`, which the main session updates (`subagent-delegation.md`). Verify: the sweep finds no old name outside the frozen test-function names and the change's own history in `design.md` and `evidence/`.
 - [x] 11.4 Main session: add an `ident` row to `evidence/rename-map.tsv` for every rename of 11.1–11.2, mapping each baseline identifier to its final name. Where this change already renamed one (`WithLockoutCap` → `WithCap`), change the existing row's new name rather than adding a second row. Verify: `evidence/check.sh all` against the group-1 baseline reports no unmapped difference.
-- [ ] 11.5 Gate: `make check`, `evidence/check.sh all`, `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then a Sonnet review of the group-11 diff against D15: every rename in the table landed, nothing outside it was renamed, and every option's godoc still names its default. Verify: no unmapped difference, a valid change, a green CI run and a clean review.
+- [x] 11.5 Gate: `make check`, `evidence/check.sh all`, `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then a Sonnet review of the group-11 diff against D15: every rename in the table landed, nothing outside it was renamed, and every option's godoc still names its default. Verify: no unmapped difference, a valid change, a green CI run and a clean review.
 
 ## 12. Column constructors and the `WithUserRoles` godoc (D16)
 
@@ -152,7 +152,7 @@ The naming sweep of 2026-10-31 found names that do not say what they bound, star
 
   Then unexport the fields, implement `RoleColumn`, and change the `sqlstore` and `pgxstore` callers from a struct literal to `RoleColumn`. Verify: the failing lines are recorded; `go test -count=1 -race ./internal/storekit/` passes; `go test ./...` passes in the core module and `store/pgxstore`; the identity-store conformance suites under `test/` pass in CI; `rg 'storekit\.Column\{' -g '!.claude/.legacy'` finds nothing.
 - [x] 12.2 Rewrite the `identity.WithUserRoles` godoc (D16): on `Update`, a list with no usable role name leaves every stored grant and the primary role untouched; on `Provision`, it creates a user with no roles. Documentation only. Verify: `go doc ./identity WithUserRoles` reads as `default-identity-store`'s "A role list that names nothing leaves grants untouched" requires, and `gofmt -l identity` is clean.
-- [ ] 12.3 Gate: `make check`; `evidence/check.sh all`, with the `Column` fields as `changed` rows and `RoleColumn` as an `added` row (D13, phase 6; the main session extends `check.sh` to accept both kinds first); `openspec validate restructure-layout --strict`; push; CI green. Then a Sonnet review against D16. Verify: as 11.5.
+- [x] 12.3 Gate: `make check`; `evidence/check.sh all`, with the `Column` fields as `changed` rows and `RoleColumn` as an `added` row (D13, phase 6; the main session extends `check.sh` to accept both kinds first); `openspec validate restructure-layout --strict`; push; CI green. Then a Sonnet review against D16. Verify: as 11.5.
 
 ## 13. A user-store outage is unavailable, not a failed login (D19)
 
@@ -206,7 +206,7 @@ Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md
 
   Then `resolveForRecover` returns `ErrUnavailable` for a load failure the caller did not end, logged as now. Also: `WithErrorHandler`'s godoc, and the handler docs of `ginsec` and `fibersec`, point to the 503 oracle warning; reflow `httpsec/basic.go` 173–186 and `httpsec/recovery_options.go` 174. Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/... ./recovery/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
 - [x] 13.11 Narrow the lookup classification (D19, input bullet). Red step: port `TestReview_StoredRowTheConnectionCannotEncodeIsNotAMiss` into each backend's LATIN1 test as a row: a UTF-8 database read through `client_encoding=LATIN1`, an existing user whose name holds `€`; `LoadByUserID` and `LoadByUsername("ada")` return a failure, not `ErrUserNotFound`. See it fail. Then `storekit.LookupMiss` takes the looked-up value and is true only when it is not ASCII; only `LoadByUsername` uses it; its godoc says why. Verify: the failing lines are recorded; `go test -count=1 -race ./internal/storekit/ ./store/...`, the nested store modules, and the three backends' LATIN1 tests pass.
-- [ ] 13.12 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.6 (done), of 13.7–13.9 (done) and a Sonnet review of 13.10–13.11 against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas. Verify: as 11.5.
+- [x] 13.12 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.6 (done), of 13.7–13.9 (done) and a Sonnet review of 13.10–13.11 against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas. Verify: as 11.5.
 
 ## 14. API key authentication can require an active owner (D17)
 
@@ -228,7 +228,7 @@ Proven by `TestAPIKey_RefusesKeyOfInactiveOwner`. One lane, Opus, because it is 
   - `WithAPIKeyOwners`' godoc names the mismatch refusal and that a refused key keeps its last-use time.
 
   Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
-- [ ] 14.4 Gate: as 12.3, with `WithAPIKeyOwners` as an `added` row. Then an Opus review of 14.1–14.2 (done) and a Sonnet review of 14.3 against D17 and the `api-keys` delta. Verify: as 11.5.
+- [x] 14.4 Gate: as 12.3, with `WithAPIKeyOwners` as an `added` row. Then an Opus review of 14.1–14.2 (done) and a Sonnet review of 14.3 against D17 and the `api-keys` delta. Verify: as 11.5.
 
 ## 15. A verifier requires an issuer and an audience (D18)
 
@@ -256,7 +256,7 @@ Proven by `TestVerifier_RefusesTokenForAnotherAudienceWhenNoneConfigured`. One l
   - a row shows `WithAudience(" svc ")` is accepted and enforced as given.
 
   See the blank rows fail. Where a waiver-name assertion passes on the current code, break the message temporarily and see it fail. Then the failure lists in the godoc of `NewVerifier` and `NewGenerator` name the empty-or-blank refusal. Verify: the failing lines are recorded; `go test -count=1 -race ./token/...` passes; `go doc ./token NewVerifier` and `go doc ./token NewGenerator` name the refusal.
-- [ ] 15.7 Gate: as 12.3, with the four waivers as `added` rows, and the changed tests of 15.2, 15.4, 15.5 and 15.6 listed for the assertion review. Then an Opus review of 15.1–15.5 against D18 (done, clean) and a Sonnet review of 15.6 and the `token-issuance` delta. Verify: as 11.5.
+- [x] 15.7 Gate: as 12.3, with the four waivers as `added` rows, and the changed tests of 15.2, 15.4, 15.5 and 15.6 listed for the assertion review. Then an Opus review of 15.1–15.5 against D18 (done, clean) and a Sonnet review of 15.6 and the `token-issuance` delta. Verify: as 11.5.
 
 ## 16. Limiters charge and refund atomically (D20)
 
@@ -304,7 +304,7 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
   - or a move into `make test-isolated`, beside `TestPGLimiter_PruneUnderRecords`, with the same skip under `go test ./...` and the same environment switch.
 
   Every broken variant the changed tests catch is still caught. Verify: three consecutive full `make check` runs are green; `make test-isolated` is green; each changed test's broken-variant check still fails its variant.
-- [ ] 16.8 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows, and the charge-first `TestCodes` cases listed for the assertion review. Then an Opus review of 16.1–16.5 (done), and a Sonnet review of 16.6 and 16.7 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
+- [x] 16.8 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows, and the charge-first `TestCodes` cases listed for the assertion review. Then an Opus review of 16.1–16.5 (done), and a Sonnet review of 16.6 and 16.7 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
   - refund precision under concurrent charges;
   - the decorator's degraded path;
   - the conditional `UPDATE` under PostgreSQL's default isolation.
