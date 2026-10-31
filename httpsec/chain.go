@@ -390,6 +390,14 @@ const (
 	// held at, and the endpoint that resolves it.
 	OrderPasswordChange Order = 650
 
+	// OrderReauthentication is the re-authentication endpoints, at which a
+	// full session proves its user again. It is inside every gate, the
+	// password-change gate included, so a session owing any challenge, or
+	// confined to enrolment or recovery, is refused by that gate before it
+	// can re-prove; and it is outside the passkey endpoints and session
+	// renewal. See EnableReauthentication.
+	OrderReauthentication Order = 655
+
 	// OrderPasskeys is the passkey endpoints that need a session: registration
 	// and its confirmations, and the listing, rename and remove endpoints. It
 	// is inside every gate, the password-change gate included, so each gate
