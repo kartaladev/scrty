@@ -165,6 +165,23 @@ func TestMFABegin(t *testing.T) {
 			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
 		},
 		{
+			// The pending check comes before the path is read: a signed-in
+			// session is told it has no challenge, not that the method is
+			// unknown.
+			name:    "a satisfied session begins an unknown method",
+			state:   new(session.MFASatisfied),
+			wire:    untouched,
+			request: begin(httpsec.DefaultMFABeginPrefix + "/nosuch"),
+			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
+		},
+		{
+			name:    "a satisfied session begins a method without a begin step",
+			state:   new(session.MFASatisfied),
+			wire:    untouched,
+			request: begin(httpsec.DefaultMFABeginPrefix + "/totp"),
+			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
+		},
+		{
 			name:    "begin for a method without a begin step",
 			wire:    untouched,
 			request: begin(httpsec.DefaultMFABeginPrefix + "/totp"),

@@ -72,7 +72,7 @@ type MFAOption func(*mfaInterceptor) error
 // after signing in), is refused with ErrNoMFAChallengePending (403) before the
 // method, the limiter or the body is consulted, and nothing is counted or
 // changed. Re-proving a signed-in session belongs to re-authentication
-// (/reauth, added by this change), not to these endpoints.
+// (EnableReauthentication, at /reauth by default), not to these endpoints.
 //
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.

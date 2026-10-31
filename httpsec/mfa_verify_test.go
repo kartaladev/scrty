@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base32"
 	"encoding/json"
@@ -399,6 +400,9 @@ func TestMFAVerifyOrdering(t *testing.T) {
 	type testCase struct {
 		name    string
 		channel factor.Channel
+		// path is the path the code is posted to, the harness's method unless
+		// a case needs another.
+		path    string
 		session func(t *testing.T, h *mfaHarness) *session.Session
 		wire    func(t *testing.T, h *mfaHarness)
 		// unread posts a body that fails the test if it is read, for the
@@ -476,6 +480,41 @@ func TestMFAVerifyOrdering(t *testing.T) {
 					"the authentication time is untouched")
 				assert.True(t, got.MFASatisfiedAt.IsZero())
 				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+			},
+		},
+		{
+			// The pending check is decided before the path is read: a
+			// signed-in session posting to a method that does not exist is
+			// told it has no challenge, not that the method is unknown.
+			name:    "a satisfied session posting to an unknown method",
+			channel: factor.AuthenticatorApp,
+			path:    httpsec.DefaultMFAVerifyPrefix + "/nosuch",
+			session: stateAfter(session.MFASatisfied),
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+				require.NotErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+			},
+		},
+		{
+			// Nor is the method's usability looked at first: this one is on
+			// the first factor's own channel.
+			name:    "a satisfied session posting to a method it cannot use",
+			channel: factor.Email,
+			session: func(t *testing.T, h *mfaHarness) *session.Session {
+				t.Helper()
+
+				return h.newSession(t, factor.MagicLink, session.MFASatisfied)
+			},
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+				require.NotErrorIs(t, out.err, mfa.ErrSameChannel)
+				require.NotErrorIs(t, out.err, httpsec.ErrMFAMethodNotUsable)
 			},
 		},
 		{
@@ -563,9 +602,10 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			s := tc.session(t, h)
 			tc.wire(t, h)
 
-			req := postCode(t.Context(), testMFAVerifyPath)
+			path := cmp.Or(tc.path, testMFAVerifyPath)
+			req := postCode(t.Context(), path)
 			if tc.unread {
-				req = postUnread(t.Context(), t, testMFAVerifyPath)
+				req = postUnread(t.Context(), t, path)
 			}
 
 			out := serve(t, h.chain(t, s), req)
