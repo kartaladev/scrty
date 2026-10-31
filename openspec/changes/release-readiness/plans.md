@@ -74,8 +74,13 @@ Plan task N.M is `tasks.md` task N.M.
 | 2 (parallel with R3) | R4 | 4.1–4.2 | `scripts/release-probe.sh`, `.github/workflows/release-probe.yml` | Sonnet: a script to a stated contract |
 | 2 (parallel with R3) | R5 | 5.2–5.5 | `CHANGELOG.md`, `SECURITY.md`, `RELEASING.md`, `README.md` | Sonnet: documents from the decisions |
 | 2 (parallel with R3; only once `idiomatic-api-shape` is merged, since it builds on that change's queued sender) | R6 | 6.1–6.2 | `notify/queued.go`, `notify/queued_test.go`, `notify/smtp_test.go`, `notify/notify.go` | Opus: worker replacement under races (decisions 9 and 10) |
-| 3 | main | 7.1–7.2 | — | Sonnet reviewer for 7.1 |
-| 4 | maintainer | 8.1–8.2 | — | — |
+| 2 (parallel with R3; after `idiomatic-api-shape` is merged, whose concrete `*JWTGenerator` and `*JWTAuthenticator` types it extends) | R7 | 7.1, then 7.2 | `token/generator.go` and its tests, `authenticate/jwt.go` and its tests, and every caller of the subject on the bearer path that 7.1 names | Opus: a change to a public claim, a security contract that cannot change after the tag |
+| 2 (parallel with R3; after `idiomatic-api-shape` is merged) | R8 | 8.1–8.2 | `token/signingkey` (`record.go`, the housekeeping files, their tests); `signingkey.go` in `store/sqlstore`, `store/pgxstore` and `store/gormstore`; `internal/pgschema/signingkeys.go`; `store/seal/signingkey.go` and its test; `test/storetest/signingkey_suite.go` and its callers | Opus: a port change across four stores and a decorator, with retry on failure |
+| 2 (parallel with R3) | R9 | 9.1 | `authenticate/passkey/store.go` and its tests and mocks; `passkey_credential.go` in the three SQL stores; `internal/pgschema/passkey.go`; `test/storetest/passkeycredential_suite.go` and `broken_passkey_test.go` | Sonnet: a mechanical removal. It shares packages with R8 but never a file, since R8 owns only the `signingkey*` files |
+| 2 (parallel with R3) | R9b | 9.2 | a new test file in `authenticate/mfa`, nothing else | Opus: a race reproduction whose outcome decides a contract change |
+| 2 (parallel with R3) | R10 | 10.1–10.2 | `test/pgxstore/identity_test.go`, `test/sqlstore/identity_test.go`, `test/gormstore/identity_test.go` and their helpers; the two `session_supersede_test.go` files | Sonnet: test isolation to a stated shape |
+| 3 | main | 11.1–11.2 | — | Sonnet reviewer for 11.1 |
+| 4 | maintainer | 12.1–12.2 | — | — |
 
 R3 and R4 both read `release-modules.txt`, which R2 owns and finishes first. R5 needs R3's target names, which are fixed here (`release-check` and `release-tags`), so it runs in parallel. Each dispatch gets a fresh Sonnet reviewer that edits nothing.
 
@@ -348,12 +353,49 @@ echo "probe: $version resolves for every published module"
 - [ ] **Step 5:** `ErrConfig`'s godoc in `notify/notify.go` names the case: a send with no sender address on the message and no default sender. `rg -n 'ErrConfig' notify/*.go` shows no other non-constructor use the godoc misses.
 - [ ] **Step 6:** `go test -race -count=1 ./notify/...`, `go vet ./notify/...`, `golangci-lint run ./notify/...`. Expected: PASS, 0 issues.
 
-### Task 7.1–7.2: Integration gate (main session)
+### Task 5.2, 5.5, 5.6 additions (dispatch R5, and the main session for 5.6)
 
-- [ ] **7.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas, the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
-- [ ] **7.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, and keep the outputs.
+- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then the API changes of decisions 11–13 and `idiomatic-api-shape`'s breaking changes under **Changed**. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
+- [ ] **5.5:** add the *Known limitations* section listed in task 5.5, each limit in one sentence that names the default and what a consumer can do about it.
+- [ ] **5.6 (main session):** a Sonnet research agent reports, for each listed claim, the test that pins the fixed behaviour (`rg` for the claim's scenario, then `go test -run` it) or that none exists. The main session writes the outcomes into `design.md`.
 
-### Task 8.1–8.2: First release (maintainer)
+### Task 7.1–7.2: The token subject (decision 11; dispatch R7)
 
-- [ ] **8.1 (maintainer):** `gh api -X PUT repos/kartaladev/scrty/private-vulnerability-reporting`, then read it back and expect `"enabled": true`.
-- [ ] **8.2 (maintainer):** after merge, follow `RELEASING.md` for `v0.1.0`, and watch `release-probe` pass.
+**Interfaces:**
+- Produces: `func token.WithUsernameSubject() Option`, `func authenticate.WithJWTUsernameSubject() JWTOption`. The generator's default subject is `Principal.ID`.
+
+- [ ] **Step 1 (7.1, audit):** with gopls, list every read of `identity.Principal.Username` reachable from `JWTAuthenticator.Authenticate` and from a guard or policy behind the bearer interceptor. Report each, with whether it would see an empty username. Edit nothing. The main session records the outcome in decision 11.
+- [ ] **Step 2 (7.2, red):** the table cases in `token`: "Default token" (`sub` `u-1`), "Consumer chooses the username as subject" (`sub` `alice`), "Empty subject" (`Generate` returns an error, `errors.Is(err, token.ErrConfig)` or the package's issuing error, and no token). In `authenticate`: "Valid token" (`Principal.ID` `u-1`, empty `Username`) and "Consumer reads the subject as a username". Run `go test -run 'Subject|ValidToken' -count=1 ./token/ ./authenticate/`. Expected: FAIL on the default and empty-subject cases.
+- [ ] **Step 3 (green):** implement both options, each naming the default it replaces, with godoc saying the two must agree. Fix any reader 7.1 reported, as decision 11 then states. Run Step 2, then `go test ./token/... ./authenticate/... ./httpsec/...` and the `test` module. Expected: PASS.
+
+### Task 8.1–8.2: Signing-key retention (decision 12; dispatch R8)
+
+**Interfaces:**
+- Produces: `KeyStore.Delete(ctx context.Context, kids ...string) error`, idempotent, and `func signingkey.WithRetiredKeysKept() Option`.
+
+- [ ] **Step 1 (8.1, red):** add `Delete` to the port as a stub returning nil in every store, so the tree compiles. Add to `test/storetest/signingkey_suite.go`: "deleted keys are not loaded", "deleting a missing key is not an error", "delete with no keys is a no-op". Add the five `signing-keys` scenarios as table cases on a clockwork fake. "Failed delete retried" uses a store double whose `Delete` fails once. Run them. Expected: FAIL on assertions.
+- [ ] **Step 2 (8.2, green):** implement `Delete` in the memory store, `sqlstore`, `pgxstore`, `gormstore` (one statement, `kid` in the set) and the sealing decorator (forwards). Implement the housekeeping deletion of keys retired for age only, with report and retry. Run `go test -race ./token/signingkey/... ./store/seal/...` and the conformance suite in the `test` module against every store (Docker). Expected: PASS.
+
+### Task 9.1: Remove the unused passkey store method (decision 13; dispatch R9)
+
+- [ ] **Step 1:** remove `DeleteAwaitingSavedCodes` from `passkey.CredentialStore`, its three SQL implementations, `internal/pgschema/passkey.go`, the conformance suite and its broken-store variant. Regenerate the mocks with `go generate`. Run `go build ./...` and `go test ./...` in every module that changed, including the Docker suites. Expected: PASS. `rg DeleteAwaitingSavedCodes --glob '!openspec/**'` finds nothing.
+
+### Task 9.2: Reproduce or drop the MFA confirmation race (decision 14; dispatch R9b)
+
+- [ ] **Step 1:** write `TestConfirmEnrolment_DeviceProofBetweenReadAndConfirm` in `authenticate/mfa`. A store double blocks `Confirm` until the test lands a device proof for the same enrolment through the device path. Assert that the enrolment's outcome reflects the device proof: confirmed once, with no second confirmation overwriting it. Run it under `-race -count=10`.
+- [ ] **Step 2:** report the result and stop. If it passes, the main session records the claim as dropped. If it fails, the main session writes the fix's decision and a `multi-factor-auth` delta, and then plans the fix.
+
+### Task 10.1–10.2: Release-gate stability (dispatch R10)
+
+- [ ] **10.1:** in each driver's `identity_test.go`, give each parallel case of `TestIdentityStore_Scenarios` its own migrated database, using the existing per-test database helper. Run `go test -race -count=5 -run TestIdentityStore_Scenarios` per driver. Expected: PASS.
+- [ ] **10.2:** check the error from the trigger drop in both `session_supersede_test.go` files. Point one at a missing trigger temporarily, watch it fail, then restore it. Run both. Expected: PASS.
+
+### Task 11.1–11.2: Integration gate (main session)
+
+- [ ] **11.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas, the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
+- [ ] **11.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, and keep the outputs.
+
+### Task 12.1–12.2: First release (maintainer)
+
+- [ ] **12.1 (maintainer):** `gh api -X PUT repos/kartaladev/scrty/private-vulnerability-reporting`, then read it back and expect `"enabled": true`.
+- [ ] **12.2 (maintainer):** after merge, follow `RELEASING.md` for `v0.1.0`, and watch `release-probe` pass.

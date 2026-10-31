@@ -34,6 +34,17 @@ The first consumer's adoption is blocked on this, whatever else is built.
 - **Pre-release fixes carried from `idiomatic-api-shape`.** Two defects in `notify`, both older than that change and found while it was implemented, are fixed before `v0.1.0`:
   - a queued sender whose wrapped sender ends its goroutine (`runtime.Goexit`, as `t.FailNow` does) loses that worker. Once every worker is gone, it accepts messages it never delivers;
   - `ErrConfig` is wrapped by an SMTP send that has no sender address, which its godoc does not admit.
+- **Pre-release API fixes from a sweep of every archived change's follow-ups.** Each would be a breaking change after the first tag:
+  - the token subject becomes the user's identifier by default, with an option to keep the username;
+  - the key manager deletes the signing keys it retires from the store, with an option to keep them;
+  - an unused method is removed from the passkey credential store port;
+  - a reported race in confirming an MFA enrolment is reproduced or dropped before the tag.
+- **Release hygiene from the same sweep.**
+  - The changelog notes left by an archived change are folded into the first entry.
+  - The outcome of each claim that change left unreproduced is recorded.
+  - The README gains a *Known limitations* section.
+  - Two tests that can destabilise the release gate are hardened.
+  - The remaining follow-ups are recorded as a post-release backlog.
 - **Repository setting, a step for the maintainer.** Enabling private vulnerability reporting is listed as such, since it is a change to the public repository's settings and is not made by tooling. It is off as of 2026-10-21.
 - **Spec correction.**
   - The settled `module-layout` requirement still names Go 1.26 as the minimum and a CI run on Go 1.26 and Go 1.27.
@@ -48,6 +59,9 @@ The first consumer's adoption is blocked on this, whatever else is built.
 
 ### Modified Capabilities
 
+- `token-issuance`: the subject is the principal's user identifier by default, or the username when configured; issuing with an empty subject fails.
+- `authentication`: the bearer-token provider reads the subject the same way the generator writes it.
+- `signing-keys`: housekeeping deletes from the store the keys it retires for age, by default.
 - `email-notification`: the queued sender replaces a worker whose wrapped sender ends its goroutine, so it never accepts a message it cannot deliver.
 - `module-layout`:
   - published modules resolve outside the repository at a released version;
@@ -62,7 +76,12 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - `.github/workflows/`, which gains a release-gate workflow and a post-tag probe;
   - new `CHANGELOG.md`, `SECURITY.md` and `RELEASING.md`;
   - `README.md` (supported versions, install).
-- **Library code changes only for the two `notify` fixes,** and no API change.
+- **Library code and API changes, all before the first tag:**
+  - the two `notify` fixes, with no API change;
+  - a subject option on the token generator and the JWT authenticator;
+  - `signingkey.KeyStore` gains a delete method, implemented by every store and the sealing decorator;
+  - `passkey.CredentialStore` loses `DeleteAwaitingSavedCodes`;
+  - test hardening in the `test` module.
 - **Tags:** `v0.1.0` and eight prefixed `v0.1.0` tags, pushed by the maintainer, not by tooling.
 - **Related changes:**
   - `first-party-sessions` is implemented first, so its session store port, its security-state migration and its session features ship in `v0.1.0` and are summarised in that entry;

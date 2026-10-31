@@ -145,6 +145,34 @@ None of the decisions below is library behaviour a consumer configures. They gov
 - **Default and override:** unchanged. A consumer sets `WithSMTPFrom`, or `Message.From`.
 - **Alternative considered:** a new sentinel for a missing address. Rejected, because it adds API for a case the existing sentinel already means.
 
+### 11. The token subject is the user's identifier by default
+
+- **The problem.** Issued tokens carry the principal's username as `sub`. A rename invalidates the user's live tokens, and a username can be reassigned to someone else, while `sub` is the claim every verifier keys on.
+- **The decision.** By default the generator writes `Principal.ID` as `sub`, and the JWT authenticator builds the principal with that identifier. This departs from the established design, which carries the username. The departure exists because `sub` is meant to be stable and never reassigned, and a public claim cannot change after the first tag without breaking live tokens and external verifiers.
+- **Default and override.** The default is the user identifier. A consumer whose own systems read the username sets `token.WithUsernameSubject()` on the generator and `authenticate.WithJWTUsernameSubject()` on the authenticator. The two components cannot see each other, so a mismatch cannot fail at construction; both options' godoc says they must agree.
+- **Refusal.** Issuing for a principal whose chosen subject is empty fails, instead of minting a token no one can resolve.
+- **Risk.** Under the default, a bearer principal carries an identifier and no username. The first task audits every use of `Principal.Username` on the bearer path with gopls before the change, and reports any consumer of the name.
+- **User's choice, 2026-10-31:** an option, defaulting to the identifier.
+
+### 12. Housekeeping deletes the keys it retires for age
+
+- **The problem.** `signingkey.KeyStore` has no delete method. Housekeeping stops publishing old keys but leaves them in the store, which gains a row per algorithm per rotation, hourly by default, and every row is loaded at start and on each reload.
+- **The decision.** `KeyStore` gains `Delete(ctx context.Context, kids ...string) error`. It is idempotent: a missing key is not an error. Housekeeping deletes every key it stops publishing because it is older than the key lifetime. Such a key can no longer verify a token, since token lifetimes are shorter than the key lifetime. A key it stops publishing because it is dated in the future is only unpublished, never deleted, because that date may come from another replica's clock. A failed delete is reported to the logger and the error hook and retried at the next run.
+- **Implementations.** The in-memory store, `sqlstore`, `pgxstore`, `gormstore`, and the sealing decorator, which forwards the call. The store conformance suite gains delete cases.
+- **Default and override.** Deletion is on by default. `WithRetiredKeysKept()` keeps retired keys in the store, for a consumer who audits them.
+- **User's choice, 2026-10-31:** add the delete method before the tag.
+
+### 13. The unused passkey store method is removed
+
+- `passkey.CredentialStore.DeleteAwaitingSavedCodes` has not been called by the library since an earlier change stopped deleting credentials awaiting saved codes. It is removed from the port, the three SQL stores, the conformance suite and the mocks. Removing a port method after the tag would break every consumer store, so it goes now.
+- **User's choice, 2026-10-31.**
+
+### 14. The reported MFA confirmation race is settled before the tag
+
+- **The claim.** The single-call `ConfirmEnrolment` reads the pending enrolment, then calls the store's `Confirm`, which checks neither the enrolment's generation nor the device proof. A device proof landing in between would go unseen. UNREPRODUCED.
+- **The decision.** The first task writes the red test. If it passes, the claim is dropped and recorded here. If it fails, apply pauses so that this decision and a `multi-factor-auth` delta can be written before the fix, because fixing it changes the store's `Confirm` contract.
+- **User's choice, 2026-10-31.**
+
 ## Risks / Trade-offs
 
 - **`gorelease` may refuse a module whose `go.mod` has `replace` directives.**
@@ -159,6 +187,36 @@ None of the decisions below is library behaviour a consumer configures. They gov
   - Accepted: an unchanged module at a new version costs nothing to a consumer, and keeps one version meaning one tested set.
 - **The response times in the security policy are a commitment.**
   - Mitigation: they are proposed defaults, for the maintainer to confirm or change in review before `SECURITY.md` is published.
+
+## Post-release backlog
+
+Open follow-ups from the archived changes that are not needed for `v0.1.0`. None is a breaking change to add later. Each names the change that recorded it.
+
+- **Performance**
+  - Cache the verification key set instead of rebuilding it on every verify (identity-and-tokens; measured at 1.7–5% of an RS256 verify).
+  - Throttle the API key's `LastUsedAt` write (auth-methods).
+  - Evaluate `PostAuthentication` once on the magic-link path (auth-methods; to be confirmed against the current code first).
+- **Features**
+  - A full-session listing of a user's enrolled second factors (mfa-multi-method).
+  - Ending other sessions when TOTP is removed or a password changes (passkey-session-revocation).
+  - A passkey or other begin-step method as an account-recovery proof (recovery-codes, passkey-authentication).
+  - A general security-events port for login, logout and revocation (first-party-sessions).
+  - A concurrency limit and a strength policy for password hashing (first-party-sessions).
+  - A cap option for the shared limiters' local fall-back count (limiter-key-bounds).
+  - A per-flow unavailable mode and exported limiter namespaces and defaults (shared-rate-limiting).
+  - Per-user MFA grace windows (mfa-enrolment-path; additive through an optional interface).
+  - Storing and enforcing the provider's `auth_time` and `max_age` (oidc-mfa-assurance; a later migration adds the column).
+  - A constant-work decoy for magic-link requests (auth-methods).
+- **Refactors** (first-party-sessions): the `gorm` session save through the shared column map; one savepoint protocol in `storekit`; one written form of the `stale` rule; `DeleteFamily`'s empty second pass.
+- **Unmeasured or unreproduced**
+  - Possible deadlocks (`40P01`) between user-wide deletes or the sweep and a re-rotation (first-party-sessions; fails loudly and safely).
+  - The circuit breaker tripping on an encoding failure end to end, and the batched prune over a sparse table (postgres-limiter-hardening).
+  - Two concurrent successful passkey finishes leaving one response's saved codes superseded, the earlier unconfirmed code set confirming in a gap, and clock skew in the "abandoned" rule (pre-release-hardening; stated limits).
+  - Test failures seen once: the migration-rollback teardown timeout, the Keycloak container start, `TestPGLimiter_HeldRow`, the `hang` probe's read timeout, and the shared PostgreSQL server's first start (stabilize-intermittent-tests, testcontainers-optimize). Watched on the release gate's CI.
+- **Code observations**
+  - `authenticate`'s password and JWT providers stamp `Authentication.Time` with `time.Now()` and offer no time source. The `time-source` capability does not require one, and it could be added as an option later.
+- **Process**
+  - The reply to a consumer drafted during `lockout-honest-defaults` has no record of being sent. That is the maintainer's to confirm.
 
 ## Migration Plan
 
@@ -212,6 +270,14 @@ None of the decisions below is library behaviour a consumer configures. They gov
 ### Decisions 9 and 10: `notify` fixes
 
 Reasoned from scrty's own settled specs (`email-notification`) and code, and from the review of `idiomatic-api-shape` that found both.
+
+### Decisions 11–14: pre-release API fixes
+
+**Primary documentation:**
+- [OpenID Connect Core 1.0, §2 ID Token](https://openid.net/specs/openid-connect-core-1_0.html#IDToken): `sub` is a locally unique identifier for the end user that is never reassigned. Not re-checked on this date.
+- [RFC 7519, §4.1.2 "sub"](https://www.rfc-editor.org/rfc/rfc7519#section-4.1.2): the subject is unique within the issuer's context. Not re-checked on this date.
+
+Decisions 12–14 are reasoned from scrty's own settled specs and code, and from the follow-up sweep of the archived changes. Decision 11 departs from the established design, as stated in that decision.
 
 ### Decision 8: supported Go releases
 

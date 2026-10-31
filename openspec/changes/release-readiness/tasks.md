@@ -56,6 +56,7 @@ Go checks are test-first: write the failing test, run it, and confirm it fails f
   - a statement on semantic versioning and v0;
   - a `[0.1.0]` entry with the date left as `YYYY-MM-DD` until tagging, summarising the capabilities by module.
   Verify that every published module is named in the entry, and that the headings match the format's change types.
+  - Fold in `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` (its breaking changes, new sentinels and security fixes), the API changes of decisions 11–13, and `idiomatic-api-shape`'s breaking changes. Then delete the notes file. Verify every entry of the notes file appears in `[0.1.0]`.
 - [ ] 5.3 Write `SECURITY.md`:
   - private vulnerability reporting as the only channel, and no public issues;
   - the response expectations from design decision 6, as confirmed by the maintainer in review;
@@ -63,22 +64,43 @@ Go checks are test-first: write the failing test, run it, and confirm it fails f
   - disclosure through a repository security advisory and the Go vulnerability database.
   Verify each item of the two security-policy requirements against the text.
 - [ ] 5.4 Write `RELEASING.md` with the steps of design decision 7, each with its command: the bump commands, `make release-check`, the private-reporting check with `gh api`, `make release-tags`, the push, the probe, and the release notes. Include the never-move-a-tag rule and its recovery (a new patch version plus `retract`). Verify that each step's command exists and runs: `make release-check` and `make release-tags` from groups 3 and 5, and the `gh api` check returning JSON.
-- [ ] 5.5 Update `README.md`: an install section (`go get github.com/kartaladev/scrty@v0.1.0` and one nested module), links to `CHANGELOG.md` and `SECURITY.md`, and a supported-versions sentence consistent with `SECURITY.md`. Verify the links resolve within the repository.
+- [ ] 5.5 Update `README.md`: an install section (`go get github.com/kartaladev/scrty@v0.1.0` and one nested module), links to `CHANGELOG.md` and `SECURITY.md`, and a supported-versions sentence consistent with `SECURITY.md`, and a *Known limitations* section: the concurrent passkey finish, the magic-link timing difference, OIDC logout's replay window with no `jti` guard, `auth_time` and `max_age` not enforced, the rate limiter's burst overshoot and its N-replica multiplication, and the in-memory defaults' single-process scope. Verify the links resolve within the repository.
+- [ ] 5.6 Record the outcome of each claim `pre-release-hardening` left unreproduced (U2, U4, U8, S7, the fiber `HEAD` bypass, the unparseable-hash half of M2, the Argon2id ceiling). For each, name the test that now pins the fixed behaviour, or state that it was dropped and why. Write them in this change's `design.md`; the archive is not edited. Verify every listed claim has an outcome.
 
 ## 6. Pre-release fixes in `notify` (decisions 9, 10; email-notification requirement "A queued sender returns without waiting for delivery")
 
 - [ ] 6.1 Red: write `TestQueuedSender_WrappedSenderEndsItsGoroutine`, the scenario "Wrapped sender ends its goroutine", under `-race` with goleak. Run it and confirm it fails because the second message is never delivered. Then implement decision 9: a worker whose delivery did not return normally logs the failure and is replaced. Verify: the scenario and every queued-sender scenario pass under `-race`.
 - [ ] 6.2 Pin the current behaviour with `TestSMTPSender_NoSenderAddressIsAConfigError`: a message with no `From`, through a sender with no default address, returns an error matching `ErrConfig`. It passes today, so prove it by temporarily wrapping a different error and watching it fail, then restore it. Then update `ErrConfig`'s godoc per decision 10. Verify: the test passes, and every place that wraps `notify.ErrConfig` outside a constructor is named in the godoc.
 
-## 7. Integration gate
+## 7. The token subject (decision 11; token-issuance and authentication deltas)
 
-- [ ] 7.1 Run a whole-branch review against every requirement in this change's specs, with a fresh Sonnet reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
-- [ ] 7.2 Run `make check`, `make release-check VERSION=v0.1.0` and `openspec validate release-readiness --strict`. Verify all three are clean, and keep the output.
+- [ ] 7.1 Audit, read-only: list every use of `identity.Principal.Username` reachable from a bearer-authenticated request (gopls references from `JWTAuthenticator.Authenticate` onward), and report which would see an empty username under the new default. The main session records the outcome in decision 11 before 7.2.
+- [ ] 7.2 Red: write the `token-issuance` scenarios "Default token" (now `sub` `u-1`), "Consumer chooses the username as subject" and "Empty subject", and the `authentication` scenarios "Valid token" (principal identifier `u-1`) and "Consumer reads the subject as a username". Run them and confirm the default and empty-subject cases fail on their assertions. Then implement decision 11 with `token.WithUsernameSubject()` and `authenticate.WithJWTUsernameSubject()`, each naming the default it replaces. Verify: the scenarios pass, and so do the `token`, `authenticate`, `httpsec` and `test` suites.
 
-## 8. First release (maintainer)
+## 8. Signing-key retention (decision 12; signing-keys delta)
 
-- [ ] 8.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
-- [ ] 8.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
+- [ ] 8.1 Red: add delete cases to the key-store conformance suite (delete existing keys, delete a missing key without error, `LoadAll` no longer returns deleted keys), and the `signing-keys` scenarios "Old key removed" (also gone from the store), "Consumer keeps retired keys", "Failed delete retried", "Current key kept" and "Far-future key removed" (still stored). Run them and confirm they fail on their assertions, not on compiling: add `Delete` as a stub first.
+- [ ] 8.2 Implement `KeyStore.Delete` in the in-memory store, `sqlstore`, `pgxstore`, `gormstore` and the sealing decorator, and the housekeeping deletion with `WithRetiredKeysKept()`. Verify: the conformance suite passes against every store, including the Docker suites, and every `signing-keys` scenario passes under `-race`.
+
+## 9. Port clean-up (decisions 13, 14)
+
+- [ ] 9.1 Remove `passkey.CredentialStore.DeleteAwaitingSavedCodes` from the port, the three SQL stores, `internal/pgschema`, the conformance suite and the mocks. This is a removal with no red step. Verify: every module builds and its tests pass, and `rg DeleteAwaitingSavedCodes` finds nothing outside `openspec/`.
+- [ ] 9.2 Red: write `TestConfirmEnrolment_DeviceProofBetweenReadAndConfirm`, which lands a device proof between `ConfirmEnrolment`'s read and the store's `Confirm` and asserts the outcome `mfa-enrolment-path` says is wrong is not what happens. Run it. If it passes, report it so the main session records the claim as dropped in decision 14. If it fails, stop and report it, so the main session writes the fix's decision and a `multi-factor-auth` delta before any fix.
+
+## 10. Release-gate stability
+
+- [ ] 10.1 Give each parallel case of `TestIdentityStore_Scenarios` its own database in all three drivers (`test/pgxstore`, `test/sqlstore`, `test/gormstore`), so no two cases rename tables in one database. Verify with `-count=5` per driver under `-race`.
+- [ ] 10.2 Check the error of the trigger drop in `test/sqlstore/session_supersede_test.go` and `test/gormstore/session_supersede_test.go`. Verify the tests pass, and that a dropped trigger whose drop fails now fails the test: point it at a missing trigger temporarily, then restore it.
+
+## 11. Integration gate
+
+- [ ] 11.1 Run a whole-branch review against every requirement in this change's specs, with a fresh Sonnet reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
+- [ ] 11.2 Run `make check`, `make release-check VERSION=v0.1.0` and `openspec validate release-readiness --strict`. Verify all three are clean, and keep the output.
+
+## 12. First release (maintainer)
+
+- [ ] 12.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
+- [ ] 12.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
 
 ## Workflow follow-up
 
