@@ -2167,8 +2167,8 @@ func TestEnrolmentGate(t *testing.T) {
 			reached: func(t *testing.T, _ *gateWitnesses, out served) {
 				t.Helper()
 
-				require.ErrorIs(t, out.err, httpsec.ErrMFAMethodNotUsable,
-					"the verify endpoint judges the request, and refuses a method the user has not enrolled on")
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending,
+					"the verify endpoint judges the request, and serves only a pending session")
 			},
 			assert: challenged,
 		},
@@ -2183,8 +2183,8 @@ func TestEnrolmentGate(t *testing.T) {
 			reached: func(t *testing.T, _ *gateWitnesses, out served) {
 				t.Helper()
 
-				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod,
-					"the MFA slot judges the request: totp has no begin step")
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending,
+					"the MFA slot judges the request: begin serves only a pending session")
 			},
 			assert: challenged,
 		},

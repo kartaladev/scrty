@@ -417,6 +417,14 @@ func TestMFAVerifyOrdering(t *testing.T) {
 		}
 	}
 
+	stateAfter := func(state session.MFAState) func(*testing.T, *mfaHarness) *session.Session {
+		return func(t *testing.T, h *mfaHarness) *session.Session {
+			t.Helper()
+
+			return h.newSession(t, factor.Password, state)
+		}
+	}
+
 	cases := []testCase{
 		{
 			name:    "no session",
@@ -431,6 +439,56 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			// A signed-in session cannot be moved through the second factor
+			// again: proving it afresh is re-authentication's business.
+			name:    "a session that already satisfied its second factor",
+			channel: factor.AuthenticatorApp,
+			session: stateAfter(session.MFASatisfied),
+			wire: func(_ *testing.T, h *mfaHarness) {
+				// Nothing is throttled, read, verified or counted.
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				assert.Equal(t, session.MFASatisfied, h.stored(t, s.ID).MFA,
+					"the handle is unchanged and still stored")
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, out.rec.Body.Len(), "nothing is written")
+			},
+		},
+		{
+			// A user enrolled after signing in has a session no challenge
+			// was ever raised on; posting a code does not start one.
+			name:    "a session no second factor was asked of",
+			channel: factor.AuthenticatorApp,
+			session: stateAfter(session.MFANone),
+			unread:  true,
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				got := h.stored(t, s.ID)
+				assert.Equal(t, session.MFANone, got.MFA)
+				assert.True(t, s.AuthenticatedAt.Equal(got.AuthenticatedAt),
+					"the authentication time is untouched")
+				assert.True(t, got.MFASatisfiedAt.IsZero())
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+			},
+		},
+		{
+			name:    "no session still comes first",
+			channel: factor.AuthenticatorApp,
+			session: noSession,
+			unread:  true,
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.NotErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
 			},
 		},
 		{
@@ -484,11 +542,13 @@ func TestMFAVerifyOrdering(t *testing.T) {
 				// A user who gets it right has not guessed, so nothing is spent.
 				h.allows().accepts().recordsNoFailure()
 			},
-			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
 				require.NoError(t, out.err)
 				assert.Equal(t, http.StatusOK, out.rec.Code)
 				assert.False(t, out.handlerRan,
 					"the endpoint is this library's own, so the application never sees it")
+				assert.Equal(t, session.MFASatisfied, h.stored(t, h.rotatedID(t)).MFA,
+					"a pending session is still resolved and rotated")
 			},
 		},
 	}

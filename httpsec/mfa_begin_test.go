@@ -82,6 +82,8 @@ func TestMFABegin(t *testing.T) {
 		// first is the factor the session was established by: password
 		// unless a case needs another.
 		first factor.Kind
+		// state is the second-factor state of the session, nil for pending.
+		state *session.MFAState
 		// anonymous sends no credential at all.
 		anonymous bool
 		stub      func(c *challengeStub)
@@ -143,6 +145,24 @@ func TestMFABegin(t *testing.T) {
 			wire:    func(h *mfaHarness) { h.allows().recordsNoFailure() },
 			request: begin(testMFABeginPath),
 			assert:  issued,
+		},
+		{
+			// Re-proving a signed-in session is re-authentication's business.
+			name:    "a session that already satisfied its second factor",
+			state:   new(session.MFASatisfied),
+			wire:    untouched,
+			request: begin(testMFABeginPath),
+			assert: func(t *testing.T, h *mfaHarness, c *challengeStub, s *session.Session, out served) {
+				assert.Equal(t, session.MFASatisfied, h.stored(t, s.ID).MFA, "the session is unchanged")
+				refusedWith(httpsec.ErrNoMFAChallengePending)(t, h, c, s, out)
+			},
+		},
+		{
+			name:    "a session no second factor was asked of",
+			state:   new(session.MFANone),
+			wire:    untouched,
+			request: begin(testMFABeginPath),
+			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
 		},
 		{
 			name:    "begin for a method without a begin step",
@@ -305,7 +325,12 @@ func TestMFABegin(t *testing.T) {
 				first = factor.Password
 			}
 
-			s := h.pendingSession(t, first)
+			state := session.MFAPending
+			if tc.state != nil {
+				state = *tc.state
+			}
+
+			s := h.newSession(t, first, state)
 
 			token := mfaTokenFor(s.ID)
 			if tc.anonymous {

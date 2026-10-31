@@ -238,7 +238,12 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 // user:
 //
 //  1. No session, or one carrying no resolved caller: there is nothing to add
-//     a second factor to, and nobody to issue the rotated credential to.
+//     a second factor to, and nobody to issue the rotated credential to. A
+//     session that is not pending, whether it already satisfied its second
+//     factor or none was ever asked of it, is refused with
+//     ErrNoMFAChallengePending: the endpoint serves only a pending session,
+//     and re-proving a signed-in one belongs to re-authentication (/reauth),
+//     not here. Nothing is counted or changed.
 //  2. The path names no configured method: ErrUnknownMFAMethod. The method is
 //     read from the path and nowhere else.
 //  3. The method is on the first factor's channel: mfa.ErrSameChannel. A
@@ -372,6 +377,10 @@ func (i *mfaInterceptor) admit(
 		return nil, nil, ErrAuthenticationRequired
 	}
 
+	if err := requirePending(s); err != nil {
+		return nil, nil, err
+	}
+
 	name, ok := methodSegment(ex.Request.Path(), prefix)
 	method, known := i.byName[name]
 	if !ok || !known || !serves(method) {
@@ -383,6 +392,22 @@ func (i *mfaInterceptor) admit(
 	}
 
 	return s, method, nil
+}
+
+// requirePending refuses a session that owes no second factor with
+// ErrNoMFAChallengePending: one already satisfied, or one no challenge was ever
+// raised on, such as the session of a user enrolled after signing in. Both
+// endpoints serve only a pending session, so neither can move a signed-in
+// session through the second factor again, and a session's authentication time
+// is never refreshed by a code. Proving a signed-in session afresh is
+// re-authentication's business. The refusal reads nothing, counts nothing and
+// issues nothing.
+func requirePending(s *session.Session) error {
+	if s.MFA != session.MFAPending {
+		return ErrNoMFAChallengePending
+	}
+
+	return nil
 }
 
 // anyMethod is what the verify endpoint serves: every configured method.

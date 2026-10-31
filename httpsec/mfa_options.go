@@ -67,6 +67,13 @@ type MFAOption func(*mfaInterceptor) error
 // a retry would not change that: it is tried and logged once per issuance
 // window. The verify and begin prefixes must not overlap.
 //
+// The verify and begin endpoints serve only a pending session. A session that
+// already satisfied its second factor, or was never asked one (a user enrolled
+// after signing in), is refused with ErrNoMFAChallengePending (403) before the
+// method, the limiter or the body is consulted, and nothing is counted or
+// changed. Re-proving a signed-in session belongs to re-authentication
+// (/reauth, added by this change), not to these endpoints.
+//
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.
 //

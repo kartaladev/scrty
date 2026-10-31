@@ -76,6 +76,11 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // begin issues a pending challenge for a challenge method and answers with the
 // method's begin data.
 //
+// It serves only a pending session: one already satisfied, or none was ever
+// asked a second factor, is refused with ErrNoMFAChallengePending before
+// anything is issued, and re-proving a signed-in session belongs to
+// re-authentication (/reauth) instead.
+//
 // It makes the same refusals verify does, in the same order and before the
 // body is read — the body is never read here at all — with one difference: a
 // path naming a method that has no begin step is refused as unknown, exactly
