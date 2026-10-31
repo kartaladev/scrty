@@ -85,7 +85,7 @@ These keep returning their interface, because each one is a wrapper over a port 
 - each still flushes everything it reaches, in its documented order, even when one flush fails;
 - each returns `errors.Join` of the errors it got, or nil;
 - `Chain` returns the errors of the components it reaches, the policy engine's joined error included.
-- **`authenticate.FirstOf` is an aggregator too.** It implements `logsample.Flusher`: it flushes each delegate that implements it, in delegate order, keeps going after a failure, and returns `errors.Join` of their errors, or nil. Without it, the form-login and basic-auth probes miss every flusher wrapped in a `FirstOf`, the authenticator `FormLoginDeps` suggests. The summary of suppressed refusals is then never written at flush, and a consumer delegate's error is lost. A nested `FirstOf` is reached through the same method. This is `UNREPRODUCED` until task 2.5's red test.
+- **`authenticate.FirstOf` is an aggregator too.** It implements `logsample.Flusher`: it flushes each delegate that implements it, in delegate order, keeps going after a failure, and returns `errors.Join` of their errors, or nil. Without it, the form-login and basic-auth probes miss every flusher wrapped in a `FirstOf`, the authenticator `FormLoginDeps` suggests. The summary of suppressed refusals is then never written at flush, and a consumer delegate's error is lost. A nested `FirstOf` is reached through the same method. `REPRODUCED` by `TestChain_FlushRefusalLogs_ReachesFirstOfDelegates`, which failed before the method existed with "the password authenticator behind FirstOf was not flushed"; `TestFirstOf_FlushRefusalLogs` pins the order and the joined errors.
 
 The library's own flushers never fail, so with the defaults nothing changes. A consumer's authenticator, broker or policy whose flush fails is now reported instead of discarded.
 
@@ -118,7 +118,7 @@ This applies to `signingkey.Keys`, `session.MemoryStore`, `sweep.Sweeper` and `n
 - **`Shutdown(ctx context.Context) error`:**
   - marks the component shut down (terminal);
   - cancels the work's context (for `QueuedSender`, closes intake and lets the queue drain);
-  - waits for the work's `WaitGroup` inside a `select` on `ctx.Done()`;
+  - waits for the work to end inside a `select` on `ctx.Done()`, through a channel closed when the work ends (`Keys` closes it once its loops' `WaitGroup` is done);
   - returns nil once the work has ended, or `ctx.Err()` if the context is done first.
 
   A later call waits again under its own context, and returns the shutdown's outcome. For `Keys`, `session.MemoryStore` and `QueuedSender`, that outcome is nil once the work has ended. For `Sweeper`, it is the shared result described in Context, which can be the stop-timeout error. Shutting down a component that was never started marks it shut down and returns nil.
@@ -189,7 +189,7 @@ Every other `Enable…` function already follows the rule.
 
 `func DefaultScopes() []string` returns `[]string{"openid", "profile", "email"}` as a new slice on each call. `resolveProvider` calls it.
 
-**Why it matters beyond style:** the registry checks that a non-nil `Provider.Scopes` includes `openid`, but takes nil scopes from the global without checking it. A consumer, or a dependency, that changed `oidc.DefaultScopes` could therefore drop `openid` from every provider left on the defaults, past the check. This is `UNREPRODUCED`: a code reading, pending the copy test of task 7.2.
+**Why it matters beyond style:** the registry checks that a non-nil `Provider.Scopes` includes `openid`, but takes nil scopes from the global without checking it. A consumer, or a dependency, that changed `oidc.DefaultScopes` could therefore drop `openid` from every provider left on the defaults, past the check. This stays `UNREPRODUCED`, a code reading only, and is now moot: the mutable global is gone. `TestDefaultScopes_ReturnsACopy` pins the new copy behaviour; it could not have failed against the old variable, which had no function to call.
 
 **Default and override:** the default scopes are unchanged. They are replaced per provider through `Provider.Scopes`, as before. No process-wide override exists any more, and none is needed.
 
@@ -200,6 +200,7 @@ Every other `Enable…` function already follows the rule.
 - **Exported concrete types widen the API surface.** → They add type names and zero values, not methods (D1's table). Each type's godoc says its zero value is unusable.
 - **`Chain.FlushRefusalLogs` returning an error** is flagged by `errcheck` wherever a caller ignores it. → The library's own callers and examples handle or explicitly discard it, in the same task.
 - **Changing `NewExchange` to panic on nil** could crash an integration that passed nil. → `ginsec` and `fibersec` always pass the request's context. The panic message names the function.
+- **The memory-store constructors now return two values, so about sixty test files wrap them.** → `internal/must` provides `Must[T](v T, err error) T` for test fixtures whose configuration is fixed and known valid. It is internal, so consumers cannot depend on it, and it is never used in examples or production code, which handle the error explicitly.
 - **The test module calls every changed constructor.** → It is updated in the same task as each constructor, so the workspace always builds.
 
 ## Migration Plan

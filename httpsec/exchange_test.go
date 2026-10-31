@@ -606,25 +606,29 @@ func TestExchange_NilContext(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name string
-		act  func()
-		want string
+		name   string
+		act    func(t *testing.T)
+		assert func(t *testing.T, act func())
 	}
 
 	cases := []testCase{
 		{
 			name: "new exchange",
-			act: func() {
+			act: func(_ *testing.T) {
 				httpsec.NewExchange(nilContext(), stubRequest{}, &stubWriter{})
 			},
-			want: "httpsec: NewExchange needs a non-nil context",
+			assert: func(t *testing.T, act func()) {
+				require.PanicsWithValue(t, "httpsec: NewExchange needs a non-nil context", act)
+			},
 		},
 		{
 			name: "set context",
-			act: func() {
-				httpsec.NewExchange(context.Background(), stubRequest{}, &stubWriter{}).SetContext(nilContext())
+			act: func(t *testing.T) {
+				httpsec.NewExchange(t.Context(), stubRequest{}, &stubWriter{}).SetContext(nilContext())
 			},
-			want: "httpsec: Exchange.SetContext needs a non-nil context",
+			assert: func(t *testing.T, act func()) {
+				require.PanicsWithValue(t, "httpsec: Exchange.SetContext needs a non-nil context", act)
+			},
 		},
 	}
 
@@ -632,7 +636,7 @@ func TestExchange_NilContext(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.PanicsWithValue(t, tc.want, tc.act)
+			tc.assert(t, func() { tc.act(t) })
 		})
 	}
 }
