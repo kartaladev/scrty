@@ -238,16 +238,29 @@ func TestReauthVerify(t *testing.T) {
 			},
 		},
 		{
-			// "Lookup failure" at verify: no downgrade, nothing verified.
-			name: "a lookup failure refuses and verifies nothing",
+			// "Lookup failure" at verify: no downgrade, nothing verified. Only the
+			// named method's own lookup decides.
+			name: "a lookup failure of the named method refuses and verifies nothing",
 			wire: func(h *reauthHarness) {
 				untouched(h)
 				h.extra = []mfa.Method{&challengeStub{channel: testDeviceChannel, enrolledErr: errLookup}}
 			},
-			request: unread(reauthVerifyTOTP),
+			request: unread(reauthVerifyPasskey),
 			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
 				refusedWith(errLookup)(t, h, s, out)
 				assert.NotContains(t, out.err.Error(), "ana@example.com", "the store's own text stays out")
+			},
+		},
+		{
+			// An unrelated method's failing lookup cannot downgrade this path.
+			name: "a lookup failure of an unrelated method does not refuse a TOTP re-proof",
+			wire: func(h *reauthHarness) {
+				h.allows().accepts().recordsNoFailure()
+				h.extra = []mfa.Method{&challengeStub{channel: testDeviceChannel, enrolledErr: errLookup}}
+			},
+			request: code(reauthVerifyTOTP),
+			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+				reproved(t, h, s, out)
 			},
 		},
 		{
@@ -609,6 +622,30 @@ func TestReauthBegin(t *testing.T) {
 			},
 			act:    beginAt(reauthBeginPasskey),
 			assert: refusedBegin(httpsec.ErrReauthenticationMethodNotUsable),
+		},
+		{
+			name: "a lookup failure of the named method refuses a begin and issues nothing",
+			wire: func(h *reauthHarness, stub *challengeStub) {
+				untouched(h, stub)
+				stub.enrolledErr = errors.New("reauthverify_test: enrolment store unavailable")
+			},
+			act: beginAt(reauthBeginPasskey),
+			assert: func(t *testing.T, e *reauthEnv, out served) {
+				refusedBegin(e.stub.enrolledErr)(t, e, out)
+			},
+		},
+		{
+			name: "a lookup failure of an unrelated method does not refuse a begin",
+			wire: func(h *reauthHarness, stub *challengeStub) {
+				underAllowance(0)(h, stub)
+				h.extra = append(h.extra, &challengeStub{name: "other", channel: testDeviceChannel,
+					enrolledErr: errors.New("reauthverify_test: enrolment store unavailable")})
+			},
+			act: func(t *testing.T, e *reauthEnv) served { return e.begin(t, e.token()) },
+			assert: func(t *testing.T, e *reauthEnv, out served) {
+				require.NoError(t, out.err)
+				assert.NotEmpty(t, e.stub.lastIssued(), "the challenge was issued")
+			},
 		},
 		{
 			name: "a consumer store keeps the re-proof challenges under their own purpose",

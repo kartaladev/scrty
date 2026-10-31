@@ -2,7 +2,6 @@ package httpsec
 
 import (
 	"errors"
-	"slices"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
@@ -41,9 +40,11 @@ const reauthChallengeSweepFlow = "reauth-challenge-sweep"
 //  1. Admission: only a full session (admit).
 //  2. The method the path names, matched exactly: an empty, unknown or
 //     differently cased name is ErrUnknownMFAMethod.
-//  3. The factor policy (offered): a method the user may not re-prove with is
-//     ErrReauthenticationMethodNotUsable, and a lookup that fails refuses. The
-//     same-channel rule of a login's second factor does not apply.
+//  3. The factor policy, through the named method's own enrolment lookup: a
+//     method the user is not enrolled on is
+//     ErrReauthenticationMethodNotUsable, and a lookup that fails refuses. No
+//     other method is looked up. The same-channel rule of a login's second
+//     factor does not apply.
 //  4. The MFA slot's verification throttle, the one instance a login's second
 //     factor is counted on, so re-proof has no budget of its own.
 //  5. The response, read the way the method declares.
@@ -142,8 +143,9 @@ func (i *reauthInterceptor) begin(ex *Exchange) error {
 
 // admitMethod makes the refusals begin and verify share, all decided before
 // the body is read and none counted: admission, the method the path names
-// under prefix, and the factor policy. serves reports whether the endpoint
-// serves a configured method at all; one it does not is unknown.
+// under prefix, and the factor policy (the named method's enrolment only).
+// serves reports whether the endpoint serves a configured method at all; one
+// it does not is unknown.
 func (i *reauthInterceptor) admitMethod(
 	ex *Exchange,
 	prefix string,
@@ -164,12 +166,16 @@ func (i *reauthInterceptor) admitMethod(
 		return nil, nil, ErrUnknownMFAMethod
 	}
 
-	offered, _, err := i.offered(ex.Context(), s)
+	// Only the named method's enrolment is looked up: presenting an enrolled
+	// second factor is already the strongest proof the policy can ask for, so
+	// an unrelated method's lookup cannot cause a downgrade here. A failure of
+	// this lookup refuses, behind fixed text.
+	enrolled, err := method.Enrolled(ex.Context(), s.UserID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, diag.Wrap(err, msgReauthMethodsUnavailable)
 	}
 
-	if !slices.ContainsFunc(offered, func(m mfa.Method) bool { return m.Name() == name }) {
+	if !enrolled {
 		return nil, nil, ErrReauthenticationMethodNotUsable
 	}
 
