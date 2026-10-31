@@ -131,6 +131,8 @@ This applies to `signingkey.Keys`, `session.MemoryStore`, `sweep.Sweeper` and `n
   The OpenTelemetry reference below supports the terminal state, not its "every method becomes a no-op" rule. A session store that stopped saving at shutdown would lose sessions while requests are still being drained.
 - **Shutdown from inside the component's own work** cannot wait for itself. A purge, an error hook of `Keys`, or a wrapped sender that calls Shutdown waits until its own context ends, and returns that context's error. Each `Shutdown`'s godoc says so, and says to call it from outside the work.
 - **Renames:** `Keys.Stop()`, `MemoryStore.Stop()` and `QueuedSender.Close(ctx)` become `Shutdown(ctx)`. `notify.ErrSenderClosed` becomes `notify.ErrAlreadyShutdown`.
+- **One helper holds the wait.** The step "completion wins a tie, then wait under the context" lives in one internal helper that all four `Shutdown` methods call, so the rule cannot drift between copies. Each keeps its own result: `sweep` wraps the context's error, and the other three return it as it is.
+- **`QueuedSender` logs outside its lock.** A `Send` refused for a full queue decides under the read lock and logs after releasing it, so a slow or re-entrant log handler cannot hold `Shutdown` past its context.
 - **`Sweeper` lets gocron cancel the running purge.** Each run's context is a child gocron derives from the sweeper's run context, and gocron's own shutdown cancels it before waiting. The sweeper's cancel runs only after gocron's shutdown returns: cancelling first lets a purge see the cancellation before gocron has stopped the job's timer, which breaks the stop-timeout wait.
 - **`sweep`'s `WithStopTimeout` stays.** It is gocron's own bound on a cancelled purge (default 10 seconds), and Shutdown returns when either that timeout or its own context ends first, as it does today.
 
@@ -147,6 +149,10 @@ This applies to `signingkey.Keys`, `session.MemoryStore`, `sweep.Sweeper` and `n
 A nil or typed-nil `az` fails with an error wrapping `httpsec.ErrConfig`, unless the option `WithChainAuthorizer()` is given. That option records the consumer's declaration that the guards rely on the authorizer the chain publishes on each request. The adapters reuse `httpsec.ErrConfig`, because their guards are `httpsec` guards adapted to a framework. The typed-nil check uses the library's existing `internal/nilcheck`.
 
 **A typed nil is never a fallback.** With `WithChainAuthorizer()`, a typed-nil `az` is stored as no fallback at all. A request with no authorizer in its context is then refused with the access-denied error, as for a plain nil, instead of calling a method on a nil value.
+
+**The request-time check stays defensive.** Guards still test their stored authorizer with `internal/nilcheck` at request time, although construction already stores a typed nil as plain nil. A later option that set the fallback could otherwise turn a refusal into a nil-method panic. A code review suggested a plain `!= nil` for speed; the user declined it on 2026-10-31, since a reflection check costs little next to a request.
+
+**One helper holds the rule.** The construction rule and the authorizer resolution live in one internal helper that `httpsec`, `ginsec` and `fibersec` share, so the three adapters cannot disagree. Each keeps its own error text.
 
 Giving both a non-nil `az` and `WithChainAuthorizer()` is allowed and means what it says: the request's authorizer is preferred, and `az` is the fallback.
 

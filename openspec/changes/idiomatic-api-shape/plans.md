@@ -53,6 +53,9 @@
 | E | 5.1–5.2 | `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`, and every `NewGuards` caller | Opus: security refusal logic written for the first time | Opus |
 | F | 6.1, 7.1, 7.2, 8.1 | `httpsec/exchange.go`, `httpsec/oidc_options.go` and `EnableOIDCLogin`'s callers, `authenticate/oidc/registry.go`, and the final stale-name sweep | Sonnet: signatures and panics fixed by the design | Sonnet |
 | main session + Opus reviewer | 8.2 | whole branch | | Opus |
+| G1 | 9.1, then 9.2 | `notify/queued.go` and its test; the four `Shutdown` files (`token/signingkey/keys_lifecycle.go`, `session/store_memory.go`, `notify/queued.go`, `expiry/sweep/sweeper.go`); new `internal/lifecycle` | Opus: a lock-ordering fix under races, then a refactor of shared behaviour across four packages | Opus |
+| G2 | 9.3 | `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`; new `internal/guardauth` | Opus: a refactor of security refusal logic across three modules | Opus |
+| G3 | 9.4 | `httpsec/oidc_options.go` and `httpsec/oidc_options_test.go`; godoc in `notify/notify.go` and `token/signingkey/keys.go`; new `internal/must/must_test.go`; `authenticate/firstof.go`; `authenticate/oidc/registry.go` | Sonnet: small fixes whose shape each finding states | Sonnet |
 
 **Order:**
 - A runs first, because every later lane compiles against its types.
@@ -60,6 +63,7 @@
 - C1, C2, C3 and C4 then run in parallel. Their files and callers do not overlap. C2 comes after B, which owns `session/store_memory.go`'s constructor.
 - A2 was added after A, B and C had started. It touches no file of B, C or D, so it runs once C's lanes have landed, before D.
 - D runs after all of C, E after D, and F after E. E and F stay sequential so that the `httpsec` test files never have two writers.
+- G1, G2 and G3 run in parallel once F has landed. They own disjoint files, and each new internal package has a single owner. `notify/notify.go` (G3) and `notify/queued.go` (G1) are different files. Task 8.2 closes after all three, with a fresh review of group 9 and green CI.
 
 ---
 
@@ -280,3 +284,48 @@
 
   Fix each stale use. Expected: none left.
 - [ ] **Step 2 (8.2, main session):** Run `make check`, push, and wait for CI to be green, including the Docker suites. Run `openspec validate idiomatic-api-shape --strict`. Dispatch the Opus whole-branch reviewer with the eight deltas, D1–D8 and `git diff origin/main...HEAD`. Expected: green, valid, and a clean review.
+
+### Task 13: Review follow-ups (tasks 9.1–9.4)
+
+#### G1, step A (9.1): `Send` logs outside the lock
+
+**Files:** `notify/queued.go`, `notify/queued_test.go`
+
+- [ ] **Step 1 (red):** Write `TestQueuedSender_ShutdownNotHeldByASlowLogger`. Build a sender with a queue of 1, one worker blocked in the wrapped sender, and a `slog` handler that blocks on a channel when it records a queue-full message. Fill the queue, then call `Send` in a goroutine, which parks in the handler. Call `Shutdown` with a 100 ms context. Assert it returns `context.DeadlineExceeded` within 1 s. Release the handler and the worker in cleanup, and check with `goleak`.
+- [ ] **Step 2:** `go test -race -run TestQueuedSender_ShutdownNotHeldByASlowLogger -count=1 ./notify/`. Expected: FAIL, because `Shutdown` is still blocked on the lock after 1 s.
+- [ ] **Step 3 (green):** In `Send`, decide under the read lock (shut down, queued, or full), release it, then log and return. Run Step 2 and the queued-sender suite with `-race -count=5`. Expected: PASS.
+
+#### G1, step B (9.2): one shutdown wait
+
+**Files:** create `internal/lifecycle/lifecycle.go` and `lifecycle_test.go`; modify the four `Shutdown` methods.
+
+**Interfaces:**
+- Produces: `func lifecycle.Await(ctx context.Context, done <-chan struct{}) error`. It returns nil if `done` is already closed, checked before anything else so that completion wins a tie. Otherwise it waits for whichever comes first: `done` closing gives nil, and `ctx` ending gives `ctx.Err()`.
+
+- [ ] **Step 1:** Write `TestAwait`, a table with three cases: "done already closed with ctx already done gives nil", "ctx ends first gives its error", "done closes first gives nil". Implement `Await`, run the test, and see "done already closed with ctx already done" fail when the pre-check is removed. Restore the pre-check.
+- [ ] **Step 2:** Replace the hand-written wait in `Keys.Shutdown`, `MemoryStore.Shutdown`, `QueuedSender.Shutdown` and `Sweeper.Shutdown` with `Await`. `sweep` keeps wrapping the error it returns. No test changes.
+- [ ] **Step 3:** `go test -race -count=3` on `./token/signingkey/ ./session/ ./notify/ ./internal/lifecycle/`, then inside `expiry/sweep`. Expected: PASS, with no test file changed except the new one.
+
+#### G2 (9.3): one guard rule
+
+**Files:** create `internal/guardauth/guardauth.go` and its test; modify the three `guards.go` files.
+
+**Interfaces:**
+- Produces:
+  - `func guardauth.Fallback(az authorize.Authorizer, chainDeclared bool) (fallback authorize.Authorizer, ok bool)`. With a usable `az`, it returns `az, true`. With a nil or typed-nil `az`, it returns `nil, chainDeclared`. When `ok` is false, the caller refuses construction with its own error text.
+  - `func guardauth.For(ctx context.Context, fallback authorize.Authorizer) (authorize.Authorizer, bool)`. It prefers the request's authorizer (`authorize.AuthorizerFromContext`), then the fallback when `!nilcheck.IsNil(fallback)`.
+
+- [ ] **Step 1:** Write `TestFallback` and `TestFor`, each a table covering a usable authorizer, nil, typed nil, declared and undeclared reliance, and context against fallback. Implement and run.
+- [ ] **Step 2:** Make the three `NewGuards` call `Fallback`, and the three `authorizerFor` call `For`. Each package keeps its error text. No test changes.
+- [ ] **Step 3:** `go test -race -count=1` in the root, `httpsec/ginsec` and `httpsec/fibersec`, plus the `test` module's conformance suites. Expected: PASS, with no existing test changed.
+
+#### G3 (9.4): small fixes
+
+- [ ] **Step 1:** The `EnableOIDCLogin` refusal names `OIDCDeps.RelyingParty`. Update the assertion in `TestEnableOIDCLoginConstruction`, run it, and see it fail on the old text first.
+- [ ] **Step 2:** The godoc of `notify.ErrConfig` and `signingkey.ErrConfig` lists the lifecycle methods that return them.
+- [ ] **Step 3:** Write `TestMust`, a table with two cases: "value passes through" and "error panics with that error". Use `require.PanicsWithError`, or recover and `ErrorIs`. Make `Must` ignore the error temporarily, see the panic case fail, then restore it.
+- [ ] **Step 4:** `FirstOf.FlushRefusalLogs` appends only non-nil errors. `TestFirstOf_FlushRefusalLogs` passes unchanged.
+- [ ] **Step 5:** `resolveProvider` copies the default scopes once. `registry_test.go` passes unchanged.
+- [ ] **Step 6:** `go test -count=1 ./httpsec/ ./notify/ ./token/signingkey/ ./internal/must/ ./authenticate/...` and `golangci-lint run ./...`. Expected: PASS, 0 issues.
+
+After G1–G3: the main session runs `make check`, a fresh Opus reviewer checks the group-9 diff against D4, D5 and these tasks, the branch is pushed, and CI must be green before 8.2 is ticked.
