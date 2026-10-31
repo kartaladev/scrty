@@ -531,15 +531,38 @@ func grantsInPosition(q *gorm.DB, op string, userID id.ID) (map[string]assignedR
 // reporting false, with no error, when there is none. The rows are closed
 // before it returns, so the connection is free for the next statement.
 func queryRow(q *gorm.DB, op, query string, args []any, dest ...any) (bool, error) {
+	return scanRow(q, op, query, args, false, dest...)
+}
+
+// lookupRow is queryRow for a query selecting by a value the caller supplied.
+// A failure storekit.LookupMiss reports, the database being unable to hold
+// that value, is no row: nothing stored can match it.
+func lookupRow(q *gorm.DB, op, query string, args []any, dest ...any) (bool, error) {
+	return scanRow(q, op, query, args, true, dest...)
+}
+
+// scanRow is queryRow, and lookupRow when lookup is true.
+func scanRow(q *gorm.DB, op, query string, args []any, lookup bool, dest ...any) (bool, error) {
+	// failure is err as a failed call of the database: a miss, with no
+	// error, when lookup is true and err says the database cannot hold the
+	// value looked up.
+	failure := func(err error) (bool, error) {
+		if lookup && storekit.LookupMiss(err) {
+			return false, nil
+		}
+
+		return false, dbFailed(op, err)
+	}
+
 	rows, err := q.Raw(query, args...).Rows()
 	if err != nil {
-		return false, dbFailed(op, err)
+		return failure(err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return false, dbFailed(op, err)
+			return failure(err)
 		}
 		return false, nil
 	}
@@ -555,6 +578,8 @@ func queryRow(q *gorm.DB, op, query string, args []any, dest ...any) (bool, erro
 
 // load reads the complete record of the user query selects with arg, through
 // q: the user row, then its grants, organization and group.
+// A value the database cannot hold matches no user: the load reports
+// identity.ErrUserNotFound for it, as it does for a user that is not there.
 func load(q *gorm.DB, op, query string, arg any) (*identity.Details, error) {
 	var (
 		d                    identity.Details
@@ -565,7 +590,7 @@ func load(q *gorm.DB, op, query string, arg any) (*identity.Details, error) {
 		mfa                  bool
 		createdAt, updatedAt time.Time
 	)
-	found, err := queryRow(q, op, query, []any{arg}, &userID, &d.Name, &d.Username, &d.Password, &d.Active,
+	found, err := lookupRow(q, op, query, []any{arg}, &userID, &d.Name, &d.Username, &d.Password, &d.Active,
 		&role, &orgID, &changedAt, &mfa, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err

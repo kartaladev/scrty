@@ -156,6 +156,10 @@ func ApplyUserOptions(opts ...UserOption) *UserChange {
 // (in sqlstore, pgxstore and gormstore) implement it, but a component that needs a
 // UserLoader and is given none fails at construction rather than falling back
 // to an empty store or to one of those.
+//
+// Input the loader's store cannot represent, such as text the database's
+// encoding cannot hold, is reported as ErrUserNotFound, since no user can
+// match it. A client therefore cannot cause a load failure with its own input.
 type UserLoader interface {
 	// LoadByUsername loads the user with this username, passed exactly as
 	// presented and never trimmed or case-folded. A miss returns ErrUserNotFound;

@@ -350,6 +350,27 @@ func ValidSQLState(code string) bool {
 	return true
 }
 
+// LookupMiss reports whether err, the failure of a lookup, means the database
+// cannot hold the value looked up, so that no row can match it. It is true
+// when err's chain holds an error reporting, through a SQLState method,
+// SQLSTATE 22021 (a character not in the database's encoding repertoire) or
+// 22P05 (a character with no equivalent in the database's encoding). A lookup
+// treats such a failure as a miss, since it is caused by the input alone. Any
+// other failure, a cancellation and nil are not a miss.
+func LookupMiss(err error) bool {
+	var st SQLStater
+	if !errors.As(err, &st) {
+		return false
+	}
+
+	switch st.SQLState() {
+	case "22021", "22P05":
+		return true
+	default:
+		return false
+	}
+}
+
 // Column is one users column an update writes, and the value it binds. Its
 // name is unexported: a Column comes only from UserColumns or RoleColumn, so
 // the column names that reach the SQL text are the ones this package fixes.

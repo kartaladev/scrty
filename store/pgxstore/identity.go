@@ -620,6 +620,8 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q DBTX, op string, f
 
 // load reads the complete record of the user query selects with arg, through
 // q: the user row, then its grants, organization and group.
+// A value the database cannot hold matches no user: the load reports
+// identity.ErrUserNotFound for it, as it does for a user that is not there.
 func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg any) (*identity.Details, error) {
 	var (
 		d             identity.Details
@@ -630,7 +632,8 @@ func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg 
 	// not returned: the grants carry the roles, Required reads the flag.
 	err := q.QueryRow(ctx, query, arg).Scan(&rawID, &d.Name, &d.Username, &d.Password, &d.Active,
 		nil, &rawOrg, &changedAt, nil, nil, nil)
-	if errors.Is(err, pgx.ErrNoRows) {
+	// A value the database cannot hold matches no user.
+	if errors.Is(err, pgx.ErrNoRows) || storekit.LookupMiss(err) {
 		return nil, failed(op, identity.ErrUserNotFound)
 	}
 	if err != nil {

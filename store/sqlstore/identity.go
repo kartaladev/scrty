@@ -529,6 +529,8 @@ func (s *IdentityStore) atomically(ctx context.Context, op string, fn func(q DBT
 
 // load reads the complete record of the user query selects with arg, through
 // q: the user row, then its grants, organization and group.
+// A value the database cannot hold matches no user: the load reports
+// identity.ErrUserNotFound for it, as it does for a user that is not there.
 func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg any) (*identity.Details, error) {
 	var (
 		d                    identity.Details
@@ -541,7 +543,8 @@ func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg 
 	)
 	err := q.QueryRowContext(ctx, query, arg).Scan(&userID, &d.Name, &d.Username, &d.Password, &d.Active,
 		&role, &orgID, &changedAt, &mfa, &createdAt, &updatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	// A value the database cannot hold matches no user.
+	if errors.Is(err, sql.ErrNoRows) || storekit.LookupMiss(err) {
 		return nil, failed(op, identity.ErrUserNotFound)
 	}
 	if err != nil {

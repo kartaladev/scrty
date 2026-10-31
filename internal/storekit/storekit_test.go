@@ -865,6 +865,75 @@ func TestDetached(t *testing.T) {
 	}
 }
 
+func TestLookupMiss(t *testing.T) {
+	type testCase struct {
+		name   string
+		err    error
+		assert func(t *testing.T, got bool)
+	}
+
+	miss := func(t *testing.T, got bool) { assert.True(t, got) }
+	failure := func(t *testing.T, got bool) { assert.False(t, got) }
+
+	cases := []testCase{
+		{
+			name:   "a character outside the repertoire",
+			err:    &sqlStateErr{code: "22021", msg: "invalid byte sequence"},
+			assert: miss,
+		},
+		{
+			name:   "an untranslatable character",
+			err:    &sqlStateErr{code: "22P05", msg: "character has no equivalent"},
+			assert: miss,
+		},
+		{
+			name:   "a character outside the repertoire, wrapped",
+			err:    fmt.Errorf("query: %w", &sqlStateErr{code: "22021"}),
+			assert: miss,
+		},
+		{
+			name:   "an untranslatable character, wrapped twice",
+			err:    fmt.Errorf("scan: %w", fmt.Errorf("query: %w", &sqlStateErr{code: "22P05"})),
+			assert: miss,
+		},
+		{
+			name:   "a lost connection",
+			err:    &sqlStateErr{code: "08006", msg: "connection failure"},
+			assert: failure,
+		},
+		{
+			name:   "a serialization failure, wrapped",
+			err:    fmt.Errorf("query: %w", &sqlStateErr{code: "40001"}),
+			assert: failure,
+		},
+		{
+			name:   "a message that merely names a code",
+			err:    &sqlStateErr{code: "XX000", msg: "22021 and 22P05"},
+			assert: failure,
+		},
+		{
+			name:   "a canceled context",
+			err:    context.Canceled,
+			assert: failure,
+		},
+		{
+			name:   "an error reporting no SQLSTATE",
+			err:    errors.New("22021"),
+			assert: failure,
+		},
+		{
+			name:   "no error",
+			assert: failure,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, storekit.LookupMiss(tc.err))
+		})
+	}
+}
+
 func TestUpdateUserQuery(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	changedAt := now.Add(-time.Hour)

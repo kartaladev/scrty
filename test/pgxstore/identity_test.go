@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/test"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
@@ -413,6 +414,70 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, t.Context(), db.Pool)
+		})
+	}
+}
+
+// TestIdentityStore_InputTheDatabaseCannotEncode loads from a LATIN1 database
+// through a handle that sends UTF-8, so a username with no LATIN1 form is
+// refused by the server (SQLSTATE 22P05). The refusal means no user can hold
+// that name, so it is a miss; every other failure stays a failure.
+func TestIdentityStore_InputTheDatabaseCannotEncode(t *testing.T) {
+	t.Parallel()
+
+	admin := test.RunTestPostgres(t)
+	store := newIdentityStore(t, openPool(t, storefix.Latin1DSN(t, admin.DB, admin.DSN)))
+
+	type testCase struct {
+		name     string
+		username string
+		ctx      func(ctx context.Context) context.Context // nil means identity
+		assert   func(t *testing.T, d *identity.Details, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:     "a username the database cannot encode is not found",
+			username: "ada\u20ac",
+			assert: func(t *testing.T, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+		{
+			name:     "a username the database can encode is not found when nobody has it",
+			username: "ad\u00e1",
+			assert: func(t *testing.T, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+		{
+			name:     "a failure that is not the input stays a failure",
+			username: "ada\u20ac",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			assert: func(t *testing.T, _ *identity.Details, err error) {
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound)
+				assert.ErrorIs(t, err, context.Canceled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			d, err := store.LoadByUsername(ctx, tc.username)
+			tc.assert(t, d, err)
 		})
 	}
 }
