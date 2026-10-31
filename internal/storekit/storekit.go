@@ -350,14 +350,22 @@ func ValidSQLState(code string) bool {
 	return true
 }
 
-// LookupMiss reports whether err, the failure of a lookup, means the database
-// cannot hold the value looked up, so that no row can match it. It is true
-// when err's chain holds an error reporting, through a SQLState method,
-// SQLSTATE 22021 (a character not in the database's encoding repertoire) or
-// 22P05 (a character with no equivalent in the database's encoding). A lookup
-// treats such a failure as a miss, since it is caused by the input alone. Any
-// other failure, a cancellation and nil are not a miss.
-func LookupMiss(err error) bool {
+// LookupMiss reports whether err, the failure of a lookup by value, means the
+// database cannot hold value, so that no row can match it. It is true when
+// value holds a non-ASCII byte and err's chain holds an error reporting,
+// through a SQLState method, SQLSTATE 22021 (a character not in the
+// database's encoding repertoire) or 22P05 (a character with no equivalent in
+// the database's encoding). A lookup treats such a failure as a miss.
+//
+// Every server encoding is a superset of ASCII, so a value of ASCII bytes
+// alone cannot cause either failure; it comes from a stored row the
+// connection cannot encode, and stays a failure. So do any other failure, a
+// cancellation and nil.
+func LookupMiss(value string, err error) bool {
+	if !hasNonASCII(value) {
+		return false
+	}
+
 	var st SQLStater
 	if !errors.As(err, &st) {
 		return false
@@ -369,6 +377,17 @@ func LookupMiss(err error) bool {
 	default:
 		return false
 	}
+}
+
+// hasNonASCII reports whether s holds a byte outside ASCII.
+func hasNonASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Column is one users column an update writes, and the value it binds. Its

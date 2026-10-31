@@ -506,3 +506,60 @@ func TestIdentityStore_InputTheDatabaseCannotEncode(t *testing.T) {
 		})
 	}
 }
+
+// TestIdentityStore_StoredRowTheConnectionCannotEncode loads an existing user
+// from a UTF8 database through a handle that asks for the LATIN1 client
+// encoding. The user's stored name has no LATIN1 form, so the server fails
+// the row's output (SQLSTATE 22P05). The input did not cause that failure, so
+// it is a failure and no lookup reports the user as not found.
+//
+// Its setup differs from the table above, which reads a LATIN1 database, so
+// it is a table of its own.
+func TestIdentityStore_StoredRowTheConnectionCannotEncode(t *testing.T) {
+	t.Parallel()
+
+	admin := test.RunTestPostgres(t)
+	writeDSN, readDSN := storefix.UTF8ReadAsLatin1DSN(t, admin.DB, admin.DSN)
+
+	ada, err := newIdentityStore(t, openGorm(t, writeDSN)).Provision(t.Context(), "ada",
+		identity.WithUserName("Ada \u20ac"), identity.WithUserRoles("user"))
+	require.NoError(t, err)
+	store := newIdentityStore(t, openGorm(t, readDSN))
+
+	type testCase struct {
+		name   string
+		load   func(ctx context.Context) (*identity.Details, error)
+		assert func(t *testing.T, d *identity.Details, err error)
+	}
+
+	failure := func(t *testing.T, _ *identity.Details, err error) {
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, identity.ErrUserNotFound)
+	}
+
+	cases := []testCase{
+		{
+			name: "a stored name the connection cannot encode is a failure, not a miss, by reference",
+			load: func(ctx context.Context) (*identity.Details, error) {
+				return store.LoadByUserID(ctx, ada.ID)
+			},
+			assert: failure,
+		},
+		{
+			name: "a stored name the connection cannot encode is a failure, not a miss, by username",
+			load: func(ctx context.Context) (*identity.Details, error) {
+				return store.LoadByUsername(ctx, "ada")
+			},
+			assert: failure,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, err := tc.load(t.Context())
+			tc.assert(t, d, err)
+		})
+	}
+}

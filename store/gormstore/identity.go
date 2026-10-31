@@ -161,7 +161,7 @@ func (s *IdentityStore) LoadByUsername(ctx context.Context, username string) (*i
 		return nil, failed(op, err)
 	}
 
-	return load(q, op, pgschema.UserByUsername, username)
+	return load(q, op, pgschema.UserByUsername, username, username)
 }
 
 // LoadByUserID loads the user with this reference, or returns
@@ -180,7 +180,7 @@ func (s *IdentityStore) LoadByUserID(ctx context.Context, ref identity.UserID) (
 		return nil, failed(op, err)
 	}
 
-	return load(q, op, pgschema.UserByID, uid)
+	return load(q, op, pgschema.UserByID, uid, "")
 }
 
 // LoadPrivileges returns the privileges role grants, grouped by resource
@@ -339,7 +339,7 @@ func (s *IdentityStore) Provision(
 		}
 
 		var err error
-		out, err = load(q, op, pgschema.UserByID, userID)
+		out, err = load(q, op, pgschema.UserByID, userID, "")
 
 		return err
 	})
@@ -423,7 +423,7 @@ func (s *IdentityStore) Update(
 			}
 		}
 
-		out, err = load(q, op, pgschema.UserByID, userID)
+		out, err = load(q, op, pgschema.UserByID, userID, "")
 
 		return err
 	})
@@ -531,23 +531,18 @@ func grantsInPosition(q *gorm.DB, op string, userID id.ID) (map[string]assignedR
 // reporting false, with no error, when there is none. The rows are closed
 // before it returns, so the connection is free for the next statement.
 func queryRow(q *gorm.DB, op, query string, args []any, dest ...any) (bool, error) {
-	return scanRow(q, op, query, args, false, dest...)
+	return lookupRow(q, op, query, "", args, dest...)
 }
 
-// lookupRow is queryRow for a query selecting by a value the caller supplied.
-// A failure storekit.LookupMiss reports, the database being unable to hold
-// that value, is no row: nothing stored can match it.
-func lookupRow(q *gorm.DB, op, query string, args []any, dest ...any) (bool, error) {
-	return scanRow(q, op, query, args, true, dest...)
-}
-
-// scanRow is queryRow, and lookupRow when lookup is true.
-func scanRow(q *gorm.DB, op, query string, args []any, lookup bool, dest ...any) (bool, error) {
+// lookupRow is queryRow for a query selecting by typed, text the caller
+// supplied, or "" when the query selects by nothing a caller supplied. A
+// failure storekit.LookupMiss reports for typed, the database being unable to
+// hold it, is no row: nothing stored can match it.
+func lookupRow(q *gorm.DB, op, query, typed string, args []any, dest ...any) (bool, error) {
 	// failure is err as a failed call of the database: a miss, with no
-	// error, when lookup is true and err says the database cannot hold the
-	// value looked up.
+	// error, when err says the database cannot hold typed.
 	failure := func(err error) (bool, error) {
-		if lookup && storekit.LookupMiss(err) {
+		if storekit.LookupMiss(typed, err) {
 			return false, nil
 		}
 
@@ -578,9 +573,12 @@ func scanRow(q *gorm.DB, op, query string, args []any, lookup bool, dest ...any)
 
 // load reads the complete record of the user query selects with arg, through
 // q: the user row, then its grants, organization and group.
-// A value the database cannot hold matches no user: the load reports
-// identity.ErrUserNotFound for it, as it does for a user that is not there.
-func load(q *gorm.DB, op, query string, arg any) (*identity.Details, error) {
+//
+// typed is the text the caller supplied as arg, or "" when arg is not text a
+// caller supplied. A typed value the database cannot hold matches no user: the
+// load reports identity.ErrUserNotFound for it, as it does for a user that is
+// not there (see storekit.LookupMiss).
+func load(q *gorm.DB, op, query string, arg any, typed string) (*identity.Details, error) {
 	var (
 		d                    identity.Details
 		userID               id.ID
@@ -590,7 +588,7 @@ func load(q *gorm.DB, op, query string, arg any) (*identity.Details, error) {
 		mfa                  bool
 		createdAt, updatedAt time.Time
 	)
-	found, err := lookupRow(q, op, query, []any{arg}, &userID, &d.Name, &d.Username, &d.Password, &d.Active,
+	found, err := lookupRow(q, op, query, typed, []any{arg}, &userID, &d.Name, &d.Username, &d.Password, &d.Active,
 		&role, &orgID, &changedAt, &mfa, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err

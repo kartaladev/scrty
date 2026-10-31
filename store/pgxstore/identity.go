@@ -160,7 +160,7 @@ func (s *IdentityStore) LoadByUsername(ctx context.Context, username string) (*i
 		return nil, failed(op, err)
 	}
 
-	return s.load(ctx, q, op, pgschema.UserByUsername, username)
+	return s.load(ctx, q, op, pgschema.UserByUsername, username, username)
 }
 
 // LoadByUserID loads the user with this reference, or returns
@@ -179,7 +179,7 @@ func (s *IdentityStore) LoadByUserID(ctx context.Context, ref identity.UserID) (
 		return nil, failed(op, err)
 	}
 
-	return s.load(ctx, q, op, pgschema.UserByID, uuidArg(uid))
+	return s.load(ctx, q, op, pgschema.UserByID, uuidArg(uid), "")
 }
 
 // LoadPrivileges returns the privileges role grants, grouped by resource
@@ -320,7 +320,7 @@ func (s *IdentityStore) Provision(
 			}
 		}
 
-		out, err = s.load(ctx, q, op, pgschema.UserByID, uuidArg(userID))
+		out, err = s.load(ctx, q, op, pgschema.UserByID, uuidArg(userID), "")
 
 		return err
 	})
@@ -403,7 +403,7 @@ func (s *IdentityStore) Update(
 			}
 		}
 
-		out, err = s.load(ctx, q, op, pgschema.UserByID, uuidArg(userID))
+		out, err = s.load(ctx, q, op, pgschema.UserByID, uuidArg(userID), "")
 
 		return err
 	})
@@ -620,9 +620,12 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q DBTX, op string, f
 
 // load reads the complete record of the user query selects with arg, through
 // q: the user row, then its grants, organization and group.
-// A value the database cannot hold matches no user: the load reports
-// identity.ErrUserNotFound for it, as it does for a user that is not there.
-func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg any) (*identity.Details, error) {
+//
+// typed is the text the caller supplied as arg, or "" when arg is not text a
+// caller supplied. A typed value the database cannot hold matches no user: the
+// load reports identity.ErrUserNotFound for it, as it does for a user that is
+// not there (see storekit.LookupMiss).
+func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg any, typed string) (*identity.Details, error) {
 	var (
 		d             identity.Details
 		rawID, rawOrg pgtype.UUID
@@ -633,7 +636,7 @@ func (s *IdentityStore) load(ctx context.Context, q DBTX, op, query string, arg 
 	err := q.QueryRow(ctx, query, arg).Scan(&rawID, &d.Name, &d.Username, &d.Password, &d.Active,
 		nil, &rawOrg, &changedAt, nil, nil, nil)
 	// A value the database cannot hold matches no user.
-	if errors.Is(err, pgx.ErrNoRows) || storekit.LookupMiss(err) {
+	if errors.Is(err, pgx.ErrNoRows) || storekit.LookupMiss(typed, err) {
 		return nil, failed(op, identity.ErrUserNotFound)
 	}
 	if err != nil {
