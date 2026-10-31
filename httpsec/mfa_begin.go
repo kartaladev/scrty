@@ -1,10 +1,8 @@
 package httpsec
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -120,7 +118,8 @@ func (i *mfaInterceptor) begin(ex *Exchange) error {
 	cm := method.(mfa.ChallengeMethod) // admit checked it
 	mgr := i.challenges[method.Name()]
 
-	i.sweepExpired(ctx, method.Name(), mgr)
+	sweepExpired(ctx, mgr, i.sweeps[method.Name()], i.now, challengeSweepFlow, msgChallengesNotPurged,
+		method.Name(), i.sampler, i.log)
 
 	// One bounded issue, not a count and then an issue: of begins racing for
 	// one user, on this process or on another replica, no more than the limit
@@ -154,41 +153,6 @@ const (
 
 // challengeSweepFlow names the sampler keys of failed sweeps.
 const challengeSweepFlow = "mfa-challenge-sweep"
-
-// sweepExpired purges method's expired challenges from the store, when a
-// sweep is due. A sweep that fails is logged through the chain's sampler and
-// otherwise ignored.
-//
-// It runs under the request's own context, so a store that stops answering
-// holds the begin no longer than the request allows. A sweep that fails, or is
-// cut short, gives its turn back, so a later begin sweeps again rather than
-// waiting out the window; the exception is a store that cannot purge at all,
-// which no retry would change, so its turn is kept and it is logged once per
-// window.
-func (i *mfaInterceptor) sweepExpired(ctx context.Context, method string, mgr *onetime.Tokens) {
-	clock := i.sweeps[method]
-
-	claimed, due := clock.claim(i.now(), mgr.IssuanceWindow())
-	if !due {
-		return
-	}
-
-	_, err := mgr.PurgeExpired(ctx)
-	if err == nil {
-		return
-	}
-
-	reason := reasonStoreUnavailable
-	if errors.Is(err, onetime.ErrReapUnsupported) {
-		reason = reasonPurgeUnsupported
-	} else {
-		clock.release(claimed)
-	}
-
-	logSampled(ctx, i.sampler, i.log, slog.LevelWarn, i.now(),
-		challengeSweepFlow+sampleKeySeparator+method+sampleKeySeparator+reason, msgChallengesNotPurged,
-		slog.String("method", method), slog.String("reason", reason))
-}
 
 // sweepClock spaces one method's sweeps of its expired challenges. It is safe
 // for concurrent use.

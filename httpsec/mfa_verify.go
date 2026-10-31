@@ -290,7 +290,7 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	if cm, ok := method.(mfa.ChallengeMethod); ok {
-		if err := i.spendChallenge(ctx, cm, s, response); err != nil {
+		if err := spendChallenge(ctx, i.challenges[cm.Name()], cm, s, response); err != nil {
 			i.throttle.RecordFailure(ctx, user)
 
 			return err
@@ -309,49 +309,6 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	return i.resolve(ex, s)
-}
-
-// spendChallenge checks the challenge a challenge method's response presents
-// against those issued to session s, and spends it. Only a nil return lets the
-// method verify the response.
-//
-// Every attempt that presents a live challenge spends it, whether the method
-// then accepts the response or not. That departs from check-then-consume as
-// the one-time package frames it — where a refusal between the two leaves the
-// token redeemable — on purpose: a pending challenge is not a credential the
-// user holds and would lose, only the server's nonce for one attempt, and one
-// try per challenge is the simpler guarantee to state and to keep. It also
-// settles a race: of several attempts presenting one challenge, the store's
-// compare-and-set lets exactly one through to Verify.
-//
-// Every failure is mfa.ErrInvalidCode, the refusal the method itself gives a
-// wrong response, so a caller learns only that the answer was not good. That
-// includes a store that could not answer: the one-time manager reports its
-// store's failures as an invalid token too, and logs them, so this fails
-// closed rather than letting an attempt reach the method unspent.
-func (i *mfaInterceptor) spendChallenge(
-	ctx context.Context,
-	cm mfa.ChallengeMethod,
-	s *session.Session,
-	response []byte,
-) error {
-	presented, err := cm.PresentedChallenge(response)
-	if err != nil || presented == "" {
-		return mfa.ErrInvalidCode
-	}
-
-	mgr := i.challenges[cm.Name()]
-
-	checked, err := mgr.Check(ctx, presented, s.ID)
-	if err != nil {
-		return mfa.ErrInvalidCode
-	}
-
-	if err := mgr.Consume(ctx, checked); err != nil {
-		return mfa.ErrInvalidCode
-	}
-
-	return nil
 }
 
 // admit makes the refusals the verify and begin endpoints share, steps 1 to 4
