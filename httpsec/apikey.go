@@ -172,9 +172,9 @@ const (
 	reasonOwnerCallerEnded = "owner-caller-ended"
 	reasonOwnerMismatch    = "owner-mismatch"
 
-	msgAPIKeyOwnerUnavailable = "httpsec: an API key's owner could not be loaded"
-	msgAPIKeyOwnerCallerEnded = "httpsec: the caller left while an API key's owner was loaded"
-	msgAPIKeyOwnerMismatch    = "httpsec: the user loader answered for another user than an API key's owner"
+	msgAPIKeyOwnerUnavailable = "httpsec: an API key's owner could not be loaded"                            //nolint:gosec // G101: a fixed log message, not a credential
+	msgAPIKeyOwnerCallerEnded = "httpsec: the caller left while an API key's owner was loaded"               //nolint:gosec // G101: a fixed log message, not a credential
+	msgAPIKeyOwnerMismatch    = "httpsec: the user loader answered for another user than an API key's owner" //nolint:gosec // G101: a fixed log message, not a credential
 )
 
 // checkOwner refuses a verified key whose owner the consumer's user loader
