@@ -136,6 +136,9 @@ type ReauthenticationRequiredError struct{ Window time.Duration }
 - **Rule:** a re-proof second factor is any configured MFA method the user is enrolled on, whatever its channel. A session that signed in with a passkey may re-prove with the passkey method.
 - **Why:** the same-channel rule exists so that two factors at login are independent. A re-proof is one factor, presented alongside the live session secret. That is what NIST SP 800-63B-4 allows for AAL2 reauthentication ("a single authentication factor ... in conjunction with the session secret").
   - Applying the rule would leave a passwordless passkey user with no re-proof at all, or push them to a weaker password.
+- **Freshness, not assurance.** A re-proof whose method shares the session's first-factor channel refreshes the authentication time only. It does not record the second factor as satisfied, because it proves the same authenticator again, not an independent one. A re-proof on another channel (TOTP after a password sign-in) records the second factor as satisfied, as at MFA verify.
+  - Otherwise, where the consumer counts a passkey sign-in as one factor only (`WithoutSecondFactorAtLogin`), a passkey-only session would reach "second factor met" with one authenticator, and passkey registration, which trusts that state for the account's assurance, would admit it.
+  - The channel test is the one `/mfa/verify` applies; only its consequence differs.
 - **Override:** none. Strengthening is available through D3's second-factor-only option. Weakening is not offered.
 
 ### D5. The MFA verify and begin endpoints refuse a session that owes no challenge (BREAKING, pre-tag)
@@ -315,6 +318,12 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 - [NIST SP 800-63B-4: Session Management](https://pages.nist.gov/800-63-4/sp800-63b/session/): successful reauthentication resets both timeouts; for federated logins the relying party decides whether reauthentication is met.
 - [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html): require an authenticator already bound to the account and extra verification for sensitive actions; no security questions; rotate tokens after re-authentication.
 - [Google: Verify it's you for sensitive actions](https://support.google.com/accounts/answer/7162782): risk-based reauthentication by a second factor or a device registered for at least 7 days. Read through a search summary.
+
+**D4: a same-channel re-proof refreshes freshness only** (accessed 2026-11-01)
+- [NIST SP 800-63B-4: Session Management](https://pages.nist.gov/800-63-4/sp800-63b/session/): a session "SHALL NOT be considered at a higher AAL than the authentication event"; reauthentication confirms continued presence.
+- [NIST SP 800-63B-4: Authenticator Assurance Levels](https://pages.nist.gov/800-63-4/sp800-63b/aal/): AAL2 needs "two distinct authentication factors"; AAL2 reauthentication may be a single factor with the session secret.
+- [OWASP Multifactor Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html): multiple instances of the same factor do not constitute MFA; factors must be independent; a passkey is MFA only with user verification.
+- [PCI SSC Multi-Factor Authentication Guidance](https://listings.pcisecuritystandards.org/pdfs/Multi-Factor-Authentication-Guidance-v1.pdf) and [Mozilla accounts: step-up authentication](https://mozilla.github.io/ecosystem-platform/relying-parties/how-tos/step-up-authentication): a step-up needs an independent factor. Read through a search summary.
 
 **D6: rotation after re-proof**
 - [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) and [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): renew the session identifier on privilege change and after re-authentication.

@@ -360,7 +360,7 @@ The password endpoint SHALL read only the password, from the `password` form fie
 - **THEN** it is refused with the unavailable error and no failure is recorded
 
 ### Requirement: A successful re-proof refreshes the authentication time and rotates the session
-A successful re-proof SHALL set the authentication time to now from the chain's time source; a second-factor re-proof SHALL also record the second factor as satisfied then. It SHALL rotate the session, so the previous handle stops working, and answer with the rotated session's credential through a replaceable responder, without passing the request on. A failure SHALL change neither the session nor its handle.
+A successful re-proof SHALL set the authentication time to now from the chain's time source; a second-factor re-proof SHALL also record the second factor as satisfied then, except as the same-channel requirement below states. It SHALL rotate the session, so the previous handle stops working, and answer with the rotated session's credential through a replaceable responder, without passing the request on. A failure SHALL change neither the session nor its handle.
 
 #### Scenario: Second-factor re-proof
 - **WHEN** a session authenticated at 09:00 re-proves with TOTP at 09:30
@@ -391,6 +391,17 @@ A successful re-proof SHALL set the authentication time to now from the chain's 
 #### Scenario: Consumer responder
 - **WHEN** re-authentication is enabled with a responder of the consumer's that sets a cookie
 - **THEN** the consumer's responder receives the rotated session and the library writes no response of its own
+
+### Requirement: A same-channel re-proof refreshes freshness only
+A second-factor re-proof whose method shares the session's first-factor channel SHALL set the authentication time and SHALL leave the second-factor state unchanged, since it proves the same authenticator again. A re-proof on another channel SHALL record the second factor as satisfied.
+
+#### Scenario: A same-channel re-proof refreshes freshness only
+- **WHEN** a passkey sign-in counts as one factor only, and a passkey-only session that met no second factor re-proves with that passkey
+- **THEN** the rotated session reports the new authentication time and still reports no satisfied second factor
+
+#### Scenario: A different channel meets the second factor
+- **WHEN** a password session re-proves with TOTP
+- **THEN** the rotated session reports a satisfied second factor
 
 ### Requirement: Re-proof responses are not cached and re-proof logs carry no secret
 Every default re-proof responder SHALL set `Cache-Control: no-store`; a consumer responder SHALL own its headers. Records the re-proof endpoints write SHALL contain no password, code, challenge or authenticator response.

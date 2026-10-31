@@ -114,6 +114,14 @@ Each task names how it is verified. A signature change owns every caller of the 
   - the three reauthentication sentinels.
 
   The defaults table gains every new default (D6, D7, D9). Verify with `go test -run 'Example' ./httpsec/` and `go vet ./httpsec/`
+- [ ] 6.7 A same-channel re-proof refreshes freshness only, and the docs follow D4, D5 and D10:
+  - `resolve` records the second factor as satisfied only when the method's channel is not the session's first-factor channel, using the test `/mfa/verify` applies; a same-channel re-proof sets the authentication time and leaves `MFA` and `MFASatisfiedAt` unchanged;
+  - the passkey "step-up" docs (`authenticate/passkey/doc.go`, `authenticate/passkey/register.go`, `httpsec/passkey.go`, the README passkey section) say a full session re-proves at `/reauth`, not `/mfa/verify`, and that a same-channel re-proof refreshes freshness without meeting the second factor;
+  - the README re-authentication section names the gate refusal for a session owing a challenge, and the 409 for a concurrent re-proof or MFA verification on one server;
+  - `fibersec.DefaultRecentAuthenticationWindow` aliases `httpsec.DefaultRecentAuthenticationWindow`, as `ginsec` does;
+  - the consumer-prefix row also re-proves with a valid TOTP code at `/account/confirm/verify/totp`.
+
+  (D4, D8, D10; "A successful re-proof refreshes the authentication time and rotates the session" and the ADDED "A same-channel re-proof refreshes freshness only", every scenario; "Re-proof endpoints exist only when re-authentication is enabled" scenario "Consumer prefix".) Verify with `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...`, `go test ./...` in `httpsec/fibersec`, and `go vet`
 
 ## 7. A lost strict rotation is a renewal conflict (`sessions`, `multi-factor-auth`, `reauthentication`)
 
