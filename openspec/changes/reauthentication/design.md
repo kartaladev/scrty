@@ -209,7 +209,7 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
   2. the factor policy, before the body;
   3. bind only `password`, from the form field or a JSON body, under the login body limit. A missing field is `ErrCredentialsMissing` (400);
   4. the username comes from `ex.Authentication.Principal.Username`, never the request. An empty username refuses as authentication failed;
-  5. `authenticatePassword`;
+  5. the form login's `attemptPassword`, the order login itself runs (source throttle, pre-authentication and lock refusal, the password check, each refusal charged as login charges it), then the check that the proved account is the session's user;
   6. on success, reset failures and resolve.
 - **Resolve:**
   1. Set `AuthenticatedAt = now` from the chain's time source.
