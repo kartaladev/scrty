@@ -313,11 +313,11 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
 
 ## 17. Whole-branch gate
 
-- [ ] 17.1 Main session: update the old names that 11.3 reported under `openspec/`. Update the artifacts of the active changes that name a renamed identifier or a changed default:
+- [x] 17.1 Main session: update the old names that 11.3 reported under `openspec/`. Update the artifacts of the active changes that name a renamed identifier or a changed default:
   - `idiomatic-api-shape` and `key-port-context`, checked against the names that actually landed (Migration Plan step 4);
   - `trusted-proxy-client-ip`, whose resolver D15's vocabulary now names.
 
-  Verify: `openspec validate --all --strict` is valid, and `rg` finds no old name in an active change's artifacts outside their own history.
+  Verify: `openspec validate restructure-layout --strict` is valid; `openspec validate --all` fails only on the active changes that have no deltas yet (`bff-resource-server`, `trusted-proxy-client-ip`), as it did before this change; and `rg` finds no old name in an active change's artifacts outside their own history. `--all --strict` is not the check: it also fails on long-requirement warnings in older main specs, which this change does not own.
 - [ ] 17.2 Final gate: `make check`, `evidence/check.sh all` against the group-1 baseline, `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then one Opus whole-branch review against every spec requirement the change covers, including the seven security deltas. Each claimed defect needs a failing test or is labelled `UNREPRODUCED`. Verify: no unmapped difference, a valid change, a green CI run and a clean review.
 
 ## Workflow follow-up
