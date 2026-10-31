@@ -22,7 +22,7 @@ Before either mode can be specified, the team must decide where the browser-faci
   - an API verifies JWTs issued by scrty or by another issuer, using a remote key set;
   - issuer and audience are required configuration;
   - verified scopes and claims are mapped into the principal that `authorization` evaluates.
-- Add **CSRF protection** that is on by default for every cookie-authenticated, state-changing request and cannot be switched off silently. The default layers a Fetch Metadata and Origin check with a token check, and each layer is replaceable.
+- ~~Add **CSRF protection**~~ **Moved (2026-11-01) to `close-security-gaps`**, which owns the `csrf-protection` capability: the Fetch Metadata and Origin check, the session-bound token, and the rule that a chain with cookie authentication fails construction without CSRF protection. This change's cookie session declares itself cookie-authenticating so that rule applies to it.
 - Record a comparison of token refresh strategies: a refresh token held by the BFF on the server, or short sessions that fall back to re-login.
 - Make the **magic-link endpoints' form parameters and body limit replaceable**, as form login's already are. They hard-code `email`, `next` and `token`, and bound their body with a constant named for the login endpoint that no option can set. Form login exposes all four through `WithLoginParams` and `WithLoginBodyLimit`, so this is a parity gap rather than a decision: `library-design` requires every default to be replaceable without forking, or the design to say why not, and there is no why. It lands here because this change revisits how every browser-facing, state-changing POST is read — the magic-link consume endpoint being one of them — but it is a small, self-contained fix that could equally ride with any change that next touches that interceptor. Inherited from `auth-methods`.
 - List five **open questions** for the team. They block the specs for all three capabilities.
@@ -51,22 +51,18 @@ Specs for all three are deferred until the open questions in design.md are answe
   - algorithm pinning;
   - key-set caching and refetch;
   - mapping scopes and claims into the principal used for authorization.
-- `csrf-protection`: refusing cross-site, state-changing requests that carry a cookie session:
-  - Fetch Metadata and Origin checks;
-  - the token scheme;
-  - safe-method and exemption rules;
-  - the refusal contract.
+- ~~`csrf-protection`~~: moved to `close-security-gaps` (2026-11-01). This change depends on it.
 
 ### Modified Capabilities
 
 None. No specs have been archived yet. Two modifications are expected once the questions are answered, and each would be raised with its owning change:
 - `sessions`, for an identifier rotation operation;
-- `http-error-propagation`, for a CSRF refusal sentinel and its status.
+- ~~`http-error-propagation`, for a CSRF refusal sentinel and its status~~: provided by `close-security-gaps`.
 
 ## Impact
 
 - **New code (expected), core module:**
-  - cookie session and CSRF interceptors in `httpsec`;
+  - a cookie session interceptor in `httpsec` (the CSRF interceptor comes from `close-security-gaps`);
   - a resource-server verifier.
 - **Placement is not decided.** It depends on open question 1, the in-app BFF versus a standalone proxy.
 - **Dependencies:** no new JOSE library. Remote key sets reuse jwx v4, its `jwkfetch` companion, and the key-set cache semantics that `oidc-brokering` defines. A standalone proxy, if chosen, would be a new nested module.

@@ -1,5 +1,7 @@
 ## Context
 
+> **Note (2026-11-01):** `csrf-protection` moved to `close-security-gaps`. Its design D6 supersedes every CSRF decision below. They are kept for the record of how the question was reasoned, and the next update of this change removes them.
+
 See proposal.md for why this change exists. **This design is a candidate, not an agreed approach.** The five open questions below block the specs for `bff-session`, `resource-server` and `csrf-protection`. Every decision after them is written as "if the team adopts the recommendation", and names the question it depends on.
 
 The constraints that shape the approach:
