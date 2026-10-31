@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The re-proof paths under the default prefix.
@@ -51,6 +52,10 @@ type reauthHarness struct {
 	// reauthOpts are the re-authentication options a case adds after the
 	// harness's tokens.
 	reauthOpts []httpsec.ReauthenticationOption
+
+	// reauthStore is the re-proof challenge store a case gave the chain, kept
+	// so the case can read back what was issued into it.
+	reauthStore onetime.Store
 }
 
 func newReauthHarness(t *testing.T) *reauthHarness {
@@ -303,12 +308,18 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: claimed,
 		},
 		{
-			name: "a POST to the bare verify path is the endpoint's",
+			// "A method segment is required".
+			name: "a POST to the bare verify path is the endpoint's, naming no method",
 			wire: func(*reauthHarness) {},
 			request: func(r *http.Request) *http.Request {
 				return formRequest(r.Context(), httpsec.DefaultReauthenticationPrefix+"/verify/", "")
 			},
-			assert: claimed,
+			assert: func(t *testing.T, out served, err error) {
+				t.Helper()
+
+				claimed(t, out, err)
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+			},
 		},
 		{
 			// "Nothing to re-prove with".
