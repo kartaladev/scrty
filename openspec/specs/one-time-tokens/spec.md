@@ -136,11 +136,19 @@ A token store SHALL refuse a purge with a zero cutoff and delete nothing. When t
 - **THEN** it refuses and deletes nothing
 
 ### Requirement: The in-memory store isolates stored records
-When no store is configured, the manager SHALL use an in-memory store. That store SHALL hold its own copies of hashes and records, so mutating a slice passed in or returned cannot change stored state. It SHALL preserve an absent binding hash as absent, and it SHALL implement purging. Any implementation of the token store contract SHALL be usable in its place.
+When no store is configured, the manager SHALL use an in-memory store. That store SHALL hold its own copies of hashes and records, so mutating a slice passed in or returned cannot change stored state. It SHALL preserve an absent binding hash as absent, and it SHALL implement purging. Its time source SHALL default to the system clock and be replaceable by an option; constructing it with a nil time source, typed nil included, SHALL fail with a configuration error rather than keep the default. Any implementation of the token store contract SHALL be usable in its place.
 
 #### Scenario: Returned hash is a copy
 - **WHEN** a caller overwrites the bytes of a hash returned by the in-memory store and the record is read again
 - **THEN** the stored hash is unchanged
+
+#### Scenario: Consumer time source
+- **WHEN** the in-memory store is constructed with a controlled time source, a record expires by that source, and purging runs
+- **THEN** the expired record is purged with no real waiting
+
+#### Scenario: Nil time source
+- **WHEN** the in-memory store is constructed with a nil time source
+- **THEN** construction fails with a configuration error and returns no store
 
 ### Requirement: Issuance can be bounded atomically per subject
 The manager SHALL offer an issue bounded by a limit, which issues a token for a subject, under its purpose, only while fewer than the limit were issued for it within the issuance window. The count and the issue SHALL be one atomic store operation, so concurrent bounded issues never take the count past the limit. A refused issue SHALL report an identifiable limit-reached outcome and issue nothing. A limit below 1 SHALL be refused.
