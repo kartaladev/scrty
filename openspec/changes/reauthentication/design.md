@@ -10,11 +10,11 @@ See proposal.md for why. The current state that shapes the approach:
 - **Two freshness checks exist, written separately.**
   - `httpsec/recovery_codes.go:158` and the passkey manager's `admit` (`authenticate/passkey/passkey.go:448`) both compute `now.Sub(s.AuthenticatedAt) > window`, with 15-minute defaults and their own options.
   - Their spec text describes the time as "the later of creation and second-factor satisfaction". That is equal to `AuthenticatedAt` today, and stops being equal once a password re-proof exists.
-- **Guards, as settled by `idiomatic-api-shape` (PR #29).**
+- **Guards, as settled by `idiomatic-api-shape` (merged in PR #29).**
   - `NewGuards(az, opts...) (*Guards, error)` validates after its options run. `GuardOption` is `func(*Guards)`, with no error.
   - Every guard runs `g.guard(judge)`: principal, then authorizer, then the judge, whose error is refused unchanged.
   - The default refusal is `StatusForError` with no body. gin registers the refusal on `gc.Error`. fiber returns it to `fiber.Config.ErrorHandler`.
-  - `ginsec` and `fibersec` re-implement the judge and reuse only `httpsec` types and sentinels.
+  - `ginsec` and `fibersec` re-implement the judge and reuse `httpsec` types and sentinels. The one decision all three adapters must make identically, where a guard finds its authorizer, lives in `internal/guardauth`; each adapter keeps its own error text and refusal path.
   - Builder methods panic at wiring on a nil receiver, checker or extractor.
   - Guards have no clock. A judge reads the session with `httpsec.SessionFromContext`.
 - **The MFA slot can already be reached by a full session.**
@@ -249,6 +249,7 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 ### D8. Adapters
 
 `ginsec` and `fibersec` gain the same three options, two methods and validation, following their existing re-implemented judges.
+- The recency decision is already single: every adapter calls `(*session.Session).AuthenticatedWithin` (D1) and builds the same error type, so no new internal package is added beside `internal/guardauth`. The validation (window above zero, non-nil clock and time source, typed nil included) is three lines each, and each adapter words its configuration error in its own terms, as `guardauth` leaves error text to the adapter.
 - They read the session through `httpsec.SessionFromContext` on the request context: gin's `gc.Request.Context()`, and fiber's route context that the middleware writes back.
 - They build the same `*httpsec.ReauthenticationRequiredError`.
 - gin refuses through its error-channel path. fiber returns the refusal to `fiber.Config.ErrorHandler` and gains no error-handler option, as settled.
@@ -274,7 +275,7 @@ var ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication m
 
 ## Migration Plan
 
-- This change branches from `refactor/idiomatic-api-shape` (PR #29) and merges after it, because it builds on `NewGuards` returning an error and on the adapter guard shape.
+- This change builds on `NewGuards` returning an error and on the adapter guard shape from `idiomatic-api-shape`, merged in PR #29 and archived in PR #31. Its branch is rebased onto `main` after both.
 - There is no data or schema migration. The re-proof endpoints are off until enabled. The guard is new API.
 - D5 is the only behaviour change for existing chains, and it is recorded in the changelog as breaking before the first tag.
 - Rollback is a revert of the change. No stored state depends on it.

@@ -95,7 +95,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
   Also: `AuthenticatedAt = 09:00:05`, `now = 09:00:00` gives true; `AuthenticatedAt = 12:00`, `now = 09:00` gives true (Review Focus); zero `AuthenticatedAt` with a `24h` window gives false.
 
   Add `TestSave_KeepsAuthenticatedAt` against `NewMemoryStore`: load, set `AuthenticatedAt` an hour later, `Save`, reload, and assert unchanged.
-- [ ] **Step 2: Run and see it fail.** `go test -race -run 'TestAuthenticatedWithin' ./session/` fails as undefined. That is a compile failure, so stub the method to `return false`, rerun, and see the `true` rows fail. `TestSave_KeepsAuthenticatedAt` pins existing behaviour: invert `store_memory.go:310` temporarily, see it fail, then restore.
+- [ ] **Step 2: Run and see it fail.** `go test -race -run 'TestAuthenticatedWithin' ./session/` fails as undefined. That is a compile failure, so stub the method to `return false`, rerun, and see the `true` rows fail. `TestSave_KeepsAuthenticatedAt` pins existing behaviour: invert `session/store_memory.go:299` (`rec.AuthenticatedAt = stored.AuthenticatedAt`) temporarily, see it fail, then restore.
 - [ ] **Step 3: Implement** the rule `!s.AuthenticatedAt.IsZero() && now.Sub(s.AuthenticatedAt) <= window`, with godoc naming the inclusive end, the future case and the zero case.
 - [ ] **Step 4: Run.** `go test -race ./session/` passes.
 - [ ] **Step 5: Commit** `feat(session): one check for authenticated within a window`.
@@ -161,7 +161,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 
 - [ ] **Step 1: Failing table cases.** Each of these is `errors.Is(err, ErrConfig)` with the option's name in the message: window `0`, window `-1s`, `WithGuardClock(nil)`, `WithGuardClock((*fakeClock)(nil))`, `WithAuthenticationTime(nil)`. "Defaults" builds with no options and expects success.
 - [ ] **Step 2: Run and see** the five error cases fail with a nil error.
-- [ ] **Step 3: Implement.** The options record their value and a "given" flag. `NewGuards` validates after options run, using `nilcheck.IsNil` for the clock, as it does for the authorizer.
+- [ ] **Step 3: Implement.** The options record their value and a "given" flag. `NewGuards` validates after options run, using `internal/nilcheck.IsNil` for the clock and the time source so a typed nil is caught, the same check `internal/guardauth.Fallback` applies to the authorizer.
 - [ ] **Step 4: Run.** `go test -race -run 'TestNewGuards' ./httpsec/` passes.
 - [ ] **Step 5: Commit** `feat(httpsec): recency options on guards`.
 

@@ -68,7 +68,7 @@ OWASP asks for re-authentication before sensitive changes, and services such as 
   - the sentinel registry test;
   - `test/httpsecconformance` scenarios on net/http, gin and fiber.
 - **Docs:** godoc on every new option, guard and endpoint; a README section on re-authentication and the defaults table.
-- **Depends on** `idiomatic-api-shape` (PR #29): `NewGuards` returning an error, and the `GuardOption` and adapter guard shape it settles. This change branches from that PR and merges after it.
+- **Builds on** `idiomatic-api-shape` (merged in PR #29, archived in PR #31): `NewGuards` returning an error, and the `GuardOption` and adapter guard shape it settles.
 - **Follow-ups, out of scope:**
   - Re-authentication through an OIDC provider (`max_age`, `prompt=login`, `auth_time`). An OIDC session's authentication time today is its local sign-in time.
   - Cookie delivery and CSRF for the re-proof endpoints, which `bff-resource-server` must cover with its other unsafe endpoints.
