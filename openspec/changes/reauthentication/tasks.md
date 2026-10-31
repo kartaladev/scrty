@@ -82,7 +82,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - non-full sessions are refused by their gates and, if reordered, by the endpoint as authentication required.
 
   (D3, D4, D6; "Only a full session may re-prove" scenarios "No session", "Pending second factor", "Pending password change", "Enrolment-only session", "Recovery-pending session"; "The method listing reports how the session's user may re-prove", every scenario; "A consumer can require a second factor for every re-proof" scenario "Second factor only" at the listing.) Verify with `go test -race -run 'TestReauthMethods|TestReauthAdmission' ./httpsec/`
-- [ ] 6.3 Second-factor begin and verify:
+- [x] 6.3 Second-factor begin and verify:
   - the order in D6;
   - the MFA slot's throttle instance;
   - per-method challenge managers under `reauth-challenge:<method>`, bound to the session, with their own TTL, limit and store, swept by the chain's expiry task;
