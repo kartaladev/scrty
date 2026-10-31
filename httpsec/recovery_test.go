@@ -275,12 +275,12 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
-			name: "a caller that hangs up during the password proof is refused and counted as a wrong password is",
+			name: "a caller that hangs up during the password proof is refused and charged to its source only",
 			arrange: func(t *testing.T, h *recoveryHarness) {
 				h.authn = hangUpAuthenticator(t)
 				h.recOpts = []httpsec.RecoveryOption{
 					httpsec.WithRecoveryLimiter(countingLimiter(t, 1)),
-					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 1)),
+					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)),
 				}
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
@@ -295,6 +295,8 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			assert: func(t *testing.T, h *recoveryHarness, out served) {
 				require.ErrorIs(t, out.err, recovery.ErrRefused,
 					"a hang-up during the proof was read as an outage")
+				assert.ErrorIs(t, out.err, context.Canceled,
+					"the refusal does not say the caller's context ended the proof's load")
 				assert.NotErrorIs(t, out.err, authenticate.ErrUnavailable)
 				assert.True(t, recovery.RefusedAfterValidCode(out.err),
 					"the hang-up was not marked as a refusal after a valid code")
@@ -302,7 +304,8 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 
 				n, err := h.attempts.FailureCount(t.Context(), e2eAddress, time.Now().Add(-time.Hour))
 				require.NoError(t, err)
-				assert.Equal(t, 1, n, "the hang-up was not recorded as a failed attempt, as a wrong password is")
+				assert.Zero(t, n,
+					"the hang-up was recorded as a failed attempt, though no password was compared")
 			},
 		},
 		{

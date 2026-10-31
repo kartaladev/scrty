@@ -80,7 +80,7 @@ Nothing is tagged yet and there are no consumers, so moving and renaming public 
   - The `identity.WithUserRoles` godoc says what an empty list does on `Update`, which the spec already requires: nothing.
   - API key authentication can be given a user loader (`httpsec.WithAPIKeyOwners`), and then refuses a key whose user is inactive or gone. Without one it looks nothing up, as now, because a key's principal is the consumer's reference and need not be a user.
   - `token.NewVerifier` requires an issuer and an audience, or an explicit waiver of each (`WithoutVerifyIssuer`, `WithoutVerifyAudience`).
-  - A user-store outage during a password login is its own outcome, `authenticate.ErrUnavailable`, answered 503. Form login and Basic authentication count it against neither the username nor the source.
+  - A user-store outage during a password login is its own outcome, `authenticate.ErrUnavailable`, answered as a wrong password is. Form login, Basic authentication and a recovery's password proof charge it to the source, never to the username, so an outage never holds an account and reveals nothing about one.
   - The limiter port gains an atomic charge and refund, which every shipped limiter implements. Saved recovery codes charge before the lookup and refund on success, so the limit holds under concurrency.
 - **Repository wiring updated to the new paths:**
   - every `go.mod` `replace` directive, `go.work`, and the module directories the layout tests name;
@@ -131,8 +131,9 @@ None.
 - The security review fixes:
   - `token-issuance`: a verifier enforces an issuer and an audience unless each check is explicitly waived, and construction refuses a verifier with neither;
   - `authentication`: a user-store failure other than "not found" is a distinct unavailable error, not the uniform failure, and costs the same password work;
-  - `http-error-propagation`: the unavailable error maps to 503;
-  - `http-security-chain`: form login and Basic authentication count an unavailable user store against neither the username nor the source;
+  - `http-error-propagation`: the unavailable error maps to 401, as a wrong password does;
+  - `http-security-chain`: form login and Basic authentication answer an unavailable user store as a wrong password, charge it to the source and never to the username, and charge a client that leaves during the load to the source only;
+  - `identity-model`: input a user store cannot represent is "not found", not a load failure;
   - `api-keys`: a consumer can require a key's owner to be an active user;
   - `rate-limiting`: every limiter charges and refunds atomically, and a flow that must hold its limit under concurrency charges first;
   - `account-recovery`: the saved-code limit holds under concurrent presentations.

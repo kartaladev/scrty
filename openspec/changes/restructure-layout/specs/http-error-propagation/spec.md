@@ -7,7 +7,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 
 | Refusal | Status |
 |---|---|
-| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), refused magic-link redemption, session idle, throttled source, throttled saved-code presentation | 401 |
+| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), refused magic-link redemption, session idle, throttled source, throttled saved-code presentation, the user store unavailable to a password login, a Basic authentication, a recovery's password proof or an API key owner check (the authentication capability's unavailable error) | 401 |
 | challenge of kind password change, challenge of kind second-factor enrolment, challenge of kind account recovery | 403 |
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
@@ -20,7 +20,6 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | held recovery presented before its hold ends | 409 |
 | session renewal that lost a concurrent renewal | 409 |
 | API key rotation refused (the key is revoked or expired, or a concurrent rotation won) | 409 |
-| the user store unavailable to a password login, a Basic authentication, a recovery's password proof or an API key owner check (the authentication capability's unavailable error) | 503 |
 | any other error | 500 |
 
 A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.
@@ -45,7 +44,7 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 
 #### Scenario: User store unavailable
 - **WHEN** an error wraps the authentication capability's unavailable error, because the user store returned a connection error during a password login
-- **THEN** the mapping returns 503, not 401 and not 500
+- **THEN** the mapping returns 401, as for a wrong password, and not 503 or 500
 
 #### Scenario: Joined verification failure
 - **WHEN** an error joins the authentication failure refusal with a token-parsing cause

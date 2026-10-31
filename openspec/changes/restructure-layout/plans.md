@@ -99,6 +99,9 @@
 | U3 | 13.5 | `authenticate/password*.go`, `httpsec/password_outage_test.go`, `httpsec/basic.go`, `httpsec/recovery.go` | Opus: refusal semantics under cancellation | Opus (one review of U1–U3) |
 | U4 | 13.6 | `authenticate/authenticate.go`, `authenticate/password*.go`, `httpsec/recovery*.go`, `httpsec/login.go`, `httpsec/password_outage_test.go`, `recovery/recover_test.go` | Sonnet: folds review findings whose fixes are stated, and a log change the user decided | Opus, inside the 13.7 group review |
 | U5 | 13.7 | `authenticate/password*.go`, `authenticate/authenticate.go`, `httpsec/login.go`, `httpsec/basic.go`, `httpsec/recovery*.go`, `recovery/recover.go`, `httpsec/password_outage_test.go` | Opus: refusal counting on three security paths, and a mistake would pass most tests | Opus |
+| K2 | 14.3 | `httpsec/apikey.go`, `httpsec/apikey_test.go` | Sonnet: the fix and its rows are given by the review | Sonnet |
+| U6 | 13.8 | the files of Task 43e | Opus: changes what three security endpoints answer and count, and a mistake would pass most tests | Opus |
+| S2 | 13.9 | the files of Task 43f | Sonnet: the classifier, its codes and its tests are given | Opus, inside the 13.10 group review |
 | U2 | 13.4 | `recovery/recover*.go`, `httpsec/login_options.go` | Opus: same reason as U1, and it touches a security refusal path | Opus (one review of U1–U2) |
 | K1 | 14.1–14.2 | `httpsec/apikey*.go` | Opus: refusal logic written for the first time | Opus |
 | V1 | 15.1–15.3 | `token/**` | Opus: token verification logic | Opus |
@@ -109,9 +112,9 @@
 | L2 | 16.2 | `internal/pglimiter`, `internal/unavailable`, `store/sqlstore/limiter*.go`, `store/pgxstore/limiter*.go`, `ratelimit/redisstore`, the test module's limiter suites | Opus: atomic writes in SQL and Lua | Opus (one review of L1–L3) |
 | L2b | 16.3 | `test/ratelimittest/charge.go`, `test/ratelimittest/doubles_test.go`, `test/ratelimittest/broken_test.go`, godoc in `ratelimit/charge.go`, `ratelimit/memory.go`, `ratelimit/redisstore/limiter.go`, `internal/unavailable/wrap.go` | Sonnet: the case, the flaw and the wording are given by the review | Opus, inside the 16.5 group review |
 | L3 | 16.4 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
-| main session | 12.3, 13.8, 14.3, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| main session | 12.3, 13.10, 14.4, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
-The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3, so K1 and L3 run on the branch. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
+The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3. K1 then runs in its own worktree off the U commit, in parallel with U5 on the branch: both compile in `httpsec` but own disjoint files. L3 runs on the branch after K1 lands. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
 ---
 
@@ -692,10 +695,38 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 4: Wording.** `Authenticate`'s godoc says "or its cause"; reflow `authenticate/authenticate.go` 69–73; `ErrUnavailable` says that it never matches `ErrAuthenticationFailed`.
 - [ ] **Step 5: Verify.** `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...`, and in `httpsec/ginsec` and `httpsec/fibersec`. Expected: PASS.
 
-### Task 44: Group-13 gate (task 13.8, main session)
+### Task 43e: An unavailable store answers as a wrong password, charged to the source (task 13.8, U6, after Task 43d and the K lane's cherry-pick)
+
+**Files:** `httpsec/errors.go` and `httpsec/errors_test.go`; `httpsec/basic.go`, `httpsec/login.go`, `httpsec/login_options.go`, `httpsec/recovery.go`, `httpsec/recovery_options.go`, `recovery/recover.go`; `httpsec/apikey.go` (godoc) and `httpsec/apikey_test.go` (the outage row); `authenticate/authenticate.go` (godoc); `httpsec/password_outage_test.go`, `httpsec/recovery_test.go`; the `ginsec` and `fibersec` error-response tests. Create `httpsec/outage_oracle_test.go` if the three ported tests do not fit an existing table.
+
+**Interfaces:**
+- Produces: `StatusForError(err)` returns 401 for any error matching `authenticate.ErrUnavailable`. Basic sets its `WWW-Authenticate` challenge for it. Form login, Basic and the recovery's password proof call the source guard's record once for it, on a context with its cancellation stripped, and never the username's attempt store or the recovery limit. No new exported identifier.
+- Unchanged: `errors.Is(err, authenticate.ErrUnavailable)` stays true and `errors.Is(err, authenticate.ErrAuthenticationFailed)` false, so logs and consumer handlers can tell them apart. The API key owner check stays uncounted.
+
+- [ ] **Step 1: Write** the three ported cases, each a table over form login and Basic with a mock `identity.UserLoader`: `"a held account answers an outage as a free one does"` (default concealed locks; assert equal status and headers for the held and the free username), `"known and unknown users answer a partial outage alike"` (assert equal status and headers, and one source `RecordFailure` each), and `"outages are charged to the source"` (limit 5 on a mock or memory source guard; 8 requests; assert 3 refused by the guard and the encoder double's `Match` count is 5).
+- [ ] **Step 2: Change** the expectations named in task 13.8: 401 instead of 503, the Basic challenge present, one source charge, nothing for the username or the recovery limit, and the adapters' 401. The API key owner outage row expects 401 and `RecordFailure` `Times(0)`.
+- [ ] **Step 3: Run.** `go test -count=1 -race ./httpsec/ ./recovery/` and the two adapter modules. Expected: FAIL with 503 against 401, a missing challenge, and a missing `RecordFailure`. Record the lines.
+- [ ] **Step 4: Implement** the 401 row (replacing the 503 row), Basic's challenge, and the source charge at the three endpoints.
+- [ ] **Step 5: Godoc** as task 13.8 lists. `ErrUnavailable` says the default answer is the wrong-password answer, and that a consumer handler answering 503 for it brings back the lock-state and partial-outage oracles.
+- [ ] **Step 6: Verify.** `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...`, and in `httpsec/ginsec` and `httpsec/fibersec`. Expected: PASS.
+
+### Task 43f: Input a store cannot represent is "not found" (task 13.9, S2, in parallel with Task 43e)
+
+**Files:** `internal/storekit/storekit.go` and its test; the identity files of `store/sqlstore`, `store/pgxstore` and `store/gormstore` (`LoadByUsername`, `LoadByUserID`); `identity/ports.go` (godoc); the test module's identity-store conformance suite.
+
+**Interfaces:**
+- Produces: `func storekit.LookupMiss(err error) bool`, true when `err`'s chain holds a `storekit.SQLStater` reporting SQLSTATE `22021` (character not in repertoire) or `22P05` (untranslatable character), found as the existing SQLSTATE filter finds it, so the core module still imports no driver. Each store's two lookups return `identity.ErrUserNotFound` (wrapped as their other misses are) when it is true.
+
+- [ ] **Step 1: Write** `TestLookupMiss`, a table over a test-local `SQLStater` double reporting 22021 and 22P05 (bare and wrapped with `%w`) → true, and 08006, 40001, `context.Canceled` and nil → false. Declare `LookupMiss` returning false first.
+- [ ] **Step 2: Write** the conformance case `"a username the database cannot encode is not found"`: a LATIN1 database (created with `ENCODING 'LATIN1' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0` on the test container), the identity-store migrations applied, and `LoadByUsername(ctx, "ada€")` asserting `ErrorIs(err, identity.ErrUserNotFound)`. Run it for every backend whose driver sends UTF-8 (at least `sqlstore`); a backend whose client encoding follows the database and so raises nothing is skipped with a note.
+- [ ] **Step 3: Run** both. Expected: FAIL, `TestLookupMiss` on the true rows and the conformance case with SQLSTATE 22P05. Record the lines.
+- [ ] **Step 4: Implement** `LookupMiss` and its use in the six lookups. Godoc on `identity.UserLoader`: input the store cannot represent is reported as "user not found".
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./internal/storekit/ ./store/...`, the `store/pgxstore` and `store/gormstore` modules, and the test module's identity-store conformance with Docker. Expected: PASS.
+
+### Task 44: Group-13 gate (task 13.10, main session)
 
 - [ ] **Step 1:** Add an `added` row for `ErrUnavailable`, and list Task 41's changed case for the assertion review. Run `evidence/check.sh all && make check && openspec validate restructure-layout --strict`.
-- [ ] **Step 2:** An Opus review of the U1–U5 diffs against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
+- [ ] **Step 2:** An Opus review of the U1–U6 and S2 diffs against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
 
 ### Task 45: API key owners (tasks 14.1–14.2, K1, after Task 44)
 
@@ -719,7 +750,19 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 5: Godoc.** `EnableAPIKey` says that without `WithAPIKeyOwners` no owner is looked up, so deactivating a user stops none of that reference's keys. `WithAPIKeyOwners` names the default it replaces ("no lookup").
 - [ ] **Step 6: Verify.** `go test -count=1 -race ./httpsec/...`. Expected: PASS.
 
-### Task 46: Group-14 gate (task 14.3, main session)
+### Task 45a: Fold the K1 review (task 14.3, K2, after Task 45)
+
+**Files:** `httpsec/apikey.go`, `httpsec/apikey_test.go`.
+
+**Interfaces:**
+- Produces: in `checkOwner`, success requires `err == nil && details != nil && details.Active && details.ID == owner`. A mismatch returns `refusedAPIKey()`, charges the source once, and writes one sampled error-level record with reason `owner-mismatch` and no user data beyond what the existing records carry.
+
+- [ ] **Step 1: Write** the row `"loader answers for another user"`: the loader returns an active user with a different ID; it asserts the wrong-key error and status, `RecordFailure` `Times(1)`, and one error-level `owner-mismatch` record. Add the row `"loader answers nothing"` for `(nil, nil)`: wrong-key refusal, `Times(1)`. Extend the caller-left closure with `ErrorIs(err, authenticate.ErrAuthenticationFailed)`, `StatusForError(err) == 401` and exactly one debug record.
+- [ ] **Step 2: Run.** `go test -count=1 -run TestAPIKeyOwners ./httpsec/`. Expected: FAIL on the mismatch row ("Expected error … but got nil"). Record the lines. The other additions pin existing behaviour: invert each once and see it fail.
+- [ ] **Step 3: Implement** the ID check and its record, and the godoc sentences.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./httpsec/...`, and in `httpsec/ginsec` and `httpsec/fibersec`. Expected: PASS.
+
+### Task 46: Group-14 gate (task 14.4, main session)
 
 - [ ] As Task 44, with `WithAPIKeyOwners` as an `added` row, an Opus review against D17 and the `api-keys` delta, and the commit `feat(httpsec): an API key can require an active owner`.
 
@@ -849,6 +892,7 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 **Interfaces:**
 - Produces: `type Limiter interface { Exceeded(…); RecordFailure(…); Charger }`, whose godoc states that `Charge` must be atomic and that the conformance suite proves it.
 - `recovery.Codes` charges with `context.WithoutCancel(ctx)` before `Match`, refunds after a valid match, and no longer calls `Exceeded` or `RecordFailure` on the presentation path.
+- `recovery/codes.go`'s `causedByCaller` is true when the context has ended and the error is, or wraps, `ctx.Err()` or `context.Cause(ctx)`; a table row with `context.WithCancelCause` pins it, seen to fail first.
 
 - [ ] **Step 1: Widen** `Limiter`, regenerate the mocks, and add both methods to the two hand-written doubles. Verify `go build ./...` and `go vet ./...` in every module.
 - [ ] **Step 2: Write** `TestCodes_ConcurrentWrongCodesStayWithinLimit` in the `table-test` form. A test-local decorator over the memory limiter holds every caller at a barrier after its limit decision; a counting decorator over the memory code store counts `Match`. 20 distinct, well-formed wrong codes go through `Confirm` under the default 5 per 15 minutes, asserting `LessOrEqual(t, matches, 5)`. Add case `"a valid code spends no allowance"`: one valid code, then 4 wrong ones, and a 5th wrong code is still looked up.

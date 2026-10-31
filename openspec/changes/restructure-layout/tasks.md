@@ -177,7 +177,7 @@ Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md
   - the `httpsec/login.go` paragraph left short by an earlier edit is reflowed, and the outage test's godoc names its hung-up rows.
 
   Verify: the failing lines are recorded, and `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
-- [ ] 13.7 Charge a caller-ended load to the source only (D19, caller-cancellation bullet), and fold the group-13 review's wording. Red step:
+- [x] 13.7 Charge a caller-ended load to the source only (D19, caller-cancellation bullet), and fold the group-13 review's wording. Red step:
   - port `TestBasicAuth_SlowStoreWithClientTimeoutsHoldsAccount` into `httpsec` as a row of `TestPasswordLoginStoreOutageIsNotACredentialFailure`, over Basic and form login: under `lockout.WithFailureStreakLimit(3)`, three correct-password requests each time out while the loader blocks until the context ends and returns `ctx.Err()`; then the store answers and the correct password succeeds. See it fail with "held after 3 consecutive failures";
   - the hung-up rows of that test expect one source charge and no failure recorded for the username; the recovery hung-up case expects one source charge and none against the user's recovery limit; the authenticator's caller-ended cases assert that the error also matches the context's error. See each fail on the current code.
 
@@ -187,7 +187,19 @@ Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md
   - the Basic hung-up row asserts its `WWW-Authenticate` challenge.
 
   Verify: the failing lines are recorded, and `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
-- [ ] 13.8 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.6 (done) and of 13.7 against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas. Verify: as 11.5.
+- [ ] 13.8 Answer an unavailable store as a wrong password, and charge it to the source (D19, "The client sees a wrong password" and "The source pays" bullets). Red step: port the security review's tests into `httpsec`, following `table-test` and `use-mockgen`, with a mock user loader in place of PostgreSQL:
+  - "a held account answers an outage as a free one does": concealed locks, a failing loader, one held and one free username, over form login and Basic; both answer the same status and headers;
+  - "known and unknown users answer a partial outage alike": the loader fails for a known username and misses an unknown one; both answer the same status and headers and are charged to the source once;
+  - "outages are charged to the source": a loader failing every load; more requests than the source limit; the guard refuses those beyond it, and the encoder double counts no more password work than the limit;
+  - the outage rows of `TestPasswordLoginStoreOutageIsNotACredentialFailure`, the recovery outage case and the `StatusForError` case expect 401, the Basic challenge, one source charge, and nothing for the username or the recovery limit; the adapters' cases in `ginsec` and `fibersec` expect 401; the API key owner outage row expects 401 and no source charge.
+
+  See each fail on the current code. Then map `ErrUnavailable` to 401, set Basic's challenge for it, and charge the source at form login, Basic and the recovery's password proof. Godoc: `ErrUnavailable`, `EnableFormLogin`, `EnableBasicAuth`, `EnableAccountRecovery` (which also names the caller-ended case), `WithAPIKeyOwners`, and the error-response docs say that a consumer error handler answering 503 for `ErrUnavailable` brings back the lock-state and partial-outage oracles. Verify: the failing lines are recorded; `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
+- [ ] 13.9 Report input a store cannot represent as "not found" (D19, input bullet; `identity-model` delta). Red step:
+  - a `storekit` table test of the lookup classifier: an error whose `storekit.SQLStater` reports SQLSTATE 22021 or 22P05, bare and wrapped, is a miss; 08006 and 40001 are not;
+  - port `TestShippedStoreOnLatin1Database_UnencodableUsernameIsChargedToTheSource`'s setup into the test module's identity-store conformance as "a username the database cannot encode is not found", for `sqlstore` over a LATIN1 database, and see it fail with SQLSTATE 22P05.
+
+  Then classify both codes as `identity.ErrUserNotFound` in `LoadByUsername` and `LoadByUserID` of `sqlstore`, `pgxstore` and `gormstore`, through one `storekit` helper, and state the rule in `identity.UserLoader`'s godoc. Verify: the failing lines are recorded; `go test -count=1 -race ./internal/storekit/ ./store/...` and the nested store modules pass; the conformance case passes for every backend it runs on.
+- [ ] 13.10 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.6 (done) and of 13.7–13.9 against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas. Verify: as 11.5.
 
 ## 14. API key authentication can require an active owner (D17)
 
@@ -203,7 +215,13 @@ Proven by `TestAPIKey_RefusesKeyOfInactiveOwner`. One lane, Opus, because it is 
 
   Declare the option as a no-op first, and see the inactive, missing, outage and nil rows fail. Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/...` passes.
 - [ ] 14.2 State the default in `EnableAPIKey`'s godoc (D17): without `WithAPIKeyOwners`, deactivating a user stops none of the keys issued for that user's reference. Verify: `go doc ./httpsec EnableAPIKey` says so and names the option.
-- [ ] 14.3 Gate: as 12.3, with `WithAPIKeyOwners` as an `added` row. Then an Opus review of 14.1–14.2 against D17 and the `api-keys` delta. Verify: as 11.5.
+- [ ] 14.3 Fold the K1 review (D17, mismatch bullet). Red step: a row in `TestAPIKeyOwners` where the loader returns an active user whose ID differs from the key's principal reference; it expects the wrong-key refusal, one source charge and one error-level record with reason `owner-mismatch`. See it fail. Also:
+  - the caller-left rows assert `ErrAuthenticationFailed`, `StatusForError` 401 and exactly one debug-level record;
+  - a row pins a loader answering `(nil, nil)`: refused as a wrong key and counted;
+  - `WithAPIKeyOwners`' godoc names the mismatch refusal and that a refused key keeps its last-use time.
+
+  Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
+- [ ] 14.4 Gate: as 12.3, with `WithAPIKeyOwners` as an `added` row. Then an Opus review of 14.1–14.2 (done) and a Sonnet review of 14.3 against D17 and the `api-keys` delta. Verify: as 11.5.
 
 ## 15. A verifier requires an issuer and an audience (D18)
 
@@ -257,7 +275,7 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
   - the odd line wraps at `ratelimit/memory.go:548` and `ratelimit/redisstore/limiter.go:349` are reflowed.
 
   Verify: the failing lines are recorded; `cd test && go test -count=1 -race ./ratelimittest/` passes, including the catch-broken test; the new case passes against the memory limiter, `sqlstore`, `pgxstore` and every Redis and Valkey image in the test module's limiter suites.
-- [ ] 16.4 Widen `ratelimit.Limiter` to embed `Charger`, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
+- [ ] 16.4 Widen `ratelimit.Limiter` to embed `Charger`, and make `recovery/codes.go`'s `causedByCaller` match `context.Cause(ctx)` too, as the password path does, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
   - the failing lines are recorded;
   - `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run;
   - `go test -count=1 -race ./...` passes in the core module and every nested module;
@@ -280,5 +298,5 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
 
 ## Workflow follow-up
 
-- Archive the change with `/opsx:archive` once the branch is merged, which syncs the `module-layout`, `test-provisioning`, `token-issuance`, `authentication`, `http-error-propagation`, `http-security-chain`, `api-keys`, `rate-limiting` and `account-recovery` deltas into the main specs.
+- Archive the change with `/opsx:archive` once the branch is merged, which syncs the `module-layout`, `test-provisioning`, `token-issuance`, `authentication`, `http-error-propagation`, `http-security-chain`, `identity-model`, `api-keys`, `rate-limiting` and `account-recovery` deltas into the main specs.
 - Open the pull request only when the user asks for it.

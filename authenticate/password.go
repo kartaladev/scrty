@@ -252,10 +252,11 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 
 // Authenticate resolves a username and password against the user loader.
 //
-// Every refusal returns the bare ErrAuthenticationFailed, with nothing wrapped
-// and nothing added, so an unknown username, a wrong password and an inactive
-// account are one answer rather than three. What separates them goes to the
-// log, where an operator sees it and a caller does not.
+// Every refusal of the credential returns the bare ErrAuthenticationFailed,
+// with nothing wrapped and nothing added, so an unknown username, a wrong
+// password and an inactive account are one answer rather than three. What
+// separates them goes to the log, where an operator sees it and a caller does
+// not.
 //
 // A user loader that fails with anything other than identity.ErrUserNotFound
 // is not a refusal: the credential was never judged. That returns the bare
@@ -265,12 +266,15 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 // See ErrUnavailable for what it reveals and how httpsec answers it.
 //
 // The one load failure that is not an outage is the caller's own: when ctx has
-// ended and the loader's error is, or wraps, ctx's own error, the store did not
-// fail, the caller left. That returns the uniform ErrAuthenticationFailed, so
-// a caller that charges refusals charges it too, and a client that hangs up
-// mid-login cannot spend password work that nothing counts. A loader that
-// fails with some other error after the caller left, or with a deadline of its
-// own while the caller still waits, is still unavailable.
+// ended and the loader's error is, or wraps, ctx's own error or its cause, the
+// store did not fail, the caller left. That returns the uniform failure joined
+// with ctx's error, and with its cause when that differs, so the error matches
+// ErrAuthenticationFailed and ctx.Err() alike, and nothing of the loader's own
+// error. A caller that charges refusals can charge it, so a client that hangs
+// up mid-login cannot spend password work that nothing counts, and can tell
+// from the error that no password was compared. A loader that fails with some
+// other error after the caller left, or with a deadline of its own while the
+// caller still waits, is still unavailable.
 //
 // A username the store does not know is still verified, against the reference
 // hash built at construction. Returning early there would make the unknown-user
@@ -328,14 +332,16 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 		// A load the caller's own cancellation or deadline ended judged
 		// nothing, and the store did not fail: the caller left. It is recorded
 		// at debug, under a key of its own so a burst of hang-ups cannot take
-		// the outage's place in the sampled window, and it stays the uniform
-		// failure, which the endpoints charge, so a client that hangs up
-		// mid-login cannot spend password work no throttle pays for.
+		// the outage's place in the sampled window. It stays the uniform
+		// failure, which the endpoints charge to the source, so a client that
+		// hangs up mid-login cannot spend password work no throttle pays for;
+		// joined with the context's error, so they can tell no password was
+		// compared and record nothing for the username.
 		if causedByCaller(ctx, err) {
 			a.refuse(ctx, slog.LevelDebug, reasonCallerEnded, creds.Username,
 				diag.Failure(reasonCallerEnded, err)...)
 
-			return nil, ErrAuthenticationFailed
+			return nil, endedByCaller(ctx)
 		}
 
 		// Not routine: the store could not answer, so nobody can log in and an
@@ -422,6 +428,19 @@ func causedByCaller(ctx context.Context, err error) bool {
 
 	return ctxErr != nil &&
 		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
+}
+
+// endedByCaller is the uniform failure for a load ctx's own end cut short:
+// ErrAuthenticationFailed joined with ctx's error, and with its cause when
+// that is a different error. It carries nothing of the loader's own error,
+// whose text may quote what the store holds.
+func endedByCaller(ctx context.Context) error {
+	ctxErr := ctx.Err()
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(ctxErr, cause) {
+		return errors.Join(ErrAuthenticationFailed, ctxErr, cause)
+	}
+
+	return errors.Join(ErrAuthenticationFailed, ctxErr)
 }
 
 // usableHash reports whether the stored hash is one the encoder would verify,

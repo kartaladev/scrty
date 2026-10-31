@@ -438,6 +438,23 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			"the refusal carried detail a caller could tell refusals apart by")
 	}
 
+	// endedByTheCaller is what a load the caller's own context ended returns:
+	// the uniform failure, joined with each of the context's errors in want,
+	// so a caller can tell that no password was compared, and nothing of the
+	// loader's own error.
+	endedByTheCaller := func(t *testing.T, err error, want ...error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+		for _, target := range want {
+			assert.ErrorIs(t, err, target,
+				"the failure does not say the caller's context ended the load")
+		}
+		assert.NotErrorIs(t, err, authenticate.ErrUnavailable,
+			"a load the caller ended was answered as an outage, which nothing charges")
+		assert.NotContains(t, err.Error(), "store:", "the loader's text reached the caller")
+	}
+
 	cases := []testCase{
 		{
 			name: "an unknown user still costs a password comparison",
@@ -531,7 +548,7 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			},
 		},
 		{
-			name:  "a load the caller's own cancellation ended is the uniform failure, not an outage",
+			name:  "a load the caller's own cancellation ended is the uniform failure joined with it, not an outage",
 			users: failsWithTheCallersEnd,
 			ctx:   cancelled,
 			assert: func(t *testing.T, err error, enc *recordingEncoder) {
@@ -540,7 +557,7 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 				// An unavailable answer here is charged nowhere, so a client
 				// that hangs up mid-login would spend password work no source
 				// pays for.
-				bare(t, err)
+				endedByTheCaller(t, err, context.Canceled)
 
 				matches, matchedTo := enc.calls()
 				require.Equal(t, 1, matches)
@@ -548,7 +565,7 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			},
 		},
 		{
-			name:  "a load the caller's own deadline ended is the uniform failure, not an outage",
+			name:  "a load the caller's own deadline ended is the uniform failure joined with it, not an outage",
 			users: failsWithTheCallersEnd,
 			ctx: func(ctx context.Context) context.Context {
 				dctx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
@@ -559,11 +576,11 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			assert: func(t *testing.T, err error, _ *recordingEncoder) {
 				t.Helper()
 
-				bare(t, err)
+				endedByTheCaller(t, err, context.DeadlineExceeded)
 			},
 		},
 		{
-			name:  "a load the caller's cancel cause ended is the uniform failure",
+			name:  "a load the caller's cancel cause ended is the uniform failure joined with the cause",
 			users: failsWithTheCallersCause,
 			ctx: func(ctx context.Context) context.Context {
 				cctx, cancel := context.WithCancelCause(ctx)
@@ -574,11 +591,11 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			assert: func(t *testing.T, err error, _ *recordingEncoder) {
 				t.Helper()
 
-				bare(t, err)
+				endedByTheCaller(t, err, errCallerLeft, context.Canceled)
 			},
 		},
 		{
-			name:  "a load the caller's timeout cause ended is the uniform failure",
+			name:  "a load the caller's timeout cause ended is the uniform failure joined with the cause",
 			users: failsWithTheCallersCause,
 			ctx: func(ctx context.Context) context.Context {
 				dctx, cancel := context.WithTimeoutCause(ctx, -time.Second, errCallerLeft)
@@ -589,7 +606,7 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			assert: func(t *testing.T, err error, _ *recordingEncoder) {
 				t.Helper()
 
-				bare(t, err)
+				endedByTheCaller(t, err, errCallerLeft, context.DeadlineExceeded)
 			},
 		},
 		{

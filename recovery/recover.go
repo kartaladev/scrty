@@ -88,6 +88,14 @@ type Request struct {
 // refusal after a valid code (see RefusedAfterValidCode), so it is counted
 // against the source too.
 //
+// A refused password whose error also matches the request context's error or
+// its cause, with that context ended, is the check reporting a user load the
+// caller's own context cut short, as the password provider does by joining
+// the two: no password was compared. It is refused and marked as above, so
+// the source pays for it, but it is not counted against the user's recovery
+// limit. A refusal whose error names a cancellation while the caller still
+// waits is counted against the user as any other.
+//
 // An error matching authenticate.ErrUnavailable is the one exception: the
 // check could not judge the password, because the user store could not
 // answer. The recovery returns it unchanged and unmarked, counts it against
@@ -217,11 +225,18 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 				return nil, err
 			}
 
-			if errors.Is(err, authenticate.ErrAuthenticationFailed) {
-				err = refusedByCheck(err)
+			if !errors.Is(err, authenticate.ErrAuthenticationFailed) {
+				return nil, r.refuse(ctx, v.user, err, true)
 			}
 
-			return nil, r.refuse(ctx, v.user, err, true)
+			// The caller's own context ended the check's user load, so no
+			// password was compared: refused and marked, so the source pays
+			// for it, but not counted against the user's recovery limit.
+			if passwordLoadEndedByCaller(ctx, err) {
+				return nil, &refusedAfterCode{err: refusedByCheck(err)}
+			}
+
+			return nil, r.refuse(ctx, v.user, refusedByCheck(err), true)
 		}
 	}
 
@@ -230,6 +245,20 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 	}
 
 	return v, nil
+}
+
+// passwordLoadEndedByCaller reports whether a password check's error is the
+// uniform failure for a load ctx's own end cut short: ctx has ended, and err
+// matches authenticate.ErrAuthenticationFailed and ctx's error or its cause.
+// It decides from the error, not from ctx alone: a password compared and
+// refused before the caller left is a failed proof like any other.
+func passwordLoadEndedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+	if ctxErr == nil || !errors.Is(err, authenticate.ErrAuthenticationFailed) {
+		return false
+	}
+
+	return errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx))
 }
 
 // refusedByCheck turns a password check's authentication failure into

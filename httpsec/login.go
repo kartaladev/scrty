@@ -348,6 +348,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 	if err != nil {
+		// Every refusal is charged to the source, a load the client's own
+		// hang-up ended included: verifyPassword recorded nothing for the
+		// username then, and a client timing its hang-ups must still pay for
+		// the password work it spent.
 		recordSourceFailure(ctx, l.guard, src)
 
 		return err
@@ -398,9 +402,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // login refuses it (refuseLocked): concealed behind a decoy by default, the
 // lock alone when the consumer discloses locks. A credential the
 // authenticator refuses is recorded as a failed attempt; a user store that
-// could not answer (authenticate.ErrUnavailable) is returned as it is and
-// recorded as nothing. Clearing the failures a success supersedes is left to
-// the caller, because only a login is a success in that sense.
+// could not answer (authenticate.ErrUnavailable), and a load the request's own
+// context ended, are returned as they are and recorded as nothing. Clearing
+// the failures a success supersedes is left to the caller, because only a
+// login is a success in that sense.
 //
 // There is no source check here. The login endpoint checks the
 // password-login guard before calling the two steps itself, and account
@@ -440,7 +445,11 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 // A user store that could not answer (authenticate.ErrUnavailable) is returned
 // as it is and recorded as nothing: no credential was judged, and counting it
 // would let an outage lock or hold accounts whose owners typed the right
-// password.
+// password. Nor is a load the request's own context ended (see
+// loadEndedByCaller) recorded against the account: no password was compared,
+// and recording it would let client timeouts in front of a slow store hold an
+// account. It is returned as the refusal it is, for the caller to charge to
+// the source.
 func (l *formLogin) verifyPassword(
 	ctx context.Context,
 	username string,
@@ -448,7 +457,7 @@ func (l *formLogin) verifyPassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
-	if errors.Is(err, authenticate.ErrUnavailable) {
+	if errors.Is(err, authenticate.ErrUnavailable) || loadEndedByCaller(ctx, err) {
 		return nil, err
 	}
 	if err != nil {
@@ -458,6 +467,21 @@ func (l *formLogin) verifyPassword(
 	}
 
 	return auth, nil
+}
+
+// loadEndedByCaller reports whether err is the authenticator's uniform failure
+// for a user load the request's own context ended, so that no password was
+// compared: ctx has ended, and err matches authenticate.ErrAuthenticationFailed
+// and ctx's error or its cause, as the password provider's joined failure
+// does. It decides from the error, never from ctx alone: a password compared
+// and refused before the client left is a failed attempt like any other.
+func loadEndedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+	if ctxErr == nil || !errors.Is(err, authenticate.ErrAuthenticationFailed) {
+		return false
+	}
+
+	return errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx))
 }
 
 // checkPassword is account recovery's password proof (recovery.PasswordCheck):

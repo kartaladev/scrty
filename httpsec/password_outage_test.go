@@ -49,8 +49,10 @@ type outageRun struct {
 // and a lockout policy with a failure-streak limit does not hold an account
 // for failures its owner never made. Its hung-up rows pin the other side of
 // that line: a client that hangs up mid-login did not find the store down, so
-// the request is the uniform failure, answered 401, recorded for the username
-// and charged to the source like any guess.
+// the request is the uniform failure, answered 401 and charged to the source,
+// but no password was compared, so nothing is recorded for the username. Its
+// slow-store rows pin what follows from that: client timeouts in front of a
+// slow store never hold an account.
 func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 	t.Parallel()
 
@@ -77,7 +79,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		// request builds the endpoint's request for the password.
 		request func(ctx context.Context, password string) *http.Request
 
-		// ctx modifies the context the outage requests are served on. nil
+		// ctx modifies the context each outage request is served on. nil
 		// means the test's own.
 		ctx func(ctx context.Context) context.Context
 
@@ -173,6 +175,24 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			"the account was held for failures its owner never made")
 	}
 
+	// timingOut is a client that gives up on its request shortly after
+	// sending it, as a client or proxy timeout does. The timer's resources are
+	// released once the context ends.
+	timingOut := func(ctx context.Context) context.Context {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+		context.AfterFunc(cctx, cancel)
+
+		return cctx
+	}
+
+	// slowStore is a store that cannot answer before the caller's context
+	// ends, and then fails with that context's error, as a SQL driver does.
+	slowStore := func(ctx context.Context) error {
+		<-ctx.Done()
+
+		return fmt.Errorf("user store: load user: %w", ctx.Err())
+	}
+
 	// endedByTheCaller is a store failing with the error of the context it was
 	// given, as a SQL driver does once the caller's context has ended.
 	endedByTheCaller := func(ctx context.Context) error {
@@ -183,28 +203,47 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		return errUserStoreRefused
 	}
 
-	// chargedAsAGuess is what a row whose client hung up during the load
-	// asserts: the store did not fail, the caller left, so it is the uniform
-	// failure, answered 401, recorded for the username and charged to the
-	// source like any guess. Otherwise a client timing its hang-ups would
-	// spend password work that no throttle pays for.
-	chargedAsAGuess := func(t *testing.T, run outageRun) {
+	// chargedToTheSource is what a row whose clients left during the load
+	// asserts, given how many did and the context error each left with: the
+	// store did not fail, the caller left, so each is the uniform failure,
+	// joined with that error and answered 401. It is charged to the source,
+	// so a client timing its hang-ups cannot spend password work that no
+	// throttle pays for, and recorded nothing for the username, because no
+	// password was compared.
+	chargedToTheSource := func(t *testing.T, run outageRun, requests int, ctxErr error) {
 		t.Helper()
 
-		require.Len(t, run.outages, 1)
-		out := run.outages[0]
-		require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-		assert.NotErrorIs(t, out.err, authenticate.ErrUnavailable,
-			"a load the caller ended was answered as an outage, which nothing charges")
-		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
-		assert.False(t, out.handlerRan, "the hung-up request reached the application")
+		require.Len(t, run.outages, requests)
+		for i, out := range run.outages {
+			require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "request %d", i+1)
+			assert.ErrorIs(t, out.err, ctxErr,
+				"request %d does not say the caller's context ended its load", i+1)
+			assert.NotErrorIs(t, out.err, authenticate.ErrUnavailable,
+				"request %d: a load the caller ended was answered as an outage, which nothing charges", i+1)
+			assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err), "request %d", i+1)
+			assert.False(t, out.handlerRan, "request %d reached the application", i+1)
+		}
 
-		assert.Equal(t, 2, run.recordedFailures,
-			"the hung-up request was not recorded for the username")
-		assert.Equal(t, 2, run.sourceFailures,
-			"the hung-up request was not charged to the source")
+		assert.Equal(t, 1, run.recordedFailures,
+			"a load the caller ended was recorded for the username, though no password was compared")
+		assert.Equal(t, 1+requests, run.sourceFailures,
+			"a load the caller ended was not charged to the source")
 		assert.NoError(t, run.recovered.err,
 			"the right password was refused once the store recovered")
+		assert.NotErrorIs(t, run.recovered.err, lockout.ErrAccountHeld,
+			"the account was held for loads its callers ended")
+	}
+
+	// challenged is what a Basic row whose client left asserts besides: each
+	// refusal is a 401, so it carries the realm's challenge.
+	challenged := func(t *testing.T, run outageRun) {
+		t.Helper()
+
+		for i, out := range run.outages {
+			assert.NotEmpty(t, out.rec.Header().Get("WWW-Authenticate"),
+				"request %d was answered 401 without a challenge", i+1)
+		}
+		assert.True(t, run.recovered.handlerRan, "the recovered request did not reach the application")
 	}
 
 	// noChallenge is what a Basic row asserts besides: no credential was
@@ -261,8 +300,21 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			assert: func(t *testing.T, run outageRun) {
 				t.Helper()
 
-				chargedAsAGuess(t, run)
-				assert.True(t, run.recovered.handlerRan, "the recovered request did not reach the application")
+				chargedToTheSource(t, run, 1, context.Canceled)
+				challenged(t, run)
+			},
+		},
+		{
+			name:    "basic, a slow store behind client timeouts never holds an account",
+			enable:  basic,
+			request: basicReq,
+			ctx:     timingOut,
+			downErr: slowStore,
+			assert: func(t *testing.T, run outageRun) {
+				t.Helper()
+
+				chargedToTheSource(t, run, outageRequests, context.DeadlineExceeded)
+				challenged(t, run)
 			},
 		},
 		{
@@ -298,7 +350,20 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			assert: func(t *testing.T, run outageRun) {
 				t.Helper()
 
-				chargedAsAGuess(t, run)
+				chargedToTheSource(t, run, 1, context.Canceled)
+				loggedIn(t, run)
+			},
+		},
+		{
+			name:    "form login, a slow store behind client timeouts never holds an account",
+			enable:  formLogin,
+			request: formReq,
+			ctx:     timingOut,
+			downErr: slowStore,
+			assert: func(t *testing.T, run outageRun) {
+				t.Helper()
+
+				chargedToTheSource(t, run, outageRequests, context.DeadlineExceeded)
 				loggedIn(t, run)
 			},
 		},
@@ -364,11 +429,6 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			wrong := serve(t, chain, tc.request(t.Context(), "wrong"))
 			require.ErrorIs(t, wrong.err, authenticate.ErrAuthenticationFailed)
 
-			ctx := t.Context()
-			if tc.ctx != nil {
-				ctx = tc.ctx(ctx)
-			}
-
 			requests := outageRequests
 			if tc.requests != 0 {
 				requests = tc.requests
@@ -378,6 +438,11 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 
 			down.Store(true)
 			for range requests {
+				ctx := t.Context()
+				if tc.ctx != nil {
+					ctx = tc.ctx(ctx)
+				}
+
 				run.outages = append(run.outages, serveIn(ctx, t, chain, tc.request(ctx, rightPassword)))
 			}
 

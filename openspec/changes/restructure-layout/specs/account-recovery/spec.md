@@ -28,12 +28,12 @@ The library SHALL count failed saved-code presentations per user reference, whet
 ## ADDED Requirements
 
 ### Requirement: An unavailable user store is not a failed recovery proof
-When a recovery's password proof receives the authentication capability's unavailable error, the recovery SHALL be refused with that error, which the public status mapping answers with 503. It SHALL NOT be counted against the user's recovery limit or against the request's source, because no proof was refused.
+When a recovery's password proof receives the authentication capability's unavailable error, the recovery SHALL be refused with that error, which the public status mapping answers as a refused proof is. It SHALL be counted against the request's source, and SHALL NOT be counted against the user's recovery limit, because no password was compared.
 
 #### Scenario: Outage during a recovery's password proof
 - **WHEN** the user store returns a connection error while a recovery for `u-1` checks its password proof
-- **THEN** the recovery is refused with the unavailable error and answered 503
-- **AND** nothing is counted against `u-1`'s recovery limit or the source
+- **THEN** the recovery is refused with the unavailable error and answered 401, as a refused proof is
+- **AND** one failure is counted against the source and nothing against `u-1`'s recovery limit
 
 ### Requirement: A client that leaves during the proof's user load is charged to its source only
 When a recovery's password proof receives the uniform failure for a load the request's own context ended, the recovery SHALL be refused as a failed proof and counted against the request's source, but SHALL NOT be counted against the user's recovery limit, because no password was compared.

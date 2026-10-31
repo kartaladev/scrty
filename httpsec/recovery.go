@@ -468,7 +468,10 @@ func (i *recoveryInterceptor) issue(ctx context.Context, res *recovery.Result) (
 // store could not answer: no proof was refused, and counting it would let an
 // outage use up the allowance of every source that tried to recover during it.
 // A load the caller's own cancellation ended is not that error: the password
-// proof refuses it, and it is counted as any refusal after the codes passed is.
+// proof refuses it, and it is counted against the source as any refusal after
+// the codes passed is, though nothing is recorded against the account and the
+// recovery counts nothing against the user's recovery limit, because no
+// password was compared.
 // A refusal after the recovery codes passed is counted unless the consumer
 // turned that off. Every other failure is counted: a refused code, an unknown
 // or throttled user, and any other dependency outage the recovery met.

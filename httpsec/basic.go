@@ -175,17 +175,25 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, err
 	}
 	if err != nil {
+		// A load the request's own context ended compared no password, so
+		// nothing is recorded for the username: client timeouts in front of a
+		// slow store must not hold an account. It is still charged to the
+		// source below, so a client timing its hang-ups pays for the password
+		// work it spent.
+		//
 		// The record carries a fixed reason and the attempt store's error
 		// type, never its text: a consumer who wants that detail logs it
 		// inside their own policy.AttemptStore.
-		// The client's cancellation is not passed on: a client that hangs up after
-		// sending its guess must still be charged for it, and an attempt store
-		// that honours cancellation would otherwise drop the failure. Reset is
-		// different, and stays on the request's context: nobody is owed a
-		// clearing the client did not wait for.
-		if recErr := b.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); recErr != nil {
-			b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-				diag.Failure("attempt-store", recErr)...)
+		// The client's cancellation is not passed on: a client that hangs up
+		// after its password was compared must still be charged for it, and
+		// an attempt store that honours cancellation would otherwise drop the
+		// failure. Reset is different, and stays on the request's context:
+		// nobody is owed a clearing the client did not wait for.
+		if !loadEndedByCaller(ctx, err) {
+			if recErr := b.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); recErr != nil {
+				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
+					diag.Failure("attempt-store", recErr)...)
+			}
 		}
 
 		recordSourceFailure(ctx, b.guard, src)
@@ -308,10 +316,13 @@ type BasicAuthOption func(*basicAuth) error
 //  4. Authenticate. A failure is recorded against the account and the source.
 //     A user store that could not answer (authenticate.ErrUnavailable) is not
 //     a failure: it is returned at once, answered 503, and records, counts and
-//     clears nothing. A success clears the username's failures through
-//     BasicAuthDeps.Attempts, as form login does, including its count towards
-//     a cap set with lockout.WithFailureStreakLimit; a store that fails to
-//     clear is logged and the request still succeeds. It costs one reset of
+//     clears nothing. A load the request's own context ended compared no
+//     password: it is refused as a failure and counted against the source
+//     only, with nothing recorded against the account. A success clears the
+//     username's failures through BasicAuthDeps.Attempts, as form login does,
+//     including its count towards a cap set with
+//     lockout.WithFailureStreakLimit; a store that fails to clear is logged
+//     and the request still succeeds. It costs one reset of
 //     the attempt store per successful request; for a policy with a cap that
 //     reset clears both the failure log and the consecutive count.
 //  5. Run the stateless-authentication phase, and continue with the caller
