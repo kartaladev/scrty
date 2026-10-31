@@ -1,7 +1,9 @@
 package redisstore_test
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -416,6 +418,40 @@ func TestLimiter_ScriptCalls(t *testing.T) {
 	}
 }
 
+// failingHook answers every command with err once the hooks it wraps have
+// seen it, as a server that rejects the script would.
+type failingHook struct{ err error }
+
+func (failingHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h failingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		_ = next(ctx, cmd)
+		cmd.SetErr(h.err)
+
+		return h.err
+	}
+}
+
+func (failingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// failingClient is recordingClient with every command failed with err. The
+// failing hook is added first, which makes it the outermost: it runs the
+// recorder, then replaces the answer.
+func failingClient(t *testing.T, err error) (*redis.Client, *recorder) {
+	t.Helper()
+
+	rec := &recorder{}
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true})
+	client.AddHook(failingHook{err: err})
+	client.AddHook(rec)
+	t.Cleanup(func() { _ = client.Close() })
+
+	return client, rec
+}
+
 // TestLimiter_ChargeScripts pins what Charge and Refund send, without a
 // server: one script call each, declaring the one key, with the arguments the
 // scripts read, and the receipt Charge builds from the script's answer.
@@ -432,20 +468,24 @@ func TestLimiter_ChargeScripts(t *testing.T) {
 		err      error
 	}
 
+	errScript := errors.New("redis: the script failed")
+
 	type testCase struct {
-		name   string
-		reply  any
+		name  string
+		reply any
+		// fail, when set, fails every command after the recorder has seen it.
+		fail   error
 		opts   []redisstore.Option
-		call   func(t *testing.T, l *redisstore.Limiter) outcome
+		call   func(t *testing.T, l *redisstore.Limiter, client *redis.Client) outcome
 		assert func(t *testing.T, cmds [][]any, o outcome)
 	}
 
-	charge := func(t *testing.T, l *redisstore.Limiter) outcome {
+	charge := func(t *testing.T, l *redisstore.Limiter, _ *redis.Client) outcome {
 		r, exceeded, err := l.Charge(t.Context(), "k")
 		return outcome{receipt: r, exceeded: exceeded, err: err}
 	}
-	refund := func(r ratelimit.Receipt) func(t *testing.T, l *redisstore.Limiter) outcome {
-		return func(t *testing.T, l *redisstore.Limiter) outcome {
+	refund := func(r ratelimit.Receipt) func(t *testing.T, l *redisstore.Limiter, client *redis.Client) outcome {
+		return func(t *testing.T, l *redisstore.Limiter, _ *redis.Client) outcome {
 			return outcome{err: l.Refund(t.Context(), r)}
 		}
 	}
@@ -496,6 +536,35 @@ func TestLimiter_ChargeScripts(t *testing.T) {
 			},
 		},
 		{
+			// The backend alone: the decorator refuses a failed charge on its own
+			// account, so only this row sees the backend's own answer.
+			name: "a charge whose script fails is refused and records nothing", fail: errScript,
+			call: func(t *testing.T, _ *redisstore.Limiter, client *redis.Client) outcome {
+				r, exceeded, err := redisstore.BackendCharge(t.Context(), client, "api-key", 3, time.Minute, "k")
+				return outcome{receipt: r, exceeded: exceeded, err: err}
+			},
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.ErrorIs(t, o.err, errScript)
+				assert.True(t, o.exceeded, "a charge that could not be counted was accepted")
+				assert.Zero(t, o.receipt)
+				// The failed script is the only command sent: no retry, no fallback
+				// and no other write could have added a member.
+				name, keys, _ := script(t, cmds)
+				assert.Equal(t, "evalsha", name)
+				assert.Equal(t, []any{key}, keys)
+			},
+		},
+		{
+			name: "a limiter whose charge script fails refuses the charge as unavailable", fail: errScript, call: charge,
+			assert: func(t *testing.T, cmds [][]any, o outcome) {
+				require.ErrorIs(t, o.err, ratelimit.ErrBackendUnavailable)
+				assert.ErrorIs(t, o.err, errScript, "the cause is kept")
+				assert.True(t, o.exceeded)
+				assert.Zero(t, o.receipt)
+				script(t, cmds) // exactly one command was sent
+			},
+		},
+		{
 			name: "refund, server clock: the receipt's stamp in microseconds", reply: int64(1),
 			call: refund(ratelimit.NewReceipt("k", time.UnixMicro(stampUS))),
 			assert: func(t *testing.T, cmds [][]any, o outcome) {
@@ -529,12 +598,20 @@ func TestLimiter_ChargeScripts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			client, rec := recordingClient(t, tc.reply)
+			var (
+				client *redis.Client
+				rec    *recorder
+			)
+			if tc.fail != nil {
+				client, rec = failingClient(t, tc.fail)
+			} else {
+				client, rec = recordingClient(t, tc.reply)
+			}
 			opts := append([]redisstore.Option{redisstore.WithLogger(quietLogger())}, tc.opts...)
 			l, err := redisstore.NewLimiter(client, "api-key", 3, time.Minute, opts...)
 			require.NoError(t, err)
 
-			o := tc.call(t, l)
+			o := tc.call(t, l, client)
 			tc.assert(t, rec.commands(), o)
 		})
 	}

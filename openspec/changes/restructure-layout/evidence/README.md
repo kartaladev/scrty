@@ -12,7 +12,7 @@ through `rename-map.tsv`.
 | `decls.py [ROOT]` | The declaration inventory: every top-level declaration (func, method, type, var, const, `//go:embed` pattern), exported or not, of every non-generated production file in the workspace modules |
 | `check.sh [tests\|api\|decls\|coverage\|all]... [-- FRESH_DIR]` | Captures (or reuses) a fresh inventory and runs `check.py` |
 | `check.py` | The comparison. It first checks the map itself: every left-hand side must be declared in the baseline |
-| `rename-map.tsv` | `kind<TAB>old<TAB>new`. Kinds: `path` (D1), `pkgname`, `split` (D3: `policy` → `policy/lockout`), `ident` (D3, D8–D10), `test` (D7 case names, added per lane), `errprefix` (D11, informational), `merged` (D5 copies and their `storekit` successor) |
+| `rename-map.tsv` | `kind<TAB>old<TAB>new`. Kinds: `path` (D1), `pkgname`, `split` (D3: `policy` → `policy/lockout`), `ident` (D3, D8–D10), `test` (D7 case names, added per lane), `errprefix` (D11, informational), `merged` (D5 copies and their `storekit` successor), and for phase 6 `added` and `changed` (old is `-`), and `coverage` (old is a baseline package, new is the `covered/total` floor a decision accepts, with the reason in a comment above the row) |
 | `examples.py [ROOT]` | The `Example` function inventory, read from source: `go test` lists only the examples that have an output comment, and the rest are compiled but never run |
 | `empty.export` | `apidiff` export data of an empty package, used to list a package's exported names |
 

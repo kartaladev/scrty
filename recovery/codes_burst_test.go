@@ -97,7 +97,11 @@ func TestCodes_ConcurrentWrongCodesStayWithinLimit(t *testing.T) {
 		{
 			name: "a valid code spends no allowance",
 			present: func(t *testing.T, ctx context.Context, c *recovery.Codes) []error {
-				valid := mustGenerate(t, c, "u-1")[0]
+				codes, err := c.Generate(ctx, "u-1")
+				require.NoError(t, err)
+				require.NotEmpty(t, codes)
+
+				valid := codes[0]
 				require.NoError(t, c.Confirm(ctx, "u-1", valid))
 
 				var errs []error

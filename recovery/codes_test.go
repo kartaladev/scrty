@@ -524,7 +524,7 @@ func TestCodes(t *testing.T) {
 		},
 		{
 			name: "a client hanging up during the lookup is still charged",
-			options: func(t *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
+			options: func(_ *testing.T, ctrl *gomock.Controller) []recovery.CodesOption {
 				limiter := NewMockLimiter(ctrl)
 				store := NewMockCodeStore(ctrl)
 				// No Refund is expected: gomock fails the case if one is made.

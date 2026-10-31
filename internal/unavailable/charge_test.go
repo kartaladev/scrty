@@ -14,6 +14,20 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
+// endingHandler is a slog.Handler that ends a context, as a caller hanging up
+// does, when it is handed a record, and then passes the record on.
+type endingHandler struct {
+	slog.Handler
+
+	end func()
+}
+
+func (h endingHandler) Handle(ctx context.Context, rec slog.Record) error {
+	h.end()
+
+	return h.Handler.Handle(ctx, rec)
+}
+
 // chargesDown makes every backend charge and refund fail, as many times as
 // they are called.
 func (h *harness) chargesDown() {
@@ -115,6 +129,10 @@ func TestUnavailable_Charge(t *testing.T) {
 				ctx: func(ctx context.Context) context.Context {
 					cctx, c := context.WithCancel(ctx)
 					cancel = c
+					// The parent ends with the test, so the cancel function is
+					// released even if the backend never calls it.
+					context.AfterFunc(ctx, c)
+
 					return cctx
 				},
 				arrange: func(_ *testing.T, h *harness) {
@@ -241,10 +259,59 @@ func TestUnavailable_Charge(t *testing.T) {
 				assert.Zero(t, r)
 			},
 		},
+		func() testCase {
+			// The outage opens the breaker, and the record of it ends the caller's
+			// context before the local count is charged.
+			var cancel context.CancelFunc
+			var local *ratelimit.MemoryLimiter
+
+			return testCase{
+				name: "a fallback charge whose caller left is refused",
+				mode: ratelimit.UnavailableFallbackToLocal,
+				ctx: func(ctx context.Context) context.Context {
+					cctx, c := context.WithCancel(ctx)
+					cancel = c
+					context.AfterFunc(ctx, c)
+
+					return cctx
+				},
+				arrange: func(t *testing.T, h *harness) {
+					var err error
+					local, err = ratelimit.NewMemoryLimiter(testLimit, testWindow,
+						ratelimit.WithMemoryLimiterClock(h.clock),
+						ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+					require.NoError(t, err)
+
+					cfg := unavailable.DefaultConfig()
+					cfg.Mode = ratelimit.UnavailableFallbackToLocal
+					cfg.Clock = h.clock
+					cfg.Logger = slog.New(endingHandler{Handler: h.logs, end: func() { cancel() }})
+					h.limiter, err = unavailable.Wrap(h.backend, testNamespace, testLimit, testWindow, cfg)
+					require.NoError(t, err)
+					unavailable.ReplaceLocal(h.limiter, local)
+
+					h.backend.EXPECT().Charge(gomock.Any(), testKey).Return(ratelimit.Receipt{}, true, errDown)
+				},
+				assert: func(t *testing.T, _ *harness, r ratelimit.Receipt, exceeded bool, err error) {
+					require.ErrorIs(t, err, context.Canceled)
+					assert.ErrorContains(t, err, "charge abandoned: the caller's context ended")
+					assert.NotErrorIs(t, err, ratelimit.ErrBackendUnavailable)
+					assert.True(t, exceeded)
+					assert.Zero(t, r)
+
+					// A failure in the local count would refuse the last of these.
+					for i := range testLimit {
+						_, exceeded, err := local.Charge(t.Context(), testKey)
+						require.NoError(t, err)
+						require.False(t, exceeded, "the local count holds a failure: charge %d of %d was refused", i+1, testLimit)
+					}
+				},
+			}
+		}(),
 		{
 			name: "allow: an outage accepts the charge, records nothing, and logs the outage",
 			mode: ratelimit.UnavailableAllow,
-			arrange: func(t *testing.T, h *harness) {
+			arrange: func(_ *testing.T, h *harness) {
 				h.chargesDown()
 			},
 			assert: func(t *testing.T, h *harness, r ratelimit.Receipt, exceeded bool, err error) {

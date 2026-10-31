@@ -33,6 +33,8 @@ class Map:
         self.paths, self.idents, self.tests, self.splits, self.merged = [], {}, [], [], {}
         # D13 phase 6: identifiers a decision adds, and ones whose type a decision changes.
         self.added, self.changed = set(), set()
+        # D13 phase 6: a coverage drop a decision accepts, down to a floor of covered/total statements.
+        self.coverage_floor = {}
         for line in open(path):
             if not line.strip() or line.startswith("#"):
                 continue
@@ -51,6 +53,11 @@ class Map:
                 self.added.add(new)
             elif kind == "changed":
                 self.changed.add(new)
+            elif kind == "coverage":
+                c, t = new.split("/")
+                self.coverage_floor[old] = (int(c), int(t))
+            elif kind not in ("pkgname", "errprefix"):
+                raise SystemExit(f"rename-map.tsv: unknown kind {kind!r}")
         self.paths.sort(key=lambda p: -len(p[0]))
         # Keys in the moved-but-not-renamed form too, so a half-applied rename normalises.
         self.final = {}
@@ -344,6 +351,9 @@ def validate_map(m, ev):
     for old, _ in m.paths + m.splits:
         if old not in pkgs and not any(p.startswith(old + "/") for p in pkgs):
             problems.append(f"map path {old} holds no baseline package")
+    for old in m.coverage_floor:
+        if old not in pkgs:
+            problems.append(f"coverage key {old} is not a baseline package")
     return problems
 
 
@@ -382,6 +392,9 @@ def check_coverage(m, ev, fresh):
             continue
         if not news:
             problems.append(f"coverage: no package reports coverage for {', '.join(sorted(olds))}")
+            continue
+        floors = [m.coverage_floor[p] for p in olds if p in m.coverage_floor]
+        if floors and all(nc * ft >= fc * nt for fc, ft in floors):
             continue
         if bt and nc * bt < bc * nt:
             problems.append(f"coverage drops: {', '.join(sorted(olds))} {bc}/{bt} ({100*bc/bt:.2f}%) -> "

@@ -287,7 +287,7 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
   - `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run;
   - `go test -count=1 -race ./...` passes in the core module and every nested module;
   - `go generate ./...` leaves no drift.
-- [ ] 16.5 Pin the charge's fail-closed error paths (D20; `golang-tdd`, error paths that change an observable outcome). Tests only:
+- [x] 16.5 Pin the charge's fail-closed error paths (D20; `golang-tdd`, error paths that change an observable outcome). Tests only:
   - `redisstore`: a charge whose script fails returns `exceeded=true` with the error, and records nothing;
   - `internal/unavailable`: in fallback mode, a charge whose caller's context has ended while the breaker is open is refused with the "charge abandoned" error, and the local count records nothing.
 

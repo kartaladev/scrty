@@ -411,3 +411,5 @@ ident	github.com/kartaladev/scrty/recovery.msgCodeRecordError	github.com/kartala
 ident	github.com/kartaladev/scrty/recovery.Codes.recordFailure	github.com/kartaladev/scrty/recovery.Codes.refund
 added	-	github.com/kartaladev/scrty/ratelimit.Charger.Charge
 added	-	github.com/kartaladev/scrty/ratelimit.Charger.Refund
+# D20 (task 16.5): the charge and refund add two deferred breaker-abandon blocks that run only if the call panics, as the existing wrap.go:389 guard does; every other new branch is covered.
+coverage	github.com/kartaladev/scrty/internal/unavailable	246/252
