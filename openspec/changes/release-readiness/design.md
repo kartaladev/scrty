@@ -130,6 +130,21 @@ None of the decisions below is library behaviour a consumer configures. They gov
   - The requirement changes to the 1.27 floor, tested on every supported Go release at or above it.
 - **What CI tests.** The matrix stays `1.27.x` until Go 1.28 is released, when `1.28.x` is added. That is the requirement, not a new decision.
 
+### 9. A queued-sender worker that ends abnormally is replaced
+
+- **The defect.** `recover` cannot stop `runtime.Goexit`, so a wrapped sender that ends its goroutine (as `t.FailNow` does) kills the worker delivering its message. Once every worker is gone, `Send` still queues messages and returns no error, and nothing delivers them. This breaks `email-notification`'s rule that an accepted message is delivered. It was REPRODUCED by a scratch test while `idiomatic-api-shape` was implemented, and is older than that change.
+- **The fix.** A deferred check notices a delivery that did not return normally. It logs the failure and starts a replacement worker, so the pool stays at its configured size. The message being delivered is reported as failed, as a panic's message already is.
+- **Default and override:** automatic, with no option. A pool that silently shrinks has no use a consumer could want.
+- **Alternative considered:** document the case and leave it. Rejected, because the sender would then accept messages it never delivers.
+- **Order:** this change's `email-notification` delta copies the requirement as `idiomatic-api-shape` modifies it, so that change is archived first.
+
+### 10. A missing sender address stays a configuration error
+
+- **The mismatch.** `notify/smtp.go` wraps `ErrConfig` when a message has no `From` and the sender was built with no default address. `ErrConfig`'s godoc says it marks wiring mistakes, as opposed to failures at send time, and does not mention this case. UNREPRODUCED: the wording disagrees with the behaviour, and the behaviour is not wrong.
+- **The decision.** The case is a wiring mistake: the consumer configured neither a default sender nor a sender on the message. `ErrConfig` keeps wrapping it, and its godoc names it.
+- **Default and override:** unchanged. A consumer sets `WithSMTPFrom`, or `Message.From`.
+- **Alternative considered:** a new sentinel for a missing address. Rejected, because it adds API for a case the existing sentinel already means.
+
 ## Risks / Trade-offs
 
 - **`gorelease` may refuse a module whose `go.mod` has `replace` directives.**
@@ -193,6 +208,10 @@ None of the decisions below is library behaviour a consumer configures. They gov
 
 **Primary documentation:**
 - The 90-day coordinated-disclosure deadline is common industry practice. It is not re-checked against a specific source on this date.
+
+### Decisions 9 and 10: `notify` fixes
+
+Reasoned from scrty's own settled specs (`email-notification`) and code, and from the review of `idiomatic-api-shape` that found both.
 
 ### Decision 8: supported Go releases
 

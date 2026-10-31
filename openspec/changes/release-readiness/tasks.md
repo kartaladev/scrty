@@ -65,15 +65,20 @@ Go checks are test-first: write the failing test, run it, and confirm it fails f
 - [ ] 5.4 Write `RELEASING.md` with the steps of design decision 7, each with its command: the bump commands, `make release-check`, the private-reporting check with `gh api`, `make release-tags`, the push, the probe, and the release notes. Include the never-move-a-tag rule and its recovery (a new patch version plus `retract`). Verify that each step's command exists and runs: `make release-check` and `make release-tags` from groups 3 and 5, and the `gh api` check returning JSON.
 - [ ] 5.5 Update `README.md`: an install section (`go get github.com/kartaladev/scrty@v0.1.0` and one nested module), links to `CHANGELOG.md` and `SECURITY.md`, and a supported-versions sentence consistent with `SECURITY.md`. Verify the links resolve within the repository.
 
-## 6. Integration gate
+## 6. Pre-release fixes in `notify` (decisions 9, 10; email-notification requirement "A queued sender returns without waiting for delivery")
 
-- [ ] 6.1 Run a whole-branch review against every requirement in this change's specs, with a fresh Sonnet reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
-- [ ] 6.2 Run `make check`, `make release-check VERSION=v0.1.0` and `openspec validate release-readiness --strict`. Verify all three are clean, and keep the output.
+- [ ] 6.1 Red: write `TestQueuedSender_WrappedSenderEndsItsGoroutine`, the scenario "Wrapped sender ends its goroutine", under `-race` with goleak. Run it and confirm it fails because the second message is never delivered. Then implement decision 9: a worker whose delivery did not return normally logs the failure and is replaced. Verify: the scenario and every queued-sender scenario pass under `-race`.
+- [ ] 6.2 Pin the current behaviour with `TestSMTPSender_NoSenderAddressIsAConfigError`: a message with no `From`, through a sender with no default address, returns an error matching `ErrConfig`. It passes today, so prove it by temporarily wrapping a different error and watching it fail, then restore it. Then update `ErrConfig`'s godoc per decision 10. Verify: the test passes, and every place that wraps `notify.ErrConfig` outside a constructor is named in the godoc.
 
-## 7. First release (maintainer)
+## 7. Integration gate
 
-- [ ] 7.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
-- [ ] 7.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
+- [ ] 7.1 Run a whole-branch review against every requirement in this change's specs, with a fresh Sonnet reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
+- [ ] 7.2 Run `make check`, `make release-check VERSION=v0.1.0` and `openspec validate release-readiness --strict`. Verify all three are clean, and keep the output.
+
+## 8. First release (maintainer)
+
+- [ ] 8.1 **(maintainer)** Enable private vulnerability reporting, and verify `gh api repos/kartaladev/scrty/private-vulnerability-reporting` reports `"enabled": true`.
+- [ ] 8.2 **(maintainer)** After the branch is merged, date the `0.1.0` changelog entry, run `make release-check VERSION=v0.1.0` on the merged commit, then create the tags `make release-tags VERSION=v0.1.0` prints, and push them. Verify the release-probe workflow passes for `v0.1.0`.
 
 ## Workflow follow-up
 

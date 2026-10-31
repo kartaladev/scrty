@@ -31,6 +31,9 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - Supported versions: the latest minor release, during v0.
   - Supported Go releases.
   - How fixed vulnerabilities are published, including the Go vulnerability database.
+- **Pre-release fixes carried from `idiomatic-api-shape`.** Two defects in `notify`, both older than that change and found while it was implemented, are fixed before `v0.1.0`:
+  - a queued sender whose wrapped sender ends its goroutine (`runtime.Goexit`, as `t.FailNow` does) loses that worker. Once every worker is gone, it accepts messages it never delivers;
+  - `ErrConfig` is wrapped by an SMTP send that has no sender address, which its godoc does not admit.
 - **Repository setting, a step for the maintainer.** Enabling private vulnerability reporting is listed as such, since it is a change to the public repository's settings and is not made by tooling. It is off as of 2026-10-21.
 - **Spec correction.**
   - The settled `module-layout` requirement still names Go 1.26 as the minimum and a CI run on Go 1.26 and Go 1.27.
@@ -45,6 +48,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
 
 ### Modified Capabilities
 
+- `email-notification`: the queued sender replaces a worker whose wrapped sender ends its goroutine, so it never accepts a message it cannot deliver.
 - `module-layout`:
   - published modules resolve outside the repository at a released version;
   - the Go-release requirement is corrected to the 1.27 floor;
@@ -58,7 +62,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - `.github/workflows/`, which gains a release-gate workflow and a post-tag probe;
   - new `CHANGELOG.md`, `SECURITY.md` and `RELEASING.md`;
   - `README.md` (supported versions, install).
-- **No library code changes,** and no API change.
+- **Library code changes only for the two `notify` fixes,** and no API change.
 - **Tags:** `v0.1.0` and eight prefixed `v0.1.0` tags, pushed by the maintainer, not by tooling.
 - **Related changes:**
   - `first-party-sessions` is implemented first, so its session store port, its security-state migration and its session features ship in `v0.1.0` and are summarised in that entry;

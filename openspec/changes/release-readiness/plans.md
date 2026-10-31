@@ -73,8 +73,9 @@ Plan task N.M is `tasks.md` task N.M.
 | 2 (after R1, R2; the main session records 1.1's outcome in `design.md` first) | R3 | 3.1–3.3, 5.1 | `Makefile`, `.github/workflows/release-check.yml` | Sonnet: Makefile plumbing to a stated order |
 | 2 (parallel with R3) | R4 | 4.1–4.2 | `scripts/release-probe.sh`, `.github/workflows/release-probe.yml` | Sonnet: a script to a stated contract |
 | 2 (parallel with R3) | R5 | 5.2–5.5 | `CHANGELOG.md`, `SECURITY.md`, `RELEASING.md`, `README.md` | Sonnet: documents from the decisions |
-| 3 | main | 6.1–6.2 | — | Sonnet reviewer for 6.1 |
-| 4 | maintainer | 7.1–7.2 | — | — |
+| 2 (parallel with R3; only once `idiomatic-api-shape` is merged, since it builds on that change's queued sender) | R6 | 6.1–6.2 | `notify/queued.go`, `notify/queued_test.go`, `notify/smtp_test.go`, `notify/notify.go` | Opus: worker replacement under races (decisions 9 and 10) |
+| 3 | main | 7.1–7.2 | — | Sonnet reviewer for 7.1 |
+| 4 | maintainer | 8.1–8.2 | — | — |
 
 R3 and R4 both read `release-modules.txt`, which R2 owns and finishes first. R5 needs R3's target names, which are fixed here (`release-check` and `release-tags`), so it runs in parallel. Each dispatch gets a fresh Sonnet reviewer that edits nothing.
 
@@ -334,12 +335,25 @@ echo "probe: $version resolves for every published module"
 
 ---
 
-### Task 6.1–6.2: Integration gate (main session)
+### Task 6.1–6.2: Pre-release fixes in `notify` (decisions 9, 10; dispatch R6)
 
-- [ ] **6.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas, the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
-- [ ] **6.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, and keep the outputs.
+**Files:** `notify/queued.go`, `notify/queued_test.go`, `notify/smtp_test.go`, `notify/notify.go`
 
-### Task 7.1–7.2: First release (maintainer)
+**Interfaces:** no exported change. The worker loop gains a replacement path, and `ErrConfig`'s godoc gains one case.
 
-- [ ] **7.1 (maintainer):** `gh api -X PUT repos/kartaladev/scrty/private-vulnerability-reporting`, then read it back and expect `"enabled": true`.
-- [ ] **7.2 (maintainer):** after merge, follow `RELEASING.md` for `v0.1.0`, and watch `release-probe` pass.
+- [ ] **Step 1 (6.1, red):** Write `TestQueuedSender_WrappedSenderEndsItsGoroutine` with `goleak`. Build a sender with 1 worker, wrapping a sender that calls `runtime.Goexit()` on its first message and records later ones. Send message A, wait until it is in flight, then send message B. Assert B is delivered within 5 s, and that `Shutdown` with a 5 s context returns nil.
+- [ ] **Step 2:** `go test -race -run TestQueuedSender_WrappedSenderEndsItsGoroutine -count=1 ./notify/`. Expected: FAIL, because B is never delivered.
+- [ ] **Step 3 (green):** In the worker, a deferred check sees a delivery that did not return normally. It logs that delivery as failed, the same way a recovered panic is logged, and starts a replacement worker under the same `WaitGroup` before the dying one is marked done, so the drained signal never closes early. Run Step 2 and the queued-sender suite with `-race -count=5`. Expected: PASS.
+- [ ] **Step 4 (6.2):** Write `TestSMTPSender_NoSenderAddressIsAConfigError`: an `SMTPSender` built without `WithSMTPFrom` sends a `Message` with no `From`, and the error matches `notify.ErrConfig`. It passes today. Temporarily wrap a different error in `smtp.go`, watch the test fail, then edit it back.
+- [ ] **Step 5:** `ErrConfig`'s godoc in `notify/notify.go` names the case: a send with no sender address on the message and no default sender. `rg -n 'ErrConfig' notify/*.go` shows no other non-constructor use the godoc misses.
+- [ ] **Step 6:** `go test -race -count=1 ./notify/...`, `go vet ./notify/...`, `golangci-lint run ./notify/...`. Expected: PASS, 0 issues.
+
+### Task 7.1–7.2: Integration gate (main session)
+
+- [ ] **7.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas, the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
+- [ ] **7.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, and keep the outputs.
+
+### Task 8.1–8.2: First release (maintainer)
+
+- [ ] **8.1 (maintainer):** `gh api -X PUT repos/kartaladev/scrty/private-vulnerability-reporting`, then read it back and expect `"enabled": true`.
+- [ ] **8.2 (maintainer):** after merge, follow `RELEASING.md` for `v0.1.0`, and watch `release-probe` pass.
