@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -16,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/ginsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // deciding is an authorizer that answers every question with err, so a case
@@ -497,6 +499,16 @@ func TestGin_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
 			panics: "ginsec: ResourcePrivileges needs non-nil Guards",
 		},
 		{
+			name:   "RequireRecentAuthentication",
+			build:  func() { (*ginsec.Guards)(nil).RequireRecentAuthentication() },
+			panics: "ginsec: RequireRecentAuthentication needs non-nil Guards",
+		},
+		{
+			name:   "RequireAuthenticationWithin",
+			build:  func() { (*ginsec.Guards)(nil).RequireAuthenticationWithin(time.Minute) },
+			panics: "ginsec: RequireAuthenticationWithin needs non-nil Guards",
+		},
+		{
 			name: "ResourceOwnerships",
 			build: func() {
 				ginsec.ResourceOwnerships[string](nil, "orders", "order", ownedByAnyone)
@@ -510,6 +522,331 @@ func TestGin_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
 			t.Parallel()
 
 			assert.PanicsWithValue(t, tc.panics, tc.build)
+		})
+	}
+}
+
+// fixedClock is a clock that reads one moment, so a case says when "now" is.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
+var _ clock.Clock = fixedClock{}
+
+// TestGin_RecencyGuard pins the gin recency guard to the core guard's
+// judgement: the same window, the same default, the same refusal.
+func TestGin_RecencyGuard(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+
+	// authenticatedAgo reports a consumer's authentication time d before base.
+	authenticatedAgo := func(d time.Duration) ginsec.GuardOption {
+		return ginsec.WithAuthenticationTime(func(context.Context) (time.Time, bool) {
+			return base.Add(-d), true
+		})
+	}
+
+	type testCase struct {
+		name string
+
+		// opts are the guards' options. The clock is base unless clockAt says
+		// otherwise.
+		opts    []ginsec.GuardOption
+		clockAt func() time.Time
+
+		// mw is the guard under test, nil meaning RequireRecentAuthentication.
+		mw func(g *ginsec.Guards) gin.HandlerFunc
+
+		// session serves the request through the chain's bearer fixture, so
+		// the guard reads the session the chain resolved.
+		session      bool
+		noPrincipal  bool
+		noAuthorizer bool
+
+		assert func(t *testing.T, out *served)
+	}
+
+	refusedWithin := func(window time.Duration) func(*testing.T, *served) {
+		return func(t *testing.T, out *served) {
+			t.Helper()
+
+			assert.False(t, out.routeRan, "the route does not run for a stale authentication")
+			require.Len(t, out.ginErrors, 1)
+			require.ErrorIs(t, out.ginErrors[0], httpsec.ErrReauthenticationRequired)
+
+			var refusal *httpsec.ReauthenticationRequiredError
+			require.ErrorAs(t, out.ginErrors[0], &refusal)
+			assert.Equal(t, window, refusal.Window)
+			assert.Equal(t, http.StatusForbidden, out.rec.Code)
+		}
+	}
+
+	letThrough := func(t *testing.T, out *served) {
+		t.Helper()
+
+		assert.True(t, out.routeRan, "the route runs for a recent authentication")
+		assert.Empty(t, out.ginErrors)
+		assert.Equal(t, http.StatusOK, out.rec.Code)
+	}
+
+	within := func(d time.Duration) func(g *ginsec.Guards) gin.HandlerFunc {
+		return func(g *ginsec.Guards) gin.HandlerFunc { return g.RequireAuthenticationWithin(d) }
+	}
+
+	cases := []testCase{
+		{
+			name:   "stale by 16 minutes is refused with the default window",
+			opts:   []ginsec.GuardOption{authenticatedAgo(16 * time.Minute)},
+			assert: refusedWithin(15 * time.Minute),
+		},
+		{
+			name:   "fresh by 5 minutes runs the route",
+			opts:   []ginsec.GuardOption{authenticatedAgo(5 * time.Minute)},
+			assert: letThrough,
+		},
+		{
+			name:   "the window is inclusive",
+			opts:   []ginsec.GuardOption{authenticatedAgo(15 * time.Minute)},
+			assert: letThrough,
+		},
+		{
+			name: "the guards' window replaces the default",
+			opts: []ginsec.GuardOption{
+				ginsec.WithRecentAuthenticationWindow(time.Hour), authenticatedAgo(45 * time.Minute),
+			},
+			assert: letThrough,
+		},
+		{
+			name: "a shorter guards' window refuses with that window",
+			opts: []ginsec.GuardOption{
+				ginsec.WithRecentAuthenticationWindow(time.Minute), authenticatedAgo(5 * time.Minute),
+			},
+			assert: refusedWithin(time.Minute),
+		},
+		{
+			name:   "a per-route window of 5 minutes refuses at 6 minutes",
+			opts:   []ginsec.GuardOption{authenticatedAgo(6 * time.Minute)},
+			mw:     within(5 * time.Minute),
+			assert: refusedWithin(5 * time.Minute),
+		},
+		{
+			name: "a per-route window wins over the guards' window",
+			opts: []ginsec.GuardOption{
+				ginsec.WithRecentAuthenticationWindow(5 * time.Minute), authenticatedAgo(45 * time.Minute),
+			},
+			mw:     within(time.Hour),
+			assert: letThrough,
+		},
+		{
+			name: "a consumer time source reporting none is refused",
+			opts: []ginsec.GuardOption{ginsec.WithAuthenticationTime(
+				func(context.Context) (time.Time, bool) { return time.Time{}, false })},
+			assert: refusedWithin(15 * time.Minute),
+		},
+		{
+			// The session was authenticated at the real now, and the clock is
+			// base, so only the consumer's time source can make this stale.
+			name:    "a consumer time source replaces a fresh session",
+			opts:    []ginsec.GuardOption{authenticatedAgo(16 * time.Minute)},
+			session: true,
+			assert:  refusedWithin(15 * time.Minute),
+		},
+		{
+			name:    "a fresh session runs the route",
+			session: true,
+			clockAt: func() time.Time { return time.Now().Add(5 * time.Minute) },
+			assert:  letThrough,
+		},
+		{
+			name:    "a stale session is refused",
+			session: true,
+			clockAt: func() time.Time { return time.Now().Add(16 * time.Minute) },
+			assert:  refusedWithin(15 * time.Minute),
+		},
+		{
+			name:   "a request with no session is refused",
+			assert: refusedWithin(15 * time.Minute),
+		},
+		{
+			name:        "no principal is told to authenticate",
+			opts:        []ginsec.GuardOption{authenticatedAgo(time.Minute)},
+			noPrincipal: true,
+			assert: func(t *testing.T, out *served) {
+				assert.False(t, out.routeRan)
+				require.Len(t, out.ginErrors, 1)
+				require.ErrorIs(t, out.ginErrors[0], httpsec.ErrAuthenticationRequired)
+				assert.NotErrorIs(t, out.ginErrors[0], httpsec.ErrReauthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, out.rec.Code)
+			},
+		},
+		{
+			name:         "no authorizer is access denied before recency is judged",
+			opts:         []ginsec.GuardOption{authenticatedAgo(time.Hour)},
+			noAuthorizer: true,
+			assert: func(t *testing.T, out *served) {
+				assert.False(t, out.routeRan)
+				require.Len(t, out.ginErrors, 1)
+				require.ErrorIs(t, out.ginErrors[0], authorize.ErrAccessDenied)
+				assert.NotErrorIs(t, out.ginErrors[0], httpsec.ErrReauthenticationRequired)
+				assert.Equal(t, http.StatusForbidden, out.rec.Code)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := base
+			if tc.clockAt != nil {
+				now = tc.clockAt()
+			}
+
+			g := mustGuards(t, nil, append([]ginsec.GuardOption{
+				ginsec.WithChainAuthorizer(), ginsec.WithGuardClock(fixedClock{at: now}),
+			}, tc.opts...)...)
+
+			mw := g.RequireRecentAuthentication
+			if tc.mw != nil {
+				mw = func() gin.HandlerFunc { return tc.mw(g) }
+			}
+
+			var chainOpts []httpsec.Option
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil)
+
+			if tc.session {
+				chainOpts, _ = authenticated(t)
+				req = bearerRequest(t.Context(), http.MethodGet, "/invoices")
+			} else if !tc.noPrincipal {
+				chainOpts = append(chainOpts, httpsec.RegisterInterceptor(
+					publishing(testPrincipal()), httpsec.OrderBearerToken))
+			}
+
+			if !tc.noAuthorizer {
+				chainOpts = append(chainOpts, httpsec.EnableAuthorization(deciding(t, nil)))
+			}
+
+			out := &served{}
+
+			eng := gin.New()
+			eng.Use(out.collecting())
+			eng.Use(ginsec.Middleware(newChain(t, chainOpts...)))
+			eng.GET("/invoices", mw(), out.route())
+
+			out.rec = serve(eng, req)
+
+			tc.assert(t, out)
+		})
+	}
+}
+
+// fixedClockPtr is a clock whose nil pointer is a typed-nil interface value.
+type fixedClockPtr struct{}
+
+func (*fixedClockPtr) Now() time.Time { return time.Time{} }
+
+// TestGin_NewGuards_Recency pins that gin guards refuse recency options no
+// guard could judge with, at construction, naming the option.
+func TestGin_NewGuards_Recency(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *fixedClockPtr
+
+	type testCase struct {
+		name   string
+		opts   []ginsec.GuardOption
+		assert func(t *testing.T, g *ginsec.Guards, err error)
+	}
+
+	refused := func(option string) func(*testing.T, *ginsec.Guards, error) {
+		return func(t *testing.T, g *ginsec.Guards, err error) {
+			t.Helper()
+
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.ErrorContains(t, err, option)
+			assert.Nil(t, g)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "defaults build",
+			assert: func(t *testing.T, g *ginsec.Guards, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, g)
+			},
+		},
+		{
+			name:   "window of zero",
+			opts:   []ginsec.GuardOption{ginsec.WithRecentAuthenticationWindow(0)},
+			assert: refused("WithRecentAuthenticationWindow"),
+		},
+		{
+			name:   "negative window",
+			opts:   []ginsec.GuardOption{ginsec.WithRecentAuthenticationWindow(-time.Second)},
+			assert: refused("WithRecentAuthenticationWindow"),
+		},
+		{
+			name:   "nil clock",
+			opts:   []ginsec.GuardOption{ginsec.WithGuardClock(nil)},
+			assert: refused("WithGuardClock"),
+		},
+		{
+			name:   "typed-nil clock",
+			opts:   []ginsec.GuardOption{ginsec.WithGuardClock(typedNil)},
+			assert: refused("WithGuardClock"),
+		},
+		{
+			name:   "nil authentication time",
+			opts:   []ginsec.GuardOption{ginsec.WithAuthenticationTime(nil)},
+			assert: refused("WithAuthenticationTime"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g, err := ginsec.NewGuards(nil,
+				append([]ginsec.GuardOption{ginsec.WithChainAuthorizer()}, tc.opts...)...)
+			tc.assert(t, g, err)
+		})
+	}
+}
+
+// TestGin_RequireAuthenticationWithinFailsAtWiring pins that a route window no
+// caller could meet is a wiring panic naming the window.
+func TestGin_RequireAuthenticationWithinFailsAtWiring(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		window time.Duration
+		panics string
+	}
+
+	cases := []testCase{
+		{
+			name:   "zero",
+			window: 0,
+			panics: "ginsec: RequireAuthenticationWithin needs a window above zero, got 0s",
+		},
+		{
+			name:   "negative",
+			window: -time.Second,
+			panics: "ginsec: RequireAuthenticationWithin needs a window above zero, got -1s",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := mustGuards(t, nil, ginsec.WithChainAuthorizer())
+
+			assert.PanicsWithValue(t, tc.panics, func() { g.RequireAuthenticationWithin(tc.window) })
 		})
 	}
 }
