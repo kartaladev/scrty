@@ -450,8 +450,9 @@ proved they kept it.
   back in does not end it, and it is independent of `EnableAccountRecovery`: it only reads the
   record store.
 - **Regeneration.** `GET`/`POST /recovery/codes` count and regenerate a user's saved codes for a
-  full session. A `POST` needs a session whose latest authentication is within the freshness window
-  and is refused with `recovery.ErrReauthenticationRequired` (403) otherwise.
+  full session. A `POST` needs a session whose authentication time (sign-in, satisfied second
+  factor or re-authentication) is within the freshness window, its end included, and is refused
+  with `recovery.ErrReauthenticationRequired` (403) otherwise.
 
 ### Defaults
 
@@ -539,7 +540,7 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
 | Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
-| Freshness to register or remove a passkey | latest authentication within 15 minutes | `passkey.WithManagementFreshness` |
+| Freshness to register or remove a passkey | the session's authentication time (sign-in, satisfied second factor or re-authentication) within 15 minutes, the end included | `passkey.WithManagementFreshness` |
 | Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session steps up through the passkey method; a passkey-first session cannot (same channel) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
 | User verification | required | `passkey.WithUserVerification` |
 | Resident (discoverable) key | required; a non-resident passkey serves only as a second factor | `passkey.WithResidentKey` |

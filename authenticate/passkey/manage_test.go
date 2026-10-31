@@ -576,9 +576,20 @@ func TestManageRemove(t *testing.T) {
 			assert: refusedKept(passkey.ErrReauthenticationRequired),
 		},
 		{
-			name:    "a session at exactly the freshness window is admitted",
+			name:    "exactly at the window's end is admitted",
 			session: fresh, target: mine, advance: 15 * time.Minute,
 			assert: removedWithNotice("Security key", mine),
+		},
+		{
+			name: "a zero authentication time is refused",
+			session: func(*manageEnv) *session.Session {
+				s := fullSession("sess-1", "u-1")
+				s.AuthenticatedAt = time.Time{}
+
+				return s
+			},
+			target: mine,
+			assert: refusedKept(passkey.ErrReauthenticationRequired),
 		},
 		{
 			name: "a second factor met 5 minutes ago keeps an older session fresh",

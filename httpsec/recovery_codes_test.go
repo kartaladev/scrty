@@ -229,6 +229,33 @@ func TestRecoveryCodes(t *testing.T) {
 			},
 		},
 		{
+			name: "exactly at the window's end is admitted",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t) // 09:00
+				h.elapse(t, s, 15*time.Minute)
+
+				return h.codesRequest(t, http.MethodPost, s) // 09:15:00
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				regenerated(t, h, out, first)
+			},
+		},
+		{
+			name: "a zero authentication time is refused",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s, err := h.sessions.Create(t.Context(), e2eUser, session.WithFirstFactor(factor.Password),
+					func(s *session.Session) { s.AuthenticatedAt = time.Time{} })
+				require.NoError(t, err)
+
+				return h.codesRequest(t, http.MethodPost, s)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, recovery.ErrReauthenticationRequired)
+				assert.False(t, out.handlerRan)
+				setUnchanged(t, h, first)
+			},
+		},
+		{
 			name: "a second factor satisfied at 09:15 is fresh at 09:20",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
 				h.chainOpts = append(h.chainOpts,

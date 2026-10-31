@@ -398,8 +398,10 @@ func constantTimeEqual(stored, presented string) bool {
 // challenge, never confined — must have met its second factor when its
 // account has one (owesSecondFactor): a configured MFA method its user can
 // use, or the user's own active passkeys while a passkey route can meet the
-// second factor. Its latest authentication, the later of its creation and its
-// second factor, must also be within the freshness window. The configured
+// second factor. The session's authentication time (sign-in, satisfied second
+// factor or re-authentication) must also be within the freshness window, by
+// session.Session.AuthenticatedWithin: the window's end is admitted, and a
+// session with no recorded authentication time never is. The configured
 // methods are rc.MFAMethods, or Deps.MFAMethods when rc lists none. Anything
 // else, such as a session with a pending MFA challenge, is refused. Every
 // refusal is ErrReauthenticationRequired, except that a failed MFA or passkey
@@ -445,7 +447,7 @@ func (m *Passkeys) admit(ctx context.Context, s *session.Session, rc Registratio
 		}
 	}
 
-	if m.clock.Now().Sub(s.AuthenticatedAt) > m.freshness {
+	if !s.AuthenticatedWithin(m.clock.Now(), m.freshness) {
 		return ErrReauthenticationRequired
 	}
 
