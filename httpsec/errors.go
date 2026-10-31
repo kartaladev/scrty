@@ -106,9 +106,11 @@ var (
 	ErrReauthenticationRequired = errors.New("httpsec: reauthentication required")
 
 	// ErrReauthenticationMethodNotUsable refuses a re-authentication request
-	// whose method the caller cannot use: the user has not enrolled it, or
-	// it is not among the methods the re-authentication endpoints
-	// (EnableReauthentication) offer. Nothing was changed. It maps to 403.
+	// whose method the caller cannot use: the user has not enrolled it, it is
+	// not among the methods the re-authentication endpoints
+	// (EnableReauthentication) offer, or it is the password while the user
+	// holds a usable second factor or a second factor is required for every
+	// re-proof. Nothing was checked or counted. It maps to 403.
 	// Its text names no method, session or user.
 	ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication method not usable")
 )
