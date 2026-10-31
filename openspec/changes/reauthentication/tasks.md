@@ -90,7 +90,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - no same-channel refusal.
 
   ("A second-factor re-proof is verified like a second factor", every scenario; "Re-proof challenges are their own and bound to the session", every remaining scenario; "A refused authenticator at re-proof keeps its meaning", every scenario; "A user re-proves with the strongest factor they hold, by default" scenario "A passkey login re-proves with the passkey"; "Re-proof endpoints exist only when re-authentication is enabled" scenario "A method segment is required".) Verify with `go test -race -run 'TestReauthVerify|TestReauthBegin' ./httpsec/`
-- [ ] 6.4 `POST <prefix>/password`:
+- [x] 6.4 `POST <prefix>/password`:
   - the factor policy before the body;
   - binding only `password` (form, then JSON) under the login body limit;
   - the username from the resolved caller;
@@ -98,7 +98,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - lockout failures cleared on success.
 
   ("A password re-proof checks the session's own user under the account lockout", every scenario; "A user re-proves with the strongest factor they hold, by default" scenarios "A TOTP holder offers a password", "A user without a second factor", "MFA not configured", "Lookup failure does not downgrade"; "A consumer can require a second factor for every re-proof", every scenario.) Verify with `go test -race -run 'TestReauthPassword' ./httpsec/`
-- [ ] 6.5 Resolve:
+- [x] 6.5 Resolve:
   - the authentication time from the chain's clock;
   - for a second factor, also the satisfied second factor at that time;
   - a strict rotation with rollback on failure;
@@ -106,7 +106,7 @@ Each task names how it is verified. A signature change owns every caller of the 
   - sampled refusal logs free of secrets.
 
   ("A successful re-proof refreshes the authentication time and rotates the session", every scenario; "Re-proof responses are not cached and re-proof logs carry no secret", every scenario; "Only a full session may re-prove" scenario "A fresh session re-proves"; MODIFIED sessions scenario "A re-authentication refreshes the authentication time"; MODIFIED account-recovery scenario "Fresh after a re-authentication"; MODIFIED passkey-authentication scenario "Freshness from a re-authentication".) Verify with `go test -race -run 'TestReauthResolve|TestRecoveryCodes|TestPasskeyRegister' ./httpsec/`
-- [ ] 6.6 Godoc on `EnableReauthentication`, every option, responder and endpoint, naming each default. The README gains a re-authentication section after the guards section:
+- [x] 6.6 Godoc on `EnableReauthentication`, every option, responder and endpoint, naming each default. The README gains a re-authentication section after the guards section:
   - the endpoints and the default JSON;
   - the factor policy, and why no "any factor" option exists;
   - OIDC-only users and the listing responder filter;
@@ -117,7 +117,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 7. A lost strict rotation is a renewal conflict (`sessions`, `multi-factor-auth`, `reauthentication`)
 
-- [ ] 7.1 Within the in-flight window after a strict rotation, the manager remembers the rotated handle's digest, and a strict `Rotate` of that handle that finds no record fails with `session.ErrRenewalConflict`:
+- [x] 7.1 Within the in-flight window after a strict rotation, the manager remembers the rotated handle's digest, and a strict `Rotate` of that handle that finds no record fails with `session.ErrRenewalConflict`:
   - no store write and no `judge` on that path, so reuse detection never fires and nothing is revoked;
   - past the window, or for a never-rotated revoked or unknown session, `ErrNotFound`; an expired session `ErrExpired`;
   - the old identifier stops loading at once;
