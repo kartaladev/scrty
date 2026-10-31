@@ -11,8 +11,8 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 1. One freshness check (`sessions`, `account-recovery`, `passkey-authentication`)
 
-- [ ] 1.1 `(*session.Session).AuthenticatedWithin(now time.Time, window time.Duration) bool`: no more than `window` elapsed, inclusive; a future authentication time counts as no time elapsed; a zero authentication time is never within (D1; ADDED sessions "One check decides whether a session authenticated within a window", every scenario as one table test). Also cover the MODIFIED sessions scenario "Saving cannot refresh it" against the in-memory store. Verify with `go test -race -run 'TestAuthenticatedWithin|TestSave' ./session/`
-- [ ] 1.2 Recovery-code regeneration (`httpsec/recovery_codes.go`) and the passkey manager's freshness check (`authenticate/passkey/passkey.go` `admit`) call `AuthenticatedWithin` instead of their own comparisons. Add boundary cases first:
+- [x] 1.1 `(*session.Session).AuthenticatedWithin(now time.Time, window time.Duration) bool`: no more than `window` elapsed, inclusive; a future authentication time counts as no time elapsed; a zero authentication time is never within (D1; ADDED sessions "One check decides whether a session authenticated within a window", every scenario as one table test). Also cover the MODIFIED sessions scenario "Saving cannot refresh it" against the in-memory store. Verify with `go test -race -run 'TestAuthenticatedWithin|TestSave' ./session/`
+- [x] 1.2 Recovery-code regeneration (`httpsec/recovery_codes.go`) and the passkey manager's freshness check (`authenticate/passkey/passkey.go` `admit`) call `AuthenticatedWithin` instead of their own comparisons. Add boundary cases first:
   - exactly at the window's end is admitted;
   - a zero authentication time is refused.
 
@@ -20,7 +20,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 ## 2. Refusals (`http-error-propagation`)
 
-- [ ] 2.1 `httpsec.ErrReauthenticationRequired`, `*httpsec.ReauthenticationRequiredError{Window}` and `httpsec.ErrReauthenticationMethodNotUsable`:
+- [x] 2.1 `httpsec.ErrReauthenticationRequired`, `*httpsec.ReauthenticationRequiredError{Window}` and `httpsec.ErrReauthenticationMethodNotUsable`:
   - the error type is `ErrReauthenticationRequired` under `errors.Is`, and exposes its window under `errors.As`;
   - its text names no session, user or handle;
   - both map to 403 in `statusTable`;
