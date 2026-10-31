@@ -216,8 +216,8 @@ type RecoveryOption func(*recoveryInterceptor) error
 //     only, and exist only when the core enables recovery.ProofSaved;
 //     otherwise their path reaches the application like any other. A POST
 //     regenerates the set through recovery.Recoverer.Regenerate, which
-//     notifies the user, when the session's latest authentication — the
-//     later of its creation and its second factor's satisfaction — is within
+//     notifies the user, when the session's authentication time (sign-in,
+//     satisfied second factor or re-authentication) is within
 //     15 minutes (WithRecoveryRegenerationFreshness), and is refused with
 //     recovery.ErrReauthenticationRequired (403) otherwise; it answers 200
 //     with {"recovery_codes":[…]} and Cache-Control: no-store

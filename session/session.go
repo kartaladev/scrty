@@ -125,9 +125,9 @@ type Session struct {
 	// and Rotate writes the value from the session it is given, which is how
 	// second-factor verification records its refresh. Either way a
 	// successor's CreatedAt is its renewal time while its AuthenticatedAt
-	// stays the sign-in's, unless the caller refreshed it. Every freshness check that asks
-	// how recently the user authenticated reads this field alone, never
-	// CreatedAt. Library-owned: Save keeps the stored value, so changing it
+	// stays the sign-in's, unless the caller refreshed it. Every freshness
+	// check that asks how recently the user authenticated reads this field
+	// alone, never CreatedAt, through AuthenticatedWithin. Library-owned: Save keeps the stored value, so changing it
 	// here and saving changes nothing, and a consumer cannot set it through
 	// Data.
 	AuthenticatedAt time.Time
@@ -267,6 +267,20 @@ type Session struct {
 	// "returned unchanged" has to survive a durable store, where a number
 	// comes back a float and "0042" comes back 42.
 	Data map[string]string
+}
+
+// AuthenticatedWithin reports whether s authenticated no longer than window
+// before now, reading AuthenticatedAt: the session's authentication time
+// (sign-in, satisfied second factor or re-authentication). It is the one
+// freshness check the library makes.
+//
+// The window's end is inclusive: a session that authenticated exactly window
+// before now is within it. An authentication time later than now, as when
+// replicas' clocks disagree, counts as no time elapsed, so it is within the
+// window. A zero AuthenticatedAt, a session with no
+// recorded authentication, is never within any window.
+func (s *Session) AuthenticatedWithin(now time.Time, window time.Duration) bool {
+	return !s.AuthenticatedAt.IsZero() && now.Sub(s.AuthenticatedAt) <= window
 }
 
 // clone returns a session sharing no map or slice with s, so neither side can reach the

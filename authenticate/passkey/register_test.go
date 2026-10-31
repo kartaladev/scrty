@@ -105,6 +105,17 @@ func TestBeginRegistration(t *testing.T) {
 			},
 		},
 		{name: "stale full session", session: full, at: 16 * time.Minute, assert: reauth},
+		{name: "exactly at the window's end is admitted", session: full, at: 15 * time.Minute, assert: issued},
+		{
+			name: "a zero authentication time is refused",
+			session: func() *session.Session {
+				s := full()
+				s.AuthenticatedAt = time.Time{}
+
+				return s
+			},
+			assert: reauth,
+		},
 		{
 			name:  "freshness counts from the second factor",
 			setup: func(_ *testing.T, f *fixture) { f.withTOTP(true, nil) },

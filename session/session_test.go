@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -217,4 +219,106 @@ func TestConsumerDataIsReturnedUnchanged(t *testing.T) {
 	loaded, err := m.Load(t.Context(), s.ID)
 	require.NoError(t, err)
 	assert.Equal(t, data, loaded.Data, "the library did not return the consumer's map byte-for-byte")
+}
+
+// TestAuthenticatedWithin pins the one freshness rule: no more than the window
+// elapsed since the authentication time, inclusive of the window's end; a time
+// ahead of the clock counts as none elapsed; a zero time is never within.
+func TestAuthenticatedWithin(t *testing.T) {
+	t.Parallel()
+
+	at := func(hh, mm, ss int) time.Time { return time.Date(2026, 1, 2, hh, mm, ss, 0, time.UTC) }
+
+	type testCase struct {
+		name            string
+		authenticatedAt time.Time
+		now             time.Time
+		window          time.Duration
+		assert          func(t *testing.T, got bool)
+	}
+
+	cases := []testCase{
+		{
+			name:            "inside the window",
+			authenticatedAt: at(9, 0, 0),
+			now:             at(9, 10, 0),
+			window:          15 * time.Minute,
+			assert:          func(t *testing.T, got bool) { assert.True(t, got) },
+		},
+		{
+			name:            "at the window's end",
+			authenticatedAt: at(9, 0, 0),
+			now:             at(9, 15, 0),
+			window:          15 * time.Minute,
+			assert:          func(t *testing.T, got bool) { assert.True(t, got) },
+		},
+		{
+			name:            "past the window",
+			authenticatedAt: at(9, 0, 0),
+			now:             at(9, 15, 1),
+			window:          15 * time.Minute,
+			assert:          func(t *testing.T, got bool) { assert.False(t, got) },
+		},
+		{
+			name:            "authentication time seconds ahead of the clock",
+			authenticatedAt: at(9, 0, 5),
+			now:             at(9, 0, 0),
+			window:          15 * time.Minute,
+			assert:          func(t *testing.T, got bool) { assert.True(t, got) },
+		},
+		{
+			name:            "authentication time hours ahead of the clock",
+			authenticatedAt: at(12, 0, 0),
+			now:             at(9, 0, 0),
+			window:          15 * time.Minute,
+			assert:          func(t *testing.T, got bool) { assert.True(t, got) },
+		},
+		{
+			name:            "no recorded authentication time",
+			authenticatedAt: time.Time{},
+			now:             at(9, 0, 0),
+			window:          24 * time.Hour,
+			assert:          func(t *testing.T, got bool) { assert.False(t, got) },
+		},
+		{
+			name:            "no recorded authentication time against the largest window",
+			authenticatedAt: time.Time{},
+			now:             at(9, 0, 0),
+			window:          time.Duration(math.MaxInt64),
+			assert:          func(t *testing.T, got bool) { assert.False(t, got) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := &session.Session{AuthenticatedAt: tc.authenticatedAt}
+			tc.assert(t, s.AuthenticatedWithin(tc.now, tc.window))
+		})
+	}
+}
+
+// TestSave_KeepsAuthenticatedAt pins that saving cannot refresh the
+// authentication time: it is library-owned, and Save keeps the stored value.
+func TestSave_KeepsAuthenticatedAt(t *testing.T) {
+	t.Parallel()
+
+	store := must.Must(session.NewMemoryStore(
+		session.WithMemoryStoreClock(clockwork.NewFakeClockAt(createdAt)),
+	))
+	s := storedSession("keeps-authenticated-at")
+	s.AuthenticatedAt = createdAt
+	require.NoError(t, store.Create(t.Context(), s))
+
+	loaded, err := store.Load(t.Context(), s.ID)
+	require.NoError(t, err)
+
+	loaded.AuthenticatedAt = createdAt.Add(time.Hour)
+	require.NoError(t, store.Save(t.Context(), loaded))
+
+	reloaded, err := store.Load(t.Context(), s.ID)
+	require.NoError(t, err)
+	assert.True(t, createdAt.Equal(reloaded.AuthenticatedAt),
+		"Save changed the authentication time to %s", reloaded.AuthenticatedAt)
 }

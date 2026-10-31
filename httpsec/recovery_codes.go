@@ -34,9 +34,10 @@ type RecoveryCodesResponder func(ex *Exchange, codes []string) error
 type RecoveryCountResponder func(ex *Exchange, count recovery.RemainingCodes) error
 
 // WithRecoveryRegenerationFreshness sets how recent a session's latest authentication
-// must be for it to regenerate the user's saved codes. The latest
-// authentication is the later of the session's creation and its second
-// factor's satisfaction.
+// must be for it to regenerate the user's saved codes. Freshness reads the
+// session's authentication time (sign-in, satisfied second factor or
+// re-authentication), never a renewal, and admits a session exactly at the
+// window's end.
 //
 // Default: 15 minutes. A regeneration mints a lasting credential and is rare,
 // so the default asks for a recent login; a consumer who wants a longer window,
@@ -146,16 +147,18 @@ func challengePending(s *session.Session) bool {
 }
 
 // regenerate replaces the session user's saved codes, when the session's
-// latest authentication (session.Session.AuthenticatedAt: the sign-in, or the
-// second factor satisfied since) is within the window, through the core, which
-// also sends the user the notice. A renewal is not an authentication and never
-// moves that time. Outside the window it is
+// authentication time (sign-in, satisfied second factor or re-authentication)
+// is within the window by session.Session.AuthenticatedWithin, through the
+// core, which also sends the user the notice. The window's end is inclusive,
+// and a session with no recorded authentication time is never within it. A
+// renewal is not an authentication and never moves that time. Outside the
+// window it is
 // recovery.ErrReauthenticationRequired, and nothing changes.
 //
 // Cache-Control: no-store is set before the responder runs, since the
 // response carries the new codes.
 func (i *recoveryInterceptor) regenerate(ex *Exchange, s *session.Session) error {
-	if i.now().Sub(s.AuthenticatedAt) > i.freshness {
+	if !s.AuthenticatedWithin(i.now(), i.freshness) {
 		return recovery.ErrReauthenticationRequired
 	}
 
