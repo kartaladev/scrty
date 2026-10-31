@@ -13,13 +13,13 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [ ] 2.1 Add `Host()` and `Secure()` to `httpsec.Request` and the net/http request, test-first: a table test over a TLS and a plain request. Verify: `go test -run 'TestHTTPRequest_HostAndSecure' -count=1 ./httpsec/` passes after failing.
 - [ ] 2.2 Implement `Host()` and `Secure()` in `ginsec` and `fibersec` from the transport, never from the frameworks' proxy helpers, test-first. Verify: `go test -run 'TestRequest_HostAndSecure' ./...` in both adapter modules passes after failing.
 - [ ] 2.3 Add `WithHTTPSDeployment()` and its conflict with trusted proxies, test-first. Verify: `go test -run 'TestHTTPSDeployment' -count=1 ./httpsec/` passes after failing.
-- [ ] 2.4 Add `WithTrustedProxies` construction rules (empty list, catch-all prefixes, no family or field, host without allowlist, hop limit below one), test-first, one table. Verify: `go test -run 'TestTrustedProxies_Construction' -count=1 ./httpsec/`.
+- [ ] 2.4 Add `EnableTrustedProxies` construction rules (empty list, catch-all prefixes, no family or field, host without allowlist, hop limit below one), test-first, one table. Verify: `go test -run 'TestTrustedProxies_Construction' -count=1 ./httpsec/`.
 - [ ] 2.5 Implement right-to-left resolution of `X-Forwarded-*` and `Forwarded`, joining repeated headers, honouring `MaxHops` and the named fields, test-first. Use the scenarios of `trusted-proxies` as the table, including a forged left-most entry and a bypassed proxy. Verify: `go test -run 'TestTrustedProxies_Resolve' -count=1 ./httpsec/`.
 - [ ] 2.6 Refuse a forwarded host outside the allowlist with `ErrHostNotAllowed`, and register it in the status table at 400, test-first. Verify: `go test -run 'TestTrustedProxies_HostNotAllowed|TestStatusForError' -count=1 ./httpsec/`.
 - [ ] 2.7 Remove both header families after resolution unless `KeepForwardedHeaders()` is given, on all three adapters, test-first. Verify: `go test -run 'TestTrustedProxies_RemovesHeaders' ./...` in the core and both adapter modules.
 - [ ] 2.8 Add `ClientFromContext` and make every interceptor (rate limiting included) read the resolved values, test-first. Verify: `go test -run 'TestClientFromContext|TestSourceGuard_UsesResolvedClient' -count=1 ./httpsec/`.
 - [ ] 2.9 Remove `ginsec.WithForwardedClientIP` and route gin and fiber through the chain's resolver, with failing tests first for "gin's own trusted proxies do not change the chain" and "Same answer on every adapter". Verify: those tests pass in `test/httpsecconformance` on all three adapters.
-- [ ] 2.10 Document `WithTrustedProxies`, `WithAllowedHosts`, `WithHTTPSDeployment` and `ClientFromContext` in godoc, each naming its default, and add the nginx and Traefik section to the README. Verify: `go doc ./httpsec WithTrustedProxies` shows the defaults, and `go vet ./...` is clean.
+- [ ] 2.10 Document `EnableTrustedProxies` (with `ForwardedHost`'s allowlist), `WithHTTPSDeployment` and `ClientFromContext` in godoc, each naming its default, and add the nginx and Traefik section to the README. Verify: `go doc ./httpsec EnableTrustedProxies` shows the defaults, and `go vet ./...` is clean.
 
 ## 3. Outer slots and security headers (D3, D4, D17)
 
@@ -76,17 +76,17 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [ ] 8.3 Add the replay port with the in-memory default, and the fail-closed store error, test-first. Verify: `go test -run 'TestDPoP_Replay' -count=1 -race ./httpsec/`.
 - [ ] 8.4 Accept the `DPoP` scheme in the signed-bearer and session-reference interceptors, refuse bound tokens as `Bearer`, and add `Require`, test-first. Verify: `go test -run 'TestDPoP_Bearer' -count=1 ./httpsec/`.
 - [ ] 8.5 Bind tokens at every issuing endpoint (login, MFA verify, passkey, magic link, OIDC handoff, recovery, re-authentication, renewal), test-first, one case per endpoint. Verify: `go test -run 'TestDPoP_Binding' -count=1 ./httpsec/`.
-- [ ] 8.6 Build `htu` from the resolved scheme and host, or `WithPublicURL`, test-first, including the trusted-proxy scenario. Verify: `go test -run 'TestDPoP_PublicURL' -count=1 ./httpsec/`.
-- [ ] 8.7 Add opt-in server nonces and the `WWW-Authenticate: DPoP` responses, and register the DPoP refusals at 401, test-first. Verify: `go test -run 'TestDPoP_Nonce|TestDPoP_Challenge|TestStatusForError' -count=1 ./httpsec/`.
+- [ ] 8.6 Build `htu` from the resolved scheme and host, or the DPoP config's `PublicURL`, test-first, including the trusted-proxy scenario. Verify: `go test -run 'TestDPoP_PublicURL' -count=1 ./httpsec/`.
+- [ ] 8.7 Add opt-in server nonces (the DPoP config's `Nonce` field) and the `WWW-Authenticate: DPoP` responses, and register the DPoP refusals at 401, test-first. Verify: `go test -run 'TestDPoP_Nonce|TestDPoP_Challenge|TestStatusForError' -count=1 ./httpsec/`.
 - [ ] 8.8 Run DPoP end to end on all three adapters in conformance, and check the doc's browser `dpop.ts` against a test server in a headless-browser test or a recorded proof vector. Verify: `go test -run 'TestDPoP' ./...` in the `test` module.
 - [ ] 8.9 Godoc `WithDPoP` and its defaults, and add the README section with the React, Next.js and htmx samples. Verify: `go doc ./httpsec WithDPoP`.
 
 ## 9. mTLS-bound tokens (D9)
 
-- [ ] 9.1 Bind tokens to a direct TLS client certificate with `WithCertificateBinding`, test-first, over an `httptest` TLS server with client certificates. Verify: `go test -run 'TestCertificateBinding_Direct' -count=1 ./httpsec/`.
+- [ ] 9.1 Bind tokens to a direct TLS client certificate with `EnableCertificateBinding`, test-first, over an `httptest` TLS server with client certificates. Verify: `go test -run 'TestCertificateBinding_Direct' -count=1 ./httpsec/`.
 - [ ] 9.2 Read a forwarded client certificate only from a trusted peer, in the header and encoding settled in 1.3, test-first. Verify: `go test -run 'TestCertificateBinding_Forwarded' -count=1 ./httpsec/`.
 - [ ] 9.3 Refuse a bound token without its certificate, register the refusal at 401, and run the scenarios on all three adapters, test-first. Verify: `go test -run 'TestCertificateBinding' ./...` in the core and `test` modules.
-- [ ] 9.4 Document certificate binding with its default and the proxy configuration it needs. Verify: `go doc ./httpsec WithCertificateBinding`.
+- [ ] 9.4 Document certificate binding with its default and the proxy configuration it needs. Verify: `go doc ./httpsec EnableCertificateBinding`.
 
 ## 10. Password policy and rehash (D10, D11)
 

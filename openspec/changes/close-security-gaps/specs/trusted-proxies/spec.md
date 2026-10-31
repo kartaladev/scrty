@@ -16,7 +16,7 @@ Enabling trusted proxies SHALL require a list of proxy address prefixes and exac
 - the prefix list is empty;
 - a prefix covers all IPv4 or all IPv6 addresses, unless the consumer states explicitly that every peer is trusted;
 - no header family or no field is named;
-- the host field is named and no allowed host is configured;
+- the host field is named without at least one allowed host;
 - the hop limit is less than one;
 - trusted proxies and the declaration that every request is secure are both configured.
 
@@ -25,8 +25,8 @@ Enabling trusted proxies SHALL require a list of proxy address prefixes and exac
 - **THEN** building the chain fails with a configuration error naming the proxy prefixes
 
 #### Scenario: Forwarded host without an allowlist
-- **WHEN** the consumer trusts the forwarded host field and configures no allowed hosts
-- **THEN** building the chain fails with a configuration error naming the allowed hosts
+- **WHEN** the consumer trusts the forwarded host field and gives it no allowed host
+- **THEN** building the chain fails with a configuration error naming the forwarded host field
 
 ### Requirement: Forwarded values are read only from a trusted peer, right to left
 When the transport peer is not within a trusted prefix, every forwarded header SHALL be ignored. When it is, the chain SHALL join all occurrences of the named header into one list and read it from the right: each entry added by a trusted proxy SHALL be skipped, and the first entry whose address is not trusted SHALL be the client. No more trusted hops than the hop limit, one by default, SHALL be skipped; once the limit is reached, the next entry SHALL be the client. The scheme and host SHALL be taken from the same hop as the client. A header the chain cannot parse SHALL be ignored, leaving the transport values.

@@ -33,7 +33,7 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
 - **CSRF protection**, moved here from `bff-resource-server`:
   - a Fetch Metadata and Origin-versus-Host check on unsafe methods;
   - a token layer for cookie-authenticated requests.
-- **Trusted proxies and API gateways**, opt-in through `httpsec.WithTrustedProxies`, absorbing `trusted-proxy-client-ip`:
+- **Trusted proxies and API gateways**, opt-in through `httpsec.EnableTrustedProxies`, absorbing `trusted-proxy-client-ip`:
   - the client IP, scheme and host are resolved from one named header family, only from listed proxies, right to left with a hop limit;
   - a forwarded host must be on a required allowlist;
   - consumed headers are removed by default;

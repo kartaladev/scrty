@@ -51,7 +51,7 @@ type Request interface {
 ```
 
 - **Default:** net/http and gin read `r.Host` and `r.TLS != nil`; fiber reads its host and TLS state from the connection, never from its proxy-aware helpers. The chain wraps the adapter's request with the resolved values (D7), so every interceptor reads one answer.
-- **Override:** `WithHTTPSDeployment()` declares every request secure, for TLS that ends upstream without forwarded headers. It conflicts with `WithTrustedProxies`, which is a configuration error.
+- **Override:** `WithHTTPSDeployment()` declares every request secure, for TLS that ends upstream without forwarded headers. It conflicts with `EnableTrustedProxies`, which is a configuration error.
 - **Why now:** adding a method to an interface consumers implement is breaking after the tag. The CSRF layer needs `Host()` anyway, and doing it later would break custom adapters twice.
 - **Alternatives rejected:**
   - *A single `URL()` accessor.* It is broader than needed, and invites rebuilding the URL inconsistently.
@@ -229,12 +229,15 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
 ### D7. Trusted proxies: opt-in, explicit, read right to left, never rewriting the request
 
 ```go
-httpsec.WithTrustedProxies(httpsec.TrustedProxies{
+httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
     Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
-    Headers:  httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto, httpsec.ForwardedHost),
-    MaxHops:  1,
+    Headers:  httpsec.XForwarded(
+        httpsec.ForwardedFor,
+        httpsec.ForwardedProto,
+        httpsec.ForwardedHost("app.example.com"), // the allowlist is the field's argument
+    ),
+    MaxHops: 1,
 })
-httpsec.WithAllowedHosts("app.example.com")
 func ClientFromContext(ctx context.Context) Client // IP, Secure, Host, ViaProxy
 ```
 
@@ -264,7 +267,7 @@ func ClientFromContext(ctx context.Context) Client // IP, Secure, Host, ViaProxy
         ^ never reached: a forged entry cannot become the client
 
  resolved: Client{IP: 203.0.113.7, Secure: true, Host: app.example.com, ViaProxy: true}
- then: host on allowlist? (if ForwardedHost named) --no--> 400 ErrHostNotAllowed
+ then: host on ForwardedHost's allowlist? (if named) --no--> 400 ErrHostNotAllowed
  then: delete Forwarded and X-Forwarded-* from the request (default)
 ```
 
@@ -296,9 +299,9 @@ httpsec.EnableBearerToken(deps, httpsec.WithDPoP(httpsec.DPoP{
     ProofMaxAge: 60 * time.Second,  // default
     Replay:      replayStore,       // default: in-memory, per process
     Algorithms:  []jwa.SignatureAlgorithm{jwa.ES256()}, // default
+    Nonce:       false,             // default; true turns on server nonces
+    PublicURL:   "",                // default: built from the resolved scheme and host (D2, D7)
 }))
-httpsec.WithDPoPNonce()         // opt-in server nonces
-httpsec.WithPublicURL("https://app.example.com") // optional; default from D2/D7
 ```
 
 - **Verification:**
@@ -349,7 +352,7 @@ httpsec.WithPublicURL("https://app.example.com") // optional; default from D2/D7
 
 ### D9. mTLS-bound tokens (RFC 8705)
 
-- **Default:** off. **Override:** `WithCertificateBinding()` on bearer authentication.
+- **Default:** off. **Override:** `EnableCertificateBinding(...)`, a top-level option, because the binding spans token issuance and its own slot (D19).
 - **Behaviour:** an issuing request with a client certificate binds `cnf.x5t#S256`. A bound token is accepted only with the same certificate, checked in the existing `OrderMTLS` slot.
 - **Behind a TLS-terminating proxy:** the certificate comes from a header the consumer names in the trusted-proxy configuration. It is read only from a trusted peer, and parsed as URL-encoded PEM.
 - **Open:** which header and encoding each common proxy uses must be verified before the spec for that part is final (open question).
@@ -454,7 +457,7 @@ type Event struct {
     Factor   identity.FirstFactor
     Session  string // digest, never the identifier
 }
-httpsec.WithSecurityEvents(func(ctx context.Context, e security.Event))
+httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 ```
 
 - **Default:** no sink, no events.
@@ -502,6 +505,22 @@ httpsec.WithSecurityEvents(func(ctx context.Context, e security.Event))
 | `password.ErrPasswordRejected` | 422; `ErrPasswordReused` stays 422 and is also `ErrPasswordRejected` |
 | a session handle not found | 404 |
 | replay-store, history and breach-lookup failures | 500 (dependency failures) |
+
+### D19. Top-level options that switch on a security feature are named `Enable…`
+
+```
+ httpsec.New(
+     EnableX(...)       <- switches on a feature that is off until called; checked at build time
+     WithX(...)         <- a setting or declaration that switches on no feature (WithClock, WithLogger,
+                           WithHTTPSDeployment)
+ )
+ EnableX(deps, WithY(...), WithoutZ())   <- options inside a feature tune it: With / Without
+```
+
+- **Rule:** every top-level `httpsec.New` option that switches on a security feature is `EnableX`, registered through the existing `config.enable` seam so its dependencies are checked when the chain is built. A top-level option that only sets something or declares a fact is `WithX`. Options inside a feature are `WithX` of that feature's option type, and turning off an on-by-default behaviour is `WithoutX`. This states the convention the existing API already follows (`EnableFormLogin` beside `WithClock` and `WithLoginLimiter`).
+- **This change's top-level options:** `EnableSecurityHeaders`, `EnableCORS`, `EnableCSRFProtection`, `EnableTrustedProxies`, `EnableSessionManagement`, `EnableCertificateBinding`, `EnableAutomationChallenge`, `EnableSignInNotice`, `EnableSecurityEvents`. `WithHTTPSDeployment` stays `With`, because it declares a fact about the deployment and switches nothing on.
+- **Inside features:** DPoP is configured through `WithDPoP` on `EnableBearerToken`, and its nonce and public URL are fields of its config, not top-level options. The forwarded-host allowlist is the argument of `ForwardedHost(...)`, so a trusted host can never be configured without one.
+- **Alternatives rejected:** *`Enable` everywhere, including inside features.* It contradicts the sub-option style of the whole existing API, and `Enable` nested in `Enable` reads as two features.
 
 ## Risks / Trade-offs
 
@@ -589,7 +608,7 @@ httpsec.WithSecurityEvents(func(ctx context.Context, e security.Event))
 **D15: automation challenge**
 - [OWASP Credential Stuffing Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Credential_Stuffing_Prevention_Cheat_Sheet.html): challenge only suspicious traffic.
 
-**D1, D2, D3, D16, D17, D18**
+**D1, D2, D3, D16, D17, D18, D19**
 - Reasoned from scrty's own settled specs (`http-security-chain`, `framework-adapters`, `http-error-propagation`, `sessions`), the in-progress `reauthentication`, `key-port-context` and `release-readiness` designs, and the established design.
 
 ### Primary documentation

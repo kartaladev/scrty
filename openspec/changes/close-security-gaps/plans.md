@@ -25,6 +25,7 @@
 - A defect found along the way is claimed only with a failing test (`defect-claims.md`).
 - The predecessor is never cited in code, docs or commits (`legacy-reference.md`).
 - Slot values: `OrderSecurityHeaders = 25`, `OrderCORS = 50`, `OrderCSRF = 75`.
+- Naming (design D19): a top-level `httpsec.New` option that switches on a security feature is `EnableX` and registers through `config.enable`; a top-level setting or declaration is `WithX` (`WithHTTPSDeployment`); options inside a feature are `WithX`/`WithoutX` of that feature's option type.
 - Defaults pinned by the specs: HSTS `max-age=31536000; includeSubDomains`; CORS max age 10 minutes; DPoP proof lifetime 60 seconds; DPoP algorithms `ES256`; trusted-proxy `MaxHops` 1; password minimum 15 (floor 8), maximum accepted at least 64, common list at least 3,000 entries; unseen-device window 90 days.
 
 ## Review Focus
@@ -87,9 +88,8 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - `func WithHTTPSDeployment() Option`
 - `type TrustedProxies struct { Prefixes []netip.Prefix; Headers HeaderFamily; MaxHops int }`
 - `func XForwarded(fields ...ForwardedField) HeaderFamily`, `func Forwarded(fields ...ForwardedField) HeaderFamily`
-- `const ForwardedFor, ForwardedProto, ForwardedHost ForwardedField`
-- `func WithTrustedProxies(tp TrustedProxies, opts ...ProxyOption) Option`, `func TrustAllProxies() ProxyOption`, `func KeepForwardedHeaders() ProxyOption`
-- `func WithAllowedHosts(hosts ...string) Option`
+- `const ForwardedFor, ForwardedProto ForwardedField`; `func ForwardedHost(allowed ...string) ForwardedField` (the allowlist is the field's argument; D19)
+- `func EnableTrustedProxies(tp TrustedProxies, opts ...ProxyOption) Option`, `func TrustAllProxies() ProxyOption`, `func KeepForwardedHeaders() ProxyOption`
 - `type Client struct { IP string; Secure bool; Host string; ViaProxy bool }`, `func ClientFromContext(ctx context.Context) (Client, bool)`
 - `var ErrHostNotAllowed = errors.New("httpsec: host not allowed")`
 
@@ -109,13 +109,13 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ### Task 2.3: `WithHTTPSDeployment`
 **Files:** Create `httpsec/client.go`; Modify `httpsec/options.go`; Test `httpsec/client_test.go`
-- [ ] Red: `TestHTTPSDeployment` — a plain request through a chain with the option sees `Secure() == true`; a chain with both this option and `WithTrustedProxies` fails `New` with `ErrConfig` naming `WithHTTPSDeployment`.
+- [ ] Red: `TestHTTPSDeployment` — a plain request through a chain with the option sees `Secure() == true`; a chain with both this option and `EnableTrustedProxies` fails `New` with `ErrConfig` naming `WithHTTPSDeployment`.
 - [ ] Run; expect FAIL. Green: a resolved-request wrapper in `client.go` overriding `Secure()`; the conflict check in `New`. PASS; commit.
 
 ### Task 2.4: Trusted-proxy construction rules
 **Files:** Create `httpsec/proxies.go`; Test `httpsec/proxies_test.go`
-- [ ] Red: `TestTrustedProxies_Construction`, one table: empty prefixes; `0.0.0.0/0`; `::/0`; no family; family with no fields; `ForwardedHost` without `WithAllowedHosts`; `MaxHops: 0`; `TrustAllProxies()` with `0.0.0.0/0` succeeds. Each assert names the option in the error.
-- [ ] Run; expect FAIL. Green: validation in `WithTrustedProxies` and `New`. `MaxHops` zero value means "unset" and defaults to 1; an explicit negative is refused. PASS; commit.
+- [ ] Red: `TestTrustedProxies_Construction`, one table: empty prefixes; `0.0.0.0/0`; `::/0`; no family; family with no fields; `ForwardedHost()` with no allowed host; `MaxHops: 0`; `TrustAllProxies()` with `0.0.0.0/0` succeeds. Each assert names the option in the error.
+- [ ] Run; expect FAIL. Green: validation in `EnableTrustedProxies` and `New`. `MaxHops` zero value means "unset" and defaults to 1; an explicit negative is refused. PASS; commit.
 
 ### Task 2.5: Right-to-left resolution
 **Files:** Modify `httpsec/proxies.go`, `httpsec/client.go`, `httpsec/chain.go` (wrap the adapter request before the first interceptor); Test `httpsec/proxies_test.go`
@@ -145,7 +145,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ### Task 2.10: Documentation
 **Files:** godoc in `httpsec/proxies.go`, `client.go`; `README.md`
-- [ ] Godoc each option with its default; README section with the nginx and Traefik configurations from the gap review (Case 3). Verify `go doc ./httpsec WithTrustedProxies` and `go vet ./...` clean. Commit.
+- [ ] Godoc each option with its default; README section with the nginx and Traefik configurations from the gap review (Case 3). Verify `go doc ./httpsec EnableTrustedProxies` and `go vet ./...` clean. Commit.
 
 ---
 
@@ -299,7 +299,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - `func EnableSessionManagement(m *session.Sessions, opts ...SessionManagementOption) Option`, `func WithSessionManagementPrefix(p string) SessionManagementOption` (default `/sessions`)
 - `var ErrSignInNotFound` mapped to 404
 - `func WithoutPasskeyRemovalNotification() PasskeyOption`
-- `func WithSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option`, `func SignInNoticeWindow(d time.Duration) SignInNoticeOption` (default 90 days)
+- `func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option`, `func SignInNoticeWindow(d time.Duration) SignInNoticeOption` (default 90 days)
 
 ### Task 7.1: Endpoints
 - [ ] Red `TestSessionManagement`: list marks the current sign-in and carries no session identifier; "Sign out other devices" with a 2-minute-old authentication; "Stale session" with a 2-hour-old one refused with the reauthentication-required error; "Another user's handle" → 404. Fail; Green in `httpsec/session_management.go`, using `Session.AuthenticatedWithin` from `reauthentication`; pass; commit.
@@ -322,7 +322,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 **Interfaces produced:**
 - `token`: an issuing option `WithConfirmation(c Confirmation)`; `type Confirmation struct { JKT, X5TS256 string }`; the verifier's result exposes `Confirmation`.
-- `httpsec`: `type DPoP struct { Require bool; ProofMaxAge time.Duration; Replay ReplayStore; Algorithms []jwa.SignatureAlgorithm }`, `func WithDPoP(d DPoP) BearerTokenOption` (and the session-bearer equivalent), `func WithoutDPoP() BearerTokenOption`, `func WithDPoPNonce() Option`, `func WithPublicURL(base string) Option`
+- `httpsec`: `type DPoP struct { Require bool; ProofMaxAge time.Duration; Replay ReplayStore; Algorithms []jwa.SignatureAlgorithm; Nonce bool; PublicURL string }`, `func WithDPoP(d DPoP) BearerTokenOption` (and the session-bearer equivalent), `func WithoutDPoP() BearerTokenOption` (nonces and the public URL are config fields, not top-level options; D19)
 - `type ReplayStore interface { Seen(ctx context.Context, jtiDigest string, until time.Time) (bool, error) }` with an in-memory default
 - `var ErrInvalidDPoPProof`, `var ErrDPoPNonceRequired` (both 401)
 
@@ -344,7 +344,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - [ ] Red `TestDPoP_Binding`: one row per endpoint (login, MFA verify, passkey login, magic link, OIDC handoff, recovery completion, re-authentication, renewal) — a proof without `ath` yields a token with `cnf.jkt` and a bound session; renewal of a bound session without the bound key refused. Fail; Green through one helper the issuing paths call (`complete.go` and the endpoints that mint on their own); pass; commit.
 
 ### Task 8.6: Public URL
-- [ ] Red `TestDPoP_PublicURL`: trusted proxy forwards `https` and `app.example.com`, app sees `http://10.20.1.5:8080/api/orders`, proof `htu` `https://app.example.com/api/orders` passes; `WithPublicURL` overrides; Review Focus row: `https://APP.example.com:443/api/orders` equals `https://app.example.com/api/orders`. Fail; Green; pass; commit.
+- [ ] Red `TestDPoP_PublicURL`: trusted proxy forwards `https` and `app.example.com`, app sees `http://10.20.1.5:8080/api/orders`, proof `htu` `https://app.example.com/api/orders` passes; the config's `PublicURL` overrides; Review Focus row: `https://APP.example.com:443/api/orders` equals `https://app.example.com/api/orders`. Fail; Green; pass; commit.
 
 ### Task 8.7: Nonces and challenges
 - [ ] Red `TestDPoP_Nonce` (opt-in; missing nonce → 401 `WWW-Authenticate: DPoP error="use_dpop_nonce"` plus `DPoP-Nonce`), `TestDPoP_Challenge` (invalid signature → `DPoP error="invalid_dpop_proof", algs="ES256"`), and `TestStatusForError` rows → 401. Fail; Green; pass; commit.
@@ -359,7 +359,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ## Task group 9: mTLS-bound tokens (lane D, dispatch D3)
 
-**Interfaces produced:** `func WithCertificateBinding() BearerTokenOption`; `TrustedProxies.ClientCertHeader string` (from task 1.3); `var ErrCertificateBinding` (401); the check runs at `OrderMTLS`.
+**Interfaces produced:** `func EnableCertificateBinding(opts ...CertificateBindingOption) Option` (top-level; D19); `TrustedProxies.ClientCertHeader string` (from task 1.3); `var ErrCertificateBinding` (401); the check runs at `OrderMTLS`.
 
 ### Task 9.1: Direct TLS
 - [ ] Red `TestCertificateBinding_Direct` over `httptest.NewUnstartedServer` with `tls.RequireAnyClientCert`: signing in with certificate C binds `x5t#S256`; later request with C passes. Fail; Green in `httpsec/certbinding.go`; pass; commit.
@@ -413,7 +413,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ## Task group 11: security events (lane E)
 
-**Interfaces produced:** package `github.com/kartaladev/scrty/security`: `type Event struct { Name string; At time.Time; Outcome string; User identity.UserID; ClientIP string; Factor identity.FirstFactor; Session string }`, `type Sink func(ctx context.Context, e Event)`, name constants (`LoginSuccess = "authn_login_success"`, ...); `httpsec.WithSecurityEvents(s security.Sink) Option`.
+**Interfaces produced:** package `github.com/kartaladev/scrty/security`: `type Event struct { Name string; At time.Time; Outcome string; User identity.UserID; ClientIP string; Factor identity.FirstFactor; Session string }`, `type Sink func(ctx context.Context, e Event)`, name constants (`LoginSuccess = "authn_login_success"`, ...); `httpsec.EnableSecurityEvents(s security.Sink) Option`.
 
 ### Task 11.1: Package and sink
 - [ ] Red `TestSecurityEvents_Sink` (no sink → nothing; failed login → one `authn_login_fail`). Fail; Green; pass; commit.
@@ -431,7 +431,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ## Task group 12: automation challenge (lane C)
 
-**Interfaces produced:** `type ChallengeVerifier interface { Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error) }`, `type ChallengeSignals struct { SourceFailures, IdentifierFailures int }`, `const ChallengePass, ChallengeRefuse, ChallengeNotNeeded`, `func WithChallengeVerifier(v ChallengeVerifier, opts ...ChallengeOption) Option`, `func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption`, `func WithoutChallengeRefusalCounting() ChallengeOption`, `var ErrChallengeRequired` (403).
+**Interfaces produced:** `type ChallengeVerifier interface { Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error) }`, `type ChallengeSignals struct { SourceFailures, IdentifierFailures int }`, `const ChallengePass, ChallengeRefuse, ChallengeNotNeeded`, `func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option`, `func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption`, `func WithoutChallengeRefusalCounting() ChallengeOption`, `var ErrChallengeRequired` (403).
 
 ### Task 12.1: Flows
 - [ ] Red `TestChallenge_Flows` with a mockgen `ChallengeVerifier`: refusal before account lookup and without a lockout failure, for each of the five flows; unselected flow not called; no verifier → no calls. Fail; Green; pass; commit.
@@ -477,5 +477,5 @@ Each lane owns its files; a file not listed is held by the main session for revi
 ## Self-review notes
 
 - Spec coverage: every requirement in the nine new and ten modified capability deltas maps to a task above; `supply-chain` maps to group 13; `http-error-propagation` rows are spread across 2.6, 5.6, 7.2, 8.7, 9.3, 10.5 and 12.2.
-- Interfaces: names introduced in a group's Interfaces block are the ones later groups use (`Request.Host/Secure`, `ClientFromContext`, `config.dpopEnabled`, `session.KeyBinding`, `token.Confirmation`).
+- Interfaces: names introduced in a group's Interfaces block are the ones later groups use (`Request.Host/Secure`, `ClientFromContext`, `config.dpopEnabled`, `session.KeyBinding`, `token.Confirmation`). Top-level options that switch on a feature are `Enable…` (design D19); feature sub-options stay `With…`.
 - Draft caveat: every signature touching `reauthentication` (`Session.AuthenticatedWithin`, the re-proof rotation) or `key-port-context` (token issuance options) is re-checked in task group 1.
