@@ -466,8 +466,8 @@ func TestPGLimiter_PruneCatchesBrokenVariants(t *testing.T) {
 // clock and prune batches of 1,000 keys, over conn's handle or a pool of the
 // factory's own.
 type pruneFactoryOptions struct {
-	// clock, when set, is the factory's clock, and the test timeout replaces
-	// the default operation timeout, as the other builders give it.
+	// clock, when set, is the factory's clock, and the conformance timeout
+	// replaces the default operation timeout, as the other builders give it.
 	clock clock.Clock
 	// batch, when set, is the prune batch size.
 	batch int

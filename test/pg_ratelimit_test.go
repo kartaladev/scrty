@@ -76,7 +76,8 @@ type pgBackend struct {
 }
 
 // pgLimiterOptions are the options every sqlstore limiter in these tests
-// takes: the conformance timeout, a discarded log and, when clk is set, that clock.
+// takes: the conformance timeout, a discarded log and, when clk is set, that
+// clock.
 func pgLimiterOptions(clk clock.Clock) []sqlstore.LimiterOption {
 	opts := []sqlstore.LimiterOption{
 		sqlstore.WithLimiterOperationTimeout(pgConformanceTimeout),
