@@ -280,56 +280,17 @@ func (m *Sessions) newIdentifier() (string, error) {
 // leave a live session that has forgotten which factor established it or which
 // provider it came from. Options run after the creation time and deadlines are
 // set, so an option may read them, as WithSecondFactorAtLogin does.
+//
+// Create runs no step of the caller's between building the session and
+// storing it; Prepare and Prepared.Commit split the two, and CreateIssuing
+// runs an issuing step between them.
 func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
-	id, err := m.newIdentifier()
+	p, err := m.Prepare(user, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	family, err := m.families.NewID()
-	if err != nil {
-		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
-	}
-	if family.IsZero() {
-		return nil, fmt.Errorf("%w: the family identifier generator returned the nil identifier", ErrConfig)
-	}
-
-	now := m.clock.Now()
-	s := &Session{
-		ID:                id,
-		UserID:            user,
-		CreatedAt:         now,
-		LastAccessedAt:    now,
-		IdleExpiresAt:     now.Add(m.idleTimeout),
-		AbsoluteExpiresAt: now.Add(m.absoluteTimeout),
-		FamilyID:          family,
-		FamilyCreatedAt:   now,
-		// A sign-in is an authentication. Set before the options, so a
-		// consumer's option may still choose another time.
-		AuthenticatedAt: now,
-	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(s)
-		}
-	}
-
-	// The lifetime is read back from the deadline the options left, so a
-	// WithAbsoluteLifetime and any consumer option that sets the deadline are
-	// judged the same way, before anything is stored.
-	if lifetime := s.AbsoluteExpiresAt.Sub(s.CreatedAt); lifetime <= 0 || lifetime > m.maxLifetime {
-		return nil, fmt.Errorf("%w: absolute lifetime %s is outside 0 to the maximum %s",
-			ErrConfig, lifetime, m.maxLifetime)
-	}
-	if s.IdleExpiresAt.After(s.AbsoluteExpiresAt) {
-		s.IdleExpiresAt = s.AbsoluteExpiresAt
-	}
-
-	if err := m.store.Create(ctx, s); err != nil {
-		return nil, storeFailed(err, "session: the session could not be created")
-	}
-
-	return s, nil
+	return p.Commit(ctx)
 }
 
 // Load returns the session with this identifier.
