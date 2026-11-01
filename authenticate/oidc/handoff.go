@@ -221,6 +221,14 @@ type RedeemCandidate struct {
 // any consumer policy the chain's shipped check evaluates. A check that wrote
 // something would write it once per attempt rather than once per sign-in.
 //
+// The library may issue a credential between the checks and the consume: the
+// chain's shipped check, once its refusal checks pass, builds the session and
+// issues the credential for it, which writes no state, so a credential that
+// cannot be issued leaves the code redeemable. A redemption that then loses
+// the consume to a racing one discards what it issued: the session that
+// credential names is never stored. Only the atomic consume decides which
+// redemption signs in.
+//
 // A redeemer runs the checks against the user it will return and that user's
 // password-change time. The login completion step reuses the
 // post-authentication decision the chain's shipped check made before the code

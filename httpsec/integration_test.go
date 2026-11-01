@@ -2935,6 +2935,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			act: func(t *testing.T) *errorSink {
 				h := newAuthHarness(t)
 				formLogin(h)
+				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil)
 				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(errFixtureFailure)
 
 				return refusedBy(t, loginRequest(t),
@@ -2943,12 +2944,14 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			assert: fixedText(http.StatusInternalServerError),
 		},
 		{
-			name: "login completion: the challenged session could not be saved",
+			// The challenge mark is in the creating write, so that write is
+			// the one that fails.
+			name: "login completion: the challenged session could not be created",
 			act: func(t *testing.T) *errorSink {
 				h := newAuthHarness(t)
 				formLogin(h)
-				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errFixtureFailure)
+				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil)
+				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(errFixtureFailure)
 
 				return refusedBy(t, loginRequest(t),
 					httpsec.WithLogger(h.logger()), httpsec.EnableFormLogin(h.formLoginDeps()),
@@ -2964,8 +2967,8 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			act: func(t *testing.T) *errorSink {
 				h := newAuthHarness(t)
 				formLogin(h)
-				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(session.ErrNotFound)
+				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil)
+				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(session.ErrNotFound)
 
 				return refusedBy(t, loginRequest(t),
 					httpsec.WithLogger(h.logger()), httpsec.EnableFormLogin(h.formLoginDeps()),
@@ -2975,11 +2978,11 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			assert: unchanged(session.ErrNotFound, http.StatusInternalServerError),
 		},
 		{
+			// Issued before anything is stored, so no Create is expected.
 			name: "login completion: the token could not be generated",
 			act: func(t *testing.T) *errorSink {
 				h := newAuthHarness(t)
 				formLogin(h)
-				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("", errFixtureFailure)
 
 				return refusedBy(t, loginRequest(t),

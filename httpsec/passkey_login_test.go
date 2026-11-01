@@ -49,6 +49,10 @@ const (
 // may carry.
 const pwlLoaderCause = "db password=hunter2 unreachable"
 
+// errPwlSigning is what the token generator fails with when a case makes the
+// key source unable to sign.
+var errPwlSigning = errors.New("passkey_login_test: kms unreachable at 10.0.0.7")
+
 // pwlMaxPasswordAge is the password-age policy's limit when a case turns it
 // on; the user's password is then twice as old.
 const pwlMaxPasswordAge = 24 * time.Hour
@@ -77,7 +81,11 @@ type pwlDeployment struct {
 
 	// loaderFails makes LoadByUserID fail with loaderCause, an outage, and
 	// loaderOtherUser makes it answer the details of another user.
-	loaderFails     atomic.Bool
+	loaderFails atomic.Bool
+
+	// signingFails makes the token generator fail, as a key source that
+	// cannot sign makes it.
+	signingFails    atomic.Bool
 	loaderOtherUser atomic.Bool
 
 	// hash is the user's password hash, for form login, and totpClock the
@@ -192,6 +200,10 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 
 	d.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, sid string, _ *identity.Principal) (string, error) {
+			if d.signingFails.Load() {
+				return "", errPwlSigning
+			}
+
 			return mfaTokenFor(sid), nil
 		})
 	d.tokens.EXPECT().Verify(gomock.Any(), gomock.Any()).AnyTimes().
@@ -651,6 +663,33 @@ func TestPasswordless(t *testing.T) {
 				assert.Equal(t, e2eUser, s.UserID)
 				assert.True(t, s.IdleExpiresAt.Equal(doc.ValidUntil))
 			},
+		},
+		{
+			// The challenge is spent before the login completes, as settled:
+			// the ceremony's response is single use whatever follows. The
+			// session is stored only once the credential is issued.
+			name: "a credential that cannot be issued stores no session, and the challenge stays spent",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+				cookie, challenge := d.begun(t)
+				body := handleAssertionBody(challenge, "cred-1", handle)
+
+				d.signingFails.Store(true)
+				failed := d.finish(t, body, cookie)
+
+				require.ErrorIs(t, failed.err, errPwlSigning, "the generator's error stays reachable")
+				assert.NotErrorIs(t, failed.err, authenticate.ErrAuthenticationFailed, "an outage is not a refusal")
+				assert.NotErrorIs(t, failed.err, httpsec.ErrAuthenticationRequired)
+				assert.NotContains(t, failed.err.Error(), "10.0.0.7")
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(failed.err))
+				assert.Empty(t, failed.rec.Body.String(), "no token is written")
+				assert.Zero(t, d.sessionCount(t, failed), "no session is stored for a token never issued")
+
+				d.signingFails.Store(false)
+
+				return d.finish(t, body, cookie)
+			},
+			assert: refusedAsFailed,
 		},
 		{
 			name: "no ceremony cookie is refused",

@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/magiclink"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
@@ -100,6 +101,14 @@ type MagicLinkResponder func(ex *Exchange, result MagicLinkResult) error
 // handed. The comparison is not deep equality: the same user loaded again, with
 // the same instant in another location, is the same login. A check that ran
 // and denied refuses with the policy's own reason.
+//
+// The last check the endpoint hands over builds the session and issues its
+// credential, storing nothing, so a credential that cannot be issued is a
+// dependency failure that leaves the link redeemable and is not counted
+// against the source. The session is stored only after the replacement
+// returns, so a redemption that loses the consume to a racing one stores
+// nothing for the credential it issued. A replacement that runs the checks
+// more than once issues once.
 //
 // What the endpoint cannot do is un-spend a link a replacement consumed before
 // it was refused.
@@ -395,12 +404,31 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 
 	check, out := redemptionPolicyCheck(i.engine, i.enforced, i.challengeMethods, factor.MagicLink, i.now)
 
+	// Built and issued inside the checks, after every refusal check has
+	// passed and before the redeemer consumes the link, so a credential that
+	// cannot be issued leaves the link redeemable. The session is stored only
+	// once the link is spent, below.
+	login := newRedemptionLogin(loginTailDeps{
+		engine:            i.engine,
+		sessions:          i.sessions,
+		tokens:            i.tokens,
+		issue:             i.issue,
+		enrolmentLifetime: i.enrolmentLifetime,
+		enforced:          i.enforced,
+		challengeMethods:  i.challengeMethods,
+		cancelHeld:        i.cancelHeld,
+	}, out)
+
 	// The policy check runs first and the consumer's own follow, in the order
-	// they were registered: magiclink stops at the first refusal, so a login
-	// the policy denies never reaches a consumer's check.
-	checks := make([]magiclink.Check, 0, 1+len(i.checks))
+	// they were registered, and the issuing step last: magiclink stops at the
+	// first refusal, so a login the policy denies never reaches a consumer's
+	// check, and a login any check refused is never issued for.
+	checks := make([]magiclink.Check, 0, 2+len(i.checks))
 	checks = append(checks, check)
 	checks = append(checks, wrapChecks(i.checks, out)...)
+	checks = append(checks, func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error {
+		return login.issue(ctx, postAuthenticationInput(&p, factor.MagicLink, "", passwordChangedAt, i.now()))
+	})
 
 	redemption, err := i.redeemer.Redeem(ctx, token, nonce, checks...)
 	if err != nil {
@@ -409,34 +437,38 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		}
 
 		// The redeemer's error, unchanged: magiclink already answers every
-		// cause with one uniform refusal, and a policy or consumer check
-		// refusal is the consumer's own to read.
+		// cause with one uniform refusal, a policy or consumer check refusal
+		// is the consumer's own to read, and a credential that could not be
+		// issued is a dependency failure. Whatever the issuing step built is
+		// dropped: it was never stored, so it names nothing.
 		return err
 	}
 
-	// Checked before anything is created. A Redeemer is an interface, and an
-	// implementation that skipped or discarded the check has not shown this
-	// login is permitted.
+	// Checked before anything is stored. A Redeemer is an interface, and an
+	// implementation that skipped or discarded the checks has not shown this
+	// login is permitted, nor that the login issued for is the one returned.
 	if err := guardRedemption(out, redemption.Principal, redemption.PasswordChangedAt); err != nil {
 		return err
 	}
 
-	// Set before the tail runs, so a challenge response carries it too: the URL
-	// the browser came from holds the token either way.
+	issued, err := login.redeemed()
+	if err != nil {
+		return err
+	}
+
+	// Set before the session is stored, so a challenge response carries it
+	// too: the URL the browser came from holds the token either way.
 	ex.Writer.SetHeader("Referrer-Policy", "no-referrer")
 
-	tok, err := completeLogin(ex, loginTailDeps{
-		engine:            i.engine,
-		sessions:          i.sessions,
-		tokens:            i.tokens,
-		issue:             i.issue,
-		enrolmentLifetime: i.enrolmentLifetime,
-		enforced:          i.enforced,
-		challengeMethods:  out.challengeMethods(i.challengeMethods),
-		decided:           &out.decision,
-		cancelHeld:        i.cancelHeld,
-	}, postAuthenticationInput(
-		&redemption.Principal, factor.MagicLink, "", redemption.PasswordChangedAt, i.now()))
+	// The link is spent, so the first factor is proved: the user's held
+	// recoveries are cancelled before the session is stored, as completeLogin
+	// cancels them for every login. A cancellation that cannot be recorded
+	// refuses the login, with the link already spent.
+	if err := login.deps.cancelHeldRecoveries(ctx, redemption.Principal.ID); err != nil {
+		return err
+	}
+
+	tok, err := issued.commit(ex)
 	if err != nil {
 		return err
 	}

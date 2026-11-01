@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -217,13 +218,59 @@ func (s *loginSpies) createdSession() *session.Session {
 	return s.created
 }
 
-func (s *loginSpies) expectSave(log *callLog, err error) {
-	s.store.EXPECT().Save(gomock.Any(), gomock.Any()).
+// recordSaves logs any save of the session without requiring one, so a test
+// that pins "one write" reads a Save in the call order rather than as an
+// unexpected call.
+func (s *loginSpies) recordSaves(log *callLog) {
+	s.store.EXPECT().Save(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, _ *session.Session) error {
 			log.add("Save")
 
+			return nil
+		})
+}
+
+// expectCreateFailing records that the session's creating write was attempted,
+// and fails it with err.
+func (s *loginSpies) expectCreateFailing(log *callLog, err error) {
+	s.store.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *session.Session) error {
+			log.add("Create")
+
 			return err
 		})
+}
+
+// recordCreates logs any creating write without requiring one, so a test that
+// pins "nothing is stored" reads a Create in the call order rather than as an
+// unexpected call.
+func (s *loginSpies) recordCreates(log *callLog) {
+	s.store.EXPECT().Create(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, _ *session.Session) error {
+			log.add("Create")
+
+			return nil
+		})
+}
+
+// expectGenerateFailing records that the token was asked for, and fails it
+// with err.
+func (s *loginSpies) expectGenerateFailing(log *callLog, err error) {
+	s.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ *identity.Principal) (string, error) {
+			log.add("Generate")
+
+			return "", err
+		})
+}
+
+// spendLogging is a spend step that logs it ran and fails with err.
+func spendLogging(log *callLog, err error) func(context.Context) error {
+	return func(context.Context) error {
+		log.add("Spend")
+
+		return err
+	}
 }
 
 func (s *loginSpies) expectGenerate(log *callLog, jti *string) {
@@ -248,9 +295,26 @@ func newExchange(t *testing.T) *httpsec.Exchange {
 	return ex
 }
 
-// TestCompleteLogin pins the order of the one tail every first factor shares.
-// A token that exists before the session it belongs to is marked answers
-// requests as if the challenge had been met, so the order is the guarantee.
+// errIssuing stands for a key source that cannot sign, errStoring for a
+// session store that cannot write, and errSpending for a redemption that lost
+// its consume. Neither dependency's text may reach a returned error.
+var (
+	errIssuing  = errors.New("complete_test: kms unreachable at 10.0.0.7")
+	errStoring  = errors.New("complete_test: session store unreachable at 10.0.0.7")
+	errSpending = errors.New("complete_test: the link was consumed by another redemption")
+)
+
+// TestCompleteLogin pins the order of the one tail every first factor shares:
+// build the session, mark any challenge on it, issue the credential, then
+// store the session in one write, and only then hand the credential out. A
+// credential is never handed out for a session that was not stored, so a
+// token never exists for a session whose challenge mark did not persist, and a
+// credential that cannot be issued costs nothing.
+//
+// A row with a spend step runs the tail as a redemption does, in its two
+// halves with the single-use credential spent between them: the first half
+// stores nothing, so a spend that fails, or one never reached because issuing
+// failed, leaves nothing stored.
 func TestCompleteLogin(t *testing.T) {
 	t.Parallel()
 
@@ -258,13 +322,31 @@ func TestCompleteLogin(t *testing.T) {
 		name   string
 		engine func(t *testing.T) *policy.Engine
 		opts   []session.CreateOption
+		// spend is a redemption's spend step, run between the tail's two
+		// halves; nil runs the tail whole, as form login does.
+		spend  func(log *callLog) func(context.Context) error
 		wire   func(t *testing.T, s *loginSpies, log *callLog, jti *string)
 		assert func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, jti string)
 	}
 
+	dependencyFailure := func(t *testing.T, ex *httpsec.Exchange, tok string, err error) {
+		t.Helper()
+
+		require.Error(t, err)
+		assert.Empty(t, tok, "no credential is handed out")
+		assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed, "an outage is not a refusal")
+		assert.NotErrorIs(t, err, httpsec.ErrAuthenticationRequired, "an outage is not a refusal")
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(err))
+		assert.NotContains(t, err.Error(), "10.0.0.7", "a dependency's text stays out of the error")
+
+		var ch *httpsec.ChallengeError
+		assert.NotErrorAs(t, err, &ch, "no challenge carries a credential")
+		assert.Nil(t, ex.Session, "no session is published")
+	}
+
 	cases := []testCase{
 		{
-			name:   "an allowed login creates the session, then issues the token",
+			name:   "an allowed login issues the token, then creates the session",
 			engine: allowingEngine,
 			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
 				s.expectCreate(log)
@@ -273,7 +355,7 @@ func TestCompleteLogin(t *testing.T) {
 			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, jti string) {
 				require.NoError(t, err)
 				assert.Equal(t, "issued-token", tok)
-				assert.Equal(t, []string{"Create", "Generate"}, calls)
+				assert.Equal(t, []string{"Generate", "Create"}, calls)
 
 				require.NotNil(t, ex.Session, "the session is published for a consumer handler")
 				assert.Equal(t, factor.Password, ex.Session.FirstFactor)
@@ -299,7 +381,7 @@ func TestCompleteLogin(t *testing.T) {
 			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				require.NoError(t, err, "with no policies wired the chain rests on authentication alone")
 				assert.Equal(t, "issued-token", tok)
-				assert.Equal(t, []string{"Create", "Generate"}, calls)
+				assert.Equal(t, []string{"Generate", "Create"}, calls)
 			},
 		},
 		{
@@ -333,18 +415,18 @@ func TestCompleteLogin(t *testing.T) {
 			},
 		},
 		{
-			name: "a challenge is marked and saved before the token is issued",
+			name: "a challenge is marked in the creating write, after the token is issued",
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
 				return challengingEngine(t, policy.ChallengeMFA)
 			},
 			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
-				s.expectCreate(log)
-				s.expectSave(log, nil)
 				s.expectGenerate(log, jti)
+				s.expectCreateCapturing(log)
+				s.recordSaves(log)
 			},
-			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, jti string) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, err, &ch)
 				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
@@ -352,8 +434,13 @@ func TestCompleteLogin(t *testing.T) {
 				assert.Equal(t, session.MFAPending, ch.Session.MFA)
 				assert.NotEmpty(t, ch.Token)
 				assert.Equal(t, "issued-token", tok)
-				assert.Equal(t, []string{"Create", "Save", "Generate"}, calls,
-					"the pending marker must be durable before a token for it exists")
+				assert.Equal(t, []string{"Generate", "Create"}, calls,
+					"the pending marker is in the one write that stores the session, before the token is handed out")
+
+				created := s.createdSession()
+				require.NotNil(t, created)
+				assert.Equal(t, session.MFAPending, created.MFA, "the stored session is the marked one")
+				assert.Equal(t, created.ID, jti, "the token names the session that was stored")
 				assert.NotNil(t, ex.Session, "a consumer rendering the prompt reads who is challenged")
 			},
 		},
@@ -365,35 +452,101 @@ func TestCompleteLogin(t *testing.T) {
 				return challengingEngine(t, policy.ChallengePasswordChange)
 			},
 			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
-				s.expectCreate(log)
-				s.expectSave(log, nil)
 				s.expectGenerate(log, jti)
+				s.expectCreateCapturing(log)
+				s.recordSaves(log)
 			},
-			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, _ string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, s *loginSpies, _ *httpsec.Exchange, _ string, err error, calls []string, _ string) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, err, &ch)
 				require.NotNil(t, ch.Session)
 				assert.True(t, ch.Session.PasswordChangePending)
-				assert.Equal(t, []string{"Create", "Save", "Generate"}, calls)
+				assert.Equal(t, []string{"Generate", "Create"}, calls)
+
+				created := s.createdSession()
+				require.NotNil(t, created)
+				assert.True(t, created.PasswordChangePending, "the stored session is the marked one")
 			},
 		},
 		{
-			name: "a failed save leaves no token issued",
+			name: "a token that cannot be issued stores nothing, and is a dependency failure",
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
 				return challengingEngine(t, policy.ChallengeMFA)
 			},
+			spend: func(log *callLog) func(context.Context) error { return spendLogging(log, nil) },
 			wire: func(_ *testing.T, s *loginSpies, log *callLog, _ *string) {
-				s.expectCreate(log)
-				s.expectSave(log, errors.New("store unavailable"))
-				// No expectation on the generator: any call to it fails the test.
+				s.expectGenerateFailing(log, errIssuing)
+				s.recordCreates(log)
+				s.recordSaves(log)
 			},
-			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
-				require.Error(t, err)
-				assert.Empty(t, tok)
-				assert.NotContains(t, calls, "Generate",
-					"a token must never exist for a session whose pending flag failed to persist")
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+				dependencyFailure(t, ex, tok, err)
+				require.ErrorIs(t, err, errIssuing, "the generator's error stays reachable")
+				assert.Equal(t, []string{"Generate"}, calls,
+					"nothing is spent and nothing is stored for a credential that was never issued")
+			},
+		},
+		{
+			name:   "a store that fails after the token is issued hands no token out",
+			engine: allowingEngine,
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectGenerate(log, jti)
+				s.expectCreateFailing(log, errStoring)
+			},
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+				dependencyFailure(t, ex, tok, err)
+				require.ErrorIs(t, err, errStoring, "the store's error stays reachable")
+				assert.Equal(t, []string{"Generate", "Create"}, calls)
+			},
+		},
+		{
+			name: "a challenged login whose store fails after issuing raises no challenge",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return challengingEngine(t, policy.ChallengeMFA)
+			},
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectGenerate(log, jti)
+				s.expectCreateFailing(log, errStoring)
+				s.recordSaves(log)
+			},
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+				dependencyFailure(t, ex, tok, err)
+				assert.Equal(t, []string{"Generate", "Create"}, calls,
+					"the token issued for the session that was never stored is discarded")
+			},
+		},
+		{
+			name:   "a redemption spends after the token is issued and before the session is stored",
+			engine: allowingEngine,
+			spend:  func(log *callLog) func(context.Context) error { return spendLogging(log, nil) },
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectGenerate(log, jti)
+				s.expectCreate(log)
+			},
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, "issued-token", tok)
+				assert.Equal(t, []string{"Generate", "Spend", "Create"}, calls)
+				assert.NotNil(t, ex.Session)
+			},
+		},
+		{
+			name:   "a redemption whose spend fails stores nothing, and the issued token is discarded",
+			engine: allowingEngine,
+			spend:  func(log *callLog) func(context.Context) error { return spendLogging(log, errSpending) },
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectGenerate(log, jti)
+				s.recordCreates(log)
+			},
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+				require.ErrorIs(t, err, errSpending)
+				assert.Empty(t, tok, "the issued token is discarded")
+				assert.Nil(t, ex.Session, "no session is published")
+				assert.Equal(t, []string{"Generate", "Spend"}, calls, "no session is stored")
 			},
 		},
 		{
@@ -408,7 +561,7 @@ func TestCompleteLogin(t *testing.T) {
 			},
 			assert: func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, _ string, err error, calls []string, _ string) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"Create", "Generate"}, calls)
+				assert.Equal(t, []string{"Generate", "Create"}, calls)
 
 				created := s.createdSession()
 				require.NotNil(t, created, "the store must have received the session")
@@ -454,7 +607,7 @@ func TestCompleteLogin(t *testing.T) {
 			},
 			assert: func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, _ string, err error, calls []string, _ string) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"Create", "Generate"}, calls,
+				assert.Equal(t, []string{"Generate", "Create"}, calls,
 					"the federated fields are in the first write; no Save follows to add them")
 
 				created := s.createdSession()
@@ -488,8 +641,34 @@ func TestCompleteLogin(t *testing.T) {
 			in := httpsec.PostAuthenticationInputForTest(
 				testPrincipal(), factor.Password, "ada", time.Time{}, time.Now())
 
-			tok, err := httpsec.CompleteLoginForTest(ex,
-				httpsec.LoginTailDepsForTest(tc.engine(t), spies.sessions, spies.tokens), in, tc.opts...)
+			deps := httpsec.LoginTailDepsForTest(tc.engine(t), spies.sessions, spies.tokens)
+
+			var (
+				tok string
+				err error
+			)
+
+			if tc.spend == nil {
+				tok, err = httpsec.CompleteLoginForTest(ex, deps, in, tc.opts...)
+			} else {
+				// A redemption's order: the first half inside its checks, the
+				// spend, and the second half only once the spend succeeded.
+				spend := tc.spend(log)
+
+				tok, err = func() (string, error) {
+					login, err := httpsec.PrepareLoginForTest(ex.Context(), deps, in, tc.opts...)
+					if err != nil {
+						return "", err
+					}
+
+					if err := spend(ex.Context()); err != nil {
+						return "", err
+					}
+
+					return httpsec.CommitLoginForTest(ex, login)
+				}()
+			}
+
 			tc.assert(t, spies, ex, tok, err, log.all(), jti)
 		})
 	}
@@ -503,9 +682,9 @@ func TestCompleteLoginOtherFirstFactor(t *testing.T) {
 
 	log := &callLog{}
 	spies := newLoginSpies(t)
-	spies.expectCreate(log)
-	spies.expectSave(log, nil)
 	spies.expectGenerate(log, nil)
+	spies.expectCreate(log)
+	spies.recordSaves(log)
 
 	ex := newExchange(t)
 
@@ -526,7 +705,120 @@ func TestCompleteLoginOtherFirstFactor(t *testing.T) {
 	assert.True(t, ch.Session.PasswordChangePending)
 	assert.Equal(t, factor.Kind("magic-link"), ch.Session.FirstFactor,
 		"the session records the factor the login actually used")
-	assert.Equal(t, []string{"Create", "Save", "Generate"}, log.all())
+	assert.Equal(t, []string{"Generate", "Create"}, log.all())
+}
+
+// writeLog is a session store that logs every creating write and every save
+// into a shared call log, so a test reads the order of the writes beside the
+// token's issuance.
+type writeLog struct {
+	session.Store
+
+	log *callLog
+}
+
+func (w *writeLog) Create(ctx context.Context, s *session.Session) error {
+	w.log.add("Create")
+
+	return w.Store.Create(ctx, s)
+}
+
+func (w *writeLog) Save(ctx context.Context, s *session.Session) error {
+	w.log.add("Save")
+
+	return w.Store.Save(ctx, s)
+}
+
+// TestCompleteLogin_ChallengeStoredBeforeHandOut pins, through a whole form
+// login over a real store, that a challenged login's session is in the store,
+// carrying its challenge mark, by the time the challenge hands its token out,
+// and that it got there in the one write that created it: no session is ever
+// stored unmarked, and no token is issued for one that is.
+//
+// Not rows of TestCompleteLogin: it runs a real chain and a real store.
+func TestCompleteLogin_ChallengeStoredBeforeHandOut(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		kind   policy.ChallengeKind
+		assert func(t *testing.T, stored *session.Session)
+	}
+
+	cases := []testCase{
+		{
+			name: "a second-factor challenge",
+			kind: policy.ChallengeMFA,
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.Equal(t, session.MFAPending, stored.MFA)
+			},
+		},
+		{
+			name: "a password-change challenge",
+			kind: policy.ChallengePasswordChange,
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.True(t, stored.PasswordChangePending)
+			},
+		},
+		{
+			name: "an enrolment challenge",
+			kind: policy.ChallengeMFAEnrolment,
+			assert: func(t *testing.T, stored *session.Session) {
+				assert.Equal(t, session.MFAEnrolmentPending, stored.MFA)
+				assert.False(t, stored.EnrolmentOriginDeadline.IsZero(), "the enrolment-origin marker is set")
+				assert.WithinDuration(t, stored.CreatedAt.Add(15*time.Minute), stored.AbsoluteExpiresAt, time.Second,
+					"stored with its deadline already lowered to the default enrolment lifetime")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			log := &callLog{}
+
+			h := newAuthHarness(t)
+			sessions, err := session.New(session.WithStore(&writeLog{Store: must.Must(session.NewMemoryStore()), log: log}))
+			require.NoError(t, err)
+			h.sessions = sessions
+
+			h.expectAuthenticated(testPrincipal())
+			h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
+			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, sid string, _ *identity.Principal) (string, error) {
+					log.add("Generate")
+
+					_, err := sessions.Load(ctx, sid)
+					assert.ErrorIs(t, err, session.ErrNotFound, "the token is issued before its session is stored")
+
+					return "issued-token", nil
+				})
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableFormLogin(h.formLoginDeps()),
+				httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, tc.kind)),
+				httpsec.EnableGateForTest(tc.kind),
+			)
+			require.NoError(t, err)
+
+			out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+
+			var ch *httpsec.ChallengeError
+			require.ErrorAs(t, out.err, &ch)
+			assert.Equal(t, tc.kind, ch.Kind)
+			assert.Equal(t, "issued-token", ch.Token)
+			require.NotNil(t, ch.Session)
+
+			assert.Equal(t, []string{"Generate", "Create"}, log.all(),
+				"one write, after the token is issued, and no save to add the mark")
+
+			stored, err := sessions.Load(t.Context(), ch.Session.ID)
+			require.NoError(t, err, "the session the challenge hands out is stored")
+			tc.assert(t, stored)
+		})
+	}
 }
 
 // tokenGeneratorIsAnInterface keeps the spy honest: if token.Generator stops
@@ -535,10 +827,10 @@ func TestCompleteLoginOtherFirstFactor(t *testing.T) {
 var _ token.Generator = (*MockGenerator)(nil)
 
 // TestCompleteLoginEnrolment pins what the login tail does with an enrolment
-// challenge: the session is created, marked enrolment-pending with its
-// deadlines lowered to the enrolment lifetime, and saved in that state before
-// any token for it exists. A token issued first would be a credential for a
-// full session, however briefly.
+// challenge: the session is built, marked enrolment-pending with its
+// deadlines lowered to the enrolment lifetime, and stored in that state, in
+// the one write that creates it, before the token for it is handed out. A
+// session stored before its mark would be a full session, however briefly.
 func TestCompleteLoginEnrolment(t *testing.T) {
 	t.Parallel()
 
@@ -583,15 +875,16 @@ func TestCompleteLoginEnrolment(t *testing.T) {
 
 			var saved session.Session
 
+			// One write, after the token: no Save is expected, so one fails
+			// the test.
 			gomock.InOrder(
-				store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil),
-				store.EXPECT().Save(gomock.Any(), gomock.Any()).
+				tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil),
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, s *session.Session) error {
 						saved = *s
 
 						return nil
 					}),
-				tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil),
 			)
 
 			ex := newExchange(t)
@@ -741,7 +1034,6 @@ func TestCompleteLoginMFAMethods(t *testing.T) {
 			h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 			if !tc.writesNothing {
 				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(nil)
 				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil)
 			}
 
@@ -823,13 +1115,11 @@ func TestCompleteLogin_Proof(t *testing.T) {
 				assert.Equal(t, policy.ChallengePasswordChange, ch.Kind)
 				assert.Equal(t, "issued-token", tok)
 
-				require.NotNil(t, w.created)
+				require.NotNil(t, w.created, "the challenge is marked in the creating write")
 				assert.Equal(t, session.MFASatisfied, w.created.MFA)
-
-				require.NotNil(t, w.saved, "the challenge is marked and saved")
-				assert.Equal(t, session.MFASatisfied, w.saved.MFA)
-				assert.True(t, w.saved.MFAAtFirstFactor)
-				assert.True(t, w.saved.PasswordChangePending)
+				assert.True(t, w.created.MFAAtFirstFactor)
+				assert.True(t, w.created.PasswordChangePending)
+				assert.Nil(t, w.saved, "nothing is saved after the creating write")
 			},
 		},
 		{
@@ -841,13 +1131,10 @@ func TestCompleteLogin_Proof(t *testing.T) {
 				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
 				assert.Equal(t, "issued-token", tok)
 
-				require.NotNil(t, w.created)
-				assert.Equal(t, session.MFANone, w.created.MFA)
+				require.NotNil(t, w.created, "the challenge is marked in the creating write")
+				assert.Equal(t, session.MFAPending, w.created.MFA)
 				assert.False(t, w.created.MFAAtFirstFactor)
-
-				require.NotNil(t, w.saved)
-				assert.Equal(t, session.MFAPending, w.saved.MFA)
-				assert.False(t, w.saved.MFAAtFirstFactor)
+				assert.Nil(t, w.saved, "nothing is saved after the creating write")
 			},
 		},
 	}

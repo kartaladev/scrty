@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -277,6 +279,25 @@ func TestMagicLinkPolicyCheck(t *testing.T) {
 
 				assert.ErrorIs(t, h.redeem(t, c, token, nonce).err, magiclink.ErrInvalidLink,
 					"the link was spent")
+			},
+		},
+		{
+			// Refused inside the check, before the redemption builds, issues
+			// or spends anything: a wiring fault is never the holder's to pay
+			// for with their link.
+			name: "a challenge nothing enforces refuses, issues nothing and leaves the link redeemable",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return challengingEngine(t, policy.ChallengeMFA)
+			},
+			assert: func(t *testing.T, h *magicLinkHarness, _ *httpsec.Chain, token, nonce string, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrConfig)
+				assert.Zero(t, h.activeSessions(t), "no session is created")
+				assert.Zero(t, h.issued.Load(), "and no token is issued")
+
+				allowing := newMagicLinkChainFor(t, h)
+				require.NoError(t, h.redeem(t, allowing, token, nonce).err)
 			},
 		},
 		{
@@ -1289,4 +1310,259 @@ func TestMagicLinkRedirects(t *testing.T) {
 			tc.assert(t, h.sender.lastNext(t), nil)
 		})
 	}
+}
+
+// errKeySourceDown stands for a remote key source that cannot sign while a
+// redemption issues its credential. Its text names an internal host, which no
+// returned error may carry.
+var errKeySourceDown = errors.New("redemption_test: kms unreachable at 10.0.0.7")
+
+// recordingIssuer is a token generator that fails with errKeySourceDown until
+// healthy is set, and records the session identifier each token it was asked
+// for names, whether or not it issued it. Every token it issues is the
+// identifier behind a fixed prefix, so a response's access token tells a test
+// which session the winner's credential names.
+type recordingIssuer struct {
+	healthy atomic.Bool
+
+	mu    sync.Mutex
+	named []string
+}
+
+func (r *recordingIssuer) generator(t *testing.T) *MockGenerator {
+	t.Helper()
+
+	g := NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+			r.mu.Lock()
+			r.named = append(r.named, id)
+			r.mu.Unlock()
+
+			if !r.healthy.Load() {
+				return "", errKeySourceDown
+			}
+
+			return recordedTokenPrefix + id, nil
+		})
+
+	return g
+}
+
+// recordedTokenPrefix is what every token a recordingIssuer issues starts with.
+const recordedTokenPrefix = "token-for-"
+
+// names is every session identifier a token was asked for, in order.
+func (r *recordingIssuer) names() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.named...)
+}
+
+// requireIssuingOutage asserts that err is a redemption that failed because
+// its credential could not be issued: a dependency failure from which the key
+// source's error is reachable, answered 500, and not refused as an invalid
+// link, a missing authentication or a policy decision.
+func requireIssuingOutage(t *testing.T, err error, refusal error) {
+	t.Helper()
+
+	require.ErrorIs(t, err, errKeySourceDown, "the key source's error stays reachable")
+	assert.NotErrorIs(t, err, refusal, "an outage is not the invalid-credential refusal")
+	assert.NotErrorIs(t, err, httpsec.ErrAuthenticationRequired, "an outage is not a refusal")
+	assert.NotErrorIs(t, err, policy.ErrDenied, "an outage is not a policy decision")
+	assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(err))
+	assert.NotContains(t, err.Error(), "10.0.0.7", "the dependency's own text stays out of the error")
+}
+
+// TestMagicLink_CredentialCannotBeIssuedKeepsLink pins that a link is spent
+// only by a redemption that goes on to succeed: a credential that cannot be
+// issued is a dependency failure, stores no session, costs the link nothing
+// and is not charged to the source. Ten such failures from one source are
+// followed by an eleventh redemption from that same source once the key source
+// recovers, which succeeds only if the link survived and none of the ten
+// counted against the source's allowance of ten.
+func TestMagicLink_CredentialCannotBeIssuedKeepsLink(t *testing.T) {
+	t.Parallel()
+
+	h := newMagicLinkHarness(t)
+	token, nonce := h.link(t, h.chain(t))
+
+	issuer := &recordingIssuer{}
+	h.tokens = issuer.generator(t)
+	c := h.chain(t)
+
+	for i := range 10 {
+		out := h.redeem(t, c, token, nonce)
+
+		requireIssuingOutage(t, out.err, magiclink.ErrInvalidLink)
+		require.Zero(t, h.activeSessions(t), "redemption %d stored a session", i+1)
+	}
+
+	issuer.healthy.Store(true)
+
+	out := h.redeem(t, c, token, nonce)
+	require.NoError(t, out.err, "the link survived, and the source was charged nothing")
+	assert.Equal(t, 1, h.activeSessions(t))
+
+	again := h.redeem(t, c, token, nonce)
+	require.ErrorIs(t, again.err, magiclink.ErrInvalidLink, "the redemption that succeeded spent it")
+}
+
+// TestMagicLink_RacingRedemptionsStoreOneSession pins that of 16 redemptions
+// of one link racing each other, exactly one succeeds and stores a session.
+// Each racer may build and issue its credential before the consume decides
+// between them; a loser's credential names a session that was never stored,
+// so presented as a bearer session reference it authenticates nothing.
+func TestMagicLink_RacingRedemptionsStoreOneSession(t *testing.T) {
+	t.Parallel()
+
+	const racers = 16
+
+	h := newMagicLinkHarness(t)
+	token, nonce := h.link(t, h.chain(t))
+
+	issuer := &recordingIssuer{}
+	issuer.healthy.Store(true)
+	h.tokens = issuer.generator(t)
+	c := h.chain(t)
+
+	var (
+		start, done sync.WaitGroup
+		mu          sync.Mutex
+		winners     []served
+		refused     atomic.Int64
+	)
+
+	start.Add(1)
+
+	for i := range racers {
+		done.Add(1)
+
+		go func() {
+			defer done.Done()
+
+			start.Wait()
+
+			// Distinct sources, so no racer is throttled by another's loss.
+			out := h.redeemFrom(t, c, "203.0.113."+strconv.Itoa(10+i), token, nonce)
+			switch {
+			case out.err == nil:
+				mu.Lock()
+				winners = append(winners, out)
+				mu.Unlock()
+			case assert.ErrorIs(t, out.err, magiclink.ErrInvalidLink, "a loser is refused uniformly"):
+				refused.Add(1)
+			}
+		}()
+	}
+
+	start.Done()
+	done.Wait()
+
+	require.Len(t, winners, 1, "exactly one racer redeems")
+	assert.Equal(t, int64(racers-1), refused.Load())
+	assert.Equal(t, 1, h.activeSessions(t), "the store holds exactly one session for the user")
+
+	var body magicLinkBody
+	require.NoError(t, json.Unmarshal(winners[0].rec.Body.Bytes(), &body))
+	winner, ok := strings.CutPrefix(body.AccessToken, recordedTokenPrefix)
+	require.True(t, ok, "the winner's credential is one the issuer issued")
+
+	named := issuer.names()
+	assert.LessOrEqual(t, len(named), racers, "a racer issues at most once")
+	assert.Contains(t, named, winner)
+
+	// A session reference is the credential the session-reference bearer
+	// accepts, so presenting each identifier a token was issued for asks the
+	// store directly whether that session exists.
+	bearer, err := httpsec.New(httpsec.EnableSessionBearer(
+		httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}))
+	require.NoError(t, err)
+
+	for _, id := range named {
+		req := getFrom(t.Context(), "/account", magicLinkSource)
+		req.Header.Set("Authorization", "Bearer "+id)
+
+		out := serve(t, bearer, req)
+		if id == winner {
+			require.NoError(t, out.err, "the winner's session was stored")
+			assert.True(t, out.handlerRan)
+
+			continue
+		}
+
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired,
+			"a loser's credential names a session that was never stored")
+		assert.False(t, out.handlerRan)
+	}
+}
+
+// TestMagicLink_ChallengeStoresMarkedSessionOnceAfterConsume pins where a
+// challenge raised at redemption leaves its session: built and marked before
+// the link is spent, and stored, mark and all, in the one write that creates
+// it, after the consume. The store probes the link from inside that write, so
+// a session stored before the consume would find the link still redeemable.
+func TestMagicLink_ChallengeStoresMarkedSessionOnceAfterConsume(t *testing.T) {
+	t.Parallel()
+
+	h := newMagicLinkHarness(t)
+
+	mem, err := session.NewMemoryStore()
+	require.NoError(t, err)
+
+	var (
+		mu           sync.Mutex
+		created      []session.Session
+		saves        int
+		probe        error
+		token, nonce string
+	)
+
+	store := NewMockStore(gomock.NewController(t))
+	store.EXPECT().Create(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, s *session.Session) error {
+			mu.Lock()
+			created = append(created, *s)
+			mu.Unlock()
+
+			// Spends nothing when the redemption has already consumed the link,
+			// which is the order under test.
+			_, probe = h.manager.Redeem(ctx, token, nonce)
+
+			return mem.Create(ctx, s)
+		})
+	store.EXPECT().Save(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, s *session.Session) error {
+			mu.Lock()
+			saves++
+			mu.Unlock()
+
+			return mem.Save(ctx, s)
+		})
+	store.EXPECT().Load(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.Load)
+	store.EXPECT().CountActiveByUser(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.CountActiveByUser)
+
+	h.sessions, err = session.New(session.WithStore(store))
+	require.NoError(t, err)
+
+	token, nonce = h.link(t, h.chain(t))
+
+	h.engine = challengingEngine(t, policy.ChallengeMFA)
+	h.chainOpts = []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFA)}
+
+	out := h.redeem(t, h.chain(t), token, nonce)
+
+	var ch *httpsec.ChallengeError
+	require.ErrorAs(t, out.err, &ch)
+	require.NotNil(t, ch.Session)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Len(t, created, 1, "the session is created once")
+	assert.Equal(t, ch.Session.ID, created[0].ID)
+	assert.Equal(t, session.MFAPending, created[0].MFA, "the creating write carries the mark")
+	assert.Zero(t, saves, "no later save was needed to record the mark")
+	require.ErrorIs(t, probe, magiclink.ErrInvalidLink, "the link was spent before the session was stored")
 }

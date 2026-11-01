@@ -849,7 +849,12 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 		assert.False(t, out.handlerRan)
 		assert.Zero(t, d.h.activeSessions(t), "no session is created")
-		assert.Zero(t, d.h.issued.Load(), "and no token is issued")
+
+		// The redeemer ran the real checks, so a token was issued inside them
+		// for the login they allowed, before the redeemer changed what it
+		// reported. It names a session that was never stored, and is never
+		// handed out.
+		assert.NotContains(t, out.rec.Body.String(), "access_token", "and no credential is handed out")
 	}
 
 	cases := []testCase{
@@ -1719,4 +1724,40 @@ func TestOIDCRedeemSession(t *testing.T) {
 			tc.assert(t, h, w, code, out)
 		})
 	}
+}
+
+// TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode pins that a handoff code
+// is spent only by a redemption that goes on to succeed: a credential that
+// cannot be issued is a dependency failure with fixed library text, not the
+// invalid-handoff outcome, creates no session and leaves the code redeemable.
+// Ten such failures from one source are followed by an eleventh redemption
+// from that same source once the key source recovers, which succeeds only if
+// the code survived and none of the ten counted against the source.
+func TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode(t *testing.T) {
+	t.Parallel()
+
+	h := newOIDCHarness(t)
+	code := h.issueHandoff(t, "")
+
+	issuer := &recordingIssuer{}
+	h.tokens = issuer.generator(t)
+	c := h.chain(t)
+
+	for i := range 10 {
+		out := serve(t, c, handoffRequest(t.Context(), magicLinkSource, code))
+
+		requireIssuingOutage(t, out.err, oidc.ErrInvalidHandoff)
+		require.Zero(t, h.activeSessions(t), "redemption %d created a session", i+1)
+	}
+
+	assert.NotContains(t, h.logs.String(), code, "no log record carries the code")
+
+	issuer.healthy.Store(true)
+
+	out := serve(t, c, handoffRequest(t.Context(), magicLinkSource, code))
+	require.NoError(t, out.err, "the code survived, and the source was charged nothing")
+	assert.Equal(t, 1, h.activeSessions(t))
+
+	again := serve(t, c, handoffRequest(t.Context(), oidcAnotherSource, code))
+	require.ErrorIs(t, again.err, oidc.ErrInvalidHandoff, "the redemption that succeeded spent it")
 }
