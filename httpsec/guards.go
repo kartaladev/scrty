@@ -9,9 +9,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/guardauth"
-	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/session"
 )
 
 // Guards builds the per-endpoint authorization a consumer puts in front of one
@@ -52,6 +50,10 @@ type Guards struct {
 	// which tells an absent source the consumer passed from no option at all.
 	authTime    func(ctx context.Context) (time.Time, bool)
 	authTimeSet bool
+
+	// recency judges every recency guard, built by NewGuards from the
+	// options above.
+	recency *guardauth.Recency
 }
 
 // DefaultRecentAuthenticationWindow is how recently a recency guard requires
@@ -102,7 +104,7 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 		opt(g)
 	}
 
-	if err := g.checkRecency(); err != nil {
+	if err := g.buildRecency(); err != nil {
 		return nil, err
 	}
 
@@ -422,22 +424,21 @@ func WithAuthenticationTime(fn func(ctx context.Context) (time.Time, bool)) Guar
 	}
 }
 
-// checkRecency refuses recency options no guard could judge with.
-func (g *Guards) checkRecency() error {
-	if g.window <= 0 {
-		return newConfigError(
-			"WithRecentAuthenticationWindow needs a window above zero, got %s", g.window)
+// buildRecency builds the recency judge from the options, refusing those no
+// guard could judge with. The request's session is the time source unless
+// WithAuthenticationTime was given.
+func (g *Guards) buildRecency() error {
+	authTime := g.authTime
+	if !g.authTimeSet {
+		authTime = guardauth.SessionAuthenticationTime(SessionFromContext)
 	}
 
-	if nilcheck.IsNil(g.clock) {
-		return newConfigError(
-			"WithGuardClock was given no clock; omit the option to use the system clock")
+	recency, reason := guardauth.NewRecency(g.window, g.clock, authTime)
+	if reason != "" {
+		return newConfigError("%s", reason)
 	}
 
-	if g.authTimeSet && g.authTime == nil {
-		return newConfigError(
-			"WithAuthenticationTime was given no function; omit the option to read the session's")
-	}
+	g.recency = recency
 
 	return nil
 }
@@ -460,7 +461,7 @@ func (g *Guards) RequireRecentAuthentication() func(http.Handler) http.Handler {
 		panic("httpsec: RequireRecentAuthentication needs non-nil Guards")
 	}
 
-	return g.recent(g.window)
+	return g.recent(0)
 }
 
 // RequireAuthenticationWithin guards a route that the caller may reach only
@@ -501,38 +502,13 @@ func (g *Guards) RequireAuthenticationWithin(window time.Duration) func(http.Han
 	return g.recent(window)
 }
 
-// recent builds the recency guard over window.
+// recent builds the recency guard over window, zero meaning the guards'.
 func (g *Guards) recent(window time.Duration) func(http.Handler) http.Handler {
 	return g.guard(func(ctx context.Context, _ Request, _ authorize.Authorizer) error {
-		authAt, ok := g.authenticationTime(ctx)
-		if !ok {
-			return &ReauthenticationRequiredError{Window: window}
-		}
-
-		// The session's own check judges the consumer's time too, so there is
-		// one definition of recent: inclusive end, a time ahead of the clock
-		// fresh, a zero time never.
-		judged := session.Session{AuthenticatedAt: authAt}
-		if !judged.AuthenticatedWithin(g.clock.Now(), window) {
-			return &ReauthenticationRequiredError{Window: window}
+		if recent, judged := g.recency.Judge(ctx, window); !recent {
+			return &ReauthenticationRequiredError{Window: judged}
 		}
 
 		return nil
 	})
-}
-
-// authenticationTime is when the caller last proved their identity, from the
-// consumer's source when one was given and from the request's session
-// otherwise.
-func (g *Guards) authenticationTime(ctx context.Context) (time.Time, bool) {
-	if g.authTime != nil {
-		return g.authTime(ctx)
-	}
-
-	s, ok := SessionFromContext(ctx)
-	if !ok {
-		return time.Time{}, false
-	}
-
-	return s.AuthenticatedAt, true
 }

@@ -774,6 +774,14 @@ func TestFiberRecencyGuards(t *testing.T) {
 			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
 		},
 		{
+			name:  "a consumer time source reporting a zero time refuses",
+			ahead: time.Minute,
+			opts: []fibersec.GuardOption{fibersec.WithAuthenticationTime(
+				func(context.Context) (time.Time, bool) { return time.Time{}, true })},
+			build:  recent,
+			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
 			name:   "a caller with no session is told to reauthenticate",
 			build:  recent,
 			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
