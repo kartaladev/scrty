@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the key and cipher ports a per-call context, report a missing signing key apart from an outage, stop an outage or a hang-up from reading as a refusal on the verification, issuing and session-resolution paths, and issue every credential before anything is stored or spent, as the eleven spec deltas and design decisions D1–D8 require.
+**Goal:** Give the key and cipher ports a per-call context, report a missing signing key apart from an outage, stop an outage or a hang-up from reading as a refusal on the verification, issuing and session-resolution paths, and issue every credential before anything is stored or spent, as the twelve spec deltas and design decisions D1–D8 require.
 
 **Architecture:**
 - **Defects first, on today's signatures (tasks 2.x).** Each misclassification is reproduced by a failing test and fixed before any port changes, so every claim is proven or dropped on its own.
@@ -420,6 +420,17 @@ Each defect was reproduced in a disposable copy (`tasks.md` group 9 names the te
 - [ ] **Step 2: Run** `go test -race -count=1 ./...`, `golangci-lint run ./...` and `go vet ./...`. Expected PASS with no test edited.
 - [ ] **Step 3: Commit** `refactor: one hang-up predicate and one signer-unavailable text`.
 
+### Task 9.8: The group-9 review's gaps (lane O, dispatch O2, Sonnet)
+
+The 9.7 review found no defect; the behaviour below is correct today (probed in a copy), so each new row's red step is by mutation.
+
+**Files:** Test `httpsec/magiclink_test.go` and the OIDC redemption test file gopls finds for `httpsec/oidc_redeem.go`. Godoc only: `internal/hangup/hangup.go` (package doc), `token/onetime/tokens.go` (`Consume`'s long line, `Redeem`), `authenticate/magiclink/links.go` (`Redeem`).
+
+- [ ] **Step 1: Write the HTTP rows.** Magic link: a generator that advances the onetime manager's fake clock past the link's expiry while it issues (issue at +59 s, advance 2 s). Assert the error matches `magiclink.ErrInvalidLink`, `StatusForError` is 401, no active session for the user, the link unspent, and exactly one failure recorded with the source limiter. OIDC handoff: the same shape with the handoff's clock, asserting the invalid-handoff outcome and no session created, if the existing harness lets a generator move the handoff's clock; otherwise state why not.
+- [ ] **Step 2: See them fail by mutation.** Disable `Tokens.Consume`'s expiry refusal (and, for the OIDC row, `Handoff.Redeem`'s re-read); run `go test -run 'TestMagicLink|TestOIDC|Expir' -count=1 ./httpsec/`. Expected FAIL: a session stored / nil error. Restore by hand, confirm with `cmp`.
+- [ ] **Step 3: Godoc.** `hangup` package doc lists every path that asks `ByCaller` after 9.6 (gopls references), the API key owner load and the saved-code failure logging included. Rewrap `Consume`'s 103-column line. `onetime.Tokens.Redeem` and `magiclink.Links.Redeem`: a token whose expiry passes during the checks is refused at the spend.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./token/... ./authenticate/... ./internal/...` and `golangci-lint run ./...`. Expected PASS, 0 issues.
+
 ### Task 9.7: Review (main session)
 
-- [ ] Run each lane's verification commands. Then a fresh Opus reviewer checks the group-9 diff against D7, D8 and the four deltas. Findings go back to a fresh dispatch of the lane. Then run `openspec validate key-port-context --strict`, re-run 7.1 (`make check`, and CI green on the final head), and tick.
+- [ ] Run each lane's verification commands. Then a fresh Opus reviewer checks the group-9 diff against D7, D8 and the five deltas (`one-time-tokens` added by 9.8). Findings go back to a fresh dispatch of the lane. Then run `openspec validate key-port-context --strict`, re-run 7.1 (`make check`, and CI green on the final head), and tick.

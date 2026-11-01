@@ -69,6 +69,7 @@ None.
 - `authentication`: the bearer provider answers a key source outage as a dependency failure.
 - `diagnostic-redaction`: a keyring and a key source are dependencies whose error text stays out of the logs.
 - `magic-link` and `oidc-login`: the credential is issued before the link or code is consumed, and a failure to issue it keeps the link or code redeemable.
+- `one-time-tokens`: a consume refuses a token whose expiry has passed by then, and leaves it unspent, so issuing between the check and the consume cannot spend an expired token.
 - `account-recovery`: the credential is issued before anything is spent, and a failure to issue it spends, removes, ends and replaces nothing, at once and after a hold.
 - `store-conformance`: the sealed-column suite checks that every seal and open carries the store operation's context.
 
