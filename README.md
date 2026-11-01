@@ -306,7 +306,9 @@ chain, err := httpsec.New(
    surfaces (a password change, say) is completed as a login completes one: the session is satisfied,
    rotated and marked with it, and verification answers with a `*httpsec.ChallengeError` of that kind
    carrying the rotated session and its credential, instead of calling the responder. The caller's
-   old credential is superseded, so the consumer's error handler must deliver `ce.Token`. The same
+   old credential is superseded, so the consumer's error handler must deliver `ce.Token`; the default
+   handler writes only the status, so a chain without `WithErrorHandler` leaves the caller without a
+   working credential, as at a login challenge. The same
    line as at re-authentication holds: a consumer policy that raises `policy.ChallengeMFA` without
    reading `policy.Input.MFASatisfied` hides whatever is registered after it. The begin endpoint
    (`POST /mfa/begin/<name>`) and verification both refuse a caller other than the session's own

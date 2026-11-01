@@ -367,8 +367,9 @@ func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 	}
 
 	// 5. A session that has already satisfied its second factor is done. The
-	// claim is honoured here and nowhere else: in the post-authentication phase
-	// it is the login's own word for itself.
+	// claim is honoured here on its own: in the post-authentication phase it is
+	// the login's own word for itself, which step 12 honours only beside
+	// Reauthenticating.
 	if phase == PerRequest && in.MFASatisfied {
 		return Decision{Outcome: Allow}
 	}

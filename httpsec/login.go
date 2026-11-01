@@ -729,7 +729,8 @@ func evaluatePhase(
 // MFASatisfied keeps raising it, and whatever it hides stays hidden; the
 // library's policy.MFA honours it, and policy.MFARequirement raises no
 // post-authentication second-factor challenge for a login off the federated
-// channel.
+// channel, and allows an unmet federated one once MFASatisfied and
+// Reauthenticating are both set.
 func judgeBehindSecondFactor(
 	ctx context.Context,
 	e *policy.Engine,
