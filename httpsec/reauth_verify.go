@@ -81,8 +81,8 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 	}
 
 	// admit refused a session whose first factor published no caller.
-	if ex.Authentication.Principal.ID != s.UserID {
-		return ErrAuthenticationRequired
+	if err := requireSessionUser(ex, s); err != nil {
+		return err
 	}
 
 	// Steps 4 to 8.

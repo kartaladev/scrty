@@ -248,7 +248,12 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     factor or none was ever asked of it, is refused with
 //     ErrNoMFAChallengePending: the endpoint serves only a pending session,
 //     and re-proving a signed-in one belongs to re-authentication (/reauth),
-//     not here. Nothing is counted or changed.
+//     not here. Nothing is counted or changed. A caller who is not the
+//     session's user, because a consumer interceptor past the first factor
+//     published another principal, is refused the same way once steps 2 to 4
+//     have passed and before the throttle (requireSessionUser): nothing is
+//     counted, verified or judged for the substituted principal, and the
+//     session stays pending.
 //  2. The path names no configured method: ErrUnknownMFAMethod. The method is
 //     read from the path and nowhere else.
 //  3. The method is on the first factor's channel: mfa.ErrSameChannel. A
@@ -288,6 +293,12 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 func (i *mfaInterceptor) verify(ex *Exchange) error {
 	s, method, err := i.admit(ex, i.verifyPrefix, anyMethod)
 	if err != nil {
+		return err
+	}
+
+	// Step 4's last refusal: admit refused a session whose first factor
+	// published no caller.
+	if err := requireSessionUser(ex, s); err != nil {
 		return err
 	}
 

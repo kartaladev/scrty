@@ -30,6 +30,12 @@ type MFAOption func(*mfaInterceptor) error
 // errors.As but not repeated in the text. None of these is counted against the
 // verification limiter.
 //
+// The caller must be the pending session's user. A consumer interceptor past
+// the first factor that published another principal is refused with
+// ErrAuthenticationRequired (401) before the throttle, the code check and the
+// post-authentication re-judgement, so nothing is counted, verified or judged
+// for the substituted principal and the session stays pending.
+//
 // A method that is an mfa.ChallengeMethod also has a begin step: a POST to
 // the begin prefix, "/" and its name ("/mfa/begin/<name>" by default) makes
 // the same refusals, is refused while the user's verification is throttled,

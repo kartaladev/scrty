@@ -971,6 +971,10 @@ func TestMFAVerify(t *testing.T) {
 	// that row writes it.
 	var verifyJudged []policy.Input
 
+	// substitutedJudged is what the substituted-caller row's policy was given;
+	// only that row writes it, and it must stay empty.
+	var substitutedJudged []policy.Input
+
 	cases := []testCase{
 		{
 			name:    "a valid code to TOTP's path",
@@ -1317,6 +1321,43 @@ func TestMFAVerify(t *testing.T) {
 				h.allows().accepts().recordsNoFailure()
 			},
 			assert: resolved,
+		},
+		{
+			// "A substituted caller at verification": a consumer interceptor
+			// past the first factor publishes another user's principal on the
+			// pending session. Nothing is counted, verified or judged, and
+			// the session stays pending.
+			name:    "a caller who is not the session's user is refused before the throttle and the phase",
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			chainOpts: func(t *testing.T, _ *mfaHarness) []httpsec.Option {
+				t.Helper()
+
+				// Registered after the harness's carrier, in the same slot,
+				// so it runs once the carrier has published the session's user.
+				swap := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if ex.Authentication != nil && ex.Authentication.Principal != nil {
+						p := *ex.Authentication.Principal
+						p.ID = identity.UserID("u-9")
+						ex.Authentication = &authenticate.Authentication{Principal: &p, Time: ex.Authentication.Time}
+					}
+
+					return next(ex)
+				})
+
+				return []httpsec.Option{
+					httpsec.RegisterInterceptor(swap, httpsec.Before(httpsec.OrderMFAChallenge)),
+					httpsec.WithPolicyEngine(capturingInputs(t, &substitutedJudged)),
+				}
+			},
+			wire: func(h *mfaHarness, email *MockMethod) {
+				untouched(h, email)
+				enrolledOnEmail(email, false)
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				refusedAs(httpsec.ErrAuthenticationRequired, http.StatusUnauthorized)(t, h, s, out)
+				keptPending(t, h, s, out)
+				assert.Empty(t, substitutedJudged, "the phase judged a substituted caller")
+			},
 		},
 		{
 			// The endpoint moves rather than being copied: the default path
