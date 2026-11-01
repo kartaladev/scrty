@@ -66,10 +66,10 @@ const reauthChallengeSweepFlow = "reauth-challenge-sweep"
 //     and the verified response is not counted.
 //  10. Success: resolve.
 //
-// Before step 4, a resolved caller who is not the session's own user (a
-// consumer interceptor past the gates published another) is refused with
-// ErrAuthenticationRequired, as the password re-proof refuses one: nothing is
-// counted, verified or judged by the phase.
+// Before step 4, and so before the throttle, a resolved caller who is not the
+// session's own user (a consumer interceptor past the gates published another)
+// is refused with ErrAuthenticationRequired: nothing is counted, verified or
+// judged by the phase.
 func (i *reauthInterceptor) verify(ex *Exchange) error {
 	s, method, err := i.admitMethod(ex, i.paths().verify, anyMethod)
 	if err != nil {
@@ -101,13 +101,18 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 // The input is the one a login builds for the session's user and first factor:
 // the caller the chain resolved, its username, the password-change time the
 // resolution read, and the session's own first factor rather than the method
-// re-proved with. When the session records that its login met the second
-// factor at its first (session.Session.MFAAtFirstFactor, library-owned and
-// write-once), the input carries the library's proof of it
-// (policy.Input.SecondFactorAtLogin) for that first factor at the time the
-// session records the second factor as met, as that login's input carried it.
-// The phase therefore answers a re-proof as it answers a login of the same
-// user now. The input is marked as the re-authentication of an existing
+// re-proved with. Two fields are rebuilt from what the library recorded on the
+// session, as the session's own requests rebuild them. When the session records
+// that its login met the second factor at its first
+// (session.Session.MFAAtFirstFactor, library-owned and write-once), the input
+// carries the library's proof of it (policy.Input.SecondFactorAtLogin) for that
+// first factor, as that login's input carried it. The proof's time is the one
+// the session records for its second factor as met, which a cross-channel
+// re-proof moves; no policy reads it. And the input carries the evidence the
+// login's provider asserted (policy.Input.FederatedAssurance), minted afresh
+// from the session's provider, issuer, amr and acr, so the policies match it
+// against the provider's configuration as it is now. The phase therefore
+// answers a re-proof as it answers a login of the same user now. The input is marked as the re-authentication of an existing
 // session (policy.Input.Reauthenticating), so a policy counting sessions knows
 // none is added.
 //
@@ -136,6 +141,8 @@ func secondFactorPhase(ex *Exchange, s *session.Session, now time.Time) error {
 	if s.MFAAtFirstFactor {
 		in.SecondFactorAtLogin = assurance.New(s.FirstFactor, s.MFASatisfiedAt)
 	}
+
+	in.FederatedAssurance = sessionFederatedAssurance(s)
 
 	d := evaluatePhase(ex.Context(), engine, policy.PostAuthentication, in)
 

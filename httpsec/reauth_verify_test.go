@@ -139,6 +139,21 @@ func unchanged(t *testing.T, h *reauthHarness, s *session.Session) {
 	assert.Nil(t, h.issuedFor.Load(), "no credential was issued")
 }
 
+// fullSessionWith is a live session past its second factor whose login
+// recorded opts besides its first factor, as an OIDC login records the
+// provider and the assurance it asserted.
+func (h *reauthHarness) fullSessionWith(t *testing.T, first factor.Kind, opts ...session.CreateOption) *session.Session {
+	t.Helper()
+
+	s, err := h.sessions.Create(t.Context(), testMFAUser, append([]session.CreateOption{session.WithFirstFactor(first)}, opts...)...)
+	require.NoError(t, err)
+
+	s.MFA = session.MFASatisfied
+	require.NoError(t, h.sessions.Save(t.Context(), s))
+
+	return s
+}
+
 // TestReauthVerify pins the second-factor re-proof at POST
 // <prefix>/verify/<method>: the order it judges a submission in, what it
 // counts against the user's second-factor throttle, and what it changes.
@@ -154,8 +169,11 @@ func TestReauthVerify(t *testing.T) {
 		// setup, when set, wires what needs the test: a policy engine, or a
 		// further session of the user. first is the re-proved session's first
 		// factor, the password when unset.
-		setup   func(t *testing.T, h *reauthHarness)
-		first   factor.Kind
+		setup func(t *testing.T, h *reauthHarness)
+		first factor.Kind
+		// create, when set, are further options the re-proved session is created
+		// with, as its login would have recorded them.
+		create  []session.CreateOption
 		request func(ctx context.Context, t *testing.T, token string) *http.Request
 		assert  func(t *testing.T, h *reauthHarness, s *session.Session, out served)
 	}
@@ -239,6 +257,40 @@ func TestReauthVerify(t *testing.T) {
 		}
 	}
 
+	// federatedRequirement wires the requirement policy over everyone, refusing
+	// a federated login the provider's evidence does not satisfy, with a source
+	// that answers met for every evidence it is asked about.
+	federatedRequirement := func(met bool) func(*testing.T, *reauthHarness) {
+		return engine(func(t *testing.T, _ *reauthHarness) *policy.Engine {
+			t.Helper()
+
+			ctrl := gomock.NewController(t)
+
+			totpLookup := NewMockMFAMethodLookup(ctrl)
+			totpLookup.EXPECT().Name().Return("totp").AnyTimes()
+			totpLookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totpLookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+
+			src := NewMockFederatedAssuranceSource(ctrl)
+			src.EXPECT().MeetsAssurance(gomock.Any(), testMFAUser, gomock.Any()).Return(met, nil).AnyTimes()
+
+			p, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{totpLookup},
+				policy.WithMFARequiredForAll(),
+				policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse),
+				policy.WithFederatedAssuranceSource(src))
+			require.NoError(t, err)
+
+			return engineOf(t, p)
+		})
+	}
+
+	// mfaFederated is what an OIDC login asserting multi-factor authentication
+	// records on its session.
+	mfaFederated := []session.CreateOption{
+		session.WithExternalSession("corp", "https://idp.example.com", "", ""),
+		session.WithFederatedAssurance([]string{"mfa"}, ""),
+	}
+
 	// captured is what the input-capturing row's policy was given, and
 	// substituted what the substituted-caller row's was; only that row writes
 	// each.
@@ -253,6 +305,34 @@ func TestReauthVerify(t *testing.T) {
 			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
 				reproved(t, h, s, out)
 			},
+		},
+		{
+			// "A federated session re-proves under refused assurance": the
+			// provider asserted multi-factor authentication at the login and the
+			// source still accepts it, so the requirement policy admits the
+			// session on every request. The re-proof's input carries the
+			// session's evidence as that request's does.
+			name:    "a federated session whose evidence meets the source re-proves under refused assurance",
+			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup:   federatedRequirement(true),
+			first:   factor.OIDC,
+			create:  mfaFederated,
+			request: code(reauthVerifyTOTP),
+			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+				reproved(t, h, s, out)
+			},
+		},
+		{
+			// The same session once the provider's configuration no longer
+			// accepts what it asserted: the re-proof is refused with the
+			// policy's reason, as the session's next request would be.
+			name:    "a federated session whose evidence no longer meets the source is refused on its re-proof",
+			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup:   federatedRequirement(false),
+			first:   factor.OIDC,
+			create:  mfaFederated,
+			request: code(reauthVerifyTOTP),
+			assert:  refusedWith(policy.ErrFederatedAssuranceNotMet),
 		},
 		{
 			// "Above the session cap": the user holds two sessions under a cap
@@ -551,6 +631,9 @@ func TestReauthVerify(t *testing.T) {
 			}
 
 			s := h.fullSession(t, first)
+			if len(tc.create) > 0 {
+				s = h.fullSessionWith(t, first, tc.create...)
+			}
 
 			// Time has passed since the sign-in, so a refreshed
 			// authentication time differs from the one the session holds.
