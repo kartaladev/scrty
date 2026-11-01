@@ -86,6 +86,10 @@ type GuardOption func(*Guards)
 // less (WithRecentAuthenticationWindow), a nil or typed-nil clock
 // (WithGuardClock), or a nil authentication-time source
 // (WithAuthenticationTime). The message names the option.
+//
+// A wiring that is wrong in both ways reports the recency option first, on
+// every adapter, so one mistake is one error whichever adapter builds the
+// guards.
 func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 	g := &Guards{
 		window: DefaultRecentAuthenticationWindow,

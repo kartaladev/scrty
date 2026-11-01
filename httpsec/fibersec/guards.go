@@ -82,6 +82,16 @@ type GuardOption func(*Guards)
 // that meant to rely on the chain. With WithChainAuthorizer, a nil az — typed
 // or not — means no fallback, and a request the chain published no authorizer
 // on is refused with authorize.ErrAccessDenied.
+//
+// It also fails with an error wrapping httpsec.ErrConfig when a recency option
+// was given something no recency guard could judge with: a window of zero or
+// less (WithRecentAuthenticationWindow), a nil or typed-nil clock
+// (WithGuardClock), or a nil authentication-time source
+// (WithAuthenticationTime). The message names the option.
+//
+// A wiring that is wrong in both ways reports the recency option first, on
+// every adapter, so one mistake is one error whichever adapter builds the
+// guards.
 func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 	g := &Guards{window: DefaultRecentAuthenticationWindow, clock: clock.System()}
 

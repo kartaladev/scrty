@@ -74,6 +74,16 @@ type MFAOption func(*mfaInterceptor) error
 // changed. Re-proving a signed-in session belongs to re-authentication
 // (EnableReauthentication, at /reauth by default), not to these endpoints.
 //
+// A verification that succeeds rotates the session to a new handle and answers
+// with the credential issued for it. The credential is issued inside the
+// rotation, before anything is stored, so one that cannot be issued refuses the
+// verification with nothing rotated or stored: the session stays pending under
+// the credential the caller arrived with, rather than being signed out. A
+// verification that loses a race with a concurrent renewal, re-proof or
+// verification of the same session, through this server or any other manager
+// sharing the session store, is refused with ErrSessionRenewalConflict (409)
+// inside the winner's in-flight window.
+//
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.
 //
@@ -265,7 +275,9 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 // factor would hold a credential naming a session that no longer exists. With
 // EnableSessionBearer on, it must not be given: the endpoint hands back the
 // rotated session's identifier instead, and a generator is a configuration
-// error from New. It is the same generator
+// error from New. The token is issued inside the rotation, before anything is
+// stored, so a generator that fails refuses the verification with nothing
+// rotated and the caller's credential still working. It is the same generator
 // the first factors issue through, so a token from a login and one from a
 // second factor are indistinguishable to whatever verifies them.
 func WithMFATokens(g token.Generator) MFAOption {

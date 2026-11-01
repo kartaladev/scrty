@@ -639,9 +639,9 @@ func WithPolicyEngine(e *policy.Engine) Option {
 // check off.
 //
 // A request raising a declared kind is refused on every passkey registration
-// and management endpoint. A
-// gate that lets passkey registration through to resolve its kind names the
-// kind in WithPasskeyRegistrationResolving.
+// and management endpoint, since the gate enforcing the kind may sit after
+// them. A gate that lets passkey registration through to resolve its kind
+// names the kind in WithPasskeyRegistrationResolving.
 func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 	return func(c *config) error {
 		if kind == policy.ChallengeNone {

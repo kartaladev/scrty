@@ -93,7 +93,11 @@ func WithPasskeyRemoveResponder(fn PasskeyChangeResponder) PasskeyOption {
 
 // manage serves the management endpoints: GET on the credentials prefix
 // lists, POST on its rename and remove paths changes. It reports false for
-// any other request, which the caller passes on.
+// any other request, which the caller passes on. A request on which the
+// per-request policy raised a consumer challenge kind is refused with a
+// ChallengeError of that kind, with no way to opt a kind in: the management
+// endpoints never serve one (WithPasskeyRegistrationResolving is for
+// registration only).
 func (p *passkeyInterceptor) manage(ex *Exchange) (bool, error) {
 	r := ex.Request
 

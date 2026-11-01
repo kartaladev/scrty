@@ -221,7 +221,9 @@ type RecoveryOption func(*recoveryInterceptor) error
 //     notifies the user, when the session's authentication time (sign-in,
 //     satisfied second factor or re-authentication) is within
 //     15 minutes (WithRecoveryRegenerationFreshness), and is refused with
-//     recovery.ErrReauthenticationRequired (403) otherwise; it answers 200
+//     recovery.ErrReauthenticationRequired (403) otherwise, and a stale
+//     session is refreshed by a re-proof (EnableReauthentication) or, on a
+//     chain without it, only by signing in again; it answers 200
 //     with {"recovery_codes":[…]} and Cache-Control: no-store
 //     (WithRecoveryCodesResponder). A GET answers 200 with
 //     {"remaining":n,"low":bool} and never a code
