@@ -237,6 +237,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assertTimeEqual(t, want.AcceptUntil, got.AcceptUntil, "AcceptUntil")
 	assertTimeEqual(t, want.RetainUntil, got.RetainUntil, "RetainUntil")
 	assertTimeEqual(t, want.FirstPresentedAt, got.FirstPresentedAt, "FirstPresentedAt")
+	assert.Equal(t, want.RotatedStrictly, got.RotatedStrictly, "RotatedStrictly")
 	if len(want.SuccessorDigest) == 0 {
 		assert.Empty(t, got.SuccessorDigest, "a session never superseded must load with no successor")
 	} else {
@@ -2436,6 +2437,207 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 				require.ErrorIs(t, err, session.ErrNotFound)
 				assertSessionsLoad(ctx, t, s, old, successor)
 				assertSessionsGone(ctx, t, s, "sess-never")
+			},
+		},
+	}
+}
+
+// runSessionStrictRotationSuite runs the strict-rotation mark cases,
+// sessionStrictRotationCases, against newStore.
+//
+// It stays apart from RunSessionStoreSuite only until every store this module
+// ships persists the mark: the in-memory default and the encrypting decorator
+// do, the durable stores do not yet. It is reached through export_test.go, so
+// the in-memory runs and the broken variants of this package run it and no
+// other package can. Once the durable stores persist the mark,
+// RunSessionStoreSuite appends sessionStrictRotationCases to its own cases,
+// which makes them required of every session store, a consumer's included,
+// and this runner and its export are removed.
+func runSessionStrictRotationSuite(t *testing.T, newStore func(t *testing.T, clk clock.Clock) session.Store) {
+	t.Helper()
+
+	runSuite(t, sessionStrictRotationCases(), newStore)
+}
+
+// sessionStrictRotationCases are the cases of the strict-rotation mark: a
+// supersession made without grace (Supersession.Strict) is returned on load
+// with Session.RotatedStrictly set, one with a grace window is not, Create and
+// Save never write the mark, and the sweep removes a marked session as any
+// other superseded one once its retention deadline passes.
+func sessionStrictRotationCases() []suiteCase[session.Store] {
+	// inFlight is the window a strict rotation gives the session it
+	// supersedes, which is also that session's retention deadline.
+	const inFlight = 30 * time.Second
+
+	// supersede supersedes old at suiteStart by a successor named
+	// successorID, strictly or with a grace window, and returns the
+	// successor. A strict supersession is retained only for its window, as a
+	// strict rotation retains it; a grace one for the suite's retention.
+	supersede := func(ctx context.Context, t *testing.T, s session.Store,
+		old *session.Session, successorID string, strict bool,
+	) *session.Session {
+		t.Helper()
+
+		retain := sessionRetainUntil
+		if strict {
+			retain = suiteStart.Add(inFlight)
+		}
+		successor := successorOf(old, successorID, suiteStart)
+		require.NoError(t, s.Supersede(ctx, session.Supersession{
+			Old: old.ID, AcceptUntil: suiteStart.Add(inFlight), RetainUntil: retain,
+			Successor: successor, Now: suiteStart, Strict: strict,
+		}))
+		return successor
+	}
+
+	// strictlySuperseded is old as a store must hold it once supersede
+	// superseded it strictly by successor.
+	strictlySuperseded := func(old *session.Session, successor string) *session.Session {
+		s := supersededUntil(old, successor, suiteStart, suiteStart.Add(inFlight), suiteStart.Add(inFlight))
+		s.RotatedStrictly = true
+		return s
+	}
+
+	return []suiteCase[session.Store]{
+		{
+			name: "a supersession without grace is loaded marked as strict",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3001))
+				require.NoError(t, s.Create(ctx, old))
+
+				successor := supersede(ctx, t, s, old, "sess-b", true)
+
+				assertSessionsLoad(ctx, t, s, strictlySuperseded(old, successor.ID), successor)
+			},
+		},
+		{
+			name: "a supersession with a grace window is loaded unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3002))
+				require.NoError(t, s.Create(ctx, old))
+
+				successor := supersede(ctx, t, s, old, "sess-b", false)
+
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, successor.ID, suiteStart, suiteStart.Add(inFlight)), successor)
+			},
+		},
+		{
+			name: "creating a session never writes the strict mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				created := familySession("sess-a", "u-1", suiteID(3003))
+				created.RotatedStrictly = true
+				require.NoError(t, s.Create(ctx, created))
+
+				// A supersession inserts its successor as Create inserts a
+				// session, so the mark the successor is handed is not
+				// written either.
+				old := familySession("sess-c", "u-1", suiteID(3013))
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-d", suiteStart)
+				successor.RotatedStrictly = true
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: suiteStart,
+				}))
+
+				for _, sessionID := range []string{created.ID, successor.ID} {
+					got, err := s.Load(ctx, sessionID)
+					require.NoError(t, err)
+					assert.False(t, got.RotatedStrictly,
+						"session %s was handed over marked, and must load unmarked", sessionID)
+				}
+			},
+		},
+		{
+			name: "saving a session never writes the strict mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, familySession("sess-a", "u-1", suiteID(3004))))
+
+				saved := familySession("sess-a", "u-1", suiteID(3004))
+				saved.LastAccessedAt = saved.LastAccessedAt.Add(time.Minute)
+				saved.RotatedStrictly = true
+				require.NoError(t, s.Save(ctx, saved))
+
+				want := *saved
+				want.RotatedStrictly = false
+				assertSessionsLoad(ctx, t, s, &want)
+			},
+		},
+		{
+			name: "saving a strictly superseded session keeps its mark",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3005))
+				require.NoError(t, s.Create(ctx, old))
+				successor := supersede(ctx, t, s, old, "sess-b", true)
+
+				// A copy loaded before the supersession, saved after it.
+				require.NoError(t, s.Save(ctx, old))
+
+				assertSessionsLoad(ctx, t, s, strictlySuperseded(old, successor.ID))
+			},
+		},
+		{
+			name: "a strict supersession through an observed successor marks Old and leaves the knocked-out successor unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3007))
+				require.NoError(t, s.Create(ctx, old))
+				previous := supersede(ctx, t, s, old, "sess-b", false)
+
+				again := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-c", again)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(previous.ID),
+					AcceptUntil: again.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: again, Strict: true,
+				}))
+
+				marked := supersededUntil(old, successor.ID, again, again.Add(inFlight), sessionRetainUntil)
+				marked.RotatedStrictly = true
+				assertSessionsLoad(ctx, t, s, marked,
+					knockedOutAs(previous, again, sessionRetainUntil), successor)
+			},
+		},
+		{
+			name: "a later supersession overwrites the strict mark of an earlier one",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3008))
+				require.NoError(t, s.Create(ctx, old))
+				previous := supersede(ctx, t, s, old, "sess-b", true)
+
+				again := suiteStart.Add(10 * time.Second)
+				successor := successorOf(old, "sess-c", again)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(previous.ID),
+					AcceptUntil: again.Add(inFlight), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: again,
+				}))
+
+				assertSessionsLoad(ctx, t, s,
+					supersededUntil(old, successor.ID, again, again.Add(inFlight), sessionRetainUntil),
+					knockedOutAs(previous, again, sessionRetainUntil), successor)
+			},
+		},
+		{
+			name: "a strictly superseded session is swept once its retention deadline passes",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3006))
+				require.NoError(t, s.Create(ctx, old))
+				successor := supersede(ctx, t, s, old, "sess-b", true)
+
+				clk.Advance(inFlight - time.Second)
+				n, err := s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Zero(t, n, "nothing is swept before the retention deadline")
+				assertSessionsLoad(ctx, t, s, strictlySuperseded(old, successor.ID))
+
+				clk.Advance(2 * time.Second)
+				n, err = s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the strictly superseded session goes, and only it")
+
+				assertSessionsGone(ctx, t, s, old.ID)
+				assertSessionsLoad(ctx, t, s, successor)
 			},
 		},
 	}

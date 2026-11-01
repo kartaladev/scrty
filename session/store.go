@@ -123,6 +123,13 @@ type Supersession struct {
 	// (WithUnusedSuccessorRecovery). It has no effect when ObservedSuccessor
 	// is nil.
 	RequireUnpresentedSuccessor bool
+
+	// Strict reports that the supersession is a rotation without grace. The
+	// store records it on Old as Session.RotatedStrictly, and returns it with
+	// Old's other supersession state until Old's RetainUntil passes. It is
+	// written on Old alone: neither Old's previous successor nor Successor is
+	// marked.
+	Strict bool
 }
 
 // Store persists sessions.
@@ -154,7 +161,8 @@ type Supersession struct {
 type Store interface {
 	// Create inserts s. An identifier that is already stored is an error
 	// rather than a replacement: overwriting would silently end the session
-	// already holding it.
+	// already holding it. It stores s unmarked (RotatedStrictly false),
+	// whatever s says: only Supersede writes the mark.
 	//
 	// Every stored session belongs to a family. A session whose FamilyID is
 	// the nil family, id.Nil, is refused with an error and nothing is
@@ -171,10 +179,10 @@ type Store interface {
 	//
 	// The family, supersession and presentation fields (FamilyID,
 	// FamilyCreatedAt, SupersededAt, AcceptUntil, RetainUntil,
-	// SuccessorDigest, FirstPresentedAt) are written by Create, Supersede and
-	// MarkPresented only: Save keeps the stored values whatever the session
-	// handed to it says, so saving a copy loaded before a concurrent
-	// supersession cannot undo it.
+	// RotatedStrictly, SuccessorDigest, FirstPresentedAt) are written by
+	// Create, Supersede and MarkPresented only: Save keeps the stored values
+	// whatever the session handed to it says, so saving a copy loaded before
+	// a concurrent supersession cannot undo it.
 	//
 	// A stored session that is superseded (SupersededAt set) also keeps its
 	// IdleExpiresAt and AbsoluteExpiresAt as stored: a superseded session
@@ -197,15 +205,15 @@ type Store interface {
 	// superseded is past either deadline.
 	//
 	// A superseded session is returned with its supersession state
-	// (SupersededAt, AcceptUntil, RetainUntil, SuccessorDigest) and its own
-	// deadlines as stored, whether or not its grace window or its own
-	// deadlines have ended, until its RetainUntil passes; then it is
-	// ErrExpired. One with a zero RetainUntil, written before the
-	// field existed, is judged by its own deadlines. The Sessions judges the
-	// window, and the record's own deadlines inside it, with its own clock. A
-	// consumer calling Load directly therefore sees superseded sessions,
-	// expired ones included, and must not treat one as live without that
-	// judgement.
+	// (SupersededAt, AcceptUntil, RetainUntil, RotatedStrictly,
+	// SuccessorDigest) and its own deadlines as stored, whether or not its
+	// grace window or its own deadlines have ended, until its RetainUntil
+	// passes; then it is ErrExpired. One with a zero RetainUntil, written
+	// before the field existed, is judged by its own deadlines. The Sessions
+	// judges the window, and the record's own deadlines inside it, with its
+	// own clock. A consumer calling Load directly therefore sees superseded
+	// sessions, expired ones included, and must not treat one as live without
+	// that judgement.
 	Load(ctx context.Context, id string) (*Session, error)
 
 	// RecordActivity writes lastAccessed and idleExpires to the session with
@@ -239,11 +247,13 @@ type Store interface {
 	//
 	//   - it marks op.Old superseded at op.Now, with op.AcceptUntil as its
 	//     window end, the digest of op.Successor's identifier as its
-	//     successor, and its retention deadline as above;
+	//     successor, op.Strict as its RotatedStrictly, and its retention
+	//     deadline as above;
 	//   - it marks Old's previous successor, if it had one, superseded at
 	//     op.Now with a window ending at op.Now, and its retention deadline
 	//     as above;
-	//   - it inserts op.Successor.
+	//   - it inserts op.Successor, unmarked whatever its RotatedStrictly
+	//     says, as Create would.
 	//
 	// It writes those records and no other: no earlier superseded session of
 	// the family, and no session of another family, so its cost does not

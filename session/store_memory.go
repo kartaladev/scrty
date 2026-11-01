@@ -246,8 +246,11 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 }
 
 // putLocked stores rec, a record not stored yet, under its identifier and
-// indexes its digest and family. Callers hold s.mu.
+// indexes its digest and family. It stores rec unmarked, whatever its
+// RotatedStrictly says, since only Supersede marks a record. Callers hold
+// s.mu.
 func (s *MemoryStore) putLocked(rec *Session) {
+	rec.RotatedStrictly = false
 	s.records[rec.ID] = rec
 	s.byDigest[string(sessionDigest(rec.ID))] = rec.ID
 	members, ok := s.byFamily[rec.FamilyID]
@@ -276,11 +279,11 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 }
 
 // Save updates the stored session, whole except for MFAAtFirstFactor,
-// AuthenticatedAt and the family, supersession (RetainUntil included) and
-// presentation fields, and never inserts. Those are kept as Create, Supersede
-// and MarkPresented wrote them, whatever the saved session says. A superseded
-// record also keeps both of its own deadlines, so a stale copy can change
-// neither them nor its retention.
+// AuthenticatedAt and the family, supersession (RetainUntil and
+// RotatedStrictly included) and presentation fields, and never inserts. Those
+// are kept as Create, Supersede and MarkPresented wrote them, whatever the
+// saved session says. A superseded record also keeps both of its own
+// deadlines, so a stale copy can change neither them nor its retention.
 //
 // A session that is no longer stored is ErrNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
@@ -303,6 +306,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	rec.AcceptUntil = stored.AcceptUntil
 	rec.SuccessorDigest = stored.SuccessorDigest
 	rec.RetainUntil = stored.RetainUntil
+	rec.RotatedStrictly = stored.RotatedStrictly
 	rec.FirstPresentedAt = stored.FirstPresentedAt
 	if !stored.SupersededAt.IsZero() {
 		rec.IdleExpiresAt = stored.IdleExpiresAt
@@ -515,7 +519,8 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 // successor take the later of their stored RetainUntil and op.RetainUntil as
 // their RetainUntil, so housekeeping removes them only when their family
 // could no longer be live, and no supersession lowers a retention deadline.
-// Neither record's own deadlines change.
+// Neither record's own deadlines change. Old takes op.Strict as its
+// RotatedStrictly; the successor is inserted unmarked, as Create inserts it.
 //
 // Nothing else is written: no other record of the family is touched, however
 // many renewals came before.
@@ -564,6 +569,7 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	old.SupersededAt = op.Now
 	old.AcceptUntil = op.AcceptUntil
 	old.SuccessorDigest = sessionDigest(op.Successor.ID)
+	old.RotatedStrictly = op.Strict
 	retain(old, op.RetainUntil)
 	s.putLocked(op.Successor.clone())
 

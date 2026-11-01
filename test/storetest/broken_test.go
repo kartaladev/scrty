@@ -137,6 +137,12 @@ var portableVariants = []brokenVariant{
 		"a superseded record is swept after its retention deadline, not by its own deadlines"),
 	sessionVariant(sessionSaveMovesRetention,
 		"a stale save of a superseded record changes neither its deadlines nor its retention"),
+	sessionVariant(sessionSupersedeDropsStrictMark, "a supersession without grace is loaded marked as strict"),
+	sessionVariant(sessionSaveWritesStrictMark, "saving a session never writes the strict mark"),
+	sessionVariant(sessionCreateWritesStrictMark, "creating a session never writes the strict mark"),
+	sessionVariant(sessionSupersedeMarksPreviousSuccessor,
+		"a strict supersession through an observed successor marks Old and leaves the knocked-out successor unmarked"),
+	sessionVariant(sessionSupersedeMarkSticky, "a later supersession overwrites the strict mark of an earlier one"),
 	sessionVariant(sessionSupersedeAcceptsEarlyRetention,
 		"a retention deadline before the window is refused and writes nothing"),
 	sessionVariant(sessionSupersedeAcceptsNoFamilySuccessor,
@@ -278,10 +284,12 @@ func sessionVariant(d sessionDefect, failsCase string) brokenVariant {
 	return brokenVariant{
 		name: "session-" + string(d),
 		run: func(t *testing.T) {
-			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+			newStore := func(t *testing.T, clk clock.Clock) session.Store {
 				t.Helper()
 				return newSessionStore(d, clk)
-			})
+			}
+			storetest.RunSessionStoreSuite(t, newStore)
+			storetest.RunSessionStrictRotationSuite(t, newStore)
 		},
 		failsCase: failsCase,
 	}

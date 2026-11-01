@@ -229,6 +229,15 @@ type Session struct {
 	// its RetainUntil as given. Library-owned.
 	RetainUntil time.Time
 
+	// RotatedStrictly reports that this session was superseded by a rotation
+	// without grace (Supersession.Strict), and is false for a session never
+	// superseded and for one superseded with a grace window. A store returns
+	// it with the rest of the supersession state until RetainUntil passes.
+	// Only Store.Supersede sets it: Create stores a session unmarked, a
+	// successor inside Supersede included, and Save keeps the stored value
+	// whatever the session handed to it says. Library-owned.
+	RotatedStrictly bool
+
 	// FirstPresentedAt is when the session was first loaded successfully,
 	// and is zero until then. Only Store.MarkPresented sets it, and only
 	// once. Library-owned.
