@@ -779,6 +779,13 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 // the in-flight window, the renewal conflict for a lost race through any
 // manager sharing the store, the deadlines and family carried over. s is not
 // modified.
+//
+// The in-flight window (AcceptUntil and RetainUntil) is counted from the
+// instant the manager read its clock before the step ran, not from the moment
+// the supersession is written. A step slower than the window therefore leaves
+// the old record with a window that has already ended when it is stored, and a
+// concurrent rotation that reads it then is refused as a gone session rather
+// than as a renewal conflict.
 func (m *Sessions) RotateIssuing(
 	ctx context.Context,
 	s *Session,

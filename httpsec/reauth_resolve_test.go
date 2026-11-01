@@ -538,15 +538,19 @@ func TestReauthResolve(t *testing.T) {
 				}
 				wg.Wait()
 
-				if outs[0].err == nil {
-					require.Error(t, outs[1].err, "exactly one wins")
-
-					return outs[1]
+				// Both racers may issue before either supersedes, so the last
+				// identifier issued is not necessarily the winner's. The
+				// winner's is the one its own response carries.
+				winner, loser := outs[0], outs[1]
+				if winner.err != nil {
+					winner, loser = loser, winner
 				}
 
-				require.NoError(t, outs[1].err, "exactly one wins")
+				require.NoError(t, winner.err, "exactly one wins")
+				require.Error(t, loser.err, "exactly one wins")
+				f.issuedFor.Store(sessionIDOf(t, accessTokenFrom(t, winner)))
 
-				return outs[0]
+				return loser
 			},
 			assert: func(t *testing.T, f *pwFixture, _ *httpsec.Chain, s *session.Session, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
@@ -557,6 +561,13 @@ func TestReauthResolve(t *testing.T) {
 				winner, ok := f.issuedFor.Load().(string)
 				require.True(t, ok)
 				assert.Equal(t, session.MFASatisfied, f.stored(t, winner).MFA, "the winner's session is in place")
+
+				// A credential the loser issued before its supersession was
+				// refused names a successor that was never stored.
+				for _, id := range f.issuedExcept(winner) {
+					_, err := f.sessions.Load(t.Context(), id)
+					assert.ErrorIs(t, err, session.ErrNotFound, "a credential issued for a lost rotation names no session")
+				}
 
 				n, err := f.sessions.CountActiveByUser(t.Context(), s.UserID)
 				require.NoError(t, err)
@@ -604,9 +615,9 @@ func TestReauthResolve(t *testing.T) {
 		},
 		{
 			// "A failure SHALL change neither the session nor its handle": the
-			// fields set before the rotation are put back on the session the
-			// exchange carries.
-			name: "a failed rotation rolls the session's fields back",
+			// fields are set on a copy, so the session the exchange carries is
+			// as it arrived.
+			name: "a failed rotation leaves the session the caller holds unchanged",
 			wire: func(_ *testing.T, f *pwFixture) {
 				f.totpUnenrolled = false
 				f.allows().recordsNoFailure()
@@ -631,9 +642,9 @@ func TestReauthResolve(t *testing.T) {
 
 				require.NotNil(t, f.resolved)
 				assert.Equal(t, s.ID, f.resolved.ID, "the exchange keeps the session it arrived with")
-				assert.True(t, f.resolved.AuthenticatedAt.Equal(s.AuthenticatedAt), "authentication time rolled back")
-				assert.Equal(t, session.MFANone, f.resolved.MFA, "second-factor state rolled back")
-				assert.True(t, f.resolved.MFASatisfiedAt.IsZero(), "second-factor time rolled back")
+				assert.True(t, f.resolved.AuthenticatedAt.Equal(s.AuthenticatedAt), "the authentication time is unchanged")
+				assert.Equal(t, session.MFANone, f.resolved.MFA, "the second-factor state is unchanged")
+				assert.True(t, f.resolved.MFASatisfiedAt.IsZero(), "the second-factor time is unchanged")
 			},
 		},
 		{

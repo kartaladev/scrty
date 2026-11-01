@@ -1528,8 +1528,11 @@ func TestManagerRotate(t *testing.T) {
 		store func(t *testing.T) session.Store
 		// issue is the caller's step on the successor; nil rotates through
 		// Rotate, which runs none.
-		issue  func(successor *session.Session) (string, error)
-		assert func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error)
+		issue func(successor *session.Session) (string, error)
+		// prepare moves the stored record before the rotation runs; nil
+		// leaves it as it was created.
+		prepare func(t *testing.T, m *session.Sessions, old *session.Session)
+		assert  func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error)
 	}
 
 	errIssue := errors.New("the credential could not be issued")
@@ -1619,6 +1622,76 @@ func TestManagerRotate(t *testing.T) {
 				assert.NotEqual(t, old.ID, again.ID)
 			},
 		},
+		{
+			// The step ran and succeeded, but the supersession that follows
+			// it failed: the credential names a successor that was never
+			// stored, so it is not handed back.
+			name: "a step that succeeds while the supersession fails returns no credential and the store's error",
+			store: func(*testing.T) session.Store {
+				return &failingWriteStore{Store: must.Must(session.NewMemoryStore())}
+			},
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			assert: func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, errStoreWrite)
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok, "a credential for a successor that was never stored is not returned")
+				require.NotNil(t, r.given, "the step ran before the supersession")
+
+				_, loadErr := m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "the credential names no session")
+
+				reloaded, loadErr := m.Load(t.Context(), old.ID)
+				require.NoError(t, loadErr, "the old identifier still loads")
+				assert.False(t, reloaded.RotatedStrictly)
+			},
+		},
+		{
+			// A refusal decided from the stored record, before the successor
+			// is built, never reaches the step.
+			name:  "a session that is gone never calls the step",
+			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				require.NoError(t, m.Delete(t.Context(), old.ID))
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			name:  "a revoked session never calls the step",
+			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				n, err := m.RevokeFamily(t.Context(), old.FamilyID)
+				require.NoError(t, err)
+				require.Positive(t, n, "the family was revoked")
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.Error(t, err)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			name:  "a strictly rotated session inside its window never calls the step",
+			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				_, err := m.Rotate(t.Context(), old)
+				require.NoError(t, err, "another request rotated it first")
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1635,6 +1708,10 @@ func TestManagerRotate(t *testing.T) {
 			require.NoError(t, m.Save(ctx, old))
 
 			before := snapshot(old)
+
+			if tc.prepare != nil {
+				tc.prepare(t, m, old)
+			}
 
 			var r rotation
 			if tc.issue == nil {

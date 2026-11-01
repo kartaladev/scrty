@@ -3597,12 +3597,11 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 		assert func(t *testing.T, h *enrolHarness, s *session.Session, issued *atomic.Value, out served)
 	}
 
-	// untouched is a refusal that changed nothing: the pinned session is as
+	// untouched is a refusal that changed nothing: kept is the session as
 	// verification found it.
-	untouched := func(t *testing.T, h *enrolHarness) {
+	untouched := func(t *testing.T, kept *session.Session) {
 		t.Helper()
 
-		kept := h.pinned
 		assert.Equal(t, session.MFAPending, kept.MFA, "the challenge stays pending")
 		assert.True(t, kept.MFASatisfiedAt.IsZero())
 		assert.Equal(t, clockAt(9, 15), kept.AbsoluteExpiresAt, "the lowered deadline stays")
@@ -3657,7 +3656,7 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 				require.ErrorIs(t, out.err, session.ErrExpired)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 				assert.Nil(t, issued.Load(), "no credential is issued")
-				untouched(t, h)
+				untouched(t, h.pinned)
 			},
 		},
 		{
@@ -3669,7 +3668,7 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 				h.pinned = h.stored(t, s.ID)
 				failing.Store(true)
 			},
-			assert: func(t *testing.T, h *enrolHarness, _ *session.Session, issued *atomic.Value, out served) {
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, issued *atomic.Value, out served) {
 				t.Helper()
 
 				require.ErrorIs(t, out.err, errStoreLeaky)
@@ -3680,7 +3679,16 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 					_, err := h.sessions.Load(t.Context(), id)
 					require.ErrorIs(t, err, session.ErrNotFound, "the issued credential names no session")
 				}
-				untouched(t, h)
+
+				// The session the verification held is a copy the rotation
+				// changed, so the stored record is what shows nothing was
+				// written: still pending, deadline and marker as lowered, and
+				// not marked as rotated.
+				untouched(t, h.pinned)
+
+				stored := h.stored(t, s.ID)
+				untouched(t, stored)
+				assert.False(t, stored.RotatedStrictly, "the stored session is not marked as rotated")
 			},
 		},
 	}

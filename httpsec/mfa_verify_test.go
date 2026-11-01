@@ -89,6 +89,13 @@ type mfaHarness struct {
 	// which after a successful verification is the rotated one.
 	issuedFor atomic.Value
 
+	// issuedMu guards issuedAll, every session identifier a token was issued
+	// against, in order. Under a race the last one issued is not the winner's,
+	// so a case that races reads the winner's from its response and uses this
+	// to find the identifiers that were issued and never stored.
+	issuedMu  sync.Mutex
+	issuedAll []string
+
 	// generateErr, when a case sets it before the chain serves anything,
 	// makes the token generator fail every issue with it and record nothing
 	// in issuedFor.
@@ -156,6 +163,10 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 			}
 
 			h.issuedFor.Store(id)
+
+			h.issuedMu.Lock()
+			h.issuedAll = append(h.issuedAll, id)
+			h.issuedMu.Unlock()
 
 			return mfaTokenFor(id), nil
 		})
@@ -1202,9 +1213,9 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 
 			// A refused rotation leaves the session the caller holds as it
 			// was: the second factor is not recorded on it.
-			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
-			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
-			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
+			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is unchanged")
+			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is unchanged: got %s", s.MFASatisfiedAt)
+			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is unchanged: got %s", s.AuthenticatedAt)
 
 			return c, out
 		}
@@ -2157,6 +2168,23 @@ func TestMFAVerifySatisfiedSessionPassesTheGate(t *testing.T) {
 
 	rotated := h.stored(t, h.rotatedID(t))
 	assert.Equal(t, session.MFASatisfied, rotated.MFA)
+}
+
+// issuedExcept returns every identifier a token was issued against other than
+// kept.
+func (h *mfaHarness) issuedExcept(kept string) []string {
+	h.issuedMu.Lock()
+	defer h.issuedMu.Unlock()
+
+	var others []string
+
+	for _, id := range h.issuedAll {
+		if id != kept {
+			others = append(others, id)
+		}
+	}
+
+	return others
 }
 
 // rotatedID is the identifier the last access token was issued against.
