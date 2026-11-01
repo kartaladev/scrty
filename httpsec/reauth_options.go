@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -237,34 +238,26 @@ func (i *reauthInterceptor) buildChallenges(c *config, option string) error {
 		return nil
 	}
 
+	// The default store is built only when a challenge method needs one.
 	store := i.challengeStore
-
-	for _, m := range i.mfa.methods {
-		if !isChallengeMethod(m) {
-			continue
-		}
-
-		if store == nil {
-			def, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
-			if err != nil {
-				return newConfigError("%s could not build the re-proof challenge store: %s", option, err)
-			}
-
-			store = def
-		}
-
-		mgr, err := onetime.New(reauthChallengePurpose(m.Name()),
-			onetime.WithTokenTTL(i.challengeTTL),
-			onetime.WithStore(store),
-			onetime.WithClock(c.clock),
-			onetime.WithLogger(c.logger))
+	if store == nil && slices.ContainsFunc(i.mfa.methods, isChallengeMethod) {
+		def, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
 		if err != nil {
-			return newConfigError("%s could not build the re-proof challenges of %q: %s", option, m.Name(), err)
+			return newConfigError("%s could not build the re-proof challenge store: %s", option, err)
 		}
 
-		i.challenges[m.Name()] = mgr
-		i.sweeps[m.Name()] = &sweepClock{}
+		store = def
 	}
+
+	challenges, sweeps, err := challengeManagers(c, i.mfa.methods, store, i.challengeTTL, reauthChallengePurpose,
+		func(method string, err error) error {
+			return newConfigError("%s could not build the re-proof challenges of %q: %s", option, method, err)
+		})
+	if err != nil {
+		return err
+	}
+
+	i.challenges, i.sweeps = challenges, sweeps
 
 	return nil
 }

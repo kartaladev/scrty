@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -95,4 +96,169 @@ func sweepExpired(
 	logSampled(ctx, sampler, log, slog.LevelWarn, now(),
 		flow+sampleKeySeparator+method+sampleKeySeparator+reason, msg,
 		slog.String("method", method), slog.String("reason", reason))
+}
+
+// checkResponse takes a second-factor response through the steps the
+// second-factor and the re-proof verify endpoints share, once the endpoint has
+// admitted the request and named method. Only a nil return lets the endpoint
+// resolve; any other return is its refusal, unchanged. In order:
+//
+//  1. throttle refuses a user it has locked out, before the response is read.
+//  2. The response is read the way the method declares.
+//  3. For a challenge method, the challenge the response presents is checked
+//     against the challenges issued to session s and spent (spendChallenge);
+//     a failure there is mfa.ErrInvalidCode, recorded against the user.
+//  4. The method verifies the response. A failure is recorded against the
+//     user, unless it refused the authenticator rather than its response,
+//     such as a suspected clone (mfa.ErrAuthenticatorRefused), or compared
+//     nothing, such as a refused attempt charge
+//     (mfa.ErrVerifyThrottled): neither is a guess.
+//
+// The two endpoints differ in the throttle and the challenges they pass, never
+// in this order.
+func checkResponse(
+	ex *Exchange,
+	throttle *mfa.VerifyThrottle,
+	challenges map[string]*onetime.Tokens,
+	method mfa.Method,
+	s *session.Session,
+) error {
+	ctx := ex.Context()
+	user := s.UserID
+
+	if err := throttle.Check(ctx, user); err != nil {
+		return err
+	}
+
+	response, err := readResponse(ex.Request, method.Response())
+	if err != nil {
+		return err
+	}
+
+	if cm, ok := method.(mfa.ChallengeMethod); ok {
+		if err := spendChallenge(ctx, challenges[cm.Name()], cm, s, response); err != nil {
+			throttle.RecordFailure(ctx, user)
+
+			return err
+		}
+	}
+
+	if err := method.Verify(ctx, user, response); err != nil {
+		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
+			throttle.RecordFailure(ctx, user)
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+// challengeIssue is what one endpoint issues a challenge method's challenges
+// with. The second-factor begin and the re-proof begin each fill it from their
+// own configuration.
+type challengeIssue struct {
+	// throttle refuses a user it has locked out before anything is issued.
+	throttle *mfa.VerifyThrottle
+
+	// mgr issues the method's challenges, sweep spaces its sweeps, and limit
+	// bounds the challenges one user is issued within mgr's issuance window.
+	mgr   *onetime.Tokens
+	sweep *sweepClock
+	limit int
+
+	// respond answers with the method's begin data.
+	respond MFABeginResponder
+
+	// notIssued is the fixed text a challenge that could not be issued, or
+	// whose data could not be built, is refused with.
+	notIssued string
+
+	// sweepFlow and notPurged are the sampler flow and the record text of a
+	// failed sweep; now, sampler and log are the endpoint's own.
+	sweepFlow, notPurged string
+	now                  func() time.Time
+	sampler              *logsample.Sampler
+	log                  *slog.Logger
+}
+
+// issueChallenge issues cm's challenge to session s and answers with the
+// method's begin data: the steps the second-factor and the re-proof begin
+// endpoints share once the endpoint has admitted the request. In order:
+//
+//  1. iss.throttle refuses a user it has locked out, so a locked-out user
+//     cannot keep minting challenges.
+//  2. The method's expired challenges are swept, when a sweep is due
+//     (sweepExpired). A sweep that fails is logged, never refused.
+//  3. One challenge is issued, bound to the session, unless the user already
+//     holds iss.limit of them within the issuance window: then the refusal is
+//     mfa.ErrVerifyThrottled and nothing is issued. A store that cannot decide
+//     is refused behind iss.notIssued.
+//  4. The method builds its begin data around the challenge, and iss.respond
+//     answers with it. A method that fails is refused behind iss.notIssued.
+func issueChallenge(ex *Exchange, s *session.Session, cm mfa.ChallengeMethod, iss challengeIssue) error {
+	ctx := ex.Context()
+
+	if err := iss.throttle.Check(ctx, s.UserID); err != nil {
+		return err
+	}
+
+	sweepExpired(ctx, iss.mgr, iss.sweep, iss.now, iss.sweepFlow, iss.notPurged, cm.Name(), iss.sampler, iss.log)
+
+	// One bounded issue, not a count and then an issue: of begins racing for
+	// one user, on this process or on another replica, no more than the limit
+	// are issued a challenge.
+	challenge, _, err := iss.mgr.IssueWithin(ctx, string(s.UserID), iss.limit, onetime.WithBinding(s.ID))
+
+	switch {
+	case errors.Is(err, onetime.ErrIssueLimitReached):
+		return mfa.ErrVerifyThrottled
+	case err != nil:
+		return diag.Wrap(err, iss.notIssued)
+	}
+
+	data, err := cm.BeginChallenge(ctx, s.UserID, challenge)
+	if err != nil {
+		return diag.Wrap(err, iss.notIssued)
+	}
+
+	return iss.respond(ex, data)
+}
+
+// challengeManagers builds one challenge manager and one sweep clock per
+// challenge method of methods, keyed by the method's name, all over store, on
+// the chain's clock and logger. purpose names each method's one-time purpose,
+// which keeps managers sharing one store apart; refuse words the configuration
+// error a manager that cannot be built is reported as. store may be nil only
+// when methods hold no challenge method.
+func challengeManagers(
+	c *config,
+	methods []mfa.Method,
+	store onetime.Store,
+	ttl time.Duration,
+	purpose func(method string) string,
+	refuse func(method string, err error) error,
+) (map[string]*onetime.Tokens, map[string]*sweepClock, error) {
+	managers := make(map[string]*onetime.Tokens)
+	sweeps := make(map[string]*sweepClock)
+
+	for _, m := range methods {
+		if !isChallengeMethod(m) {
+			continue
+		}
+
+		mgr, err := onetime.New(purpose(m.Name()),
+			onetime.WithTokenTTL(ttl),
+			onetime.WithStore(store),
+			onetime.WithClock(c.clock),
+			onetime.WithLogger(c.logger))
+		if err != nil {
+			return nil, nil, refuse(m.Name(), err)
+		}
+
+		managers[m.Name()] = mgr
+		sweeps[m.Name()] = &sweepClock{}
+	}
+
+	return managers, sweeps, nil
 }
