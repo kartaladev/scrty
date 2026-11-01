@@ -1200,6 +1200,12 @@ type loadCountingStore struct {
 	// which then fails with that context's cause, which is its error when it
 	// has no other, as a store does when the client leaves.
 	hangUp context.CancelFunc
+
+	// hangUpVerdict, when set with hangUp, is the verdict the failing load
+	// reached before the request's context ended: the load then fails with
+	// both, as a store does whose refusal's follow-up write the hang-up cut
+	// short.
+	hangUpVerdict error
 }
 
 func (s *loadCountingStore) Load(ctx context.Context, id string) (*session.Session, error) {
@@ -1208,6 +1214,10 @@ func (s *loadCountingStore) Load(ctx context.Context, id string) (*session.Sessi
 	if from := s.failFrom.Load(); from > 0 && n >= from && (!s.failEach || (n-from)%2 == 0) {
 		if s.hangUp != nil {
 			s.hangUp()
+
+			if s.hangUpVerdict != nil {
+				return nil, errors.Join(s.hangUpVerdict, ctx.Err())
+			}
 
 			return nil, fmt.Errorf("db: %w", context.Cause(ctx))
 		}
@@ -1240,6 +1250,15 @@ func (s *loadCountingStore) failEndpointLoads(err error) {
 func (s *loadCountingStore) hangUpAtEndpointLoad(hangUp context.CancelFunc) {
 	s.hangUp = hangUp
 	s.failFrom.Store(s.loads.Load() + 2)
+}
+
+// refuseAndHangUpAtEndpointLoad makes the endpoint's load of the next late
+// renewal reach verdict while the client leaves: hangUp ends that request's
+// context, and the load fails with the verdict joined with the context's
+// error.
+func (s *loadCountingStore) refuseAndHangUpAtEndpointLoad(verdict error, hangUp context.CancelFunc) {
+	s.hangUpVerdict = verdict
+	s.hangUpAtEndpointLoad(hangUp)
 }
 
 // failureRecordingLimiter is the default allowance, 100 failures a minute, that
@@ -1516,6 +1535,24 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 				assert.Equal(t, "httpsec: the request ended while its session loaded", out[0].err.Error(),
 					"a client that left with a cause is not reported as the manager's outage")
 				assert.Empty(t, l.recorded(), "a client that left with a cause is not a failed guess")
+			},
+		},
+		{
+			name: "a reuse verdict wins over a client that leaves during the endpoint's load",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				ctx, hangUp := context.WithCancel(t.Context())
+				t.Cleanup(hangUp)
+				l.store.refuseAndHangUpAtEndpointLoad(session.ErrReused, hangUp)
+
+				return []served{l.renewIn(ctx, t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired, "a verdict was reached")
+				require.ErrorIs(t, out[0].err, session.ErrReused, "and stays identifiable")
+				assert.Len(t, l.recorded(), 1, "a refused late credential is charged, though the client left")
 			},
 		},
 		{

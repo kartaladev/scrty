@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -469,17 +468,18 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 // session's own identifier. A token names a principal, minted from the user
 // details the recovery itself loaded, never by loading the user again.
 //
-// A failure is returned behind fixed text and marked errRecoveryNotIssued, a
-// dependency failure: the endpoint answers it as one (500 by default, through
-// StatusForError), and charges it to no source.
+// A failure is returned behind fixed text, marked errRecoveryNotIssued and as
+// an issuing failure (issuingFailure), a dependency failure: the endpoint
+// answers it as one (500 by default, through StatusForError, whatever the
+// generator's error wraps), and charges it to no source.
 func (i *recoveryInterceptor) issueRecovered(ctx context.Context, s *session.Session, user *identity.Details) (string, error) {
 	if user == nil {
-		return "", diag.Wrap(errRecoveredUserMissing, textRecoveryNotIssued, errRecoveryNotIssued)
+		return "", issuingFailure(errRecoveredUserMissing, textRecoveryNotIssued, errRecoveryNotIssued)
 	}
 
 	tok, err := i.issueCredential(ctx, s, identity.PrincipalFromDetails(user))
 	if err != nil {
-		return "", diag.Wrap(err, textRecoveryNotIssued, errRecoveryNotIssued)
+		return "", issuingFailure(err, textRecoveryNotIssued, errRecoveryNotIssued)
 	}
 
 	return tok, nil

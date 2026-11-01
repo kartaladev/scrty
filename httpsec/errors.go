@@ -352,7 +352,15 @@ var statusTable = []statusRow{
 // errors, and an error it does not recognise is a server fault, never a
 // silent success.
 //
-// A challenge is checked first, so a challenge that also wraps a refusal
+// A credential the chain could not issue is checked before anything else, and
+// is 500 whatever the token generator's error wraps: an issuing failure is a
+// dependency failure, never a refusal, so a generator whose error wraps a
+// sentinel below that is answered 401 still does not send the client back to
+// log in. It is 500 as well when a refusal is joined beside the issuing
+// failure, not only when its cause wraps one: the failure decides. The
+// generator's error stays reachable for a consumer's own handler.
+//
+// A challenge is checked next, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
 // password-change, enrolment or account-recovery challenge is 403, because the
 // caller is authenticated and must act rather than present credentials again;
@@ -379,6 +387,13 @@ var statusTable = []statusRow{
 // ones 401, revealing which usernames exist.
 func StatusForError(err error) int {
 	if err == nil {
+		return http.StatusInternalServerError
+	}
+
+	// An issuing failure is a dependency failure whatever its cause wraps,
+	// so it is answered before the challenge and the refusal table are read.
+	var issuing *issueFailure
+	if errors.As(err, &issuing) {
 		return http.StatusInternalServerError
 	}
 

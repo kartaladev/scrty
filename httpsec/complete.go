@@ -45,16 +45,47 @@ type credentialIssuer func(ctx context.Context, s *session.Session, p *identity.
 
 // signedTokens issues a token from g naming s through its jti, which is how a
 // later signed bearer request finds the session. The generator is the
-// consumer's, so its error comes back behind fixed text.
+// consumer's, so its error comes back behind fixed text, marked as an issuing
+// failure (issuingFailure).
 func signedTokens(g token.Generator) credentialIssuer {
 	return func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error) {
 		tok, err := g.Generate(ctx, s.ID, p)
 		if err != nil {
-			return "", diag.Wrap(err, msgTokenNotIssued)
+			return "", issuingFailure(err, msgTokenNotIssued)
 		}
 
 		return tok, nil
 	}
+}
+
+// issueFailure marks a failure of the chain's credential issuer. It is a
+// dependency failure on every path that issues, never a refusal: StatusForError
+// answers it 500 before it consults its refusal table, so a consumer generator
+// whose error wraps a sentinel that table answers 401
+// (authenticate.ErrUnavailable, say) does not send the client back to log in
+// during a key outage. Its text is fixed library text, and it unwraps to the
+// failure it marks, so the cause stays reachable with errors.Is and errors.As.
+//
+// Build it with issuingFailure.
+type issueFailure struct {
+	text string
+	err  error
+}
+
+// Error returns the fixed text, never the cause's.
+func (f *issueFailure) Error() string { return f.text }
+
+// Unwrap returns the failure it marks.
+func (f *issueFailure) Unwrap() error { return f.err }
+
+// issuingFailure is err behind text and kinds (diag.Wrap), marked as an
+// issuing failure: nil when err is nil.
+func issuingFailure(err error, text string, kinds ...error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &issueFailure{text: text, err: diag.Wrap(err, text, kinds...)}
 }
 
 // issueSessionReference issues the session's own identifier, which is the

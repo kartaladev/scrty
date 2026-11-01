@@ -650,8 +650,12 @@ func TestRedeemerGuard(t *testing.T) {
 	type testCase struct {
 		name     string
 		redeemer func(h *magicLinkHarness) httpsec.Redeemer
-		engine   func(t *testing.T) *policy.Engine
-		assert   func(t *testing.T, h *magicLinkHarness, out served)
+
+		// arrange, when set, configures the harness further once the link is
+		// sent, before the redeeming chain is built.
+		arrange func(t *testing.T, h *magicLinkHarness)
+		engine  func(t *testing.T) *policy.Engine
+		assert  func(t *testing.T, h *magicLinkHarness, out served)
 	}
 
 	// discardsTheDeny runs the check it was handed, sees the refusal and
@@ -774,6 +778,71 @@ func TestRedeemerGuard(t *testing.T) {
 		})
 	}
 
+	// retriesAfterIssueFailure runs the checks, and when they fail runs them
+	// once more, as a redeemer that retries a transient failure does; its
+	// consume then fails, reporting the first attempt's error beside the
+	// refusal.
+	retriesAfterIssueFailure := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			var first error
+
+			for range 2 {
+				var err error
+
+				for _, check := range checks {
+					if err = check(ctx, user, time.Time{}); err != nil {
+						break
+					}
+				}
+
+				if err == nil {
+					break
+				}
+
+				if first == nil {
+					first = err
+				}
+			}
+
+			return magiclink.Redemption{}, errors.Join(first, magiclink.ErrInvalidLink)
+		})
+	}
+
+	// retriesAndReportsFirst runs the checks twice, as a redeemer that retries
+	// does, and returns the first attempt's error: when every issue failed,
+	// the error it returns is not the one the endpoint recorded last.
+	retriesAndReportsFirst := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			var first error
+
+			for range 2 {
+				for _, check := range checks {
+					if err := check(ctx, user, time.Time{}); err != nil {
+						if first == nil {
+							first = err
+						}
+
+						break
+					}
+				}
+			}
+
+			return magiclink.Redemption{}, first
+		})
+	}
+
+	// retriedCharges counts the failures recorded against the source by the
+	// row that retries after an issuing failure.
+	var retriedCharges atomic.Int32
+
 	establishedNothing := func(t *testing.T, h *magicLinkHarness) {
 		t.Helper()
 
@@ -851,6 +920,67 @@ func TestRedeemerGuard(t *testing.T) {
 			},
 		},
 		{
+			// The first issue fails and the retried one succeeds, so the
+			// consume's refusal is a failed guess like any other, though the
+			// redeemer reports the first attempt's error beside it.
+			name:     "a redeemer whose retried issue succeeded and whose consume then failed is charged",
+			redeemer: retriesAfterIssueFailure,
+			arrange: func(t *testing.T, h *magicLinkHarness) {
+				var calls atomic.Int32
+
+				g := NewMockGenerator(gomock.NewController(t))
+				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
+						if calls.Add(1) == 1 {
+							return "", errKeySourceDown
+						}
+
+						return "issued-token", nil
+					})
+				h.tokens = g
+
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+				l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(context.Context, string) error {
+						retriedCharges.Add(1)
+
+						return nil
+					})
+				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(l))
+			},
+			engine: func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, magiclink.ErrInvalidLink)
+				// The accepted answer: a refusal joined beside the first
+				// issuing failure is an issuing failure for the mapping.
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.Equal(t, int32(1), retriedCharges.Load(),
+					"a failed consume after a successful issue is a failed guess")
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			// Each failed issue is a new error, so the first one the redeemer
+			// returns is not the last the endpoint recorded; it is still an
+			// outage, and the source is not charged for it.
+			name:     "a redeemer whose every issue failed and that returns its first failure is not charged",
+			redeemer: retriesAndReportsFirst,
+			arrange: func(t *testing.T, h *magicLinkHarness) {
+				g := NewMockGenerator(gomock.NewController(t))
+				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					Return("", errKeySourceDown)
+				h.tokens = g
+				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, 0)))
+			},
+			engine: func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, errKeySourceDown)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
 			name:     "the built-in redeemer with an allowing policy succeeds",
 			redeemer: func(*magicLinkHarness) httpsec.Redeemer { return nil },
 			engine:   func(*testing.T) *policy.Engine { return nil },
@@ -874,6 +1004,10 @@ func TestRedeemerGuard(t *testing.T) {
 
 			if r := tc.redeemer(h); r != nil {
 				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkRedeemer(r))
+			}
+
+			if tc.arrange != nil {
+				tc.arrange(t, h)
 			}
 
 			h.engine = tc.engine(t)

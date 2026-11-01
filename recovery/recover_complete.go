@@ -68,6 +68,15 @@ type IssueFunc func(ctx context.Context, s *session.Session, user *identity.Deta
 // replaced, so a credential it then cannot issue costs the user both. A nil
 // issuer is a configuration error.
 //
+// The session is built, and its confined lifetime counted, before the issuer
+// is called and the proofs are spent, which is what lets issuing come first.
+// A recovery whose steps together take longer than that lifetime therefore
+// stores a session that has already expired, and its credential authenticates
+// nothing. The recovery still stands, and when it replaced the saved set the
+// result still carries the new saved codes, so the user keeps them and can
+// recover again. The lifetime is 15 minutes unless WithPendingSessionLifetime
+// sets another, far beyond the steps' latency.
+//
 // httpsec's account recovery supplies its own, issuing the credential its
 // chain's bearer accepts, and it replaces one given here.
 func WithCredentialIssuer(issue IssueFunc) Option {

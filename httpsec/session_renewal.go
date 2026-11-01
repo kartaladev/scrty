@@ -200,11 +200,12 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 // issuing step's own error, nil when the step did not fail.
 //
 // An issuing failure is a dependency failure, returned as the issuer returned
-// it, already behind fixed text: never a refusal, whatever the issuer's error
-// wraps, and nothing was superseded. A refusal of the rotation is answered by
-// renewalRefusal. Anything else, a successor issued only after the grace
-// window had closed included, is the manager's error, a dependency failure
-// behind its fixed text, 500 by default.
+// it, already behind fixed text and marked as an issuing failure
+// (issuingFailure), which StatusForError answers 500: never a refusal,
+// whatever the issuer's error wraps, and nothing was superseded. A refusal
+// of the rotation is answered by refusedRenewal. Anything else, a successor
+// issued only after the grace window had closed included, is the manager's
+// error, a dependency failure behind its fixed text, 500 by default.
 func rotationFailure(err, issueErr error) error {
 	if issueErr != nil {
 		return err
@@ -259,9 +260,13 @@ func (r *sessionRenewal) rotateOptions(ex *Exchange, s *session.Session) []sessi
 // and published, or, under unused-successor recovery, the late one the
 // resolution core let through for this endpoint alone, loaded for renewal.
 //
-// A late load the request's own context ended fails with fixed text that
-// matches the context's error, as a hang-up at resolution does, and not with
-// the manager's outage text: no verdict was reached, and nothing failed.
+// A late load the request's own context ended, and that reached no refusal,
+// fails with fixed text that matches the context's error, as a hang-up at
+// resolution does, and not with the manager's outage text: nothing failed. A
+// load that reached an authentication-required refusal is refused and
+// charged, whether or not the request has ended by then. A conflict, such as a
+// lost race, is a refusal too but is not charged: it says nothing about the
+// credential's source.
 func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 	if ex.Session != nil && ex.Authentication != nil && ex.Authentication.Principal != nil {
 		return ex.Session, nil
@@ -275,17 +280,24 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 
 	s, err := r.sessions.LoadForRenewal(ctx, ex.renewal)
 	if err != nil {
-		if endedByRequest(ctx, err) {
-			return nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
+		// A verdict wins over a hang-up: a load that reached a refusal is
+		// refused, and charged, even when the request's context has ended
+		// by then. Only a load that reached none is asked whether the
+		// request ended.
+		refusal := refusedRenewal(err)
+		if refusal == nil {
+			if endedByRequest(ctx, err) {
+				return nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
+			}
+
+			return nil, err
 		}
 
-		refusal := renewalRefusal(err)
-
-		// Only a refusal is charged: a late credential the load refuses as
-		// expired, not found or reused is a failed guess like a refused
-		// reference at the bearer, and is counted against its source. A lost
-		// race, a store fault and a client that left reached no verdict on
-		// the credential, and are not.
+		// Only an authentication-required refusal is charged: a late
+		// credential the load refuses as expired, not found or reused is a
+		// failed guess like a refused reference at the bearer, and is counted
+		// against its source. A conflict (a lost race), a store fault and a
+		// client that left reached no verdict on the credential, and are not.
 		if ex.chargeRenewal != nil && errors.Is(refusal, ErrAuthenticationRequired) {
 			ex.chargeRenewal(ctx)
 		}
@@ -367,24 +379,16 @@ func (r *sessionRenewal) judgeLate(
 	return nil
 }
 
-// renewalRefusal is the refusal a failed load or rotation answers with.
+// refusedRenewal is the refusal a failed load or rotation answers with, and
+// nil when err is no refusal.
 //
 // Reuse stays identifiable beside ErrAuthenticationRequired, so a consumer
 // that rolls its request transaction back on a refusal can tell this is the
 // one it must commit. A lost race is ErrSessionRenewalConflict, a 409, so the
 // client retries with the credential it holds. A missing or ended session is
-// ErrAuthenticationRequired, as at the bearer. Anything else is the manager's
-// error, already behind fixed text.
-func renewalRefusal(err error) error {
-	if refusal := refusedRenewal(err); refusal != nil {
-		return refusal
-	}
-
-	return err
-}
-
-// refusedRenewal is the refusal err answers with, as renewalRefusal words it,
-// and nil when err is no refusal.
+// ErrAuthenticationRequired, as at the bearer. Anything else is no refusal,
+// and the caller answers it with the manager's error, already behind fixed
+// text.
 func refusedRenewal(err error) error {
 	switch {
 	case errors.Is(err, session.ErrReused):

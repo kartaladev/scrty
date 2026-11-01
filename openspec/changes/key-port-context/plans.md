@@ -358,7 +358,7 @@ Each defect was reproduced in a disposable copy (`tasks.md` group 9 names the te
 
 ### Task 9.2: An issuing failure is never a refusal (lane H)
 
-**Files:** Modify `httpsec/complete.go` (`signedTokens`), `httpsec/errors.go` (`StatusForError`), `httpsec/recovery.go` (the recovery issuer), and the `rotationFailure` godoc. Test `httpsec/errors_test.go`, and an issuing-failure table in `httpsec/issuing_keysource_test.go`.
+**Files:** Modify `httpsec/complete.go` (`signedTokens`), `httpsec/errors.go` (`StatusForError`), `httpsec/recovery.go` (the recovery issuer), and the `rotationFailure` godoc. Test an issuing-failure table in `httpsec/issuing_keysource_test.go`, and an internal test for the recovery issuer's own branch (`httpsec/recovery_internal_test.go`, or the existing internal test file gopls finds).
 
 **Interfaces:** Produces an unexported `type issueFailure struct{ err error }` with `Error() string` (fixed library text) and `Unwrap() error`. `signedTokens` and the recovery issuer return `&issueFailure{err}` on failure. `StatusForError` returns 500 when `errors.As(err, new(*issueFailure))`, before it checks the challenge and the table.
 
@@ -367,14 +367,29 @@ Each defect was reproduced in a disposable copy (`tasks.md` group 9 names the te
 - [ ] **Step 3: Implement** the mark and the mapping. The text stays the issuer's existing fixed text.
 - [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/...`. Expected PASS.
 
+**Follow-up after the group-9 review (lane H, dispatch H2).** The recovery issuer's own mark (`httpsec/recovery.go`, `issueRecovered`) is redundant where the shared issuer already marked the error; the branch that needs it, a nil user before the shared issuer runs, is untested.
+
+- [ ] **Step 5: Write the pin.** An internal test (`package httpsec`) `TestIssueRecovered_NilUserIsAnIssuingFailure`: `issueRecovered(ctx, s, nil)` returns an error for which `StatusForError` is 500 and `errors.As(err, new(*issueFailure))` holds.
+- [ ] **Step 6: See it fail by mutation.** Replace that branch's `issuingFailure(...)` with an unmarked error; run `go test -run TestIssueRecovered_NilUserIsAnIssuingFailure -count=1 ./httpsec/`. Expected FAIL on the `errors.As` assertion: an unmarked unknown error also maps to 500, so the mark, not the status, is what this pins. Restore by hand.
+- [ ] **Step 7: Godoc.** `StatusForError`: an issuing failure is answered 500 even when a refusal is joined beside it, not only when its cause wraps one.
+
 ### Task 9.5: A redemption forgets an issuing failure once a later issue succeeds; the recovery limit is stated (lane H)
 
-**Files:** Modify `httpsec/redemption.go` (`redemptionLogin.issue`) and the `recovery/recover_complete.go` godoc of `WithCredentialIssuer`. Test `httpsec/magiclink_test.go` (`TestRedeemerGuard`).
+**Files:** Modify `httpsec/redemption.go` (`redemptionLogin.issue`, `countsAgainstSource`) and the `recovery/recover_complete.go` godoc of `WithCredentialIssuer`. Test `httpsec/magiclink_test.go` (`TestRedeemerGuard`).
 
 - [ ] **Step 1: Write the failing test.** Add a `TestRedeemerGuard` row in which a redeemer's first issue fails, a retried issue succeeds, and it then fails with `errors.Join(firstErr, ErrInvalidLink)`. Assert one failure charged.
 - [ ] **Step 2: Run.** Expected FAIL: `expected: 1 actual: 0`.
 - [ ] **Step 3: Implement** `r.out.issueErr = nil` once the issue succeeds. Godoc: a recovery slower than its session's lifetime stores an expired session; the response still carries the new saved codes.
-- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./recovery/...`. Expected PASS. Commit lane H as one commit per task.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./recovery/...`. Expected PASS.
+
+**Follow-up after the group-9 review (lane H, dispatch H2).** `countsAgainstSource` (`httpsec/redemption.go`) recognises only the last issuing failure, by identity; each `signedTokens` failure is a new `*issueFailure`.
+
+- [ ] **Step 5: Write the failing test.** A `TestRedeemerGuard` row, "a redeemer whose every issue failed and that returns its first failure is not charged": the generator always fails with `errKeySourceDown`; the redeemer runs the checks twice and returns the first error; the limiter is `countingLimiter(t, 0)`; the result matches `errKeySourceDown` and `StatusForError` is 500.
+- [ ] **Step 6: Run** `go test -run 'TestRedeemerGuard' -count=1 ./httpsec/`. Expected FAIL: `Unexpected call to *httpsec_test.MockLimiter.RecordFailure(... magic-link-redeem:203.0.113.7)`.
+- [ ] **Step 7: Implement.** In `countsAgainstSource`, while `out.issueErr != nil`, an error matching `out.issueErr` or carrying any `*issueFailure` (`errors.As`) is not charged. Once a later issue succeeded, `issueErr` is nil and the request is charged as 9.5's first row requires.
+- [ ] **Step 8: Pin the accepted 500.** In the retried-then-refused row, also assert `StatusForError(err) == 500` (design, "Review findings accepted without change").
+- [ ] **Step 9: Comment nits from the review.** `session_renewal.go` (`renewing` godoc and the inline comment): only an authentication-required refusal is charged, a conflict is not. `redemption.go`: rewrap the long comment line. `recover_complete.go`: "the result still carries the new saved codes" holds when the saved set was replaced.
+- [ ] **Step 10: Run** `go test -race -count=1 ./httpsec/... ./recovery/...` and `golangci-lint run ./httpsec/... ./recovery/...`. Expected PASS, 0 issues. Commit lane H as one commit per task.
 
 ### Task 9.3: Expiry judged at the spend (lane O)
 
