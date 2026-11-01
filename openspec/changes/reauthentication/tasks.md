@@ -254,7 +254,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
 ## 11. Conformance and close-out, again
 
 - [x] 11.1 `test/httpsecconformance` on net/http, gin and fiber gains: a re-proof prefix under the form login path accepted; a renewal that lost to a re-proof answered 409; a password re-proof refused by a post-authentication deny. (D9; the scenarios named.) Verify with `go vet ./...` and `go test -race ./...` in the `test` module (needs Docker)
-- [ ] 11.2 The whole-workspace gate, as 8.2:
+- [x] 11.2 The whole-workspace gate, as 8.2:
   - `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module listed by `go list -m`;
   - `gofmt -l` empty over tracked Go files;
   - `openspec validate reauthentication --strict`.
