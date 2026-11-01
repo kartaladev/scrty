@@ -175,7 +175,7 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 //     refusal it must commit, or it would roll the family's revocation back
 //     too. The manager's error names no identifier.
 //   - a hang-up, when ctx ended and err is that ending, ctx's error or the
-//     cause it was cancelled with (endedByRequest): it matches ctx's error,
+//     cause it was cancelled with (hangup.ByCaller): it matches ctx's error,
 //     and neither ErrAuthenticationRequired nor anything an outage is told
 //     by. No verdict was reached, and nothing failed.
 //   - a dependency failure otherwise, a store or cipher outage or the store's
@@ -195,7 +195,7 @@ func classifyLoad(ctx context.Context, err error) error {
 		errors.Is(err, session.ErrExpired),
 		errors.Is(err, session.ErrUnreadable):
 		return ErrAuthenticationRequired
-	case endedByRequest(ctx, err):
+	case hangup.ByCaller(ctx, err):
 		return diag.Wrap(err, textSessionLoadEnded, ctx.Err())
 	default:
 		return diag.Wrap(err, textSessionNotResolved)
@@ -217,20 +217,11 @@ func classifyReload(ctx context.Context, err error) error {
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
 		return ErrAuthenticationRequired
-	case endedByRequest(ctx, err):
+	case hangup.ByCaller(ctx, err):
 		return diag.Wrap(err, textUserReloadEnded, ctx.Err())
 	default:
 		return diag.Wrap(err, textUserNotReloaded)
 	}
-}
-
-// endedByRequest reports whether err is the request's own context ending
-// rather than a dependency failing on its own: ctx has ended, and err matches
-// ctx's error or the cause it was cancelled with (hangup.ByCaller). A deadline
-// a dependency met on a context of its own, while the request was still
-// waiting, is an outage.
-func endedByRequest(ctx context.Context, err error) bool {
-	return hangup.ByCaller(ctx, err)
 }
 
 // The fixed texts resolution answers a failure that is not a refusal with.

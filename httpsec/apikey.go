@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -221,7 +222,7 @@ func (i *apiKeyInterceptor) checkOwner(
 
 		return refusedAPIKey()
 
-	case ownerLoadEndedByCaller(ctx, err):
+	case hangup.ByCaller(ctx, err):
 		logSampled(ctx, i.sampler, i.log, slog.LevelDebug, now,
 			apiKeyFlow+sampleKeySeparator+reasonOwnerCallerEnded, msgAPIKeyOwnerCallerEnded,
 			append([]slog.Attr{slog.String("flow", apiKeyFlow)},
@@ -242,17 +243,6 @@ func (i *apiKeyInterceptor) checkOwner(
 		// the log.
 		return authenticate.ErrUnavailable
 	}
-}
-
-// ownerLoadEndedByCaller reports whether err is the request's own context
-// ending rather than the user loader failing on its own: ctx has ended, and
-// err is or wraps ctx's error or its cause. A deadline the loader met on a
-// context of its own is an outage, since the caller was still waiting.
-func ownerLoadEndedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil &&
-		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // callerEndedAPIKey is the refusal of a request whose client left while its

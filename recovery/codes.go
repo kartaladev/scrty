@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -313,24 +313,11 @@ func (c *Codes) refund(ctx context.Context, r ratelimit.Receipt) {
 // is written at error level.
 func (c *Codes) logFailure(ctx context.Context, msg, reason string, err error) {
 	level := slog.LevelError
-	if causedByCaller(ctx, err) {
+	if hangup.ByCaller(ctx, err) {
 		level = slog.LevelDebug
 	}
 
 	c.logger.LogAttrs(ctx, level, msg, diag.Failure(reason, err)...)
-}
-
-// causedByCaller reports whether err is the caller's own context ending, rather
-// than a dependency failing on its own: ctx has ended, and err is or wraps
-// ctx's error or its cause. It compares the state of the caller's context, not
-// only the error's identity: a cancellation or deadline a dependency met on a
-// context of its own does not count while ctx is still live, since the caller
-// was still waiting.
-func causedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil &&
-		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // CodeThrottleKey is the limiter key saved-code presentations for user are

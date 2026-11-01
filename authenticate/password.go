@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -328,7 +329,7 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, c iden
 		// hangs up mid-login cannot spend password work no throttle pays for;
 		// joined with the context's error, so they can tell no password was
 		// compared and record nothing for the username.
-		if causedByCaller(ctx, err) {
+		if hangup.ByCaller(ctx, err) {
 			a.refuse(ctx, slog.LevelDebug, reasonCallerEnded, creds.Username,
 				diag.Failure(reasonCallerEnded, err)...)
 
@@ -408,17 +409,6 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, c iden
 		Time:              time.Now(),
 		PasswordChangedAt: details.PasswordChangedAt,
 	}, nil
-}
-
-// causedByCaller reports whether err is the caller's own context ending, rather
-// than the user loader failing on its own: ctx has ended, and err is or wraps
-// ctx's error or its cause. A cancellation or deadline the loader met on a
-// context of its own does not count, since the caller was still waiting.
-func causedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil &&
-		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // endedByCaller is the uniform failure for a load ctx's own end cut short:

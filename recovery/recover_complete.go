@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -259,7 +260,7 @@ func (r *Recoverer) issueSession(ctx context.Context, details *identity.Details,
 	credential, err := r.issue(ctx, p.Session(), details)
 	if err != nil {
 		level := slog.LevelError
-		if loadEndedByCaller(ctx, err) {
+		if hangup.ByCaller(ctx, err) {
 			level = slog.LevelDebug
 		}
 

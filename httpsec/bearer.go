@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -115,7 +116,7 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 //
 // A request whose own context ended while its token was verified, and whose
 // err is that context's error or the cause it was cancelled with
-// (endedByRequest), is a hang-up: neither a refusal, since no verdict was
+// (hangup.ByCaller), is a hang-up: neither a refusal, since no verdict was
 // reached, nor an outage, since nothing failed.
 // It is returned behind fixed text of its own, or as the context's error
 // itself when the verifier returns it bare, matching the context's error
@@ -141,7 +142,7 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
 	}
 
-	if endedByRequest(ctx, err) {
+	if hangup.ByCaller(ctx, err) {
 		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerVerificationEnded)
 
 		return diag.Wrap(err, textVerificationEnded, ctx.Err())

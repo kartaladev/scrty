@@ -207,7 +207,7 @@ func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Prin
 	case err != nil:
 		// The source could not answer. That is an outage, not a missing key,
 		// and its text is the consumer's: kept reachable, never rendered.
-		return "", diag.Wrap(err, "token: signing key unavailable")
+		return "", diag.Wrap(err, textSignerUnavailable)
 	case nilcheck.IsNil(signer):
 		// A source that reports no error and hands over nothing has not
 		// answered either. Signing with it would panic inside the JOSE stack.
@@ -254,10 +254,14 @@ func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Prin
 	return string(signed), nil
 }
 
+// textSignerUnavailable is the text of a key source that did not answer, whether
+// it failed or handed over no signer.
+const textSignerUnavailable = "token: signing key unavailable"
+
 // errSignerUnavailable is what Generate fails with when the key source
 // reports no error and yet hands over no signer: the same outage, in the same
 // words, as a source that failed to answer.
-var errSignerUnavailable = errors.New("token: signing key unavailable")
+var errSignerUnavailable = errors.New(textSignerUnavailable)
 
 var (
 	_ Generator = (*JWTGenerator)(nil)

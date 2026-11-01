@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -286,7 +287,7 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 		// request ended.
 		refusal := refusedRenewal(err)
 		if refusal == nil {
-			if endedByRequest(ctx, err) {
+			if hangup.ByCaller(ctx, err) {
 				return nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
 			}
 
