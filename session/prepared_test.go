@@ -175,7 +175,9 @@ func TestPreparedCommit(t *testing.T) {
 	type testCase struct {
 		name  string
 		store *probeStore
-		ctx   func(ctx context.Context) context.Context
+		// mgr are manager options added to the fixture's own.
+		mgr []session.Option
+		ctx func(ctx context.Context) context.Context
 		// before acts on the prepared session before the commit under test.
 		before func(t *testing.T, f *prepareFixture, p *session.Prepared)
 		assert func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error)
@@ -352,6 +354,102 @@ func TestPreparedCommit(t *testing.T) {
 				require.NoError(t, loadErr)
 			},
 		},
+		func() testCase {
+			var built string
+
+			return testCase{
+				name:  "a changed identifier is refused and neither identifier loads",
+				store: &probeStore{},
+				before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+					built = p.Session().ID
+					p.Session().ID = "another-identifier"
+				},
+				assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+					require.ErrorIs(t, err, session.ErrConfig)
+					assert.Nil(t, got)
+					assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+					for _, id := range []string{built, p.Session().ID} {
+						_, loadErr := f.m.Load(t.Context(), id)
+						require.ErrorIs(t, loadErr, session.ErrNotFound, id)
+					}
+				},
+			}
+		}(),
+		{
+			name:  "a changed user is refused and writes nothing",
+			store: &probeStore{},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().UserID = testUser + "-other"
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
+			name:  "an absolute deadline lengthened within the maximum is refused and writes nothing",
+			store: &probeStore{},
+			mgr:   []session.Option{session.WithMaxAbsoluteLifetime(24 * time.Hour * 365 * 10)},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().AbsoluteExpiresAt = p.Session().AbsoluteExpiresAt.Add(time.Minute)
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
+			name:  "an idle deadline lengthened within the absolute one is refused and writes nothing",
+			store: &probeStore{},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().IdleExpiresAt = p.Session().IdleExpiresAt.Add(time.Minute)
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
+			name:  "a session marked enrolment-pending is stored",
+			store: &probeStore{},
+			before: func(_ *testing.T, f *prepareFixture, p *session.Prepared) {
+				f.m.MarkEnrolmentPending(p.Session(), 10*time.Minute)
+			},
+			assert: func(t *testing.T, f *prepareFixture, _ *session.Prepared, got *session.Session, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, int32(1), f.store.creates.Load())
+
+				_, loadErr := f.m.Load(t.Context(), got.ID)
+				require.NoError(t, loadErr)
+			},
+		},
+		{
+			name:  "a session marked recovery-pending is stored",
+			store: &probeStore{},
+			before: func(_ *testing.T, f *prepareFixture, p *session.Prepared) {
+				f.m.MarkRecoveryPending(p.Session(), 10*time.Minute, createdAt)
+			},
+			assert: func(t *testing.T, f *prepareFixture, _ *session.Prepared, got *session.Session, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, int32(1), f.store.creates.Load())
+
+				_, loadErr := f.m.Load(t.Context(), got.ID)
+				require.NoError(t, loadErr)
+			},
+		},
 		{
 			name:  "a cancelled request stores nothing",
 			store: &probeStore{honourContext: true},
@@ -375,7 +473,7 @@ func TestPreparedCommit(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			f := newPrepareFixture(t, tc.store)
+			f := newPrepareFixture(t, tc.store, tc.mgr...)
 			p, err := f.m.Prepare(testUser)
 			require.NoError(t, err)
 

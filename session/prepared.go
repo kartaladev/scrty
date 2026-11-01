@@ -31,6 +31,11 @@ type Prepared struct {
 	m *Sessions
 	s *Session
 
+	// built is the session as Prepare built it, copied by value. Commit
+	// compares the caller's session against it: the identity fields must be
+	// as built and the deadlines no later.
+	built Session
+
 	// committed is set by the first Commit, before it writes, so a second
 	// one, concurrent or later, is refused without reaching the store.
 	committed atomic.Bool
@@ -94,7 +99,7 @@ func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepare
 		s.IdleExpiresAt = s.AbsoluteExpiresAt
 	}
 
-	return &Prepared{m: m, s: s}, nil
+	return &Prepared{m: m, s: s, built: *s}, nil
 }
 
 // checkLifetime refuses a session whose absolute lifetime, counted from its
@@ -116,10 +121,11 @@ func (m *Sessions) checkLifetime(s *Session) error {
 // The identifier, the user, the family and its start, and the creation and
 // authentication times must not be changed: the credential the caller issues
 // names them, and a session stored under other values is not the one that
-// credential was issued for. The deadlines may only be shortened, as
-// Sessions.MarkEnrolmentPending and Sessions.MarkRecoveryPending shorten
-// them; Commit refuses a session whose deadlines no longer meet the limits
-// Prepare applied (ErrConfig).
+// credential was issued for. The idle and absolute deadlines may only be
+// shortened, as Sessions.MarkEnrolmentPending and
+// Sessions.MarkRecoveryPending shorten them. Commit refuses a session whose
+// identity fields differ from the ones Prepare built, or whose deadline is
+// later than the one Prepare built (ErrConfig), and stores nothing.
 func (p *Prepared) Session() *Session { return p.s }
 
 // Commit stores the prepared session in the one write that creates it
@@ -139,6 +145,13 @@ func (p *Prepared) Session() *Session { return p.s }
 // of this kind is not a commit; the caller may correct the session and commit
 // again.
 //
+// Commit also refuses, with ErrConfig and nothing written, a session whose
+// identifier, user, family, family start, creation time or authentication
+// time differs from the one Prepare built, or whose idle or absolute deadline
+// is later than the one Prepare built. Shortening a deadline, as the marks
+// do, is allowed. Like the deadline checks above, such a refusal is not a
+// commit.
+//
 // A store's failure is returned behind fixed text of this package, matching
 // the store's error through errors.Is, as Create returns it. The session is
 // then not stored, and a credential the caller issued for it names a session
@@ -147,6 +160,9 @@ func (p *Prepared) Session() *Session { return p.s }
 func (p *Prepared) Commit(ctx context.Context) (*Session, error) {
 	if p.committed.Load() {
 		return nil, ErrAlreadyCommitted
+	}
+	if err := p.checkBuilt(); err != nil {
+		return nil, err
 	}
 	if err := p.m.checkLifetime(p.s); err != nil {
 		return nil, err
@@ -164,6 +180,34 @@ func (p *Prepared) Commit(ctx context.Context) (*Session, error) {
 	}
 
 	return p.s, nil
+}
+
+// checkBuilt refuses a session that no longer is the one Prepare built, apart
+// from its marks: an identity field that differs, or a deadline moved later.
+// It names the field and never its value, which may be an identifier.
+func (p *Prepared) checkBuilt() error {
+	s, b := p.s, &p.built
+
+	switch {
+	case s.ID != b.ID:
+		return fmt.Errorf("%w: the prepared session's identifier was changed", ErrConfig)
+	case s.UserID != b.UserID:
+		return fmt.Errorf("%w: the prepared session's user was changed", ErrConfig)
+	case s.FamilyID != b.FamilyID:
+		return fmt.Errorf("%w: the prepared session's family was changed", ErrConfig)
+	case !s.FamilyCreatedAt.Equal(b.FamilyCreatedAt):
+		return fmt.Errorf("%w: the prepared session's family start was changed", ErrConfig)
+	case !s.CreatedAt.Equal(b.CreatedAt):
+		return fmt.Errorf("%w: the prepared session's creation time was changed", ErrConfig)
+	case !s.AuthenticatedAt.Equal(b.AuthenticatedAt):
+		return fmt.Errorf("%w: the prepared session's authentication time was changed", ErrConfig)
+	case s.IdleExpiresAt.After(b.IdleExpiresAt):
+		return fmt.Errorf("%w: the prepared session's idle deadline was lengthened", ErrConfig)
+	case s.AbsoluteExpiresAt.After(b.AbsoluteExpiresAt):
+		return fmt.Errorf("%w: the prepared session's absolute deadline was lengthened", ErrConfig)
+	}
+
+	return nil
 }
 
 // CreateIssuing is Create with a step of the caller's run on the session
