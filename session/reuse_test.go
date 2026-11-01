@@ -2774,3 +2774,584 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 		})
 	}
 }
+
+// graceIssuingFixture is a manager on a fake clock over the case's store, a
+// session created through it at 09:00:00, and a count of detected reuses.
+type graceIssuingFixture struct {
+	m      *session.Sessions
+	clk    *clockwork.FakeClock
+	store  session.Store
+	old    *session.Session
+	reused *atomic.Int32
+}
+
+// advancedSuccessorStore is a real store whose supersession always finds the
+// successor it observed already advanced, as when another renewal won while
+// the caller's step ran.
+type advancedSuccessorStore struct {
+	session.Store
+}
+
+func (*advancedSuccessorStore) Supersede(context.Context, session.Supersession) error {
+	return session.ErrSuccessorAdvanced
+}
+
+// supersedeSpyStore is a real store that counts the supersessions it is asked
+// to write, whether or not they succeed.
+type supersedeSpyStore struct {
+	session.Store
+
+	supersedes atomic.Int32
+}
+
+func (s *supersedeSpyStore) Supersede(ctx context.Context, op session.Supersession) error {
+	s.supersedes.Add(1)
+
+	return s.Store.Supersede(ctx, op)
+}
+
+// TestRotateWithGraceIssuing pins that a renewal is stored only once the
+// caller's step on the successor, such as issuing its credential, has
+// succeeded: a step that fails stores, supersedes and revokes nothing, the
+// window is counted from the clock read before the step, and a credential is
+// never handed out for a successor that was not stored.
+func TestRotateWithGraceIssuing(t *testing.T) {
+	t.Parallel()
+
+	// rotation is what one renewal came back with, and the successor the step
+	// was handed, nil when no step ran.
+	type rotation struct {
+		got   *session.Session
+		kind  session.RenewalKind
+		tok   string
+		given *session.Session
+	}
+
+	type testCase struct {
+		name  string
+		store func(clk *clockwork.FakeClock) session.Store
+		// opts are manager options added to the fixture's own.
+		opts  []session.Option
+		grace time.Duration
+		ctx   func(ctx context.Context) context.Context
+		// prepare moves the stored record before the renewal runs.
+		prepare func(t *testing.T, f *graceIssuingFixture)
+		// issue is the caller's step; noStep passes none.
+		issue  func(clk *clockwork.FakeClock, successor *session.Session) (string, error)
+		noStep bool
+		assert func(t *testing.T, f *graceIssuingFixture, r rotation, err error)
+	}
+
+	memoryOn := func(clk *clockwork.FakeClock) session.Store {
+		return must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+	}
+	issueFor := func(_ *clockwork.FakeClock, successor *session.Session) (string, error) {
+		return "credential-for:" + successor.ID, nil
+	}
+	// spyOn is a memory store behind a supersession counter.
+	spyOn := func(clk *clockwork.FakeClock) session.Store {
+		return &supersedeSpyStore{Store: memoryOn(clk)}
+	}
+	// stepTaking is a step that succeeds after d.
+	stepTaking := func(d time.Duration) func(*clockwork.FakeClock, *session.Session) (string, error) {
+		return func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+			clk.Advance(d)
+
+			return "credential-for:" + successor.ID, nil
+		}
+	}
+	// familyEndedWithNothingWritten asserts a renewal refused as expired
+	// because its step ended after the family did: nothing stored, nothing
+	// superseded, nothing revoked.
+	familyEndedWithNothingWritten := func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrExpired)
+		assert.NotErrorIs(t, err, session.ErrReused)
+		assert.Nil(t, r.got, "a successor was returned after the family ended")
+		assert.Empty(t, r.tok)
+		require.NotNil(t, r.given, "the step ran")
+
+		_, loadErr := f.m.Load(t.Context(), r.given.ID)
+		require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+		assert.Zero(t, f.store.(*supersedeSpyStore).supersedes.Load(), "a supersession was written")
+		assert.Zero(t, f.reused.Load(), "a reuse was reported")
+	}
+	// unsuperseded asserts the old identifier loads and is not superseded.
+	unsuperseded := func(t *testing.T, f *graceIssuingFixture) {
+		t.Helper()
+
+		loaded, err := f.m.Load(t.Context(), f.old.ID)
+		require.NoError(t, err, "the old identifier no longer loads")
+		assert.True(t, loaded.SupersededAt.IsZero(), "the old session was superseded")
+		assert.Empty(t, loaded.SuccessorDigest, "the old session names a successor")
+	}
+
+	cases := []testCase{
+		{
+			name:  "a step that succeeds is handed the successor that is then stored, and its credential is returned",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			issue: issueFor,
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, r.given, "the step ran")
+				require.NotNil(t, r.got)
+				assert.Equal(t, session.RenewalFresh, r.kind)
+				assert.Equal(t, r.given.ID, r.got.ID, "the step was handed the successor that was stored")
+				assert.Equal(t, "credential-for:"+r.got.ID, r.tok)
+
+				_, loadErr := f.m.Load(t.Context(), r.got.ID)
+				require.NoError(t, loadErr)
+				old, loadErr := f.m.Load(t.Context(), f.old.ID)
+				require.NoError(t, loadErr, "the old identifier loads inside its window")
+				assert.False(t, old.SupersededAt.IsZero(), "the old session was not superseded")
+			},
+		},
+		{
+			// "The caller's step fails".
+			name:  "a step that fails stores and supersedes nothing, and the old identifier is not reuse later",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			issue: func(*clockwork.FakeClock, *session.Session) (string, error) { return "", errIssue },
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				isBare(errIssue)(t, err)
+				assert.Nil(t, r.got)
+				assert.Zero(t, r.kind)
+				assert.Empty(t, r.tok)
+				require.NotNil(t, r.given, "the step ran")
+
+				_, loadErr := f.m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+				unsuperseded(t, f)
+
+				f.clk.Advance(31 * time.Second)
+				unsuperseded(t, f)
+				assert.Zero(t, f.reused.Load(), "a reuse was reported")
+			},
+		},
+		{
+			// "The window counts from before the caller's step": rotated at
+			// T (09:00:00 here, 10:00:00 in the scenario) with a 30-second
+			// grace, and a step that takes 5 seconds.
+			name:  "the window counts from the clock read before the step",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(5 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, createdAt, r.got.CreatedAt, "the successor is dated from the clock read before the step")
+
+				f.clk.Advance(createdAt.Add(30*time.Second - time.Nanosecond).Sub(f.clk.Now()))
+				_, loadErr := f.m.Load(t.Context(), f.old.ID)
+				require.NoError(t, loadErr, "the old identifier stopped loading inside its window")
+
+				f.clk.Advance(time.Nanosecond)
+				_, loadErr = f.m.Load(t.Context(), f.old.ID)
+				require.ErrorIs(t, loadErr, session.ErrReused, "the window was counted from after the step")
+			},
+		},
+		{
+			// "A step that outlives the grace stores nothing": the clock is
+			// read after the step, and a window that has closed by then
+			// would make the holder's requests still in flight under the old
+			// identifier read as reuse.
+			name:  "a step that outlives the grace stores nothing and the session renews again",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(31 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, session.ErrReused)
+				assert.Nil(t, r.got)
+				assert.Zero(t, r.kind)
+				assert.Empty(t, r.tok, "a credential for a successor that was never stored was returned")
+				require.NotNil(t, r.given, "the step ran")
+
+				_, loadErr := f.m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+				unsuperseded(t, f)
+				assert.Zero(t, f.reused.Load(), "a reuse was reported")
+
+				next, kind, rotErr := f.m.RotateWithGrace(t.Context(), f.old, 30*time.Second)
+				require.NoError(t, rotErr, "the old identifier could not be renewed again")
+				assert.Equal(t, session.RenewalFresh, kind)
+				require.NotNil(t, next)
+			},
+		},
+		{
+			// "A step that succeeds only after the window has closed": the
+			// window written is the one capped by the window the first
+			// rotation gave, not the whole grace counted from now. Rotated at
+			// T with 30 seconds, renewed again at T+20 with a step of 15
+			// seconds, the capped window closed at T+30, before the step
+			// ended at T+35, though now+grace is T+50.
+			name:  "a re-rotation whose step outlives the window it is capped to stores nothing",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				_, _, err := f.m.RotateWithGrace(t.Context(), f.old, 30*time.Second)
+				require.NoError(t, err)
+
+				f.clk.Advance(20 * time.Second)
+			},
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(15 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, session.ErrReused)
+				assert.Nil(t, r.got)
+				assert.Zero(t, r.kind)
+				assert.Empty(t, r.tok, "a credential for a successor that was never stored was returned")
+				require.NotNil(t, r.given, "the step ran")
+				assert.Zero(t, f.reused.Load(), "a reuse was reported")
+
+				_, loadErr := f.m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+			},
+		},
+		func() testCase {
+			// spy counts the supersessions the manager asks the store for.
+			spy := &supersedeSpyStore{}
+
+			return testCase{
+				// "A step may not outlive the session": the window is capped
+				// by the session's absolute deadline, 10 s away, though the
+				// grace is 30 s, so a step of 15 s ends after it closed.
+				name: "a step that outlives the session's absolute deadline stores nothing",
+				store: func(clk *clockwork.FakeClock) session.Store {
+					spy.Store = memoryOn(clk)
+
+					return spy
+				},
+				grace: 30 * time.Second,
+				prepare: func(t *testing.T, f *graceIssuingFixture) {
+					f.old.AbsoluteExpiresAt = createdAt.Add(10 * time.Second)
+					f.old.IdleExpiresAt = createdAt.Add(10 * time.Second)
+					require.NoError(t, f.m.Save(t.Context(), f.old))
+				},
+				issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+					clk.Advance(15 * time.Second)
+
+					return "credential-for:" + successor.ID, nil
+				},
+				assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+					assert.NotErrorIs(t, err, session.ErrReused)
+					assert.Nil(t, r.got)
+					assert.Zero(t, r.kind)
+					assert.Empty(t, r.tok, "a credential for a successor that was never stored was returned")
+					require.NotNil(t, r.given, "the step ran")
+					assert.Zero(t, f.reused.Load(), "a reuse was reported")
+
+					assert.Zero(t, spy.supersedes.Load(), "the old session was superseded")
+
+					_, loadErr := f.m.Load(t.Context(), r.given.ID)
+					require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+
+					// The step ended past the deadline, so the old identifier
+					// reads as expired, not as reuse or as gone.
+					_, loadErr = f.m.Load(t.Context(), f.old.ID)
+					require.ErrorIs(t, loadErr, session.ErrExpired)
+				},
+			}
+		}(),
+		{
+			// Recovery counts no window from the old record: it renews
+			// because that window has already closed, so only the grace
+			// counted from now bounds the step.
+			name:  "a recovery whose step is shorter than the grace is stored",
+			store: memoryOn,
+			opts:  []session.Option{session.WithUnusedSuccessorRecovery()},
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				_, _, err := f.m.RotateWithGrace(t.Context(), f.old, 30*time.Second)
+				require.NoError(t, err)
+
+				f.clk.Advance(31 * time.Second)
+			},
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(5 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, r.got)
+				assert.Equal(t, session.RenewalRecovery, r.kind)
+				assert.Equal(t, "credential-for:"+r.got.ID, r.tok)
+
+				_, loadErr := f.m.Load(t.Context(), r.got.ID)
+				require.NoError(t, loadErr, "the successor was not stored")
+			},
+		},
+		{
+			// A step of exactly the grace closes the window at the instant
+			// the supersession would be written: AcceptUntil is not after
+			// the clock, so the successor is not written either.
+			name:  "a step that takes exactly the grace stores nothing",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(30 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.Empty(t, r.tok)
+				unsuperseded(t, f)
+				assert.Zero(t, f.reused.Load(), "a reuse was reported")
+			},
+		},
+		{
+			// The successor moved on while the step ran: that is reuse, the
+			// credential names a successor that was never stored.
+			name: "a successor that moved on during the step is reuse and returns no credential",
+			store: func(clk *clockwork.FakeClock) session.Store {
+				return &advancedSuccessorStore{Store: memoryOn(clk)}
+			},
+			grace: 30 * time.Second,
+			issue: issueFor,
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				isBare(session.ErrReused)(t, err)
+				assert.Nil(t, r.got)
+				assert.Zero(t, r.kind)
+				assert.Empty(t, r.tok, "a credential was returned for a rotation judged as reuse")
+				require.NotNil(t, r.given, "the step ran")
+				assert.Equal(t, int32(1), f.reused.Load(), "reuse must be observed once")
+
+				_, loadErr := f.m.Load(t.Context(), f.old.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "the family was not revoked")
+			},
+		},
+		{
+			// Review Focus 4: the step succeeded and the supersession then
+			// failed. The credential names a successor that was never
+			// stored, so it is not handed back.
+			name: "a step that succeeds while the supersession fails returns no credential and the store's error",
+			store: func(clk *clockwork.FakeClock) session.Store {
+				return &failingWriteStore{Store: memoryOn(clk)}
+			},
+			grace: 30 * time.Second,
+			issue: issueFor,
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, errStoreWrite)
+				assert.Nil(t, r.got)
+				assert.Zero(t, r.kind)
+				assert.Empty(t, r.tok, "a credential for a successor that was never stored was returned")
+				require.NotNil(t, r.given, "the step ran before the supersession")
+
+				_, loadErr := f.m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "the credential names a session")
+				unsuperseded(t, f)
+			},
+		},
+		{
+			name: "a cancelled request never calls the step",
+			store: func(clk *clockwork.FakeClock) session.Store {
+				return &probeStore{Store: memoryOn(clk), honourContext: true}
+			},
+			grace: 30 * time.Second,
+			ctx:   cancelled,
+			issue: issueFor,
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, r.given, "the step was called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+				unsuperseded(t, f)
+			},
+		},
+		{
+			name:  "a grace above the maximum never calls the step",
+			store: memoryOn,
+			grace: session.MaxRenewalGrace + time.Second,
+			issue: issueFor,
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, r.given, "the step was called")
+				assert.Empty(t, r.tok)
+				unsuperseded(t, f)
+			},
+		},
+		{
+			name:  "a session that is gone never calls the step",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				require.NoError(t, f.m.Delete(t.Context(), f.old.ID))
+			},
+			issue: issueFor,
+			assert: func(t *testing.T, _ *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Nil(t, r.given, "the step was called")
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			// "A step that outlives the family stores nothing", with no grace:
+			// the family ends at 21:00:00, the rotation starts at 20:59:50
+			// and the step ends at 21:00:05.
+			name:  "with no grace, a step that outlives the family stores nothing and supersedes nothing",
+			store: spyOn,
+			opts:  []session.Option{session.WithIdleTimeout(12 * time.Hour)},
+			grace: 0,
+			prepare: func(_ *testing.T, f *graceIssuingFixture) {
+				f.clk.Advance(12*time.Hour - 10*time.Second)
+			},
+			issue:  stepTaking(15 * time.Second),
+			assert: familyEndedWithNothingWritten,
+		},
+		{
+			// The instant the family ends is already past it: the rotation
+			// starts at 20:59:50 and the step ends at exactly 21:00:00.
+			name:  "with no grace, a step that ends exactly when the family does stores nothing and supersedes nothing",
+			store: spyOn,
+			opts:  []session.Option{session.WithIdleTimeout(12 * time.Hour)},
+			grace: 0,
+			prepare: func(_ *testing.T, f *graceIssuingFixture) {
+				f.clk.Advance(12*time.Hour - 10*time.Second)
+			},
+			issue:  stepTaking(10 * time.Second),
+			assert: familyEndedWithNothingWritten,
+		},
+		{
+			// The same under a family maximum a second manager lowered over
+			// the same store, so the old record's own deadline is past the
+			// family's end and does not cap the window.
+			name:  "under a lowered family maximum, a step that outlives the family stores nothing and supersedes nothing",
+			store: spyOn,
+			opts:  []session.Option{session.WithIdleTimeout(12 * time.Hour)},
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				f.m = managerFor(t,
+					session.WithStore(f.store), session.WithClock(f.clk),
+					session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
+					session.WithMaxAbsoluteLifetime(6*time.Hour), session.WithMaxFamilyLifetime(6*time.Hour))
+				f.clk.Advance(6*time.Hour - 10*time.Second)
+			},
+			issue:  stepTaking(15 * time.Second),
+			assert: familyEndedWithNothingWritten,
+		},
+		{
+			name:   "no step renews as RotateWithGrace does",
+			store:  memoryOn,
+			grace:  30 * time.Second,
+			noStep: true,
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, r.got)
+				assert.Equal(t, session.RenewalFresh, r.kind)
+				assert.Empty(t, r.tok)
+
+				_, loadErr := f.m.Load(t.Context(), r.got.ID)
+				require.NoError(t, loadErr)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			f := &graceIssuingFixture{clk: clk, store: tc.store(clk), reused: &atomic.Int32{}}
+			f.m = managerFor(t, append([]session.Option{
+				session.WithStore(f.store),
+				session.WithClock(clk),
+				session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.reused.Add(1) }),
+			}, tc.opts...)...)
+			old, err := f.m.Create(t.Context(), testUser)
+			require.NoError(t, err)
+			f.old = old
+
+			if tc.prepare != nil {
+				tc.prepare(t, f)
+			}
+
+			var (
+				r     rotation
+				issue func(*session.Session) (string, error)
+			)
+			if !tc.noStep {
+				issue = func(successor *session.Session) (string, error) {
+					r.given = snapshot(successor)
+
+					return tc.issue(clk, successor)
+				}
+			}
+			r.got, r.kind, r.tok, err = f.m.RotateWithGraceIssuing(ctx, old, tc.grace, issue)
+			tc.assert(t, f, r, err)
+		})
+	}
+}
+
+// TestRotateWithGraceIssuing_ConcurrentStepsStoreOneSuccessor pins "A losing
+// rotation's step is discarded": two renewals of one session that both read
+// it before either writes, and whose steps both succeed, store one successor
+// between them. The loser's credential is not returned and names a successor
+// that loads nothing. Its shape, two renewals racing, is not the table's.
+func TestRotateWithGraceIssuing_ConcurrentStepsStoreOneSuccessor(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+	store := newLoadBarrierStore(inner)
+	m := managerFor(t, session.WithStore(store), session.WithClock(clk))
+	o, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+
+	var (
+		wg         sync.WaitGroup
+		successors [2]*session.Session
+		given      [2]*session.Session
+		toks       [2]string
+		errs       [2]error
+	)
+	for i := range 2 {
+		wg.Go(func() {
+			successors[i], _, toks[i], errs[i] = m.RotateWithGraceIssuing(t.Context(), o, 30*time.Second,
+				func(successor *session.Session) (string, error) {
+					given[i] = snapshot(successor)
+
+					return "credential-for:" + successor.ID, nil
+				})
+		})
+	}
+	wg.Wait()
+
+	won := 0
+	if errs[0] != nil {
+		won = 1
+	}
+	loser := 1 - won
+	require.NoError(t, errs[won])
+	require.ErrorIs(t, errs[loser], session.ErrRenewalConflict, "both renewals produced a successor")
+	assert.Equal(t, "credential-for:"+successors[won].ID, toks[won])
+	assert.Nil(t, successors[loser])
+	assert.Empty(t, toks[loser], "the losing renewal's credential was returned")
+	require.NotNil(t, given[loser], "the losing renewal's step ran")
+
+	assert.Equal(t, 2, inner.Len(), "the family holds the old session and exactly one successor")
+	_, err = m.Load(t.Context(), given[loser].ID)
+	require.ErrorIs(t, err, session.ErrNotFound, "the losing successor was stored")
+	_, err = m.Load(t.Context(), successors[won].ID)
+	require.NoError(t, err)
+}

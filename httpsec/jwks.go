@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/kartaladev/scrty/internal/diag"
@@ -23,10 +24,18 @@ const DefaultJWKSPath = "/.well-known/jwks.json"
 //
 // What it returns is served unchanged, so an implementation returns the public
 // half and nothing else: the bytes handed back are the bytes every client on
-// the internet reads. An error it returns reaches the consumer's error handler
-// behind fixed text, matching by identity through errors.Is and errors.As.
+// the internet reads.
 type KeySetProvider interface {
-	JWKS() ([]byte, error)
+	// JWKS returns the key set document. ctx is the request's own context,
+	// with no deadline of the library's added: an implementation over a
+	// remote key service should honour it. The endpoint is public and asked on
+	// every fetch, so such an implementation is expected to cache.
+	//
+	// An error is a dependency failure, never a refusal: the endpoint serves
+	// nothing in its place, and the error reaches the consumer's error handler
+	// behind fixed library text, answered 500 by the default status mapping,
+	// with the provider's own error reachable through errors.Is and errors.As.
+	JWKS(ctx context.Context) ([]byte, error)
 }
 
 // jwksEndpoint serves the public key set.
@@ -48,7 +57,7 @@ func (j *jwksEndpoint) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	set, err := j.keys.JWKS()
+	set, err := j.keys.JWKS(ex.Context())
 	if err != nil {
 		// Propagated, not swallowed. An empty set served with a 200 would tell
 		// every client that every signature is invalid, and they would cache

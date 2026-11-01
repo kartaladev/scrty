@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -194,6 +195,34 @@ func TestOIDCRedeem(t *testing.T) {
 			return r
 		}
 	}
+
+	// redeemerRunning is a consumer redeemer that answers for the linked user
+	// after running the one check it is handed as run says, and reports what
+	// run returns. A mock rather than a hand-written double, like the others.
+	redeemerRunning := func(
+		run func(ctx context.Context, check oidc.RedeemCheck, user identity.Principal) (identity.Principal, error),
+	) func(t *testing.T, h *oidcHarness) httpsec.HandoffRedeemer {
+		return func(t *testing.T, _ *oidcHarness) httpsec.HandoffRedeemer {
+			r := NewMockHandoffRedeemer(gomock.NewController(t))
+			r.EXPECT().Redeem(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ string, checks ...oidc.RedeemCheck) (oidc.HandoffResult, error) {
+					p, err := run(ctx, checks[0], identity.Principal{ID: oidcTestUserID, Username: "ada@example.com"})
+					if err != nil {
+						return oidc.HandoffResult{}, err
+					}
+
+					return oidc.HandoffResult{Principal: p}, nil
+				})
+
+			return r
+		}
+	}
+
+	otherUser := identity.Principal{ID: "u-someone-else", Username: "else@example.com"}
+
+	// errIssuedForAnother is what a faithful redeemer reports when the check
+	// lets a second candidate through after it has issued for the first.
+	errIssuedForAnother := errors.New("oidc_test: the check accepted a second candidate")
 
 	cases := []testCase{
 		{
@@ -381,6 +410,69 @@ func TestOIDCRedeem(t *testing.T) {
 			},
 		},
 		{
+			name: "an implementation that runs the check twice issues once and stores one session",
+			opts: withRedeemer(redeemerRunning(func(
+				ctx context.Context, check oidc.RedeemCheck, user identity.Principal,
+			) (identity.Principal, error) {
+				for range 2 {
+					if err := check(ctx, oidc.RedeemCandidate{Principal: user}); err != nil {
+						return identity.Principal{}, err
+					}
+				}
+
+				return user, nil
+			})),
+			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, int64(1), h.issued.Load(), "the credential is issued once")
+				assert.Equal(t, 1, h.activeSessions(t))
+			},
+		},
+		{
+			name: "an implementation that re-runs the check for another candidate and ignores it is refused",
+			opts: withRedeemer(redeemerRunning(func(
+				ctx context.Context, check oidc.RedeemCheck, user identity.Principal,
+			) (identity.Principal, error) {
+				if err := check(ctx, oidc.RedeemCandidate{Principal: user}); err != nil {
+					return identity.Principal{}, err
+				}
+
+				_ = check(ctx, oidc.RedeemCandidate{Principal: otherUser})
+
+				return otherUser, nil
+			})),
+			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
+				// A token was issued for the first candidate, so this is not
+				// requireRefused; the refusal is what matters, and that no
+				// session was stored for it.
+				require.ErrorIs(t, out.err, policy.ErrDenied)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			name: "the check refuses a second candidate itself after it has issued for the first",
+			opts: withRedeemer(redeemerRunning(func(
+				ctx context.Context, check oidc.RedeemCheck, user identity.Principal,
+			) (identity.Principal, error) {
+				if err := check(ctx, oidc.RedeemCandidate{Principal: user}); err != nil {
+					return identity.Principal{}, err
+				}
+
+				if err := check(ctx, oidc.RedeemCandidate{Principal: otherUser}); err != nil {
+					return identity.Principal{}, err
+				}
+
+				return identity.Principal{}, errIssuedForAnother
+			})),
+			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied)
+				require.NotErrorIs(t, out.err, errIssuedForAnother)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
 			name:   "replaying a denied code is throttled by default",
 			opts:   withRedeemer(forwarding(10)),
 			engine: switchablePolicy,
@@ -510,7 +602,11 @@ func TestOIDCRedeemRacing(t *testing.T) {
 	t.Parallel()
 
 	h := newOIDCHarness(t)
-	h.issueTokens()
+
+	issuer := &recordingIssuer{}
+	issuer.healthy.Store(true)
+	h.tokens = issuer.generator(t)
+
 	code := h.issueHandoff(t, "")
 	c := h.chain(t)
 
@@ -552,6 +648,43 @@ func TestOIDCRedeemRacing(t *testing.T) {
 	assert.Equal(t, int64(1), succeeded.Load(), "exactly one racer redeems")
 	assert.Equal(t, int64(racers-1), refused.Load(), "every other one is refused uniformly")
 	assert.Equal(t, 1, h.activeSessions(t))
+
+	// A session reference is the credential the session-reference bearer
+	// accepts, so presenting each identifier a credential was issued for asks
+	// the store directly whether that session exists. Exactly one does: a
+	// loser's credential names a session that was never stored.
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), oidcTestUserID).AnyTimes().
+		Return(&identity.Details{ID: oidcTestUserID, Username: "ada@example.com", Active: true}, nil)
+
+	bearer, err := httpsec.New(httpsec.EnableSessionBearer(
+		httpsec.SessionBearerDeps{Sessions: h.sessions, Users: users}))
+	require.NoError(t, err)
+
+	named := issuer.names()
+	require.NotEmpty(t, named, "the winner issued a credential")
+
+	stored := 0
+
+	for _, id := range named {
+		req := getFrom(t.Context(), "/account", "203.0.113.99")
+		req.Header.Set("Authorization", "Bearer "+id)
+
+		out := serve(t, bearer, req)
+		if out.err == nil {
+			stored++
+
+			continue
+		}
+
+		// The loser branch only runs under a regression, such as issuing
+		// after the spend; with the spend first, only the winner names one.
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired,
+			"a loser's credential names a session that was never stored")
+		assert.False(t, out.handlerRan)
+	}
+
+	assert.Equal(t, 1, stored, "only the winner's credential names a stored session")
 }
 
 // The values the assurance cases sign in with.
@@ -602,6 +735,10 @@ type assuranceDeployment struct {
 
 	// evaluatorDown fails the consumer evaluator a case wires.
 	evaluatorDown atomic.Bool
+
+	// lastIssuedID is the session identifier the last credential was issued
+	// for, which is how a case loads what that credential names.
+	lastIssuedID atomic.Value
 
 	chain *httpsec.Chain
 }
@@ -665,6 +802,7 @@ func newAssuranceDeployment(t *testing.T, cfg assuranceConfig) *assuranceDeploym
 	d.h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
 			d.h.issued.Add(1)
+			d.lastIssuedID.Store(id)
 
 			return mfaTokenFor(id), nil
 		})
@@ -849,7 +987,17 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 		assert.False(t, out.handlerRan)
 		assert.Zero(t, d.h.activeSessions(t), "no session is created")
-		assert.Zero(t, d.h.issued.Load(), "and no token is issued")
+
+		// The redeemer ran the real checks, so a token was issued inside them
+		// for the login they allowed, before the redeemer changed what it
+		// reported. It was issued once at most, and names a session that was
+		// never stored, so it authenticates nothing.
+		assert.LessOrEqual(t, d.h.issued.Load(), int64(1), "the credential is issued at most once")
+
+		if id, ok := d.lastIssuedID.Load().(string); ok {
+			_, err := d.h.sessions.Load(t.Context(), id)
+			require.Error(t, err, "the issued credential names no stored session")
+		}
 	}
 
 	cases := []testCase{
@@ -1717,6 +1865,153 @@ func TestOIDCRedeemSession(t *testing.T) {
 			out := serve(t, h.chain(t, tc.opts...), handoffRequest(t.Context(), oidcTestSource, code))
 
 			tc.assert(t, h, w, code, out)
+		})
+	}
+}
+
+// TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode pins that a handoff code
+// is spent only by a redemption that goes on to succeed: a credential that
+// cannot be issued is a dependency failure with fixed library text, not the
+// invalid-handoff outcome, creates no session and leaves the code redeemable.
+// Ten such failures from one source are followed by an eleventh redemption
+// from that same source once the key source recovers, which succeeds only if
+// the code survived and none of the ten counted against the source.
+func TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode(t *testing.T) {
+	t.Parallel()
+
+	h := newOIDCHarness(t)
+	code := h.issueHandoff(t, "")
+
+	issuer := &recordingIssuer{}
+	h.tokens = issuer.generator(t)
+
+	// Exactly one failure is recorded with the source limiter: the reuse of
+	// the spent code at the end. The ten issuing failures record none.
+	c := h.chain(t, httpsec.WithOIDCHandoffLimiter(countingLimiter(t, 1)))
+
+	for i := range 10 {
+		out := serve(t, c, handoffRequest(t.Context(), magicLinkSource, code))
+
+		requireIssuingOutage(t, out.err, oidc.ErrInvalidHandoff)
+		assert.Equal(t, "httpsec: the access token could not be issued", out.err.Error(),
+			"the answer carries the library's fixed text and nothing of the key source's")
+		require.Zero(t, h.activeSessions(t), "redemption %d created a session", i+1)
+	}
+
+	assert.NotContains(t, h.logs.String(), code, "no log record carries the code")
+
+	issuer.healthy.Store(true)
+
+	out := serve(t, c, handoffRequest(t.Context(), magicLinkSource, code))
+	require.NoError(t, out.err, "the code survived, and the source was charged nothing")
+	assert.Equal(t, 1, h.activeSessions(t))
+
+	again := serve(t, c, handoffRequest(t.Context(), oidcAnotherSource, code))
+	require.ErrorIs(t, again.err, oidc.ErrInvalidHandoff, "the redemption that succeeded spent it")
+}
+
+// lastReadHandoffStore is a handoff store that remembers the identifier of the
+// record it was last asked for, so a test can read back the record a
+// redemption touched and see whether it was consumed.
+type lastReadHandoffStore struct {
+	*oidc.MemoryHandoffStore
+
+	mu   sync.Mutex
+	last string
+}
+
+func (s *lastReadHandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc.HandoffRecord, error) {
+	s.mu.Lock()
+	s.last = tokenID
+	s.mu.Unlock()
+
+	return s.MemoryHandoffStore.FindByTokenID(ctx, tokenID)
+}
+
+// consumed reports whether the record the store was last asked for is consumed.
+func (s *lastReadHandoffStore) consumed(t *testing.T) bool {
+	t.Helper()
+
+	s.mu.Lock()
+	tokenID := s.last
+	s.mu.Unlock()
+
+	rec, err := s.MemoryHandoffStore.FindByTokenID(t.Context(), tokenID)
+	require.NoError(t, err)
+
+	return rec.ConsumedAt != nil
+}
+
+// TestOIDCHandoff_CodeExpiringWhileCredentialIssuedIsRefusedUnconsumed pins
+// that a code is spent only before it expires, judged at the spend: the
+// credential is issued between the code's check and its consume, and a code
+// whose expiry passes while it is signed is refused as an invalid handoff,
+// creates no session, stays unconsumed and costs its source one recorded
+// failure, as any other refusal does.
+func TestOIDCHandoff_CodeExpiringWhileCredentialIssuedIsRefusedUnconsumed(t *testing.T) {
+	t.Parallel()
+
+	const signTook = 2 * time.Second
+
+	tests := map[string]struct {
+		// waited is how long the code sits before it is redeemed, and
+		// failures the number the source limiter is expected to record.
+		waited   time.Duration
+		failures int
+		assert   func(t *testing.T, h *oidcHarness, store *lastReadHandoffStore, out served)
+	}{
+		"expires while the credential is issued": {
+			waited:   oidc.HandoffTTL - time.Second,
+			failures: 1,
+			assert: func(t *testing.T, h *oidcHarness, store *lastReadHandoffStore, out served) {
+				require.ErrorIs(t, out.err, oidc.ErrInvalidHandoff)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan, "the application never sees the redemption")
+				assert.Zero(t, h.activeSessions(t), "no session is created")
+				assert.False(t, store.consumed(t), "the code stays unconsumed")
+			},
+		},
+		"still live when the credential is issued": {
+			waited:   10 * time.Second,
+			failures: 0,
+			assert: func(t *testing.T, h *oidcHarness, store *lastReadHandoffStore, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, 1, h.activeSessions(t))
+				assert.True(t, store.consumed(t), "the redemption consumed it")
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+			store := &lastReadHandoffStore{MemoryHandoffStore: oidc.NewMemoryHandoffStore()}
+
+			users := NewMockUserLoader(gomock.NewController(t))
+			users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
+				Return(&identity.Details{ID: oidcTestUserID, Username: "ada@example.com", Active: true}, nil)
+
+			h := newOIDCHarness(t)
+			h.handoffs = must.Must(oidc.NewHandoff(store, users, oidc.WithHandoffClock(clk)))
+
+			// The generator is the step between the check and the consume: it
+			// takes signTook of the handoff's clock to sign.
+			h.tokens = NewMockGenerator(gomock.NewController(t))
+			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
+					clk.Advance(signTook)
+
+					return "issued-token", nil
+				})
+
+			code := h.issueHandoff(t, "")
+			clk.Advance(tc.waited)
+
+			c := h.chain(t, httpsec.WithOIDCHandoffLimiter(countingLimiter(t, tc.failures)))
+
+			tc.assert(t, h, store, serve(t, c, handoffRequest(t.Context(), oidcTestSource, code)))
 		})
 	}
 }

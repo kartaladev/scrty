@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"net/url"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
@@ -41,21 +42,59 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// ID token. Nothing in this request reaches it.
 	check, out := oidcRedemptionCheck(i.engine, i.enforced, i.challengeMethods, i.now)
 
-	res, err := i.redeemer.Redeem(ctx, code, check)
+	// Built and issued inside the check, after the refusal check has passed
+	// and before the redeemer consumes the code, so a credential that cannot
+	// be issued leaves the code redeemable. The session is stored only once
+	// the code is spent, below.
+	login := newRedemptionLogin(loginTailDeps{
+		engine:            i.engine,
+		sessions:          i.sessions,
+		tokens:            i.tokens,
+		issue:             i.issue,
+		enrolmentLifetime: i.enrolmentLifetime,
+		enforced:          i.enforced,
+		challengeMethods:  i.challengeMethods,
+		cancelHeld:        i.cancelHeld,
+	}, out)
+
+	// One check, as the redeemer has always been handed: the refusal check,
+	// then, only once it has passed, the issuing step.
+	checkThenIssue := func(ctx context.Context, c oidc.RedeemCandidate) error {
+		if err := check(ctx, c); err != nil {
+			return err
+		}
+
+		// The assurance the session records must be the assurance the
+		// policy check decided on, so a candidate carrying any other is
+		// refused before anything is issued for it.
+		if err := guardFederatedAssurance(out, c.Provider, c.Issuer, c.AMR, c.ACR); err != nil {
+			return err
+		}
+
+		in := postAuthenticationInput(&c.Principal, factor.OIDC, "", c.PasswordChangedAt, i.now())
+		in.FederatedAssurance = out.federated
+
+		return login.issue(ctx, in)
+	}
+
+	res, err := i.redeemer.Redeem(ctx, code, checkThenIssue)
 	if err != nil {
 		if countsAgainstSource(i.countRefusals, err, out) {
 			recordSourceFailure(ctx, i.guard, src)
 		}
 
 		// The redeemer's error, unchanged: oidc already answers every cause
-		// with one uniform refusal, and a policy refusal is the policy's own
-		// reason for the consumer to read.
+		// with one uniform refusal, a policy refusal is the policy's own
+		// reason for the consumer to read, and a credential that could not be
+		// issued is a dependency failure. Whatever the issuing step built is
+		// dropped: it was never stored, so it names nothing.
 		return err
 	}
 
-	// Checked before anything is created. A HandoffRedeemer is an interface,
-	// and an implementation that skipped or discarded the check has not shown
-	// this login is permitted.
+	// Checked before anything is stored. A HandoffRedeemer is an interface,
+	// and an implementation that skipped or discarded the checks has not shown
+	// this login is permitted, nor that the login issued for is the one
+	// returned.
 	if err := guardRedemption(out, res.Principal, res.PasswordChangedAt); err != nil {
 		return err
 	}
@@ -66,29 +105,34 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		return err
 	}
 
-	// Set before the tail runs, so a challenge response carries it too: the
-	// page the browser posted from held the code in its URL either way.
+	issued, err := login.redeemed()
+	if err != nil {
+		return err
+	}
+
+	// Set before the session is stored, so a challenge response carries it
+	// too: the page the browser posted from held the code in its URL either
+	// way.
 	ex.Writer.SetHeader("Referrer-Policy", "no-referrer")
 
-	// The provider session travels in the write that creates the session, so
-	// no request ever sees a federated session without it, and back-channel
-	// logout can find it from its first moment. The asserted assurance reaches
-	// the tail as evidence, which records it on the session in that same
-	// write; the guard above has just shown it is what the check decided on.
-	in := postAuthenticationInput(&res.Principal, factor.OIDC, "", res.PasswordChangedAt, i.now())
-	in.FederatedAssurance = out.federated
+	// The provider session is known only from the redeemer's result, after
+	// the consume, and the credential issued inside the checks does not
+	// depend on it. It is recorded on the session before the one write that
+	// creates it, so no request ever sees a federated session without it, and
+	// back-channel logout can find it from its first moment. The asserted
+	// assurance was recorded when the session was built, from the evidence
+	// the guards above have just shown is what the check decided on.
+	session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken)(issued.session())
 
-	tok, err := completeLogin(ex, loginTailDeps{
-		engine:            i.engine,
-		sessions:          i.sessions,
-		tokens:            i.tokens,
-		issue:             i.issue,
-		enrolmentLifetime: i.enrolmentLifetime,
-		enforced:          i.enforced,
-		challengeMethods:  out.challengeMethods(i.challengeMethods),
-		decided:           &out.decision,
-		cancelHeld:        i.cancelHeld,
-	}, in, session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken))
+	// The code is spent, so the first factor is proved: the user's held
+	// recoveries are cancelled before the session is stored, as completeLogin
+	// cancels them for every login. A cancellation that cannot be recorded
+	// refuses the login, with the code already spent.
+	if err := login.deps.cancelHeldRecoveries(ctx, res.Principal.ID); err != nil {
+		return err
+	}
+
+	tok, err := issued.commit(ex)
 	if err != nil {
 		return err
 	}

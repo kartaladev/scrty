@@ -24,10 +24,16 @@ import (
 // The provider ID token a federated session carries is sealed with c before
 // it is written and opened when it is read, through session.NewEncryptedStore
 // and seal.SessionCipher; there is no unsealed variant, and a nil c, typed
-// nil included, is a configuration error. A token that will not open makes
-// the load fail with session.ErrUnreadable, never
-// session.ErrNotFound. A load never rewrites the record, so a token
-// sealed under a retired key is re-sealed only by the session's next save.
+// nil included, is a configuration error. Every seal and open runs under the
+// context of the save or load it serves. A token that will not open makes the
+// load fail with session.ErrUnreadable, never session.ErrNotFound. An open
+// that is an outage is not that: one abandoned by the context's cancellation
+// or deadline, or one c marks by wrapping its error with seal.ErrUnavailable
+// (for example errors.Join(seal.ErrUnavailable, err)), fails the load with a
+// store failure that matches the cause, and session.ErrCipherUnavailable for
+// a marked one, never session.ErrUnreadable. A load never rewrites the
+// record, so a token sealed under a retired key is re-sealed only by the
+// session's next save.
 //
 // The session identifier, a bearer credential, is never stored: a session is
 // kept and found under the SHA-256 digest of its identifier, behind a

@@ -63,8 +63,8 @@ func TestNewKeyManager(t *testing.T) {
 	accepted := func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, err error) {
 		require.NoError(t, err)
 		require.NotNil(t, km)
-		_, _, ok := km.Signer(signingkey.RS256)
-		assert.True(t, ok)
+		_, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+		assert.NoError(t, signerErr)
 	}
 
 	cases := []testCase{
@@ -73,8 +73,8 @@ func TestNewKeyManager(t *testing.T) {
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, err error) {
 				require.NoError(t, err)
 
-				kid, signer, ok := km.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, signer, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 				require.NotEmpty(t, kid)
 				pub, isRSA := signer.Public().(*rsa.PublicKey)
 				require.True(t, isRSA, "RS256 signs with an RSA key, got %T", signer.Public())
@@ -93,21 +93,21 @@ func TestNewKeyManager(t *testing.T) {
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, err error) {
 				require.NoError(t, err)
 
-				_, es, ok := km.Signer(signingkey.ES256)
-				require.True(t, ok)
+				_, es, signerErr := km.Signer(t.Context(), signingkey.ES256)
+				require.NoError(t, signerErr)
 				_, isEC := es.Public().(*ecdsa.PublicKey)
 				assert.True(t, isEC, "ES256 signs with an ECDSA key, got %T", es.Public())
 
-				_, ed, ok := km.Signer(signingkey.EdDSA)
-				require.True(t, ok)
+				_, ed, signerErr := km.Signer(t.Context(), signingkey.EdDSA)
+				require.NoError(t, signerErr)
 				_, isEd := ed.Public().(ed25519.PublicKey)
 				assert.True(t, isEd, "EdDSA signs with an Ed25519 key, got %T", ed.Public())
 
 				assert.ElementsMatch(t,
 					[]signingkey.Alg{signingkey.ES256, signingkey.EdDSA}, km.SupportedAlgs())
 
-				_, _, rsOK := km.Signer(signingkey.RS256)
-				assert.False(t, rsOK, "an algorithm the consumer did not configure has no key")
+				_, _, signerErr = km.Signer(t.Context(), signingkey.RS256)
+				assert.ErrorIs(t, signerErr, signingkey.ErrNoKey, "an algorithm the consumer did not configure has no key")
 			},
 		},
 		{
@@ -259,8 +259,8 @@ func TestNewKeyManagerStoresBeforeUse(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	kid, signer, ok := km.Signer(signingkey.RS256)
-	require.True(t, ok)
+	kid, signer, signerErr := km.Signer(t.Context(), signingkey.RS256)
+	require.NoError(t, signerErr)
 
 	assert.Equal(t, kid, written.Kid,
 		"the key the manager signs with is the one the store was given")
@@ -403,8 +403,8 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, km)
 
-				_, _, ok := km.Signer(signingkey.RS256)
-				assert.True(t, ok, "construction left no current key")
+				_, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				assert.NoError(t, signerErr, "construction left no current key")
 			},
 		},
 		{
@@ -426,8 +426,8 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 				require.NoError(t, err, "the default store has no I/O to cancel")
 				require.NotNil(t, km)
 
-				_, _, ok := km.Signer(signingkey.RS256)
-				assert.True(t, ok, "construction left no current key")
+				_, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				assert.NoError(t, signerErr, "construction left no current key")
 			},
 		},
 	}
@@ -617,13 +617,13 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				store := signingkey.NewMemoryKeyStore()
 				first, err := signingkey.New(t.Context(), signingkey.WithKeyStore(store), noon)
 				require.NoError(t, err)
-				kid, _, ok := first.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, _, signerErr := first.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 				return store, kid
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string) {
-				kid, _, ok := km.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 				assert.Equal(t, wantKid, kid, "the second manager signs with the stored key")
 
 				recs, err := store.LoadAll(t.Context())
@@ -631,7 +631,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				assert.Len(t, recs, 1,
 					"an algorithm that already has a stored key gets no replacement")
 
-				assert.True(t, publishes(km, wantKid),
+				assert.True(t, publishes(t, km, wantKid),
 					"the stored key is published, so its tokens still verify")
 			},
 		},
@@ -644,13 +644,13 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				return &listingStore{recs: []signingkey.Record{newer, older}}, newer.Kid
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string) {
-				kid, _, ok := km.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 				assert.Equal(t, wantKid, kid, "the current key is the latest CreatedAt")
 
 				assert.Zero(t, store.(*listingStore).stored, "nothing is minted or rewritten")
 
-				published, err := km.VerificationKeys()
+				published, err := km.VerificationKeys(t.Context())
 				require.NoError(t, err)
 				assert.Len(t, published, 2, "the key it replaced stays published")
 			},
@@ -664,8 +664,8 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				return &listingStore{recs: []signingkey.Record{first, second}}, second.Kid
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, wantKid string) {
-				kid, _, ok := km.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 				assert.Equal(t, wantKid, kid, "the tie goes to the record the store listed later")
 			},
 		},
@@ -679,7 +679,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string) {
 				assert.Equal(t, wantKid, currentKid(t, km, signingkey.RS256),
 					"the current key is the one created now")
-				published, err := km.VerificationKeys()
+				published, err := km.VerificationKeys(t.Context())
 				require.NoError(t, err)
 				assert.Equal(t, []string{wantKid}, kidsOf(published),
 					"a key dated more than one lifetime ahead is not published")
@@ -708,7 +708,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, ahead string) {
 				assert.NotEqual(t, ahead, currentKid(t, km, signingkey.RS256),
 					"a key dated beyond the reload interval does not sign yet")
-				assert.True(t, publishes(km, ahead),
+				assert.True(t, publishes(t, km, ahead),
 					"but it is within one lifetime, so the tokens it signed still verify")
 			},
 		},
@@ -744,7 +744,7 @@ func TestConstructionOverOnlyAFarFutureKeyMintsACurrentKey(t *testing.T) {
 
 	kid := currentKid(t, km, signingkey.RS256)
 	assert.NotEqual(t, future.Kid, kid, "the far-future key does not sign")
-	assert.False(t, publishes(km, future.Kid), "and is not published")
+	assert.False(t, publishes(t, km, future.Kid), "and is not published")
 	recs, err := store.LoadAll(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, recs, 2, "a new key was stored")
@@ -890,8 +890,8 @@ func TestStoredRecordCarriesThePublishablePublicKey(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	kid, _, ok := km.Signer(signingkey.ES256)
-	require.True(t, ok)
+	kid, _, signerErr := km.Signer(t.Context(), signingkey.ES256)
+	require.NoError(t, signerErr)
 
 	recs, err := store.LoadAll(t.Context())
 	require.NoError(t, err)
@@ -935,7 +935,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	require.NoError(t, err)
 	shutdownAndVerify(t, km)
 
-	published, err := km.VerificationKeys()
+	published, err := km.VerificationKeys(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, published, 2, "a key listed twice is one key")
 	require.Equal(t, current.Kid, currentKid(t, km, signingkey.RS256))
@@ -944,9 +944,9 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	// second entry for a kid it has just dropped would have nothing to read.
 	require.NoError(t, km.Start(t.Context()))
 	advance(t, clk, time.Second, loopCount)
-	require.False(t, publishes(km, dup.Kid),
+	require.False(t, publishes(t, km, dup.Kid),
 		"the duplicated key stops being published once it is past its lifetime")
-	assert.True(t, publishes(km, current.Kid), "and the current key is untouched")
+	assert.True(t, publishes(t, km, current.Kid), "and the current key is untouched")
 }
 
 // blockingStore holds one write inside the store until it is released, so a
@@ -1013,8 +1013,8 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	// is a failed assertion rather than a hung test.
 	served := make(chan string, 1)
 	go func() {
-		kid, signer, ok := km.Signer(signingkey.EdDSA)
-		if !ok || signer == nil || !publishes(km, kid) {
+		kid, signer, signerErr := km.Signer(t.Context(), signingkey.EdDSA)
+		if signerErr != nil || signer == nil || !publishes(t, km, kid) {
 			kid = ""
 		}
 		served <- kid
@@ -1120,8 +1120,8 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 					"the stored key is held before the minted one, so it is published first")
 				assert.IsType(t, ed25519.PublicKey{}, keys[0].Key)
 
-				_, _, signs := km.Signer(signingkey.EdDSA)
-				assert.False(t, signs, "publishing a foreign key is not signing with it")
+				_, _, signerErr := km.Signer(t.Context(), signingkey.EdDSA)
+				assert.ErrorIs(t, signerErr, signingkey.ErrNoKey, "publishing a foreign key is not signing with it")
 
 				assert.Equal(t, currentKid(t, km, signingkey.RS256), keys[1].Kid)
 			},
@@ -1160,7 +1160,7 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 
 			km := tc.manager(t)
 
-			keys, err := km.VerificationKeys()
+			keys, err := km.VerificationKeys(t.Context())
 			tc.assert(t, km, keys, err)
 		})
 	}
@@ -1234,25 +1234,25 @@ func TestVerificationKeysDoNotShareKeyMaterialWithTheManager(t *testing.T) {
 			// want is read before anything is written to, and is a value, not
 			// a handle, so no assertion below can be satisfied by comparing
 			// corrupted material with itself.
-			before, err := km.VerificationKeys()
+			before, err := km.VerificationKeys(t.Context())
 			require.NoError(t, err)
 			require.Len(t, before, 1)
 			want := publicKeyBytes(t, before[0].Key)
 
-			handed, err := km.VerificationKeys()
+			handed, err := km.VerificationKeys(t.Context())
 			require.NoError(t, err)
 			require.Len(t, handed, 1)
 			tc.corrupt(t, handed[0].Key)
 
-			after, err := km.VerificationKeys()
+			after, err := km.VerificationKeys(t.Context())
 			require.NoError(t, err,
 				"a manager that shared its key material cannot publish at all once a caller has written to it")
 			require.Len(t, after, 1)
 			assert.Equal(t, want, publicKeyBytes(t, after[0].Key),
 				"a caller writing to a key it was handed must not change the key the manager publishes")
 
-			_, signer, ok := km.Signer(tc.alg)
-			require.True(t, ok)
+			_, signer, signerErr := km.Signer(t.Context(), tc.alg)
+			require.NoError(t, signerErr)
 			assert.Equal(t, want, publicKeyBytes(t, signer.Public()),
 				"nor the public half of the key the manager still signs with")
 		})
@@ -1304,10 +1304,10 @@ func TestPublishedKeysDoNotBreakTheManagersOwnVerification(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	kid, signer, ok := km.Signer(signingkey.EdDSA)
-	require.True(t, ok)
+	kid, signer, signerErr := km.Signer(t.Context(), signingkey.EdDSA)
+	require.NoError(t, signerErr)
 
-	exported, err := km.VerificationKeys()
+	exported, err := km.VerificationKeys(t.Context())
 	require.NoError(t, err)
 	require.Len(t, exported, 1)
 	handed, isEd25519 := exported[0].Key.(ed25519.PublicKey)
@@ -1571,8 +1571,8 @@ func TestJWKSPublishesTheDocumentAnEndpointServes(t *testing.T) {
 					"the stored key is held before the minted one, so it is published first")
 				assert.Equal(t, "OKP", keys[0]["kty"])
 
-				_, _, signs := km.Signer(signingkey.EdDSA)
-				assert.False(t, signs, "publishing a foreign key is not signing with it")
+				_, _, signerErr := km.Signer(t.Context(), signingkey.EdDSA)
+				assert.ErrorIs(t, signerErr, signingkey.ErrNoKey, "publishing a foreign key is not signing with it")
 
 				assert.Equal(t, currentKid(t, km, signingkey.RS256), keys[1]["kid"])
 			},
@@ -1595,7 +1595,7 @@ func TestJWKSPublishesTheDocumentAnEndpointServes(t *testing.T) {
 				// document and this process verifying a token in hand must
 				// agree on which keys exist, so they cannot be allowed to
 				// drift apart.
-				reported, keysErr := km.VerificationKeys()
+				reported, keysErr := km.VerificationKeys(t.Context())
 				require.NoError(t, keysErr)
 				assert.Equal(t, kidsOf(reported), publishedKids(t, doc))
 
@@ -1615,7 +1615,7 @@ func TestJWKSPublishesTheDocumentAnEndpointServes(t *testing.T) {
 
 			km := tc.manager(t)
 
-			doc, err := km.JWKS()
+			doc, err := km.JWKS(t.Context())
 			tc.assert(t, km, doc, err)
 		})
 	}
@@ -1689,7 +1689,7 @@ func TestJWKSPublishesNoPrivateMaterial(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			doc, err := km.JWKS()
+			doc, err := km.JWKS(t.Context())
 			tc.assert(t, store, doc, err)
 		})
 	}
@@ -1715,14 +1715,14 @@ func TestAConsumerPublishesItsOwnDocumentFromThePort(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	doc, err := km.JWKS()
+	doc, err := km.JWKS(t.Context())
 	require.NoError(t, err)
 	require.Len(t, publishedKeys(t, doc), 2, "the default publishes every key held")
 
 	// The consumer's own rule: publish the key currently signing RS256 and
 	// nothing else.
 	signing := currentKid(t, km, signingkey.RS256)
-	reported, err := km.VerificationKeys()
+	reported, err := km.VerificationKeys(t.Context())
 	require.NoError(t, err)
 
 	own := make([]signingkey.PublicKey, 0, len(reported))
@@ -1745,4 +1745,147 @@ func TestAConsumerPublishesItsOwnDocumentFromThePort(t *testing.T) {
 		"and chose it out of what the default publishes")
 	assert.NotEqual(t, publishedKids(t, doc), publishedKids(t, consumerDoc),
 		"which is a document this package deliberately does not produce")
+}
+
+// TestKeys_SignerReportsNoKey pins that the manager answers a request for an
+// algorithm it was not configured with by ErrNoKey, so a generator can tell a
+// key that was never there from a source that could not answer. A key another
+// replica wrote for that algorithm is published, and still not signed with.
+func TestKeys_SignerReportsNoKey(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		manager func(t *testing.T) *signingkey.Keys
+		alg     signingkey.Alg
+		assert  func(t *testing.T, km *signingkey.Keys, kid string, signer crypto.Signer, err error)
+	}
+
+	noKey := func(t *testing.T, _ *signingkey.Keys, kid string, signer crypto.Signer, err error) {
+		require.ErrorIs(t, err, signingkey.ErrNoKey)
+		assert.Empty(t, kid)
+		assert.Nil(t, signer)
+	}
+
+	cases := []testCase{
+		{
+			name: "an algorithm the manager was not configured with",
+			manager: func(t *testing.T) *signingkey.Keys {
+				km, err := signingkey.New(t.Context(), signingkey.WithAlgs(signingkey.RS256))
+				require.NoError(t, err)
+
+				return km
+			},
+			alg:    signingkey.EdDSA,
+			assert: noKey,
+		},
+		{
+			name: "an algorithm another replica published a key for",
+			manager: func(t *testing.T) *signingkey.Keys {
+				store := signingkey.NewMemoryKeyStore()
+				require.NoError(t, store.Store(t.Context(), realRecordFor(t, signingkey.ES256, epoch)))
+
+				km, err := signingkey.New(t.Context(),
+					signingkey.WithKeyStore(store),
+					signingkey.WithAlgs(signingkey.RS256),
+					signingkey.WithClock(newClock()),
+				)
+				require.NoError(t, err)
+
+				return km
+			},
+			alg: signingkey.ES256,
+			assert: func(t *testing.T, km *signingkey.Keys, kid string, signer crypto.Signer, err error) {
+				noKey(t, km, kid, signer, err)
+
+				published, keysErr := km.VerificationKeys(t.Context())
+				require.NoError(t, keysErr)
+				algs := make([]signingkey.Alg, 0, len(published))
+				for _, key := range published {
+					algs = append(algs, key.Alg)
+				}
+				assert.Contains(t, algs, signingkey.ES256,
+					"the other replica's key is published even though it never signs here")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			km := tc.manager(t)
+			kid, signer, err := km.Signer(t.Context(), tc.alg)
+			tc.assert(t, km, kid, signer, err)
+		})
+	}
+}
+
+// TestKeys_AnswersUnderCancelledContext pins that the manager, which performs
+// no input or output when asked for a key, answers whatever state the
+// caller's context is in.
+func TestKeys_AnswersUnderCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		ctx    func(ctx context.Context) context.Context
+		assert func(t *testing.T, kid string, signer crypto.Signer, signerErr error,
+			published []signingkey.PublicKey, keysErr error, doc []byte, docErr error)
+	}
+
+	answers := func(t *testing.T, kid string, signer crypto.Signer, signerErr error,
+		published []signingkey.PublicKey, keysErr error, doc []byte, docErr error,
+	) {
+		require.NoError(t, signerErr)
+		assert.NotEmpty(t, kid)
+		assert.NotNil(t, signer)
+		require.NoError(t, keysErr)
+		assert.NotEmpty(t, published)
+		require.NoError(t, docErr)
+		assert.NotEmpty(t, doc)
+	}
+
+	cases := []testCase{
+		{name: "a live context", assert: answers},
+		{
+			name: "a cancelled context",
+			ctx: func(ctx context.Context) context.Context {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cancelled
+			},
+			assert: answers,
+		},
+		{
+			name: "an expired context",
+			ctx: func(ctx context.Context) context.Context {
+				expired, cancel := context.WithDeadline(ctx, time.Unix(0, 0))
+				t.Cleanup(cancel)
+
+				return expired
+			},
+			assert: answers,
+		},
+	}
+
+	km, err := signingkey.New(t.Context(), signingkey.WithAlgs(signingkey.RS256))
+	require.NoError(t, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			kid, signer, signerErr := km.Signer(ctx, signingkey.RS256)
+			published, keysErr := km.VerificationKeys(ctx)
+			doc, docErr := km.JWKS(ctx)
+			tc.assert(t, kid, signer, signerErr, published, keysErr, doc, docErr)
+		})
+	}
 }

@@ -94,8 +94,8 @@ func TestStoredRecord(t *testing.T) {
 					return // refused, which is what this test asks for
 				}
 
-				_, signer, ok := km.Signer(signingkey.ES256)
-				require.True(t, ok)
+				_, signer, signerErr := km.Signer(t.Context(), signingkey.ES256)
+				require.NoError(t, signerErr)
 				signed, err := jws.Sign([]byte(`{"sub":"x"}`),
 					jws.WithKey(auditAlg(t, signingkey.ES256), signer))
 				require.NoError(t, err)
@@ -125,11 +125,11 @@ func TestStoredRecord(t *testing.T) {
 					return // refused, which is what this test asks for
 				}
 
-				_, _, ok := km.Signer("HS256")
-				assert.False(t, ok,
+				_, _, signerErr := km.Signer(t.Context(), "HS256")
+				assert.ErrorIs(t, signerErr, signingkey.ErrNoKey,
 					"the manager offers no signer for an algorithm WithAlgs would have refused")
 
-				published, err := km.VerificationKeys()
+				published, err := km.VerificationKeys(t.Context())
 				require.NoError(t, err)
 				for _, key := range published {
 					assert.NotEqual(t, "HS256", key.Alg,
@@ -157,8 +157,8 @@ func TestStoredRecord(t *testing.T) {
 					return // refused, which is what this test asks for
 				}
 
-				kid, _, ok := km.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 				assert.Equal(t, swapped.Kid, kid,
 					"a record is either refused or held under the identifier it carries; "+
 						"it is never silently republished under a different one")
@@ -235,8 +235,8 @@ func TestKidIsThumbprint(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			kid, signer, ok := km.Signer(tc.alg)
-			require.True(t, ok)
+			kid, signer, signerErr := km.Signer(t.Context(), tc.alg)
+			require.NoError(t, signerErr)
 			assert.Equal(t, rfc7638(t, signer.Public()), kid,
 				"the key identifier is the RFC 7638 SHA-256 thumbprint of the public key")
 

@@ -133,6 +133,10 @@ type passwordlessInterceptor struct {
 //     (PasswordlessTokens). A missing or mismatched cookie, an unknown
 //     credential, a handle mismatch and a bad signature are all
 //     authenticate.ErrAuthenticationFailed, and no refusal leaves a session.
+//     The ceremony's challenge is spent before the login completes, so a
+//     login whose credential cannot be issued, a dependency failure and not
+//     a refusal, has spent it, and has stored no session: the login
+//     completion step stores the session only once its credential is issued.
 //
 // New refuses the chain when passwordless login is enabled and:
 // PasskeyDeps.Users is missing; the passkey manager has no saved recovery

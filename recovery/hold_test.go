@@ -636,9 +636,20 @@ func TestRecoverer_FinishFailures(t *testing.T) {
 			assert.Equal(t, []recovery.AuthenticatorRef{refTOTP, refEmail}, e.held.snapshot(), "nothing is reset")
 			assert.Empty(t, e.out.recoveredNotices())
 
+			// The saved set was voided when the hold started; a finish that
+			// failed has replaced it with nothing.
+			left, cerr := e.codes.Remaining(t.Context(), anaID)
+			require.NoError(t, cerr)
+			assert.Zero(t, left.N, "a failed finish leaves the saved codes unreplaced")
+
+			for _, sid := range e.prior {
+				assert.True(t, e.loads(t, sid), "the user's sessions are not ended")
+			}
+
 			again, err := r.Finish(t.Context(), token)
 			require.NoError(t, err, "the token is still good and the record still pending")
-			assert.NotNil(t, again.Session)
+			require.NotNil(t, again.Session)
+			assert.Equal(t, issuedForPrefix+again.Session.ID, again.Credential)
 		}
 	}
 	returned := func(t *testing.T, err error) {
@@ -704,6 +715,12 @@ func TestRecoverer_FinishFailures(t *testing.T) {
 			}),
 		},
 		{
+			name:   "an issuing failure is a dependency failure, and the record stays pending",
+			arm:    func(e *completeEnv) { e.failIssue(errStore) },
+			disarm: func(e *completeEnv) { e.failIssue(nil) },
+			assert: refusedThenRedeemable(returned),
+		},
+		{
 			name:   "a token that cannot be consumed is ignored, and the record still refuses a reuse",
 			arm:    func(e *completeEnv) { e.faults.arm(faultTokensConsume, errStore) },
 			disarm: func(e *completeEnv) { e.faults.arm(faultTokensConsume, nil) },
@@ -732,6 +749,8 @@ func TestRecoverer_FinishFailures(t *testing.T) {
 
 			h := heldRecovery(t.Context(), t, r, savedAndIssuedReq(e))
 			e.clock.Advance(73 * time.Hour)
+			// Logins made since the hold started, live at the finish.
+			e.prior = e.priorSessions(t, 2)
 
 			tc.arm(e)
 			res, err := r.Finish(t.Context(), h.CompletionToken)

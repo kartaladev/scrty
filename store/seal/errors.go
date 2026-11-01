@@ -28,4 +28,17 @@ var (
 	// [A-Za-z0-9._-]{1,64} and never appears in the error's text; treat the id
 	// Open returns alongside this error as a claim made by the stored value.
 	ErrUnknownKeyID = errors.New("seal: unknown key id")
+
+	// ErrUnavailable is the marker a Cipher or Keyring wraps an outage with:
+	// a failure to reach its keys, such as a key management service's
+	// timeout, throttling or unavailable key, that says nothing about the
+	// value being sealed or opened. An implementation marks one by wrapping
+	// its error with it, for example errors.Join(ErrUnavailable, err).
+	//
+	// The sealing stores return it as they return any cipher error, so a
+	// caller can tell an outage from a value that does not open; a re-seal on
+	// read that fails with it still never fails the read. SessionCipher
+	// reports it as session.ErrCipherUnavailable. It matches neither
+	// ErrDecryptionFailed nor ErrUnknownKeyID.
+	ErrUnavailable = errors.New("seal: keys unavailable")
 )

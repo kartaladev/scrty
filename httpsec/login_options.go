@@ -104,9 +104,13 @@ type LoginOption func(*formLogin) error
 //     nothing recorded against the account. Account recovery's password
 //     proof, which runs this step, treats both the same way, and counts
 //     neither against the user's recovery limit.
-//  5. Run the post-authentication phase, open the session, and issue the
-//     access token, refusing with a ChallengeError when a challenge is
-//     raised.
+//  5. Run the post-authentication phase, then build the session, mark a
+//     challenge on it when one is raised, issue the access token, store the
+//     session in one write, and hand the token out, in that order: a token is
+//     issued before anything is stored, so a token that cannot be issued
+//     (a generator that fails) stores no session, and is a dependency
+//     failure, never a refusal. A raised challenge refuses with a
+//     ChallengeError, carrying the stored session and its token.
 //
 // # What the binding reads, and what it does not
 //

@@ -203,6 +203,7 @@ func TestNewRecoverer(t *testing.T) {
 			assert: configError,
 		},
 		{name: "a nil id generator", opts: with(recovery.WithIDGenerator(nil)), assert: configError},
+		{name: "a nil credential issuer", opts: with(recovery.WithCredentialIssuer(nil)), assert: configError},
 		{name: "session revocation turned off", opts: with(recovery.WithoutSessionRevocation()), assert: ok},
 
 		// Holds.

@@ -207,8 +207,8 @@ func TestVerifyKeySelection(t *testing.T) {
 		{
 			name: "no key identifier in the header",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
-				_, signer, ok := keys.Signer(signingkey.RS256)
-				require.True(t, ok)
+				_, signer, signerErr := keys.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 
 				return signRaw(t, signer, "", signingkey.RS256, validClaims(time.Now()))
 			},
@@ -217,8 +217,8 @@ func TestVerifyKeySelection(t *testing.T) {
 		{
 			name: "a key identifier that is not in the set",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
-				_, signer, ok := keys.Signer(signingkey.RS256)
-				require.True(t, ok)
+				_, signer, signerErr := keys.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 
 				return signRaw(t, signer, "not-a-kid-in-the-set", signingkey.RS256, validClaims(time.Now()))
 			},
@@ -238,8 +238,8 @@ func TestVerifyKeySelection(t *testing.T) {
 		{
 			name: "alg none with an empty signature",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
-				kid, _, ok := keys.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, _, signerErr := keys.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 
 				header := encodeSegment(t, map[string]any{"alg": "none", "typ": "JWT", "kid": kid})
 				claims := encodeSegment(t, validClaims(time.Now()))
@@ -255,8 +255,8 @@ func TestVerifyKeySelection(t *testing.T) {
 		{
 			name: "HS256 over an RS256 key, signed with that key's public half as the secret",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
-				kid, signer, ok := keys.Signer(signingkey.RS256)
-				require.True(t, ok)
+				kid, signer, signerErr := keys.Signer(t.Context(), signingkey.RS256)
+				require.NoError(t, signerErr)
 
 				// The attacker knows the public key: it is published in the
 				// JWK Set. Using it as an HMAC secret is the algorithm
@@ -631,7 +631,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			name: "a key source that cannot supply its key set is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().VerificationKeys().Return(nil, unreachable).Times(1)
+				keys.EXPECT().VerificationKeys(gomock.Any()).Return(nil, unreachable).Times(1)
 
 				return keys
 			},
@@ -647,7 +647,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			name: "a key source that hands over no keys at all is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().VerificationKeys().Return(nil, nil).Times(1)
+				keys.EXPECT().VerificationKeys(gomock.Any()).Return(nil, nil).Times(1)
 
 				return keys
 			},
@@ -665,7 +665,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			name: "a key source holding no keys at all is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().VerificationKeys().Return([]signingkey.PublicKey{}, nil).Times(1)
+				keys.EXPECT().VerificationKeys(gomock.Any()).Return([]signingkey.PublicKey{}, nil).Times(1)
 
 				return keys
 			},
@@ -683,7 +683,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			name: "a key this package cannot read is an outage, not a token checked against the rest",
 			keys: func(t *testing.T) signingkey.KeySource {
 				signing := newKeySource(t)
-				published, err := signing.VerificationKeys()
+				published, err := signing.VerificationKeys(t.Context())
 				require.NoError(t, err)
 
 				// A source of the consumer's own hands over whatever a
@@ -693,8 +693,8 @@ func TestVerifyErrorClassification(t *testing.T) {
 				// quietly drops what it cannot read would still hold the
 				// signing key, and would answer as though nothing were wrong.
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().Signer(gomock.Any()).DoAndReturn(signing.Signer).AnyTimes()
-				keys.EXPECT().VerificationKeys().Return(append(
+				keys.EXPECT().Signer(gomock.Any(), gomock.Any()).DoAndReturn(signing.Signer).AnyTimes()
+				keys.EXPECT().VerificationKeys(gomock.Any()).Return(append(
 					[]signingkey.PublicKey{{
 						Kid: "unreadable-1",
 						Alg: signingkey.RS256,
@@ -934,7 +934,7 @@ func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 			name: "the refusal costs no key lookup",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().VerificationKeys().Times(0)
+				keys.EXPECT().VerificationKeys(gomock.Any()).Times(0)
 
 				return keys
 			},
@@ -1025,7 +1025,7 @@ type nilKeyVerificationSource struct {
 	key any
 }
 
-func (s nilKeyVerificationSource) VerificationKeys() ([]signingkey.PublicKey, error) {
+func (s nilKeyVerificationSource) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
 	return []signingkey.PublicKey{{Kid: "k-1", Alg: s.alg, Key: s.key}}, nil
 }
 
@@ -1108,7 +1108,7 @@ func TestVerifierReturnedErrors(t *testing.T) {
 				t.Helper()
 
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().VerificationKeys().Return(nil, errKeySourceFixture)
+				keys.EXPECT().VerificationKeys(gomock.Any()).Return(nil, errKeySourceFixture)
 
 				ver, err := token.NewVerifier(token.WithVerifyKeySource(keys), token.WithoutVerifyIssuer(), token.WithoutVerifyAudience())
 				require.NoError(t, err)

@@ -85,7 +85,7 @@ func NewPasskeyCredentialStore(db *sql.DB, c seal.Cipher, opts ...Option) (*Pass
 func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
 	const op = "insert passkey credential"
 
-	args, err := s.insertArgs(c)
+	args, err := s.insertArgs(ctx, c)
 	if err != nil {
 		return failed(op, err)
 	}
@@ -94,8 +94,9 @@ func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credenti
 }
 
 // insertArgs checks c is storable and returns PasskeyCredentialInsert's
-// arguments for it, its emailed code sealed.
-func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error) {
+// arguments for it, its emailed code sealed under ctx, the context of the
+// store method being served.
+func (s *PasskeyCredentialStore) insertArgs(ctx context.Context, c *passkey.Credential) ([]any, error) {
 	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
 		return nil, err
 	}
@@ -118,7 +119,7 @@ func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error
 		attempts  int
 	)
 	if c.EmailCode != nil {
-		sealed, err := s.cipher.Seal([]byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
+		sealed, err := s.cipher.Seal(ctx, []byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +154,7 @@ func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error
 func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
 	const op = "insert passkey credential within a limit"
 
-	args, err := s.insertArgs(c)
+	args, err := s.insertArgs(ctx, c)
 	if err != nil {
 		return false, failed(op, err)
 	}
@@ -265,7 +266,7 @@ func (s *PasskeyCredentialStore) query(ctx context.Context, op, query string, ar
 
 	var out []*passkey.Credential
 	for rows.Next() {
-		c, err := s.scan(rows)
+		c, err := s.scan(ctx, rows)
 		if err != nil {
 			return nil, failed(op, err)
 		}
@@ -278,8 +279,10 @@ func (s *PasskeyCredentialStore) query(ctx context.Context, op, query string, ar
 	return out, nil
 }
 
-// scan reads one credential row, in the column order of the selects.
-func (s *PasskeyCredentialStore) scan(rows *sql.Rows) (*passkey.Credential, error) {
+// scan reads one credential row, in the column order of the selects,
+// opening its emailed code under ctx, the context of the store method being
+// served.
+func (s *PasskeyCredentialStore) scan(ctx context.Context, rows *sql.Rows) (*passkey.Credential, error) {
 	var (
 		c          passkey.Credential
 		user       string
@@ -308,7 +311,7 @@ func (s *PasskeyCredentialStore) scan(rows *sql.Rows) (*passkey.Credential, erro
 	c.State, c.Pending = passkey.State(state), passkey.PendingReason(pending) //nolint:gosec // G115: small enums
 
 	if code.Valid {
-		opened, err := s.open(code.String, c.ID, c.User)
+		opened, err := s.open(ctx, code.String, c.ID, c.User)
 		if err != nil {
 			return nil, err
 		}
@@ -318,13 +321,14 @@ func (s *PasskeyCredentialStore) scan(rows *sql.Rows) (*passkey.Credential, erro
 	return &c, nil
 }
 
-// open opens the emailed code of user's credential cid, stored as text.
-func (s *PasskeyCredentialStore) open(text string, cid id.ID, user identity.UserID) (string, error) {
+// open opens the emailed code of user's credential cid, stored as text,
+// under ctx, the context of the store method being served.
+func (s *PasskeyCredentialStore) open(ctx context.Context, text string, cid id.ID, user identity.UserID) (string, error) {
 	sealed, err := storekit.SecretFromText(text)
 	if err != nil {
 		return "", err
 	}
-	plain, _, err := s.cipher.Open(sealed, seal.PasskeyEmailCodeAAD(cid, user))
+	plain, _, err := s.cipher.Open(ctx, sealed, seal.PasskeyEmailCodeAAD(cid, user))
 	if err != nil {
 		return "", err
 	}
@@ -420,7 +424,7 @@ func (s *PasskeyCredentialStore) ChargeEmailAttempt(
 		return nil, false, err
 	}
 
-	code, err := s.open(text, cid, user)
+	code, err := s.open(ctx, text, cid, user)
 	if err != nil {
 		return nil, false, failed(op, err)
 	}

@@ -122,8 +122,10 @@ func (b *sessionBearer) wire(c *Chain) {
 // then refused before the store is asked, so a stream of junk credentials costs
 // no lookup. Every refusal of the presented reference (format, load, user
 // reload) is recorded against the source; a policy decision about a valid
-// session is not. A request with no claimed Authorization header never reaches
-// the limiter. Everything after
+// session is not, and neither is a dependency failure or a request whose own
+// context ended, which reach no verdict and so do not match
+// ErrAuthenticationRequired. A request with no claimed Authorization header
+// never reaches the limiter. Everything after
 // extraction is the resolution core the signed bearer also runs, so the two
 // modes refuse identically.
 func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
@@ -186,6 +188,10 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 // Unknown references are throttled per source: each refused reference counts
 // against the client address, and a source past its allowance (by default 100
 // per minute) is refused with ErrAuthenticationRequired before any lookup.
+// Only a refusal of the presented reference is counted: a malformed value, and
+// the refusals of steps 2 and 3 below. A dependency failure, a request whose
+// own context ended, and a policy decision about a valid session reached no
+// verdict on the reference, and are not counted.
 // WithSessionBearerLimiter replaces the limiter. A limiter that cannot answer
 // refuses the request (fail closed), and behind a shared address every client
 // counts against one allowance, so configure the framework's trusted-proxy
@@ -206,12 +212,24 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 //     missing, expired or undecryptable one with ErrAuthenticationRequired,
 //     and a superseded one presented after its renewal window with
 //     ErrAuthenticationRequired joined to session.ErrReused, by which
-//     time the manager has revoked the session's family;
+//     time the manager has revoked the session's family. Any other load
+//     failure, a session store or cipher outage, is a dependency failure, not
+//     a refusal: it fails the request with fixed library text, the manager's
+//     error reachable through errors.Is and errors.As, which the default
+//     status mapping answers with 500 and a consumer may answer otherwise
+//     through WithErrorHandler;
 //  3. reloads the user with LoadByUserID on the session's user reference,
-//     never by username, refusing a missing user with
-//     ErrAuthenticationRequired;
+//     never by username, refusing with ErrAuthenticationRequired a user who
+//     no longer exists (identity.ErrUserNotFound), is not the user the session
+//     records, or is not active. Any other reload failure, a user store
+//     outage, is a dependency failure as in step 2, the loader's error
+//     reachable;
 //  4. publishes the caller and the session, and runs the per-request policy
 //     phase as EnableBearerToken does.
+//
+// A request whose own context ended while its session loaded or its user
+// reloaded fails with an error matching that context's error: it is neither
+// refused nor reported as an outage, and nothing is counted against its source.
 //
 // Why opaque: revocation takes effect at the next request, because there is
 // nothing to verify offline; it needs no signing keys; and the store keeps

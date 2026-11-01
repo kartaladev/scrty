@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -255,16 +256,7 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 // It decides from the error, not from ctx alone: a password compared and
 // refused before the caller left is a failed proof like any other.
 func passwordLoadEndedByCaller(ctx context.Context, err error) bool {
-	return errors.Is(err, authenticate.ErrAuthenticationFailed) && loadEndedByCaller(ctx, err)
-}
-
-// loadEndedByCaller reports whether err is the caller's own context ending a
-// load, rather than a dependency failing on its own: ctx has ended, and err
-// matches ctx's error or its cause.
-func loadEndedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil && (errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
+	return errors.Is(err, authenticate.ErrAuthenticationFailed) && hangup.ByCaller(ctx, err)
 }
 
 // refusedByCheck turns a password check's authentication failure into
@@ -380,7 +372,7 @@ func (r *Recoverer) resolveForRecover(ctx context.Context, username string) (*id
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound), err == nil && (details == nil || !details.Active):
 	case err != nil:
-		endedByCaller := loadEndedByCaller(ctx, err)
+		endedByCaller := hangup.ByCaller(ctx, err)
 
 		level := slog.LevelError
 		if endedByCaller {

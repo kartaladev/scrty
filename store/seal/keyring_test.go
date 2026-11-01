@@ -127,7 +127,7 @@ func TestNewKeyring(t *testing.T) {
 			assert: func(t *testing.T, kr seal.Keyring, err error) {
 				require.NoError(t, err)
 
-				id, _, err := kr.Active()
+				id, _, err := kr.Active(t.Context())
 				require.NoError(t, err)
 				assert.Equal(t, "Az09._-"+strings.Repeat("x", 57), id)
 			},
@@ -141,20 +141,20 @@ func TestNewKeyring(t *testing.T) {
 			assert: func(t *testing.T, kr seal.Keyring, err error) {
 				require.NoError(t, err)
 
-				id, key, err := kr.Active()
+				id, key, err := kr.Active(t.Context())
 				require.NoError(t, err)
 				assert.Equal(t, "k2", id)
 				assert.Equal(t, keyTwo, key)
 
-				retired, err := kr.ByID("k1")
+				retired, err := kr.ByID(t.Context(), "k1")
 				require.NoError(t, err)
 				assert.Equal(t, keyOne, retired)
 
-				active, err := kr.ByID("k2")
+				active, err := kr.ByID(t.Context(), "k2")
 				require.NoError(t, err)
 				assert.Equal(t, keyTwo, active)
 
-				_, err = kr.ByID("gone")
+				_, err = kr.ByID(t.Context(), "gone")
 				require.ErrorIs(t, err, seal.ErrUnknownKeyID)
 			},
 		},
@@ -188,22 +188,22 @@ func TestKeyring_CopiesKeys(t *testing.T) {
 
 	configured[1] ^= 0xff // after the ring
 
-	_, key, err := kr.Active()
+	_, key, err := kr.Active(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, keyTwo, key)
 
 	key[2] ^= 0xff // a slice the ring handed out
 
-	_, again, err := kr.Active()
+	_, again, err := kr.Active(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, keyTwo, again)
 
-	byID, err := kr.ByID("k2")
+	byID, err := kr.ByID(t.Context(), "k2")
 	require.NoError(t, err)
 	require.Len(t, byID, len(keyTwo))
 	byID[3] ^= 0xff
 
-	byIDAgain, err := kr.ByID("k2")
+	byIDAgain, err := kr.ByID(t.Context(), "k2")
 	require.NoError(t, err)
 	assert.Equal(t, keyTwo, byIDAgain)
 }

@@ -2,6 +2,7 @@ package token
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
@@ -27,9 +29,17 @@ type Generator interface {
 	// other than the configured one, and rather than issuing one that
 	// identifies nobody: an empty id, a nil principal and a principal with no
 	// username are each refused. No failure here matches ErrInvalid.
+	//
+	// ctx is passed to the key source, which is asked for a signer once for
+	// this token; the signer is never kept. A source that holds no key for the
+	// configured algorithm (signingkey.ErrNoKey) fails it as "no current key
+	// for algorithm", naming the configured one; any other source error, or no
+	// signer at all, fails it as an outage behind fixed library text, never as
+	// a missing key.
 	// A key source's own crypto.Signer failing to sign comes back behind
-	// fixed library text; the signer's own error stays reachable through
-	// errors.Is and errors.As, but its text never is.
+	// fixed library text too. In each case the source's or the signer's own
+	// error stays reachable through errors.Is and errors.As, but its text
+	// never is.
 	Generate(ctx context.Context, id string, p *identity.Principal) (string, error)
 
 	Verifier
@@ -164,7 +174,7 @@ func (g *JWTGenerator) Verify(ctx context.Context, raw string) (*Claims, error) 
 
 // Generate signs a token for p, identified by id, with the key source's current
 // signing key. See Generator.
-func (g *JWTGenerator) Generate(_ context.Context, id string, p *identity.Principal) (string, error) {
+func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Principal) (string, error) {
 	// Never ErrInvalid: that is the verdict on a token a caller
 	// presented, and there is no token here. A consumer mapping
 	// ErrInvalid to "credential refused" must not see this.
@@ -185,11 +195,23 @@ func (g *JWTGenerator) Generate(_ context.Context, id string, p *identity.Princi
 
 	cfg := g.cfg
 
-	kid, signer, ok := cfg.keys.Signer(cfg.alg)
-	if !ok {
+	// Asked for on every token and dropped once it has signed, never kept:
+	// a source may hand back a signer bound to ctx, which is only safe
+	// because nothing here outlives this call.
+	kid, signer, err := cfg.keys.Signer(ctx, cfg.alg)
+	switch {
+	case errors.Is(err, signingkey.ErrNoKey):
 		// Never fall back to another algorithm, and never to an unsigned
 		// token. Keys rotate, so this cannot be a construction check.
-		return "", fmt.Errorf("token: no current key for algorithm %q", cfg.alg)
+		return "", diag.Wrap(err, fmt.Sprintf("token: no current key for algorithm %q", cfg.alg))
+	case err != nil:
+		// The source could not answer. That is an outage, not a missing key,
+		// and its text is the consumer's: kept reachable, never rendered.
+		return "", diag.Wrap(err, textSignerUnavailable)
+	case nilcheck.IsNil(signer):
+		// A source that reports no error and hands over nothing has not
+		// answered either. Signing with it would panic inside the JOSE stack.
+		return "", errSignerUnavailable
 	}
 
 	now := cfg.clock.Now()
@@ -231,6 +253,15 @@ func (g *JWTGenerator) Generate(_ context.Context, id string, p *identity.Princi
 
 	return string(signed), nil
 }
+
+// textSignerUnavailable is the text of a key source that did not answer, whether
+// it failed or handed over no signer.
+const textSignerUnavailable = "token: signing key unavailable"
+
+// errSignerUnavailable is what Generate fails with when the key source
+// reports no error and yet hands over no signer: the same outage, in the same
+// words, as a source that failed to answer.
+var errSignerUnavailable = errors.New(textSignerUnavailable)
 
 var (
 	_ Generator = (*JWTGenerator)(nil)

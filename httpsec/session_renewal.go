@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -42,7 +44,8 @@ const (
 // for every endpoint that issues a credential; a missing or typed-nil
 // required field is refused when the chain is built.
 type SessionRenewalDeps struct {
-	// Sessions rotates the renewed session (session.Sessions.RotateWithGrace),
+	// Sessions rotates the renewed session
+	// (session.Sessions.RotateWithGraceIssuing),
 	// and loads a late one under unused-successor recovery
 	// (session.Sessions.LoadForRenewal).
 	//
@@ -174,17 +177,46 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
-	successor, kind, err := r.sessions.RotateWithGrace(ctx, s, r.grace, r.rotateOptions(ex, s)...)
-	if err != nil {
-		return renewalRefusal(err)
-	}
+	// The successor's credential is issued between building the successor and
+	// writing the supersession, so a credential that cannot be issued
+	// supersedes nothing: the presented one keeps the standing it had, and
+	// presenting it after the window would have ended is not reuse.
+	var issueErr error
 
-	credential, err := r.issue(ctx, successor, principal)
+	successor, kind, credential, err := r.sessions.RotateWithGraceIssuing(ctx, s, r.grace,
+		func(next *session.Session) (string, error) {
+			tok, err := r.issue(ctx, next, principal)
+			issueErr = err
+
+			return tok, err
+		}, r.rotateOptions(ex, s)...)
 	if err != nil {
-		return err
+		return rotationFailure(err, issueErr)
 	}
 
 	return r.respond(ex, RenewalResult{Credential: credential, Session: successor, User: details, Kind: kind})
+}
+
+// rotationFailure is the error a failed rotation answers with, given the
+// issuing step's own error, nil when the step did not fail.
+//
+// An issuing failure is a dependency failure, returned as the issuer returned
+// it, already behind fixed text and marked as an issuing failure
+// (issuingFailure), which StatusForError answers 500: never a refusal,
+// whatever the issuer's error wraps, and nothing was superseded. A refusal
+// of the rotation is answered by refusedRenewal. Anything else, a successor
+// issued only after the grace window had closed included, is the manager's
+// error, a dependency failure behind its fixed text, 500 by default.
+func rotationFailure(err, issueErr error) error {
+	if issueErr != nil {
+		return err
+	}
+
+	if refusal := refusedRenewal(err); refusal != nil {
+		return refusal
+	}
+
+	return err
 }
 
 // admit refuses a renewal of a family that is over its limit, and fails closed
@@ -228,6 +260,14 @@ func (r *sessionRenewal) rotateOptions(ex *Exchange, s *session.Session) []sessi
 // renewing is the session this request renews: the one the chain resolved
 // and published, or, under unused-successor recovery, the late one the
 // resolution core let through for this endpoint alone, loaded for renewal.
+//
+// A late load the request's own context ended, and that reached no refusal,
+// fails with fixed text that matches the context's error, as a hang-up at
+// resolution does, and not with the manager's outage text: nothing failed. A
+// load that reached an authentication-required refusal is refused and
+// charged, whether or not the request has ended by then. A conflict, such as a
+// lost race, is a refusal too but is not charged: it says nothing about the
+// credential's source.
 func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 	if ex.Session != nil && ex.Authentication != nil && ex.Authentication.Principal != nil {
 		return ex.Session, nil
@@ -237,15 +277,30 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 		return nil, ErrAuthenticationRequired
 	}
 
-	s, err := r.sessions.LoadForRenewal(ex.Context(), ex.renewal)
-	if err != nil {
-		refusal := renewalRefusal(err)
+	ctx := ex.Context()
 
-		// A late credential the load refuses as expired, not found or reused is
-		// a failed guess like a refused reference at the bearer, and is counted
-		// against its source. A lost race or a store fault is not.
+	s, err := r.sessions.LoadForRenewal(ctx, ex.renewal)
+	if err != nil {
+		// A verdict wins over a hang-up: a load that reached a refusal is
+		// refused, and charged, even when the request's context has ended
+		// by then. Only a load that reached none is asked whether the
+		// request ended.
+		refusal := refusedRenewal(err)
+		if refusal == nil {
+			if hangup.ByCaller(ctx, err) {
+				return nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
+			}
+
+			return nil, err
+		}
+
+		// Only an authentication-required refusal is charged: a late
+		// credential the load refuses as expired, not found or reused is a
+		// failed guess like a refused reference at the bearer, and is counted
+		// against its source. A conflict (a lost race), a store fault and a
+		// client that left reached no verdict on the credential, and are not.
 		if ex.chargeRenewal != nil && errors.Is(refusal, ErrAuthenticationRequired) {
-			ex.chargeRenewal(ex.Context())
+			ex.chargeRenewal(ctx)
 		}
 
 		return nil, refusal
@@ -257,10 +312,15 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 // user reloads s's user by the reference s records, and refuses unless it is
 // that user and active (ownActiveUser). A late renewal reaches here without
 // the resolution core having checked either, so the check is made here too.
+//
+// A failed reload is answered as at resolution (classifyReload): a user not
+// found is refused, a request whose own context ended fails with that
+// context's error, and any other failure is a dependency failure, 500 by
+// default. None of them rotates anything.
 func (r *sessionRenewal) user(ctx context.Context, s *session.Session) (*identity.Details, *identity.Principal, error) {
 	details, err := r.users.LoadByUserID(ctx, s.UserID)
 	if err != nil {
-		return nil, nil, ErrAuthenticationRequired
+		return nil, nil, classifyReload(ctx, err)
 	}
 
 	if err := ownActiveUser(s, details); err != nil {
@@ -320,15 +380,17 @@ func (r *sessionRenewal) judgeLate(
 	return nil
 }
 
-// renewalRefusal is the refusal a failed load or rotation answers with.
+// refusedRenewal is the refusal a failed load or rotation answers with, and
+// nil when err is no refusal.
 //
 // Reuse stays identifiable beside ErrAuthenticationRequired, so a consumer
 // that rolls its request transaction back on a refusal can tell this is the
 // one it must commit. A lost race is ErrSessionRenewalConflict, a 409, so the
 // client retries with the credential it holds. A missing or ended session is
-// ErrAuthenticationRequired, as at the bearer. Anything else is the manager's
-// error, already behind fixed text.
-func renewalRefusal(err error) error {
+// ErrAuthenticationRequired, as at the bearer. Anything else is no refusal,
+// and the caller answers it with the manager's error, already behind fixed
+// text.
+func refusedRenewal(err error) error {
 	switch {
 	case errors.Is(err, session.ErrReused):
 		return errors.Join(ErrAuthenticationRequired, err)
@@ -339,7 +401,7 @@ func renewalRefusal(err error) error {
 		errors.Is(err, session.ErrUnreadable):
 		return ErrAuthenticationRequired
 	default:
-		return err
+		return nil
 	}
 }
 
@@ -372,21 +434,43 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //
 //  1. refuses a request with no authentication result or no session with
 //     ErrAuthenticationRequired;
-//  2. reloads the session's user with LoadByUserID, refusing a missing one
-//     with ErrAuthenticationRequired;
-//  3. rotates the session with session.Sessions.RotateWithGrace. A
-//     credential renewed again inside its window is re-rotated
-//     (session.RenewalReRotation), so a client that lost a renewal response
-//     can retry with the credential it holds. A lost race with a concurrent
-//     renewal of the same session is refused with ErrSessionRenewalConflict,
-//     a 409, and the client retries with the credential it holds. A renewed
-//     credential presented after its window is reuse: the manager revokes the
-//     session's whole family, and the refusal is ErrAuthenticationRequired
-//     joined to session.ErrReused;
-//  4. issues the successor's credential through the chain's bearer mode: the
+//  2. reloads the session's user with LoadByUserID, refusing with
+//     ErrAuthenticationRequired a user who no longer exists
+//     (identity.ErrUserNotFound), is not the user the session records, or is
+//     not active. Any other reload failure, a user store outage, is a
+//     dependency failure, not a refusal: it fails the request with fixed
+//     library text, the loader's error reachable through errors.Is and
+//     errors.As, which the default status mapping answers with 500 and a
+//     consumer may answer otherwise through WithErrorHandler. A reload the
+//     request's own context ended fails with an error matching that context's
+//     error. Neither rotates anything;
+//  3. rotates the session with session.Sessions.RotateWithGraceIssuing,
+//     issuing the successor's credential through the chain's bearer mode
+//     once the successor is built and before the rotation is stored: the
 //     successor's identifier with EnableSessionBearer on, and a token from
-//     SessionRenewalDeps.Tokens otherwise;
-//  5. hands the result to the responder.
+//     SessionRenewalDeps.Tokens otherwise. A credential renewed again inside
+//     its window is re-rotated (session.RenewalReRotation), so a client that
+//     lost a renewal response can retry with the credential it holds. A lost
+//     race with a concurrent renewal of the same session is refused with
+//     ErrSessionRenewalConflict, a 409, and the client retries with the
+//     credential it holds; the credential issued for the losing successor
+//     names a session that was never stored and is discarded. A renewed
+//     credential presented after its window is reuse: the manager revokes
+//     the session's whole family, and the refusal is
+//     ErrAuthenticationRequired joined to session.ErrReused;
+//  4. hands the result to the responder.
+//
+// A successor credential that cannot be issued, a key source that cannot
+// sign for example, fails the renewal as a dependency failure, not a refusal:
+// the issuer's fixed text, its cause reachable through errors.Is and
+// errors.As, 500 by default. Nothing is stored, superseded or revoked, so the
+// presented credential keeps the standing it had, and presenting it after the
+// grace window would have ended is not reuse. A credential issued only once
+// the grace window has closed is never handed out either: the renewal fails
+// with the manager's fixed text, matching context.DeadlineExceeded, as a
+// dependency failure, and nothing is stored. Neither failure is a refusal, and
+// neither is charged anywhere but to the renewal limit, which counts every
+// attempt.
 //
 // The endpoint sits inside bearer authentication and inside every gate that
 // confines a session, so a session owing a second factor, confined to
@@ -406,6 +490,14 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // per-request policy phase does not allow, and rotates it: while its successor
 // was never presented it is recovered (session.RenewalRecovery); otherwise it
 // is reuse, refused as above with the family revoked.
+//
+// With EnableSessionBearer, a late renewal whose load the endpoint refuses as
+// expired, not found or reused is counted against its source, as a refused
+// reference is at the bearer. One the endpoint renews is not, and neither is
+// one whose load fails as a dependency failure, which is answered with the
+// manager's fixed text and 500 by default, or one whose request's own context
+// ended, which fails with an error matching that context's error: neither
+// reached a verdict on the credential.
 //
 // A renewal reaching the endpoint this way is anonymous to every interceptor
 // between the bearer and the endpoint, so a consumer gate that judges the

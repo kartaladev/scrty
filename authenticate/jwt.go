@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -96,10 +97,28 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // Authenticate verifies the presented token and resolves the caller from its
 // claims.
 //
-// A verification failure is returned as errors.Join(ErrAuthenticationFailed,
-// err), so a caller matches the uniform failure while an operator's log still
-// records which check the token failed. Joining rather than wrapping keeps both
-// matchable without deciding which of the two is the "real" error.
+// A token the verifier rejects, an error matching token.ErrInvalid, is
+// returned as errors.Join(ErrAuthenticationFailed, err), so a caller matches
+// the uniform failure while an operator's log still records which check the
+// token failed. Joining rather than wrapping keeps both matchable without
+// deciding which of the two is the "real" error.
+//
+// A caller whose own context ended while the token was verified, the
+// verifier failing with that context's error or the cause it was cancelled
+// with (context.Cause), is neither refused nor an outage: no verdict was
+// reached, and nothing failed. It is returned behind
+// fixed library text of its own, or as the context's error itself when the
+// verifier returns it bare, matching the context's error either way, and it
+// does not match ErrAuthenticationFailed. It is told by ctx itself, never by
+// the error alone: a key source that times out on a deadline of its own while
+// ctx is still live is an outage.
+//
+// Any other verification error, a key source that could not supply the
+// verification keys above all, is not a refusal: the check never happened. It
+// is returned behind fixed library text, with the verifier's error, and through
+// it the key source's, still reachable through errors.Is and errors.As, and it
+// does not match ErrAuthenticationFailed. A caller that answers it as a
+// refused token sends every client back to authenticate during an outage.
 //
 // A verified token with no subject is refused. A principal with no username
 // satisfies every check that asks only whether someone is authenticated, while
@@ -112,7 +131,14 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 
 	claims, err := a.verifier.Verify(ctx, creds.Token())
 	if err != nil {
-		return nil, errors.Join(ErrAuthenticationFailed, err)
+		if errors.Is(err, token.ErrInvalid) {
+			return nil, errors.Join(ErrAuthenticationFailed, err)
+		}
+		if hangup.ByCaller(ctx, err) {
+			return nil, diag.Wrap(err, textCallerLeftDuringVerification, ctx.Err())
+		}
+
+		return nil, diag.Wrap(err, textVerificationKeysUnavailable)
 	}
 	if claims == nil || claims.Subject() == "" {
 		return nil, ErrAuthenticationFailed
@@ -160,6 +186,15 @@ func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 
 	return generated, nil
 }
+
+// The texts a verification that did not happen is returned with: a key
+// source's own text may name the key it could not reach. A caller that left
+// has text of its own, so a consumer that logs by text does not report it as
+// a key outage.
+const (
+	textVerificationKeysUnavailable  = "authenticate: verification keys unavailable"
+	textCallerLeftDuringVerification = "authenticate: the caller left while the token was verified"
+)
 
 var _ Authenticator = (*JWTAuthenticator)(nil)
 

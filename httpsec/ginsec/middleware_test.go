@@ -473,7 +473,7 @@ func TestGinSelfAnswered(t *testing.T) {
 				t.Helper()
 
 				keys := NewMockKeySetProvider(gomock.NewController(t))
-				keys.EXPECT().JWKS().Return([]byte(`{"keys":[]}`), nil).AnyTimes()
+				keys.EXPECT().JWKS(gomock.Any()).Return([]byte(`{"keys":[]}`), nil).AnyTimes()
 
 				eng := gin.New()
 				eng.Use(ginsec.Middleware(newChain(t, httpsec.EnableJWKSEndpoint(keys))))

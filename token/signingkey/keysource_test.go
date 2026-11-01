@@ -1,6 +1,7 @@
 package signingkey_test
 
 import (
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -36,14 +37,14 @@ func newExternalKeySource(t *testing.T) *externalKeySource {
 	return &externalKeySource{kid: "external-1", signer: private, public: public}
 }
 
-func (s *externalKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (s *externalKeySource) Signer(_ context.Context, alg signingkey.Alg) (string, crypto.Signer, error) {
 	if alg != signingkey.EdDSA {
-		return "", nil, false
+		return "", nil, signingkey.ErrNoKey
 	}
-	return s.kid, s.signer, true
+	return s.kid, s.signer, nil
 }
 
-func (s *externalKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
+func (s *externalKeySource) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
 	return []signingkey.PublicKey{{
 		Kid: s.kid,
 		Alg: signingkey.EdDSA,
@@ -66,13 +67,13 @@ func TestKeySource(t *testing.T) {
 	// issuesAndVerifies is shared: the cases differ only in which
 	// implementation of the port is behind them.
 	issuesAndVerifies := func(t *testing.T, source signingkey.KeySource) {
-		kid, _, ok := source.Signer(signingkey.EdDSA)
-		require.True(t, ok, "the source supplies a signer for EdDSA")
+		kid, _, signerErr := source.Signer(t.Context(), signingkey.EdDSA)
+		require.NoError(t, signerErr, "the source supplies a signer for EdDSA")
 		require.NotEmpty(t, kid)
 
 		token := signWithCurrent(t, source, "issued over the port")
 
-		require.True(t, publishes(source, kid), "the source publishes the key that signed")
+		require.True(t, publishes(t, source, kid), "the source publishes the key that signed")
 		set := publishedSet(t, source)
 		published, found := set.LookupKeyID(kid)
 		require.True(t, found)
@@ -84,8 +85,8 @@ func TestKeySource(t *testing.T) {
 		require.NoError(t, err, "the source's own set verifies what its signer signed")
 		assert.Equal(t, "issued over the port", string(payload))
 
-		_, _, rsOK := source.Signer(signingkey.RS256)
-		assert.False(t, rsOK, "a source reports no signer for an algorithm it does not hold")
+		_, _, signerErr = source.Signer(t.Context(), signingkey.RS256)
+		assert.ErrorIs(t, signerErr, signingkey.ErrNoKey, "a source reports no signer for an algorithm it does not hold")
 	}
 
 	cases := []testCase{

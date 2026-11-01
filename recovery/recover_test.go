@@ -361,6 +361,28 @@ func TestRecoverer_Verify(t *testing.T) {
 			},
 		},
 		{
+			name: "a password load the caller's context ended with a cause is refused, marked, and not counted against the user",
+			setup: func(e *recoverEnv) {
+				e.passwordErr = errors.Join(authenticate.ErrAuthenticationFailed, errCallerLeft)
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerLeft)
+
+				return cctx
+			},
+			req: savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				assert.ErrorIs(t, err, errCallerLeft, "the check's error stays beneath the refusal")
+				assert.True(t, recovery.RefusedAfterValidCode(err),
+					"not marked, so the HTTP layer would not charge the source")
+				assert.Zero(t, e.failures.Load(),
+					"counted against the user's recovery limit, though no password was compared")
+				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]), "the saved code stays redeemable")
+			},
+		},
+		{
 			name: "a refusal naming a cancellation the caller never made is counted against the user",
 			setup: func(e *recoverEnv) {
 				e.passwordErr = errors.Join(authenticate.ErrAuthenticationFailed, context.Canceled)
@@ -684,6 +706,7 @@ func TestRecoverer_Verify(t *testing.T) {
 				assert.NotErrorIs(t, err, authenticate.ErrUnavailable,
 					"the caller leaving was read as the user store failing")
 				nothingSpent(t, e, r)
+				assert.Zero(t, e.failures.Load(), "the caller leaving was counted against the user")
 			},
 		},
 		{

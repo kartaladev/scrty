@@ -347,26 +347,30 @@ func (km *Keys) SupportedAlgs() []Alg {
 	return slices.Clone(km.algs)
 }
 
-// Signer returns the kid and signer currently signing for alg, and whether
-// there is one.
+// Signer returns the kid and signer currently signing for alg, or ErrNoKey
+// when there is none.
 //
 // It answers only for the configured algorithms, so what SupportedAlgs reports
 // and what this hands out are the same set. A shared store may hold keys for
 // other algorithms, written by a replica configured differently; those stay
-// published, and none of them ever signs here.
-func (km *Keys) Signer(alg Alg) (string, crypto.Signer, bool) {
+// published, and asking for any of them returns ErrNoKey: none of them ever
+// signs here.
+//
+// The keys are already in memory, so ctx is not consulted and the answer is the
+// same whatever state it is in. No error other than ErrNoKey is returned.
+func (km *Keys) Signer(_ context.Context, alg Alg) (string, crypto.Signer, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 
 	kid, ok := km.current[alg]
 	if !ok {
-		return "", nil, false
+		return "", nil, ErrNoKey
 	}
 	entry, held := km.keys[kid]
 	if !held {
-		return "", nil, false
+		return "", nil, ErrNoKey
 	}
-	return kid, entry.signer, true
+	return kid, entry.signer, nil
 }
 
 // VerificationKeys returns the public half of every key held, each carrying
@@ -381,8 +385,9 @@ func (km *Keys) Signer(alg Alg) (string, crypto.Signer, bool) {
 // The error is never non-nil here, because a manager already holds its keys
 // and has nothing left to fail at. It is part of the KeySource contract for
 // the sources that do: one backed by a key service answers a request per call
-// and has an outage to report.
-func (km *Keys) VerificationKeys() ([]PublicKey, error) {
+// and has an outage to report. For the same reason ctx is not consulted, and
+// the answer is the same whatever state it is in.
+func (km *Keys) VerificationKeys(_ context.Context) ([]PublicKey, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 
@@ -439,7 +444,10 @@ func (km *Keys) VerificationKeys() ([]PublicKey, error) {
 // verifiers should cache the bytes — as an HTTP cache header, typically — and
 // keep that cache well inside the key lifetime, which is what keeps a replaced
 // key published.
-func (km *Keys) JWKS() ([]byte, error) {
+//
+// It satisfies httpsec.KeySetProvider. ctx is not consulted: the document is
+// rendered from keys already in memory, whatever state the context is in.
+func (km *Keys) JWKS(_ context.Context) ([]byte, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 

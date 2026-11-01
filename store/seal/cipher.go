@@ -1,6 +1,7 @@
 package seal
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"errors"
@@ -24,18 +25,39 @@ import (
 // differs from what Seal was given, and should produce a different value each
 // time it seals the same plaintext.
 //
+// Every method takes the context of the store operation it serves: each
+// sealing store passes the context of the method it is serving, a re-seal on
+// read included, and never substitutes a context or imposes a deadline of its
+// own. An implementation over a remote service, such as a key management
+// service, should honour it, so a request's deadline and cancellation reach
+// the service. Such a service's quotas make a call per seal or open
+// impractical at scale, so an implementation over one is expected to cache,
+// or to use envelope encryption, asking the service for a data key rather
+// than to seal every value. AEADCipher performs no input or output of its
+// own and passes the context on to its Keyring.
+//
+// An implementation that cannot reach its keys marks the failure by wrapping
+// its error with ErrUnavailable, for example errors.Join(ErrUnavailable, err),
+// and leaves a value it judged invalid unmarked: the stores return a marked
+// failure as they return any cipher error, so a caller can tell an outage
+// from ErrDecryptionFailed and ErrUnknownKeyID, and SessionCipher reports it
+// to sessions as session.ErrCipherUnavailable, which a session load treats as
+// a store failure rather than as session.ErrUnreadable. A context error needs
+// no mark: the session store reads it as an outage too. AEADCipher returns
+// its Keyring's errors wrapped, so a Keyring marks an outage the same way.
+//
 //go:generate mockgen -source=cipher.go -package=seal_test -destination=cipher_mock_test.go -typed
 type Cipher interface {
 	// Seal encrypts plaintext under the active key, authenticating aad.
-	Seal(plaintext, aad []byte) ([]byte, error)
+	Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error)
 
 	// Open decrypts sealed, failing unless aad is exactly what Seal was given,
 	// and reports the id of the key that opened it, so a caller can tell a
 	// value sealed under a retired key and re-seal it.
-	Open(sealed, aad []byte) (plaintext []byte, keyID string, err error)
+	Open(ctx context.Context, sealed, aad []byte) (plaintext []byte, keyID string, err error)
 
 	// ActiveKeyID returns the id of the key Seal uses now.
-	ActiveKeyID() (string, error)
+	ActiveKeyID(ctx context.Context) (string, error)
 }
 
 // AEADCipher is the default Cipher: AES-256-GCM over the keys of a Keyring.
@@ -89,9 +111,11 @@ func NewAEADCipher(kr Keyring) (*AEADCipher, error) {
 	return &AEADCipher{kr: kr}, nil
 }
 
-// Seal encrypts plaintext under the active key and returns the envelope.
-func (c *AEADCipher) Seal(plaintext, aad []byte) ([]byte, error) {
-	id, key, err := c.active()
+// Seal encrypts plaintext under the active key and returns the envelope. ctx
+// is passed to the keyring; the cipher itself answers whatever state ctx is
+// in.
+func (c *AEADCipher) Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error) {
+	id, key, err := c.active(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -109,14 +133,16 @@ func (c *AEADCipher) Seal(plaintext, aad []byte) ([]byte, error) {
 	return aead.Seal(header, nil, plaintext, additionalData(header, aad)), nil //nolint:gosec // G407: NewGCMWithRandomNonce generates the nonce, so Seal takes none
 }
 
-// Open decrypts an envelope, reporting the id of the key that opened it.
-func (c *AEADCipher) Open(sealed, aad []byte) ([]byte, string, error) {
+// Open decrypts an envelope, reporting the id of the key that opened it. ctx
+// is passed to the keyring; the cipher itself answers whatever state ctx is
+// in.
+func (c *AEADCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, string, error) {
 	id, header, body, ok := decodeEnvelope(sealed)
 	if !ok {
 		return nil, "", ErrDecryptionFailed
 	}
 
-	key, err := c.kr.ByID(id)
+	key, err := c.kr.ByID(ctx, id)
 	if errors.Is(err, ErrUnknownKeyID) {
 		return nil, id, diag.Wrap(err, "seal: unknown key id: the keyring does not hold the key the value was sealed under",
 			ErrUnknownKeyID)
@@ -138,20 +164,21 @@ func (c *AEADCipher) Open(sealed, aad []byte) ([]byte, string, error) {
 	return plaintext, id, nil
 }
 
-// ActiveKeyID returns the id of the keyring's active key.
-func (c *AEADCipher) ActiveKeyID() (string, error) {
-	id, _, err := c.active()
+// ActiveKeyID returns the id of the keyring's active key, asking the keyring
+// under ctx.
+func (c *AEADCipher) ActiveKeyID(ctx context.Context) (string, error) {
+	id, _, err := c.active(ctx)
 
 	return id, err
 }
 
-// active asks the keyring for its active key, and refuses an id the envelope
-// cannot carry. It is the one place a keyring's active key is checked, so
-// Seal and ActiveKeyID can never disagree about it.
 var _ Cipher = (*AEADCipher)(nil)
 
-func (c *AEADCipher) active() (string, []byte, error) {
-	id, key, err := c.kr.Active()
+// active asks the keyring for its active key under ctx, and refuses an id
+// the envelope cannot carry. It is the one place a keyring's active key is
+// checked, so Seal and ActiveKeyID can never disagree about it.
+func (c *AEADCipher) active(ctx context.Context) (string, []byte, error) {
+	id, key, err := c.kr.Active(ctx)
 	if err != nil {
 		return "", nil, diag.Wrap(err, "seal: the keyring could not provide the active key")
 	}
@@ -338,9 +365,17 @@ type sessionCipher struct {
 //	store, err := session.NewEncryptedStore(inner, seal.SessionCipher(c))
 //
 // The sealing rule for sessions, including the additional data each token is
-// bound to, stays in package session; this adapter only drops the key id Open
-// reports. c's errors are returned unchanged, and the session store answers a
-// token that will not open as session.ErrUnreadable.
+// bound to, stays in package session; this adapter drops the key id Open
+// reports, and passes c the context the session store gives it.
+//
+// An error of c matching ErrUnavailable, from Seal or Open, is reported as
+// session.ErrCipherUnavailable, joined with c's error so ErrUnavailable and
+// its cause still match. The session store answers such an open failure as a
+// store failure rather than as session.ErrUnreadable, so a cipher marks an
+// outage once, with ErrUnavailable, for every store. Every other error of c
+// is returned unchanged: a context error, which the session store also treats
+// as a store failure, and any other, which the session store answers, on an
+// open, as session.ErrUnreadable.
 //
 // A nil c, typed nil included, gives a nil session.Cipher, so
 // session.NewEncryptedStore refuses it with session.ErrConfig instead of the
@@ -353,14 +388,35 @@ func SessionCipher(c Cipher) session.Cipher {
 	return sessionCipher{c: c}
 }
 
-// Seal seals plaintext through the wrapped Cipher.
-func (s sessionCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
-	return s.c.Seal(plaintext, additionalData)
+// Seal seals plaintext through the wrapped Cipher, under ctx, reporting an
+// outage as session.ErrCipherUnavailable.
+func (s sessionCipher) Seal(ctx context.Context, plaintext, additionalData []byte) ([]byte, error) {
+	sealed, err := s.c.Seal(ctx, plaintext, additionalData)
+	if err != nil {
+		return nil, sessionError(err)
+	}
+
+	return sealed, nil
 }
 
-// Open opens ciphertext through the wrapped Cipher, dropping the key id.
-func (s sessionCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
-	plaintext, _, err := s.c.Open(ciphertext, additionalData)
+// Open opens ciphertext through the wrapped Cipher, under ctx, dropping the
+// key id and reporting an outage as session.ErrCipherUnavailable.
+func (s sessionCipher) Open(ctx context.Context, ciphertext, additionalData []byte) ([]byte, error) {
+	plaintext, _, err := s.c.Open(ctx, ciphertext, additionalData)
+	if err != nil {
+		return nil, sessionError(err)
+	}
 
-	return plaintext, err
+	return plaintext, nil
+}
+
+// sessionError reports err, an error of the wrapped Cipher, to the session
+// store: joined with session.ErrCipherUnavailable when it matches
+// ErrUnavailable, and otherwise unchanged.
+func sessionError(err error) error {
+	if errors.Is(err, ErrUnavailable) {
+		return errors.Join(session.ErrCipherUnavailable, err)
+	}
+
+	return err
 }

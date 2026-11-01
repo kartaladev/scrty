@@ -32,8 +32,21 @@ var ErrExpired = errors.New("session: session expired")
 // It is deliberately not ErrNotFound. A key that has been retired out
 // from under live sessions is an operational mistake, and reporting it as a
 // missing session would hide it behind a perfectly ordinary-looking login
-// prompt.
+// prompt. It is never reported for an outage of the cipher (see
+// ErrCipherUnavailable).
 var ErrUnreadable = errors.New("session: session cannot be read")
+
+// ErrCipherUnavailable is the marker a Cipher wraps an outage with: a failure
+// to reach its keys, such as a key management service's timeout, throttling
+// or unavailable key, that says nothing about the value it was asked to open.
+// A cipher marks one by wrapping its error with it, for example
+// errors.Join(ErrCipherUnavailable, err).
+//
+// The sealing store reports an open failure matching it as a store failure
+// wrapping it, never as ErrUnreadable, so an outage does not end the
+// session the way a value that truly does not open does. It matches neither
+// ErrUnreadable nor ErrNotFound.
+var ErrCipherUnavailable = errors.New("session: cipher unavailable")
 
 // ErrRenewalConflict is what a store reports when a supersession lost
 // to another: the session's current successor is no longer the one the caller

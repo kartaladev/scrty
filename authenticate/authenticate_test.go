@@ -1,6 +1,7 @@
 package authenticate_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -128,4 +129,39 @@ func TestAuthenticationContext(t *testing.T) {
 		assert.False(t, ok)
 		assert.Nil(t, got)
 	})
+}
+
+// ctxProbeKey is the key a test stores a value under to tell its own context
+// from any other one a collaborator is handed.
+type ctxProbeKey struct{}
+
+// TestJWTAuthenticator_VerifierReceivesTheCallersContext pins that the
+// verifier is handed the context Authenticate was called with, checked by a
+// value the caller put in it, so the caller's deadline, cancellation and
+// values reach the key source behind the verifier.
+func TestJWTAuthenticator_VerifierReceivesTheCallersContext(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+
+	var got any
+
+	v := NewMockVerifier(ctrl)
+	v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+			got = ctx.Value(ctxProbeKey{})
+
+			return token.NewClaims("ada", tokenID.String()), nil
+		})
+
+	auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(v))
+	require.NoError(t, err)
+
+	creds := NewMockBearerCredentials(ctrl)
+	creds.EXPECT().Token().Return(presentedToken)
+	creds.EXPECT().Cleanup().Return(nil)
+
+	_, err = auth.Authenticate(context.WithValue(t.Context(), ctxProbeKey{}, "callers"), creds)
+	require.NoError(t, err)
+	assert.Equal(t, "callers", got, "the verifier saw another context than the caller's")
 }

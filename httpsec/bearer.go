@@ -8,6 +8,9 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -26,8 +29,10 @@ type bearerToken struct {
 	sessions *session.Sessions
 	users    identity.UserLoader
 
-	// log is the chain's logger, handed over by wire.
-	log *slog.Logger
+	// log is the chain's logger, and sampler the chain's refusal-log sampler,
+	// both handed over by wire.
+	log     *slog.Logger
+	sampler *logsample.Sampler
 
 	// resolver is the resolution core the bearer joins once its token has
 	// verified, built by wire over the bearer's own session manager and user
@@ -44,6 +49,7 @@ type bearerToken struct {
 // applied.
 func (b *bearerToken) wire(c *Chain) {
 	b.log = c.logger
+	b.sampler = c.sampler
 	b.resolver = sessionResolver{
 		sessions: b.sessions,
 		users:    b.users,
@@ -65,13 +71,16 @@ func (b *bearerToken) wire(c *Chain) {
 // the consumer's error handling to decide, and a header written here would be
 // one the consumer cannot take back.
 //
-// A token that fails verification is recorded at debug with the verifier's
-// own text, kept on purpose: it names the check the token failed (expired,
-// wrong signature, wrong audience), which is what an operator chasing a
-// rejected client needs, and it is the library's protocol-failure text rather
-// than a store's. Every other dependency failure is recorded by a fixed reason
-// and its error's Go type, never its text, and a failed save of the session
-// comes back behind fixed text, its error still matching through errors.Is and
+// A token the verifier rejects is recorded at debug with the verifier's own
+// text, kept on purpose: it names the check the token failed (expired, wrong
+// signature, wrong audience), which is what an operator chasing a rejected
+// client needs, and it is the library's protocol-failure text rather than a
+// store's. A token that could not be checked because the verification keys
+// were unavailable is a dependency failure, and one whose request ended while
+// it was verified is a hang-up, neither refused nor an outage (notVerified).
+// Every dependency failure that is recorded is recorded by a fixed reason and
+// its error's Go type, never its text, and every one returned comes back
+// behind fixed text, its error still matching through errors.Is and
 // errors.As. A consumer who wants a store's full error logs it inside their
 // own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
@@ -84,13 +93,7 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 
 	claims, err := b.verifier.Verify(ctx, presented)
 	if err != nil {
-		// Joined rather than wrapped: an operator's log records which check the
-		// token failed, while a caller still matches the one uniform failure.
-		// The cause reaches the record below, never the client.
-		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerNotVerified,
-			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
-
-		return errors.Join(authenticate.ErrAuthenticationFailed, err)
+		return b.notVerified(ex, err)
 	}
 
 	// The session identifier is the token's jti, which is how a token issued at
@@ -101,6 +104,55 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	}
 
 	return next(ex)
+}
+
+// notVerified answers a token the verifier did not accept, with err.
+//
+// Only a token the verifier rejected (token.ErrInvalid) is refused, with
+// authenticate.ErrAuthenticationFailed joined rather than wrapped: an
+// operator's log records which check the token failed, while a caller still
+// matches the one uniform failure. The cause reaches the record, never the
+// client.
+//
+// A request whose own context ended while its token was verified, and whose
+// err is that context's error or the cause it was cancelled with
+// (hangup.ByCaller), is a hang-up: neither a refusal, since no verdict was
+// reached, nor an outage, since nothing failed.
+// It is returned behind fixed text of its own, or as the context's error
+// itself when the verifier returns it bare, matching the context's error
+// either way, and recorded at debug with no error text. It is told by the
+// request's own context, never by err alone: a key source that times out on a
+// deadline of its own while the request still waits is an outage.
+//
+// Anything else, a key source that could not supply the keys above all, is a
+// dependency failure: the check never happened, and answering it as a refused
+// token would send every client back to authenticate during an outage. It is
+// returned behind fixed text with err reachable, which the default status
+// mapping answers with 500, and recorded at ERROR by a fixed reason and err's
+// type, never its text, which a consumer's key source may word with the key it
+// could not reach. The record is sampled per window, since during an outage
+// every request writes one.
+func (b *bearerToken) notVerified(ex *Exchange, err error) error {
+	ctx := ex.Context()
+
+	if errors.Is(err, token.ErrInvalid) {
+		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerNotVerified,
+			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
+
+		return errors.Join(authenticate.ErrAuthenticationFailed, err)
+	}
+
+	if hangup.ByCaller(ctx, err) {
+		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerVerificationEnded)
+
+		return diag.Wrap(err, textVerificationEnded, ctx.Err())
+	}
+
+	logSampled(ctx, b.sampler, b.log, slog.LevelError, b.now(),
+		bearerFlow+sampleKeySeparator+reasonVerificationKeys, msgBearerKeysUnavailable,
+		diag.Failure(reasonVerificationKeys, err)...)
+
+	return diag.Wrap(err, textVerificationKeysUnavailable)
 }
 
 // presented reports the token an Authorization header carries, and whether this
@@ -151,6 +203,25 @@ func presentedCredential(header, scheme string, allowEmptyScheme bool) (string, 
 // because a stream of expired tokens is ordinary traffic.
 const msgBearerNotVerified = "httpsec: a bearer token did not verify" //nolint:gosec // G101: a log message naming what failed, not a credential
 
+// What a bearer token that could not be checked, because the verification keys
+// could not be obtained, is recorded and returned with.
+const (
+	// bearerFlow names the bearer's sampler keys.
+	bearerFlow = "bearer"
+
+	reasonVerificationKeys          = "verification-keys"
+	msgBearerKeysUnavailable        = "httpsec: a bearer token could not be checked; the verification keys are unavailable" //nolint:gosec // G101: a log message naming what failed, not a credential
+	textVerificationKeysUnavailable = "httpsec: verification keys unavailable"
+)
+
+// What a bearer token whose request ended while it was verified is recorded
+// and returned with. The text is its own, so an error handler that logs by
+// text does not report a client that left as a key outage.
+const (
+	msgBearerVerificationEnded = "httpsec: the request ended while its bearer token was verified" //nolint:gosec // G101: a log message naming what happened, not a credential
+	textVerificationEnded      = "httpsec: the request ended while its token was verified"
+)
+
 // BearerTokenDeps are the collaborators bearer authentication is wired to.
 //
 // All three are required. The session manager and the user loader are what make
@@ -178,16 +249,39 @@ type BearerTokenOption func(*bearerToken) error
 // a token presented with no scheme at all is ignored. Requests carrying another
 // scheme, or no Authorization header, pass through untouched.
 //
-// A token that fails verification is recorded at debug with the verifier's own
+// Refusals and failures are kept apart. A token the verifier rejects
+// (token.ErrInvalid) is refused with authenticate.ErrAuthenticationFailed, a
+// 401, joined to the verifier's error. A session that is missing, expired or
+// undecryptable, a superseded identifier presented after its window, and a user
+// who no longer exists, is not the session's or is not active, are refused
+// with ErrAuthenticationRequired, a 401. A failure of a dependency is not a
+// refusal: a verification key source that cannot supply its keys, a session
+// store or cipher outage while the session loads, and a user store outage
+// while the user reloads each fail the request with fixed library text, the
+// dependency's error reachable through errors.Is and errors.As, and matching
+// neither ErrAuthenticationRequired nor authenticate.ErrAuthenticationFailed.
+// The default status mapping answers them with 500; a consumer who wants
+// another answer, 503 with Retry-After for example, matches the cause in the
+// handler given to WithErrorHandler. A request whose own context ended while
+// its session loaded or its user reloaded fails with an error matching that
+// context's error, and is neither refused nor reported as an outage; so does
+// one whose context ended while its token was verified, with fixed text of
+// its own (or the context's error itself, when the verifier returns it bare)
+// and no ERROR record. A verification key source that times out on a
+// deadline of its own while the request is still live is an outage.
+//
+// A token the verifier rejects is recorded at debug with the verifier's own
 // text, kept on purpose: it is the library's own protocol-failure text, not a
 // dependency's, and names the check the token failed (expired, wrong
 // signature, wrong audience), which an operator chasing a rejected client
-// needs. Every other dependency failure — an unreadable session, a failed
-// save while marking a challenge — is recorded by a fixed reason and the
+// needs. A verification key source that cannot supply its keys is recorded at
+// ERROR, sampled per window. That record, and those for an unreadable session
+// and a failed save while marking a challenge, carry a fixed reason and the
 // error's Go type, never its text, and a failed save is returned wrapped in
 // fixed library text, its error still matching through errors.Is and
-// errors.As. A consumer who wants a store's full error logs it inside their
-// own implementation of BearerTokenDeps.
+// errors.As. A consumer who wants a dependency's full error logs it inside
+// their own implementation of the port: the token.Verifier's key source, or
+// the stores and loader of BearerTokenDeps.
 func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 	const option = "EnableBearerToken"
 

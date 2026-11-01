@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,8 @@ func TestSessionBearer(t *testing.T) {
 		wire   func(h *authHarness)
 		assert func(t *testing.T, s served)
 	}
+
+	errUsersDown := errors.New("users: connection refused")
 
 	// refused is a 401 that never ran the handler. The lookups a case allows
 	// are the ones its wire function expects.
@@ -289,9 +292,18 @@ func TestSessionBearer(t *testing.T) {
 				h.store.EXPECT().Load(gomock.Any(), testReference).Return(referencedSession(), nil)
 				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
-					Return(nil, errors.New("users: connection refused"))
+					Return(nil, errUsersDown)
 			},
-			assert: refused,
+			// A dependency failure, not a refusal: an outage of the user store
+			// must not log every caller out.
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				require.ErrorIs(t, s.err, errUsersDown)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: user could not be reloaded", s.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.False(t, s.handlerRan)
+			},
 		},
 	}
 
@@ -1178,12 +1190,38 @@ type loadCountingStore struct {
 	// failErr; loads before it reach the store.
 	failFrom atomic.Int64
 	failErr  error
+
+	// failEach, when set, fails only every other load from failFrom on: the
+	// endpoint's load of each late renewal, the bearer's load before it
+	// reaching the store.
+	failEach bool
+
+	// hangUp, when set, ends the request's context during the failing load,
+	// which then fails with that context's cause, which is its error when it
+	// has no other, as a store does when the client leaves.
+	hangUp context.CancelFunc
+
+	// hangUpVerdict, when set with hangUp, is the verdict the failing load
+	// reached before the request's context ended: the load then fails with
+	// both, as a store does whose refusal's follow-up write the hang-up cut
+	// short.
+	hangUpVerdict error
 }
 
 func (s *loadCountingStore) Load(ctx context.Context, id string) (*session.Session, error) {
 	n := s.loads.Add(1)
 
-	if from := s.failFrom.Load(); from > 0 && n >= from {
+	if from := s.failFrom.Load(); from > 0 && n >= from && (!s.failEach || (n-from)%2 == 0) {
+		if s.hangUp != nil {
+			s.hangUp()
+
+			if s.hangUpVerdict != nil {
+				return nil, errors.Join(s.hangUpVerdict, ctx.Err())
+			}
+
+			return nil, fmt.Errorf("db: %w", context.Cause(ctx))
+		}
+
 		return nil, s.failErr
 	}
 
@@ -1196,6 +1234,31 @@ func (s *loadCountingStore) Load(ctx context.Context, id string) (*session.Sessi
 func (s *loadCountingStore) failEndpointLoad(err error) {
 	s.failErr = err
 	s.failFrom.Store(s.loads.Load() + 2)
+}
+
+// failEndpointLoads makes the endpoint's load of every late renewal from now on
+// fail with err, while the bearer's load before it still reaches the store.
+func (s *loadCountingStore) failEndpointLoads(err error) {
+	s.failErr = err
+	s.failEach = true
+	s.failFrom.Store(s.loads.Load() + 2)
+}
+
+// hangUpAtEndpointLoad makes the client leave during the endpoint's load of
+// the next late renewal: hangUp ends that request's context, and the load
+// fails with the context's error.
+func (s *loadCountingStore) hangUpAtEndpointLoad(hangUp context.CancelFunc) {
+	s.hangUp = hangUp
+	s.failFrom.Store(s.loads.Load() + 2)
+}
+
+// refuseAndHangUpAtEndpointLoad makes the endpoint's load of the next late
+// renewal reach verdict while the client leaves: hangUp ends that request's
+// context, and the load fails with the verdict joined with the context's
+// error.
+func (s *loadCountingStore) refuseAndHangUpAtEndpointLoad(verdict error, hangUp context.CancelFunc) {
+	s.hangUpVerdict = verdict
+	s.hangUpAtEndpointLoad(hangUp)
 }
 
 // failureRecordingLimiter is the default allowance, 100 failures a minute, that
@@ -1282,11 +1345,18 @@ func (l *lateRenewals) superseded(t *testing.T) (string, string) {
 func (l *lateRenewals) renew(t *testing.T, credential string) served {
 	t.Helper()
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+	return l.renewIn(t.Context(), t, credential)
+}
+
+// renewIn is renew on a request whose context is ctx.
+func (l *lateRenewals) renewIn(ctx context.Context, t *testing.T, credential string) served {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
 	req.Header.Set("Authorization", "Bearer "+credential)
 	req.RemoteAddr = sessionReferenceSource + ":51000"
 
-	return serve(t, l.chain, req)
+	return serveIn(ctx, t, l.chain, req)
 }
 
 func (l *lateRenewals) recorded() []string {
@@ -1295,6 +1365,9 @@ func (l *lateRenewals) recorded() []string {
 
 	return append([]string(nil), l.failures...)
 }
+
+// errClientLeftWithCause is the cause a test's request is cancelled with.
+var errClientLeftWithCause = errors.New("the client closed the connection")
 
 // TestSessionBearerLateRenewals pins that, under unused-successor recovery, a
 // late renewal the endpoint refuses is counted against its source like any
@@ -1343,6 +1416,23 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			drive: func(t *testing.T, l *lateRenewals) []served {
 				old, _ := l.superseded(t)
 				l.clk.Advance(8 * 24 * time.Hour)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+
+				failures := l.recorded()
+				require.Len(t, failures, 1)
+				assert.Contains(t, failures[0], sessionReferenceSource)
+			},
+		},
+		{
+			name: "a late renewal refused as not found is recorded once against its source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+				l.store.failEndpointLoad(session.ErrNotFound)
 
 				return []served{l.renew(t, old)}
 			},
@@ -1407,6 +1497,65 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			},
 		},
 		{
+			name: "the client leaves during the endpoint's load",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				ctx, hangUp := context.WithCancel(t.Context())
+				t.Cleanup(hangUp)
+				l.store.hangUpAtEndpointLoad(hangUp)
+
+				return []served{l.renewIn(ctx, t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, context.Canceled)
+				assert.NotErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its session loaded", out[0].err.Error(),
+					"a client that left is not reported as the manager's outage")
+				assert.Empty(t, l.recorded(), "a client that left is not a failed guess")
+			},
+		},
+		{
+			name: "the client leaves with a cause during the endpoint's load",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				ctx, hangUp := context.WithCancelCause(t.Context())
+				t.Cleanup(func() { hangUp(nil) })
+				l.store.hangUpAtEndpointLoad(func() { hangUp(errClientLeftWithCause) })
+
+				return []served{l.renewIn(ctx, t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, context.Canceled)
+				require.ErrorIs(t, out[0].err, errClientLeftWithCause, "the cause stays reachable")
+				assert.NotErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its session loaded", out[0].err.Error(),
+					"a client that left with a cause is not reported as the manager's outage")
+				assert.Empty(t, l.recorded(), "a client that left with a cause is not a failed guess")
+			},
+		},
+		{
+			name: "a reuse verdict wins over a client that leaves during the endpoint's load",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				ctx, hangUp := context.WithCancel(t.Context())
+				t.Cleanup(hangUp)
+				l.store.refuseAndHangUpAtEndpointLoad(session.ErrReused, hangUp)
+
+				return []served{l.renewIn(ctx, t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired, "a verdict was reached")
+				require.ErrorIs(t, out[0].err, session.ErrReused, "and stays identifiable")
+				assert.Len(t, l.recorded(), 1, "a refused late credential is charged, though the client left")
+			},
+		},
+		{
 			name: "a recovered late renewal spends nothing",
 			drive: func(t *testing.T, l *lateRenewals) []served {
 				old, _ := l.superseded(t)
@@ -1428,6 +1577,306 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			l := newLateRenewals(t)
 			out := tc.drive(t, l)
 			tc.assert(t, l, out)
+		})
+	}
+}
+
+// TestLateRenewal_OutageIsNotCharged pins that a late renewal the endpoint
+// cannot load, because the session store fails or the client leaves, is not
+// recorded against its source: 101 of them from one source within a minute are
+// each answered as the failure they are, and none is refused by the guard.
+func TestLateRenewal_OutageIsNotCharged(t *testing.T) {
+	t.Parallel()
+
+	storeDeadline := fmt.Errorf("db: %w", context.DeadlineExceeded)
+
+	type testCase struct {
+		name string
+
+		// fail arms the store before the first late renewal, and renew sends
+		// one late renewal of old.
+		fail  func(l *lateRenewals)
+		renew func(t *testing.T, l *lateRenewals, old string) served
+
+		// each asserts what one late renewal was answered with.
+		each func(t *testing.T, out served)
+	}
+
+	plain := func(t *testing.T, l *lateRenewals, old string) served { return l.renew(t, old) }
+
+	cases := []testCase{
+		{
+			name:  "the session store fails at the endpoint's load",
+			fail:  func(l *lateRenewals) { l.store.failEndpointLoads(errStoreDown) },
+			renew: plain,
+			each: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, errStoreDown)
+			},
+		},
+		{
+			name:  "the session store's own deadline passes at the endpoint's load",
+			fail:  func(l *lateRenewals) { l.store.failEndpointLoads(storeDeadline) },
+			renew: plain,
+			each: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, context.DeadlineExceeded)
+			},
+		},
+		{
+			name: "the client leaves during the endpoint's load",
+			renew: func(t *testing.T, l *lateRenewals, old string) served {
+				ctx, hangUp := context.WithCancel(t.Context())
+				defer hangUp()
+
+				l.store.hangUpAtEndpointLoad(hangUp)
+
+				return l.renewIn(ctx, t, old)
+			},
+			each: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, context.Canceled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			l := newLateRenewals(t)
+			old, _ := l.superseded(t)
+			l.clk.Advance(8 * 24 * time.Hour)
+
+			if tc.fail != nil {
+				tc.fail(l)
+			}
+
+			before := l.store.loads.Load()
+
+			out := make([]served, 0, 101)
+			for range 101 {
+				out = append(out, tc.renew(t, l, old))
+			}
+
+			assert.Empty(t, l.recorded(), "a late renewal that reached no verdict is not a failed guess")
+			assert.Equal(t, before+2*101, l.store.loads.Load(),
+				"every late renewal reached the store twice, so none was refused by the guard")
+
+			for i, o := range out {
+				assert.NotErrorIs(t, o.err, httpsec.ErrAuthenticationRequired, "late renewal %d was refused", i)
+				assert.False(t, o.handlerRan)
+				tc.each(t, o)
+			}
+		})
+	}
+}
+
+// chargeRecorder is the default allowance, 100 failures a minute, that also
+// lists the keys it was charged.
+type chargeRecorder struct {
+	ratelimit.Limiter
+
+	mu      sync.Mutex
+	charged []string
+}
+
+func newChargeRecorder(t *testing.T) *chargeRecorder {
+	t.Helper()
+
+	inner, err := ratelimit.NewMemoryLimiter(100, time.Minute,
+		ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+	require.NoError(t, err)
+
+	return &chargeRecorder{Limiter: inner}
+}
+
+func (l *chargeRecorder) RecordFailure(ctx context.Context, key string) error {
+	l.mu.Lock()
+	l.charged = append(l.charged, key)
+	l.mu.Unlock()
+
+	return l.Limiter.RecordFailure(ctx, key)
+}
+
+func (l *chargeRecorder) recorded() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return append([]string(nil), l.charged...)
+}
+
+// TestSessionReferenceGuard_ChargesRefusalsOnly pins that the session-reference
+// guard records a failure for a refused reference and for nothing else: a
+// session-store or user-store outage reaches no verdict, so 101 presentations
+// from one source during one are each answered as a dependency failure and
+// none is refused by the guard, while an unreadable session, a user who is
+// gone, and a user who is not the session's or not active are each charged.
+func TestSessionReferenceGuard_ChargesRefusalsOnly(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// presentations is how many times the source presents testReference.
+		presentations int
+
+		// wire wires the store and the loader; loads counts the store loads.
+		wire func(h *authHarness, loads *atomic.Int64)
+
+		assert func(t *testing.T, out []served, charged []string, loads int64)
+	}
+
+	// loading wires the store to answer every load of testReference with s
+	// and err, counting them.
+	loading := func(h *authHarness, loads *atomic.Int64, s func() *session.Session, err error) {
+		h.store.EXPECT().Load(gomock.Any(), testReference).AnyTimes().
+			DoAndReturn(func(context.Context, string) (*session.Session, error) {
+				loads.Add(1)
+
+				if s == nil {
+					return nil, err
+				}
+
+				return s(), err
+			})
+		h.acceptsFirstPresentation()
+	}
+
+	reloading := func(h *authHarness, details *identity.Details, err error) {
+		h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).AnyTimes().Return(details, err)
+	}
+
+	// uncharged is a run of presentations none of which the guard refused or
+	// recorded: each reached the store and failed with cause.
+	uncharged := func(cause error) func(t *testing.T, out []served, charged []string, loads int64) {
+		return func(t *testing.T, out []served, charged []string, loads int64) {
+			t.Helper()
+
+			assert.Empty(t, charged, "an outage is not a failed guess")
+			assert.Equal(t, int64(len(out)), loads, "every presentation was looked up: none was refused by the guard")
+
+			for i, s := range out {
+				require.ErrorIs(t, s.err, cause, "presentation %d", i)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired, "presentation %d was refused", i)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+			}
+		}
+	}
+
+	// chargedOnce is one refused presentation, recorded against its source.
+	chargedOnce := func(t *testing.T, out []served, charged []string, _ int64) {
+		t.Helper()
+
+		require.Len(t, out, 1)
+		require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+		assert.False(t, out[0].handlerRan)
+
+		require.Len(t, charged, 1, "a refused reference is a failed guess")
+		assert.Contains(t, charged[0], sessionReferenceSource)
+	}
+
+	cases := []testCase{
+		{
+			name:          "a session store outage spends nothing",
+			presentations: 101,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, nil, errStoreDown)
+			},
+			assert: uncharged(errStoreDown),
+		},
+		{
+			name:          "a user store outage spends nothing",
+			presentations: 101,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, referencedSession, nil)
+				reloading(h, nil, errStoreDown)
+			},
+			assert: uncharged(errStoreDown),
+		},
+		{
+			name:          "an unreadable session is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, nil, session.ErrUnreadable)
+			},
+			assert: chargedOnce,
+		},
+		{
+			name:          "an expired session is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, nil, session.ErrExpired)
+			},
+			assert: chargedOnce,
+		},
+		{
+			name:          "a reused session is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, nil, session.ErrReused)
+			},
+			assert: func(t *testing.T, out []served, charged []string, loads int64) {
+				t.Helper()
+
+				chargedOnce(t, out, charged, loads)
+				assert.ErrorIs(t, out[0].err, session.ErrReused, "the reuse stays matchable")
+			},
+		},
+		{
+			name:          "a user who is gone is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, referencedSession, nil)
+				reloading(h, nil, identity.ErrUserNotFound)
+			},
+			assert: chargedOnce,
+		},
+		{
+			name:          "a user who is not the session's is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, referencedSession, nil)
+
+				other := storedUser()
+				other.ID = "u-2"
+				reloading(h, other, nil)
+			},
+			assert: chargedOnce,
+		},
+		{
+			name:          "a user who is not active is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, referencedSession, nil)
+
+				disabled := storedUser()
+				disabled.Active = false
+				reloading(h, disabled, nil)
+			},
+			assert: chargedOnce,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+			limiter := newChargeRecorder(t)
+
+			var loads atomic.Int64
+			tc.wire(h, &loads)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableSessionBearer(h.sessionBearerDeps(), httpsec.WithSessionBearerLimiter(limiter)),
+			)
+			require.NoError(t, err)
+
+			out := make([]served, 0, tc.presentations)
+			for range tc.presentations {
+				out = append(out, fromReferenceSource(t, chain, sessionReferenceSource, "Bearer "+testReference))
+			}
+
+			tc.assert(t, out, limiter.recorded(), loads.Load())
 		})
 	}
 }

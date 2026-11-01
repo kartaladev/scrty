@@ -11,9 +11,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -585,6 +587,186 @@ func TestSessionRenewal_SignedTokenMode(t *testing.T) {
 	assert.Equal(t, identity.UserID("u-1"), stored.UserID)
 }
 
+// errSigningUnavailable stands for a key source that cannot sign: what a
+// generator reports when its signer fails.
+var errSigningUnavailable = errors.New("session_renewal_test: kms unreachable at 10.0.0.7")
+
+// TestSessionRenewal_IssueFailureDoesNotLaterReadAsReuse pins that a renewal
+// whose successor credential is never handed out supersedes nothing: the
+// presented credential keeps the standing it had, so presenting it after the
+// grace window would have ended is neither reuse nor a family revocation.
+//
+// Each row's first renewal fails differently; every row then moves the clock
+// to 31 seconds after that renewal, past the 30-second grace, and presents
+// the same credential again, which must still authenticate and renew.
+func TestSessionRenewal_IssueFailureDoesNotLaterReadAsReuse(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name string
+		// ctx modifies the first renewal's request context; nil leaves it.
+		ctx func(t *testing.T, ctx context.Context) context.Context
+		// issue is what the generator does for the first renewal.
+		issue  func(ctx context.Context, clk *clockwork.FakeClock) (string, error)
+		assert func(t *testing.T, out served)
+	}
+
+	dependencyFailure := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.Error(t, out.err)
+		assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "an outage is not a refusal")
+		assert.NotErrorIs(t, out.err, session.ErrReused)
+		assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+		assert.NotContains(t, out.err.Error(), "10.0.0.7", "a dependency's text stays out of the error")
+		assert.False(t, out.handlerRan)
+	}
+
+	cases := []testCase{
+		{
+			name: "the generator fails",
+			issue: func(context.Context, *clockwork.FakeClock) (string, error) {
+				return "", errSigningUnavailable
+			},
+			assert: func(t *testing.T, out served) {
+				dependencyFailure(t, out)
+				require.ErrorIs(t, out.err, errSigningUnavailable, "the cause stays reachable")
+			},
+		},
+		{
+			name: "the generator signs only after the window has closed",
+			issue: func(_ context.Context, clk *clockwork.FakeClock) (string, error) {
+				clk.Advance(31 * time.Second)
+
+				return "signed-too-late", nil
+			},
+			assert: func(t *testing.T, out served) {
+				dependencyFailure(t, out)
+				require.ErrorIs(t, out.err, context.DeadlineExceeded, "the cause stays reachable")
+				assert.NotContains(t, out.rec.Body.String(), "signed-too-late",
+					"a credential issued after the window is never handed out")
+			},
+		},
+		{
+			name: "the request's own deadline ends while the generator signs past the window",
+			ctx: func(t *testing.T, ctx context.Context) context.Context {
+				t.Helper()
+
+				ctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+				t.Cleanup(cancel)
+
+				return ctx
+			},
+			issue: func(ctx context.Context, clk *clockwork.FakeClock) (string, error) {
+				<-ctx.Done()
+				clk.Advance(31 * time.Second)
+
+				return "signed-too-late", nil
+			},
+			assert: func(t *testing.T, out served) {
+				dependencyFailure(t, out)
+				assert.NotContains(t, out.rec.Body.String(), "signed-too-late",
+					"a credential issued after the window is never handed out")
+			},
+		},
+		{
+			name: "the generator's error wraps the session package's not-found sentinel",
+			issue: func(context.Context, *clockwork.FakeClock) (string, error) {
+				return "", fmt.Errorf("kms adapter: %w", session.ErrNotFound)
+			},
+			assert: func(t *testing.T, out served) {
+				dependencyFailure(t, out)
+				require.ErrorIs(t, out.err, session.ErrNotFound, "the cause stays reachable")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			clk := clockwork.NewFakeClockAt(start)
+
+			var reused atomic.Int32
+
+			sessions, err := session.New(session.WithClock(clk),
+				session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))),
+				session.WithReuseObserver(func(context.Context, session.ReuseReport) { reused.Add(1) }))
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			verifier := NewMockVerifier(ctrl)
+			verifier.EXPECT().Verify(gomock.Any(), "signed-old").
+				Return(token.NewClaims(testSubject, s.ID), nil).AnyTimes()
+
+			users := NewMockUserLoader(ctrl)
+			users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil).AnyTimes()
+			users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+
+			var issued atomic.Int32
+
+			tokens := NewMockGenerator(ctrl)
+			tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(ctx context.Context, _ string, _ *identity.Principal) (string, error) {
+					if issued.Add(1) == 1 {
+						return tc.issue(ctx, clk)
+					}
+
+					return "signed-new", nil
+				})
+
+			chain, err := httpsec.New(
+				httpsec.WithClock(clk),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: verifier, Sessions: sessions, Users: users}),
+				httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: sessions, Users: users, Tokens: tokens}),
+			)
+			require.NoError(t, err)
+
+			renew := func(ctx context.Context) served {
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+				req.Header.Set("Authorization", "Bearer signed-old")
+
+				return serveIn(ctx, t, chain, req)
+			}
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(t, ctx)
+			}
+
+			tc.assert(t, renew(ctx))
+
+			old, err := sessions.Load(t.Context(), s.ID)
+			require.NoError(t, err, "the presented session is untouched")
+			assert.True(t, old.SupersededAt.IsZero(), "nothing was superseded")
+
+			if late := start.Add(31 * time.Second).Sub(clk.Now()); late > 0 {
+				clk.Advance(late)
+			}
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/me", nil)
+			req.Header.Set("Authorization", "Bearer signed-old")
+			authenticatedRequest(t, serve(t, chain, req))
+
+			out := renew(t.Context())
+			require.NoError(t, out.err, "the same credential still renews")
+			require.Equal(t, http.StatusOK, out.rec.Code)
+
+			var body loginBody
+			require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &body))
+			assert.Equal(t, "signed-new", body.AccessToken)
+
+			assert.Zero(t, reused.Load(), "no reuse is reported")
+		})
+	}
+}
+
 // barrierStore holds the first two supersessions until both have arrived, so
 // two renewals that both loaded the same session race on the store's
 // conditional write.
@@ -989,7 +1171,7 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	users := NewMockUserLoader(gomock.NewController(t))
 	gomock.InOrder(
 		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
-		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, errors.New("removed")),
+		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, identity.ErrUserNotFound),
 	)
 
 	chain, err := httpsec.New(
@@ -1008,6 +1190,87 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	stored, err := sessions.Load(t.Context(), s.ID)
 	require.NoError(t, err)
 	assert.True(t, stored.SupersededAt.IsZero(), "a removed user's session was not rotated")
+}
+
+// TestSessionRenewal_UserReloadOutageIsNotARefusal pins that the renewal
+// endpoint's own user reload answers a user-store outage as a dependency
+// failure, behind fixed text with the loader's error reachable and a 500 by
+// default, and a user not found, wrapped by the loader, as a refusal; neither
+// rotates the session.
+func TestSessionRenewal_UserReloadOutageIsNotARefusal(t *testing.T) {
+	t.Parallel()
+
+	dbDown := errors.New("db down")
+
+	type testCase struct {
+		name string
+
+		// reloadErr is what the endpoint's reload fails with; the bearer's
+		// reload before it succeeds.
+		reloadErr error
+
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:      "the user store is down",
+			reloadErr: dbDown,
+			assert: func(t *testing.T, out served) {
+				t.Helper()
+
+				require.Error(t, out.err)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out.err, dbDown, "the loader's error stays reachable")
+				assert.Equal(t, "httpsec: user could not be reloaded", out.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			name:      "a user not found, wrapped by the loader, is a refusal",
+			reloadErr: fmt.Errorf("db: %w", identity.ErrUserNotFound),
+			assert:    refusedUnauthenticated,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+			sessions, err := session.New(
+				session.WithClock(clk),
+				session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))),
+			)
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			users := NewMockUserLoader(gomock.NewController(t))
+			gomock.InOrder(
+				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
+				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, tc.reloadErr),
+			)
+
+			chain, err := httpsec.New(
+				httpsec.WithClock(clk),
+				httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+				httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: sessions, Users: users}),
+			)
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+			req.Header.Set("Authorization", "Bearer "+s.ID)
+
+			tc.assert(t, serve(t, chain, req))
+
+			stored, err := sessions.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			assert.True(t, stored.SupersededAt.IsZero(), "nothing was rotated")
+		})
+	}
 }
 
 // TestRenewal_RefusesDisabledUser pins that the renewal endpoint renews only
@@ -1449,7 +1712,7 @@ func TestSessionRenewalThrottle_RemovedUserIsNotCharged(t *testing.T) {
 	users := NewMockUserLoader(ctrl)
 	gomock.InOrder(
 		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
-		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, errors.New("removed")),
+		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, identity.ErrUserNotFound),
 	)
 
 	limiter := NewMockLimiter(ctrl)

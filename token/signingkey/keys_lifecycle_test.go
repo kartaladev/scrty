@@ -247,7 +247,7 @@ func (f *lifecycleFixture) rotatedFrom(t *testing.T, was string) bool {
 
 	deadline := time.Now().Add(parkTimeout)
 	for time.Now().Before(deadline) {
-		if kid, _, ok := f.km.Signer(signingkey.EdDSA); ok && kid != was {
+		if kid, _, signerErr := f.km.Signer(t.Context(), signingkey.EdDSA); signerErr == nil && kid != was {
 			return true
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -530,7 +530,7 @@ func TestKeys_ServedAfterShutdown(t *testing.T) {
 	goleak.VerifyNone(t, ignore)
 
 	held := currentKid(t, km, signingkey.EdDSA)
-	require.True(t, publishes(km, held), "the held key is still published")
+	require.True(t, publishes(t, km, held), "the held key is still published")
 	writes := store.writeCount()
 
 	issuer, err := token.NewGenerator(km, token.WithClock(newClock()), token.WithSigningAlg(signingkey.EdDSA),
@@ -551,7 +551,7 @@ func TestKeys_ServedAfterShutdown(t *testing.T) {
 	}
 	assert.Equal(t, held, currentKid(t, km, signingkey.EdDSA), "no rotation after shutdown")
 	assert.Equal(t, writes, store.writeCount(), "and no store write")
-	assert.True(t, publishes(km, held), "the held key is still published")
+	assert.True(t, publishes(t, km, held), "the held key is still published")
 }
 
 // TestLifecycleLoopsRunOnTheClock drives the background loops through a
@@ -650,8 +650,8 @@ func waitForRotation(t *testing.T, km *signingkey.Keys, alg signingkey.Alg, was 
 
 	var replacement string
 	require.Eventually(t, func() bool {
-		kid, _, ok := km.Signer(alg)
-		if ok && kid != was {
+		kid, _, signerErr := km.Signer(t.Context(), alg)
+		if signerErr == nil && kid != was {
 			replacement = kid
 			return true
 		}
@@ -694,7 +694,7 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 				second := waitForRotation(t, km, signingkey.EdDSA, first)
 				require.NotEqual(t, first, second, "a real interval rotates")
 
-				assert.Eventually(t, func() bool { return !publishes(km, first) },
+				assert.Eventually(t, func() bool { return !publishes(t, km, first) },
 					10*time.Second, 5*time.Millisecond,
 					"and a real interval stops publishing the replaced key once it is past its lifetime")
 			},
@@ -716,10 +716,10 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 				)
 				require.NoError(t, err)
 				written := currentKid(t, other, signingkey.ES256)
-				require.False(t, publishes(km, written), "this replica has not reloaded yet")
+				require.False(t, publishes(t, km, written), "this replica has not reloaded yet")
 
 				require.NoError(t, km.Start(t.Context()))
-				assert.Eventually(t, func() bool { return publishes(km, written) },
+				assert.Eventually(t, func() bool { return publishes(t, km, written) },
 					2*time.Second, 5*time.Millisecond,
 					"a real interval reloads the key the other replica wrote")
 			},
@@ -740,7 +740,7 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 			tc.assert(t, km, store)
 
 			require.NoError(t, km.Shutdown(t.Context()))
-			assert.True(t, publishes(km, currentKid(t, km, signingkey.EdDSA)),
+			assert.True(t, publishes(t, km, currentKid(t, km, signingkey.EdDSA)),
 				"whatever is current when Shutdown returns is still published")
 			goleak.VerifyNone(t, ignore)
 		})
@@ -805,7 +805,7 @@ func TestRestartedManager(t *testing.T) {
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, sole signingkey.Record) {
 				assert.Equal(t, sole.Kid, currentKid(t, km, signingkey.RS256),
 					"the newest key of a configured algorithm is current whatever its age")
-				assert.True(t, publishes(km, sole.Kid), "and it is published")
+				assert.True(t, publishes(t, km, sole.Kid), "and it is published")
 
 				recs, err := store.LoadAll(t.Context())
 				require.NoError(t, err)
@@ -819,10 +819,10 @@ func TestRestartedManager(t *testing.T) {
 				return []signingkey.Record{old, realRecord(t, epoch)}, old
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, old signingkey.Record) {
-				published, err := km.VerificationKeys()
+				published, err := km.VerificationKeys(t.Context())
 				require.NoError(t, err)
 				t.Logf("published keys after restart: %d", len(published))
-				assert.False(t, publishes(km, old.Kid),
+				assert.False(t, publishes(t, km, old.Kid),
 					"a non-current key past its lifetime is not published, with no housekeeping run")
 				assert.Len(t, published, 1, "only the current key is published")
 			},

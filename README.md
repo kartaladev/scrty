@@ -97,6 +97,20 @@ the destination to send the user on to. A consumer who conveys the login another
 backend-for-frontend, say) replaces this whole step with `httpsec.WithOIDCCallbackSuccess`, and no
 handoff code is issued.
 
+### The order a credential is issued in
+
+Everywhere the chain hands out a credential (form login and the other first factors, magic-link and
+OIDC handoff redemption, session renewal, re-proof, and account recovery), it issues the credential
+before it stores a session or spends anything: the session is built and marked, the credential is
+issued, the session is stored in one write, and only then is the credential handed out. A credential
+that cannot be issued (a key source that is down, a generator that fails) is a dependency failure,
+never a refusal, and is not counted as a failed guess. It stores nothing, supersedes nothing and
+spends nothing: a login stores no session that nobody holds, a renewal leaves the presented
+credential with the standing it had (it is not later read as reuse), and a one-time code or link
+stays usable. The one exception is a passkey login's challenge, which any attempt spends. Your own
+code follows the same order through `session.Sessions.Prepare` and
+`session.Prepared.Commit` (`CreateIssuing` and `RotateWithGraceIssuing` wrap it).
+
 ### Logout
 
 `httpsec.EnableLogout` on the same chain, with no `LogoutDeps.EndSession` of its own, automatically
@@ -417,6 +431,15 @@ confinement pattern (above). `EnableAccountRecovery` fails construction without 
   session — the recovery minted it for this caller already.
 
 Passkey registration (see [Passkeys](#passkeys)) is a third binding route.
+
+A recovery issues the recovery session's access token before it spends anything, and stores the
+session, already recovery-pending, as the last step. A token generator that fails is a dependency
+failure, not a refusal: the proofs stay unspent, nothing is removed, ended or replaced, no source or
+user is charged, a held recovery stays pending, and the same request succeeds once the generator
+does. The core's own hook is `recovery.WithCredentialIssuer`, optional on a bare `recovery`
+recoverer (the result then carries no credential, and issuing one afterwards costs the user the
+spent proofs if it fails); the chain supplies its own, which replaces one passed through
+`httpsec.WithRecoveryCore`.
 
 ### The MFA reset kind
 

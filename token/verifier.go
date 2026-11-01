@@ -179,7 +179,7 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 		return nil, fmt.Errorf("%w: not a canonical compact JWS", ErrInvalid)
 	}
 
-	keys, err := c.keys.VerificationKeys()
+	keys, err := c.keys.VerificationKeys(ctx)
 	if err != nil {
 		// Not a rejection of the token: the keys could not be obtained. This
 		// deliberately does not match ErrInvalid, so a key-service

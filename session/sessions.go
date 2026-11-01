@@ -280,56 +280,17 @@ func (m *Sessions) newIdentifier() (string, error) {
 // leave a live session that has forgotten which factor established it or which
 // provider it came from. Options run after the creation time and deadlines are
 // set, so an option may read them, as WithSecondFactorAtLogin does.
+//
+// Create runs no step of the caller's between building the session and
+// storing it; Prepare and Prepared.Commit split the two, and CreateIssuing
+// runs an issuing step between them.
 func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
-	id, err := m.newIdentifier()
+	p, err := m.Prepare(user, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	family, err := m.families.NewID()
-	if err != nil {
-		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
-	}
-	if family.IsZero() {
-		return nil, fmt.Errorf("%w: the family identifier generator returned the nil identifier", ErrConfig)
-	}
-
-	now := m.clock.Now()
-	s := &Session{
-		ID:                id,
-		UserID:            user,
-		CreatedAt:         now,
-		LastAccessedAt:    now,
-		IdleExpiresAt:     now.Add(m.idleTimeout),
-		AbsoluteExpiresAt: now.Add(m.absoluteTimeout),
-		FamilyID:          family,
-		FamilyCreatedAt:   now,
-		// A sign-in is an authentication. Set before the options, so a
-		// consumer's option may still choose another time.
-		AuthenticatedAt: now,
-	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(s)
-		}
-	}
-
-	// The lifetime is read back from the deadline the options left, so a
-	// WithAbsoluteLifetime and any consumer option that sets the deadline are
-	// judged the same way, before anything is stored.
-	if lifetime := s.AbsoluteExpiresAt.Sub(s.CreatedAt); lifetime <= 0 || lifetime > m.maxLifetime {
-		return nil, fmt.Errorf("%w: absolute lifetime %s is outside 0 to the maximum %s",
-			ErrConfig, lifetime, m.maxLifetime)
-	}
-	if s.IdleExpiresAt.After(s.AbsoluteExpiresAt) {
-		s.IdleExpiresAt = s.AbsoluteExpiresAt
-	}
-
-	if err := m.store.Create(ctx, s); err != nil {
-		return nil, storeFailed(err, "session: the session could not be created")
-	}
-
-	return s, nil
+	return p.Commit(ctx)
 }
 
 // Load returns the session with this identifier.
@@ -698,7 +659,11 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // A session the store no longer holds, or that is past either deadline, is
 // refused with the store's sentinel, as itself, and nothing is written:
 // rotation is a move, not a way to bring a revoked session back under a fresh
-// handle.
+// handle. A session whose family has ended under this manager's family
+// maximum is refused with ErrExpired as well, even when the record's own
+// deadlines are later, as they are when this manager's family maximum is lower
+// than the one the session was created under: another manager sharing the
+// store, or this one before a deploy lowered it.
 //
 // Which of two racing rotations of one session wins — two Rotates, or a Rotate
 // and a RotateWithGrace, through one manager or through managers sharing one
@@ -766,8 +731,9 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 // the supersession after it, a lost race or a store failure, is refused as
 // Rotate refuses it; the credential issue returned names a successor that was
 // never stored, so it authenticates nothing and the caller discards it with
-// the error. A refusal decided before the successor is built, a gone session
-// or a lost race already visible in the stored record, never calls issue.
+// the error. A refusal decided before the successor is built, a gone session,
+// a family already ended under this manager's family maximum or a lost race
+// already visible in the stored record, never calls issue.
 //
 // issue is handed the successor as it will be stored, which is also the
 // session returned, and must not modify it. It runs while this manager holds
@@ -779,6 +745,16 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 // the in-flight window, the renewal conflict for a lost race through any
 // manager sharing the store, the deadlines and family carried over. s is not
 // modified.
+//
+// The family's end is checked twice. A family that has already ended when the
+// rotation starts, that is, when the manager's clock is not before the family's
+// end under its family maximum, is refused with ErrExpired before the step
+// runs, even if the session's own deadlines are later, as they are when this
+// manager's family maximum is lower than the one the session was created
+// under. A step that
+// succeeds only once the family has ended, by the clock read after the step,
+// stores nothing and supersedes nothing: the rotation fails with ErrExpired
+// and returns no credential.
 //
 // The in-flight window (AcceptUntil and RetainUntil) is counted from the
 // instant the manager read its clock before the step ran, not from the moment
@@ -813,6 +789,13 @@ func (m *Sessions) RotateIssuing(
 		return nil, "", err
 	}
 
+	// The family maximum bounds every rotation, so a family already past its
+	// end under this manager's maximum is refused before any step runs,
+	// whatever deadline the record itself still carries.
+	if !now.Before(m.familyEnd(stored)) {
+		return nil, "", ErrExpired
+	}
+
 	id, err := m.newIdentifier()
 	if err != nil {
 		return nil, "", err
@@ -840,6 +823,13 @@ func (m *Sessions) RotateIssuing(
 	if issue != nil {
 		if tok, err = issue(rotated); err != nil {
 			return nil, "", err
+		}
+
+		// A step that outlived the family would have a successor stored for
+		// a family that has ended, so nothing is written and the rotation is
+		// refused as expired.
+		if !m.clock.Now().Before(m.familyEnd(stored)) {
+			return nil, "", ErrExpired
 		}
 	}
 

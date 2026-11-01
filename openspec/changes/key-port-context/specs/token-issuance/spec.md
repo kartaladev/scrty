@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Issuing requires a key and a valid lifetime
-Constructing a generator with a lifetime shorter than one second, or not a whole number of seconds, SHALL fail, because expiry is recorded in whole seconds. Constructing a generator whose lifetime is longer than the key source's key lifetime minus its rotation interval SHALL fail with a configuration error, when the key source reports both. Issuing when no key is current for the configured algorithm SHALL return an error and SHALL NOT produce a token.
+Constructing a generator with a lifetime shorter than one second, or not a whole number of seconds, SHALL fail, because expiry is recorded in whole seconds. Constructing a generator whose lifetime is longer than the key source's key lifetime minus its rotation interval SHALL fail with a configuration error, when the key source reports both. Issuing when no key is current for the configured algorithm SHALL return an error whose text names the algorithm, and SHALL NOT produce a token.
 
 Issuing SHALL pass its context to the key source. When the key source cannot answer, issuing SHALL return an error that wraps the source's error behind fixed text, SHALL NOT report it as a missing key, and SHALL NOT produce a token.
 
@@ -18,6 +18,7 @@ Issuing SHALL pass its context to the key source. When the key source cannot ans
 #### Scenario: No key for the algorithm
 - **WHEN** a generator configured for EdDSA issues a token over a key source holding only RS256 keys
 - **THEN** issuing returns an error and no token
+- **AND** the error's text names `EdDSA`
 
 #### Scenario: Sub-second lifetime
 - **WHEN** a generator is constructed with a 500-millisecond lifetime

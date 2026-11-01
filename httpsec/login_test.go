@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1555,10 +1556,11 @@ func TestFormLoginSequence(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectAuthenticated(testPrincipal())
 				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
-				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(nil)
+				// The mark is in the one write that creates the session: no
+				// Save is expected, so one fails the test.
 				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
 					Return("issued-token", nil)
+				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 			},
 			assert: func(t *testing.T, _ *authHarness, s served) {
 				var ch *httpsec.ChallengeError
@@ -1593,6 +1595,118 @@ func TestFormLoginSequence(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, h, serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")))
+		})
+	}
+}
+
+// TestFormLogin_TokenCannotBeIssued pins that a login whose token cannot be
+// issued, because the key source behind the generator cannot sign, costs
+// nobody anything: no session is stored, nothing is recorded against the
+// source or the user, and the request fails as a dependency failure, not as
+// a refusal.
+//
+// Not rows of TestFormLoginSequence: it runs over a real store and a counting
+// source limiter, to read what was stored and charged.
+func TestFormLogin_TokenCannotBeIssued(t *testing.T) {
+	t.Parallel()
+
+	errSigning := errors.New("login_test: kms unreachable at 10.0.0.7")
+
+	// outcome is what a login whose token cannot be issued left behind.
+	type outcome struct {
+		out    served
+		stored int
+		// charged counts what was recorded against the source, failed what was
+		// recorded against the user.
+		charged, failed int32
+	}
+
+	// dependencyFailure asserts what holds however the login was decided.
+	dependencyFailure := func(t *testing.T, got outcome) {
+		t.Helper()
+
+		require.Error(t, got.out.err)
+		require.ErrorIs(t, got.out.err, errSigning, "the generator's error stays reachable")
+		assert.NotErrorIs(t, got.out.err, authenticate.ErrAuthenticationFailed, "an outage is not a refusal")
+		assert.NotErrorIs(t, got.out.err, httpsec.ErrAuthenticationRequired, "an outage is not a refusal")
+		assert.NotContains(t, got.out.err.Error(), "10.0.0.7")
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(got.out.err))
+		assert.Empty(t, got.out.rec.Body.String(), "no token is written")
+		assert.False(t, got.out.handlerRan)
+		assert.Zero(t, got.stored, "no session is stored for a token that was never issued")
+		assert.Zero(t, got.charged, "nothing is recorded against the source")
+		assert.Zero(t, got.failed, "nothing is recorded against the user")
+	}
+
+	type testCase struct {
+		name   string
+		opts   []httpsec.Option
+		assert func(t *testing.T, got outcome)
+	}
+
+	cases := []testCase{
+		{
+			name:   "an allowed login",
+			assert: dependencyFailure,
+		},
+		{
+			name: "a login the policy challenges",
+			opts: []httpsec.Option{
+				httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA)),
+				httpsec.EnableGateForTest(policy.ChallengeMFA),
+			},
+			assert: func(t *testing.T, got outcome) {
+				dependencyFailure(t, got)
+
+				var ch *httpsec.ChallengeError
+				assert.NotErrorAs(t, got.out.err, &ch, "no challenge hands out a credential")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+			sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
+			require.NoError(t, err)
+			h.sessions = sessions
+
+			var charged, failed atomic.Int32
+
+			limiter := NewMockLimiter(gomock.NewController(t))
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(context.Context, string) error {
+					charged.Add(1)
+
+					return nil
+				})
+
+			h.expectAuthenticated(testPrincipal())
+			h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil).AnyTimes()
+			h.attempts.EXPECT().RecordFailure(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(context.Context, string, time.Time) error {
+					failed.Add(1)
+
+					return nil
+				})
+			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return("", errSigning)
+
+			chain, err := httpsec.New(append([]httpsec.Option{
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableFormLogin(h.formLoginDeps(), httpsec.WithLoginLimiter(limiter)),
+			}, tc.opts...)...)
+			require.NoError(t, err)
+
+			out := serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret"))
+
+			n, err := sessions.CountActiveByUser(t.Context(), testPrincipal().ID)
+			require.NoError(t, err)
+
+			tc.assert(t, outcome{out: out, stored: n, charged: charged.Load(), failed: failed.Load()})
 		})
 	}
 }

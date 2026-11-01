@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -121,7 +122,7 @@ func (r *Recoverer) resolveForStart(ctx context.Context, username string) (*iden
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgStartUnknown)
 	case err != nil:
 		level := slog.LevelError
-		if causedByCaller(ctx, err) {
+		if hangup.ByCaller(ctx, err) {
 			level = slog.LevelDebug
 		}
 

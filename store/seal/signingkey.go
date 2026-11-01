@@ -89,7 +89,7 @@ func NewSigningKeyStore(
 
 // Store seals the private material of a copy of rec and stores the copy.
 func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) error {
-	sealed, err := s.cipher.Seal(rec.Private, SigningKeyAAD(rec.Kid))
+	sealed, err := s.cipher.Seal(ctx, rec.Private, SigningKeyAAD(rec.Kid))
 	if err != nil {
 		return diag.Wrap(err, "seal: the signing key's private material could not be sealed")
 	}
@@ -112,14 +112,14 @@ func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, err
 	recs := make([]signingkey.Record, len(loaded))
 	copy(recs, loaded)
 
-	active, reseal := s.activeKeyForReseal()
+	active, reseal := s.activeKeyForReseal(ctx)
 
 	// stale holds the records that opened under a key other than the active
 	// one, re-sealed only once every record has opened.
 	var stale []staleKey
 	for i := range recs {
 		aad := SigningKeyAAD(recs[i].Kid)
-		plaintext, keyID, err := s.cipher.Open(recs[i].Private, aad)
+		plaintext, keyID, err := s.cipher.Open(ctx, recs[i].Private, aad)
 		if err != nil {
 			return nil, diag.Wrap(err, "seal: a stored signing key could not be opened")
 		}
@@ -145,15 +145,16 @@ type staleKey struct {
 	old   []byte
 }
 
-// activeKeyForReseal returns the active key id and whether a load re-seals.
-// A cipher that cannot name its active key turns re-sealing off for the load:
-// a re-seal is best effort and never fails the read.
-func (s *signingKeyStore) activeKeyForReseal() (string, bool) {
+// activeKeyForReseal returns the active key id and whether a load re-seals,
+// asking the cipher under ctx, the load's context. A cipher that cannot name
+// its active key turns re-sealing off for the load: a re-seal is best effort
+// and never fails the read.
+func (s *signingKeyStore) activeKeyForReseal(ctx context.Context) (string, bool) {
 	if !s.opts.resealOnRead {
 		return "", false
 	}
 
-	active, err := s.cipher.ActiveKeyID()
+	active, err := s.cipher.ActiveKeyID(ctx)
 
 	return active, err == nil
 }
@@ -162,7 +163,7 @@ func (s *signingKeyStore) activeKeyForReseal() (string, bool) {
 // hands it to the resealer in place of old. Every failure is dropped: the
 // value still opens under the key it was sealed with.
 func (s *signingKeyStore) reseal(ctx context.Context, rec signingkey.Record, aad, old []byte) {
-	resealed, err := s.cipher.Seal(rec.Private, aad)
+	resealed, err := s.cipher.Seal(ctx, rec.Private, aad)
 	if err != nil {
 		return
 	}

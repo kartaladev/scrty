@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -29,7 +30,7 @@ const (
 	msgReissueFailed        = "recovery: the saved codes could not be replaced"
 	msgRemainingFailed      = "recovery: the remaining saved codes could not be counted"
 	msgSessionFailed        = "recovery: the recovery session could not be created"
-	msgSessionCleanupFailed = "recovery: the unsaved recovery session could not be deleted"
+	msgIssueFailed          = "recovery: the recovery session's credential could not be issued"
 	msgNoticeContactFailed  = "recovery: the notice's contact address could not be resolved"
 	msgNoticeSendFailed     = "recovery: the recovery notice could not be sent"
 	msgNoticeUserLookupFail = "recovery: the user could not be loaded for the notice"
@@ -39,15 +40,65 @@ const (
 const (
 	errTextRecordStore = "recovery: the recovery record store failed"
 	errTextRecordID    = "recovery: a recovery record identifier could not be minted"
+	errTextIssue       = "recovery: the recovery session's credential could not be issued"
 )
+
+// IssueFunc issues the credential the holder of a recovery session carries
+// away, such as a signed token naming s through its identifier, for user, the
+// recovered account as the recovery loaded it. It is supplied with
+// WithCredentialIssuer.
+//
+// It is called once the session is built and marked recovery-pending, and
+// before anything is spent or stored: s loads nothing yet, and is stored only
+// once the recovery's other effects have run. It must not modify s or user. A
+// credential it returns for a recovery that then fails, such as one that loses
+// a racing recovery its saved code, names a session that is never stored, so
+// it authenticates nothing and is discarded.
+//
+// An error is a dependency failure, never a refusal: the recovery spends,
+// removes, ends, replaces, records and sends nothing, counts nothing against
+// the user, and returns the error behind fixed text of this package, still
+// matching it through errors.Is and errors.As.
+type IssueFunc func(ctx context.Context, s *session.Session, user *identity.Details) (string, error)
+
+// WithCredentialIssuer sets the step that issues the recovery session's
+// credential, which Recover and Finish call before they spend anything and
+// return in Result.Credential (see IssueFunc). The default issues none: the
+// result's Credential is empty, and a caller that issues one itself once the
+// recovery has returned does so after the proofs were spent and the saved codes
+// replaced, so a credential it then cannot issue costs the user both. A nil
+// issuer is a configuration error.
+//
+// The session is built, and its confined lifetime counted, before the issuer
+// is called and the proofs are spent, which is what lets issuing come first.
+// A recovery whose steps together take longer than that lifetime therefore
+// stores a session that has already expired, and its credential authenticates
+// nothing. The recovery still stands, and when it replaced the saved set the
+// result still carries the new saved codes, so the user keeps them and can
+// recover again. The lifetime is 15 minutes unless WithPendingSessionLifetime
+// sets another, far beyond the steps' latency.
+//
+// httpsec's account recovery supplies its own, issuing the credential its
+// chain's bearer accepts, and it replaces one given here.
+func WithCredentialIssuer(issue IssueFunc) Option {
+	return func(c *config) { c.issue, c.issueSet = issue, true }
+}
 
 // Result is what a recovery produced: a confined session and the saved-code
 // state when it completed, or a hold when it did not.
 type Result struct {
 	// Session is the recovery-pending session the recovery produced, already
-	// saved. It becomes a full session only by binding a new authenticator.
-	// Nil when the recovery is held.
+	// stored, in the one write that created it. It becomes a full session only
+	// by binding a new authenticator. Nil when the recovery is held. It is
+	// stored whether or not a credential was issued for it: without
+	// WithCredentialIssuer, Credential is empty and the caller issues one.
 	Session *session.Session
+
+	// Credential is the credential the issuer (WithCredentialIssuer) issued
+	// for Session, before anything was spent. Empty when the recovery is
+	// held, or when no issuer is configured (the default; see
+	// WithCredentialIssuer for what issuing it yourself afterwards costs).
+	Credential string
 
 	// Codes is the user's new set of saved codes, when a saved code was one of
 	// the proofs. This is the only time they exist in readable form.
@@ -60,11 +111,11 @@ type Result struct {
 	// codes are not in use.
 	Remaining RemainingCodes
 
-	// Details is the recovered user's account, as the recovery loaded it. A
-	// caller that must name the user, such as when minting the credential for
-	// Session, reads it here rather than loading the user again: a second
-	// lookup could fail after the saved codes were replaced, and the new
-	// codes would be lost with the response. Nil when the recovery is held.
+	// Details is the recovered user's account, as the recovery loaded it and
+	// handed it to the credential issuer. A caller that must name the user
+	// reads it here rather than loading the user again: a second lookup could
+	// fail after the saved codes were replaced, and the new codes would be
+	// lost with the response. Nil when the recovery is held.
 	Details *identity.Details
 
 	// Held is set, and nothing else is, when the recovery is held: it carries
@@ -79,30 +130,66 @@ type completion struct {
 	details    *identity.Details
 	plan       []AuthenticatorRef
 	savedSpent bool
+	// issued is the recovery session, built and given its credential before
+	// anything was spent, and stored last.
+	issued *issuedSession
+}
+
+// issuedSession is a recovery session that is built, marked recovery-pending
+// and given its credential, and not yet stored.
+type issuedSession struct {
+	prepared   *session.Prepared
+	credential string
 }
 
 // Recover runs a recovery: it checks both proofs without spending either,
 // spends them, and then completes the recovery or, with a hold configured,
 // holds it (see Finish).
 //
-// A recovery completes in this order, after the spends: a completed record is
-// written; the planned authenticators are removed; every session of the user
-// is deleted, unless WithoutSessionRevocation; when a saved code was spent, the
-// saved set is replaced and the new codes returned; a recovery-pending session
-// is created, confined to the session lifetime, and saved; and the user is
-// notified at their contact address. The result counts the saved codes the
-// user then holds (the new set after a reissue) and carries the user's
-// details as the recovery loaded them. A failure at any step before the notice is returned, with the proofs
-// spent and the earlier steps done; in particular a failed reset creates no
-// session and revokes nothing. A notice the sender refuses is logged, and the
-// recovery stands.
+// A recovery that completes at once first builds its recovery-pending
+// session, confined to the session lifetime, and issues its credential
+// through the issuer (WithCredentialIssuer), after every check and before
+// anything is spent. An issuing failure is a dependency failure, not a
+// refusal: nothing is spent, removed, ended, replaced, recorded or sent, and
+// nothing is counted against the user, so the same proofs recover once the
+// issuer is healthy.
+//
+// Then, in this order: the proofs are spent; a completed record is written;
+// the planned authenticators are removed; every session of the user is
+// deleted, unless WithoutSessionRevocation; when a saved code was spent, the
+// saved set is replaced and the new codes returned; the recovery session is
+// stored, already recovery-pending, in the one write that creates it; and the
+// user is notified at their contact address. The result carries the
+// credential, counts the saved codes the user then holds (the new set after a
+// reissue) and carries the user's details as the recovery loaded them.
+//
+// A failure at any step from the record to the session's write is returned,
+// with the proofs spent and the earlier steps done, and the credential
+// discarded: it names a session that was never stored, so it authenticates
+// nothing. In particular a failed reset revokes nothing, and a session write
+// that fails after the saved set was replaced loses the new codes with the
+// error. A notice the sender refuses is logged, and the recovery stands.
 //
 // Everything from the first spend on runs detached from ctx's cancellation,
-// so a client that hangs up cannot leave a recovery half done.
+// so a client that hangs up cannot leave a recovery half done. The issuer
+// runs before that, on ctx itself, so a client that hangs up while it issues
+// spends nothing.
 func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 	v, err := r.verify(ctx, req)
 	if err != nil {
 		return nil, err
+	}
+
+	now := r.clock.Now()
+	hold := max(v.hold, r.delay)
+
+	// A recovery completing at once has its credential before anything is
+	// spent; a held one creates no session until its finish.
+	var issued *issuedSession
+	if hold <= 0 {
+		if issued, err = r.issueSession(ctx, v.details, now); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := r.spend(ctx, v); err != nil {
@@ -110,7 +197,6 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	ctx = context.WithoutCancel(ctx)
-	now := r.clock.Now()
 
 	rid, err := r.ids.NewID()
 	if err != nil {
@@ -129,7 +215,7 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 		SavedSpent: v.has(ProofSaved),
 	}
 
-	if hold := max(v.hold, r.delay); hold > 0 {
+	if hold > 0 {
 		rec.NotBefore = now.Add(hold)
 
 		return r.startHold(ctx, v, rec, hold)
@@ -142,12 +228,54 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 		return nil, diag.Wrap(err, errTextRecordStore)
 	}
 
-	return r.complete(ctx, completion{user: v.user, details: v.details, plan: v.plan, savedSpent: rec.SavedSpent}, now)
+	return r.complete(ctx, completion{
+		user: v.user, details: v.details, plan: v.plan, savedSpent: rec.SavedSpent, issued: issued,
+	}, now)
+}
+
+// issueSession builds the recovery-pending session for the recovered user,
+// recovered at now, and issues its credential through the issuer. Nothing is
+// stored: the session loads nothing until complete commits it. ctx is the
+// caller's own, so an issuer bound to it fails when the client has left, and
+// that failure spends nothing either.
+//
+// An issuing failure is logged and returned behind fixed text, a dependency
+// failure: at ERROR, or at DEBUG when ctx's own end cut it short.
+func (r *Recoverer) issueSession(ctx context.Context, details *identity.Details, now time.Time) (*issuedSession, error) {
+	p, err := r.sessions.Prepare(details.ID, session.WithFirstFactor(factor.Recovery))
+	if err != nil {
+		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-build", err)...)
+
+		return nil, err
+	}
+
+	// Marked before the credential exists, so the one write that stores the
+	// session carries the state, and no credential ever names a full session.
+	r.sessions.MarkRecoveryPending(p.Session(), r.sessionLifetime, now)
+
+	if r.issue == nil {
+		return &issuedSession{prepared: p}, nil
+	}
+
+	credential, err := r.issue(ctx, p.Session(), details)
+	if err != nil {
+		level := slog.LevelError
+		if hangup.ByCaller(ctx, err) {
+			level = slog.LevelDebug
+		}
+
+		r.logger.LogAttrs(ctx, level, msgIssueFailed, diag.Failure("credential-issuer", err)...)
+
+		return nil, diag.Wrap(err, errTextIssue)
+	}
+
+	return &issuedSession{prepared: p, credential: credential}, nil
 }
 
 // complete runs the completion sequence from the reset on: reset, revoke,
-// reissue or count, the confined session, and the notice. ctx is already
-// detached from the caller's cancellation.
+// reissue or count, the one write that stores the recovery session c.issued
+// already holds a credential for, and the notice. ctx is already detached
+// from the caller's cancellation.
 func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (*Result, error) {
 	if err := r.planner.execute(ctx, c.user, c.plan); err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgResetFailed, diag.Failure("authenticator-remove", err)...)
@@ -187,26 +315,19 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		res.Remaining = n
 	}
 
-	s, err := r.sessions.Create(ctx, c.user, session.WithFirstFactor(factor.Recovery))
+	// Stored last, after the revocation, which would otherwise end it, and
+	// after the saved set was replaced, so the credential that answers with
+	// the new codes existed before the old ones were lost. A failure discards
+	// the credential, which names a session that was never stored.
+	s, err := c.issued.prepared.Commit(ctx)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-store", err)...)
 
 		return nil, err
 	}
 
-	r.sessions.MarkRecoveryPending(s, r.sessionLifetime, now)
-
-	if err := r.sessions.Save(ctx, s); err != nil {
-		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-store", err)...)
-
-		if derr := r.sessions.Delete(ctx, s.ID); derr != nil {
-			r.logger.LogAttrs(ctx, slog.LevelError, msgSessionCleanupFailed, diag.Failure("session-store", derr)...)
-		}
-
-		return nil, err
-	}
-
 	res.Session = s
+	res.Credential = c.issued.credential
 
 	subject, body := r.messages.Recovered(Notice{
 		At:            now,
@@ -274,6 +395,12 @@ func (r *Recoverer) validateCompletion(c *config) error {
 		return fmt.Errorf("%w: the recovery session lifetime must be above zero and at most the session "+
 			"manager's absolute timeout (%s), got %s", ErrConfig, r.sessions.AbsoluteTimeout(), c.sessionLifetime)
 	}
+
+	if c.issueSet && c.issue == nil {
+		return fmt.Errorf("%w: WithCredentialIssuer was given no issuer", ErrConfig)
+	}
+
+	r.issue = c.issue
 
 	switch {
 	case c.idsSet && nilcheck.IsNil(c.ids):

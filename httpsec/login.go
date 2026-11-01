@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -507,12 +508,7 @@ func (l *formLogin) verifyPassword(
 // does. It decides from the error, never from ctx alone: a password compared
 // and refused before the client left is a failed attempt like any other.
 func loadEndedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-	if ctxErr == nil || !errors.Is(err, authenticate.ErrAuthenticationFailed) {
-		return false
-	}
-
-	return errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx))
+	return errors.Is(err, authenticate.ErrAuthenticationFailed) && hangup.ByCaller(ctx, err)
 }
 
 // checkPassword is account recovery's password proof (recovery.PasswordCheck):

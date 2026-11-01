@@ -45,16 +45,47 @@ type credentialIssuer func(ctx context.Context, s *session.Session, p *identity.
 
 // signedTokens issues a token from g naming s through its jti, which is how a
 // later signed bearer request finds the session. The generator is the
-// consumer's, so its error comes back behind fixed text.
+// consumer's, so its error comes back behind fixed text, marked as an issuing
+// failure (issuingFailure).
 func signedTokens(g token.Generator) credentialIssuer {
 	return func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error) {
 		tok, err := g.Generate(ctx, s.ID, p)
 		if err != nil {
-			return "", diag.Wrap(err, msgTokenNotIssued)
+			return "", issuingFailure(err, msgTokenNotIssued)
 		}
 
 		return tok, nil
 	}
+}
+
+// issueFailure marks a failure of the chain's credential issuer. It is a
+// dependency failure on every path that issues, never a refusal: StatusForError
+// answers it 500 before it consults its refusal table, so a consumer generator
+// whose error wraps a sentinel that table answers 401
+// (authenticate.ErrUnavailable, say) does not send the client back to log in
+// during a key outage. Its text is fixed library text, and it unwraps to the
+// failure it marks, so the cause stays reachable with errors.Is and errors.As.
+//
+// Build it with issuingFailure.
+type issueFailure struct {
+	text string
+	err  error
+}
+
+// Error returns the fixed text, never the cause's.
+func (f *issueFailure) Error() string { return f.text }
+
+// Unwrap returns the failure it marks.
+func (f *issueFailure) Unwrap() error { return f.err }
+
+// issuingFailure is err behind text and kinds (diag.Wrap), marked as an
+// issuing failure: nil when err is nil.
+func issuingFailure(err error, text string, kinds ...error) error {
+	if err == nil {
+		return nil
+	}
+
+	return &issueFailure{text: text, err: diag.Wrap(err, text, kinds...)}
 }
 
 // issueSessionReference issues the session's own identifier, which is the
@@ -101,18 +132,19 @@ type loginTailDeps struct {
 	challengeMethods challengeMethodsFunc
 
 	// decided is the post-authentication decision already made for this
-	// login, nil when none was. A redemption decides in its check, before the
-	// one-time credential is spent, and hands that decision on here: the tail
-	// evaluating the policies again would run them after the spend, where a
-	// lookup failure would refuse the login and cost the holder the
-	// credential. Form login spends nothing, so it leaves this nil and the
-	// tail evaluates.
+	// login, nil when none was. A redemption decides in its policy check, and
+	// hands that decision on here to the tail's first half, which it runs in
+	// a later check of the same redemption (see redemptionLogin): evaluating
+	// the policies a second time could reach a different verdict than the one
+	// the checks passed on. Form login decides nothing in advance, so it
+	// leaves this nil and the tail evaluates.
 	decided *policy.Decision
 
 	// cancelHeld cancels the user's held account recoveries, and is nil when
 	// the chain holds none: account recovery is off, or configured with no
 	// hold. The chain hands it to each first factor at assembly. The tail
-	// calls it before anything else, ahead of the policy phase.
+	// calls it before anything else, ahead of the policy phase; a redemption
+	// calls it once its credential is spent (see completeLogin).
 	cancelHeld heldRecoveryCanceller
 }
 
@@ -231,8 +263,8 @@ func refuseUnenforced(enforced map[policy.ChallengeKind]bool, kind policy.Challe
 // mark records kind on s, in memory; the caller persists it.
 //
 // An enrolment challenge sets the enrolment-pending state and its marker and
-// lowers the session's deadlines, in one change, so the session saved next is
-// already the short-lived, confined one.
+// lowers the session's deadlines, in one change, so the session stored or
+// saved next is already the short-lived, confined one.
 //
 // A kind this package does not know marks nothing: the session has no field
 // for it. By the time mark runs, refuseUnenforced has already refused such a
@@ -258,6 +290,20 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // differently from form login — the same phase, the same marking and the same
 // ordering guarantee, written once and reused rather than restated.
 //
+// It is the composition of two halves, which a redemption runs apart so that
+// its single-use credential is spent between them: prepareLogin decides the
+// phase, builds the session (session.Sessions.Prepare), marks any challenge on
+// it and issues the credential for it, storing nothing; preparedLogin.commit
+// then stores the session, mark and all, in the one write that creates it
+// (session.Prepared.Commit), and only once that write has succeeded publishes
+// the authentication and hands the credential out. So a credential is never
+// handed out for a session that was not stored, a token never exists for a
+// session whose challenge mark did not persist, and a credential that cannot
+// be issued stores nothing and leaves unspent anything a redemption would
+// have spent. A failure to issue, or of the creating write after issuing, is
+// a dependency failure, never a refusal: the credential issued for a session
+// that was never stored names nothing and is discarded with the error.
+//
 // It returns the token it issued alongside the challenge error, because a
 // consumer prompting for a second factor needs the credential the prompt will
 // be answered with.
@@ -271,10 +317,13 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 //
 // When the chain may hold account recoveries, the user's held recoveries are
 // cancelled first, as soon as the first factor has authenticated: before the
-// policy phase and before the session is created. A login the policy then
+// policy phase and before the session is built. A login the policy then
 // denies or challenges has still cancelled them, since completing the first
 // factor is the evidence the real user still has access. A failure to cancel
-// refuses the login (see loginTailDeps.cancelHeld).
+// refuses the login (see loginTailDeps.cancelHeld). A redemption, which
+// decides the phase inside its redeemer's checks, cancels them once its
+// credential is spent instead, as it did before issuing moved into the checks:
+// a check must have no side effects.
 //
 // A caller that has already decided the phase for this login passes the
 // decision in deps.decided, and the tail acts on it rather than evaluating
@@ -285,9 +334,12 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // authentication alone rather than on a phase that refuses everything.
 //
 // opts are the caller's own attributes for the session, applied in the write
-// that creates it and before the first factor the tail records from in. A
-// federated login passes its provider session here, so the session is never
-// stored, even briefly, without it. Form login and magic-link pass none.
+// that creates it and before the first factor the tail records from in. Form
+// login passes session.WithAbsoluteLifetime when WithLoginLifetime chooses a
+// positive lifetime and none otherwise; magic-link, OIDC and passkey login
+// pass none. An OIDC redemption records its provider session on the prepared
+// session before it is committed (session.WithExternalSession), not through
+// opts.
 //
 // The first factor recorded is always in.FirstFactor, the tail's own: it is
 // applied last, so a caller's own session.WithFirstFactor in opts cannot
@@ -309,22 +361,74 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // not set, so every later request matches the stored values again. Zero
 // evidence, which every other first factor passes, records nothing.
 func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...session.CreateOption) (string, error) {
-	ctx := ex.Context()
-
 	// A user who completes a first factor can still get into their account,
 	// so a recovery held for it is cancelled here, before the policy phase:
 	// a login the policy denies still showed the user holds their first
 	// factor. A cancellation that cannot be recorded refuses the login, which
 	// fails closed: letting the recovery stand would let it finish later
-	// against a user who showed they had not lost their account. As for a
-	// session-store failure below, a one-time login credential may already be
-	// spent.
-	if deps.cancelHeld != nil {
-		if err := deps.cancelHeld(ctx, in.User); err != nil {
-			return "", err
-		}
+	// against a user who showed they had not lost their account.
+	if err := deps.cancelHeldRecoveries(ex.Context(), in.User); err != nil {
+		return "", err
 	}
 
+	login, err := prepareLogin(ex.Context(), deps, in, opts...)
+	if err != nil {
+		return "", err
+	}
+
+	return login.commit(ex)
+}
+
+// cancelHeldRecoveries cancels user's held account recoveries, and does
+// nothing when the chain holds none (see loginTailDeps.cancelHeld).
+func (deps loginTailDeps) cancelHeldRecoveries(ctx context.Context, user identity.UserID) error {
+	if deps.cancelHeld == nil {
+		return nil
+	}
+
+	return deps.cancelHeld(ctx, user)
+}
+
+// preparedLogin is a login the tail has decided, built a session for and
+// issued that session's credential, and not yet stored: the first half of
+// completeLogin, which prepareLogin returns and commit finishes.
+//
+// Until commit stores it, the session loads nothing, so the credential names
+// nothing and authenticates nothing either. A caller that does not commit, a
+// redemption that lost its consume to a racing one or was refused after its
+// checks, simply drops it: nothing was written, and nothing is undone.
+type preparedLogin struct {
+	// in is the input the login was decided and issued on.
+	in *policy.Input
+
+	// decision is what the phase decided for it: allow, or a challenge of an
+	// enforced kind.
+	decision policy.Decision
+
+	// methods are the methods a raised challenge offers.
+	methods []MFAMethod
+
+	prepared *session.Prepared
+	token    string
+}
+
+// prepareLogin is the first half of completeLogin: it decides the
+// post-authentication phase for in (or acts on deps.decided), refuses a deny,
+// an unenforced challenge and a failed methods lookup, builds the session with
+// opts and the tail's own attributes, marks any challenge on it, and issues
+// its credential. It stores nothing and spends nothing, so a redemption runs
+// it inside its redeemer's refusal checks, before the consume.
+//
+// Its errors are completeLogin's for the same steps: a policy's reason as
+// itself, a configuration error for an unenforced challenge, and a dependency
+// failure behind fixed text for a methods lookup, the session's build or the
+// credential's issue.
+func prepareLogin(
+	ctx context.Context,
+	deps loginTailDeps,
+	in *policy.Input,
+	opts ...session.CreateOption,
+) (*preparedLogin, error) {
 	d := policy.Decision{Outcome: policy.Allow}
 
 	switch {
@@ -335,19 +439,18 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	}
 
 	if d.Outcome == policy.Deny {
-		return "", policyDenyReason(d)
+		return nil, policyDenyReason(d)
 	}
 
-	// Refused before the session exists, so an unenforced challenge leaves
+	// Refused before the session is built, so an unenforced challenge leaves
 	// neither a marked session nor a token behind. The methods the challenge
 	// offers are looked up here too, for the same reason: a lookup that fails
-	// refuses the login before a pending session is written that nobody holds
-	// a credential for.
+	// refuses the login before anything is issued, spent or stored.
 	var methods []MFAMethod
 
 	if d.Outcome == policy.Challenge {
 		if err := refuseUnenforced(deps.enforced, d.Challenge); err != nil {
-			return "", err
+			return nil, err
 		}
 
 		if deps.challengeMethods != nil {
@@ -355,17 +458,18 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 
 			methods, err = deps.challengeMethods(ctx, d.Challenge, in.User, in.FirstFactor)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 		}
 	}
 
-	// The caller's own attributes first, then the first factor: a federated
-	// login records its provider session here, in the write that creates the
-	// session, so no request ever sees the session without it. The first
-	// factor is applied last so it always wins, even if opts happens to carry
-	// its own session.WithFirstFactor — the factor the policy phase was just
-	// evaluated on is the one that gets recorded.
+	// The caller's own attributes first, then the first factor, which is
+	// applied last so it always wins, even if opts happens to carry its own
+	// session.WithFirstFactor: the factor the policy phase was just evaluated
+	// on is the one that gets recorded. A federated login's provider session
+	// is not among these: an OIDC redemption learns it only from the
+	// redeemer's result, so it sets it on the prepared session before
+	// commit, ahead of the one write that creates the session.
 	//
 	// A login carrying the library's proof that its second factor was met at
 	// the first is created satisfied, in that same write, so the session never
@@ -383,32 +487,57 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	}
 	create = append(create, session.WithFirstFactor(in.FirstFactor))
 
-	s, err := deps.sessions.Create(ctx, in.User, create...)
+	p, err := deps.sessions.Prepare(in.User, create...)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+
+	s := p.Session()
 
 	if d.Outcome == policy.Challenge {
-		// Marked and saved before the token exists. A token issued first would
-		// be a credential for a session whose pending flag never persisted —
-		// that is, one that answers requests as though the challenge had been
-		// met.
+		// Marked before the token exists and before the session is stored,
+		// so the one write that creates it carries the mark: a session stored
+		// unmarked, or a token issued for one, would answer requests as though
+		// the challenge had been met.
 		challengeMarker{sessions: deps.sessions, enrolmentLifetime: deps.enrolmentLifetime}.
 			mark(s, d.Challenge)
-
-		if err := deps.sessions.Save(ctx, s); err != nil {
-			return "", err
-		}
 	}
 
-	// Issued against the session just created: a signed token names it
-	// through its jti, and a session reference is its identifier.
+	// Issued against the session just built: a signed token names it through
+	// its jti, and a session reference is its identifier. It loads nothing
+	// until commit stores it.
 	issue := deps.issue
 	if issue == nil {
 		issue = signedTokens(deps.tokens)
 	}
 
 	tok, err := issue(ctx, s, in.Principal)
+	if err != nil {
+		return nil, err
+	}
+
+	return &preparedLogin{in: in, decision: d, methods: methods, prepared: p, token: tok}, nil
+}
+
+// session is the login's session as built and marked, not yet stored. A
+// caller sets on it only what it can know no earlier than the spend, before
+// commit; never the first factor, the assurance or the challenge state the
+// tail recorded.
+func (l *preparedLogin) session() *session.Session { return l.prepared.Session() }
+
+// commit is the second half of completeLogin: the one creating write, then
+// the authentication published and the credential handed out, with a
+// challenge error when a challenge is pending.
+//
+// A failure of the write discards the credential: it names a session that was
+// never stored, so it authenticates nothing, and is never handed out. It is a
+// dependency failure, as the session manager words it. A redemption that
+// reaches commit has already spent its single-use credential, which that
+// failure does not give back.
+func (l *preparedLogin) commit(ex *Exchange) (string, error) {
+	ctx := ex.Context()
+
+	s, err := l.prepared.Commit(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -418,11 +547,11 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	ex.Session = s
 	ex.SetContext(withSession(WithCaller(ctx, ex.Authentication), s))
 
-	if d.Outcome == policy.Challenge {
-		return tok, &ChallengeError{Kind: d.Challenge, Session: s, Token: tok, Methods: methods}
+	if l.decision.Outcome == policy.Challenge {
+		return l.token, &ChallengeError{Kind: l.decision.Challenge, Session: s, Token: l.token, Methods: l.methods}
 	}
 
-	return tok, nil
+	return l.token, nil
 }
 
 // declaresJSON reports whether a content type names JSON, ignoring parameters

@@ -221,6 +221,14 @@ type RedeemCandidate struct {
 // any consumer policy the chain's shipped check evaluates. A check that wrote
 // something would write it once per attempt rather than once per sign-in.
 //
+// The library may issue a credential between the checks and the consume: the
+// chain's shipped check, once its refusal checks pass, builds the session and
+// issues the credential for it, which writes no state, so a credential that
+// cannot be issued leaves the code redeemable. A redemption that then loses
+// the consume to a racing one discards what it issued: the session that
+// credential names is never stored. Only the atomic consume decides which
+// redemption signs in.
+//
 // A redeemer runs the checks against the user it will return and that user's
 // password-change time. The login completion step reuses the
 // post-authentication decision the chain's shipped check made before the code
@@ -269,8 +277,11 @@ type HandoffResult struct {
 // apart; the cause is logged, at DEBUG for traffic that is simply wrong and at
 // ERROR for an outage, as a fixed reason (handoff-store or user-loader) and
 // the error's Go type, never the store's or loader's own text. Any failure
-// before the consume leaves the code redeemable until it expires. No error and no log record carries the code or
-// the ID token.
+// before the consume leaves the code redeemable until it expires. Expiry is
+// judged twice, on the first read of the clock and again, at and after the
+// expiry instant, immediately before the consume, so a check that outlasts the
+// code cannot spend it. No error and no log record carries the code or the ID
+// token.
 func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck) (HandoffResult, error) {
 	tokenID, secret, ok := parseHandoffCode(code)
 	if !ok {
@@ -335,6 +346,11 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 	// A request nobody will read the answer to must not spend the code.
 	if ctx.Err() != nil {
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "request_cancelled")
+	}
+	// Expiry is judged again at the spend: a check may have outlasted the code.
+	now = h.clock.Now()
+	if !now.Before(rec.ExpiresAt) {
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired")
 	}
 	err = h.store.Consume(ctx, rec.TokenID, now)
 	switch {

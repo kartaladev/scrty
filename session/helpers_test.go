@@ -148,7 +148,7 @@ type fakeCipher struct {
 	key byte
 }
 
-func (c fakeCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
+func (c fakeCipher) Seal(_ context.Context, plaintext, additionalData []byte) ([]byte, error) {
 	out := make([]byte, 0, len(additionalData)+2+len(plaintext))
 	out = append(out, c.key)
 	out = append(out, additionalData...)
@@ -160,7 +160,7 @@ func (c fakeCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (c fakeCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
+func (c fakeCipher) Open(_ context.Context, ciphertext, additionalData []byte) ([]byte, error) {
 	if len(ciphertext) == 0 || ciphertext[0] != c.key {
 		return nil, errRetiredKey
 	}

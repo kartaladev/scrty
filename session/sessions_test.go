@@ -1787,6 +1787,205 @@ func TestManagerRotate(t *testing.T) {
 	}
 }
 
+// TestRotateIssuing_StepOutlivingTheFamilyStoresNothing pins "A step that
+// outlives the family stores nothing" for the strict rotation: the family ends
+// at 21:00:00, the rotation starts at 20:59:50 and the step succeeds at
+// 21:00:05, so the rotation fails as expired with nothing stored or
+// superseded.
+func TestRotateIssuing_StepOutlivingTheFamilyStoresNothing(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// rotator is the manager that rotates, given the manager that created
+		// the session and the store they share.
+		rotator func(t *testing.T, clk *clockwork.FakeClock, store session.Store, creator *session.Sessions) *session.Sessions
+		// advance is how far the clock moves before the rotation starts.
+		advance time.Duration
+		// stepTakes is how long the caller's step runs.
+		stepTakes time.Duration
+	}
+
+	cases := []testCase{
+		{
+			name: "the family ends at the manager's own maximum",
+			rotator: func(_ *testing.T, _ *clockwork.FakeClock, _ session.Store, creator *session.Sessions) *session.Sessions {
+				return creator
+			},
+			advance:   12*time.Hour - 10*time.Second,
+			stepTakes: 15 * time.Second,
+		},
+		{
+			// The instant the family ends is already past it.
+			name: "the step ends exactly when the family does",
+			rotator: func(_ *testing.T, _ *clockwork.FakeClock, _ session.Store, creator *session.Sessions) *session.Sessions {
+				return creator
+			},
+			advance:   12*time.Hour - 10*time.Second,
+			stepTakes: 10 * time.Second,
+		},
+		{
+			name: "the family ends at a maximum a second manager lowered",
+			rotator: func(t *testing.T, clk *clockwork.FakeClock, store session.Store, _ *session.Sessions) *session.Sessions {
+				return managerFor(t, session.WithStore(store), session.WithClock(clk),
+					session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
+					session.WithMaxAbsoluteLifetime(6*time.Hour), session.WithMaxFamilyLifetime(6*time.Hour))
+			},
+			advance:   6*time.Hour - 10*time.Second,
+			stepTakes: 15 * time.Second,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			spy := &supersedeSpyStore{Store: inner}
+			creator := managerFor(t, session.WithStore(spy), session.WithClock(clk), session.WithIdleTimeout(12*time.Hour))
+			old, err := creator.Create(t.Context(), testUser)
+			require.NoError(t, err)
+
+			clk.Advance(tc.advance)
+
+			var given *session.Session
+			got, tok, err := tc.rotator(t, clk, spy, creator).RotateIssuing(t.Context(), old,
+				func(successor *session.Session) (string, error) {
+					given = snapshot(successor)
+					clk.Advance(tc.stepTakes)
+
+					return "credential-for:" + successor.ID, nil
+				})
+
+			require.ErrorIs(t, err, session.ErrExpired)
+			assert.NotErrorIs(t, err, session.ErrReused)
+			assert.Nil(t, got, "a successor was returned after the family ended")
+			assert.Empty(t, tok)
+			require.NotNil(t, given, "the step ran")
+			_, loadErr := creator.Load(t.Context(), given.ID)
+			require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+			assert.Zero(t, spy.supersedes.Load(), "a supersession was written")
+		})
+	}
+}
+
+// TestRotate_RefusesFamilyAlreadyEnded pins "Every rotation refuses a family
+// that has already ended" for the rotation without grace, with and without a
+// caller's step: a session created at 09:00:00 still carries an absolute
+// deadline of 21:00:00, but the manager that rotates it has a family maximum
+// of six hours, so its family ended at 15:00:00. A rotation at or after that
+// instant fails as expired before the successor is built: no step runs and
+// nothing is stored or superseded. One minute before it, the rotation goes
+// through.
+func TestRotate_RefusesFamilyAlreadyEnded(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// advance is how far the clock moves from 09:00:00 before the
+		// rotation starts.
+		advance time.Duration
+		// withStep rotates through RotateIssuing with a step that counts its
+		// calls, instead of through Rotate.
+		withStep bool
+		// assert receives the rotation's results, the number of times the step
+		// ran, the session that was rotated, and the manager that created it.
+		assert func(t *testing.T, spy *supersedeSpyStore, creator *session.Sessions, old, got *session.Session, tok string, steps int32, err error)
+	}
+
+	refused := func(t *testing.T, spy *supersedeSpyStore, creator *session.Sessions, old, got *session.Session, tok string, steps int32, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrExpired)
+		assert.NotErrorIs(t, err, session.ErrReused)
+		assert.Nil(t, got, "a successor was returned for a family that had ended")
+		assert.Empty(t, tok)
+		assert.Zero(t, steps, "the step ran for a family that had ended")
+		assert.Zero(t, spy.supersedes.Load(), "a supersession was written")
+
+		loaded, loadErr := creator.Load(t.Context(), old.ID)
+		require.NoError(t, loadErr, "the old identifier no longer loads")
+		assert.True(t, loaded.SupersededAt.IsZero(), "the old record was superseded")
+		assert.False(t, loaded.RotatedStrictly, "the old record was marked as rotated")
+	}
+
+	cases := []testCase{
+		{
+			name:    "Rotate one minute after the family ended",
+			advance: 6*time.Hour + time.Minute,
+			assert:  refused,
+		},
+		{
+			// The instant the family ends is already past it.
+			name:    "Rotate exactly when the family ends",
+			advance: 6 * time.Hour,
+			assert:  refused,
+		},
+		{
+			name:     "RotateIssuing one minute after the family ended",
+			advance:  6*time.Hour + time.Minute,
+			withStep: true,
+			assert:   refused,
+		},
+		{
+			name:     "RotateIssuing exactly when the family ends",
+			advance:  6 * time.Hour,
+			withStep: true,
+			assert:   refused,
+		},
+		{
+			name:     "RotateIssuing one minute before the family ends",
+			advance:  6*time.Hour - time.Minute,
+			withStep: true,
+			assert: func(t *testing.T, spy *supersedeSpyStore, _ *session.Sessions, _, got *session.Session, tok string, steps int32, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, "credential-for:"+got.ID, tok)
+				assert.EqualValues(t, 1, steps, "the step did not run exactly once")
+				assert.EqualValues(t, 1, spy.supersedes.Load())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			spy := &supersedeSpyStore{Store: inner}
+			creator := managerFor(t, session.WithStore(spy), session.WithClock(clk), session.WithIdleTimeout(12*time.Hour))
+			old, err := creator.Create(t.Context(), testUser)
+			require.NoError(t, err)
+
+			rotator := managerFor(t, session.WithStore(spy), session.WithClock(clk),
+				session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
+				session.WithMaxAbsoluteLifetime(6*time.Hour), session.WithMaxFamilyLifetime(6*time.Hour))
+
+			clk.Advance(tc.advance)
+
+			var steps atomic.Int32
+			var (
+				got *session.Session
+				tok string
+			)
+			if tc.withStep {
+				got, tok, err = rotator.RotateIssuing(t.Context(), old,
+					func(successor *session.Session) (string, error) {
+						steps.Add(1)
+
+						return "credential-for:" + successor.ID, nil
+					})
+			} else {
+				got, err = rotator.Rotate(t.Context(), old)
+			}
+
+			tc.assert(t, spy, creator, old, got, tok, steps.Load(), err)
+		})
+	}
+}
+
 // rotationFixture is one manager on a fake clock, a session created through
 // it at 09:00:00, and the counts that show whether a later call wrote to the
 // store or revoked anything.
@@ -3828,7 +4027,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "encrypted create: cipher seal hides the session identifier",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
+				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
 				return encrypted(t, d).Create(ctx, returnedErrorsSession("id-token"))
 			},
 			assert: func(t *testing.T, err error) {
@@ -3847,7 +4046,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "encrypted save: cipher seal hides the session identifier",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
+				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
 				return encrypted(t, d).Save(ctx, returnedErrorsSession("id-token"))
 			},
 			assert: func(t *testing.T, err error) {
@@ -3869,7 +4068,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				stored := returnedErrorsSession(base64.RawURLEncoding.EncodeToString([]byte("envelope")))
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(stored, nil)
-				d.cipher.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
+				d.cipher.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
 				_, err := encrypted(t, d).Load(ctx, returnedErrorsID)
 				return err
 			},

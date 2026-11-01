@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
 
@@ -27,6 +28,15 @@ const msgRecoveryLogsSuppressed = "httpsec: recovery logs suppressed"
 // The core fills the user on every completed recovery, so this guards a
 // broken invariant rather than an expected outcome.
 var errRecoveredUserMissing = errors.New("httpsec: the completed recovery carries no user")
+
+// textRecoveryNotIssued is the fixed text a recovery session's credential the
+// chain could not issue is returned behind.
+const textRecoveryNotIssued = "httpsec: the recovery session's credential could not be issued"
+
+// errRecoveryNotIssued marks a recovery that failed because the chain could
+// not issue its session's credential. It is a dependency failure, never a
+// refusal: countsAgainstRecoverySource charges it to no source.
+var errRecoveryNotIssued = errors.New(textRecoveryNotIssued)
 
 // textRecoveryUnreadable is the text a recovery body the transport failed to
 // deliver is refused behind: the transport's own text is not the library's.
@@ -51,7 +61,8 @@ type recoveryInterceptor struct {
 	tokens   token.Generator
 
 	// issueCredential issues the recovered session's credential as the
-	// chain's bearer mode decides, settled at assembly (resolve).
+	// chain's bearer mode decides, settled at assembly (resolve). The core
+	// calls it, through issueRecovered, before it spends anything.
 	issueCredential credentialIssuer
 
 	// recoverer is built at assembly (resolve), from deps, coreOpts and the
@@ -234,12 +245,13 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 
 	// The chain's logger, clock and limiter factory first, so a
 	// recovery.WithLogger, recovery.WithClock or limiter option the consumer
-	// passed replaces them; the password check last, so the chain's own always
-	// wins. The factory is handed over only when the consumer configured one:
-	// without it the core builds its own in-memory default, on the core's
-	// logger and clock, which are the chain's unless the consumer replaced
-	// them.
-	opts := make([]recovery.Option, 0, len(i.coreOpts)+4)
+	// passed replaces them; the password check and the credential issuer last,
+	// so the chain's own always win: a credential issued any other way would
+	// not be one the chain's bearer accepts. The factory is handed over only
+	// when the consumer configured one: without it the core builds its own
+	// in-memory default, on the core's logger and clock, which are the
+	// chain's unless the consumer replaced them.
+	opts := make([]recovery.Option, 0, len(i.coreOpts)+5)
 	opts = append(opts, recovery.WithLogger(c.logger), recovery.WithClock(c.clock))
 
 	if c.limiterFactory != nil {
@@ -251,6 +263,8 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	if login != nil {
 		opts = append(opts, recovery.WithPasswordCheck(login.checkPassword))
 	}
+
+	opts = append(opts, recovery.WithCredentialIssuer(i.issueRecovered))
 
 	r, err := recovery.NewRecoverer(recovery.Deps(i.deps), opts...)
 	if err != nil {
@@ -421,50 +435,63 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 // the complete and finish endpoints alike, so a finished recovery is answered
 // exactly as one that completed at once.
 //
+// It issues nothing: the core already issued the credential, through
+// issueRecovered, before it spent anything, and stored the session only
+// after, so the credential handed out here names a stored session.
+//
 // Cache-Control: no-store is set before the responder runs: the response
 // carries a credential, codes shown once, or a completion token. A consumer
 // responder may still replace the header.
 func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
-	ctx := ex.Context()
-
 	if res.Held != nil {
 		ex.Writer.SetHeader("Cache-Control", "no-store")
 
 		return i.respondHold(ex, *res.Held)
 	}
 
-	tok, err := i.issue(ctx, res)
-	if err != nil {
-		return err
-	}
-
 	ex.Writer.SetHeader("Cache-Control", "no-store")
 
 	ex.Session = res.Session
-	ex.SetContext(withSession(ctx, res.Session))
+	ex.SetContext(withSession(ex.Context(), res.Session))
 
-	return i.respond(ex, RecoveryResult{Token: tok, Recovery: res})
+	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res})
 }
 
-// issue issues the credential for the recovery-pending session a recovery
-// produced, as the chain's bearer mode decides: an access token, or the
+// issueRecovered is the credential issuer the chain gives the recovery core
+// (recovery.WithCredentialIssuer). The core calls it for the recovery-pending
+// session it has built and not yet stored, after every check and before it
+// spends a proof, and at a finish before it completes the held record, so a
+// credential that cannot be issued spends, removes, ends and replaces
+// nothing.
+//
+// It issues as the chain's bearer mode decides: an access token, or the
 // session's own identifier. A token names a principal, minted from the user
-// details the recovery itself loaded (recovery.Result.Details), never by
-// loading the user again: a second lookup could fail after the saved codes
-// were replaced, and the new codes would be lost with the response.
-func (i *recoveryInterceptor) issue(ctx context.Context, res *recovery.Result) (string, error) {
-	if res.Details == nil {
-		return "", errRecoveredUserMissing
+// details the recovery itself loaded, never by loading the user again.
+//
+// A failure is returned behind fixed text, marked errRecoveryNotIssued and as
+// an issuing failure (issuingFailure), a dependency failure: the endpoint
+// answers it as one (500 by default, through StatusForError, whatever the
+// generator's error wraps), and charges it to no source.
+func (i *recoveryInterceptor) issueRecovered(ctx context.Context, s *session.Session, user *identity.Details) (string, error) {
+	if user == nil {
+		return "", issuingFailure(errRecoveredUserMissing, textRecoveryNotIssued, errRecoveryNotIssued)
 	}
 
-	return i.issueCredential(ctx, res.Session, identity.PrincipalFromDetails(res.Details))
+	tok, err := i.issueCredential(ctx, s, identity.PrincipalFromDetails(user))
+	if err != nil {
+		return "", issuingFailure(err, textRecoveryNotIssued, errRecoveryNotIssued)
+	}
+
+	return tok, nil
 }
 
 // countsAgainstRecoverySource decides whether a failed recovery is recorded
 // against the source that made it.
 //
 // A malformed request is counted nowhere: it is the client's mistake, checked
-// before any proof, and says nothing about a guess. A refusal after the
+// before any proof, and says nothing about a guess. Nor is a credential the
+// chain could not issue (errRecoveryNotIssued): every proof had passed, and
+// the outage is the deployment's, not the client's. A refusal after the
 // recovery codes passed is counted unless the consumer turned that off. Every
 // other failure is counted: a refused code, an unknown or throttled user, and
 // any dependency outage the recovery met.
@@ -478,7 +505,7 @@ func (i *recoveryInterceptor) issue(ctx context.Context, res *recovery.Result) (
 // the codes passed, so it is counted as such a refusal is, though nothing is
 // recorded against the account or the user's recovery limit.
 func countsAgainstRecoverySource(countRefusals bool, err error) bool {
-	if errors.Is(err, recovery.ErrMalformed) {
+	if errors.Is(err, recovery.ErrMalformed) || errors.Is(err, errRecoveryNotIssued) {
 		return false
 	}
 
@@ -708,7 +735,9 @@ func readRecoveryStart(r Request) string {
 //
 // A finish that succeeds is answered exactly as a completion is: the access
 // token for the recovery-pending session, through the recovery responder,
-// with Cache-Control: no-store.
+// with Cache-Control: no-store. The core issues that token before it
+// completes the held record, so a token that cannot be issued is a dependency
+// failure that leaves the record pending and the completion token usable.
 //
 // No source guard stands in front of it. The completion token is a 256-bit
 // one-time secret handed only to the client that presented both proofs, so

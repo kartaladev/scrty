@@ -2,6 +2,7 @@ package seal
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"fmt"
 )
@@ -24,14 +25,31 @@ const maxKeyIDLen = 64
 // must return key bytes the caller may keep and alter without changing the
 // ring.
 //
+// Every method takes the context of the seal or open it serves, which is the
+// context of the store operation that asked: the cipher passes on the one it
+// was given and imposes no deadline of its own. An implementation over a
+// remote service, such as a secrets manager or a key management service,
+// should honour it, so a request's deadline and cancellation reach the
+// service. Such a service's quotas make a call per seal or open impractical
+// at scale, so an implementation over one is expected to cache the keys it
+// fetches, or to sit behind envelope encryption that asks the service only
+// for a data key. StaticKeyring performs no input or output and ignores the
+// context.
+//
+// An implementation over such a service marks a retryable failure, such as
+// throttling or a timeout, by wrapping it with ErrUnavailable, for example
+// errors.Join(ErrUnavailable, err). The default cipher passes the marker on,
+// so sessions read the failure as an outage and not as a session that cannot
+// be read.
+//
 //go:generate mockgen -source=keyring.go -package=seal_test -destination=keyring_mock_test.go -typed
 type Keyring interface {
 	// Active returns the id and bytes of the key new values are sealed under.
-	Active() (id string, key []byte, err error)
+	Active(ctx context.Context) (id string, key []byte, err error)
 
 	// ByID returns the key named id, active or retired, or an error that
 	// matches ErrUnknownKeyID when the ring holds no such key.
-	ByID(id string) ([]byte, error)
+	ByID(ctx context.Context, id string) ([]byte, error)
 }
 
 // namedKey is one configured key, before validation.
@@ -150,14 +168,16 @@ func (r *StaticKeyring) add(role string, k namedKey) error {
 	return nil
 }
 
-// Active returns the active key's id and a copy of its bytes.
-func (r *StaticKeyring) Active() (string, []byte, error) {
+// Active returns the active key's id and a copy of its bytes. It ignores the
+// context, so it answers whatever state the context is in.
+func (r *StaticKeyring) Active(context.Context) (string, []byte, error) {
 	return r.activeID, bytes.Clone(r.keys[r.activeID]), nil
 }
 
 // ByID returns a copy of the bytes of the key named id, or ErrUnknownKeyID.
-// The error does not repeat id, which comes from a stored value.
-func (r *StaticKeyring) ByID(id string) ([]byte, error) {
+// The error does not repeat id, which comes from a stored value. It ignores
+// the context, so it answers whatever state the context is in.
+func (r *StaticKeyring) ByID(_ context.Context, id string) ([]byte, error) {
 	key, ok := r.keys[id]
 	if !ok {
 		return nil, ErrUnknownKeyID

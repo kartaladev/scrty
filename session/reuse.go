@@ -205,12 +205,99 @@ func WithSuccessorLifetime(d time.Duration) RotateOption {
 // ErrExpired until the expiry sweep and ErrNotFound after it, and is never
 // judged as reuse. The guarantee holds as long as the store keeps the mark,
 // which the store-conformance suite checks.
+//
+// RotateWithGrace runs no step of the caller's between building the successor
+// and storing it; RotateWithGraceIssuing is the same renewal with one.
 func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error) {
+	next, kind, _, err := m.RotateWithGraceIssuing(ctx, s, grace, nil, opts...)
+
+	return next, kind, err
+}
+
+// RotateWithGraceIssuing is RotateWithGrace with a step of the caller's run on
+// the successor before anything is stored, and returns the successor, the
+// kind of renewal and what that step issued.
+//
+// It exists for the renewal that is only complete once the holder has a
+// credential for the successor, such as a signed token naming it. With
+// RotateWithGrace, a credential that cannot be issued after the renewal is
+// stored leaves the holder with an old identifier whose window then ends, and
+// presenting it after that is reuse that revokes the whole family: a false
+// theft alarm raised by an outage. Here issue is called once the successor is
+// built, with its identifier, and before the supersession is written, so a
+// credential is issued before its successor is stored, and a credential that
+// cannot be issued aborts the renewal instead.
+//
+// When issue fails, RotateWithGraceIssuing returns its error as it is, so
+// errors.Is and errors.As reach it, with no successor and the zero
+// RenewalKind, and has stored, superseded and revoked nothing: the old
+// identifier keeps the standing it had, and presenting it after the grace
+// would have ended is not reuse. When issue succeeds, the renewal goes on
+// exactly as RotateWithGrace's, and the store still decides racing renewals: a
+// failure of the supersession after the step, a lost race (ErrRenewalConflict),
+// a successor that moved on (reuse, ErrReused) or a store failure, is returned
+// as RotateWithGrace returns it, and the credential issue returned names a
+// successor that was never stored, so it authenticates nothing and is
+// discarded with the error. A refusal decided before the successor is built —
+// a grace or lifetime refused with ErrConfig, a gone or expired session, a
+// lost race already visible in the stored record, a reuse verdict — never
+// calls issue.
+//
+// A step that succeeds only once the session's family has ended, that is,
+// when the manager's clock read after the step is not before the family's end
+// under its family maximum, stores nothing, supersedes nothing and revokes
+// nothing, with or without a grace: the rotation fails with ErrExpired, and
+// no credential is returned. The check runs ahead of the window check below.
+//
+// The grace window (AcceptUntil) is counted from the instant the manager read
+// its clock before the step ran, not from the moment the supersession is
+// written, as RotateIssuing counts its in-flight window; the successor's
+// creation time and deadlines are counted from that instant too. A slow step
+// therefore shortens the window the old identifier keeps after the write.
+//
+// A step that succeeds only once that window has closed, that is, when the
+// manager's clock read after the step is not before the end of the window that
+// would be written, stores nothing, supersedes nothing and revokes nothing: the
+// rotation fails with an error matching context.DeadlineExceeded, a
+// dependency failure and not a verdict on the session. A write made with the
+// window already closed would make the holder's requests still in flight
+// under the old identifier read as reuse. The old identifier keeps the
+// standing it had, and can be renewed again. A grace of zero has no window to
+// outlive, and is not checked. The window is the one capped by the session's
+// absolute deadline and, for a renewal of a session already superseded, by the
+// window its first successor gave it, so a step may be cut short by those
+// before the grace has run out. A recovery has no such window to outlive,
+// since it renews because the old one has closed, and its step is bound by the
+// grace counted from the instant the clock was read before it.
+//
+// A save of the old session made while the step runs is not carried to the
+// successor, which is built from the record read before the step, as with
+// RotateWithGrace; the supersession is conditional only on the successor
+// the old record named. A mark saved on the old session during the step, such
+// as a pending challenge, is therefore not carried to the successor either:
+// confinement relies on the per-request policies raising their marks again on
+// the successor, not on the mark surviving the rotation.
+//
+// issue is handed the successor as it will be stored, which is also the
+// session returned, and must not modify it. Unlike RotateIssuing, it runs
+// under no lock of this manager: the store's conditional supersession alone
+// decides which of two concurrent renewals stores its successor. A nil issue
+// runs no step and returns an empty credential, which is RotateWithGrace.
+//
+// Every guarantee RotateWithGrace documents holds here unchanged. s is not
+// modified.
+func (m *Sessions) RotateWithGraceIssuing(
+	ctx context.Context,
+	s *Session,
+	grace time.Duration,
+	issue func(successor *Session) (string, error),
+	opts ...RotateOption,
+) (*Session, RenewalKind, string, error) {
 	if s == nil {
-		return nil, 0, errors.New("session: rotate with grace was given no session")
+		return nil, 0, "", errors.New("session: rotate with grace was given no session")
 	}
 	if grace < 0 || grace > MaxRenewalGrace {
-		return nil, 0, fmt.Errorf("%w: renewal grace must be between 0 and %s, got %s", ErrConfig, MaxRenewalGrace, grace)
+		return nil, 0, "", fmt.Errorf("%w: renewal grace must be between 0 and %s, got %s", ErrConfig, MaxRenewalGrace, grace)
 	}
 	var r rotation
 	for _, opt := range opts {
@@ -219,24 +306,28 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 		}
 	}
 	if r.lifetimeSet && (r.lifetime <= 0 || r.lifetime > m.maxLifetime) {
-		return nil, 0, fmt.Errorf("%w: successor lifetime %s is outside 0 to the maximum %s",
+		return nil, 0, "", fmt.Errorf("%w: successor lifetime %s is outside 0 to the maximum %s",
 			ErrConfig, r.lifetime, m.maxLifetime)
 	}
 
 	old, err := m.loadStored(ctx, s.ID, "session: the session to renew could not be loaded")
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 
 	now := m.clock.Now()
 	if old.RotatedStrictly {
-		return nil, 0, lostToStrictRotation(old, now)
+		return nil, 0, "", lostToStrictRotation(old, now)
 	}
 	if err := m.judge(ctx, old, now, forRenewal); err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	kind := RenewalFresh
-	acceptUntil := minTime(now.Add(grace), old.AbsoluteExpiresAt)
+	// windowEnd is the instant a step must end before: the end of the window
+	// that is written. Recovery writes a window already closed, by
+	// construction, so it is bound by the grace counted from now instead.
+	windowEnd := now.Add(grace)
+	acceptUntil := minTime(windowEnd, old.AbsoluteExpiresAt)
 	if old.superseded() {
 		kind = RenewalReRotation
 		if !old.insideWindow(now) {
@@ -245,18 +336,21 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 		}
 		acceptUntil = minTime(acceptUntil, old.AcceptUntil)
 	}
+	if kind != RenewalRecovery {
+		windowEnd = acceptUntil
+	}
 
 	// The family maximum bounds every renewal, so a family already past its
 	// end under this manager's maximum cannot be renewed, whatever deadline
 	// the record itself still carries.
 	familyEnd := m.familyEnd(old)
 	if !now.Before(familyEnd) {
-		return nil, 0, ErrExpired
+		return nil, 0, "", ErrExpired
 	}
 
 	id, err := m.newIdentifier()
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	next := successorOf(old, id)
 	next.CreatedAt = now
@@ -266,6 +360,35 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 	}
 	next.AbsoluteExpiresAt = minTime(next.AbsoluteExpiresAt, familyEnd)
 	next.IdleExpiresAt = minTime(now.Add(m.idleTimeout), next.AbsoluteExpiresAt)
+
+	// The caller's step runs before the only write, so a step that fails
+	// leaves the old record exactly as it is: nothing superseded, nothing
+	// revoked, no successor stored. The window was counted from now, read
+	// before the step.
+	var tok string
+	if issue != nil {
+		if tok, err = issue(next); err != nil {
+			return nil, 0, "", err
+		}
+
+		// A step that outlived the family would store a successor for a
+		// family that has ended, whatever grace was asked for and whatever
+		// deadline the old record itself still carries, so it is refused
+		// ahead of the window check, which a grace of zero skips.
+		if !m.clock.Now().Before(familyEnd) {
+			return nil, 0, "", ErrExpired
+		}
+
+		// A step that outlived the whole window would have the supersession
+		// written with a window already closed, and the holder's requests
+		// still in flight under the old identifier would then read as reuse:
+		// a false theft alarm raised by a slow dependency. Nothing has been
+		// written, so the old identifier simply renews on the next attempt.
+		if grace > 0 && !m.clock.Now().Before(windowEnd) {
+			return nil, 0, "", diag.Wrap(context.DeadlineExceeded,
+				"session: the credential was issued after the grace window")
+		}
+	}
 
 	err = m.store.Supersede(ctx, Supersession{
 		Old:                         old.ID,
@@ -277,13 +400,13 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 		RequireUnpresentedSuccessor: kind == RenewalRecovery,
 	})
 	if errors.Is(err, ErrSuccessorAdvanced) {
-		return nil, 0, m.reuse(ctx, old, now)
+		return nil, 0, "", m.reuse(ctx, old, now)
 	}
 	if err != nil {
-		return nil, 0, storeFailed(err, "session: the session could not be renewed")
+		return nil, 0, "", storeFailed(err, "session: the session could not be renewed")
 	}
 
-	return next, kind, nil
+	return next, kind, tok, nil
 }
 
 // LoadForRenewal returns the session with this identifier for renewal: it is

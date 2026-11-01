@@ -26,6 +26,26 @@ import (
 
 // errUserStoreRefused is the connection error the user store answers with
 // while it is down. Its text names a host on purpose: it must reach no caller.
+// causeOnlyAuthenticator answers like real while up, and while down fails as
+// the uniform failure joined with only what failsWith returns, so it carries
+// the caller's cause but never ctx.Err() beneath it.
+type causeOnlyAuthenticator struct {
+	real      authenticate.Authenticator
+	down      *atomic.Bool
+	failsWith func(ctx context.Context) error
+}
+
+func (a causeOnlyAuthenticator) Authenticate(
+	ctx context.Context,
+	c identity.Credentials,
+) (*authenticate.Authentication, error) {
+	if a.down.Load() {
+		return nil, errors.Join(authenticate.ErrAuthenticationFailed, a.failsWith(ctx))
+	}
+
+	return a.real.Authenticate(ctx, c)
+}
+
 var errUserStoreRefused = errors.New("user store: connection refused to db-primary:5432")
 
 // outageRun is what one row's sequence produced: a wrong password while the
@@ -93,6 +113,12 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		// downErr is what the user store fails with while it is down, given
 		// the context the load ran on. nil means errUserStoreRefused.
 		downErr func(ctx context.Context) error
+
+		// failsWith, when set, replaces the real authenticator while the store
+		// is down with one that fails as ErrAuthenticationFailed joined with
+		// only what it returns, given the request's context: the authenticator
+		// of a consumer that reports context.Cause and nothing of ctx.Err().
+		failsWith func(ctx context.Context) error
 
 		// requests is how many requests are served while the store is down.
 		// Zero means outageRequests.
@@ -211,6 +237,15 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		return errUserStoreRefused
 	}
 
+	// cancelledWithCause is a client that hung up with a cause, so its
+	// context's error is context.Canceled and context.Cause is errClientGone.
+	cancelledWithCause := func(ctx context.Context) context.Context {
+		cctx, cancel := context.WithCancelCause(ctx)
+		cancel(errClientGone)
+
+		return cctx
+	}
+
 	// chargedToTheSource is what a row whose clients left during the load
 	// asserts, given how many did and the context error each left with: the
 	// store did not fail, the caller left, so each is the uniform failure,
@@ -316,6 +351,20 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			},
 		},
 		{
+			name:      "basic, from a client that hung up with a cause during the load",
+			enable:    basic,
+			request:   basicReq,
+			ctx:       cancelledWithCause,
+			failsWith: context.Cause,
+			requests:  1,
+			assert: func(t *testing.T, run outageRun) {
+				t.Helper()
+
+				chargedToTheSource(t, run, 1, errClientGone)
+				challenged(t, run)
+			},
+		},
+		{
 			name:    "basic, a slow store behind client timeouts never holds an account",
 			enable:  basic,
 			request: basicReq,
@@ -366,6 +415,20 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			},
 		},
 		{
+			name:      "form login, from a client that hung up with a cause during the load",
+			enable:    formLogin,
+			request:   formReq,
+			ctx:       cancelledWithCause,
+			failsWith: context.Cause,
+			requests:  1,
+			assert: func(t *testing.T, run outageRun) {
+				t.Helper()
+
+				chargedToTheSource(t, run, 1, errClientGone)
+				loggedIn(t, run)
+			},
+		},
+		{
 			name:    "form login, a slow store behind client timeouts never holds an account",
 			enable:  formLogin,
 			request: formReq,
@@ -411,6 +474,11 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 				authenticate.WithPasswordLogger(discardLogger()))
 			require.NoError(t, err)
 
+			var underTest authenticate.Authenticator = authn
+			if tc.failsWith != nil {
+				underTest = causeOnlyAuthenticator{real: authn, down: &down, failsWith: tc.failsWith}
+			}
+
 			holds, err := lockout.New(
 				lockout.WithWaitThreshold(2),
 				lockout.WithWait(time.Nanosecond, time.Nanosecond),
@@ -439,7 +507,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 			chain, err := httpsec.New(
 				httpsec.WithLogger(discardLogger()),
 				httpsec.WithPolicyEngine(engineOf(t, holds)),
-				tc.enable(t, authn, holds.Attempts(), limiter))
+				tc.enable(t, underTest, holds.Attempts(), limiter))
 			require.NoError(t, err)
 
 			// One real failure first, so the run shows both that a failure is

@@ -462,16 +462,29 @@ func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked,
 // holding a proof from an earlier check therefore cannot spend the same token
 // twice, and of several callers racing on one token exactly one succeeds.
 //
+// Expiry is judged here too, by the manager's clock at the spend: a token
+// whose expiry has passed since Check, including one checked a moment before
+// and held across a slow step, is refused at and after its expiry instant and
+// left unspent.
+//
 // Every failure is ErrInvalidToken: a token someone else already spent, one
-// that no longer exists, and a store that could not answer are the same answer
-// here for the same reason they are the same answer in Check. The store
-// failure is logged at error level, since nothing else records it.
+// that no longer exists, one that expired since it was checked, and a store
+// that could not answer are the same answer here for the same reason they are
+// the same answer in Check. The store failure is logged at error level, since
+// nothing else records it.
 func (m *Tokens) Consume(ctx context.Context, c Checked) error {
 	if c.token.ID.IsZero() {
 		return ErrInvalidToken
 	}
 
-	if err := m.store.Consume(ctx, c.token.ID, m.clock.Now()); err != nil {
+	// Expiry is judged again at the spend, by the clock read now: a caller's
+	// own step between Check and here may have outlasted it.
+	now := m.clock.Now()
+	if !now.Before(c.token.ExpiresAt) {
+		return ErrInvalidToken
+	}
+
+	if err := m.store.Consume(ctx, c.token.ID, now); err != nil {
 		if !errors.Is(err, ErrTokenNotFound) {
 			m.logger.LogAttrs(ctx, slog.LevelError, "onetime: marking the token consumed failed",
 				append([]slog.Attr{
@@ -499,6 +512,11 @@ func (m *Tokens) Consume(ctx context.Context, c Checked) error {
 //
 // A nil check is skipped, so a caller may assemble the slice conditionally
 // without guarding each entry.
+//
+// Expiry is judged again at the spend (see Consume): a token whose expiry
+// passes while the checks run, a slow check or the step that issues the
+// caller's credential included, is refused with ErrInvalidToken and stays
+// unspent.
 //
 // If the store cannot mark the token consumed, redemption returns
 // ErrInvalidToken and no record. Reporting anything else would let a caller

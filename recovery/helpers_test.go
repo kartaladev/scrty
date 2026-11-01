@@ -382,6 +382,36 @@ type completeEnv struct {
 	// altCodes is the saved-code manager a case gave the recoverer in place
 	// of the fixture's.
 	altCodes *recovery.Codes
+	// issueErr, when set, is what the credential issuer fails with.
+	issueErr atomic.Pointer[error]
+}
+
+// failIssue makes the credential issuer fail with err; nil clears it.
+func (e *completeEnv) failIssue(err error) {
+	if err == nil {
+		e.issueErr.Store(nil)
+
+		return
+	}
+
+	e.issueErr.Store(&err)
+}
+
+// issuedForPrefix starts every credential the env's issuer issues, which is
+// the prefix followed by the session's identifier.
+const issuedForPrefix = "issued-for-"
+
+// issueCredential is the env's credential issuer: it names the session, or
+// fails as failIssue armed it.
+func (e *completeEnv) issueCredential(_ context.Context, s *session.Session, user *identity.Details) (string, error) {
+	if err := e.issueErr.Load(); err != nil {
+		return "", *err
+	}
+	if user == nil || user.ID != s.UserID {
+		return "", errors.New("issued for a user the session does not name")
+	}
+
+	return issuedForPrefix + s.ID, nil
 }
 
 // failLookup makes loading ana by reference fail with err; nil clears it.
@@ -422,7 +452,11 @@ func newCompleteEnv(t *testing.T) *completeEnv {
 	e.kind.EXPECT().Held(gomock.Any(), anaID).DoAndReturn(e.held.held).AnyTimes()
 	e.kind.EXPECT().Remove(gomock.Any(), anaID, gomock.Any()).DoAndReturn(e.held.remove).AnyTimes()
 	e.limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
-	e.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	e.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).DoAndReturn(func(context.Context, string) error {
+		e.failures.Add(1)
+
+		return nil
+	}).AnyTimes()
 	e.sender.EXPECT().Send(gomock.Any(), gomock.Any()).DoAndReturn(e.out.send).AnyTimes()
 
 	return e
@@ -483,7 +517,10 @@ func (e *completeEnv) recoverer(t *testing.T, extra ...recovery.Option) *recover
 // recovererOpts enables every proof kind over the env, with the capturing
 // messages, followed by extra.
 func (e *completeEnv) recovererOpts(extra ...recovery.Option) []recovery.Option {
-	return e.opts(append([]recovery.Option{recovery.WithMessages(e.capturingMessages())}, extra...)...)
+	return e.opts(append([]recovery.Option{
+		recovery.WithMessages(e.capturingMessages()),
+		recovery.WithCredentialIssuer(e.issueCredential),
+	}, extra...)...)
 }
 
 // priorSessions creates n sessions for ana, as earlier logins would have.

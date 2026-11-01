@@ -153,6 +153,15 @@ func LoginTailDepsForTest(
 	return loginTailDeps{engine: engine, sessions: sessions, tokens: tokens, enforced: everyBuiltInEnforced()}
 }
 
+// PrepareLoginForTest exposes the login tail's first half, which a redemption
+// runs inside its redeemer's checks, so a test can pin that it stores nothing
+// and what it leaves for the commit.
+var PrepareLoginForTest = prepareLogin
+
+// CommitLoginForTest runs the login tail's second half on l, which a
+// redemption runs once its single-use credential is spent.
+func CommitLoginForTest(ex *Exchange, l *preparedLogin) (string, error) { return l.commit(ex) }
+
 // EnableGateForTest records the built-in gate for kind as enabled, exactly as
 // its Enable option does, without registering the gate itself. A test whose
 // policy raises kind uses it to pin what raising the kind does rather than what

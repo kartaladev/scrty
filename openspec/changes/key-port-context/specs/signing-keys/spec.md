@@ -39,3 +39,10 @@ Issuance SHALL ask for a signing key once for each token, and SHALL use the sign
 #### Scenario: The key manager reports a missing key
 - **WHEN** a key manager configured only for RS256 is asked for an EdDSA signer
 - **THEN** it returns an error matching the no-key error
+
+### Requirement: A key for an unconfigured algorithm is published but never signed with
+A key found in the store for an algorithm the manager was not configured with SHALL be published among the verification keys, so a token another replica signed with it still verifies, and SHALL NOT be made current. Requesting a signer for an algorithm the manager was not configured with SHALL return the no-key error.
+
+#### Scenario: A replica publishes another replica's algorithm without adopting it
+- **WHEN** a manager configured for RS256 alone starts over a store that also holds an ES256 key
+- **THEN** the ES256 key is published among the verification keys, requesting an ES256 signer returns an error matching the no-key error, and the ES256 key is not exempt from housekeeping

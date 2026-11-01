@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -22,8 +25,11 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // errMagicLinkDenied is what a consumer's policy refuses these redemptions
@@ -277,6 +283,25 @@ func TestMagicLinkPolicyCheck(t *testing.T) {
 
 				assert.ErrorIs(t, h.redeem(t, c, token, nonce).err, magiclink.ErrInvalidLink,
 					"the link was spent")
+			},
+		},
+		{
+			// Refused inside the check, before the redemption builds, issues
+			// or spends anything: a wiring fault is never the holder's to pay
+			// for with their link.
+			name: "a challenge nothing enforces refuses, issues nothing and leaves the link redeemable",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return challengingEngine(t, policy.ChallengeMFA)
+			},
+			assert: func(t *testing.T, h *magicLinkHarness, _ *httpsec.Chain, token, nonce string, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrConfig)
+				assert.Zero(t, h.activeSessions(t), "no session is created")
+				assert.Zero(t, h.issued.Load(), "and no token is issued")
+
+				allowing := newMagicLinkChainFor(t, h)
+				require.NoError(t, h.redeem(t, allowing, token, nonce).err)
 			},
 		},
 		{
@@ -629,8 +654,12 @@ func TestRedeemerGuard(t *testing.T) {
 	type testCase struct {
 		name     string
 		redeemer func(h *magicLinkHarness) httpsec.Redeemer
-		engine   func(t *testing.T) *policy.Engine
-		assert   func(t *testing.T, h *magicLinkHarness, out served)
+
+		// arrange, when set, configures the harness further once the link is
+		// sent, before the redeeming chain is built.
+		arrange func(t *testing.T, h *magicLinkHarness)
+		engine  func(t *testing.T) *policy.Engine
+		assert  func(t *testing.T, h *magicLinkHarness, out served)
 	}
 
 	// discardsTheDeny runs the check it was handed, sees the refusal and
@@ -662,6 +691,161 @@ func TestRedeemerGuard(t *testing.T) {
 			}, nil
 		})
 	}
+
+	user := identity.Principal{ID: magicLinkUserID, Username: magicLinkKnown}
+	another := identity.Principal{ID: "u-someone-else", Username: "else@example.com"}
+
+	// policyOnly runs the policy check, the first the endpoint hands over, and
+	// never the issuing check, the last, so nothing was issued for the login
+	// it reports.
+	policyOnly := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			if err := checks[0](ctx, user, time.Time{}); err != nil {
+				return magiclink.Redemption{}, err
+			}
+
+			return magiclink.Redemption{Principal: user}, nil
+		})
+	}
+
+	// runsTwice is a faithful redeemer that runs every check twice.
+	runsTwice := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			for range 2 {
+				for _, check := range checks {
+					if err := check(ctx, user, time.Time{}); err != nil {
+						return magiclink.Redemption{}, err
+					}
+				}
+			}
+
+			return magiclink.Redemption{Principal: user}, nil
+		})
+	}
+
+	// rechecksAnother runs every check for the user, then runs the policy check
+	// again for another user and ignores what it said, and reports that other
+	// user: the policy decision now names the other user, and the credential
+	// was issued for the first.
+	rechecksAnother := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			for _, check := range checks {
+				if err := check(ctx, user, time.Time{}); err != nil {
+					return magiclink.Redemption{}, err
+				}
+			}
+
+			_ = checks[0](ctx, another, time.Time{})
+
+			return magiclink.Redemption{Principal: another}, nil
+		})
+	}
+
+	// errIssuedForAnother is what issuedForAnother reports when the issuing
+	// check lets it through for a second login.
+	errIssuedForAnother := errors.New("magiclink_test: the issuing check accepted a second login")
+
+	// issuedForAnother is a faithful redeemer that, once it has run every check
+	// for the user, runs them all again for another user, and reports a
+	// sentinel when the issuing check does not refuse that.
+	issuedForAnother := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			for _, check := range checks {
+				if err := check(ctx, user, time.Time{}); err != nil {
+					return magiclink.Redemption{}, err
+				}
+			}
+
+			for _, check := range checks {
+				if err := check(ctx, another, time.Time{}); err != nil {
+					return magiclink.Redemption{}, err
+				}
+			}
+
+			return magiclink.Redemption{}, errIssuedForAnother
+		})
+	}
+
+	// retriesAfterIssueFailure runs the checks, and when they fail runs them
+	// once more, as a redeemer that retries a transient failure does; its
+	// consume then fails, reporting the first attempt's error beside the
+	// refusal.
+	retriesAfterIssueFailure := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			var first error
+
+			for range 2 {
+				var err error
+
+				for _, check := range checks {
+					if err = check(ctx, user, time.Time{}); err != nil {
+						break
+					}
+				}
+
+				if err == nil {
+					break
+				}
+
+				if first == nil {
+					first = err
+				}
+			}
+
+			return magiclink.Redemption{}, errors.Join(first, magiclink.ErrInvalidLink)
+		})
+	}
+
+	// retriesAndReportsFirst runs the checks twice, as a redeemer that retries
+	// does, and returns the first attempt's error: when every issue failed,
+	// the error it returns is not the one the endpoint recorded last.
+	retriesAndReportsFirst := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			var first error
+
+			for range 2 {
+				for _, check := range checks {
+					if err := check(ctx, user, time.Time{}); err != nil {
+						if first == nil {
+							first = err
+						}
+
+						break
+					}
+				}
+			}
+
+			return magiclink.Redemption{}, first
+		})
+	}
+
+	// retriedCharges counts the failures recorded against the source by the
+	// row that retries after an issuing failure.
+	var retriedCharges atomic.Int32
 
 	establishedNothing := func(t *testing.T, h *magicLinkHarness) {
 		t.Helper()
@@ -697,6 +881,110 @@ func TestRedeemerGuard(t *testing.T) {
 			},
 		},
 		{
+			// The policy check allowed, so only the guard noticing that the
+			// issuing check never ran can refuse this.
+			name:     "a redeemer that runs the policy check and never the issuing check",
+			redeemer: policyOnly,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied,
+					"nothing was issued for the login it reports")
+				establishedNothing(t, h)
+			},
+		},
+		{
+			name:     "a redeemer that runs every check twice issues once and stores one session",
+			redeemer: runsTwice,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, int64(1), h.issued.Load(), "the credential is issued once")
+				assert.Equal(t, 1, h.activeSessions(t))
+			},
+		},
+		{
+			name:     "a redeemer that runs the policy check again for another user after issuing",
+			redeemer: rechecksAnother,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied,
+					"the decision names a login the credential was not issued for")
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			name:     "a redeemer that runs the issuing check again for another user is refused by it",
+			redeemer: issuedForAnother,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied,
+					"the issuing check refuses a second login itself")
+				require.NotErrorIs(t, out.err, errIssuedForAnother)
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			// The first issue fails and the retried one succeeds, so the
+			// consume's refusal is a failed guess like any other, though the
+			// redeemer reports the first attempt's error beside it.
+			name:     "a redeemer whose retried issue succeeded and whose consume then failed is charged",
+			redeemer: retriesAfterIssueFailure,
+			arrange: func(t *testing.T, h *magicLinkHarness) {
+				var calls atomic.Int32
+
+				g := NewMockGenerator(gomock.NewController(t))
+				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
+						if calls.Add(1) == 1 {
+							return "", errKeySourceDown
+						}
+
+						return "issued-token", nil
+					})
+				h.tokens = g
+
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+				l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(context.Context, string) error {
+						retriedCharges.Add(1)
+
+						return nil
+					})
+				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(l))
+			},
+			engine: func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, magiclink.ErrInvalidLink)
+				// The accepted answer: a refusal joined beside the first
+				// issuing failure is an issuing failure for the mapping.
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.Equal(t, int32(1), retriedCharges.Load(),
+					"a failed consume after a successful issue is a failed guess")
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			// Each failed issue is a new error, so the first one the redeemer
+			// returns is not the last the endpoint recorded; it is still an
+			// outage, and the source is not charged for it.
+			name:     "a redeemer whose every issue failed and that returns its first failure is not charged",
+			redeemer: retriesAndReportsFirst,
+			arrange: func(t *testing.T, h *magicLinkHarness) {
+				g := NewMockGenerator(gomock.NewController(t))
+				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					Return("", errKeySourceDown)
+				h.tokens = g
+				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, 0)))
+			},
+			engine: func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, errKeySourceDown)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
 			name:     "the built-in redeemer with an allowing policy succeeds",
 			redeemer: func(*magicLinkHarness) httpsec.Redeemer { return nil },
 			engine:   func(*testing.T) *policy.Engine { return nil },
@@ -720,6 +1008,10 @@ func TestRedeemerGuard(t *testing.T) {
 
 			if r := tc.redeemer(h); r != nil {
 				h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkRedeemer(r))
+			}
+
+			if tc.arrange != nil {
+				tc.arrange(t, h)
 			}
 
 			h.engine = tc.engine(t)
@@ -1287,6 +1579,421 @@ func TestMagicLinkRedirects(t *testing.T) {
 			require.NoError(t, out.err)
 
 			tc.assert(t, h.sender.lastNext(t), nil)
+		})
+	}
+}
+
+// errKeySourceDown stands for a remote key source that cannot sign while a
+// redemption issues its credential. Its text names an internal host, which no
+// returned error may carry.
+var errKeySourceDown = errors.New("redemption_test: kms unreachable at 10.0.0.7")
+
+// recordingIssuer is a token generator that fails with errKeySourceDown until
+// healthy is set, and records the session identifier each token it was asked
+// for names, whether or not it issued it. Every token it issues is the
+// identifier behind a fixed prefix, so a response's access token tells a test
+// which session the winner's credential names.
+type recordingIssuer struct {
+	healthy atomic.Bool
+
+	mu    sync.Mutex
+	named []string
+}
+
+func (r *recordingIssuer) generator(t *testing.T) *MockGenerator {
+	t.Helper()
+
+	g := NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+			r.mu.Lock()
+			r.named = append(r.named, id)
+			r.mu.Unlock()
+
+			if !r.healthy.Load() {
+				return "", errKeySourceDown
+			}
+
+			return recordedTokenPrefix + id, nil
+		})
+
+	return g
+}
+
+// recordedTokenPrefix is what every token a recordingIssuer issues starts with.
+const recordedTokenPrefix = "token-for-"
+
+// names is every session identifier a token was asked for, in order.
+func (r *recordingIssuer) names() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.named...)
+}
+
+// requireIssuingOutage asserts that err is a redemption that failed because
+// its credential could not be issued: a dependency failure from which the key
+// source's error is reachable, answered 500, and not refused as an invalid
+// link, a missing authentication or a policy decision.
+func requireIssuingOutage(t *testing.T, err error, refusal error) {
+	t.Helper()
+
+	require.ErrorIs(t, err, errKeySourceDown, "the key source's error stays reachable")
+	assert.NotErrorIs(t, err, refusal, "an outage is not the invalid-credential refusal")
+	assert.NotErrorIs(t, err, httpsec.ErrAuthenticationRequired, "an outage is not a refusal")
+	assert.NotErrorIs(t, err, policy.ErrDenied, "an outage is not a policy decision")
+	assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(err))
+	assert.NotContains(t, err.Error(), "10.0.0.7", "the dependency's own text stays out of the error")
+}
+
+// TestMagicLink_CredentialCannotBeIssuedKeepsLink pins that a link is spent
+// only by a redemption that goes on to succeed: a credential that cannot be
+// issued is a dependency failure, stores no session, costs the link nothing
+// and is not charged to the source. Ten such failures from one source are
+// followed by an eleventh redemption from that same source once the key source
+// recovers, which succeeds only if the link survived and none of the ten
+// counted against the source's allowance of ten.
+func TestMagicLink_CredentialCannotBeIssuedKeepsLink(t *testing.T) {
+	t.Parallel()
+
+	h := newMagicLinkHarness(t)
+	token, nonce := h.link(t, h.chain(t))
+
+	issuer := &recordingIssuer{}
+	h.tokens = issuer.generator(t)
+
+	// Exactly one failure is recorded with the source limiter: the reuse of
+	// the spent link at the end. The ten issuing failures record none.
+	h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, 1)))
+	c := h.chain(t)
+
+	for i := range 10 {
+		out := h.redeem(t, c, token, nonce)
+
+		requireIssuingOutage(t, out.err, magiclink.ErrInvalidLink)
+		require.Zero(t, h.activeSessions(t), "redemption %d stored a session", i+1)
+	}
+
+	issuer.healthy.Store(true)
+
+	out := h.redeem(t, c, token, nonce)
+	require.NoError(t, out.err, "the link survived, and the source was charged nothing")
+	assert.Equal(t, 1, h.activeSessions(t))
+
+	again := h.redeem(t, c, token, nonce)
+	require.ErrorIs(t, again.err, magiclink.ErrInvalidLink, "the redemption that succeeded spent it")
+}
+
+// TestMagicLink_IssuingFailureCancelsNoHeldRecovery pins that a redemption
+// whose credential cannot be issued cancels nothing: the link is not spent, so
+// the first factor is not yet proved, and the user's held recovery still
+// completes once its delay has passed. The same link then redeems once the key
+// source recovers, and that redemption cancels the hold.
+func TestMagicLink_IssuingFailureCancelsNoHeldRecovery(t *testing.T) {
+	t.Parallel()
+
+	h := newRecoveryHarness(t)
+	h.withHold()
+
+	issuer := &recordingIssuer{}
+	h.tokens = issuer.generator(t)
+	h.withMagicLink(t)
+	h.build(t)
+
+	held := h.hold(t)
+
+	asked := serve(t, h.chain, postValues(t.Context(), httpsec.DefaultMagicLinkRequestPath, e2eSource,
+		url.Values{httpsec.DefaultMagicLinkAddressParam: {e2eAddress}, httpsec.DefaultMagicLinkNextParam: {"/"}}))
+	require.NoError(t, asked.err)
+
+	cookie := cookieNamed(asked.rec, httpsec.DefaultBindingCookieName)
+	require.NotNil(t, cookie)
+
+	tok := h.sender.lastToken(t)
+	consume := func() served {
+		req := postValues(t.Context(), httpsec.DefaultMagicLinkConsumePath, e2eSource,
+			url.Values{httpsec.DefaultMagicLinkTokenParam: {tok}})
+		req.AddCookie(bindingCookie(cookie.Value))
+
+		return serve(t, h.chain, req)
+	}
+
+	failed := consume()
+	requireIssuingOutage(t, failed.err, magiclink.ErrInvalidLink)
+	require.Zero(t, h.activeSessions(t), "the failed redemption stored no session")
+
+	issuer.healthy.Store(true)
+	h.clock.Advance(recoveryHoldDelay)
+
+	finished := h.finish(t, held.completion)
+	require.NoError(t, finished.err, "the failed redemption cancelled nothing")
+	require.Equal(t, http.StatusOK, finished.rec.Code)
+
+	redone := consume()
+	require.NoError(t, redone.err, "the link survived the failed redemption")
+}
+
+// TestMagicLink_RacingRedemptionsStoreOneSession pins that of 16 redemptions
+// of one link racing each other, exactly one succeeds and stores a session.
+// Each racer may build and issue its credential before the consume decides
+// between them; a loser's credential names a session that was never stored,
+// so presented as a bearer session reference it authenticates nothing.
+func TestMagicLink_RacingRedemptionsStoreOneSession(t *testing.T) {
+	t.Parallel()
+
+	const racers = 16
+
+	h := newMagicLinkHarness(t)
+	token, nonce := h.link(t, h.chain(t))
+
+	issuer := &recordingIssuer{}
+	issuer.healthy.Store(true)
+	h.tokens = issuer.generator(t)
+	c := h.chain(t)
+
+	var (
+		start, done sync.WaitGroup
+		mu          sync.Mutex
+		winners     []served
+		refused     atomic.Int64
+	)
+
+	start.Add(1)
+
+	for i := range racers {
+		done.Add(1)
+
+		go func() {
+			defer done.Done()
+
+			start.Wait()
+
+			// Distinct sources, so no racer is throttled by another's loss.
+			out := h.redeemFrom(t, c, "203.0.113."+strconv.Itoa(10+i), token, nonce)
+			switch {
+			case out.err == nil:
+				mu.Lock()
+				winners = append(winners, out)
+				mu.Unlock()
+			case assert.ErrorIs(t, out.err, magiclink.ErrInvalidLink, "a loser is refused uniformly"):
+				refused.Add(1)
+			}
+		}()
+	}
+
+	start.Done()
+	done.Wait()
+
+	require.Len(t, winners, 1, "exactly one racer redeems")
+	assert.Equal(t, int64(racers-1), refused.Load())
+	assert.Equal(t, 1, h.activeSessions(t), "the store holds exactly one session for the user")
+
+	var body magicLinkBody
+	require.NoError(t, json.Unmarshal(winners[0].rec.Body.Bytes(), &body))
+	winner, ok := strings.CutPrefix(body.AccessToken, recordedTokenPrefix)
+	require.True(t, ok, "the winner's credential is one the issuer issued")
+
+	named := issuer.names()
+	assert.LessOrEqual(t, len(named), racers, "a racer issues at most once")
+	assert.Contains(t, named, winner)
+
+	// A session reference is the credential the session-reference bearer
+	// accepts, so presenting each identifier a token was issued for asks the
+	// store directly whether that session exists.
+	bearer, err := httpsec.New(httpsec.EnableSessionBearer(
+		httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}))
+	require.NoError(t, err)
+
+	for _, id := range named {
+		req := getFrom(t.Context(), "/account", magicLinkSource)
+		req.Header.Set("Authorization", "Bearer "+id)
+
+		out := serve(t, bearer, req)
+		if id == winner {
+			require.NoError(t, out.err, "the winner's session was stored")
+			assert.True(t, out.handlerRan)
+
+			continue
+		}
+
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired,
+			"a loser's credential names a session that was never stored")
+		assert.False(t, out.handlerRan)
+	}
+}
+
+// TestMagicLink_ChallengeStoresMarkedSessionOnceAfterConsume pins where a
+// challenge raised at redemption leaves its session: built and marked before
+// the link is spent, and stored, mark and all, in the one write that creates
+// it, after the consume. The store probes the link from inside that write, so
+// a session stored before the consume would find the link still redeemable.
+func TestMagicLink_ChallengeStoresMarkedSessionOnceAfterConsume(t *testing.T) {
+	t.Parallel()
+
+	h := newMagicLinkHarness(t)
+
+	mem, err := session.NewMemoryStore()
+	require.NoError(t, err)
+
+	var (
+		mu           sync.Mutex
+		created      []session.Session
+		saves        int
+		probe        error
+		token, nonce string
+	)
+
+	store := NewMockStore(gomock.NewController(t))
+	store.EXPECT().Create(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, s *session.Session) error {
+			mu.Lock()
+			created = append(created, *s)
+			mu.Unlock()
+
+			// Spends nothing when the redemption has already consumed the link,
+			// which is the order under test.
+			_, probe = h.manager.Redeem(ctx, token, nonce)
+
+			return mem.Create(ctx, s)
+		})
+	store.EXPECT().Save(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, s *session.Session) error {
+			mu.Lock()
+			saves++
+			mu.Unlock()
+
+			return mem.Save(ctx, s)
+		})
+	store.EXPECT().Load(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.Load)
+	store.EXPECT().CountActiveByUser(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.CountActiveByUser)
+
+	h.sessions, err = session.New(session.WithStore(store))
+	require.NoError(t, err)
+
+	token, nonce = h.link(t, h.chain(t))
+
+	h.engine = challengingEngine(t, policy.ChallengeMFA)
+	h.chainOpts = []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFA)}
+
+	out := h.redeem(t, h.chain(t), token, nonce)
+
+	var ch *httpsec.ChallengeError
+	require.ErrorAs(t, out.err, &ch)
+	require.NotNil(t, ch.Session)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Len(t, created, 1, "the session is created once")
+	assert.Equal(t, ch.Session.ID, created[0].ID)
+	assert.Equal(t, session.MFAPending, created[0].MFA, "the creating write carries the mark")
+	assert.Zero(t, saves, "no later save was needed to record the mark")
+	require.ErrorIs(t, probe, magiclink.ErrInvalidLink, "the link was spent before the session was stored")
+}
+
+// lastReadStore is a one-time token store that remembers the identifier of the
+// record it was last asked for, so a test can read back the record a
+// redemption touched and see whether it was spent.
+type lastReadStore struct {
+	*onetime.MemoryStore
+
+	mu   sync.Mutex
+	last id.ID
+}
+
+func (s *lastReadStore) FindByID(ctx context.Context, tokenID id.ID) (*onetime.Token, error) {
+	s.mu.Lock()
+	s.last = tokenID
+	s.mu.Unlock()
+
+	return s.MemoryStore.FindByID(ctx, tokenID)
+}
+
+// spent reports whether the record the store was last asked for is consumed.
+func (s *lastReadStore) spent(t *testing.T) bool {
+	t.Helper()
+
+	s.mu.Lock()
+	tokenID := s.last
+	s.mu.Unlock()
+
+	rec, err := s.MemoryStore.FindByID(t.Context(), tokenID)
+	require.NoError(t, err)
+
+	return !rec.ConsumedAt.IsZero()
+}
+
+// TestMagicLink_LinkExpiringWhileCredentialIssuedIsRefusedUnspent pins that a
+// link is spent only before it expires, judged at the spend: the credential is
+// issued between the check and the consume, and a link whose expiry passes
+// while it is signed is refused as an invalid link, stores no session, stays
+// unspent and costs its source one recorded failure, as any other refusal does.
+func TestMagicLink_LinkExpiringWhileCredentialIssuedIsRefusedUnspent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ttl      = time.Minute
+		tookTime = 2 * time.Second
+	)
+
+	tests := map[string]struct {
+		// waited is how long the link sits before it is redeemed, and
+		// failures the number the source limiter is expected to record.
+		waited   time.Duration
+		failures int
+		assert   func(t *testing.T, h *magicLinkHarness, store *lastReadStore, out served)
+	}{
+		"expires while the credential is issued": {
+			waited:   59 * time.Second,
+			failures: 1,
+			assert: func(t *testing.T, h *magicLinkHarness, store *lastReadStore, out served) {
+				require.ErrorIs(t, out.err, magiclink.ErrInvalidLink)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan, "the application never sees the redemption")
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+				assert.False(t, store.spent(t), "the link stays unspent")
+			},
+		},
+		"still live when the credential is issued": {
+			waited:   10 * time.Second,
+			failures: 0,
+			assert: func(t *testing.T, h *magicLinkHarness, store *lastReadStore, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, 1, h.activeSessions(t))
+				assert.True(t, store.spent(t), "the redemption spent it")
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+			store := &lastReadStore{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
+
+			h := newMagicLinkHarness(t)
+			onetimes := must.Must(onetime.New("magic-link",
+				onetime.WithClock(clk), onetime.WithStore(store), onetime.WithTokenTTL(ttl)))
+			h.manager = must.Must(magiclink.New(onetimes, h.users, h.sender, "https://app.example.com"))
+
+			// The generator is the step between the check and the consume: it
+			// takes tookTime of the link's clock to sign.
+			h.tokens = NewMockGenerator(gomock.NewController(t))
+			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
+					clk.Advance(tookTime)
+
+					return "issued-token", nil
+				})
+
+			h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, tc.failures)))
+			c := h.chain(t)
+
+			token, nonce := h.link(t, c)
+			clk.Advance(tc.waited)
+
+			tc.assert(t, h, store, h.redeem(t, c, token, nonce))
 		})
 	}
 }

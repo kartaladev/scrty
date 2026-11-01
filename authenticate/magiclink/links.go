@@ -101,6 +101,14 @@ type Redemption struct {
 // that wrote something would write it once per racing attempt rather than once
 // per sign-in.
 //
+// A caller may also issue the credential the link will sign in with between
+// the checks and the consume, as the library's HTTP endpoint does, from a
+// check of its own run after the consumer's: issuing writes no state, so a
+// credential that cannot be issued leaves the link redeemable. A redemption
+// that then loses the consume to a racing one discards what it issued: the
+// session that credential names is never stored. Only the atomic consume
+// decides which redemption signs in.
+//
 // The first check that returns an error stops the redemption, later checks do
 // not run, and the error is returned to the caller unchanged — it is the
 // consumer's contract with their own caller, and the library has no business
@@ -516,6 +524,10 @@ func defaultRenderer(link, _ string) notify.Message {
 // bindingNonce is the value RequestResult carried back from the device that
 // asked for the link. It is ignored when WithSameDeviceBinding(false) was
 // given.
+//
+// Expiry is judged again at the spend: a link whose expiry passes while the
+// checks run, a slow check or the step that issues the caller's credential
+// included, is refused as ErrInvalidLink and stays unspent.
 //
 // Every failure except a consumer check's is ErrInvalidLink: a caller cannot
 // tell a wrong token from a disabled user from a store outage. A consumer

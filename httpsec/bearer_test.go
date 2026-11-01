@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // TestBearerToken pins which Authorization headers bearer authentication
@@ -138,8 +140,11 @@ func TestBearerToken(t *testing.T) {
 		{
 			name: "a tampered token is refused uniformly and its cause is logged",
 			wire: func(_ *testing.T, h *authHarness) {
+				// A rejection matches token.ErrInvalid, as the verifier's
+				// contract requires; any other error is an outage, not a
+				// refused token.
 				h.verifier.EXPECT().Verify(gomock.Any(), "abc.def.tampered").
-					Return(nil, errors.New("token: invalid: signature verification failed"))
+					Return(nil, fmt.Errorf("%w: signature verification failed", token.ErrInvalid))
 				// No expectation on the store or the loader: a token that did
 				// not verify names nothing worth looking up.
 			},
@@ -176,7 +181,8 @@ func TestBearerToken(t *testing.T) {
 
 // TestBearerSessionResolution pins that a token is a reference to live state:
 // the session must still exist and the user is reloaded, and none of the ways
-// that fails is distinguishable from the others.
+// that refuses is distinguishable from the others. A user store that cannot
+// answer is a dependency failure, not a refusal.
 func TestBearerSessionResolution(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +191,8 @@ func TestBearerSessionResolution(t *testing.T) {
 		wire   func(t *testing.T, h *authHarness)
 		assert func(t *testing.T, h *authHarness, s served)
 	}
+
+	errUsersDown := errors.New("users: connection refused")
 
 	unauthenticated := func(t *testing.T, _ *authHarness, s served) {
 		require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
@@ -248,9 +256,17 @@ func TestBearerSessionResolution(t *testing.T) {
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
 				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
-					Return(nil, errors.New("users: connection refused"))
+					Return(nil, errUsersDown)
 			},
-			assert: unauthenticated,
+			// A dependency failure, not a refusal: an outage of the user store
+			// must not log every caller out.
+			assert: func(t *testing.T, _ *authHarness, s served) {
+				require.ErrorIs(t, s.err, errUsersDown)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: user could not be reloaded", s.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.False(t, s.handlerRan)
+			},
 		},
 		{
 			name: "the user is reloaded, so the roles are the store's and not the token's",
@@ -1163,6 +1179,393 @@ func TestBearer_AuthenticatesOnlyOwnActiveUser(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, newOwnUserFixture(t, tc.mode, tc.extra))
+		})
+	}
+}
+
+// verificationKeysDown is a consumer key source whose key service cannot be
+// reached: it signs with the keys it wraps, and cannot supply the keys to
+// verify against.
+type verificationKeysDown struct {
+	signingkey.KeySource
+
+	err error
+}
+
+func (s verificationKeysDown) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
+	return nil, s.err
+}
+
+// The issuer and audience the key-source tests issue and verify under.
+const (
+	keySourceTestIssuer   = "https://issuer.example"
+	keySourceTestAudience = "orders-api"
+)
+
+// TestBearer_KeySourceOutageIsNotARefusal pins that a token the bearer cannot
+// verify because the key source fails is a dependency failure, not a refused
+// token: fixed library text, the key source's error reachable, 500 by default,
+// recorded by a fixed reason and the error's type and never its text. A token
+// the same real verifier rejects is still refused. Real keys, a real generator
+// and a real verifier are used, because the split rests on what the verifier
+// reports for each.
+func TestBearer_KeySourceOutageIsNotARefusal(t *testing.T) {
+	t.Parallel()
+
+	errKMSTimeout := errors.New("kms: dependency timeout")
+	errKMSNamesKey := errors.New("kms: arn:aws:kms:eu-west-1:111122223333:key/abcd is unavailable")
+
+	type testCase struct {
+		name string
+
+		// verifyingWith is the key source the bearer's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(t *testing.T, signedBy *signingkey.Keys) signingkey.KeySource
+
+		assert func(t *testing.T, h *authHarness, out served)
+	}
+
+	down := func(err error) func(*testing.T, *signingkey.Keys) signingkey.KeySource {
+		return func(_ *testing.T, signedBy *signingkey.Keys) signingkey.KeySource {
+			return verificationKeysDown{KeySource: signedBy, err: err}
+		}
+	}
+
+	// unavailable asserts the outage answer to cause; no record may contain
+	// cause's text, nor any of leaks, the parts of it that name the key.
+	unavailable := func(cause error, leaks ...string) func(t *testing.T, h *authHarness, out served) {
+		return func(t *testing.T, h *authHarness, out served) {
+			t.Helper()
+
+			require.Error(t, out.err)
+			assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+				"an outage was answered as a refused token")
+			assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+			assert.NotErrorIs(t, out.err, token.ErrInvalid)
+			require.ErrorIs(t, out.err, cause, "the key source's error stays reachable")
+			assert.Equal(t, "httpsec: verification keys unavailable", out.err.Error(), "the text is the library's")
+			assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+			assert.False(t, out.handlerRan)
+
+			r := assertFailureRecord(t, h.logs.records(), "verification-keys")
+			assert.Equal(t, slog.LevelError, r.Level, "an outage is visible to an operator")
+
+			for i, rec := range h.logs.records() {
+				assert.NotContains(t, recordText(rec), cause.Error(), "record %d carries the key source's text", i)
+
+				for _, leak := range leaks {
+					assert.NotContains(t, recordText(rec), leak, "record %d names the key", i)
+				}
+			}
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:          "the key source cannot supply the verification keys",
+			verifyingWith: down(errKMSTimeout),
+			assert:        unavailable(errKMSTimeout),
+		},
+		{
+			name:          "a key source whose error names its key",
+			verifyingWith: down(errKMSNamesKey),
+			assert:        unavailable(errKMSNamesKey, "arn:aws:kms:", "111122223333", "key/abcd"),
+		},
+		{
+			name: "a token signed by a key the source does not hold is still refused",
+			verifyingWith: func(t *testing.T, _ *signingkey.Keys) signingkey.KeySource {
+				t.Helper()
+
+				other, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+				require.NoError(t, err)
+
+				return other
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+				assert.ErrorIs(t, out.err, token.ErrInvalid)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+
+				_, ok := recordAt(h.logs.records(), slog.LevelDebug, "httpsec: a bearer token did not verify")
+				assert.True(t, ok, "a refused token is recorded at debug, as before")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys,
+				token.WithIssuer(keySourceTestIssuer), token.WithAudience(keySourceTestAudience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testSubject})
+			require.NoError(t, err)
+
+			verifier, err := token.NewVerifier(
+				token.WithVerifyKeySource(tc.verifyingWith(t, keys)),
+				token.WithVerifyIssuer(keySourceTestIssuer),
+				token.WithVerifyAudience(keySourceTestAudience),
+			)
+			require.NoError(t, err)
+
+			// No expectation on the store or the loader: a token that was not
+			// verified names nothing worth looking up.
+			h := newAuthHarness(t)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+					Verifier: verifier, Sessions: h.sessions, Users: h.users,
+				}),
+			)
+			require.NoError(t, err)
+
+			tc.assert(t, h, serve(t, chain, bearerRequest(t.Context(), "Bearer "+tok)))
+		})
+	}
+}
+
+// TestBearer_HangUpDuringVerificationIsNotAnOutage pins that a request whose
+// own context ended while its token was verified is neither refused nor
+// reported as a key outage: it fails with an error matching the context's
+// error, behind fixed text of its own, and writes no ERROR record. A key
+// source that times out on a deadline of its own while the request is still
+// live is an outage all the same. Real keys, a real generator and a real
+// verifier are used, because the JOSE stack checks the context itself.
+func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// ctx modifies the request's own context; nil leaves it live.
+		ctx func(ctx context.Context) context.Context
+
+		// verifyingWith is the key source the bearer's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(signedBy *signingkey.Keys) signingkey.KeySource
+
+		// verifier, when set, replaces the real verifier with a double.
+		verifier func(ctrl *gomock.Controller) token.Verifier
+
+		assert func(t *testing.T, h *authHarness, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "the client left before the token was verified",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource { return signedBy },
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, context.Canceled)
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"a client that left was answered as a refused token")
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its token was verified", out.err.Error(),
+					"a client that left is not reported as a key outage")
+				assert.False(t, out.handlerRan)
+
+				for i, r := range h.logs.records() {
+					reason, _ := attrValue(r, "reason")
+					assert.NotEqual(t, "verification-keys", reason.String(),
+						"record %d reports a key outage", i)
+					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
+						i, r.Level, r.Message)
+					assert.NotContains(t, recordText(r), context.Canceled.Error(),
+						"record %d carries the error's text", i)
+				}
+			},
+		},
+		{
+			// A request cancelled with a cause reports that cause through
+			// context.Cause, and a dependency that returns it has returned the
+			// request's own ending, not a failure of its own.
+			name: "the client left with a cause, which the verifier returns",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errClientGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, fmt.Errorf("kms: %w", context.Cause(ctx))
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, errClientGone, "the cause stays reachable")
+				assert.ErrorIs(t, out.err, context.Canceled)
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"a client that left was answered as a refused token")
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its token was verified", out.err.Error(),
+					"a client that left is not reported as a key outage")
+				assert.False(t, out.handlerRan)
+
+				for i, r := range h.logs.records() {
+					reason, _ := attrValue(r, "reason")
+					assert.NotEqual(t, "verification-keys", reason.String(),
+						"record %d reports a key outage", i)
+					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
+						i, r.Level, r.Message)
+					assert.NotContains(t, recordText(r), errClientGone.Error(),
+						"record %d carries the error's text", i)
+				}
+			},
+		},
+		{
+			// ctx ending, with a cause, beside a failure that is neither the
+			// context's error nor its cause is the verifier failing on its own.
+			name: "the client left with a cause, but the verifier failed on its own",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errClientGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("kms down"))
+
+				return v
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				assert.NotErrorIs(t, out.err, errClientGone)
+				assert.NotEqual(t, "httpsec: the request ended while its token was verified", out.err.Error(),
+					"an unrelated failure was answered as the client leaving")
+				assert.Equal(t, "httpsec: verification keys unavailable", out.err.Error())
+				assert.False(t, out.handlerRan)
+
+				var errored bool
+				for _, r := range h.logs.records() {
+					errored = errored || r.Level >= slog.LevelError
+				}
+				assert.True(t, errored, "an outage that landed beside a hang-up wrote no ERROR record")
+			},
+		},
+		{
+			// The verifier reached a verdict, and the context ending beside it
+			// does not take the verdict back: a rejection is classified before
+			// a hang-up.
+			name: "a rejection that reaches the bearer beside the ended context is still a refusal",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, errors.Join(token.ErrInvalid, ctx.Err())
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"a verdict was reported as a hang-up")
+				assert.NotEqual(t, "httpsec: the request ended while its token was verified", out.err.Error())
+				assert.False(t, out.handlerRan)
+
+				for i, r := range h.logs.records() {
+					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
+						i, r.Level, r.Message)
+				}
+			},
+		},
+		{
+			name: "a key source that times out of its own while the request waits is an outage",
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource {
+				return verificationKeysDown{KeySource: signedBy, err: context.DeadlineExceeded}
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, context.DeadlineExceeded, "the key source's error stays reachable")
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: verification keys unavailable", out.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+
+				r := assertFailureRecord(t, h.logs.records(), "verification-keys")
+				assert.Equal(t, slog.LevelError, r.Level, "an outage is visible to an operator")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys,
+				token.WithIssuer(keySourceTestIssuer), token.WithAudience(keySourceTestAudience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testSubject})
+			require.NoError(t, err)
+
+			var verifier token.Verifier
+			if tc.verifier != nil {
+				verifier = tc.verifier(gomock.NewController(t))
+			} else {
+				verifier, err = token.NewVerifier(
+					token.WithVerifyKeySource(tc.verifyingWith(keys)),
+					token.WithVerifyIssuer(keySourceTestIssuer),
+					token.WithVerifyAudience(keySourceTestAudience),
+				)
+				require.NoError(t, err)
+			}
+
+			// No expectation on the store or the loader: a token that was not
+			// verified names nothing worth looking up.
+			h := newAuthHarness(t)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+					Verifier: verifier, Sessions: h.sessions, Users: h.users,
+				}),
+			)
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			tc.assert(t, h, serveIn(ctx, t, chain, bearerRequest(ctx, "Bearer "+tok)))
 		})
 	}
 }

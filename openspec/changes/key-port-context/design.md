@@ -2,29 +2,49 @@
 
 ## Context
 
-See `proposal.md` (Why) for the motivation, and the four deltas under `specs/` for the requirements. This change lands after `restructure-layout` and `idiomatic-api-shape`. Every name below is one they produce: `store/seal`, `token/signingkey`, `signingkey.Keys`, `KeySource.Signer`, `session.ErrUnreadable`, `seal.ErrConfig`, `*seal.AEADCipher`, `*seal.StaticKeyring`.
+See `proposal.md` (Why) for the motivation, and the deltas under `specs/` for the requirements. This change lands after `restructure-layout`, `idiomatic-api-shape` and `reauthentication`, all archived. Every name below is one they produce: `store/seal`, `token/signingkey`, `signingkey.Keys`, `KeySource.Signer`, `session.ErrUnreadable`, `session.Sessions`, `Sessions.RotateIssuing`, `seal.ErrConfig`, `*seal.AEADCipher`, `*seal.StaticKeyring`, `httpsec.KeySetProvider`.
 
-Facts that shape the approach:
+The change was audited against `main` on 2026-11-01, after `reauthentication` merged. The audit swept every settled spec and every caller of the ports, and reproduced the defects it claims in disposable copies of the tree. Those reproductions are gone; each becomes the red step of its task. The facts that shape the approach:
 
-- **Every caller of the four ports already holds a context, or is one call away from one.** The callers are `token`'s generator (which discards its context today) and verifier; `seal`'s enrolment and signing-key stores; the passkey credential stores in `store/sqlstore`, `store/gormstore` and `store/pgxstore` (their row helpers are one call below a method taking a context); and `session`'s sealing store. `*seal.AEADCipher` is the only caller of `Keyring`.
+- **Every caller of the four ports already holds a context, or can be handed one.**
+  - `token`'s generator discards the context it is given; its verifier holds one.
+  - `seal`'s enrolment store holds one in `Get`, `PutPending`, `ProveDevice` and its re-seal. Its signing-key store holds one in `Store`, `LoadAll` and its re-seal, but `activeKeyForReseal` takes none.
+  - The passkey credential stores in `store/sqlstore`, `store/gormstore` and `store/pgxstore` seal in their insert helpers, one call below a method with a context. They open two calls below one: `open` is reached through `scan` and `query`/`list` (sqlstore, pgxstore) or `fromRow` and `one`/`List` (gormstore). `ChargeEmailAttempt` opens directly.
+  - `session`'s sealing store seals in a helper reached from `Create`, `Save` and `Supersede`, which hold a context, and opens in `Load`.
+  - `*seal.AEADCipher` is the only caller of `Keyring`; its `active` helper takes no context.
+  - `httpsec.KeySetProvider.JWKS` takes no context. `signingkey.Keys` implements it, and the JWKS endpoint is its only caller.
 - **Every remote key service's Go SDK takes a context first, on every call.** That covers AWS KMS, Google Cloud KMS, Azure Key Vault and HashiCorp Vault. A PKCS#11 HSM is reached in-process, and neither common Go binding takes a context.
 - **The standard library's `crypto.Signer` and `crypto.MessageSigner` take no context.** A context-aware signer (golang/go#56508) is accepted but unimplemented. jwx v4 signs through a `crypto.Signer`, and its `WithContext` applies to verification only.
-- **The sealing session store maps every open failure to `session.ErrUnreadable`.** `httpsec` logs that error as a retired sealing key and answers it with "log in again". The `seal` stores for MFA enrolments, signing keys and passkeys already return any cipher error as a store error.
+- **An outage is reported as a refusal on four paths today.**
+  - The sealing session store maps every open failure to `session.ErrUnreadable`, a context deadline included. `httpsec` logs that error as a retired sealing key and answers "log in again". (D3)
+  - `httpsec`'s shared resolution, used by signed and session-reference bearers, answers every session-load and user-reload error with the authentication-required error. (D4)
+  - The renewal endpoint does the same for its own user reload. Its session load and rotation already return a store failure unchanged. (D4)
+  - The bearer joins every verification error with the authentication failure, so a key source that cannot supply the key set is a refused token, although `token` itself keeps that failure apart from `token.ErrInvalid`. (D6)
+- **Every credential is issued through one generator call, and seven of nine issuing paths store or spend something first.** Form login and the login completion step create the session before issuing, and its callers spend first: magic link and OIDC handoff consume their code, passkey login spends its challenge. Renewal stores the rotation, then issues. Recovery spends its proofs, removes authenticators, ends sessions and replaces the saved codes, then issues. MFA verification and re-proof issue through `Sessions.RotateIssuing`, which stores nothing until its caller's step succeeds. (D7)
+- **Some outages stay refusals by settled decisions, and this change keeps them:**
+  - a user-store outage at a password login or a recovery proof answers as a wrong password (`restructure-layout` D19), and a client that leaves during that load is charged to its source;
+  - an API key owner lookup that fails answers as an unavailable credential, 401;
+  - a session-reference or renewal limiter that fails refuses;
+  - a family revocation that fails during reuse detection still answers the reuse;
+  - a handoff store or user loader failure at OIDC redemption answers as an invalid handoff.
 - **A remote service's quotas make a call on every session read or every token issue impractical at scale.** AWS KMS, for example, allows 1,000 asymmetric signs per second per account and Region by default.
-- **`token.NewGenerator` and `token.NewVerifier` refuse construction without an issuer and an audience,** unless each is explicitly waived (`restructure-layout` D18). Every generator and verifier the tests of D2 build therefore configures both claims, or waives the ones the test is not about.
-- **A user-store outage during a password login answers as a wrong password** (`restructure-layout` D19): `authenticate.ErrUnavailable`, mapped to 401, charged to the source. D4's session resolution is a separate path, reached only after a secret session identifier has loaded, so its 500 for a reload outage and D4's recorded trade-off stand. `identity-model` also reports input a store cannot represent as "user not found", which D4's reliance on the loader contract keeps.
+- **`token.NewGenerator` and `token.NewVerifier` refuse construction without an issuer and an audience,** unless each is explicitly waived (`restructure-layout` D18). Every generator and verifier the tests build therefore configures both claims, or waives the ones the test is not about.
+- **Dependency failures carry fixed library text** (`diagnostic-redaction`): an error a library interceptor returns because of a consumer's dependency has fixed text, and keeps the dependency's error reachable by identity and type.
 
 ## Goals / Non-Goals
 
 **Goals:**
 - **A request's deadline and cancellation reach a remote key service** through every port.
-- **An outage is never reported as a refusal,** on the signing path or the session path.
-- **Every behaviour change is test-first.** The misclassified outage is reproduced by a failing test before anything is fixed (D3).
+- **On the verification, issuing and session-resolution paths, an outage of a key source, cipher, session store or user store is never reported as a refusal.** The settled exceptions listed under Context stay as they are.
+- **A credential that cannot be issued leaves the user as they were.** Nothing is stored, spent, removed or revoked for a credential the user never received.
+- **Every behaviour change is test-first.** Each defect is reproduced by a failing test before anything is fixed.
 
 **Non-Goals:**
 - **A caching or envelope-encryption decorator** (proposal, Not in this change).
 - **Changing how values are sealed.** The envelope format and the AES-256-GCM default are unchanged, and so are stored values.
 - **Classifying cipher errors in the `seal` stores.** They already fail closed with the cipher's error, which is what `secrets-at-rest` requires.
+- **Revisiting the settled outage exceptions** listed under Context.
+- **Refunding a passkey login's challenge.** `passkey-authentication` already accepts that any attempt spends it; D7 still keeps the session from being stored.
 
 ## Decisions
 
@@ -51,21 +71,27 @@ type KeySource interface { // token/signingkey
     Signer(ctx context.Context, alg Alg) (kid string, signer crypto.Signer, err error) // D2
     VerificationKeys(ctx context.Context) ([]PublicKey, error)
 }
+
+type KeySetProvider interface { // httpsec; D6
+    JWKS(ctx context.Context) ([]byte, error)
+}
 ```
 
 - **Callers pass the context they hold:**
   - the generator passes the context given to `Generate`, and the verifier the one given to verification;
-  - each `seal` store passes the context of the store method it serves, re-sealing on read included;
-  - `*seal.AEADCipher` passes its own context on to the keyring, and `seal.SessionCipher` passes its context to the cipher it adapts;
-  - the passkey row helpers take the context of the method that calls them.
-- **No caller substitutes a context of its own, or imposes a deadline of its own.** This is the rule `signing-keys` already sets for construction over a key store.
+  - each `seal` store passes the context of the store method it serves, re-sealing on read included. `activeKeyForReseal` takes the read's context;
+  - `*seal.AEADCipher` passes its own context on to the keyring, through `active`, and `seal.SessionCipher` passes its context to the cipher it adapts;
+  - the passkey row helpers take the context of the method that calls them, two levels down where they sit two levels down, and `ChargeEmailAttempt` passes its own;
+  - the sealing session store passes the context of the save or load it serves;
+  - the JWKS endpoint passes the request's context.
+- **No caller substitutes a context of its own, or imposes a deadline of its own.** This is the rule `signing-keys` already sets for construction over a key store. The conformance suite's sealed-column cases check it for every durable store (`store-conformance` delta).
 - **The in-memory implementations ignore the context.** `*seal.StaticKeyring`, `*seal.AEADCipher` and `signingkey.Keys` perform no input or output, so they succeed whatever state the context is in. This follows the `signing-keys` precedent for the in-memory key store.
 - **No nil-context check is added.** `idiomatic-api-shape` D6 adds none to functions that merely pass a context along, and the in-memory implementations do not use theirs. A nil context fails at first use, as in the standard library.
 - **Godoc of each port:**
   - an implementation over a remote service should honour the context;
   - a remote service's quotas make a call per seal, open or signature impractical at scale, so such an implementation is expected to cache, or to use envelope encryption. `VerificationKeys` already says so.
 
-**Default and override:** the in-memory implementations stay the defaults (`KeySource` has none: the caller always supplies it). A consumer replaces any port with their own implementation, which now receives the caller's context.
+**Default and override:** the in-memory implementations stay the defaults (`KeySource` and `KeySetProvider` have none: the caller always supplies them). A consumer replaces any port with their own implementation, which now receives the caller's context.
 
 **Alternatives considered:**
 - **A context on the ciphers and `KeySource` only, with `Keyring` left as it is.** `*seal.AEADCipher` would then hold a context it cannot pass on. A keyring that fetches its key bytes from a secrets service would be back to inventing one.
@@ -76,10 +102,11 @@ type KeySource interface { // token/signingkey
 
 `Signer(ctx, alg) (kid string, signer crypto.Signer, err error)`:
 
-- **A source holding no key for `alg` returns an error matching `signingkey.ErrNoKey`.** `signingkey.Keys` does so for an algorithm it was not configured with. Issuing over a source that answers `ErrNoKey` fails as "no current key for the algorithm", as it does today.
+- **A source holding no key for `alg` returns an error matching `signingkey.ErrNoKey`.** `signingkey.Keys` does so for an algorithm it was not configured with, a key it publishes for another replica included (`signing-keys`, "A key for an unconfigured algorithm is published but never signed with"). Issuing over a source that answers `ErrNoKey` fails as "no current key for algorithm" followed by the configured algorithm, as it does today. The algorithm is the consumer's configuration, not a dependency's text, so `diagnostic-redaction` does not ask for it to be dropped; the first implementation dropped it, and the review of 2026-11-01 reproduced the loss (`TestRepro_NoKeyErrorNamesTheAlgorithm`).
 - **Any other error is an outage.** Issuing fails with it, behind the generator's fixed text, as the verifier already does with `VerificationKeys`. It is never reported as a missing key.
 - **The returned signer serves the one issuance `ctx` belongs to.** The generator asks for a signer once per token, and never keeps or reuses it. A source over a remote service may therefore return a `crypto.Signer` bound to `ctx`, so the service's signing call receives the request's deadline and cancellation. That guarantee is what makes binding the context into the signer safe. It is a contract the spec states and a test pins, because the compiler cannot check it.
 - **The signer stays a standard-library `crypto.Signer`.** The `signing-keys` requirement that the contract needs only standard-library types and scrty's own algorithm names is kept.
+- **Neither error is a refusal at an endpoint.** Whichever the generator returns, the endpoint that asked fails as a dependency failure, and D7 keeps that failure from costing the user anything.
 
 **Default and override:** `signingkey.Keys` is the default source, and its signers are in-memory. A consumer supplies their own `KeySource`, and decides whether its signer binds the context.
 
@@ -99,13 +126,13 @@ The sealing session store classifies a failed open:
 | anything else | `session.ErrUnreadable`, as today |
 
 - **`session.ErrCipherUnavailable` is the marker.** A cipher over a remote service wraps its retryable failures with it, for example with `errors.Join`. The service's own retryable-versus-invalid distinction maps onto it: AWS KMS, for example, separates `InvalidCiphertextException` from its retryable timeout, internal and key-unavailable errors.
-- **`seal.ErrUnavailable` is the same marker in `seal`.** `seal.SessionCipher` translates it to `session.ErrCipherUnavailable`, so a remote `seal.Cipher` marks its outages once, and `session` keeps not importing `seal`. Context errors pass through the adapter unchanged.
+- **`seal.ErrUnavailable` is the same marker in `seal`.** `seal.SessionCipher` translates it to `session.ErrCipherUnavailable`, so a remote `seal.Cipher` marks its outages once, and `session` keeps not importing `seal`. Context errors pass through the adapter unchanged. The `seal` stores return it as they return any cipher error, and a failed re-seal on read still never fails the read.
 - **Neither sentinel matches `seal.ErrDecryptionFailed`, `seal.ErrUnknownKeyID` or `session.ErrUnreadable`.**
-- **What `httpsec` does with the store failure** is D4.
+- **What `httpsec` does with the store failure** is D4, and with a cancelled request, D8.
 
 **Default and override:** an error nobody classified stays `session.ErrUnreadable`. That is the safer default. A value that truly does not open still ends the session and lets the user log in again. Treating such a value as an outage would instead fail every request on that session until it expired. A consumer opts their cipher's outages out of that default by wrapping them with the marker. Cancellation and deadlines are classified with no work from the implementer.
 
-**Pending reproduction.** The claim that an outage is reported as an unreadable session is `UNREPRODUCED`. The first task writes the failing test: a sealing session store over a cipher whose `Open` returns `context.DeadlineExceeded`, then one returning an error that wraps `session.ErrCipherUnavailable`, and a load that must not match `session.ErrUnreadable`. If that test passes on the code as it is, the claim was wrong, and this decision is removed.
+**Reproduced.** In a disposable copy of `main`, `TestRepro_SealingStoreOpenDeadlineIsNotUnreadable` (`go test -run TestRepro_ -count=1 ./session/`) loaded a session through a cipher whose `Open` returned `context.DeadlineExceeded`, and failed with `session: session cannot be read … context deadline exceeded`: the load matched `session.ErrUnreadable`. Task 2.1 writes it again as its red step.
 
 **Alternatives considered:**
 - **Context errors only.** A remote service's timeout or throttling that is not a context error would still log users out.
@@ -113,47 +140,177 @@ The sealing session store classifies a failed open:
 
 ### D4. Session resolution answers a dependency failure as one
 
-Today `httpsec`'s session resolution answers every load error with the authentication-required error, a store failure included (`httpsec/resolve.go`). Signed and session-reference bearers share that resolution. D3 alone would therefore stop the false retired-key record, but a key service or database outage would still answer "log in again". The renewal endpoint, by contrast, already returns a store failure unchanged, and `http-error-propagation` maps any unrecognised error, a dependency failure included, to 500.
+Signed and session-reference bearers share one resolution, and the renewal endpoint reloads the user of the session it renews. Each classifies a failure:
 
-Resolution classifies a failed load:
-
-| The session manager's error | The request |
+| The failure | The request |
 |---|---|
-| not found, expired, or unreadable | refused with the authentication-required error; unreadable also writes its ERROR record |
+| session not found, expired, or unreadable | refused with the authentication-required error; unreadable also writes its ERROR record |
 | reused superseded identifier | refused as both authentication-required and reused, as today |
 | renewal required, on the renewal endpoint's own request | goes on unauthenticated, as today |
-| anything else | fails with the session manager's error, which the default mapping answers with 500; no undecryptable-session record |
+| user not found; user not the session's, or not active | refused with the authentication-required error, as today |
+| the request's own context ended | D8 |
+| any other session-load or user-reload failure | fails with fixed library text that keeps the session manager's or the loader's error reachable, which the default mapping answers with 500; no undecryptable-session record, and nothing charged to the source |
 
-(The user reload that follows has the same split; see the end of this decision.)
+- **The `identity-model` spec already requires a loader to report a miss as "user not found" and any other failure as an error that is not,** so resolution relies on a contract that is already settled, and the `identity` ports need no change.
+- **The throttle charges only refusals.** The session-reference guard and the late-renewal count record a failure only for a refused reference, so a store outage stops being charged to the source, as it is today through the 401. The guard's list also names, for the first time in the spec, the refusals the code already charges: unreadable, and a user who is not the session's or not active.
+- **Fixed text.** The returned error's text is the library's, as `diagnostic-redaction` requires of every dependency failure; the cause stays reachable with `errors.Is` and `errors.As`.
+- **Existing tests change on purpose.** `httpsec/bearer_test.go` ("the user store is down"), `httpsec/session_bearer_test.go` ("a user store that is down") and the renewal tests `TestSessionRenewal_UserReloadPrecedesRotation` and `TestSessionRenewalThrottle_RemovedUserIsNotCharged`, which model a removed user as a plain error, pin today's 401 for an outage. They are rewritten to this decision, the last two to report a removed user as "user not found".
 
-**Pending reproduction.** That resolution answers a store outage with the authentication-required error is `UNREPRODUCED`, and rests on a code reading. Its failing test comes first: a bearer request whose session store fails with an error that is not a refusal must not match the authentication-required error.
+**Default and override:** the default status mapping answers the failure with 500, as for any dependency failure. A consumer who wants another answer to an outage, 503 with `Retry-After` for example, replaces the error handler, the override `http-error-propagation` already specifies. No new option is added.
 
-**Default and override:** the default status mapping answers the failure with 500, as for any dependency failure. A consumer who wants another answer to an outage replaces the error handler, the override `http-error-propagation` already specifies. No new option is added.
+**Reproduced, in part.** In a disposable copy of `main`, `TestRepro_RenewalUserStoreOutageIsNotARefusal` (`go test -run TestRepro_ -count=1 ./httpsec/`) failed with `found: "httpsec: authentication required"` and `expected: 500, actual: 401`, and passed with the reload split on `identity.ErrUserNotFound`. That resolution answers a session-store or user-store outage with the authentication-required error is `UNREPRODUCED`, but two existing tests assert it (above). Task 2.2 writes the failing test first.
 
-**Trade-off recorded.** A cipher outage can only arise after an existing session has loaded, since the store opens the token of a record it found. While a cipher outage lasts, someone holding a session identifier could therefore tell a live session (500) from a missing one (401). Session identifiers are secret credentials, and unknown references are throttled per source, so this design accepts that exposure. The existing reason for answering missing, expired and unreadable alike, which is not to report whether a session ever existed, still holds for every refusal.
+**Trade-off recorded.** A cipher outage can only arise after an existing session has loaded, since the store opens the token of a record it found. While a cipher outage lasts, someone holding a session identifier could therefore tell a live session (500) from a missing one (401). Session identifiers are secret credentials, and unknown references are throttled per source, so this design accepts that exposure. The existing reason for answering missing, expired and unreadable alike, which is not to report whether a session ever existed, still holds for every refusal. A future cookie-borne session (the `bff-resource-server` draft) must resolve through this same core, or it brings the old answer back.
 
 **Alternatives considered:**
 - **Keep answering every load error with authentication-required.** A key service or database blip would log every active user out, and resolution would stay inconsistent with renewal.
 - **A separate change after this one.** D3 would ship only half effective until that change landed.
 
-**The user reload follows the same rule.** After the session loads, resolution reloads its user, and today answers every reload error with the authentication-required error as well. Under this decision:
-- an error matching `identity.ErrUserNotFound` is refused with the authentication-required error, as today;
-- any other reload error fails the request with the loader's error.
+### D5. The established design, compared
 
-The `identity-model` spec already requires a loader to report a miss as "user not found" and any other failure as an error that is not, so resolution relies on a contract that is already settled, and the `identity` ports need no change. The same pending-reproduction rule applies: a bearer request whose user loader fails with an error that is not "user not found" must not match the authentication-required error.
+The comparison task 1.1 called for was made on 2026-11-01.
 
-### D5. The established design is not consulted in this change
+- **D1 departs.** None of the established design's key, keyring or cipher ports takes a context, and its generator and verifier discard the ones they are given. Its documentation names those ports as the seam for a KMS-backed implementation, which would have to impose its own timeout. D1 adds what it lacks.
+- **D2 departs.** It reports a missing signing key as a boolean that the generator turns into an unclassified error, and has no notion of a key source failing, because its key manager is in-process. D2 adds `ErrNoKey` and the outage.
+- **D3 narrows it.** It maps every failure to open a sealed session field to unreadable, a missing key and a failed key lookup alike, answers 401 and logs at ERROR. That was a deliberate choice to let a session sealed under a retired key heal by logging in again, instead of failing every request until it expired. D3 keeps that default and the ERROR record, and narrows it only for cancellation, deadlines and marked outages.
+- **D4 does not depart.** The established design answers a session error that is not a refusal, and a user-loader error other than "not found", with the error itself, which its error mapping answers with 500. scrty's current answer of 401 is the departure; D4 restores the established behaviour.
+- **D6, D7 and D8 are new.** It has no remote key fetch, so its bearer answers every verification error with 401 and nothing pins an outage. It issues after creating the session and after spending a one-time link or handoff code, with no restore, and its tests assert only that the error is returned. It has no special handling of a cancelled request at verification, or at session or user load. What it does have, and D7 keeps, is the order in which the pending challenge is recorded before the credential is handed out, and the check-before-spend order of its redemptions.
 
-The read-only reference snapshot was not available when this design was made. Whether the established design gave these ports a context, and how it classified a cipher outage, has not been checked. D1 to D4 rest on the research below and on scrty's own settled specs.
+### D6. A key source outage during verification is a dependency failure
 
-**Pending:** before implementation starts, compare D1 to D4 with the established design. Record any departure as `legacy-reference.md` requires, or revise the decision if the established design is the better default.
+A bearer token whose verification keys cannot be obtained is not a refused token:
+
+- **The bearer joins the authentication failure only to a token the verifier rejects as invalid** (`token.ErrInvalid`). A failure to obtain the key set, which `token-issuance` already keeps apart from "token invalid", fails the request with fixed library text that keeps the key source's error reachable. The default mapping answers it with 500.
+- **The `authentication` bearer provider makes the same split,** and passes the caller's context to the verifier.
+- **The JWKS endpoint passes the request's context to `KeySetProvider.JWKS`,** which gains a context (D1), and answers a failure as a dependency failure, as it already propagates one.
+- **The log records it as a dependency failure,** with a fixed reason and the error's type, not as a token-verification failure whose text a record keeps (`diagnostic-redaction`).
+
+**Default and override:** 500 through the default status mapping. A consumer who prefers 503 with `Retry-After`, or a 401, answers it so in their error handler; the error carries the key source's error for them to match.
+
+**Reproduced.** In a disposable copy of `main`, `TestRepro_BearerKeySourceOutageIsNotARefusal` (`go test -run TestRepro_ -count=1 ./httpsec/`), with the real `signingkey.Keys`, generator and verifier and a key source whose `VerificationKeys` fails, failed with `found: "authenticate: authentication failed" … "kms: dependency timeout"` and `expected: 500, actual: 401`. It passed when only `token.ErrInvalid` was joined. `TestBearerToken`'s tampered-token case mocks `Verify` with a plain error, and is rewritten to return one matching `token.ErrInvalid`.
+
+**Why not the common answer.** Most resource servers checked answer this case with 401 `invalid_token`: Envoy's `jwt_authn`, auth0's `go-jwt-middleware`, and ASP.NET Core's default path. Spring Security tells the two apart internally but answers both with 401, the outage with a bare challenge. scrty departs from that majority:
+- RFC 6750 defines `invalid_token` as a token that is "expired, revoked, malformed, or invalid for other reasons", and RFC 9068 lists only properties of the token. Neither covers a server that cannot reach its keys.
+- A 401 tells the client its token was refused and that it may obtain a new one. During an outage every client then discards a valid token and returns to the authorisation server, a refresh or login storm on top of the outage.
+- OWASP's error-handling guidance answers a request the server cannot fulfil with 5xx and monitors the 5xx rate. A 401 hides the outage among ordinary authentication failures.
+- It is the answer scrty gives every other dependency failure (D4, `http-error-propagation`).
+
+Both answers deny access, so neither fails open. The 500 does tell an unauthenticated caller that verification is failing; it does not say which dependency, and the consumer can answer otherwise.
+
+**Alternatives considered:**
+- **401 with `invalid_token`, the majority practice.** The reasons above.
+- **401 with a bare `Bearer` challenge and no error code, Spring's middle path.** It avoids declaring the token invalid, but still sends the client back to authenticate, and still hides the outage from 5xx monitoring.
+- **503 with `Retry-After` by default.** It is the more precise status, but no other dependency failure in scrty answers 503, and the error handler already lets a consumer choose it.
+
+### D7. A credential is issued before anything is stored or spent
+
+Every path that hands out a credential issues it first, then spends and stores, so a credential that cannot be issued costs the user nothing:
+
+```go
+// session: the shape RotateIssuing already has, for creation and for grace rotation.
+func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepared, error) // builds; stores nothing
+func (p *Prepared) Session() *Session                                                     // for marking, and for the credential
+func (p *Prepared) Commit(ctx context.Context) (*Session, error)                          // the one creating write
+func (m *Sessions) CreateIssuing(ctx context.Context, user identity.UserID,
+    issue func(*Session) (string, error), opts ...CreateOption) (*Session, string, error)  // Prepare, issue, Commit
+func (m *Sessions) RotateWithGraceIssuing(ctx context.Context, s *Session, grace time.Duration,
+    issue func(*Session) (string, error), opts ...RotateOption) (*Session, RenewalKind, string, error)
+```
+
+The names are indicative; the implementer may choose others that read better beside `RotateIssuing`, and records the choice.
+
+| Path | Today | After |
+|---|---|---|
+| Form login, login completion | create the session, save any challenge mark, issue | build, mark, issue, store in one write, hand out |
+| Magic link | consume the link, then complete the login | build and issue inside the pre-spend check, consume, cancel held recoveries, then store |
+| OIDC handoff | consume the code, then complete the login | build and issue inside the refusal checks, consume, cancel held recoveries, then store |
+| Passkey login | spend the challenge, then complete the login | the challenge is still spent (settled); the session is stored only after issuing |
+| Renewal | store the rotation, then issue | issue between building the successor and the conditional supersession |
+| Recovery, completing at once | spend proofs, remove authenticators, end sessions, replace codes, create the session, issue | build the session and issue after the checks; then spend, reset, revoke, replace and store |
+| Recovery, finish after a hold | complete the record, then as above | issue before the record is completed |
+| MFA verification, re-proof | `RotateIssuing` | unchanged |
+
+- **A credential is never handed out for a session that was not stored.** A token signed for a session that is never stored names an identifier that loads nothing, so a racing redemption that loses the atomic consume discards its credential, and its session is never written. This keeps the guarantee the pending-challenge rule was written for: a token never exists for a session whose challenge mark did not persist. The rule's wording moves from "save before issuing" to "store before handing out".
+- **Check-then-consume is kept.** Issuing writes no state, so it can run inside the side-effect-free checks of magic link and OIDC handoff; their godoc says the library may issue there, and discards what it issued on a lost race. Only the atomic consume decides single use. A redemption cancels the user's held recoveries after the consume, as it did before, because a check must have no side effects; a credential that cannot be issued therefore cancels nothing.
+- **Recovery.** The recovery core cannot import `token`, so it takes the issuing step as a hook, and stores the session it was given after its other effects. The session is created already recovery-pending, one write instead of today's two. The saved codes are replaced only once the credential that answers with them exists, so they are never lost to a failed issue.
+  - **The hook is a constructor option, `recovery.WithCredentialIssuer`,** chosen during implementation over a field on the request and a parameter of `Finish`, so `Recover` and `Finish` keep their signatures. It is handed the session and the user's details, because a recovery completing at once learns who the user is only inside the core. With no issuer, the core issues nothing and a caller that issues afterwards does so after the proofs were spent, which the option's godoc states. `httpsec` always installs its own, after a consumer's core options, as it already does with the password check.
+  - **A store failure at the final write is the one residue.** The ended sessions must be revoked before the new session is stored, or the revocation would end it too, so a creating write that fails after the spends leaves the proofs spent and the codes replaced, and hands out nothing. It is a dependency failure, and the user recovers again.
+  - **An issuing failure is charged to no source** at the recovery endpoints, as at every other issuing path.
+- **A prepared session is stored as it was built, apart from its marks.** `Prepared.Commit` refuses with `ErrConfig`, storing nothing, a session whose identifier, user, family, family start, creation or authentication time changed after `Prepare`, or whose idle or absolute deadline moved later than `Prepare` set it. Marking a challenge or recovery shortens deadlines, which stays allowed. The credential the caller issued names those values, so a session stored under others is not the one it was issued for. The first implementation stated this only in godoc and checked the maximum lifetime alone; the review of 2026-11-01 reproduced a commit under a changed identifier and a lengthened deadline (`TestRepro_CommitAcceptsChangedID`, `TestRepro_CommitAcceptsLengthenedDeadline`). Default and override: no option; it guards a guarantee, and a caller that wants other values prepares a session with them.
+- **A grace rotation does not carry a mark saved on the old session during the caller's step to the successor.** This predates the change (`RotateWithGrace` reads, then writes, the same way). The review of 2026-11-01 probed whether a confinement escapes through it, and it does not: the only mark saved on an existing session is the per-request enrolment mark, which the per-request policy raises again on the successor's first request. A consumer policy that marks once, rather than on every request, would be exposed; `RotateWithGraceIssuing`'s godoc states that dependency. Accepted, not a defect.
+- **A link or code is spent only before it expires, judged at the spend.** Issuing runs between the check and the consume, so the expiry checked first can pass while the credential is signed. The consume refuses a link or code whose expiry has passed by then, and leaves it unspent: `onetime.Consume` compares the expiry with the clock it reads, and the OIDC handoff reads the clock again before its consume. The gap predates this change, for a slow consumer check; issuing widened it. The second review of 2026-11-01 reproduced it for both (`TestRepro_HandoffRefusesCodeThatExpiredDuringChecks`, `TestRepro_MagicLinkRefusesLinkThatExpiredDuringChecks`). Default and override: no option; `onetime.Consume` is public, and a direct caller gains the same refusal (`one-time-tokens`, "Tokens expire"). The library's other spends through it gain it too: recovery's issued-token proof, the passkey login and registration challenges, and the MFA challenge spend. In recovery, an issued token that expires while its credential is issued is refused after the MFA step was recorded, and the refusal is counted, as a lost race already was.
+- **An issuing failure is marked as one, so no status mapping reads it as a refusal.** The shared issuer wraps every failure in a dependency-failure type of its own, which keeps the cause reachable, and the default status mapping answers it 500 before it consults the refusal table. Without the mark, a consumer generator whose error wraps a refusal sentinel (`authenticate.ErrUnavailable`, say) was answered 401, sending the client back to log in during a key outage; that predates this change, and was reproduced by the second review (`TestRepro_RenewalIssuerErrorIsNeverARefusal`). It covers every path that issues through the chain's issuer: login, completion, redemptions, MFA verification, re-proof, renewal and recovery. Default and override: a consumer's error handler still sees the cause and may answer otherwise.
+- **A rotation whose step outlives the family stores nothing.** The family's end is checked before the step and again after it, and a step that ends after it fails as expired: the family is over, so a retry cannot help, unlike a step that outlived the grace window. Without the second check, a rotation with no grace, or one over a family maximum another replica lowered, reported success for a successor already expired (reproduced, `TestRepro_StepCrossesFamilyEnd_NoGrace`, `TestRepro_StepCrossesFamilyEnd_LoweredMaximum`). A grace rotation's successor is capped at the family's end; a rotation without grace carries its predecessor's deadlines unchanged.
+- **Every rotation refuses a family that has already ended.** The grace rotation checked the family's end before its step; `Rotate` and `RotateIssuing`, the rotations without grace that MFA and re-proof use, did not, so a family that had ended under the rotating manager's family maximum, lower than the one the session was created under (another manager sharing the store, or a deploy that lowered it), was still rotated, and its step still ran. They now fail with `session.ErrExpired` before the successor is built: no step runs, nothing is stored or superseded. The gap predates this change; the group-9 review reproduced it in a copy (`TestRepro_RotateIssuingFamilyAlreadyEnded`), and the user chose on 2026-11-02 to fix it in this change. `Rotate` calls `RotateIssuing`, so the one check covers both. Default and override: no option; the family maximum is the consumer's (`WithMaxFamilyLifetime`), and this only applies it to every rotation.
+- **A redemption forgets an issuing failure once a later issue succeeds**, so a consumer redeemer that retries its checks after a transient failure is charged for a later refusal as any other (reproduced, `TestRepro_ConsumeFailureAfterRetriedIssueIsCharged`). **While no issue has succeeded, any issuing failure the redeemer reports is uncharged**, not only the last: the redemption recognised the last failure by identity, so a redeemer that retried, failed both issues and returned its first failure was charged to its source. That predates this change; the review of group 9 reproduced it in a copy, for the magic link and the OIDC handoff alike, which share the code. A refusal the redeemer joins beside an issuing failure is charged once a later issue has succeeded, and is uncharged while none has, since the join then reports an issuing failure; either way it is answered 500, because the mark outranks the refusal table (accepted below). The built-in redeemers run the issue last, after every refusal check, so a wrong guess is refused, and charged, before any issue runs.
+- **Renewal's grace window** is counted from the clock reading taken before the issuing step, as `RotateIssuing` documents for its window. The store still decides racing rotations: a loser's credential names a successor that was never stored. A step that succeeds only after the window has closed stores nothing and fails as a dependency failure (Risks, "A signer slower than the whole grace window").
+- **The renewal limiter still counts every renewal attempt**, a failed one included (`http-security-chain`, "Renewals are throttled per family"). An outage longer than ten renewals in ten minutes therefore throttles the family; that is accepted, as the limiter bounds a loop and the outage is answered as one either way.
+- **An issuing failure is a dependency failure on every path,** never a refusal: it is not counted against a source or a user, and is not answered as an invalid link, an invalid handoff or a failed recovery.
+
+**Default and override:** this is an ordering, not a policy, and has no option: a consumer cannot ask for a credential to be issued after its session is stored. The consumer's responders, success writers and refusal checks are unchanged, and receive the same values.
+
+**Reproduced, in part.**
+- **Renewal.** In a disposable copy of `main`, `TestSessionRenewal_IssueFailureDoesNotLaterReadAsReuse` (`go test -run TestSessionRenewal_IssueFailureDoesNotLaterReadAsReuse -count=1 ./httpsec/`) made the generator fail, moved the clock 31 seconds and loaded the old identifier. It failed with `session: a superseded session was presented after its window: session: session expired`, with the reuse observer called once. It passed once issuing moved before the supersession, with the `session` and `httpsec` suites green.
+- **Recovery.** `TestRecoveryComplete_IssueFailureSpendsAndEndsNothing` presented a saved code and the password with a failing generator. The recovery reported "the access token could not be issued"; the user's earlier session then loaded as `session: session not found`, and a second code from the old set was refused. It was not shown passing under a fix, which is this decision's restructure.
+- **Magic link, OIDC handoff, form login and passkey login** (a link or code spent, or a session stored, for a credential never issued) are `UNREPRODUCED`; the order is plain in the code, and each path's task writes its failing test first.
+
+**Alternatives considered:**
+- **Restore what was spent when issuing fails.** A restored link, code or recovery set races a replay of the same credential, needs an "un-spend" method on three store ports and their conformance suites, and cannot restore removed authenticators, ended sessions or a sent notice.
+- **Obtain the signer before spending.** A signer bound to the request's context (D2) can still fail when it signs.
+- **Spend first, as Keycloak's authorisation code does, and let the user start again.** Acceptable for a code the user can re-request; not for a recovery that ends every session and replaces the saved codes.
+- **Leave it to a later change.** Under a remote key source, renewal turns an outage into a family revocation and a false theft alarm, which breaks D2's promise that an outage is not a missing key, let alone a theft.
+
+### D8. A request whose own context ended is not refused
+
+When the request's own context ends while the bearer verifies the token, or while resolution loads the session or reloads the user, at the bearer, the session-reference bearer or the renewal endpoint:
+
+- the request fails with an error that matches the context's error, not the authentication failure or the authentication-required error, with fixed library text of its own;
+- it is not logged at ERROR as a dependency failure, a verification-key failure or an undecryptable session;
+- it is not charged to the session-reference or late-renewal throttle.
+
+The `authentication` bearer provider makes the same split for its caller's context. A verdict wins over a hang-up: a load or verification that reached a refusal is refused, and charged where refusals are, even when the request's context has ended by then, at resolution and, since the second review of 2026-11-01 reproduced that renewal checked the hang-up first (`TestRepro_RenewalVerdictWinsOverHangUp`), at the renewal endpoint too. A hang-up is told by the request's own context: it has ended, and the error is that context's error or the cause it was cancelled with (`context.Cause`), as the password login's and recovery's load already tell it. One predicate decides it for verification, resolution, renewal, the `authentication` provider and the password and recovery loads; the first implementation had four copies there, and the two new ones ignored the cause, which the review of 2026-11-01 reproduced at the bearer, at resolution and in the `authentication` provider (`TestRepro_BearerHangUpWithCause` and its siblings). A dependency that times out on a context of its own while the request still waits is an outage.
+
+**Verification was added on 2026-11-01, during implementation.** The first draft covered only the session load and the user reload. The review of task 2.4 reproduced, on the code of that task, that a bearer whose request is cancelled during verification was answered "verification keys unavailable" and logged at ERROR as a key outage: the JOSE library checks the context's state itself, before any key is fetched. That is the case this decision exists to prevent, and a remote key source (D1) makes it routine, so the decision now covers verification too.
+
+Nobody receives the answer: Go's `net/http` cancels a request's context when the client's connection closes. The point is what the library records. A hang-up is neither a refusal (no verdict was reached) nor an outage (nothing failed), which is how nginx's 499 and gRPC's `CANCELLED` treat it. Not charging it opens nothing: a client that leaves before the store answers learns nothing about the reference it presented.
+
+This applies only to verification and resolution. A client that leaves during a password login's or a recovery proof's user load is still charged to its source (`authentication`, `account-recovery`), because those are guesses at a secret, and charging them is what stops a client from hanging up to escape the count.
+
+**Default and override:** no option. A consumer's error handler sees the context's error and may log it as it chooses.
+
+**Alternatives considered:**
+- **Answer it as any other outage.** A client that hangs up would look like an outage in logs and alerts.
+- **Keep answering authentication-required.** It contradicts D3, and records a refusal for a request nobody refused.
 
 ## Risks / Trade-offs
 
 - **A source ignores the context in the signer it returns** → the issuance cannot be cancelled once the signer is called. It still works, it fails no worse than today, and the godoc says what binding gives.
 - **A remote cipher does not mark its outages** → its outages log users out, as they do today. The godoc of both ciphers names the marker, and context errors are classified without it.
 - **A remote implementation calls its service on every seal, open or signature** → it runs into the service's quotas. The godoc of each port says to cache or use envelope encryption. scrty does not ship a decorator for it.
-- **Every test double of the four ports changes** → that is mechanical. Mocks are regenerated with the `use-mockgen` skill, and the test module's cipher fixtures change with them.
+- **A 500 on a verification outage departs from most resource servers** (D6) → a consumer whose clients expect 401 answers so in their error handler.
+- **A slow signer shortens renewal's grace window** (D7) → the same trade-off `RotateIssuing` documents; the window is bounded at 5 minutes, and the default 30 seconds is far above a signing call's latency.
+- **A signer slower than the whole grace window** (D7) → a successor written after the window closed would make the holder's requests still in flight under the old identifier read as reuse, revoking the family and raising a theft alarm for an outage. The grace rotation therefore re-reads the clock after the caller's step and, when the window has closed, writes nothing and fails as a dependency failure matching the context deadline error; the old identifier renews on the next attempt. Decided on 2026-11-01, after the review of task 6.2 reproduced the revocation.
+- **A losing racer at magic link or OIDC handoff spends a signing call** (D7) → bounded by the source throttles on both endpoints; the signature itself is discarded.
+- **A recovery's MFA proof is judged after the credential is issued** (D7), because recording its time step is a spend → every wrong MFA guess costs a signing call, bounded by the user and source limiters that count it; and while the issuer is out, a valid saved or issued code with any MFA code answers 500, uncounted, which reveals the code was valid. The password check's outage path already reveals as much, so the exposure is not new in kind.
+- **A recovery slower than its session's lifetime stores a session that has already expired** (second review, reproduced as `TestRepro_RecoverDoesNotReturnCredentialForExpiredSession`) → the session is built, and its confined lifetime counted, before the proofs are spent, so issuing can come first (D7). Refusing it at the commit would leave the proofs spent and the new saved codes unshown; building it after the spends would bring back the order D7 removes; and re-dating its deadlines is what the commit guard forbids. The default lifetime is 15 minutes, far beyond the steps' latency, and the user keeps the new saved codes the response carries, so they can recover again. Accepted, and confirmed by the user on 2026-11-01, and stated in `recovery.WithCredentialIssuer`'s godoc.
+- **The change grows from the ports to every issuing path** → the issuing paths are only reachable by a failure the ports introduce, so splitting them would ship D2 with renewal's family-revocation trap open. The tasks keep the two halves in separate groups with their own verification.
+- **Every test double of the four ports, and `KeySetProvider`'s, changes** → that is mechanical. Mocks are regenerated with the `use-mockgen` skill, and the test module's cipher fixtures and the six hand-written doubles change with them.
+- **`release-readiness` modifies the same `authentication` requirement and the bearer's user reload, and edits the same files** (`token/generator.go`, the signing-key and passkey stores, their suites) → it lands after this change and rebases its deltas, plans and tests onto this change's text and signatures.
+
+## Review findings accepted without change (2026-11-01)
+
+The whole-branch review, `/code-review` and `/security-review` ran on the branch. The security review found nothing. Reproduced findings are folded into D2, D7 and D8 above and into group 8 of `tasks.md`; these were weighed and left as they are:
+
+- **A grace rotation's step that outlives the window fails matching `context.DeadlineExceeded`** although no context deadline fired. That was decided on 2026-11-01 (Risks, "A signer slower than the whole grace window"), and is kept: it is a deadline, the window's, and the endpoints answer it as a dependency failure, never as a client that left.
+- **`Sessions.CreateIssuing` has no caller inside the library.** D7 names it as the API for a consumer's own sign-in; the library's paths mark the session, so they use `Prepare` and `Commit`.
+- **The renewal endpoint's `rotationFailure` read like `renewalRefusal`.** Cosmetic; not changed then. Group 9's reorder (D8) left `renewalRefusal` without callers, so it was removed and its godoc moved onto `refusedRenewal`.
+- **Three older context-ending checks keep their own copies** (the source throttle, the rate-limit guard and passkey attestation). They predate this change, are outside D8's paths, and do not consult the context's cause, which is `UNREPRODUCED` as a defect; moving them would change behaviour, so it is left to a later change. The three copies identical to the shared predicate (the password provider's and the saved codes' loads, and the API key check) move onto it.
+- **A re-rotation that loses to a renewal of its successor revokes the family** (second review, finding 1). Reproduced, and required: `sessions`, "Re-rotation after the successor was renewed", ends in a revoked family, and `main` does the same. A slow issuing step makes the order more likely, not new. Neither a per-identifier nor a per-family lock prevents it (each only changes which request raises it), and neither reaches other replicas. Treating it as a conflict instead would weaken the two-heads theft signal, which is a spec decision this change does not take.
+- **Concurrent renewals each make a signing call** (finding 6). A lock would serialise them, but each would still re-rotate and sign, so it saves no call; the source and family limiters bound them. Not changed.
+- **A hang-up during issuing is answered as a dependency failure** (finding 4a). D8 covers verification and resolution only, as decided; widening it to issuing is a spec decision left open.
+- **A redemption refusal joined beside a stale issuing failure is answered 500** (review of group 9, 2026-11-02). A consumer redeemer that got past a failed issue and then returns `errors.Join(firstErr, ErrInvalidLink)` is charged, as D7 requires, but the default mapping answers the join 500, because it still carries the marked failure and the mark is read before the refusal table. Kept: D7 asks for both halves, the delta forbids answering an issuing failure as an invalid link but not the reverse, and only a redeemer that joins an error it already got past reaches it; the library returns the redeemer's error unchanged. The row pins the 500, and `StatusForError`'s godoc says a mark outranks a refusal joined beside it.
+- **A redemption's login preparation can fail without the issuing mark** (review of group 9, 2026-11-02). Only the issuer's own failures are marked; a policy denial, an unenforced challenge, the challenge-method lookup or the session build fails unmarked, and a redeemer that retried, failed there twice with distinct errors and returned the first would be recognised by identity only, and charged. `UNREPRODUCED`: the issue step reuses the methods its check already looked up, so two distinct failures there need a consumer redeemer and dependencies that change between its retries. Not changed.
+- **The test module's sealed passkey view spends an emailed-code attempt per read.** Reproduced from the sixth read of one owner, which its godoc and error already state as its limit; no suite comes near it.
 
 ## Migration Plan
 
@@ -203,8 +360,48 @@ None. Nothing is tagged, there are no consumers, and stored values are unchanged
 
 ### D4. Dependency failures at session resolution
 
-Reasoned from scrty's own settled specs: `http-error-propagation` ("One public table maps refusals to a status": any other error is 500, and a dependency failure is not a refusal) `http-security-chain` (the bearer and session-reference requirements); and `identity-model` (a loader reports a miss as "user not found" and any other failure as an error that is not); and from the code of `httpsec`'s resolution and renewal endpoint.
+Reasoned from scrty's own settled specs and the established design: `http-error-propagation` ("One public table maps refusals to a status": any other error is 500, and a dependency failure is not a refusal); `http-security-chain` (the bearer, session-reference and renewal requirements); `identity-model` (a loader reports a miss as "user not found" and any other failure as an error that is not); `diagnostic-redaction` ("Returned errors caused by a dependency carry fixed library text"); and the code of `httpsec`'s resolution and renewal endpoint as of 2026-11-01.
 
 ### D5. The established design
 
-Reasoned from scrty's own settled specs; the comparison with the established design is pending.
+Reasoned from scrty's own settled specs and the established design, compared on 2026-11-01.
+
+### D6. A key source outage during verification
+
+**Researched (accessed 2026-11-01):**
+- [RFC 6750 §3, §3.1](https://www.rfc-editor.org/rfc/rfc6750.txt): `invalid_token` is a token "expired, revoked, malformed, or invalid for other reasons", answered 401, after which the client may obtain a new token and retry. No code for a server-side failure.
+- [RFC 9068 §4](https://www.rfc-editor.org/rfc/rfc9068.txt): validation failures are `invalid_token`; every failure listed is a property of the token, and key retrieval is not addressed.
+- [RFC 9110 §15.5.2, §15.6.1, §15.6.4, §10.2.3](https://www.rfc-editor.org/rfc/rfc9110.txt): 401 refuses the credentials presented; 500 is an unexpected condition; 503 is a temporary condition, with an optional `Retry-After`.
+- [OWASP Error Handling Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html): 5xx for requests the server cannot fulfil, 4xx for client errors, generic bodies, monitoring of 5xx rates. Read through a summarising fetch; the wording is paraphrased.
+- [OWASP ASVS 5.0.0, V16.5.1 to V16.5.3](https://github.com/OWASP/ASVS/blob/v5.0.0_release/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md): operate securely when an external resource fails, prevent fail-open, return a generic message.
+- [Spring Security 7.1.2 `JwtAuthenticationProvider`](https://github.com/spring-projects/spring-security/blob/7.1.2/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/authentication/JwtAuthenticationProvider.java) and [`BearerTokenAuthenticationEntryPoint`](https://github.com/spring-projects/spring-security/blob/7.1.2/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/web/BearerTokenAuthenticationEntryPoint.java): a key-retrieval failure is kept apart from a bad token internally, and both are answered 401, the former with no `error` attribute (the middle path considered).
+- [Envoy v1.40.2 `jwt_authn`](https://github.com/envoyproxy/envoy/tree/v1.40.2/source/extensions/filters/http/jwt_authn): a remote JWKS fetch failure is answered 401 `invalid_token`, with its own `jwks_fetch_failed` statistic.
+- [auth0/go-jwt-middleware v3.4.0](https://github.com/auth0/go-jwt-middleware/tree/v3.4.0): `jwks_fetch_failed` is answered 401 `invalid_token`.
+- [ASP.NET Core v10.0.13 `JwtBearerHandler.cs`](https://github.com/dotnet/aspnetcore/blob/v10.0.13/src/Security/Authentication/JwtBearer/src/JwtBearerHandler.cs): on the default path a failure inside token validation is answered 401 `invalid_token`; a configuration-manager failure is rethrown.
+- [go-oidc v3.21.0 `jwks.go`](https://github.com/coreos/go-oidc/blob/v3.21.0/oidc/jwks.go), [keyfunc v3.8.0](https://github.com/MicahParks/keyfunc/blob/v3.8.0/keyfunc.go), [golang-jwt v5.3.1 `parser.go`](https://github.com/golang-jwt/jwt/blob/v5.3.1/parser.go): Go libraries that do not classify a key-retrieval failure, so a caller must.
+
+### D7. Issue, then commit
+
+The second review's findings (expiry at the spend, the issuing-failure mark, the family's end after the step) are reasoned from scrty's own settled specs and the established design.
+
+**Researched (accessed 2026-11-01):**
+- [RFC 6749 §4.1.2, §10.5](https://www.rfc-editor.org/rfc/rfc6749.txt) and [RFC 9700 §4.2.4](https://www.rfc-editor.org/rfc/rfc9700.txt): authorisation codes are single-use and invalidated after first use; silent on a token response that fails after the code is spent.
+- [Ory fosite v0.49.0 `flow_authorize_code_token.go`](https://github.com/ory/fosite/blob/v0.49.0/handler/oauth2/flow_authorize_code_token.go): tokens are generated before the code is invalidated, and the invalidation commits in a transaction with the token sessions (the order D7 takes).
+- [Keycloak 26.8.1 `OAuth2CodeParser.java`](https://github.com/keycloak/keycloak/blob/26.8.1/services/src/main/java/org/keycloak/protocol/oidc/utils/OAuth2CodeParser.java): the code is removed first, and a later failure leaves it spent (the alternative considered).
+- [Ory Kratos v26.2.0 lookup-secret settings](https://github.com/ory/kratos/blob/v26.2.0/selfservice/strategy/lookup/settings.go) and [its documentation](https://www.ory.com/docs/kratos/mfa/lookup-secrets): regenerated recovery codes replace the old set only once the user has received them.
+- [NIST SP 800-63B-4 §3.1.2, §4.2.1.1](https://pages.nist.gov/800-63-4/sp800-63b.html): look-up secrets are used once; a used saved recovery code is invalidated and replaced; silent on ordering against delivery.
+- [Django 5.2 `PasswordResetTokenGenerator`](https://github.com/django/django/blob/5.2/django/contrib/auth/tokens.py): a stateless token spent only by the successful state change.
+
+Also reasoned from scrty's own `Sessions.RotateIssuing` (`sessions`, "A rotation without grace stores nothing when the caller cannot complete it") and the established design's order of recording a pending challenge before handing out a credential.
+
+### D8. A request whose own context ended
+
+**Primary documentation:**
+- [context.Cause and WithCancelCause](https://pkg.go.dev/context#Cause): a context cancelled with a cause reports it through `Cause`, while `Err` stays `Canceled`.
+
+**Researched (accessed 2026-11-01):**
+- [Go `net/http` `Request.Context`](https://pkg.go.dev/net/http#Request.Context) (go1.27.3): cancelled when the client's connection closes, the request is cancelled, or the handler returns.
+- [nginx release-1.28.0 `ngx_http_request.h`](https://github.com/nginx/nginx/blob/release-1.28.0/src/http/ngx_http_request.h): `NGX_HTTP_CLIENT_CLOSED_REQUEST` 499, a status logged for a request the client abandoned, never sent.
+- [gRPC status codes](https://github.com/grpc/grpc/blob/master/doc/statuscodes.md) (commit df3dd4d): `CANCELLED`, typically by the caller, distinct from `UNAVAILABLE` and `UNAUTHENTICATED`.
+
+Also reasoned from scrty's own `authentication` and `account-recovery` requirements on a client that leaves during a password proof's user load.

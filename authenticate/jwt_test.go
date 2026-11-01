@@ -1,6 +1,7 @@
 package authenticate_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 func TestNewJwtAuthenticator(t *testing.T) {
@@ -325,5 +327,311 @@ func TestBearerToken(t *testing.T) {
 }
 
 // errTokenExpired stands for a verifier's own refusal, which must stay
-// matchable alongside the uniform failure.
-var errTokenExpired = fmt.Errorf("%w: expired", errors.New("token: invalid"))
+// matchable alongside the uniform failure. It matches token.ErrInvalid, as the
+// verifier's contract requires of every rejection: any other error is an
+// outage, not a refused token.
+var errTokenExpired = fmt.Errorf("%w: expired", token.ErrInvalid)
+
+// verificationKeysDown is a consumer key source whose key service cannot be
+// reached: it signs with the keys it wraps, and cannot supply the keys to
+// verify against.
+type verificationKeysDown struct {
+	signingkey.KeySource
+
+	err error
+}
+
+func (s verificationKeysDown) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
+	return nil, s.err
+}
+
+// TestJWTProvider_KeySourceOutage pins that the bearer-token provider answers
+// a verifier that could not obtain its keys as a dependency failure, not as
+// the uniform authentication failure, and still refuses a token the same real
+// verifier rejects. Real keys, a real generator and a real verifier are used,
+// because the split rests on what the verifier reports for each.
+func TestJWTProvider_KeySourceOutage(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://issuer.example"
+		audience = "orders-api"
+	)
+
+	errKMSTimeout := errors.New("kms: dependency timeout")
+
+	type testCase struct {
+		name string
+
+		// verifyingWith is the key source the provider's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(t *testing.T, signedBy *signingkey.Keys) signingkey.KeySource
+
+		assert func(t *testing.T, got *authenticate.Authentication, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "the key source cannot supply the verification keys",
+			verifyingWith: func(_ *testing.T, signedBy *signingkey.Keys) signingkey.KeySource {
+				return verificationKeysDown{KeySource: signedBy, err: errKMSTimeout}
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"an outage was answered as a refused token")
+				assert.NotErrorIs(t, err, token.ErrInvalid)
+				require.ErrorIs(t, err, errKMSTimeout, "the key source's error stays reachable")
+				assert.Equal(t, "authenticate: verification keys unavailable", err.Error(),
+					"the text is the library's")
+			},
+		},
+		{
+			name: "a token signed by a key the source does not hold is still refused",
+			verifyingWith: func(t *testing.T, _ *signingkey.Keys) signingkey.KeySource {
+				t.Helper()
+
+				other, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+				require.NoError(t, err)
+
+				return other
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.ErrorIs(t, err, token.ErrInvalid, "the verifier's own cause stays matchable")
+				assert.Nil(t, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys, token.WithIssuer(issuer), token.WithAudience(audience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), tokenID.String(), &identity.Principal{ID: "u-1", Username: "ada"})
+			require.NoError(t, err)
+
+			verifier, err := token.NewVerifier(
+				token.WithVerifyKeySource(tc.verifyingWith(t, keys)),
+				token.WithVerifyIssuer(issuer),
+				token.WithVerifyAudience(audience),
+			)
+			require.NoError(t, err)
+
+			auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(verifier))
+			require.NoError(t, err)
+
+			got, err := auth.Authenticate(t.Context(), authenticate.NewBearerToken(tok))
+			tc.assert(t, got, err)
+		})
+	}
+}
+
+// TestJWTProvider_CallerLeavesDuringVerification pins that a caller whose
+// own context ended while the token was verified is neither refused nor
+// reported as a key outage: the error matches the context's error, behind
+// fixed text of its own. A key source that times out on a deadline of its own
+// while the caller still waits is an outage all the same. Real keys, a real
+// generator and a real verifier are used, because the JOSE stack checks the
+// context itself.
+func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
+	t.Parallel()
+
+	errCallerGone := errors.New("test: the caller went away")
+
+	const (
+		issuer   = "https://issuer.example"
+		audience = "orders-api"
+	)
+
+	type testCase struct {
+		name string
+
+		// ctx modifies the caller's context; nil leaves it live.
+		ctx func(ctx context.Context) context.Context
+
+		// verifyingWith is the key source the provider's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(signedBy *signingkey.Keys) signingkey.KeySource
+
+		// verifier, when set, replaces the real verifier with a double.
+		verifier func(ctrl *gomock.Controller) token.Verifier
+
+		assert func(t *testing.T, got *authenticate.Authentication, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "the caller left before the token was verified",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource { return signedBy },
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a caller that left was answered as a refused token")
+				assert.Equal(t, "authenticate: the caller left while the token was verified", err.Error(),
+					"a caller that left is not reported as a key outage")
+			},
+		},
+		{
+			// A caller cancelled with a cause reports that cause through
+			// context.Cause, and a verifier that returns it has returned the
+			// caller's own ending, not a failure of its own.
+			name: "the caller left with a cause, which the verifier returns",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, fmt.Errorf("kms: %w", context.Cause(ctx))
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, errCallerGone, "the cause stays reachable")
+				assert.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a caller that left was answered as a refused token")
+				assert.Equal(t, "authenticate: the caller left while the token was verified", err.Error(),
+					"a caller that left is not reported as a key outage")
+			},
+		},
+		{
+			// ctx ending, with a cause, beside a failure that is neither the
+			// context's error nor its cause is the verifier failing on its own.
+			name: "the caller left with a cause, but the verifier failed on its own",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("kms down"))
+
+				return v
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, errCallerGone)
+				assert.NotEqual(t, "authenticate: the caller left while the token was verified", err.Error(),
+					"an unrelated failure was answered as the caller leaving")
+				assert.Equal(t, "authenticate: verification keys unavailable", err.Error())
+			},
+		},
+		{
+			// The verifier reached a verdict, and the context ending beside it
+			// does not take the verdict back: a rejection is classified before
+			// a hang-up.
+			name: "a rejection that reaches the provider beside the ended context is still a refusal",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, errors.Join(token.ErrInvalid, ctx.Err())
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a verdict was reported as a hang-up")
+				assert.Nil(t, got)
+				assert.NotEqual(t, "authenticate: the caller left while the token was verified", err.Error())
+			},
+		},
+		{
+			name: "a key source that times out of its own while the caller waits is an outage",
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource {
+				return verificationKeysDown{KeySource: signedBy, err: context.DeadlineExceeded}
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.DeadlineExceeded, "the key source's error stays reachable")
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, "authenticate: verification keys unavailable", err.Error())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys, token.WithIssuer(issuer), token.WithAudience(audience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), tokenID.String(), &identity.Principal{ID: "u-1", Username: "ada"})
+			require.NoError(t, err)
+
+			var verifier token.Verifier
+			if tc.verifier != nil {
+				verifier = tc.verifier(gomock.NewController(t))
+			} else {
+				verifier, err = token.NewVerifier(
+					token.WithVerifyKeySource(tc.verifyingWith(keys)),
+					token.WithVerifyIssuer(issuer),
+					token.WithVerifyAudience(audience),
+				)
+				require.NoError(t, err)
+			}
+
+			auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(verifier))
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			got, err := auth.Authenticate(ctx, authenticate.NewBearerToken(tok))
+			tc.assert(t, got, err)
+		})
+	}
+}
