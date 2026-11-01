@@ -546,6 +546,7 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Resident (discoverable) key | required; a non-resident passkey serves only as a second factor | `passkey.WithResidentKey` |
 | Emailed confirmation code | 6 digits, valid 10 minutes, 5 attempts | not configurable: the store contract fixes the attempts (`passkey.MaxEmailCodeAttempts`) |
 | Request body caps | 64 KiB registration (`passkey.RegistrationBodyLimit`), 16 KiB assertion (`passkey.AssertionBodyLimit`) | not configurable |
+| A consumer challenge kind raised on a passkey request (`WithChallengeEnforcer`) | refused with a `ChallengeError` of that kind on every passkey endpoint | `httpsec.WithPasskeyRegistrationResolving(kinds...)`: the four registration endpoints serve the named kinds under every other rule, nothing is marked, and listing, rename and removal still refuse them; no kinds, `ChallengeNone`, a built-in kind or an undeclared kind is `ErrConfig` at `New` |
 | Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
 | Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
 | Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
