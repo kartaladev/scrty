@@ -277,7 +277,7 @@ Each defect task's red step is the reproduction named in its design decision, wr
   - red: `TestRepro2ReproofRunsThePostAuthenticationPhase` (the TOTP rows); a same-channel deny ahead of the cap and ahead of a consumer deny; the real `policy.MFA` and `policy.MFARequirement` in both orders on `/reauth/verify/passkey` for a session that met its second factor at login; a password-change challenge; a substituted caller; an OIDC session under `FederatedAssuranceRefuse` (`TestReproReproofDropsFederatedAssurance`). The existing end-to-end rows "a valid TOTP code re-proves" and "a passkey login re-proves with the passkey" must stay green.
 
   (ADDED reauthentication "A second-factor re-proof applies the post-authentication policy's denials", "A second-factor re-proof ignores only a second-factor challenge" and "A second-factor re-proof judges only the session's own user", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...`
-- [ ] 12.3 Wiring: a re-proof challenge store on a chain without the MFA slot fails `New`; fibersec validates its recency options before the authorizer fallback:
+- [x] 12.3 Wiring: a re-proof challenge store on a chain without the MFA slot fails `New`; fibersec validates its recency options before the authorizer fallback:
   - red: the no-MFA-slot row of `TestRepro2_ReauthChallengeStoreWithNoChallengeMethodIsRefused`; `TestRepro2_NewGuardsReportsWindowErrorBeforeMissingAuthorizer` on fiber, with the net/http and gin rows as its contrast.
 
   (Reauthentication "Re-proof challenge stores are wired consistently", scenario "A re-proof store without the MFA slot"; framework-adapters scenario "One wiring mistake, one error on every adapter".) Verify with `go test -race -count=1 ./httpsec/` and `go test -race ./...` in `httpsec/fibersec` and `httpsec/ginsec`
@@ -285,7 +285,7 @@ Each defect task's red step is the reproduction named in its design decision, wr
   - red: `TestRepro2PasswordEndpointStopsLookingAtTheFirstEnrolledMethod`; the listing's every-method row stays.
 
   (Reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", scenario "The password endpoint settles at the first enrolled method".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
-- [ ] 12.5 Cleanups, behaviour unchanged (D1, D6 "One full-session check", D8):
+- [x] 12.5 Cleanups, behaviour unchanged (D1, D6 "One full-session check", D8):
   - one full-session check shared by re-proof admission, passkey management and recovery-code regeneration, the strictest of the three, a challenge raised on the request included, which passkey management now refuses too, with `WithPasskeyRegistrationResolving(kinds...)` letting registration serve a consumer kind it resolves (passkey-authentication scenarios "A challenge raised on the request", "A consumer kind registration resolves", "A resolving kind that is not declared");
   - one method-listing writer shared by the MFA listing and the re-proof listing;
   - `session.AuthenticatedWithin(at, now time.Time, window time.Duration) bool`, which the method delegates to; the recency judge calls it without building a session.
