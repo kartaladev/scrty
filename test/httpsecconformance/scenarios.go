@@ -129,6 +129,11 @@ type Effects struct {
 	// Attempts is the failed-login counter the chain records against.
 	Attempts policy.AttemptStore
 
+	// staleReads is the reading wrapper a re-authentication scenario puts
+	// between the manager and Store to replay a session as it was before a
+	// rotation, and nil for every other scenario.
+	staleReads *staleReadStore
+
 	// OIDC is the federated-login wiring of an OIDC scenario, and nil for
 	// every other scenario.
 	OIDC *OIDCFixture
