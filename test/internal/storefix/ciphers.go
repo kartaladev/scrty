@@ -1,6 +1,7 @@
 package storefix
 
 import (
+	"context"
 	"crypto/rand"
 	"slices"
 	"sync"
@@ -74,13 +75,15 @@ func TestCipher(t *testing.T) seal.Cipher {
 type IdentityCipher struct{}
 
 // ActiveKeyID reports k2.
-func (IdentityCipher) ActiveKeyID() (string, error) { return "k2", nil }
+func (IdentityCipher) ActiveKeyID(context.Context) (string, error) { return "k2", nil }
 
 // Seal returns a copy of plaintext.
-func (IdentityCipher) Seal(plaintext, _ []byte) ([]byte, error) { return slices.Clone(plaintext), nil }
+func (IdentityCipher) Seal(_ context.Context, plaintext, _ []byte) ([]byte, error) {
+	return slices.Clone(plaintext), nil
+}
 
 // Open returns a copy of sealed, under k2.
-func (IdentityCipher) Open(sealed, _ []byte) ([]byte, string, error) {
+func (IdentityCipher) Open(_ context.Context, sealed, _ []byte) ([]byte, string, error) {
 	return slices.Clone(sealed), "k2", nil
 }
 
@@ -89,13 +92,13 @@ func (IdentityCipher) Open(sealed, _ []byte) ([]byte, string, error) {
 type MissingAADCipher struct{ seal.Cipher }
 
 // Seal seals plaintext with no additional data.
-func (c MissingAADCipher) Seal(plaintext, _ []byte) ([]byte, error) {
-	return c.Cipher.Seal(plaintext, nil)
+func (c MissingAADCipher) Seal(ctx context.Context, plaintext, _ []byte) ([]byte, error) {
+	return c.Cipher.Seal(ctx, plaintext, nil)
 }
 
 // Open opens sealed with no additional data.
-func (c MissingAADCipher) Open(sealed, _ []byte) ([]byte, string, error) {
-	return c.Cipher.Open(sealed, nil)
+func (c MissingAADCipher) Open(ctx context.Context, sealed, _ []byte) ([]byte, string, error) {
+	return c.Cipher.Open(ctx, sealed, nil)
 }
 
 // CountingCipher records the additional data every Seal and Open is given,
@@ -109,21 +112,21 @@ type CountingCipher struct {
 }
 
 // Seal records aad and delegates.
-func (c *CountingCipher) Seal(plaintext, aad []byte) ([]byte, error) {
+func (c *CountingCipher) Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error) {
 	c.mu.Lock()
 	c.seals = append(c.seals, string(aad))
 	c.mu.Unlock()
 
-	return c.Cipher.Seal(plaintext, aad)
+	return c.Cipher.Seal(ctx, plaintext, aad)
 }
 
 // Open records aad and delegates.
-func (c *CountingCipher) Open(sealed, aad []byte) ([]byte, string, error) {
+func (c *CountingCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, string, error) {
 	c.mu.Lock()
 	c.opens = append(c.opens, string(aad))
 	c.mu.Unlock()
 
-	return c.Cipher.Open(sealed, aad)
+	return c.Cipher.Open(ctx, sealed, aad)
 }
 
 // Seals is the additional data of every Seal so far, in order.
@@ -162,10 +165,10 @@ func (c *GatedCipher) Release() { close(c.release) }
 
 // Open delegates, the first call only after signalling Opening and waiting
 // for Release.
-func (c *GatedCipher) Open(sealed, aad []byte) ([]byte, string, error) {
+func (c *GatedCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, string, error) {
 	c.once.Do(func() {
 		close(c.opening)
 		<-c.release
 	})
-	return c.Cipher.Open(sealed, aad)
+	return c.Cipher.Open(ctx, sealed, aad)
 }

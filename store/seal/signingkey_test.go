@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func signingRecord(kid string, n int) signingkey.Record {
 func storeSealed(t *testing.T, inner signingkey.KeyStore, c seal.Cipher, rec signingkey.Record) []byte {
 	t.Helper()
 
-	sealed, err := c.Seal(rec.Private, seal.SigningKeyAAD(rec.Kid))
+	sealed, err := c.Seal(t.Context(), rec.Private, seal.SigningKeyAAD(rec.Kid))
 	require.NoError(t, err)
 
 	rec.Private = sealed
@@ -195,7 +196,7 @@ func TestSigningKeyStore_Store(t *testing.T) {
 				got := innerRecord(t, inner, "kid-a")
 				assert.NotContains(t, string(got.Private), privateSentinel)
 
-				opened, keyID, err := cs.k2Only.Open(got.Private, seal.SigningKeyAAD("kid-a"))
+				opened, keyID, err := cs.k2Only.Open(t.Context(), got.Private, seal.SigningKeyAAD("kid-a"))
 				require.NoError(t, err)
 				assert.Equal(t, "k2", keyID)
 				assert.Equal(t, rec.Private, opened)
@@ -208,7 +209,7 @@ func TestSigningKeyStore_Store(t *testing.T) {
 			name: "a consumer cipher that fails to seal stores nothing",
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Seal(rec.Private, seal.SigningKeyAAD("kid-a")).Return(nil, errCipherDown)
+				c.EXPECT().Seal(gomock.Any(), rec.Private, seal.SigningKeyAAD("kid-a")).Return(nil, errCipherDown)
 
 				return c
 			},
@@ -280,7 +281,7 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 	// aliasBacking is the slice a mocked inner store keeps: LoadAll must open
 	// into a copy, never scribble the plaintext back into aliasBacking itself.
 	aliasRec := signingRecord("kid-a", 1)
-	aliasSealed, err := cs.current.Seal(aliasRec.Private, seal.SigningKeyAAD("kid-a"))
+	aliasSealed, err := cs.current.Seal(t.Context(), aliasRec.Private, seal.SigningKeyAAD("kid-a"))
 	require.NoError(t, err)
 	aliasRec.Private = aliasSealed
 	aliasBacking := []signingkey.Record{aliasRec}
@@ -362,8 +363,8 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 				storeSealed(t, f.inner, cs.current, signingRecord("kid-a", 1))
 				old := storeSealed(t, f.inner, cs.retired, signingRecord("kid-b", 2))
 				f.resealer.EXPECT().ResealSigningKey(gomock.Any(), "kid-b", old, gomock.Any()).DoAndReturn(
-					func(_ context.Context, _ string, _, resealed []byte) error {
-						opened, keyID, err := cs.k2Only.Open(resealed, seal.SigningKeyAAD("kid-b"))
+					func(ctx context.Context, _ string, _, resealed []byte) error {
+						opened, keyID, err := cs.k2Only.Open(ctx, resealed, seal.SigningKeyAAD("kid-b"))
 						require.NoError(t, err)
 						assert.Equal(t, "k2", keyID)
 						assert.Equal(t, signingRecord("kid-b", 2).Private, opened)
@@ -398,7 +399,7 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, []signingkey.Record{signingRecord("kid-a", 1)}, recs)
 
-				_, keyID, err := cs.retired.Open(innerRecord(t, f.inner, "kid-a").Private, seal.SigningKeyAAD("kid-a"))
+				_, keyID, err := cs.retired.Open(t.Context(), innerRecord(t, f.inner, "kid-a").Private, seal.SigningKeyAAD("kid-a"))
 				require.NoError(t, err)
 				assert.Equal(t, "k1", keyID)
 			},
@@ -407,9 +408,9 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 			name: "a cipher that cannot name its active key skips the re-seal, not the load",
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Open(gomock.Any(), seal.SigningKeyAAD("kid-a")).
+				c.EXPECT().Open(gomock.Any(), gomock.Any(), seal.SigningKeyAAD("kid-a")).
 					Return(signingRecord("kid-a", 1).Private, "k1", nil)
-				c.EXPECT().ActiveKeyID().Return("", errCipherDown)
+				c.EXPECT().ActiveKeyID(gomock.Any()).Return("", errCipherDown)
 
 				return c
 			},
@@ -455,10 +456,10 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 			name: "a failed re-seal Seal does not call the resealer",
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Open(gomock.Any(), seal.SigningKeyAAD("kid-a")).
+				c.EXPECT().Open(gomock.Any(), gomock.Any(), seal.SigningKeyAAD("kid-a")).
 					Return(signingRecord("kid-a", 1).Private, "k1", nil)
-				c.EXPECT().ActiveKeyID().Return("k2", nil)
-				c.EXPECT().Seal(signingRecord("kid-a", 1).Private, seal.SigningKeyAAD("kid-a")).
+				c.EXPECT().ActiveKeyID(gomock.Any()).Return("k2", nil)
+				c.EXPECT().Seal(gomock.Any(), signingRecord("kid-a", 1).Private, seal.SigningKeyAAD("kid-a")).
 					Return(nil, errCipherDown)
 
 				return c
@@ -498,6 +499,74 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 
 			recs, err := store.LoadAll(t.Context())
 			tc.assert(t, f, recs, err)
+		})
+	}
+}
+
+// TestSigningKeyStore_CipherCarriesStoreContext checks that every cipher call
+// the signing-key store makes, the re-seal on load included, carries the
+// context of the store call it serves.
+func TestSigningKeyStore_CipherCarriesStoreContext(t *testing.T) {
+	t.Parallel()
+
+	cs := newCiphers(t)
+
+	type testCase struct {
+		name   string
+		setup  func(t *testing.T, f signingFixture)
+		call   func(ctx context.Context, f signingFixture) error
+		assert func(t *testing.T, calls []ctxCall, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "storing a key seals under the call's context",
+			call: func(ctx context.Context, f signingFixture) error {
+				return f.store.Store(ctx, signingRecord("kid-a", 1))
+			},
+			assert: func(t *testing.T, calls []ctxCall, err error) {
+				require.NoError(t, err)
+				assertCallsMarked(t, calls, "Seal")
+			},
+		},
+		{
+			name: "a load names the active key, opens and re-seals under the call's context",
+			setup: func(t *testing.T, f signingFixture) {
+				storeSealed(t, f.inner, cs.retired, signingRecord("kid-a", 1))
+				f.resealer.EXPECT().ResealSigningKey(gomock.Any(), "kid-a", gomock.Any(), gomock.Any()).Return(nil)
+			},
+			call: func(ctx context.Context, f signingFixture) error {
+				recs, err := f.store.LoadAll(ctx)
+				if err == nil && len(recs) != 1 {
+					return fmt.Errorf("loaded %d keys", len(recs))
+				}
+
+				return err
+			},
+			assert: func(t *testing.T, calls []ctxCall, err error) {
+				require.NoError(t, err)
+				assertCallsMarked(t, calls, "ActiveKeyID", "Open", "Seal")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := signingkey.NewMemoryKeyStore()
+			resealer := NewMockSigningKeyResealer(gomock.NewController(t))
+			c := &recordingCipher{Cipher: cs.current}
+			store, err := seal.NewSigningKeyStore(inner, resealer, c)
+			require.NoError(t, err)
+
+			f := signingFixture{store: store, inner: inner, resealer: resealer}
+			if tc.setup != nil {
+				tc.setup(t, f)
+			}
+
+			err = tc.call(marked(t.Context()), f)
+			tc.assert(t, c.Calls(), err)
 		})
 	}
 }

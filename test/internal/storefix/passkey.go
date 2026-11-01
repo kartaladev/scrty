@@ -337,9 +337,13 @@ func passkeySealedCredential(owner string, code []byte) *passkey.Credential {
 
 // SealedPasskeyCodes is the sealed-column suite's view of the emailed code
 // the passkey credential store keeps, built by newWith over handle and a
-// cipher. Put inserts owner's credential, of user owner, awaiting the
-// suite's secret as its emailed code; the column is email_code. The code is
-// never re-sealed on read.
+// cipher. The code is sealed and opened by five store methods, and the view
+// drives all five under the suite's context: Put inserts owner's credential,
+// of user owner, awaiting the suite's secret as its emailed code, with Insert,
+// and a second credential of user owner+"-within" with InsertWithin; Get reads
+// the code back with FindByCredentialID, then with List and with
+// ChargeEmailAttempt, and fails unless the three agree. The column is
+// email_code. The code is never re-sealed on read.
 func SealedPasskeyCodes[H any](
 	handle H, newWith func(t *testing.T, handle H, c seal.Cipher) passkey.CredentialStore,
 ) storetest.Sealed[passkey.CredentialStore] {
@@ -348,7 +352,18 @@ func SealedPasskeyCodes[H any](
 		Rotation:       storetest.UnchangedOnRead,
 		NewWithKeyring: storeOver(handle, newWith),
 		Put: func(ctx context.Context, s passkey.CredentialStore, owner string, secret []byte) error {
-			return s.Insert(ctx, passkeySealedCredential(owner, secret))
+			if err := s.Insert(ctx, passkeySealedCredential(owner, secret)); err != nil {
+				return err
+			}
+			within := owner + "-within"
+			stored, err := s.InsertWithin(ctx, passkeySealedCredential(within, secret), 1)
+			if err != nil {
+				return err
+			}
+			if !stored {
+				return fmt.Errorf("storefix: InsertWithin refused the first credential of user %q", within)
+			}
+			return nil
 		},
 		Get: func(ctx context.Context, s passkey.CredentialStore, owner string) ([]byte, bool, error) {
 			c, err := s.FindByCredentialID(ctx, []byte("sealed-"+owner))
@@ -360,6 +375,9 @@ func SealedPasskeyCodes[H any](
 			}
 			if c.EmailCode == nil {
 				return nil, true, nil
+			}
+			if err := passkeyCodeAgrees(ctx, s, c); err != nil {
+				return nil, true, err
 			}
 			return []byte(c.EmailCode.Code), true, nil
 		},
@@ -373,6 +391,39 @@ SET email_code = (SELECT email_code FROM passkey_credentials WHERE credential_id
 			require.NoError(t, err)
 		},
 	}
+}
+
+// passkeyCodeAgrees requires List and ChargeEmailAttempt to open the same
+// emailed code as c, which FindByCredentialID returned: the other two store
+// methods that open it.
+func passkeyCodeAgrees(ctx context.Context, s passkey.CredentialStore, c *passkey.Credential) error {
+	listed, err := s.List(ctx, c.User)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, l := range listed {
+		if l.ID != c.ID {
+			continue
+		}
+		found = true
+		if l.EmailCode == nil || l.EmailCode.Code != c.EmailCode.Code {
+			return fmt.Errorf("storefix: List opened a different emailed code than FindByCredentialID")
+		}
+	}
+	if !found {
+		return fmt.Errorf("storefix: List does not hold the credential FindByCredentialID returned")
+	}
+
+	charged, ok, err := s.ChargeEmailAttempt(ctx, c.User, c.ID, PasskeyCreated.Add(time.Minute))
+	if err != nil {
+		return err
+	}
+	if !ok || charged.Code != c.EmailCode.Code {
+		return fmt.Errorf("storefix: ChargeEmailAttempt did not return the emailed code FindByCredentialID opened")
+	}
+
+	return nil
 }
 
 // passkeyCodeColumn is the email_code column of the credential with

@@ -14,14 +14,14 @@ func TestGatedCipher_HoldsFirstOpenUntilReleased(t *testing.T) {
 	t.Parallel()
 
 	inner := storefix.TestCipher(t)
-	sealed, err := inner.Seal([]byte("plaintext"), []byte("aad"))
+	sealed, err := inner.Seal(t.Context(), []byte("plaintext"), []byte("aad"))
 	require.NoError(t, err)
 
 	gated := storefix.NewGatedCipher(inner)
 
 	opened := make(chan []byte, 1)
 	go func() {
-		pt, _, err := gated.Open(sealed, []byte("aad"))
+		pt, _, err := gated.Open(t.Context(), sealed, []byte("aad"))
 		assert.NoError(t, err)
 		opened <- pt
 	}()
@@ -47,7 +47,7 @@ func TestGatedCipher_HoldsFirstOpenUntilReleased(t *testing.T) {
 	}
 
 	// Later opens pass straight through.
-	pt, _, err := gated.Open(sealed, []byte("aad"))
+	pt, _, err := gated.Open(t.Context(), sealed, []byte("aad"))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("plaintext"), pt)
 }
@@ -57,9 +57,9 @@ func TestCountingCipher_RecordsAdditionalData(t *testing.T) {
 
 	c := &storefix.CountingCipher{Cipher: storefix.TestCipher(t)}
 
-	sealed, err := c.Seal([]byte("plaintext"), []byte("seal-aad"))
+	sealed, err := c.Seal(t.Context(), []byte("plaintext"), []byte("seal-aad"))
 	require.NoError(t, err)
-	_, _, err = c.Open(sealed, []byte("seal-aad"))
+	_, _, err = c.Open(t.Context(), sealed, []byte("seal-aad"))
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"seal-aad"}, c.Seals())

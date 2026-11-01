@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,9 @@ const (
 	sealedNoReseal        sealedDefect = "no-reseal"
 	sealedAbsentOnFailure sealedDefect = "absent-on-failure"
 	sealedOpaqueFailure   sealedDefect = "opaque-failure"
+	sealedOwnContext      sealedDefect = "own-context"
+	sealedResealOwnCtx    sealedDefect = "reseal-own-context"
+	sealedOwnDeadline     sealedDefect = "own-deadline"
 )
 
 // errReadFailed is the only error a store carrying the opaque-failure defect
@@ -49,6 +53,12 @@ func sealedCipher(t *testing.T, kr seal.Keyring, d sealedDefect) seal.Cipher {
 		return identityCipher{}
 	case sealedMissingAAD:
 		return missingAADCipher{c}
+	case sealedOwnContext:
+		return ownContextCipher{c}
+	case sealedResealOwnCtx:
+		return &resealOwnContextCipher{Cipher: c, opened: map[string]bool{}}
+	case sealedOwnDeadline:
+		return ownDeadlineCipher{c}
 	}
 	return c
 }
@@ -68,16 +78,91 @@ func sealedRead(d sealedDefect, secret []byte, ok bool, err error) ([]byte, bool
 // identityCipher returns its input unchanged: it seals nothing.
 type identityCipher struct{}
 
-func (identityCipher) Seal(p, _ []byte) ([]byte, error)         { return bytes.Clone(p), nil }
-func (identityCipher) Open(s, _ []byte) ([]byte, string, error) { return bytes.Clone(s), "k1", nil }
-func (identityCipher) ActiveKeyID() (string, error)             { return "k1", nil }
+func (identityCipher) Seal(_ context.Context, p, _ []byte) ([]byte, error) {
+	return bytes.Clone(p), nil
+}
+func (identityCipher) Open(_ context.Context, s, _ []byte) ([]byte, string, error) {
+	return bytes.Clone(s), "k1", nil
+}
+func (identityCipher) ActiveKeyID(context.Context) (string, error) { return "k1", nil }
 
 // missingAADCipher seals with the real cipher but binds nothing, so a sealed
 // value opens in any record.
 type missingAADCipher struct{ seal.Cipher }
 
-func (c missingAADCipher) Seal(p, _ []byte) ([]byte, error)         { return c.Cipher.Seal(p, nil) }
-func (c missingAADCipher) Open(s, _ []byte) ([]byte, string, error) { return c.Cipher.Open(s, nil) }
+func (c missingAADCipher) Seal(ctx context.Context, p, _ []byte) ([]byte, error) {
+	return c.Cipher.Seal(ctx, p, nil)
+}
+
+func (c missingAADCipher) Open(ctx context.Context, s, _ []byte) ([]byte, string, error) {
+	return c.Cipher.Open(ctx, s, nil)
+}
+
+// ownContextCipher seals and opens with the real cipher, but under a context
+// of its own rather than the one it is given: what a store does when its
+// sealing helper drops the operation's context.
+type ownContextCipher struct{ seal.Cipher }
+
+func (c ownContextCipher) Seal(_ context.Context, p, aad []byte) ([]byte, error) {
+	return c.Cipher.Seal(context.Background(), p, aad) //nolint:contextcheck // the defect: a context of its own
+}
+
+func (c ownContextCipher) Open(_ context.Context, s, aad []byte) ([]byte, string, error) {
+	return c.Cipher.Open(context.Background(), s, aad) //nolint:contextcheck // the defect: a context of its own
+}
+
+func (c ownContextCipher) ActiveKeyID(context.Context) (string, error) {
+	return c.Cipher.ActiveKeyID(context.Background()) //nolint:contextcheck // the defect: a context of its own
+}
+
+// resealOwnContextCipher carries the operation's context everywhere but when
+// it re-seals a value it has just opened: the re-seal on read runs under a
+// context of its own, as a store does that hands the re-seal to a helper
+// without the read's context. A plaintext it has opened and is asked to seal
+// again is the re-seal.
+type resealOwnContextCipher struct {
+	seal.Cipher
+
+	mu     sync.Mutex
+	opened map[string]bool
+}
+
+func (c *resealOwnContextCipher) Open(ctx context.Context, s, aad []byte) ([]byte, string, error) {
+	p, id, err := c.Cipher.Open(ctx, s, aad)
+	if err == nil {
+		c.mu.Lock()
+		c.opened[string(p)] = true
+		c.mu.Unlock()
+	}
+	return p, id, err
+}
+
+func (c *resealOwnContextCipher) Seal(ctx context.Context, p, aad []byte) ([]byte, error) {
+	c.mu.Lock()
+	resealing := c.opened[string(p)]
+	c.mu.Unlock()
+	if resealing {
+		return c.Cipher.Seal(context.Background(), p, aad) //nolint:contextcheck // the defect: a re-seal under a context of its own
+	}
+	return c.Cipher.Seal(ctx, p, aad)
+}
+
+// ownDeadlineCipher seals and opens under the context it is given, narrowed
+// by a deadline of its own: what a store does that bounds its sealing
+// without being asked to.
+type ownDeadlineCipher struct{ seal.Cipher }
+
+func (c ownDeadlineCipher) Seal(ctx context.Context, p, aad []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	return c.Cipher.Seal(ctx, p, aad)
+}
+
+func (c ownDeadlineCipher) Open(ctx context.Context, s, aad []byte) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	return c.Cipher.Open(ctx, s, aad)
+}
 
 // tableResealer is the conditional re-seal write over the in-memory table.
 type tableResealer struct{ table *mfa.MemoryEnrolmentStore }
@@ -246,6 +331,7 @@ const (
 	missingKeyCase = "a read without the sealing key is an error, never absence"
 	resealCase     = "a read under a retired key re-seals the value under the active key"
 	unchangedCase  = "a read under a retired key leaves the stored value unchanged"
+	contextCase    = "the cipher carries the operation's context"
 )
 
 var sealedVariants = []brokenVariant{
@@ -259,10 +345,16 @@ var sealedVariants = []brokenVariant{
 	sealedVariant(sealedNoReseal, storetest.SealedBase64URL, storetest.ResealOnRead, resealCase),
 	sealedVariant(sealedConforming, storetest.SealedBase64URL, storetest.UnchangedOnRead, unchangedCase),
 	sealedVariant(sealedOpaqueFailure, storetest.SealedBase64URL, storetest.ResealOnRead, missingKeyCase),
+	sealedVariant(sealedOwnContext, storetest.SealedBase64URL, storetest.ResealOnRead, contextCase),
+	sealedVariant(sealedResealOwnCtx, storetest.SealedBase64URL, storetest.ResealOnRead, resealCase),
+	sealedVariant(sealedOwnDeadline, storetest.SealedBase64URL, storetest.ResealOnRead, contextCase),
 	sealedKeysVariant(sealedConforming, ""),
 	sealedKeysVariant(sealedMissingAAD, copyCase),
 	sealedKeysVariant(sealedIdentityCipher, plaintextCase),
 	sealedKeysVariant(sealedOpaqueFailure, missingKeyCase),
+	sealedKeysVariant(sealedOwnContext, contextCase),
+	sealedKeysVariant(sealedResealOwnCtx, resealCase),
+	sealedKeysVariant(sealedOwnDeadline, contextCase),
 	{
 		name: "sealed-missing-raw",
 		// Wrapped in a subtest, as the narrow-pool race variant is, for the

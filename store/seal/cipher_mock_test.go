@@ -10,6 +10,7 @@
 package seal_test
 
 import (
+	context "context"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"
@@ -40,18 +41,18 @@ func (m *MockCipher) EXPECT() *MockCipherMockRecorder {
 }
 
 // ActiveKeyID mocks base method.
-func (m *MockCipher) ActiveKeyID() (string, error) {
+func (m *MockCipher) ActiveKeyID(ctx context.Context) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ActiveKeyID")
+	ret := m.ctrl.Call(m, "ActiveKeyID", ctx)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ActiveKeyID indicates an expected call of ActiveKeyID.
-func (mr *MockCipherMockRecorder) ActiveKeyID() *MockCipherActiveKeyIDCall {
+func (mr *MockCipherMockRecorder) ActiveKeyID(ctx any) *MockCipherActiveKeyIDCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ActiveKeyID", reflect.TypeOf((*MockCipher)(nil).ActiveKeyID))
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ActiveKeyID", reflect.TypeOf((*MockCipher)(nil).ActiveKeyID), ctx)
 	return &MockCipherActiveKeyIDCall{Call: call}
 }
 
@@ -67,21 +68,21 @@ func (c *MockCipherActiveKeyIDCall) Return(arg0 string, arg1 error) *MockCipherA
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockCipherActiveKeyIDCall) Do(f func() (string, error)) *MockCipherActiveKeyIDCall {
+func (c *MockCipherActiveKeyIDCall) Do(f func(context.Context) (string, error)) *MockCipherActiveKeyIDCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockCipherActiveKeyIDCall) DoAndReturn(f func() (string, error)) *MockCipherActiveKeyIDCall {
+func (c *MockCipherActiveKeyIDCall) DoAndReturn(f func(context.Context) (string, error)) *MockCipherActiveKeyIDCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // Open mocks base method.
-func (m *MockCipher) Open(sealed, aad []byte) ([]byte, string, error) {
+func (m *MockCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Open", sealed, aad)
+	ret := m.ctrl.Call(m, "Open", ctx, sealed, aad)
 	ret0, _ := ret[0].([]byte)
 	ret1, _ := ret[1].(string)
 	ret2, _ := ret[2].(error)
@@ -89,9 +90,9 @@ func (m *MockCipher) Open(sealed, aad []byte) ([]byte, string, error) {
 }
 
 // Open indicates an expected call of Open.
-func (mr *MockCipherMockRecorder) Open(sealed, aad any) *MockCipherOpenCall {
+func (mr *MockCipherMockRecorder) Open(ctx, sealed, aad any) *MockCipherOpenCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Open", reflect.TypeOf((*MockCipher)(nil).Open), sealed, aad)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Open", reflect.TypeOf((*MockCipher)(nil).Open), ctx, sealed, aad)
 	return &MockCipherOpenCall{Call: call}
 }
 
@@ -107,30 +108,30 @@ func (c *MockCipherOpenCall) Return(plaintext []byte, keyID string, err error) *
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockCipherOpenCall) Do(f func([]byte, []byte) ([]byte, string, error)) *MockCipherOpenCall {
+func (c *MockCipherOpenCall) Do(f func(context.Context, []byte, []byte) ([]byte, string, error)) *MockCipherOpenCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockCipherOpenCall) DoAndReturn(f func([]byte, []byte) ([]byte, string, error)) *MockCipherOpenCall {
+func (c *MockCipherOpenCall) DoAndReturn(f func(context.Context, []byte, []byte) ([]byte, string, error)) *MockCipherOpenCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // Seal mocks base method.
-func (m *MockCipher) Seal(plaintext, aad []byte) ([]byte, error) {
+func (m *MockCipher) Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Seal", plaintext, aad)
+	ret := m.ctrl.Call(m, "Seal", ctx, plaintext, aad)
 	ret0, _ := ret[0].([]byte)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Seal indicates an expected call of Seal.
-func (mr *MockCipherMockRecorder) Seal(plaintext, aad any) *MockCipherSealCall {
+func (mr *MockCipherMockRecorder) Seal(ctx, plaintext, aad any) *MockCipherSealCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Seal", reflect.TypeOf((*MockCipher)(nil).Seal), plaintext, aad)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Seal", reflect.TypeOf((*MockCipher)(nil).Seal), ctx, plaintext, aad)
 	return &MockCipherSealCall{Call: call}
 }
 
@@ -146,13 +147,13 @@ func (c *MockCipherSealCall) Return(arg0 []byte, arg1 error) *MockCipherSealCall
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockCipherSealCall) Do(f func([]byte, []byte) ([]byte, error)) *MockCipherSealCall {
+func (c *MockCipherSealCall) Do(f func(context.Context, []byte, []byte) ([]byte, error)) *MockCipherSealCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockCipherSealCall) DoAndReturn(f func([]byte, []byte) ([]byte, error)) *MockCipherSealCall {
+func (c *MockCipherSealCall) DoAndReturn(f func(context.Context, []byte, []byte) ([]byte, error)) *MockCipherSealCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

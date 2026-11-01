@@ -88,7 +88,7 @@ func NewPasskeyCredentialStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option
 func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
 	const op = "insert passkey credential"
 
-	args, err := s.insertArgs(c)
+	args, err := s.insertArgs(ctx, c)
 	if err != nil {
 		return failed(op, err)
 	}
@@ -97,8 +97,9 @@ func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credenti
 }
 
 // insertArgs checks c is storable and returns PasskeyCredentialInsert's
-// arguments for it, its emailed code sealed.
-func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error) {
+// arguments for it, its emailed code sealed under ctx, the context of the
+// store method being served.
+func (s *PasskeyCredentialStore) insertArgs(ctx context.Context, c *passkey.Credential) ([]any, error) {
 	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
 		return nil, err
 	}
@@ -121,7 +122,7 @@ func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error
 		attempts  int16
 	)
 	if c.EmailCode != nil {
-		sealed, err := s.cipher.Seal([]byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
+		sealed, err := s.cipher.Seal(ctx, []byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
 		if err != nil {
 			return nil, err
 		}
@@ -157,7 +158,7 @@ func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error
 func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
 	const op = "insert passkey credential within a limit"
 
-	args, err := s.insertArgs(c)
+	args, err := s.insertArgs(ctx, c)
 	if err != nil {
 		return false, failed(op, err)
 	}
@@ -254,7 +255,7 @@ func (s *PasskeyCredentialStore) List(ctx context.Context, user identity.UserID)
 func (s *PasskeyCredentialStore) list(ctx context.Context, op, query string, args ...any) ([]*passkey.Credential, error) {
 	var out []*passkey.Credential
 	err := s.c.query(ctx, op, query, args, func(rows pgx.Rows) error {
-		c, err := s.scan(rows)
+		c, err := s.scan(ctx, rows)
 		if err != nil {
 			return err
 		}
@@ -268,8 +269,10 @@ func (s *PasskeyCredentialStore) list(ctx context.Context, op, query string, arg
 	return out, nil
 }
 
-// scan reads one credential row, in the column order of the selects.
-func (s *PasskeyCredentialStore) scan(rows pgx.Rows) (*passkey.Credential, error) {
+// scan reads one credential row, in the column order of the selects,
+// opening its emailed code under ctx, the context of the store method being
+// served.
+func (s *PasskeyCredentialStore) scan(ctx context.Context, rows pgx.Rows) (*passkey.Credential, error) {
 	var (
 		c                   passkey.Credential
 		rowID               pgtype.UUID
@@ -308,7 +311,7 @@ func (s *PasskeyCredentialStore) scan(rows pgx.Rows) (*passkey.Credential, error
 		if err != nil {
 			return nil, err
 		}
-		opened, err := s.open(code.String, c.ID, c.User)
+		opened, err := s.open(ctx, code.String, c.ID, c.User)
 		if err != nil {
 			return nil, err
 		}
@@ -318,13 +321,14 @@ func (s *PasskeyCredentialStore) scan(rows pgx.Rows) (*passkey.Credential, error
 	return &c, nil
 }
 
-// open opens the emailed code of user's credential cid, stored as text.
-func (s *PasskeyCredentialStore) open(text string, cid id.ID, user identity.UserID) (string, error) {
+// open opens the emailed code of user's credential cid, stored as text,
+// under ctx, the context of the store method being served.
+func (s *PasskeyCredentialStore) open(ctx context.Context, text string, cid id.ID, user identity.UserID) (string, error) {
 	sealed, err := storekit.SecretFromText(text)
 	if err != nil {
 		return "", err
 	}
-	plain, _, err := s.cipher.Open(sealed, seal.PasskeyEmailCodeAAD(cid, user))
+	plain, _, err := s.cipher.Open(ctx, sealed, seal.PasskeyEmailCodeAAD(cid, user))
 	if err != nil {
 		return "", err
 	}
@@ -426,7 +430,7 @@ func (s *PasskeyCredentialStore) ChargeEmailAttempt(
 	if err != nil {
 		return nil, false, failed(op, err)
 	}
-	code, err := s.open(text, cid, user)
+	code, err := s.open(ctx, text, cid, user)
 	if err != nil {
 		return nil, false, failed(op, err)
 	}

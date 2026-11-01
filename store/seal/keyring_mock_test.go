@@ -10,6 +10,7 @@
 package seal_test
 
 import (
+	context "context"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"
@@ -40,9 +41,9 @@ func (m *MockKeyring) EXPECT() *MockKeyringMockRecorder {
 }
 
 // Active mocks base method.
-func (m *MockKeyring) Active() (string, []byte, error) {
+func (m *MockKeyring) Active(ctx context.Context) (string, []byte, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Active")
+	ret := m.ctrl.Call(m, "Active", ctx)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].([]byte)
 	ret2, _ := ret[2].(error)
@@ -50,9 +51,9 @@ func (m *MockKeyring) Active() (string, []byte, error) {
 }
 
 // Active indicates an expected call of Active.
-func (mr *MockKeyringMockRecorder) Active() *MockKeyringActiveCall {
+func (mr *MockKeyringMockRecorder) Active(ctx any) *MockKeyringActiveCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Active", reflect.TypeOf((*MockKeyring)(nil).Active))
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Active", reflect.TypeOf((*MockKeyring)(nil).Active), ctx)
 	return &MockKeyringActiveCall{Call: call}
 }
 
@@ -68,30 +69,30 @@ func (c *MockKeyringActiveCall) Return(id string, key []byte, err error) *MockKe
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeyringActiveCall) Do(f func() (string, []byte, error)) *MockKeyringActiveCall {
+func (c *MockKeyringActiveCall) Do(f func(context.Context) (string, []byte, error)) *MockKeyringActiveCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeyringActiveCall) DoAndReturn(f func() (string, []byte, error)) *MockKeyringActiveCall {
+func (c *MockKeyringActiveCall) DoAndReturn(f func(context.Context) (string, []byte, error)) *MockKeyringActiveCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // ByID mocks base method.
-func (m *MockKeyring) ByID(id string) ([]byte, error) {
+func (m *MockKeyring) ByID(ctx context.Context, id string) ([]byte, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ByID", id)
+	ret := m.ctrl.Call(m, "ByID", ctx, id)
 	ret0, _ := ret[0].([]byte)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ByID indicates an expected call of ByID.
-func (mr *MockKeyringMockRecorder) ByID(id any) *MockKeyringByIDCall {
+func (mr *MockKeyringMockRecorder) ByID(ctx, id any) *MockKeyringByIDCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ByID", reflect.TypeOf((*MockKeyring)(nil).ByID), id)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ByID", reflect.TypeOf((*MockKeyring)(nil).ByID), ctx, id)
 	return &MockKeyringByIDCall{Call: call}
 }
 
@@ -107,13 +108,13 @@ func (c *MockKeyringByIDCall) Return(arg0 []byte, arg1 error) *MockKeyringByIDCa
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeyringByIDCall) Do(f func(string) ([]byte, error)) *MockKeyringByIDCall {
+func (c *MockKeyringByIDCall) Do(f func(context.Context, string) ([]byte, error)) *MockKeyringByIDCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeyringByIDCall) DoAndReturn(f func(string) ([]byte, error)) *MockKeyringByIDCall {
+func (c *MockKeyringByIDCall) DoAndReturn(f func(context.Context, string) ([]byte, error)) *MockKeyringByIDCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

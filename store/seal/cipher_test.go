@@ -2,6 +2,7 @@ package seal_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -30,7 +31,7 @@ var (
 func mustSeal(t *testing.T, c seal.Cipher, plaintext string, aad []byte) []byte {
 	t.Helper()
 
-	sealed, err := c.Seal([]byte(plaintext), aad)
+	sealed, err := c.Seal(t.Context(), []byte(plaintext), aad)
 	require.NoError(t, err)
 
 	return sealed
@@ -87,7 +88,7 @@ func TestNewAEADCipher(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, c)
 
-				id, err := c.ActiveKeyID()
+				id, err := c.ActiveKeyID(t.Context())
 				require.NoError(t, err)
 				assert.Equal(t, "k2", id)
 			},
@@ -292,7 +293,7 @@ func TestAEADCipher(t *testing.T) {
 				opener = current
 			}
 
-			plaintext, keyID, err := opener.Open(sealed, aad)
+			plaintext, keyID, err := opener.Open(t.Context(), sealed, aad)
 			tc.assert(t, plaintext, keyID, err)
 		})
 	}
@@ -321,9 +322,156 @@ func TestAEADCipher_ActiveKeyID(t *testing.T) {
 		seal.WithKeyringEncryptionKey("k2", keyTwo),
 	)
 
-	id, err := c.ActiveKeyID()
+	id, err := c.ActiveKeyID(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, "k2", id)
+}
+
+// TestAEADCipher_AnswersUnderCancelledContext pins that the default cipher,
+// which performs no input or output, seals and opens whatever state its
+// context is in. It stands apart from TestAEADCipher_PassesContextToKeyring,
+// which runs over a mocked keyring rather than the default one.
+func TestAEADCipher_AnswersUnderCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	c := mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo), seal.WithKeyringRetiredEncryptionKey("k1", keyOne))
+
+	type testCase struct {
+		name   string
+		ctx    func(ctx context.Context) context.Context
+		assert func(t *testing.T, plaintext []byte, keyID string, err error)
+	}
+
+	roundTrips := func(t *testing.T, plaintext []byte, keyID string, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.Equal(t, secretPlaintext, string(plaintext))
+		assert.Equal(t, "k2", keyID)
+	}
+
+	cases := []testCase{
+		{
+			name:   "an already cancelled context",
+			ctx:    cancelled,
+			assert: roundTrips,
+		},
+		{
+			name: "a context whose deadline has passed",
+			ctx: func(ctx context.Context) context.Context {
+				dctx, cancel := context.WithDeadline(ctx, time.Unix(0, 0))
+				t.Cleanup(cancel)
+
+				return dctx
+			},
+			assert: roundTrips,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := tc.ctx(t.Context())
+			require.Error(t, ctx.Err(), "the case's context must already be done")
+
+			id, err := c.ActiveKeyID(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, "k2", id)
+
+			sealed, err := c.Seal(ctx, []byte(secretPlaintext), boundAAD)
+			require.NoError(t, err)
+
+			plaintext, keyID, err := c.Open(ctx, sealed, boundAAD)
+			tc.assert(t, plaintext, keyID, err)
+		})
+	}
+}
+
+// TestAEADCipher_PassesContextToKeyring checks that every keyring call the
+// default cipher makes carries the context the cipher was given.
+func TestAEADCipher_PassesContextToKeyring(t *testing.T) {
+	t.Parallel()
+
+	sealedK2 := mustSeal(t, mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo)), secretPlaintext, boundAAD)
+
+	type testCase struct {
+		name   string
+		expect func(kr *MockKeyring, seen *[]any)
+		call   func(ctx context.Context, c seal.Cipher) error
+		assert func(t *testing.T, seen []any, err error)
+	}
+
+	// active and byID answer the keyring's call with keyTwo as "k2", and
+	// record the value the call's context carries.
+	active := func(kr *MockKeyring, seen *[]any) {
+		kr.EXPECT().Active(gomock.Any()).DoAndReturn(func(ctx context.Context) (string, []byte, error) {
+			*seen = append(*seen, ctx.Value(ctxKey{}))
+
+			return "k2", bytes.Clone(keyTwo), nil
+		})
+	}
+	byID := func(kr *MockKeyring, seen *[]any) {
+		kr.EXPECT().ByID(gomock.Any(), "k2").DoAndReturn(func(ctx context.Context, _ string) ([]byte, error) {
+			*seen = append(*seen, ctx.Value(ctxKey{}))
+
+			return bytes.Clone(keyTwo), nil
+		})
+	}
+	carried := func(t *testing.T, seen []any, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		require.Len(t, seen, 1, "keyring calls")
+		assert.Equal(t, ctxMark, seen[0], "context value")
+	}
+
+	cases := []testCase{
+		{
+			name:   "a seal asks for the active key under its context",
+			expect: active,
+			call: func(ctx context.Context, c seal.Cipher) error {
+				_, err := c.Seal(ctx, []byte(secretPlaintext), boundAAD)
+
+				return err
+			},
+			assert: carried,
+		},
+		{
+			name:   "an open asks for the sealing key under its context",
+			expect: byID,
+			call: func(ctx context.Context, c seal.Cipher) error {
+				_, _, err := c.Open(ctx, sealedK2, boundAAD)
+
+				return err
+			},
+			assert: carried,
+		},
+		{
+			name:   "naming the active key asks for it under its context",
+			expect: active,
+			call: func(ctx context.Context, c seal.Cipher) error {
+				_, err := c.ActiveKeyID(ctx)
+
+				return err
+			},
+			assert: carried,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			kr := NewMockKeyring(gomock.NewController(t))
+			var seen []any
+			tc.expect(kr, &seen)
+
+			c, err := seal.NewAEADCipher(kr)
+			require.NoError(t, err)
+
+			err = tc.call(marked(t.Context()), c)
+			tc.assert(t, seen, err)
+		})
+	}
 }
 
 // TestAEADCipher_ConsumerKeyring covers a keyring the consumer implements:
@@ -339,17 +487,17 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 	type testCase struct {
 		name   string
 		expect func(kr *MockKeyring)
-		call   func(c seal.Cipher) error
+		call   func(ctx context.Context, c seal.Cipher) error
 		assert func(t *testing.T, err error)
 	}
 
-	sealCall := func(c seal.Cipher) error {
-		_, err := c.Seal([]byte(secretPlaintext), boundAAD)
+	sealCall := func(ctx context.Context, c seal.Cipher) error {
+		_, err := c.Seal(ctx, []byte(secretPlaintext), boundAAD)
 
 		return err
 	}
-	openCall := func(c seal.Cipher) error {
-		_, _, err := c.Open(sealedK2, boundAAD)
+	openCall := func(ctx context.Context, c seal.Cipher) error {
+		_, _, err := c.Open(ctx, sealedK2, boundAAD)
 
 		return err
 	}
@@ -359,16 +507,16 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 	require.Equal(t, "k2", string(rewrittenK1[5:7]))
 	rewrittenK1[6] = '1'
 
-	openRewrittenCall := func(c seal.Cipher) error {
-		plaintext, keyID, err := c.Open(rewrittenK1, boundAAD)
+	openRewrittenCall := func(ctx context.Context, c seal.Cipher) error {
+		plaintext, keyID, err := c.Open(ctx, rewrittenK1, boundAAD)
 		if err == nil {
 			return fmt.Errorf("opened as %q under %q", plaintext, keyID)
 		}
 
 		return err
 	}
-	activeCall := func(c seal.Cipher) error {
-		_, err := c.ActiveKeyID()
+	activeCall := func(ctx context.Context, c seal.Cipher) error {
+		_, err := c.ActiveKeyID(ctx)
 
 		return err
 	}
@@ -383,7 +531,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "a 16-byte active key is refused rather than sealing with AES-128",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().Active().Return("k2", keyTwo[:16], nil)
+				kr.EXPECT().Active(gomock.Any()).Return("k2", keyTwo[:16], nil)
 			},
 			call: sealCall,
 			assert: func(t *testing.T, err error) {
@@ -394,7 +542,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "an active key id the envelope cannot carry is refused",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().Active().Return("bad/id", keyTwo, nil)
+				kr.EXPECT().Active(gomock.Any()).Return("bad/id", keyTwo, nil)
 			},
 			call: sealCall,
 			assert: func(t *testing.T, err error) {
@@ -404,7 +552,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "an active key id the envelope cannot carry is refused when naming the active key",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().Active().Return("bad/id", keyTwo, nil)
+				kr.EXPECT().Active(gomock.Any()).Return("bad/id", keyTwo, nil)
 			},
 			call: activeCall,
 			assert: func(t *testing.T, err error) {
@@ -414,7 +562,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "an active-key failure propagates when sealing",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().Active().Return("", nil, errKMS)
+				kr.EXPECT().Active(gomock.Any()).Return("", nil, errKMS)
 			},
 			call:   sealCall,
 			assert: assertKMS,
@@ -422,7 +570,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "an active-key failure propagates when naming the active key",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().Active().Return("", nil, errKMS)
+				kr.EXPECT().Active(gomock.Any()).Return("", nil, errKMS)
 			},
 			call:   activeCall,
 			assert: assertKMS,
@@ -430,7 +578,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "a lookup failure propagates when opening and is not a decryption failure",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().ByID("k2").Return(nil, errKMS)
+				kr.EXPECT().ByID(gomock.Any(), "k2").Return(nil, errKMS)
 			},
 			call:   openCall,
 			assert: assertKMS,
@@ -438,7 +586,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "a wrapped unknown key id from the ring is an unknown key id",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().ByID("k2").Return(nil, errors.Join(errKMS, seal.ErrUnknownKeyID))
+				kr.EXPECT().ByID(gomock.Any(), "k2").Return(nil, errors.Join(errKMS, seal.ErrUnknownKeyID))
 			},
 			call: openCall,
 			assert: func(t *testing.T, err error) {
@@ -451,7 +599,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "a 16-byte key from a lookup is refused rather than opening with AES-128",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().ByID("k2").Return(keyTwo[:16], nil)
+				kr.EXPECT().ByID(gomock.Any(), "k2").Return(keyTwo[:16], nil)
 			},
 			call: openCall,
 			assert: func(t *testing.T, err error) {
@@ -464,7 +612,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 			// NewKeyring refuses, but a consumer ring may do.
 			name: "a key id rewritten to an id the ring aliases to the same key is refused",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().ByID("k1").Return(bytes.Clone(keyTwo), nil)
+				kr.EXPECT().ByID(gomock.Any(), "k1").Return(bytes.Clone(keyTwo), nil)
 			},
 			call: openRewrittenCall,
 			assert: func(t *testing.T, err error) {
@@ -475,7 +623,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 		{
 			name: "a ring that returns the right key opens",
 			expect: func(kr *MockKeyring) {
-				kr.EXPECT().ByID("k2").Return(bytes.Clone(keyTwo), nil)
+				kr.EXPECT().ByID(gomock.Any(), "k2").Return(bytes.Clone(keyTwo), nil)
 			},
 			call: openCall,
 			assert: func(t *testing.T, err error) {
@@ -494,7 +642,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 			c, err := seal.NewAEADCipher(kr)
 			require.NoError(t, err)
 
-			tc.assert(t, tc.call(c))
+			tc.assert(t, tc.call(t.Context(), c))
 		})
 	}
 }
@@ -525,7 +673,7 @@ func FuzzAEADCipherOpen(f *testing.F) {
 	f.Add([]byte{})
 
 	f.Fuzz(func(t *testing.T, sealed []byte) {
-		plaintext, keyID, err := c.Open(sealed, boundAAD)
+		plaintext, keyID, err := c.Open(t.Context(), sealed, boundAAD)
 		if bytes.Equal(sealed, valid) {
 			require.NoError(t, err)
 			assert.Equal(t, secretPlaintext, string(plaintext))

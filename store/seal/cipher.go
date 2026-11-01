@@ -1,6 +1,7 @@
 package seal
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"errors"
@@ -24,18 +25,29 @@ import (
 // differs from what Seal was given, and should produce a different value each
 // time it seals the same plaintext.
 //
+// Every method takes the context of the store operation it serves: each
+// sealing store passes the context of the method it is serving, a re-seal on
+// read included, and never substitutes a context or imposes a deadline of its
+// own. An implementation over a remote service, such as a key management
+// service, should honour it, so a request's deadline and cancellation reach
+// the service. Such a service's quotas make a call per seal or open
+// impractical at scale, so an implementation over one is expected to cache,
+// or to use envelope encryption, asking the service for a data key rather
+// than to seal every value. AEADCipher performs no input or output of its
+// own and passes the context on to its Keyring.
+//
 //go:generate mockgen -source=cipher.go -package=seal_test -destination=cipher_mock_test.go -typed
 type Cipher interface {
 	// Seal encrypts plaintext under the active key, authenticating aad.
-	Seal(plaintext, aad []byte) ([]byte, error)
+	Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error)
 
 	// Open decrypts sealed, failing unless aad is exactly what Seal was given,
 	// and reports the id of the key that opened it, so a caller can tell a
 	// value sealed under a retired key and re-seal it.
-	Open(sealed, aad []byte) (plaintext []byte, keyID string, err error)
+	Open(ctx context.Context, sealed, aad []byte) (plaintext []byte, keyID string, err error)
 
 	// ActiveKeyID returns the id of the key Seal uses now.
-	ActiveKeyID() (string, error)
+	ActiveKeyID(ctx context.Context) (string, error)
 }
 
 // AEADCipher is the default Cipher: AES-256-GCM over the keys of a Keyring.
@@ -89,9 +101,11 @@ func NewAEADCipher(kr Keyring) (*AEADCipher, error) {
 	return &AEADCipher{kr: kr}, nil
 }
 
-// Seal encrypts plaintext under the active key and returns the envelope.
-func (c *AEADCipher) Seal(plaintext, aad []byte) ([]byte, error) {
-	id, key, err := c.active()
+// Seal encrypts plaintext under the active key and returns the envelope. ctx
+// is passed to the keyring; the cipher itself answers whatever state ctx is
+// in.
+func (c *AEADCipher) Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error) {
+	id, key, err := c.active(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -109,14 +123,16 @@ func (c *AEADCipher) Seal(plaintext, aad []byte) ([]byte, error) {
 	return aead.Seal(header, nil, plaintext, additionalData(header, aad)), nil //nolint:gosec // G407: NewGCMWithRandomNonce generates the nonce, so Seal takes none
 }
 
-// Open decrypts an envelope, reporting the id of the key that opened it.
-func (c *AEADCipher) Open(sealed, aad []byte) ([]byte, string, error) {
+// Open decrypts an envelope, reporting the id of the key that opened it. ctx
+// is passed to the keyring; the cipher itself answers whatever state ctx is
+// in.
+func (c *AEADCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, string, error) {
 	id, header, body, ok := decodeEnvelope(sealed)
 	if !ok {
 		return nil, "", ErrDecryptionFailed
 	}
 
-	key, err := c.kr.ByID(id)
+	key, err := c.kr.ByID(ctx, id)
 	if errors.Is(err, ErrUnknownKeyID) {
 		return nil, id, diag.Wrap(err, "seal: unknown key id: the keyring does not hold the key the value was sealed under",
 			ErrUnknownKeyID)
@@ -138,20 +154,21 @@ func (c *AEADCipher) Open(sealed, aad []byte) ([]byte, string, error) {
 	return plaintext, id, nil
 }
 
-// ActiveKeyID returns the id of the keyring's active key.
-func (c *AEADCipher) ActiveKeyID() (string, error) {
-	id, _, err := c.active()
+// ActiveKeyID returns the id of the keyring's active key, asking the keyring
+// under ctx.
+func (c *AEADCipher) ActiveKeyID(ctx context.Context) (string, error) {
+	id, _, err := c.active(ctx)
 
 	return id, err
 }
 
-// active asks the keyring for its active key, and refuses an id the envelope
-// cannot carry. It is the one place a keyring's active key is checked, so
-// Seal and ActiveKeyID can never disagree about it.
 var _ Cipher = (*AEADCipher)(nil)
 
-func (c *AEADCipher) active() (string, []byte, error) {
-	id, key, err := c.kr.Active()
+// active asks the keyring for its active key under ctx, and refuses an id
+// the envelope cannot carry. It is the one place a keyring's active key is
+// checked, so Seal and ActiveKeyID can never disagree about it.
+func (c *AEADCipher) active(ctx context.Context) (string, []byte, error) {
+	id, key, err := c.kr.Active(ctx)
 	if err != nil {
 		return "", nil, diag.Wrap(err, "seal: the keyring could not provide the active key")
 	}
@@ -355,12 +372,12 @@ func SessionCipher(c Cipher) session.Cipher {
 
 // Seal seals plaintext through the wrapped Cipher.
 func (s sessionCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
-	return s.c.Seal(plaintext, additionalData)
+	return s.c.Seal(context.TODO(), plaintext, additionalData)
 }
 
 // Open opens ciphertext through the wrapped Cipher, dropping the key id.
 func (s sessionCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
-	plaintext, _, err := s.c.Open(ciphertext, additionalData)
+	plaintext, _, err := s.c.Open(context.TODO(), ciphertext, additionalData)
 
 	return plaintext, err
 }

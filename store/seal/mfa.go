@@ -145,13 +145,13 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	}
 
 	aad := MFASecretAAD(e.Generation, user)
-	plaintext, keyID, err := s.cipher.Open(e.Secret, aad)
+	plaintext, keyID, err := s.cipher.Open(ctx, e.Secret, aad)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored MFA secret could not be opened")
 	}
 
 	if s.opts.resealOnRead {
-		if active, err := s.cipher.ActiveKeyID(); err == nil && keyID != active {
+		if active, err := s.cipher.ActiveKeyID(ctx); err == nil && keyID != active {
 			s.reseal(ctx, user, plaintext, aad, e.Secret)
 		}
 	}
@@ -166,7 +166,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		// removed since it was sealed fail every read of an abandoned code.
 		e.EmailCode = nil
 	default:
-		code, _, err := s.cipher.Open(e.EmailCode, MFAEmailCodeAAD(e.Generation, user))
+		code, _, err := s.cipher.Open(ctx, e.EmailCode, MFAEmailCodeAAD(e.Generation, user))
 		if err != nil {
 			return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored emailed MFA code could not be opened")
 		}
@@ -182,7 +182,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 // that cannot name its active key: the secret still opens under the key it
 // was sealed with.
 func (s *enrolmentStore) reseal(ctx context.Context, user identity.UserID, plaintext, aad, old []byte) {
-	resealed, err := s.cipher.Seal(plaintext, aad)
+	resealed, err := s.cipher.Seal(ctx, plaintext, aad)
 	if err != nil {
 		return
 	}
@@ -192,7 +192,7 @@ func (s *enrolmentStore) reseal(ctx context.Context, user identity.UserID, plain
 
 // PutPending seals the secret of a copy of e and stores the copy as pending.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
-	sealed, err := s.cipher.Seal(e.Secret, MFASecretAAD(e.Generation, e.User))
+	sealed, err := s.cipher.Seal(ctx, e.Secret, MFASecretAAD(e.Generation, e.User))
 	if err != nil {
 		return diag.Wrap(err, "seal: the MFA secret could not be sealed")
 	}
@@ -249,7 +249,7 @@ func (s provingEnrolmentStore) ProveDevice(
 	step int64, code []byte, codeUntil, at time.Time,
 ) (bool, error) {
 	if code != nil {
-		sealed, err := s.cipher.Seal(code, MFAEmailCodeAAD(gen, user))
+		sealed, err := s.cipher.Seal(ctx, code, MFAEmailCodeAAD(gen, user))
 		if err != nil {
 			return false, diag.Wrap(err, "seal: the emailed MFA code could not be sealed")
 		}

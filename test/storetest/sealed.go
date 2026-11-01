@@ -6,7 +6,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,15 +105,24 @@ const sealedPlaintext = "SENTINEL-SECRET"
 //     it was before the read;
 //   - a sealed value copied into another record does not open there, read
 //     through a keyring holding every key the suite sealed under, and the
-//     error matches seal.ErrDecryptionFailed.
+//     error matches seal.ErrDecryptionFailed;
+//   - every seal and open the store makes carries the context of the store
+//     operation it serves, the re-seal on read included: Put and Get run
+//     under a context carrying a value and a deadline, and every key the
+//     default cipher asks the keyring for on their behalf must be asked for
+//     under that value and that deadline. The default cipher passes its
+//     context on to its keyring, so a store that seals or opens under a
+//     context of its own, or imposes a deadline of its own, is caught there.
 //
 // Each failure case asserts its reason, not only an error, so a store that
 // opens its whole table at once cannot pass a case by failing for another
 // record's key.
 //
-// The cases run in that order on one database, the copy last: it leaves a
-// record that will not open, which fails every later read of a store that
-// opens its whole table at once, as the signing-key store does.
+// The cases run in that order on one database, except the context case,
+// which runs first so a store that opens its whole table reads only what k1
+// sealed; the copy runs last: it leaves a record that will not open, which
+// fails every later read of a store that opens its whole table at once, as
+// the signing-key store does.
 //
 // h.New, h.Begin, h.BeginResolved and h.BeginForeign are not used, but are
 // required as every durable suite requires them. It fails at once, naming
@@ -141,6 +153,18 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 		require.True(t, present, msg)
 		assert.Equal(t, want, got, msg)
 	}
+	// opensUnderContext is opens under the operation's context, and requires
+	// every key the store asked kr for while reading, the re-seal on read
+	// included, to have been asked for under it.
+	opensUnderContext := func(t *testing.T, kr seal.Keyring, owner string, want []byte, msg string) {
+		t.Helper()
+		rec := &contextKeyring{Keyring: kr}
+		got, present, err := s.Get(operationContext(t), s.NewWithKeyring(t, rec), owner)
+		require.NoError(t, err, msg)
+		require.True(t, present, msg)
+		assert.Equal(t, want, got, msg)
+		assertOperationContext(t, rec.seen())
+	}
 
 	// rotation is the case for a read under a retired key, by s.Rotation.
 	rotation := durableCase{
@@ -148,7 +172,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 		assert: func(t *testing.T) {
 			secret := put(t, "resealed")
 
-			opens(t, rotated, "resealed", secret, "a value sealed under the retired key did not open")
+			opensUnderContext(t, rotated, "resealed", secret, "a value sealed under the retired key did not open")
 			opens(t, underK2, "resealed", secret,
 				"the value does not open under the active key alone: it was not re-sealed")
 		},
@@ -167,6 +191,35 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 	}
 
 	runDurableCases(t, []durableCase{
+		{
+			name: "the cipher carries the operation's context",
+			assert: func(t *testing.T) {
+				kr := &contextKeyring{Keyring: underK1}
+				store := s.NewWithKeyring(t, kr)
+				before := len(kr.seen())
+
+				ctx := operationContext(t)
+				secret := []byte(sealedPlaintext + "-context")
+				require.NoError(t, s.Put(ctx, store, "context", secret))
+				got, present, err := s.Get(ctx, store, "context")
+				require.NoError(t, err)
+				require.True(t, present)
+				assert.Equal(t, secret, got, "the store does not read back what it stored")
+
+				calls := kr.seen()[before:]
+				var seals, opens int
+				for _, c := range calls {
+					if c.active {
+						seals++
+					} else {
+						opens++
+					}
+				}
+				assertOperationContext(t, calls)
+				assert.NotZero(t, seals, "nothing was sealed through the default cipher's keyring")
+				assert.NotZero(t, opens, "nothing was opened through the default cipher's keyring")
+			},
+		},
 		{
 			name: "the stored value, decoded, does not hold the plaintext",
 			assert: func(t *testing.T) {
@@ -252,4 +305,93 @@ func sealRing(t *testing.T, opts ...seal.KeyringOption) seal.Keyring {
 	kr, err := seal.NewKeyring(opts...)
 	require.NoError(t, err)
 	return kr
+}
+
+// sealedContextKey keys the value the context case puts in its context.
+type sealedContextKey struct{}
+
+// sealedContextValue is the value the context case's operations carry.
+const sealedContextValue = "storetest: the store operation's context"
+
+// sealedDeadline is the deadline the suite's operations carry, far enough
+// off never to expire: a store that imposes a deadline of its own narrows it.
+var sealedDeadline = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// operationContext returns the context the suite runs a store operation
+// under: t's, carrying sealedContextValue and sealedDeadline.
+func operationContext(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithDeadline(t.Context(), sealedDeadline)
+	t.Cleanup(cancel)
+	return context.WithValue(ctx, sealedContextKey{}, sealedContextValue)
+}
+
+// assertOperationContext requires every call to have been made under the
+// context operationContext returns.
+func assertOperationContext(t *testing.T, calls []keyringCall) {
+	t.Helper()
+
+	for i, c := range calls {
+		assert.Equal(t, sealedContextValue, c.value,
+			"keyring call %d (%s) does not carry the operation's context: "+
+				"the store sealed or opened under a context of its own", i, c.method())
+		assert.Equal(t, sealedDeadline, c.deadline,
+			"keyring call %d (%s) does not carry the operation's deadline: "+
+				"the store imposed a deadline of its own", i, c.method())
+	}
+}
+
+// keyringCall is one key a contextKeyring was asked for: the active key, for
+// a seal or for naming the active key, or a key by id, for an open; the
+// value its context carried under sealedContextKey, and its deadline, the
+// zero time when it had none.
+type keyringCall struct {
+	active   bool
+	value    any
+	deadline time.Time
+}
+
+func (c keyringCall) method() string {
+	if c.active {
+		return "Active"
+	}
+	return "ByID"
+}
+
+// contextKeyring delegates to the embedded keyring and records the context
+// of every call. The default cipher asks its keyring for a key on every seal
+// and open, under the context it was given, so the calls recorded are the
+// cipher's own. It is safe for concurrent use.
+type contextKeyring struct {
+	seal.Keyring
+
+	mu    sync.Mutex
+	calls []keyringCall
+}
+
+func (k *contextKeyring) record(ctx context.Context, active bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	deadline, _ := ctx.Deadline()
+	k.calls = append(k.calls, keyringCall{active: active, value: ctx.Value(sealedContextKey{}), deadline: deadline})
+}
+
+// Active records ctx and delegates.
+func (k *contextKeyring) Active(ctx context.Context) (string, []byte, error) {
+	k.record(ctx, true)
+	return k.Keyring.Active(ctx)
+}
+
+// ByID records ctx and delegates.
+func (k *contextKeyring) ByID(ctx context.Context, id string) ([]byte, error) {
+	k.record(ctx, false)
+	return k.Keyring.ByID(ctx, id)
+}
+
+// seen returns every call so far, in order.
+func (k *contextKeyring) seen() []keyringCall {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.calls)
 }
