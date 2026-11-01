@@ -138,7 +138,9 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // (WithMFAChallengeStore), has a method with a begin step, and
 // WithReauthenticationChallengeStore was not, because the re-proof challenges
 // would sit in per-process memory while the login challenges are shared (a
-// TOTP-only slot has no challenge to store and needs no re-proof store); when
+// TOTP-only slot has no challenge to store and needs no re-proof store, though
+// it accepts one); when WithReauthenticationChallengeStore is given on a chain
+// without the MFA slot, where nothing issues re-proof challenges; when
 // EnablePasskeys is on a chain with the MFA slot and re-authentication is not
 // enabled; when the token generator is missing or refused as above; and when an option is given
 // an empty prefix, a lifetime or limit of zero or less, or an absent store,
@@ -208,6 +210,13 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 		return newConfigError("RequireSecondFactorForReauthentication needs EnableMFA: without "+
 			"second-factor methods no user could re-prove at all, so give %s the MFA slot or drop "+
 			"the requirement", option)
+	}
+
+	if i.mfa == nil && i.challengeStore != nil {
+		return newConfigError("WithReauthenticationChallengeStore was given on a chain without the "+
+			"MFA slot, and with no second-factor methods nothing issues re-proof challenges, so "+
+			"the store would never be used; enable EnableMFA with a challenge method or drop the "+
+			"option from %s", option)
 	}
 
 	if i.mfa != nil && i.mfa.challengeStoreGiven && i.challengeStore == nil &&
@@ -610,6 +619,11 @@ func WithReauthenticationChallengeLimit(n int) ReauthenticationOption {
 // both options otherwise, so a shared login store never leaves re-proof
 // challenges in per-process memory. An absent store, including an interface
 // holding a nil pointer, is refused.
+//
+// A chain without the MFA slot (EnableMFA) refuses this option: New fails with
+// ErrConfig naming it, because nothing issues re-proof challenges there. A
+// slot of TOTP alone accepts it, so one store can be given to both options
+// before a challenge method is added.
 func WithReauthenticationChallengeStore(s onetime.Store) ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
 		if err := requireDep("WithReauthenticationChallengeStore", "one-time store", s); err != nil {

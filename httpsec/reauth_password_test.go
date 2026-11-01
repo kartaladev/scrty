@@ -63,6 +63,10 @@ type pwFixture struct {
 
 	logs *capturingHandler
 
+	// lookups counts the enrolment lookups the methods built by
+	// countedMethods receive.
+	lookups atomic.Int32
+
 	// adaMatches counts comparisons against ada's hash.
 	adaMatches atomic.Int32
 
@@ -328,6 +332,38 @@ func emptyUsername() httpsec.Option {
 	return httpsec.RegisterInterceptor(blank, httpsec.After(httpsec.OrderPasswordChange))
 }
 
+// countingMethod is a challenge method whose enrolment lookups are counted.
+type countingMethod struct {
+	*challengeStub
+
+	counter *atomic.Int32
+}
+
+func (m *countingMethod) Enrolled(ctx context.Context, user identity.UserID) (bool, error) {
+	m.counter.Add(1)
+
+	return m.challengeStub.Enrolled(ctx, user)
+}
+
+// countedMethods are methods named a, b and c, in that order, whose lookups
+// all add to counter. enrolled says which of them the user is enrolled on, and
+// errs which of them fail the lookup.
+func countedMethods(counter *atomic.Int32, enrolled [3]bool, errs [3]error) []mfa.Method {
+	names := [3]string{"a", "b", "c"}
+	methods := make([]mfa.Method, 0, len(names))
+
+	for i, name := range names {
+		methods = append(methods, &countingMethod{
+			challengeStub: &challengeStub{
+				name: name, channel: testDeviceChannel, enrolled: enrolled[i], enrolledErr: errs[i],
+			},
+			counter: counter,
+		})
+	}
+
+	return methods
+}
+
 // TestReauthPassword pins the password re-proof at POST <prefix>/password: the
 // factor policy decided before the body is read, only the password read, and
 // checked for the session's own user through form login's password path,
@@ -515,6 +551,53 @@ func TestReauthPassword(t *testing.T) {
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				unchecked(errLookup)(t, f, s, out)
 				assert.NotContains(t, out.err.Error(), "ada@example.com", "the store's own text stays out")
+			},
+		},
+		{
+			// "The password endpoint settles at the first enrolled method".
+			name: "the first enrolled method settles the refusal without asking the others",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.extra = countedMethods(&f.lookups, [3]bool{true, true, true}, [3]error{})
+			},
+			request: unread,
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				unchecked(httpsec.ErrReauthenticationMethodNotUsable)(t, f, s, out)
+				assert.LessOrEqual(t, f.lookups.Load(), int32(1), "only the first method was asked")
+			},
+		},
+		{
+			name: "a method after the first enrolled one that would fail is never asked",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.extra = countedMethods(&f.lookups, [3]bool{true}, [3]error{1: errLookup})
+			},
+			request: unread,
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				unchecked(httpsec.ErrReauthenticationMethodNotUsable)(t, f, s, out)
+				assert.NotErrorIs(t, out.err, errLookup)
+				assert.Equal(t, int32(1), f.lookups.Load())
+			},
+		},
+		{
+			name: "a lookup that fails before one is enrolled refuses as a failed lookup",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.extra = countedMethods(&f.lookups, [3]bool{2: true}, [3]error{1: errLookup})
+			},
+			request: unread,
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				unchecked(errLookup)(t, f, s, out)
+				assert.Equal(t, int32(2), f.lookups.Load(), "the methods after the failure were not asked")
+			},
+		},
+		{
+			name: "with none enrolled every method is asked and the password re-proves",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.extra = countedMethods(&f.lookups, [3]bool{}, [3]error{})
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+				assert.Equal(t, int32(3), f.lookups.Load())
 			},
 		},
 		{

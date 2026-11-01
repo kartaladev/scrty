@@ -789,6 +789,23 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
 		},
 		{
+			// "A re-proof store without the MFA slot": nothing issues
+			// re-proof challenges, so the store would be dead wiring.
+			name: "a re-proof store on a chain without the MFA slot",
+			wire: func(h *reauthHarness) { h.noMFA = true },
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.reauthOpts = append(h.reauthOpts,
+					httpsec.WithReauthenticationChallengeStore(newReauthMemoryStore(t, h)))
+			},
+			assert: func(t *testing.T, _ served, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithReauthenticationChallengeStore")
+				assert.ErrorContains(t, err, "issues re-proof challenges")
+			},
+		},
+		{
 			// "One store for both".
 			name: "one store given to the MFA slot and to re-authentication",
 			wire: func(*reauthHarness) {},
