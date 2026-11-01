@@ -56,7 +56,7 @@ Policy denials, consumer check errors and a failure to issue the credential SHAL
 #### Scenario: Consume fails
 - **WHEN** a valid code passes every check but the store fails while consuming it
 - **THEN** redemption fails with the invalid-handoff outcome
-- **AND** no session is created and no access token is issued
+- **AND** no session is created and no access token is handed out
 
 ### Requirement: A successful redemption establishes a federated session
 A redemption that consumes the code SHALL complete the login through the login completion step of the `http-security-chain` capability, as every other first factor does. The session SHALL record the OIDC first-factor kind, together with the provider name, verified issuer, provider session id, ID token, and asserted `amr` and `acr` carried by the code, all in the write that creates the session. The session SHALL be created for the principal built from the resolved account's stored details, so that it holds only the user's stored roles. An access token SHALL be issued for it through the `token-issuance` capability before the code is consumed, and the session SHALL be stored only after the code is consumed. The response SHALL be the JSON body form login answers with, plus the destination re-validated against the redirect allowlist as `next`, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A consumer who needs a different response replaces the conveyance with a callback success handler.
