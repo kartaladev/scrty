@@ -141,11 +141,11 @@ Once started, the key manager SHALL reload every key from the store each reload 
 - **THEN** after the next reload the new key is still the current key
 
 ### Requirement: A key for an unconfigured algorithm is published but never signed with
-A key found in the store for an algorithm the manager was not configured with SHALL be published among the verification keys, so a token another replica signed with it still verifies, and SHALL NOT be made current. Requesting a signer for an algorithm the manager was not configured with SHALL report that none is available.
+A key found in the store for an algorithm the manager was not configured with SHALL be published among the verification keys, so a token another replica signed with it still verifies, and SHALL NOT be made current. Requesting a signer for an algorithm the manager was not configured with SHALL return the no-key error.
 
 #### Scenario: A replica publishes another replica's algorithm without adopting it
 - **WHEN** a manager configured for RS256 alone starts over a store that also holds an ES256 key
-- **THEN** the ES256 key is published among the verification keys, requesting an ES256 signer reports none available, and the ES256 key is not exempt from housekeeping
+- **THEN** the ES256 key is published among the verification keys, requesting an ES256 signer returns an error matching the no-key error, and the ES256 key is not exempt from housekeeping
 
 ### Requirement: Housekeeping removes old keys but never the current one
 Once started, the key manager SHALL run housekeeping each housekeeping interval, which is 1 hour by default and configurable. Housekeeping SHALL stop publishing every key created longer ago than the key lifetime, which is 24 hours by default and configurable, and every key dated more than one key lifetime after the present time, except the current key of each algorithm. A key lifetime not longer than the rotation interval SHALL fail at construction.
@@ -209,6 +209,12 @@ The key manager SHALL persist keys only through a key store that can store a key
 ### Requirement: Signing and verification keys can be supplied without the key manager
 Token issuance and verification SHALL obtain the signing key and the verification keys through a key source contract that the key manager implements. The contract SHALL describe a verification key as its key identifier, its algorithm and its public key, using only standard-library types and this capability's own algorithm names, so that implementing it requires no JOSE library. A consumer SHALL be able to supply their own key source, such as one backed by an external key service, in place of the key manager. Verification keys handed to a caller SHALL be copies of what the source holds: writing to a returned key SHALL NOT change the keys the key manager publishes or the key it signs with.
 
+Every request to the key source SHALL carry the caller's context. Issuance SHALL pass the context of the issuing call, and verification the context of the verifying call, without substituting a context of their own or imposing a deadline of their own. The key manager performs no input or output when asked for a key, and SHALL answer whatever state the context is in.
+
+Asked for a signing key, a key source SHALL report a missing key apart from an outage. A source that holds no key for the algorithm SHALL return the no-key error, and the key manager SHALL do so for an algorithm it was not configured with. Any other error SHALL mean the source could not answer.
+
+Issuance SHALL ask for a signing key once for each token, and SHALL use the signer it is given only for that token, never keeping or reusing it. A key source backed by an external service MAY therefore return a signer bound to the context it was asked with.
+
 #### Scenario: External key source
 - **WHEN** a consumer supplies a key source backed by an external signing service
 - **THEN** tokens are issued and verified with its keys and no key manager is constructed
@@ -220,6 +226,23 @@ Token issuance and verification SHALL obtain the signing key and the verificatio
 #### Scenario: A returned verification key cannot be mutated
 - **WHEN** a caller obtains the key manager's verification keys and overwrites the public key material in the key it was given
 - **THEN** the key manager still publishes that key unchanged and still verifies tokens signed by it
+
+#### Scenario: The key source receives the caller's context
+- **WHEN** a consumer key source records the context it is given, and a token is issued and then verified, each under a context carrying a distinct value
+- **THEN** the request for a signing key carries the issuing context's value
+- **AND** the request for verification keys carries the verifying context's value
+
+#### Scenario: A signer is asked for once per token and never reused
+- **WHEN** a consumer key source returns a fresh signer for each request, and three tokens are issued
+- **THEN** the source is asked for a signing key three times, and each signer signs exactly one token
+
+#### Scenario: The key manager answers under a cancelled context
+- **WHEN** a key manager configured for RS256 is asked for its RS256 signer and its verification keys under a context that is already cancelled
+- **THEN** it returns them with no error
+
+#### Scenario: The key manager reports a missing key
+- **WHEN** a key manager configured only for RS256 is asked for an EdDSA signer
+- **THEN** it returns an error matching the no-key error
 
 ### Requirement: The clock is injectable
 The key manager SHALL read time from a configurable time source, defaulting to the system clock, for key creation times, rotation, reload and housekeeping. The same source SHALL pace the rotation, reload and housekeeping background work, so a controlled source drives them without real waiting. The key manager SHALL only accept a time source that can wait as well as read the time. Each background task SHALL next run one interval after its previous run finishes, and an interval stated elsewhere in this capability is measured that way.
