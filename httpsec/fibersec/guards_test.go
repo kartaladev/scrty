@@ -577,9 +577,12 @@ func TestFiber_NewGuards_Recency(t *testing.T) {
 	}
 
 	type testCase struct {
-		name   string
-		opts   []fibersec.GuardOption
-		assert func(t *testing.T, g *fibersec.Guards, err error)
+		name string
+		// noAuthorizer builds the guards with no authorizer at all, so a
+		// second wiring mistake is judged against the missing one.
+		noAuthorizer bool
+		opts         []fibersec.GuardOption
+		assert       func(t *testing.T, g *fibersec.Guards, err error)
 	}
 
 	cases := []testCase{
@@ -613,6 +616,15 @@ func TestFiber_NewGuards_Recency(t *testing.T) {
 			assert: refusedNaming("WithRecentAuthenticationWindow"),
 		},
 		{
+			// "One wiring mistake, one error on every adapter": the recency
+			// options are judged before the missing authorizer, as the
+			// net/http and gin guards judge them.
+			name:         "a zero window and no authorizer reports the window",
+			noAuthorizer: true,
+			opts:         []fibersec.GuardOption{fibersec.WithRecentAuthenticationWindow(0)},
+			assert:       refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
 			name:   "nil clock",
 			opts:   []fibersec.GuardOption{fibersec.WithGuardClock(nil)},
 			assert: refusedNaming("WithGuardClock"),
@@ -633,7 +645,12 @@ func TestFiber_NewGuards_Recency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			g, err := fibersec.NewGuards(permittingAuthorizer(t), tc.opts...)
+			var az authorize.Authorizer
+			if !tc.noAuthorizer {
+				az = permittingAuthorizer(t)
+			}
+
+			g, err := fibersec.NewGuards(az, tc.opts...)
 			tc.assert(t, g, err)
 		})
 	}

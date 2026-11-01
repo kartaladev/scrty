@@ -93,6 +93,12 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 		opt(g)
 	}
 
+	// The recency options are judged first, as the net/http and gin guards
+	// judge them, so one wiring mistake is one error on every adapter.
+	if err := g.buildRecency(); err != nil {
+		return nil, err
+	}
+
 	// A nil az, typed or not, comes back as no fallback at all, so the guard
 	// refuses rather than calling a method on a nil value.
 	fallback, ok := guardauth.Fallback(az, g.chainAuthorizer)
@@ -103,10 +109,6 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 	}
 
 	g.authorizer = fallback
-
-	if err := g.buildRecency(); err != nil {
-		return nil, err
-	}
 
 	return g, nil
 }

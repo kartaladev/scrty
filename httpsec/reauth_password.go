@@ -13,11 +13,12 @@ import (
 // The order is the requirement:
 //
 //  1. Admission: only a full session (admit).
-//  2. The factor policy (offered), before the body is read: a user it does not
-//     offer the password to, because they hold a second factor or second-factor
-//     re-proof is required, is ErrReauthenticationMethodNotUsable, and a lookup
-//     that fails refuses. Neither reads the body, checks a password or records
-//     anything.
+//  2. The factor policy (passwordOffered), before the body is read: a user it
+//     does not offer the password to, because they hold a second factor or
+//     second-factor re-proof is required, is ErrReauthenticationMethodNotUsable,
+//     and a lookup that fails refuses. The methods are looked up in order and
+//     the first enrolled one settles it, so the ones after it are not asked.
+//     Neither reads the body, checks a password or records anything.
 //  3. The password, and nothing else, from the form field form login reads it
 //     from or else a JSON body, under form login's body limit: a missing one is
 //     ErrCredentialsMissing, an oversized body ErrRequestTooLarge.
@@ -61,7 +62,7 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	ctx := ex.Context()
 
-	if _, password, err := i.offered(ctx, s); err != nil {
+	if password, err := i.passwordOffered(ctx, s); err != nil {
 		return err
 	} else if !password {
 		return ErrReauthenticationMethodNotUsable

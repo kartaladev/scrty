@@ -761,9 +761,13 @@ func TestGin_NewGuards_Recency(t *testing.T) {
 	var typedNil *fixedClockPtr
 
 	type testCase struct {
-		name   string
-		opts   []ginsec.GuardOption
-		assert func(t *testing.T, g *ginsec.Guards, err error)
+		name string
+		// noAuthorizer builds the guards with neither an authorizer nor
+		// WithChainAuthorizer, so a second wiring mistake is judged against
+		// the missing one.
+		noAuthorizer bool
+		opts         []ginsec.GuardOption
+		assert       func(t *testing.T, g *ginsec.Guards, err error)
 	}
 
 	refused := func(option string) func(*testing.T, *ginsec.Guards, error) {
@@ -795,6 +799,14 @@ func TestGin_NewGuards_Recency(t *testing.T) {
 			assert: refused("WithRecentAuthenticationWindow"),
 		},
 		{
+			// "One wiring mistake, one error on every adapter": the recency
+			// options are judged before the missing authorizer.
+			name:         "a zero window and no authorizer reports the window",
+			noAuthorizer: true,
+			opts:         []ginsec.GuardOption{ginsec.WithRecentAuthenticationWindow(0)},
+			assert:       refused("WithRecentAuthenticationWindow"),
+		},
+		{
 			name:   "nil clock",
 			opts:   []ginsec.GuardOption{ginsec.WithGuardClock(nil)},
 			assert: refused("WithGuardClock"),
@@ -815,8 +827,12 @@ func TestGin_NewGuards_Recency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			g, err := ginsec.NewGuards(nil,
-				append([]ginsec.GuardOption{ginsec.WithChainAuthorizer()}, tc.opts...)...)
+			opts := tc.opts
+			if !tc.noAuthorizer {
+				opts = append([]ginsec.GuardOption{ginsec.WithChainAuthorizer()}, opts...)
+			}
+
+			g, err := ginsec.NewGuards(nil, opts...)
 			tc.assert(t, g, err)
 		})
 	}
