@@ -1,3 +1,5 @@
+> **Superseded (2026-11-01) by `close-security-gaps`.** Its trusted-proxies capability resolves the client address, scheme and host from one trust setting, and covers everything proposed here (design D7). This change will not be implemented; close it when `close-security-gaps` is archived.
+
 ## Why
 
 Every per-source limit is only as good as the client address it is keyed on. On net/http, `httpsec` uses the TCP peer and never reads forwarding headers, which is safe. But behind a load balancer every client shares the balancer's address, so one attacker throttles every user, and the limit protects nothing.
