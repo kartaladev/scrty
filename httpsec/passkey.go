@@ -227,8 +227,10 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // declared with WithChallengeEnforcer) is refused with a ChallengeError of
 // that kind, whatever the session's state, before anything is begun, stored
 // or changed: the gate enforcing such a challenge is the consumer's and may
-// sit after the passkey slot. A challenge the session itself owes is named in
-// preference to it. WithPasskeyRegistrationResolving names the consumer kinds
+// sit after the passkey slot. A second factor or a password change the
+// session owes is named in preference to it, on management and registration
+// alike; a recovery-pending or enrolment-only session is refused with the
+// raised kind. WithPasskeyRegistrationResolving names the consumer kinds
 // the four registration endpoints serve instead; management never does.
 //
 // Any other method on these paths passes through untouched, and so does
@@ -584,8 +586,8 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	// A second factor or a password change the session owes is named in
-	// preference to a challenge raised on the request, as management names
-	// it, whether or not registration resolves the raised kind.
+	// preference to a challenge raised on the request, whether or not
+	// registration resolves the raised kind.
 	if err := owedBeforeRaised(ex, s); err != nil {
 		return err
 	}
@@ -754,7 +756,8 @@ func WithPasskeyRegistrationResponder(fn PasskeyRegistrationResponder) PasskeyOp
 // With it, a request on which one of kinds was raised is served by the four
 // registration endpoints (begin, finish, confirm and email confirm), under
 // every other rule unchanged: assurance, freshness, confinement, and a
-// challenge the session itself owes, which is still named first. It is for a
+// second factor or password change the session owes, which is still named
+// first. It is for a
 // consumer whose gate lets registration through so that the binding resolves
 // its kind, as the library's enrolment gate does for its own. The listing,
 // the rename and the removal never serve it, since none of them binds an

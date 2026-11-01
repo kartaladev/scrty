@@ -811,6 +811,19 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 			},
 		},
 		{
+			// With nothing raised the owed challenge is not named here: the
+			// manager refuses the session as it did before any kind was raised.
+			name:      "reordered: a session owing a second factor beginning a registration with nothing raised is refused by the manager",
+			phase:     policy.PreAuthentication,
+			reordered: true,
+			session:   owingSecondFactor,
+			act:       begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
 			name:    "a recovery-pending session beginning a registration is refused with the raised challenge",
 			phase:   policy.PerRequest,
 			session: recoveryPending,
