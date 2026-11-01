@@ -1508,22 +1508,51 @@ func snapshot(s *session.Session) *session.Session {
 
 // TestManagerRotate pins what rotation is for: a handle obtained before a
 // privilege change stops working, the new one carries everything else, and a
-// store that refuses the write leaves the caller exactly where they were.
+// store that refuses the write leaves the caller exactly where they were. A
+// caller's step on the successor (RotateIssuing) runs before anything is
+// stored, and its failure leaves the caller where they were too.
 func TestManagerRotate(t *testing.T) {
 	t.Parallel()
 
+	// rotation is what one rotation came back with: the successor, the
+	// credential the caller's step issued, and the successor that step was
+	// handed, nil when no step ran.
+	type rotation struct {
+		got   *session.Session
+		tok   string
+		given *session.Session
+	}
+
 	type testCase struct {
-		name   string
-		store  func(t *testing.T) session.Store
-		assert func(t *testing.T, m *session.Sessions, old, got *session.Session, err error)
+		name string
+		// store is the case's store, on the clock the manager reads, so a case
+		// can age a session by advancing it.
+		store func(t *testing.T, clk *clockwork.FakeClock) session.Store
+		// issue is the caller's step on the successor; nil rotates through
+		// Rotate, which runs none.
+		issue func(successor *session.Session) (string, error)
+		// prepare moves the stored record before the rotation runs; nil
+		// leaves it as it was created.
+		prepare func(t *testing.T, m *session.Sessions, old *session.Session)
+		// advance moves the clock after prepare, before the rotation runs.
+		advance time.Duration
+		assert  func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error)
+	}
+
+	errIssue := errors.New("the credential could not be issued")
+
+	// memoryOn is a memory store reading the same clock as the manager.
+	memoryOn := func(_ *testing.T, clk *clockwork.FakeClock) session.Store {
+		return must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 	}
 
 	cases := []testCase{
 		{
 			name:  "the old handle stops loading and the new one carries everything",
-			store: func(*testing.T) session.Store { return must.Must(session.NewMemoryStore()) },
-			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
+			store: memoryOn,
+			assert: func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error) {
 				require.NoError(t, err)
+				got := r.got
 				assert.NotEqual(t, old.ID, got.ID)
 				assert.Equal(t, old.UserID, got.UserID)
 				assert.Equal(t, old.FirstFactor, got.FirstFactor)
@@ -1542,16 +1571,180 @@ func TestManagerRotate(t *testing.T) {
 		},
 		{
 			name: "a failed write leaves the old handle loadable",
-			store: func(*testing.T) session.Store {
-				return &failingWriteStore{Store: must.Must(session.NewMemoryStore())}
+			store: func(t *testing.T, clk *clockwork.FakeClock) session.Store {
+				return &failingWriteStore{Store: memoryOn(t, clk)}
 			},
-			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
+			assert: func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error) {
 				require.ErrorIs(t, err, errStoreWrite)
-				assert.Nil(t, got)
+				assert.Nil(t, r.got)
 
 				reloaded, loadErr := m.Load(t.Context(), old.ID)
 				require.NoError(t, loadErr)
 				assert.Equal(t, old.ID, reloaded.ID)
+			},
+		},
+		{
+			// The step is handed the successor that is then stored, and the
+			// credential it issued comes back with it.
+			name:  "a step that succeeds is handed the successor before it is stored and its credential is returned",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			assert: func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, r.given, "the step ran")
+				require.NotNil(t, r.got)
+				assert.Equal(t, r.given.ID, r.got.ID, "the step was handed the successor that was stored")
+				assert.Equal(t, "credential-for:"+r.got.ID, r.tok)
+
+				_, loadErr := m.Load(t.Context(), old.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "the old handle stops loading")
+
+				reloaded, loadErr := m.Load(t.Context(), r.got.ID)
+				require.NoError(t, loadErr)
+				assert.Equal(t, old.UserID, reloaded.UserID)
+			},
+		},
+		{
+			// "The caller's step fails".
+			name:  "a step that fails fails the rotation with its error and stores nothing",
+			store: memoryOn,
+			issue: func(*session.Session) (string, error) { return "", errIssue },
+			assert: func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, errIssue)
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+				require.NotNil(t, r.given, "the step ran")
+
+				_, loadErr := m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "no successor was stored")
+
+				reloaded, loadErr := m.Load(t.Context(), old.ID)
+				require.NoError(t, loadErr, "the old identifier still loads")
+				assert.Equal(t, old.ID, reloaded.ID)
+				assert.False(t, reloaded.RotatedStrictly, "the old session is not marked as rotated")
+				assert.Empty(t, reloaded.SuccessorDigest, "the old session is not superseded")
+				assert.True(t, reloaded.AcceptUntil.IsZero(), "the old session has no in-flight window")
+
+				// Nothing was spent, so the old session still rotates.
+				again, rotateErr := m.Rotate(t.Context(), reloaded)
+				require.NoError(t, rotateErr)
+				assert.NotEqual(t, old.ID, again.ID)
+			},
+		},
+		{
+			// The step ran and succeeded, but the supersession that follows
+			// it failed: the credential names a successor that was never
+			// stored, so it is not handed back.
+			name: "a step that succeeds while the supersession fails returns no credential and the store's error",
+			store: func(t *testing.T, clk *clockwork.FakeClock) session.Store {
+				return &failingWriteStore{Store: memoryOn(t, clk)}
+			},
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			assert: func(t *testing.T, m *session.Sessions, old *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, errStoreWrite)
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok, "a credential for a successor that was never stored is not returned")
+				require.NotNil(t, r.given, "the step ran before the supersession")
+
+				_, loadErr := m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "the credential names no session")
+
+				reloaded, loadErr := m.Load(t.Context(), old.ID)
+				require.NoError(t, loadErr, "the old identifier still loads")
+				assert.False(t, reloaded.RotatedStrictly)
+			},
+		},
+		{
+			// A refusal decided from the stored record, before the successor
+			// is built, never reaches the step.
+			name:  "a session that is gone never calls the step",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				require.NoError(t, m.Delete(t.Context(), old.ID))
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			name:  "a revoked session never calls the step",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				n, err := m.RevokeFamily(t.Context(), old.FamilyID)
+				require.NoError(t, err)
+				require.Positive(t, n, "the family was revoked")
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrNotFound, "a revoked family's record is gone from the store")
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			name:  "a strictly rotated session inside its window never calls the step",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				_, err := m.Rotate(t.Context(), old)
+				require.NoError(t, err, "another request rotated it first")
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			name:  "an expired session never calls the step",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			// Past both the idle and the absolute deadline.
+			advance: 48 * time.Hour,
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			// Judged, not read off the record: a superseded session
+			// presented after its window is reuse.
+			name:  "a session superseded with grace, past its window, never calls the step",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				_, _, err := m.RotateWithGrace(t.Context(), old, 10*time.Second)
+				require.NoError(t, err, "another request renewed it first")
+			},
+			advance: 11 * time.Second,
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrReused)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
+			},
+		},
+		{
+			name:  "a session superseded with grace, inside its window, never calls the step",
+			store: memoryOn,
+			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
+			prepare: func(t *testing.T, m *session.Sessions, old *session.Session) {
+				_, _, err := m.RotateWithGrace(t.Context(), old, 10*time.Second)
+				require.NoError(t, err, "another request renewed it first")
+			},
+			assert: func(t *testing.T, _ *session.Sessions, _ *session.Session, r rotation, err error) {
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Nil(t, r.given, "the step was not called")
+				assert.Nil(t, r.got)
+				assert.Empty(t, r.tok)
 			},
 		},
 	}
@@ -1562,7 +1755,8 @@ func TestManagerRotate(t *testing.T) {
 
 			ctx := t.Context()
 
-			m := managerFor(t, session.WithStore(tc.store(t)))
+			clk := clockwork.NewFakeClockAt(createdAt)
+			m := managerFor(t, session.WithStore(tc.store(t, clk)), session.WithClock(clk))
 			old, err := m.Create(ctx, testUser, session.WithFirstFactor(factor.MagicLink))
 			require.NoError(t, err)
 
@@ -1571,8 +1765,24 @@ func TestManagerRotate(t *testing.T) {
 
 			before := snapshot(old)
 
-			got, err := m.Rotate(ctx, old)
-			tc.assert(t, m, before, got, err)
+			if tc.prepare != nil {
+				tc.prepare(t, m, old)
+			}
+
+			clk.Advance(tc.advance)
+
+			var r rotation
+			if tc.issue == nil {
+				r.got, err = m.Rotate(ctx, old)
+			} else {
+				r.got, r.tok, err = m.RotateIssuing(ctx, old, func(successor *session.Session) (string, error) {
+					r.given = snapshot(successor)
+
+					return tc.issue(successor)
+				})
+			}
+
+			tc.assert(t, m, before, r, err)
 		})
 	}
 }

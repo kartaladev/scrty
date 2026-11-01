@@ -737,10 +737,62 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // a recovery has no window left, whatever this manager's clock says, and is
 // reuse.
 //
+// Rotate runs no step of the caller's between building the successor and
+// storing it; RotateIssuing is the same rotation with one.
+//
 // s is not modified. The returned session is the one to use.
 func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
+	rotated, _, err := m.RotateIssuing(ctx, s, nil)
+
+	return rotated, err
+}
+
+// RotateIssuing is Rotate with a step of the caller's run on the successor
+// before anything is stored, and returns the successor and what that step
+// issued.
+//
+// It exists for the caller whose rotation is only complete once the holder
+// has a credential for the successor, such as a signed token naming it. With
+// Rotate, a credential that cannot be issued after the rotation leaves the
+// holder with an old handle that no longer loads and no new one: signed out
+// by the very step meant to raise their privilege. Here issue is called once
+// the successor is built, with its identifier, and before the supersession is
+// written, so a credential that cannot be issued aborts the rotation instead.
+//
+// When issue fails, RotateIssuing returns its error as it is, so errors.Is
+// and errors.As reach it, and has stored, superseded and revoked nothing: the
+// old identifier still loads, unsuperseded, and can be rotated again. When
+// issue succeeds, the rotation goes on exactly as Rotate's, and a failure of
+// the supersession after it, a lost race or a store failure, is refused as
+// Rotate refuses it; the credential issue returned names a successor that was
+// never stored, so it authenticates nothing and the caller discards it with
+// the error. A refusal decided before the successor is built, a gone session
+// or a lost race already visible in the stored record, never calls issue.
+//
+// issue is handed the successor as it will be stored, which is also the
+// session returned, and must not modify it. It runs while this manager holds
+// the rotation's per-session lock, so a concurrent rotation of the same handle
+// through this manager waits for it. A nil issue runs no step and returns an
+// empty credential, which is Rotate.
+//
+// Every guarantee Rotate documents holds here unchanged: the strict mark and
+// the in-flight window, the renewal conflict for a lost race through any
+// manager sharing the store, the deadlines and family carried over. s is not
+// modified.
+//
+// The in-flight window (AcceptUntil and RetainUntil) is counted from the
+// instant the manager read its clock before the step ran, not from the moment
+// the supersession is written. A step slower than the window therefore leaves
+// the old record with a window that has already ended when it is stored, and a
+// concurrent rotation that reads it then is refused as a gone session rather
+// than as a renewal conflict.
+func (m *Sessions) RotateIssuing(
+	ctx context.Context,
+	s *Session,
+	issue func(successor *Session) (string, error),
+) (*Session, string, error) {
 	if s == nil {
-		return nil, fmt.Errorf("session: rotate was given no session")
+		return nil, "", fmt.Errorf("session: rotate was given no session")
 	}
 
 	unlock := m.rotating.lock(s.ID)
@@ -748,22 +800,22 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 
 	stored, err := m.loadStored(ctx, s.ID, "session: the session to rotate could not be loaded")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	now := m.clock.Now()
 	if stored.RotatedStrictly {
-		return nil, lostToStrictRotation(stored, now)
+		return nil, "", lostToStrictRotation(stored, now)
 	}
 	if stored.superseded() && stored.insideWindow(now) {
-		return nil, ErrRenewalConflict
+		return nil, "", ErrRenewalConflict
 	}
 	if err := m.judge(ctx, stored, now, forRequest); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	id, err := m.newIdentifier()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	rotated := successorOf(s, id)
@@ -780,6 +832,16 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	// (WithUnusedSuccessorRecovery) from ever renewing the old identifier
 	// into a second successor.
 	rotated.FirstPresentedAt = now
+
+	// The caller's step runs before the only write, so a step that fails
+	// leaves the old record exactly as it is: nothing superseded, nothing
+	// marked, no successor stored.
+	var tok string
+	if issue != nil {
+		if tok, err = issue(rotated); err != nil {
+			return nil, "", err
+		}
+	}
 
 	// The store's conditional supersession, not the lock above, is what
 	// stops another rotation of the same session — strict or with grace,
@@ -799,10 +861,10 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 		Strict:            true,
 	})
 	if err != nil {
-		return nil, storeFailed(err, "session: the rotated session could not be created")
+		return nil, "", storeFailed(err, "session: the rotated session could not be created")
 	}
 
-	return rotated, nil
+	return rotated, tok, nil
 }
 
 // lostToStrictRotation is the refusal of a rotation, strict or with grace, of
