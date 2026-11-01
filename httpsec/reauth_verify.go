@@ -1,9 +1,13 @@
 package httpsec
 
 import (
+	"errors"
+	"time"
+
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -53,7 +57,12 @@ const reauthChallengeSweepFlow = "reauth-challenge-sweep"
 //  8. A failure is counted, unless it refused the authenticator itself
 //     (mfa.ErrAuthenticatorRefused) or compared nothing
 //     (mfa.ErrVerifyThrottled), and is returned unchanged.
-//  9. Success: resolve.
+//  9. The post-authentication policy phase, as the password re-proof applies
+//     it (secondFactorPhase): a deny refuses with the policy's reason, except
+//     the same-channel refusal, and a challenge does not refuse. A refusal
+//     leaves the session as it was: nothing is rotated or refreshed, and
+//     the verified response is not counted.
+//  10. Success: resolve.
 func (i *reauthInterceptor) verify(ex *Exchange) error {
 	s, method, err := i.admitMethod(ex, i.paths().verify, anyMethod)
 	if err != nil {
@@ -65,7 +74,48 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
+	if err := secondFactorPhase(ex, s, i.now()); err != nil {
+		return err
+	}
+
 	return i.resolve(ex, s, method)
+}
+
+// secondFactorPhase applies the post-authentication phase to a verified
+// second-factor re-proof of s, judged at now on the chain's engine, so a
+// consumer's post-authentication denials and the session cap bind it as they
+// bind a password re-proof.
+//
+// The input is the one a login builds for the session's user and first factor:
+// the caller the chain resolved, its username, the password-change time the
+// resolution read, and the session's own first factor rather than the method
+// re-proved with. It is marked as the re-authentication of an existing session
+// (policy.Input.Reauthenticating), so a policy counting sessions knows none is
+// added.
+//
+// A deny refuses with the policy's reason, except one whose reason is
+// policy.ErrSecondFactorSameChannel: re-proof does not apply the same-channel
+// rule, so a passkey sign-in may re-prove with the passkey. A challenge does
+// not refuse: the one a login's second factor answers is the factor being
+// presented now, and the re-proof marks no session into a pending state.
+// With no engine on the chain, the phase allows.
+func secondFactorPhase(ex *Exchange, s *session.Session, now time.Time) error {
+	var engine *policy.Engine
+	if ex.perRequest != nil {
+		engine = ex.perRequest.engine
+	}
+
+	// admit refused a session whose first factor published no caller.
+	auth := ex.Authentication
+	in := postAuthenticationInput(auth.Principal, s.FirstFactor, auth.Principal.Username, auth.PasswordChangedAt, now)
+	in.Reauthenticating = true
+
+	d := evaluatePhase(ex.Context(), engine, policy.PostAuthentication, in)
+	if d.Outcome == policy.Deny && !errors.Is(d.Reason, policy.ErrSecondFactorSameChannel) {
+		return policyDenyReason(d)
+	}
+
+	return nil
 }
 
 // begin issues a re-proof challenge for a challenge method at POST

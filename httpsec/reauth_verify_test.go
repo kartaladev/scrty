@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -29,6 +31,9 @@ const (
 	reauthBeginPasskey  = reauthBeginPrefix + "/" + passkey.MethodName
 	reauthVerifyPasskey = reauthVerifyPrefix + "/" + passkey.MethodName
 )
+
+// errReauthVerifyDenied is a consumer's post-authentication refusal.
+var errReauthVerifyDenied = errors.New("reauthverify_test: post-authentication denies")
 
 // reauthBearer is the re-authentication harness on a bearer chain: every
 // request names its session through the token it carries, so a rotation is
@@ -140,8 +145,13 @@ func TestReauthVerify(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name    string
-		wire    func(h *reauthHarness)
+		name string
+		wire func(h *reauthHarness)
+		// setup, when set, wires what needs the test: a policy engine, or a
+		// further session of the user. first is the re-proved session's first
+		// factor, the password when unset.
+		setup   func(t *testing.T, h *reauthHarness)
+		first   factor.Kind
 		request func(ctx context.Context, t *testing.T, token string) *http.Request
 		assert  func(t *testing.T, h *reauthHarness, s *session.Session, out served)
 	}
@@ -178,6 +188,57 @@ func TestReauthVerify(t *testing.T) {
 
 	errLookup := errors.New("reauthverify_test: enrolment store unavailable for ana@example.com")
 
+	// engine wires the engine e builds as the chain's policy engine.
+	engine := func(e func(t *testing.T, h *reauthHarness) *policy.Engine) func(*testing.T, *reauthHarness) {
+		return func(t *testing.T, h *reauthHarness) {
+			t.Helper()
+
+			h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(e(t, h)))
+		}
+	}
+
+	// sessionCap is the concurrent session policy with a maximum of one.
+	sessionCap := func(t *testing.T, h *reauthHarness) *policy.Engine {
+		t.Helper()
+
+		p, err := policy.NewConcurrentSessions(h.sessions, 1)
+		require.NoError(t, err)
+
+		return engineOf(t, p)
+	}
+
+	// sameChannel denies in the post-authentication phase as the
+	// second-factor policies deny a login whose only second factor travels on
+	// its first factor's own channel.
+	sameChannel := func(t *testing.T, _ *reauthHarness) *policy.Engine {
+		t.Helper()
+
+		return denyingIn(t, policy.PostAuthentication, fmt.Errorf("%w: both would arrive on channel %q",
+			policy.ErrSecondFactorSameChannel, factor.Passkey.Channel()))
+	}
+
+	// freshened asserts out re-proved s on its first factor's own channel:
+	// rotated and freshly authenticated, its second-factor state left alone.
+	freshened := func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.Equal(t, http.StatusOK, out.rec.Code)
+
+		issued, ok := h.issuedFor.Load().(string)
+		require.True(t, ok, "a credential was issued")
+		assert.NotEqual(t, s.ID, issued, "the session was rotated")
+
+		rotated := h.stored(t, issued)
+		assert.True(t, rotated.AuthenticatedAt.Equal(h.clock.Now()),
+			"authenticated at the chain's now: %s", rotated.AuthenticatedAt)
+		assert.True(t, rotated.MFASatisfiedAt.Equal(s.MFASatisfiedAt), "the second-factor time is left alone")
+	}
+
+	// captured is what the input-capturing row's policy was given; only that
+	// row writes it.
+	var captured []policy.Input
+
 	cases := []testCase{
 		{
 			// "Valid TOTP code".
@@ -186,6 +247,90 @@ func TestReauthVerify(t *testing.T) {
 			request: code(reauthVerifyTOTP),
 			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
 				reproved(t, h, s, out)
+			},
+		},
+		{
+			// "Above the session cap": the user holds two sessions under a cap
+			// of one, so the re-proof is judged past the maximum and refused.
+			name: "a re-proof by a user above the session cap is refused and leaves the session",
+			wire: func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup: func(t *testing.T, h *reauthHarness) {
+				engine(sessionCap)(t, h)
+				h.fullSession(t, factor.Password)
+			},
+			request: code(reauthVerifyTOTP),
+			assert:  refusedWith(policy.ErrTooManySessions),
+		},
+		{
+			// The re-proved session is among those counted, so the user's one
+			// session re-proves under a cap of one.
+			name:    "a re-proof of the user's only session under a cap of one re-proves",
+			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup:   engine(sessionCap),
+			request: code(reauthVerifyTOTP),
+			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+				reproved(t, h, s, out)
+			},
+		},
+		{
+			// "A consumer policy denies", as the password re-proof is denied.
+			name: "a post-authentication deny refuses with the policy's reason and leaves the session",
+			wire: func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup: engine(func(t *testing.T, _ *reauthHarness) *policy.Engine {
+				return denyingIn(t, policy.PostAuthentication, errReauthVerifyDenied)
+			}),
+			request: code(reauthVerifyTOTP),
+			assert:  refusedWith(errReauthVerifyDenied),
+		},
+		{
+			// The user is presenting a second factor at this moment, so a
+			// post-authentication challenge for one does not refuse it.
+			name: "a post-authentication second-factor challenge is ignored and the session re-proves",
+			wire: func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup: engine(func(t *testing.T, _ *reauthHarness) *policy.Engine {
+				return challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA)
+			}),
+			request: code(reauthVerifyTOTP),
+			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+				reproved(t, h, s, out)
+			},
+		},
+		{
+			// "The same-channel refusal does not bind a re-proof": a passkey
+			// sign-in re-proving on the passkey's own channel.
+			name: "a same-channel deny does not refuse a re-proof on the first factor's channel",
+			wire: func(h *reauthHarness) {
+				h.methodChannel = factor.Passkey.Channel()
+				h.allows().accepts().recordsNoFailure()
+			},
+			setup:   engine(sameChannel),
+			first:   factor.Passkey,
+			request: code(reauthVerifyTOTP),
+			assert:  freshened,
+		},
+		{
+			// The phase judges what a login of the session's user on its first
+			// factor carries, marked as a re-authentication.
+			name: "the post-authentication phase judges the session's user and first factor as a re-proof",
+			wire: func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup: engine(func(t *testing.T, _ *reauthHarness) *policy.Engine {
+				return capturingInputs(t, &captured)
+			}),
+			first:   factor.MagicLink,
+			request: code(reauthVerifyTOTP),
+			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+				reproved(t, h, s, out)
+
+				require.Len(t, captured, 1, "the post-authentication phase ran once")
+				in := captured[0]
+				assert.True(t, in.Reauthenticating, "the phase was not told it judges a re-proof")
+				assert.Equal(t, testMFAUser, in.User)
+				require.NotNil(t, in.Principal)
+				assert.Equal(t, testMFAUser, in.Principal.ID)
+				assert.Equal(t, mfaUsername, in.Username)
+				assert.Equal(t, factor.MagicLink, in.FirstFactor, "the session's first factor, not the method's")
+				assert.True(t, in.Now.Equal(h.clock.Now()), "judged at the chain's now: %s", in.Now)
+				assert.Nil(t, in.Session, "a login's input carries no session")
 			},
 		},
 		{
@@ -317,7 +462,16 @@ func TestReauthVerify(t *testing.T) {
 			h := reauthBearer(t)
 			tc.wire(h)
 
-			s := h.fullSession(t, factor.Password)
+			if tc.setup != nil {
+				tc.setup(t, h)
+			}
+
+			first := tc.first
+			if first == "" {
+				first = factor.Password
+			}
+
+			s := h.fullSession(t, first)
 
 			// Time has passed since the sign-in, so a refreshed
 			// authentication time differs from the one the session holds.

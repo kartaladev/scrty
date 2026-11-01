@@ -384,15 +384,18 @@ type Input struct {
 	// Reauthenticating reports that this evaluation re-authenticates an
 	// existing session rather than signing a user in: the user proved a
 	// factor again on a session they already hold, and the phase decides
-	// whether that proof stands. The library sets it only for a password
-	// re-proof; every login, whatever its first factor, leaves it false.
+	// whether that proof stands. The library sets it for every re-proof, by
+	// password and by second factor; every login, whatever its first factor,
+	// leaves it false.
 	//
 	// A policy may conclude from it that no session is being added: the one
 	// re-authenticated is already the user's and is among any it counts, so a
 	// limit on how many sessions a user holds is not reached by a re-proof
 	// (ConcurrentSessions reads it that way). Everything else in the input is
-	// what a login for the same user and factor carries, so a policy that
-	// does not read this field judges a re-proof as it judges that login.
+	// what a login for the same user and first factor carries, so a policy
+	// that does not read this field judges a re-proof as it judges that login.
+	// A second-factor re-proof carries the session's first factor, not the
+	// method re-proved with.
 	// What a re-proof means beyond that is the consumer's policy to decide.
 	Reauthenticating bool
 
