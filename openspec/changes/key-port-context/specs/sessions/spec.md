@@ -56,7 +56,7 @@ The manager SHALL let a caller build a session, act on it, such as marking a pen
 - **AND** after the step succeeds and the session is stored, the identifier loads
 
 ### Requirement: A rotation with grace stores nothing when the caller cannot complete it
-A rotation with a grace window SHALL let the caller act on the successor, such as issuing its credential, after the successor is built and before anything is stored. When that step fails, the rotation SHALL fail with its error and SHALL store, supersede and revoke nothing, so the old identifier keeps the standing it had. The store SHALL still decide racing rotations.
+A rotation with a grace window SHALL let the caller act on the successor, such as issuing its credential, after it is built and before anything is stored. When that step fails, the rotation SHALL fail with its error and SHALL store, supersede and revoke nothing. A step that succeeds only after the window has closed SHALL likewise store nothing, and the rotation SHALL fail matching the context deadline error. The store SHALL still decide racing rotations.
 
 #### Scenario: The caller's step fails
 - **WHEN** a live session is rotated with a 30-second grace and the caller's step fails
@@ -70,3 +70,8 @@ A rotation with a grace window SHALL let the caller act on the successor, such a
 #### Scenario: The window counts from before the caller's step
 - **WHEN** a session is rotated at 10:00:00 with a 30-second grace, and the caller's step takes 5 seconds before it succeeds
 - **THEN** the old identifier loads until 10:00:30 and is superseded after it
+
+#### Scenario: A step that outlives the grace stores nothing
+- **WHEN** a session is rotated at 10:00:00 with a 30-second grace, and the caller's step takes 31 seconds before it succeeds
+- **THEN** the rotation fails with an error matching the context deadline error, and nothing is stored, superseded or revoked
+- **AND** the old identifier still loads, no reuse is reported, and the session can be rotated again
