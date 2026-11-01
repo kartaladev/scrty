@@ -73,11 +73,12 @@ var (
 
 	// ErrSessionRenewalConflict refuses a rotation of a session that a
 	// concurrent renewal of the same session has already superseded, or that
-	// a concurrent strict rotation through the same session manager (a second
-	// factor verified, or a re-proof) has already rotated away: the client
-	// lost a race with itself, or with whoever else holds the credential.
-	// Nothing was written. It maps to 409, so the client retries with the
-	// credential it now holds rather than signing in again.
+	// a concurrent strict rotation (a second factor verified, or a re-proof)
+	// has already rotated away, through this server or any other manager
+	// sharing the session store, inside the winner's in-flight window: the
+	// client lost a race with itself, or with whoever else holds the
+	// credential. Nothing was written. It maps to 409, so the client retries
+	// with the credential it now holds rather than signing in again.
 	//
 	// It wraps session.ErrRenewalConflict, so a consumer matching either
 	// identity reaches both. Its text carries no session identifier.

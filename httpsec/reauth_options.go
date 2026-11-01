@@ -37,11 +37,13 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     own user only: a resolved caller naming another user is refused with
 //     ErrAuthenticationRequired. The verified response then passes the
 //     post-authentication policy phase with the input a login of the
-//     session's user and first factor builds, carrying the library's proof
-//     of a second factor met at the first when the session records one:
-//     every deny refuses with the policy's reason, a second-factor challenge
-//     does not refuse, and any other challenge refuses as at the password
-//     endpoint, leaving the session as it was;
+//     session's user and first factor builds, marked as a re-authentication
+//     and carrying what the login did: the library's proof of a second factor
+//     met at the first when the session records one, and the evidence the
+//     provider asserted when the session is federated. Every deny refuses
+//     with the policy's reason, a second-factor challenge does not refuse,
+//     and any other challenge refuses as at the password endpoint, leaving
+//     the session as it was;
 //   - POST <prefix>/password re-proves with the session's own user's
 //     password. It reads only the password, from the form field form login
 //     reads it from or a JSON member of that name, under form login's body
@@ -67,11 +69,15 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // the credential the caller arrived with stops working, and the response
 // carries the rotated session's credential: by default the JSON document a
 // login answers with, marked Cache-Control: no-store
-// (WithReauthenticationResponder replaces it). A rotation a concurrent renewal
-// won, or that lost to a concurrent re-proof of the same session (on this
-// server or on any server sharing the session store), is refused with
-// ErrSessionRenewalConflict (409), and a failed
-// re-proof changes neither the session nor its handle.
+// (WithReauthenticationResponder replaces it). The credential is issued
+// inside the rotation, before anything is stored, so one that cannot be issued
+// refuses the re-proof with the issuer's failure and stores nothing: the
+// credential the caller arrived with keeps working. A rotation a concurrent
+// renewal won, or that lost to a concurrent re-proof or second-factor
+// verification of the same session through this server or any other manager
+// sharing the session store, is refused with ErrSessionRenewalConflict (409)
+// inside the winner's in-flight window, and a failed re-proof changes neither
+// the session nor its handle.
 //
 // # Who may re-prove
 //
@@ -91,7 +97,10 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // enrolled on none re-proves with the password, when form login is enabled. A
 // method counts whatever its channel, so a session that signed in with a
 // passkey may re-prove with the passkey method. An enrolment lookup that fails
-// refuses the request and never falls back to the password.
+// refuses the request and never falls back to the password. The password
+// endpoint looks the methods up in configuration order and stops at the first
+// one the user is enrolled on, which alone refuses the password; the listing
+// asks every method, and both reach the same answer.
 // RequireSecondFactorForReauthentication strengthens the policy so that no
 // user re-proves with the password. There is no option to weaken it: a
 // password re-proof by a user who holds a second factor would make a session
@@ -150,9 +159,9 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // it accepts one); when WithReauthenticationChallengeStore is given on a chain
 // without the MFA slot, where nothing issues re-proof challenges; when
 // EnablePasskeys is on a chain with the MFA slot and re-authentication is not
-// enabled; when the token generator is missing or refused as above; and when an option is given
-// an empty prefix, a lifetime or limit of zero or less, or an absent store,
-// generator or responder.
+// enabled; when the token generator is missing or refused as above; and when
+// an option is given an empty prefix, a lifetime or limit of zero or less, or
+// an absent store, generator or responder.
 func EnableReauthentication(opts ...ReauthenticationOption) Option {
 	const option = "EnableReauthentication"
 

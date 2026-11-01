@@ -225,13 +225,14 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // Every registration and management request on which the chain's per-request
 // policy raised a challenge of the consumer's own (Exchange.RaisedChallenge,
 // declared with WithChallengeEnforcer) is refused with a ChallengeError of
-// that kind, whatever the session's state, before anything is begun, stored
-// or changed: the gate enforcing such a challenge is the consumer's and may
-// sit after the passkey slot. A second factor or a password change the
-// session owes is named in preference to it, on management and registration
-// alike; a recovery-pending or enrolment-only session is refused with the
-// raised kind. WithPasskeyRegistrationResolving names the consumer kinds
-// the four registration endpoints serve instead; management never does.
+// that kind before anything is begun, stored or changed: the gate enforcing
+// such a challenge is the consumer's and may sit after the passkey slot. On
+// registration, a second factor or a password change the session owes is
+// named in preference to it, and a recovery-pending or enrolment-only
+// session is refused with the raised kind. On management, any challenge the
+// session owes, recovery and enrolment included, is named in preference to
+// it. WithPasskeyRegistrationResolving names the consumer kinds the four
+// registration endpoints serve instead; management never does.
 //
 // Any other method on these paths passes through untouched, and so does
 // every other path. A request without a session, or whose session carries no

@@ -43,6 +43,11 @@ type RecoveryCountResponder func(ex *Exchange, count recovery.RemainingCodes) er
 // so the default asks for a recent login; a consumer who wants a longer window,
 // such as two hours, sets it here. A window of zero or less is refused, since
 // it would refuse every regeneration.
+//
+// A session past the window is refreshed by signing in again or, on a chain
+// that enables EnableReauthentication, by a re-proof. On a chain with the
+// second-factor slot and without re-authentication, signing in again is the
+// only way.
 func WithRecoveryRegenerationFreshness(d time.Duration) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if d <= 0 {
@@ -149,6 +154,12 @@ func (i *recoveryInterceptor) codes(ex *Exchange, next Next) error {
 // renewal is not an authentication and never moves that time. Outside the
 // window it is
 // recovery.ErrReauthenticationRequired, and nothing changes.
+//
+// Only a sign-in or a re-proof moves the time, and a re-proof is available
+// only when the chain enables EnableReauthentication. Without it there is no
+// way to refresh a session in place: a user whose session is stale, on an MFA
+// chain or any other, regenerates their codes only after signing in again.
+// EnableReauthentication is the remedy.
 //
 // Cache-Control: no-store is set before the responder runs, since the
 // response carries the new codes.
