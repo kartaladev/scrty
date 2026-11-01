@@ -1,10 +1,12 @@
 package httpsecconformance
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -35,7 +38,61 @@ func reauthScenarios() []Scenario {
 		reauthPasswordRefusedForTOTPHolder(),
 		mfaVerifyRefusesFullSession(),
 		reauthRefusalCarriesWindow(),
+		reauthPrefixUnderFormLogin(),
+		renewalLostToReproofIs409(),
+		reauthPasswordRefusedByPostAuthenticationDeny(),
 	}
+}
+
+// staleReadStore is the session store of a scenario that needs a reader to have
+// read a session before a rotation wrote, which sequential requests cannot
+// arrange once the rotation has landed. Until replay is called every read goes
+// to the store underneath; after it, reads of the captured session return it as
+// it was when capture ran, while every write still goes to the store
+// underneath, whose conditional write is what decides the race.
+type staleReadStore struct {
+	session.Store
+
+	mu       sync.Mutex
+	id       string
+	snapshot *session.Session
+	replay   bool
+}
+
+// capture records the session id as the store now holds it.
+func (s *staleReadStore) capture(t *testing.T, id string) {
+	t.Helper()
+
+	got, err := s.Store.Load(t.Context(), id)
+	require.NoError(t, err)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.id, s.snapshot = id, got
+}
+
+// replayCaptured makes later reads of the captured session return it as it was.
+func (s *staleReadStore) replayCaptured() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.replay = true
+}
+
+func (s *staleReadStore) Load(ctx context.Context, id string) (*session.Session, error) {
+	s.mu.Lock()
+	snap := s.snapshot
+	replay := s.replay && id == s.id
+	s.mu.Unlock()
+
+	if replay {
+		out := *snap
+
+		return &out, nil
+	}
+
+	return s.Store.Load(ctx, id)
 }
 
 // reauthWiring is what a re-authentication scenario builds its chain from.
@@ -46,6 +103,17 @@ type reauthWiring struct {
 
 	// fullSession creates the session with its second factor satisfied.
 	fullSession bool
+
+	// prefix, when set, is the re-authentication prefix in place of the
+	// default.
+	prefix string
+
+	// renewal mounts the session renewal endpoint at its default path.
+	renewal bool
+
+	// deny mounts a policy engine whose only policy denies after
+	// authentication.
+	deny bool
 }
 
 // newReauthSpec is a chain over one controlled clock, shared by the chain, the
@@ -57,14 +125,23 @@ func newReauthSpec(t *testing.T, w reauthWiring) ChainSpec {
 	clk := clockwork.NewFakeClockAt(time.Now())
 
 	store := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
-	sessions, err := session.New(session.WithClock(clk), session.WithStore(store))
+	var stale *staleReadStore
+
+	var sessionStore session.Store = store
+	if w.renewal {
+		stale = &staleReadStore{Store: store}
+		sessionStore = stale
+	}
+
+	sessions, err := session.New(session.WithClock(clk), session.WithStore(sessionStore))
 	require.NoError(t, err)
 
 	effects := &Effects{
-		Sessions:  sessions,
-		Store:     store,
-		Attempts:  newEffects(t).Attempts,
-		totpClock: clk,
+		Sessions:   sessions,
+		Store:      store,
+		Attempts:   newEffects(t).Attempts,
+		totpClock:  clk,
+		staleReads: stale,
 	}
 
 	opts := append([]httpsec.Option{httpsec.WithClock(clk)}, bearerOptions(effects)...)
@@ -89,7 +166,26 @@ func newReauthSpec(t *testing.T, w reauthWiring) ChainSpec {
 		opts = append(opts, formLoginOptions(effects)...)
 	}
 
-	opts = append(opts, reauthOptions()...)
+	var reauthOpts []httpsec.ReauthenticationOption
+	if w.prefix != "" {
+		reauthOpts = append(reauthOpts, httpsec.WithReauthenticationPrefix(w.prefix))
+	}
+
+	opts = append(opts, reauthOptions(reauthOpts...)...)
+
+	if w.renewal {
+		opts = append(opts, httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{
+			Users:  fixtureUsers{},
+			Tokens: fixtureTokens{},
+		}))
+	}
+
+	if w.deny {
+		engine, err := policy.NewEngine(reauthDenyPolicy{})
+		require.NoError(t, err)
+
+		opts = append(opts, httpsec.WithPolicyEngine(engine))
+	}
 
 	create := []session.CreateOption{session.WithFirstFactor(factor.Password)}
 	if w.fullSession {
@@ -124,9 +220,10 @@ func totpCode(t *testing.T, e *Effects) string {
 }
 
 // reauthOptions mounts re-authentication on the chain.
-func reauthOptions() []httpsec.Option {
+func reauthOptions(extra ...httpsec.ReauthenticationOption) []httpsec.Option {
 	return []httpsec.Option{
-		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(fixtureTokens{})),
+		httpsec.EnableReauthentication(
+			append([]httpsec.ReauthenticationOption{httpsec.WithReauthenticationTokens(fixtureTokens{})}, extra...)...),
 	}
 }
 
@@ -279,6 +376,128 @@ func mfaVerifyRefusesFullSession() Scenario {
 		Assert: func(t *testing.T, res Result) {
 			assert.Equal(t, http.StatusForbidden, res.Status)
 			require.ErrorIs(t, res.Refusal, httpsec.ErrNoMFAChallengePending)
+		},
+	}
+}
+
+// reauthPrefixUnderFormLogin pins spec reauthentication "A prefix under an
+// exact path is accepted": a prefix beneath the login path builds, and each
+// endpoint is answered by its own feature.
+func reauthPrefixUnderFormLogin() Scenario {
+	const prefix = "/login/reauth"
+
+	return Scenario{
+		Name: "a re-authentication prefix under the form login path builds and both answer",
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			return newReauthSpec(t, reauthWiring{login: true, prefix: "/login/reauth"})
+		},
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			stale := issuedTokenFor(Username, spec.Effects.SessionID)
+
+			methods := send(RequestSpec{
+				Method:        http.MethodGet,
+				Path:          prefix + "/methods",
+				Header:        map[string]string{"Authorization": "Bearer " + stale},
+				ClientAddress: ClientAddress,
+			})
+			require.NoError(t, methods.Refusal)
+			assert.Equal(t, http.StatusOK, methods.Status, "body: %q", methods.Body)
+
+			login := send(formPost("/login", stale, url.Values{
+				"username": {Username},
+				"password": {Password},
+			}))
+			require.NoError(t, login.Refusal)
+			assert.Equal(t, http.StatusOK, login.Status, "body: %q", login.Body)
+		},
+	}
+}
+
+// renewalLostToReproofIs409 pins the sessions requirement "A renewal that lost
+// to a strict rotation" as the chain shows it: a re-proof rotates the session
+// without grace, so a renewal of the handle it replaced answers 409, and the
+// re-proof's credential is the one that authenticates.
+func renewalLostToReproofIs409() Scenario {
+	return Scenario{
+		Name: "a renewal that lost to a re-proof answers 409 and the re-proof's credential works",
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			return newReauthSpec(t, reauthWiring{login: true, renewal: true})
+		},
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			old := issuedTokenFor(Username, spec.Effects.SessionID)
+
+			// A request reads the session before the re-proof lands, as the
+			// renewal in flight will have; its record is what the renewal
+			// goes on to hold after the re-proof has rotated the session.
+			requireStaleRefusal(t, send(guardedGet(old)))
+			spec.Effects.staleReads.capture(t, spec.Effects.SessionID)
+
+			proved := send(formPost(httpsec.DefaultReauthenticationPrefix+"/password", old,
+				url.Values{httpsec.DefaultLoginPasswordParam: {Password}}))
+			require.NoError(t, proved.Refusal)
+			require.Equal(t, http.StatusOK, proved.Status, "body: %q", proved.Body)
+
+			spec.Effects.staleReads.replayCaptured()
+
+			lost := send(RequestSpec{
+				Method:        http.MethodPost,
+				Path:          httpsec.DefaultSessionRenewalPath,
+				Header:        map[string]string{"Authorization": "Bearer " + old},
+				ClientAddress: ClientAddress,
+			})
+			require.ErrorIs(t, lost.Refusal, httpsec.ErrSessionRenewalConflict)
+			assert.Equal(t, http.StatusConflict, lost.Status)
+
+			admitted := send(guardedGet(issuedToken(t, proved)))
+			require.NoError(t, admitted.Refusal)
+			assert.Equal(t, http.StatusOK, admitted.Status)
+			assert.True(t, admitted.RouteRan)
+		},
+	}
+}
+
+// errReauthDenied is the reason reauthDenyPolicy refuses with.
+var errReauthDenied = errors.New("httpsecconformance: denied after authentication")
+
+// reauthDenyPolicy denies every user after authentication.
+type reauthDenyPolicy struct{}
+
+func (reauthDenyPolicy) Name() string { return "httpsecconformance/reauth-deny" }
+
+func (reauthDenyPolicy) Phases() []policy.Phase {
+	return []policy.Phase{policy.PostAuthentication}
+}
+
+func (reauthDenyPolicy) Evaluate(context.Context, *policy.Input) policy.Decision {
+	return policy.Decision{Outcome: policy.Deny, Reason: errReauthDenied}
+}
+
+// reauthPasswordRefusedByPostAuthenticationDeny pins spec reauthentication
+// "Post-authentication deny": the password re-proof is refused with the
+// policy's reason and the session is left as it was.
+func reauthPasswordRefusedByPostAuthenticationDeny() Scenario {
+	return Scenario{
+		Name: "a post-authentication deny refuses the password re-proof and leaves the session",
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			return newReauthSpec(t, reauthWiring{login: true, deny: true})
+		},
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			stale := issuedTokenFor(Username, spec.Effects.SessionID)
+
+			refused := send(formPost(httpsec.DefaultReauthenticationPrefix+"/password", stale,
+				url.Values{httpsec.DefaultLoginPasswordParam: {Password}}))
+			require.ErrorIs(t, refused.Refusal, errReauthDenied)
+			assert.NotEqual(t, http.StatusOK, refused.Status)
+
+			// The session is as it was: the old handle still loads and is
+			// still stale.
+			requireStaleRefusal(t, send(guardedGet(stale)))
 		},
 	}
 }
