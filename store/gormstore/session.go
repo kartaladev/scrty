@@ -260,7 +260,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 		"federated_amr":             row.FederatedAMR,
 		"federated_acr":             row.FederatedACR,
 	}
-	res := q.Model(&sessionRow{}).Where("id_digest = ?", row.IDDigest).
+	res := q.Model(&sessionRow{}).Where("id_digest = ? AND NOT rotated_strictly", row.IDDigest).
 		Omit(savedColumnsOmitted...).Updates(values)
 	if res.Error != nil {
 		return failed(op, res.Error)

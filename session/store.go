@@ -177,6 +177,12 @@ type Store interface {
 	// and reports ErrNotFound when there is no longer one to update. It
 	// never inserts.
 	//
+	// A stored session that was superseded without grace (RotatedStrictly
+	// set) is no longer one to update either: Save reports ErrNotFound and
+	// writes nothing, whatever the copy handed to it says, because Load
+	// reports that record gone. The condition is on the stored record, not
+	// on the copy.
+	//
 	// The family, supersession and presentation fields (FamilyID,
 	// FamilyCreatedAt, SupersededAt, AcceptUntil, RetainUntil,
 	// RotatedStrictly, SuccessorDigest, FirstPresentedAt) are written by

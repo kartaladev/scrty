@@ -210,6 +210,9 @@ const (
 	// Save writes the caller's strict-rotation mark rather than keeping the
 	// stored one, as a column left in the UPDATE would.
 	sessionSaveWritesStrictMark sessionDefect = "save-writes-strict-mark"
+	// Save writes onto a record superseded without grace, as an update with
+	// no condition on the stored mark would, instead of reporting it not found.
+	sessionSaveOntoStrictRow sessionDefect = "save-onto-strict-row"
 	// Create, and Supersede inserting its successor, write the caller's
 	// strict-rotation mark, as a column left in the INSERT would.
 	sessionCreateWritesStrictMark sessionDefect = "create-writes-strict-mark"
@@ -394,6 +397,9 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 
 	stored, exists := s.records[sess.ID]
 	if !exists {
+		return session.ErrNotFound
+	}
+	if stored.RotatedStrictly && s.defect != sessionSaveOntoStrictRow {
 		return session.ErrNotFound
 	}
 	// Only Create writes the marker: a conforming save keeps the stored one.

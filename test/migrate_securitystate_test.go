@@ -1361,22 +1361,15 @@ func TestGooseDirect(t *testing.T) {
 	assert.Equal(t, 0, appliedVersionCount(t, db, versionTable))
 }
 
-// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
-// written before the session-families migration looks like through each
-// durable store once the migration has run: a family of its own, created when
-// it was, and no retention deadline. The schema cases above read the columns;
-// this one reads the rows as a consumer's code does, through the stores.
-func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
-	t.Parallel()
+// sessionStoreOpener is one durable session store, opened over the
+// connection a test migrated; sessionStoreOpeners lists them.
+type sessionStoreOpener struct {
+	name string
+	open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
+}
 
-	set := migrate.SecurityState()
-
-	type testCase struct {
-		name string
-		open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
-	}
-
-	cases := []testCase{
+func sessionStoreOpeners() []sessionStoreOpener {
+	return []sessionStoreOpener{
 		{
 			name: "sqlstore",
 			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
@@ -1412,6 +1405,74 @@ func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
 			},
 		},
 	}
+}
+
+// A row written before the strict-rotation mark existed, superseded or not,
+// reads back through each store as not marked: a rotation from before the
+// mark was not strict.
+func TestSecurityStateMigrations_StrictMarkReadsBackUnmarked(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	for _, tc := range sessionStoreOpeners() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := RunTestPostgres(t)
+			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
+			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
+
+			_, err := p.UpTo(t.Context(), versionSessionFamilies)
+			require.NoError(t, err)
+
+			const (
+				supersededID   = "a-superseded-session-from-before-the-mark"
+				unsupersededID = "a-live-session-from-before-the-mark"
+			)
+			supersededDigest := sha256.Sum256([]byte(supersededID))
+			unsupersededDigest := sha256.Sum256([]byte(unsupersededID))
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
+				 superseded_at, accept_until, retain_until)
+				VALUES ('0192f000-0000-7000-8000-0000000000c1', $1, 'u', '2026-09-01', '2026-09-01',
+				        '2099-01-01', '2099-01-01', '2026-09-01', '2026-09-01', '2099-01-01')`,
+				supersededDigest[:])
+			require.NoError(t, err)
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+				VALUES ('0192f000-0000-7000-8000-0000000000c2', $1, 'u', '2026-09-01', '2026-09-01',
+				        '2099-01-01', '2099-01-01')`, unsupersededDigest[:])
+			require.NoError(t, err)
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+
+			store := tc.open(t, conn, storefix.TestCipher(t))
+
+			superseded, err := store.Load(t.Context(), supersededID)
+			require.NoError(t, err)
+			assert.False(t, superseded.SupersededAt.IsZero(), "the row is superseded")
+			assert.False(t, superseded.RotatedStrictly, "a rotation from before the mark was not strict")
+
+			live, err := store.Load(t.Context(), unsupersededID)
+			require.NoError(t, err)
+			assert.False(t, live.RotatedStrictly)
+		})
+	}
+}
+
+// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
+// written before the session-families migration looks like through each
+// durable store once the migration has run: a family of its own, created when
+// it was, and no retention deadline. The schema cases above read the columns;
+// this one reads the rows as a consumer's code does, through the stores.
+func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	cases := sessionStoreOpeners()
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
