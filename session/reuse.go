@@ -250,14 +250,19 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 // therefore shortens the window the old identifier keeps after the write.
 //
 // A step that succeeds only once that window has closed, that is, when the
-// manager's clock read after the step is not before the instant the grace was
-// counted to, stores nothing, supersedes nothing and revokes nothing: the
+// manager's clock read after the step is not before the end of the window that
+// would be written, stores nothing, supersedes nothing and revokes nothing: the
 // rotation fails with an error matching context.DeadlineExceeded, a
 // dependency failure and not a verdict on the session. A write made with the
 // window already closed would make the holder's requests still in flight
 // under the old identifier read as reuse. The old identifier keeps the
 // standing it had, and can be renewed again. A grace of zero has no window to
-// outlive, and is not checked.
+// outlive, and is not checked. The window is the one capped by the session's
+// absolute deadline and, for a renewal of a session already superseded, by the
+// window its first successor gave it, so a step may be cut short by those
+// before the grace has run out. A recovery has no such window to outlive,
+// since it renews because the old one has closed, and its step is bound by the
+// grace counted from the instant the clock was read before it.
 //
 // A save of the old session made while the step runs is not carried to the
 // successor, which is built from the record read before the step, as with
@@ -309,7 +314,11 @@ func (m *Sessions) RotateWithGraceIssuing(
 		return nil, 0, "", err
 	}
 	kind := RenewalFresh
-	acceptUntil := minTime(now.Add(grace), old.AbsoluteExpiresAt)
+	// windowEnd is the instant a step must end before: the end of the window
+	// that is written. Recovery writes a window already closed, by
+	// construction, so it is bound by the grace counted from now instead.
+	windowEnd := now.Add(grace)
+	acceptUntil := minTime(windowEnd, old.AbsoluteExpiresAt)
 	if old.superseded() {
 		kind = RenewalReRotation
 		if !old.insideWindow(now) {
@@ -317,6 +326,9 @@ func (m *Sessions) RotateWithGraceIssuing(
 			kind = RenewalRecovery
 		}
 		acceptUntil = minTime(acceptUntil, old.AcceptUntil)
+	}
+	if kind != RenewalRecovery {
+		windowEnd = acceptUntil
 	}
 
 	// The family maximum bounds every renewal, so a family already past its
@@ -355,7 +367,7 @@ func (m *Sessions) RotateWithGraceIssuing(
 		// still in flight under the old identifier would then read as reuse:
 		// a false theft alarm raised by a slow dependency. Nothing has been
 		// written, so the old identifier simply renews on the next attempt.
-		if grace > 0 && !m.clock.Now().Before(now.Add(grace)) {
+		if grace > 0 && !m.clock.Now().Before(windowEnd) {
 			return nil, 0, "", diag.Wrap(context.DeadlineExceeded,
 				"session: the credential was issued after the grace window")
 		}

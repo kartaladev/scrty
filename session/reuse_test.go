@@ -2815,6 +2815,8 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 	type testCase struct {
 		name  string
 		store func(clk *clockwork.FakeClock) session.Store
+		// opts are manager options added to the fixture's own.
+		opts  []session.Option
 		grace time.Duration
 		ctx   func(ctx context.Context) context.Context
 		// prepare moves the stored record before the renewal runs.
@@ -2939,6 +2941,69 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 				require.NoError(t, rotErr, "the old identifier could not be renewed again")
 				assert.Equal(t, session.RenewalFresh, kind)
 				require.NotNil(t, next)
+			},
+		},
+		{
+			// "A step that succeeds only after the window has closed": the
+			// window written is the one capped by the window the first
+			// rotation gave, not the whole grace counted from now. Rotated at
+			// T with 30 seconds, renewed again at T+20 with a step of 15
+			// seconds, the capped window closed at T+30, before the step
+			// ended at T+35, though now+grace is T+50.
+			name:  "a re-rotation whose step outlives the window it is capped to stores nothing",
+			store: memoryOn,
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				_, _, err := f.m.RotateWithGrace(t.Context(), f.old, 30*time.Second)
+				require.NoError(t, err)
+
+				f.clk.Advance(20 * time.Second)
+			},
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(15 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, session.ErrReused)
+				assert.Nil(t, r.got)
+				assert.Zero(t, r.kind)
+				assert.Empty(t, r.tok, "a credential for a successor that was never stored was returned")
+				require.NotNil(t, r.given, "the step ran")
+				assert.Zero(t, f.reused.Load(), "a reuse was reported")
+
+				_, loadErr := f.m.Load(t.Context(), r.given.ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+			},
+		},
+		{
+			// Recovery counts no window from the old record: it renews
+			// because that window has already closed, so only the grace
+			// counted from now bounds the step.
+			name:  "a recovery whose step is shorter than the grace is stored",
+			store: memoryOn,
+			opts:  []session.Option{session.WithUnusedSuccessorRecovery()},
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				_, _, err := f.m.RotateWithGrace(t.Context(), f.old, 30*time.Second)
+				require.NoError(t, err)
+
+				f.clk.Advance(31 * time.Second)
+			},
+			issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+				clk.Advance(5 * time.Second)
+
+				return "credential-for:" + successor.ID, nil
+			},
+			assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, r.got)
+				assert.Equal(t, session.RenewalRecovery, r.kind)
+				assert.Equal(t, "credential-for:"+r.got.ID, r.tok)
+
+				_, loadErr := f.m.Load(t.Context(), r.got.ID)
+				require.NoError(t, loadErr, "the successor was not stored")
 			},
 		},
 		{
@@ -3073,10 +3138,11 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 
 			clk := clockwork.NewFakeClockAt(createdAt)
 			f := &graceIssuingFixture{clk: clk, reused: &atomic.Int32{}}
-			f.m = managerFor(t,
+			f.m = managerFor(t, append([]session.Option{
 				session.WithStore(tc.store(clk)),
 				session.WithClock(clk),
-				session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.reused.Add(1) }))
+				session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.reused.Add(1) }),
+			}, tc.opts...)...)
 			old, err := f.m.Create(t.Context(), testUser)
 			require.NoError(t, err)
 			f.old = old

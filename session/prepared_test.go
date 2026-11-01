@@ -283,6 +283,31 @@ func TestPreparedCommit(t *testing.T) {
 			},
 		},
 		{
+			// A refusal of the deadlines is not a commit: the once-only mark
+			// is set only once the checks have passed, so a session the
+			// caller corrects commits.
+			name:  "a commit refused for its deadlines may be repeated once the session is corrected",
+			store: &probeStore{},
+			before: func(t *testing.T, _ *prepareFixture, p *session.Prepared) {
+				s := p.Session()
+				corrected := s.AbsoluteExpiresAt
+				s.AbsoluteExpiresAt = s.CreatedAt.Add(200 * 365 * 24 * time.Hour)
+
+				_, err := p.Commit(t.Context())
+				require.ErrorIs(t, err, session.ErrConfig)
+
+				s.AbsoluteExpiresAt = corrected
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.NoError(t, err, "a refused commit used up the prepared session")
+				assert.Same(t, p.Session(), got)
+				assert.Equal(t, int32(1), f.store.creates.Load())
+
+				_, loadErr := f.m.Load(t.Context(), got.ID)
+				require.NoError(t, loadErr)
+			},
+		},
+		{
 			name:  "an absolute deadline at or before the creation is refused and writes nothing",
 			store: &probeStore{},
 			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
