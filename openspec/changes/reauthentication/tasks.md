@@ -291,7 +291,7 @@ Each defect task's red step is the reproduction named in its design decision, wr
   - `session.AuthenticatedWithin(at, now time.Time, window time.Duration) bool`, which the method delegates to; the recency judge calls it without building a session.
 
   Red step for each: a temporary divergence in the shared code that a test on each caller catches, as in 6.8. Verify with `go test -race -count=1 ./session/ ./internal/guardauth/ ./httpsec/...`, `golangci-lint run`
-- [ ] 12.6 Docs (D5, D10):
+- [x] 12.6 Docs (D5, D10):
   - `rotationRefusal` and `resolve` godoc: a lost race through any manager sharing the store is 409 inside the window;
   - the recovery-code regeneration endpoint's godoc and the README: on an MFA chain without re-authentication, a stale session regenerates only after signing in again;
   - every godoc and README place touched by 12.1–12.4 states the new behaviour.
