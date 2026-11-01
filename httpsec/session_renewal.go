@@ -257,10 +257,15 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 // user reloads s's user by the reference s records, and refuses unless it is
 // that user and active (ownActiveUser). A late renewal reaches here without
 // the resolution core having checked either, so the check is made here too.
+//
+// A failed reload is answered as at resolution (classifyReload): a user not
+// found is refused, a request whose own context ended fails with that
+// context's error, and any other failure is a dependency failure, 500 by
+// default. None of them rotates anything.
 func (r *sessionRenewal) user(ctx context.Context, s *session.Session) (*identity.Details, *identity.Principal, error) {
 	details, err := r.users.LoadByUserID(ctx, s.UserID)
 	if err != nil {
-		return nil, nil, ErrAuthenticationRequired
+		return nil, nil, classifyReload(ctx, err)
 	}
 
 	if err := ownActiveUser(s, details); err != nil {

@@ -147,6 +147,8 @@ func TestSessionBearer(t *testing.T) {
 		assert func(t *testing.T, s served)
 	}
 
+	errUsersDown := errors.New("users: connection refused")
+
 	// refused is a 401 that never ran the handler. The lookups a case allows
 	// are the ones its wire function expects.
 	refused := func(t *testing.T, s served) {
@@ -289,9 +291,18 @@ func TestSessionBearer(t *testing.T) {
 				h.store.EXPECT().Load(gomock.Any(), testReference).Return(referencedSession(), nil)
 				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
-					Return(nil, errors.New("users: connection refused"))
+					Return(nil, errUsersDown)
 			},
-			assert: refused,
+			// A dependency failure, not a refusal: an outage of the user store
+			// must not log every caller out.
+			assert: func(t *testing.T, s served) {
+				t.Helper()
+				require.ErrorIs(t, s.err, errUsersDown)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: user could not be reloaded", s.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.False(t, s.handlerRan)
+			},
 		},
 	}
 

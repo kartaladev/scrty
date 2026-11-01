@@ -176,7 +176,8 @@ func TestBearerToken(t *testing.T) {
 
 // TestBearerSessionResolution pins that a token is a reference to live state:
 // the session must still exist and the user is reloaded, and none of the ways
-// that fails is distinguishable from the others.
+// that refuses is distinguishable from the others. A user store that cannot
+// answer is a dependency failure, not a refusal.
 func TestBearerSessionResolution(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +186,8 @@ func TestBearerSessionResolution(t *testing.T) {
 		wire   func(t *testing.T, h *authHarness)
 		assert func(t *testing.T, h *authHarness, s served)
 	}
+
+	errUsersDown := errors.New("users: connection refused")
 
 	unauthenticated := func(t *testing.T, _ *authHarness, s served) {
 		require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
@@ -248,9 +251,17 @@ func TestBearerSessionResolution(t *testing.T) {
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
 				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
-					Return(nil, errors.New("users: connection refused"))
+					Return(nil, errUsersDown)
 			},
-			assert: unauthenticated,
+			// A dependency failure, not a refusal: an outage of the user store
+			// must not log every caller out.
+			assert: func(t *testing.T, _ *authHarness, s served) {
+				require.ErrorIs(t, s.err, errUsersDown)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: user could not be reloaded", s.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.False(t, s.handlerRan)
+			},
 		},
 		{
 			name: "the user is reloaded, so the roles are the store's and not the token's",

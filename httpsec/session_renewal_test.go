@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -989,7 +990,7 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	users := NewMockUserLoader(gomock.NewController(t))
 	gomock.InOrder(
 		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
-		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, errors.New("removed")),
+		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, identity.ErrUserNotFound),
 	)
 
 	chain, err := httpsec.New(
@@ -1008,6 +1009,87 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	stored, err := sessions.Load(t.Context(), s.ID)
 	require.NoError(t, err)
 	assert.True(t, stored.SupersededAt.IsZero(), "a removed user's session was not rotated")
+}
+
+// TestSessionRenewal_UserReloadOutageIsNotARefusal pins that the renewal
+// endpoint's own user reload answers a user-store outage as a dependency
+// failure, behind fixed text with the loader's error reachable and a 500 by
+// default, and a user not found, wrapped by the loader, as a refusal; neither
+// rotates the session.
+func TestSessionRenewal_UserReloadOutageIsNotARefusal(t *testing.T) {
+	t.Parallel()
+
+	dbDown := errors.New("db down")
+
+	type testCase struct {
+		name string
+
+		// reloadErr is what the endpoint's reload fails with; the bearer's
+		// reload before it succeeds.
+		reloadErr error
+
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:      "the user store is down",
+			reloadErr: dbDown,
+			assert: func(t *testing.T, out served) {
+				t.Helper()
+
+				require.Error(t, out.err)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out.err, dbDown, "the loader's error stays reachable")
+				assert.Equal(t, "httpsec: user could not be reloaded", out.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			name:      "a user not found, wrapped by the loader, is a refusal",
+			reloadErr: fmt.Errorf("db: %w", identity.ErrUserNotFound),
+			assert:    refusedUnauthenticated,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+			sessions, err := session.New(
+				session.WithClock(clk),
+				session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))),
+			)
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			users := NewMockUserLoader(gomock.NewController(t))
+			gomock.InOrder(
+				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
+				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, tc.reloadErr),
+			)
+
+			chain, err := httpsec.New(
+				httpsec.WithClock(clk),
+				httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+				httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: sessions, Users: users}),
+			)
+			require.NoError(t, err)
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+			req.Header.Set("Authorization", "Bearer "+s.ID)
+
+			tc.assert(t, serve(t, chain, req))
+
+			stored, err := sessions.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			assert.True(t, stored.SupersededAt.IsZero(), "nothing was rotated")
+		})
+	}
 }
 
 // TestRenewal_RefusesDisabledUser pins that the renewal endpoint renews only
@@ -1449,7 +1531,7 @@ func TestSessionRenewalThrottle_RemovedUserIsNotCharged(t *testing.T) {
 	users := NewMockUserLoader(ctrl)
 	gomock.InOrder(
 		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
-		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, errors.New("removed")),
+		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, identity.ErrUserNotFound),
 	)
 
 	limiter := NewMockLimiter(ctrl)

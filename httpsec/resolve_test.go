@@ -1,6 +1,11 @@
 package httpsec_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -252,6 +257,350 @@ func TestExchangeEvaluatePerRequest_FailsClosed(t *testing.T) {
 			stored, err := f.sessions.Load(t.Context(), f.session.ID)
 			require.NoError(t, err)
 			assert.NotEqual(t, session.MFAEnrolmentPending, stored.MFA, "no policy ran, so nothing was marked")
+		})
+	}
+}
+
+// resolvingAuthenticator is one of the built-in authenticators that resolve a
+// session through the shared core, wired over an authHarness: what it
+// presents, the session the store holds for it, and how it reloads the user.
+type resolvingAuthenticator struct {
+	name string
+
+	// header is the Authorization header the request carries.
+	header string
+
+	// sessionID is the identifier the store is asked to load.
+	sessionID string
+
+	// session is the live session the store holds under sessionID.
+	session func() *session.Session
+
+	// options enables the authenticator on a chain over h.
+	options func(h *authHarness) []httpsec.Option
+
+	// reload wires the authenticator's user reload to answer with fn, called
+	// with the context the reload was made with.
+	reload func(h *authHarness, fn func(ctx context.Context) (*identity.Details, error))
+}
+
+// resolvingAuthenticators are the signed bearer and the session-reference
+// bearer, the two built-ins that share session resolution.
+func resolvingAuthenticators() []resolvingAuthenticator {
+	return []resolvingAuthenticator{
+		{
+			name:      "signed bearer",
+			header:    "Bearer abc.def.ghi",
+			sessionID: testJTI,
+			session:   liveSession,
+			options: func(h *authHarness) []httpsec.Option {
+				h.expectVerified()
+
+				return []httpsec.Option{httpsec.EnableBearerToken(h.bearerTokenDeps())}
+			},
+			reload: func(h *authHarness, fn func(ctx context.Context) (*identity.Details, error)) {
+				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+					DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) { return fn(ctx) })
+			},
+		},
+		{
+			name:      "session-reference bearer",
+			header:    "Bearer " + testReference,
+			sessionID: testReference,
+			session:   referencedSession,
+			options: func(h *authHarness) []httpsec.Option {
+				return []httpsec.Option{httpsec.EnableSessionBearer(h.sessionBearerDeps())}
+			},
+			reload: func(h *authHarness, fn func(ctx context.Context) (*identity.Details, error)) {
+				h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
+					DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) { return fn(ctx) })
+			},
+		},
+	}
+}
+
+// noErrorRecord asserts that nothing was logged at ERROR or above: neither an
+// undecryptable session nor a dependency failure.
+func noErrorRecord(t *testing.T, h *authHarness) {
+	t.Helper()
+
+	for _, r := range h.logs.records() {
+		assert.Less(t, r.Level, slog.LevelError, "unexpected record at %s: %q", r.Level, r.Message)
+	}
+}
+
+// The fixed texts a dependency failure at resolution is returned with.
+const (
+	textSessionNotResolved = "httpsec: session could not be resolved"
+	textUserNotReloaded    = "httpsec: user could not be reloaded"
+)
+
+// TestResolve_DependencyFailureIsNotARefusal pins that session resolution,
+// through either authenticator that shares it, answers a session-store or
+// user-store failure as a dependency failure, behind fixed text with the
+// cause reachable and a 500 by default, and keeps answering every refusal,
+// a wrapped "not found" included, with ErrAuthenticationRequired.
+func TestResolve_DependencyFailureIsNotARefusal(t *testing.T) {
+	t.Parallel()
+
+	dbDown := errors.New("db down")
+	storeDeadline := fmt.Errorf("db: %w", context.DeadlineExceeded)
+
+	type testCase struct {
+		name   string
+		wire   func(h *authHarness, a resolvingAuthenticator)
+		assert func(t *testing.T, h *authHarness, out served)
+	}
+
+	// failed is a dependency failure with text, its cause reachable.
+	failed := func(text string, cause error) func(t *testing.T, h *authHarness, out served) {
+		return func(t *testing.T, h *authHarness, out served) {
+			t.Helper()
+
+			require.Error(t, out.err)
+			assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+			assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+			require.ErrorIs(t, out.err, cause, "the dependency's error stays reachable")
+			assert.Equal(t, text, out.err.Error(), "the text is the library's")
+			assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+			assert.False(t, out.handlerRan)
+
+			_, unreadable := recordAt(h.logs.records(), slog.LevelError, "httpsec: a session could not be decrypted")
+			assert.False(t, unreadable, "an outage is not an undecryptable session")
+		}
+	}
+
+	refused := func(t *testing.T, h *authHarness, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan)
+		noErrorRecord(t, h)
+	}
+
+	liveSessionAnd := func(h *authHarness, a resolvingAuthenticator, details *identity.Details, err error) {
+		h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(a.session(), nil)
+		h.acceptsFirstPresentation()
+		a.reload(h, func(context.Context) (*identity.Details, error) { return details, err })
+	}
+
+	cases := []testCase{
+		{
+			name: "the session store is down",
+			wire: func(h *authHarness, a resolvingAuthenticator) {
+				h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(nil, dbDown)
+			},
+			assert: failed(textSessionNotResolved, dbDown),
+		},
+		{
+			name: "the session store's own deadline passed while the request was still waiting",
+			wire: func(h *authHarness, a resolvingAuthenticator) {
+				h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(nil, storeDeadline)
+			},
+			assert: failed(textSessionNotResolved, context.DeadlineExceeded),
+		},
+		{
+			name: "the user store is down",
+			wire: func(h *authHarness, a resolvingAuthenticator) {
+				liveSessionAnd(h, a, nil, dbDown)
+			},
+			assert: failed(textUserNotReloaded, dbDown),
+		},
+		{
+			name: "a user not found, wrapped by the loader, is a refusal",
+			wire: func(h *authHarness, a resolvingAuthenticator) {
+				liveSessionAnd(h, a, nil, fmt.Errorf("db: %w", identity.ErrUserNotFound))
+			},
+			assert: refused,
+		},
+		{
+			name: "a session not found, wrapped by the store, is a refusal",
+			wire: func(h *authHarness, a resolvingAuthenticator) {
+				h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(nil, fmt.Errorf("db: %w", session.ErrNotFound))
+			},
+			assert: refused,
+		},
+		{
+			name: "an unreadable session is a refusal, and is recorded at ERROR",
+			wire: func(h *authHarness, a resolvingAuthenticator) {
+				h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(nil, session.ErrUnreadable)
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+
+				_, ok := recordAt(h.logs.records(), slog.LevelError, "httpsec: a session could not be decrypted")
+				assert.True(t, ok, "an undecryptable session is visible to an operator")
+			},
+		},
+	}
+
+	for _, a := range resolvingAuthenticators() {
+		for _, tc := range cases {
+			t.Run(a.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				h := newAuthHarness(t)
+				opts := append([]httpsec.Option{httpsec.WithLogger(h.logger())}, a.options(h)...)
+				tc.wire(h, a)
+
+				chain, err := httpsec.New(opts...)
+				require.NoError(t, err)
+
+				tc.assert(t, h, serve(t, chain, bearerRequest(t.Context(), a.header)))
+			})
+		}
+	}
+}
+
+// TestResolve_HangUpIsNotARefusal pins that a request whose own context ended
+// while its session loaded or its user reloaded, at either bearer or at the
+// renewal endpoint, fails with the context's error: not refused, and not
+// recorded at ERROR as an outage or an undecryptable session.
+func TestResolve_HangUpIsNotARefusal(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// options enables what the request goes through, over h.
+		options func(h *authHarness) []httpsec.Option
+
+		// request builds the request on ctx.
+		request func(ctx context.Context) *http.Request
+
+		// wire wires the store and loader; hangUp ends the request's context.
+		wire func(h *authHarness, hangUp context.CancelFunc)
+
+		assert func(t *testing.T, h *authHarness, out served)
+	}
+
+	hungUp := func(t *testing.T, h *authHarness, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, context.Canceled)
+		assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+		assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+		assert.NotContains(t, []string{textSessionNotResolved, textUserNotReloaded}, out.err.Error(),
+			"a client that left is not reported as an outage")
+		assert.NotContains(t, out.err.Error(), "db:", "the text is the library's")
+		assert.False(t, out.handlerRan)
+		noErrorRecord(t, h)
+	}
+
+	// loadHangsUp is a store Load during which the client leaves.
+	loadHangsUp := func(h *authHarness, id string, hangUp context.CancelFunc) {
+		h.store.EXPECT().Load(gomock.Any(), id).
+			DoAndReturn(func(ctx context.Context, _ string) (*session.Session, error) {
+				hangUp()
+
+				return nil, fmt.Errorf("db: %w", ctx.Err())
+			})
+	}
+
+	// reloadHangsUp is a user reload during which the client leaves.
+	reloadHangsUp := func(hangUp context.CancelFunc) func(ctx context.Context) (*identity.Details, error) {
+		return func(ctx context.Context) (*identity.Details, error) {
+			hangUp()
+
+			return nil, fmt.Errorf("db: %w", ctx.Err())
+		}
+	}
+
+	var cases []testCase
+
+	for _, a := range resolvingAuthenticators() {
+		get := func(ctx context.Context) *http.Request { return bearerRequest(ctx, a.header) }
+
+		cases = append(cases,
+			testCase{
+				name:    a.name + "/the client leaves while the session loads",
+				options: a.options,
+				request: get,
+				wire: func(h *authHarness, hangUp context.CancelFunc) {
+					loadHangsUp(h, a.sessionID, hangUp)
+				},
+				assert: hungUp,
+			},
+			testCase{
+				name:    a.name + "/the client leaves while the user reloads",
+				options: a.options,
+				request: get,
+				wire: func(h *authHarness, hangUp context.CancelFunc) {
+					h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(a.session(), nil)
+					h.acceptsFirstPresentation()
+					a.reload(h, reloadHangsUp(hangUp))
+				},
+				assert: hungUp,
+			},
+		)
+	}
+
+	renewal := func(h *authHarness) []httpsec.Option {
+		return []httpsec.Option{
+			httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+			httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users}),
+		}
+	}
+	renew := func(ctx context.Context) *http.Request {
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+		req.Header.Set("Authorization", "Bearer "+testReference)
+
+		return req
+	}
+
+	cases = append(cases,
+		testCase{
+			name:    "renewal endpoint/the client leaves while the session loads",
+			options: renewal,
+			request: renew,
+			wire: func(h *authHarness, hangUp context.CancelFunc) {
+				loadHangsUp(h, testReference, hangUp)
+			},
+			assert: hungUp,
+		},
+		testCase{
+			name:    "renewal endpoint/the client leaves while the endpoint reloads the user",
+			options: renewal,
+			request: renew,
+			wire: func(h *authHarness, hangUp context.CancelFunc) {
+				h.store.EXPECT().Load(gomock.Any(), testReference).Return(referencedSession(), nil)
+				h.acceptsFirstPresentation()
+				gomock.InOrder(
+					h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
+					h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
+						DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+							return reloadHangsUp(hangUp)(ctx)
+						}),
+				)
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				hungUp(t, h, out)
+				assert.NotErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+			},
+		},
+	)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, hangUp := context.WithCancel(t.Context())
+			t.Cleanup(hangUp)
+
+			h := newAuthHarness(t)
+			opts := append([]httpsec.Option{httpsec.WithLogger(h.logger())}, tc.options(h)...)
+			tc.wire(h, hangUp)
+
+			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			tc.assert(t, h, serveIn(ctx, t, chain, tc.request(ctx)))
 		})
 	}
 }

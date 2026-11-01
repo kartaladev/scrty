@@ -97,7 +97,10 @@ func ownActiveUser(s *session.Session, details *identity.Details) error {
 
 // resolve resolves the session id names, and its user by, onto ex.
 //
-// It returns nil when the request may go on, and the refusal otherwise.
+// It returns nil when the request may go on. Otherwise it returns a refusal,
+// which matches ErrAuthenticationRequired unless the per-request phase refused
+// on a policy's grounds, or a failure that matches neither: a dependency
+// failure or the request's own context ending (classifyLoad, classifyReload).
 func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error {
 	ctx := ex.Context()
 
@@ -130,26 +133,14 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 			return nil
 		}
 
-		// A superseded identifier presented after its window: the manager has
-		// revoked the family by now. The caller is answered as for any ended
-		// session, and the reuse stays identifiable, so a consumer that rolls
-		// its request transaction back on a refusal can tell this is the one
-		// refusal it must commit, or it would roll the revocation back too.
-		// The manager's error names no identifier.
-		if errors.Is(err, session.ErrReused) {
-			return errors.Join(ErrAuthenticationRequired, err)
-		}
-
-		// Missing, expired and unreadable are the same answer: telling them
-		// apart would report whether a session ever existed.
-		return ErrAuthenticationRequired
+		return classifyLoad(ctx, err)
 	}
 
 	// Reloaded rather than taken from the credential, so a role revoked a
 	// minute ago is not honoured for the rest of the credential's life.
 	details, err := by.load(ctx, r.users, s)
 	if err != nil {
-		return ErrAuthenticationRequired
+		return classifyReload(ctx, err)
 	}
 
 	if err := ownActiveUser(s, details); err != nil {
@@ -170,6 +161,87 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 
 	return ex.evaluatePerRequest(&r.phase, s, principal, details.PasswordChangedAt, now)
 }
+
+// classifyLoad answers a session load that failed with err, on the request
+// whose own context is ctx, with one of three outcomes:
+//
+//   - a refusal, which matches ErrAuthenticationRequired: a session not found,
+//     expired or unreadable, and a superseded identifier presented after its
+//     window. Missing, expired and unreadable are the same answer, since
+//     telling them apart would report whether a session ever existed. Reuse
+//     is joined to the manager's session.ErrReused, so a consumer that rolls
+//     its request transaction back on a refusal can tell this is the one
+//     refusal it must commit, or it would roll the family's revocation back
+//     too. The manager's error names no identifier.
+//   - a hang-up, when ctx ended and err is that ending (endedByRequest): it
+//     matches ctx's error, and neither ErrAuthenticationRequired nor anything
+//     an outage is told by. No verdict was reached, and nothing failed.
+//   - a dependency failure otherwise, a store or cipher outage or the store's
+//     own deadline: fixed library text, with err reachable through errors.Is
+//     and errors.As, which the default status mapping answers with 500. A
+//     consumer wanting another answer, 503 for example, matches it in their
+//     error handler.
+//
+// Only a refusal matches ErrAuthenticationRequired, which is how a caller
+// tells a refused presentation, to be charged to its source, from a request
+// that reached no verdict.
+func classifyLoad(ctx context.Context, err error) error {
+	switch {
+	case errors.Is(err, session.ErrReused):
+		return errors.Join(ErrAuthenticationRequired, err)
+	case errors.Is(err, session.ErrNotFound),
+		errors.Is(err, session.ErrExpired),
+		errors.Is(err, session.ErrUnreadable):
+		return ErrAuthenticationRequired
+	case endedByRequest(ctx, err):
+		return diag.Wrap(err, textSessionLoadEnded, ctx.Err())
+	default:
+		return diag.Wrap(err, textSessionNotResolved)
+	}
+}
+
+// classifyReload answers a user reload that failed with err, on the request
+// whose own context is ctx, as classifyLoad answers a session load: a user
+// not found, however the loader wraps identity.ErrUserNotFound, is refused
+// with ErrAuthenticationRequired; a hang-up matches ctx's error; anything
+// else is a dependency failure behind fixed text, err reachable, 500 by
+// default. The identity model requires a loader to report a miss as
+// identity.ErrUserNotFound and any other failure as an error that is not, so
+// an outage of the user store no longer logs every caller out.
+//
+// A user that loads but is not the session's, or not active, is refused by
+// ownActiveUser, not here.
+func classifyReload(ctx context.Context, err error) error {
+	switch {
+	case errors.Is(err, identity.ErrUserNotFound):
+		return ErrAuthenticationRequired
+	case endedByRequest(ctx, err):
+		return diag.Wrap(err, textUserReloadEnded, ctx.Err())
+	default:
+		return diag.Wrap(err, textUserNotReloaded)
+	}
+}
+
+// endedByRequest reports whether err is the request's own context ending
+// rather than a dependency failing on its own: ctx has ended, and err is or
+// wraps ctx's error. A deadline a dependency met on a context of its own, while
+// the request was still waiting, is an outage, which is why a bare
+// errors.Is(err, context.DeadlineExceeded) or context.Canceled is never asked.
+func endedByRequest(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil && errors.Is(err, ctxErr)
+}
+
+// The fixed texts resolution answers a failure that is not a refusal with.
+// A hang-up has texts of its own, so an error handler that logs by text does
+// not report a client that left as an outage.
+const (
+	textSessionNotResolved = "httpsec: session could not be resolved"
+	textUserNotReloaded    = "httpsec: user could not be reloaded"
+	textSessionLoadEnded   = "httpsec: the request ended while its session loaded"
+	textUserReloadEnded    = "httpsec: the request ended while its user reloaded"
+)
 
 // perRequestPhase is what the per-request policy phase and its challenge
 // handling need: the chain's engine, enforcer set and enrolment lifetime, the
