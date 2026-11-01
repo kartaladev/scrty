@@ -935,6 +935,10 @@ func TestReauthAdmission(t *testing.T) {
 		// bearer's slot, and noCaller carries it without its caller.
 		reordered, noCaller bool
 
+		// untouched, when set, wires a collaborator the refusal must never
+		// reach, as a mock that fails the case if it is called.
+		untouched func(t *testing.T, h *enrolHarness)
+
 		request func(r *http.Request) *http.Request
 		assert  func(t *testing.T, out served)
 	}
@@ -969,8 +973,48 @@ func TestReauthAdmission(t *testing.T) {
 		return s
 	}
 
+	// neverVerifies adds a second-factor method named "spy" whose Verify the
+	// case fails on, so a refusal of a request to /verify/spy shows nothing
+	// was verified.
+	neverVerifies := func(t *testing.T, h *enrolHarness) {
+		t.Helper()
+
+		m := NewMockMethod(gomock.NewController(t))
+		m.EXPECT().Name().Return("spy").AnyTimes()
+		m.EXPECT().Channel().Return(testDeviceChannel).AnyTimes()
+		m.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+		m.EXPECT().Response().Return(mfa.FormField("code", 64)).AnyTimes()
+		m.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		h.extraMethods = append(h.extraMethods, m)
+	}
+
+	// neverChecksPassword mounts form login over an authenticator the case
+	// fails on, so the refusal shows no password was checked.
+	neverChecksPassword := func(t *testing.T, h *enrolHarness) {
+		t.Helper()
+
+		ctrl := gomock.NewController(t)
+
+		authn := NewMockAuthenticator(ctrl)
+		authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Times(0)
+
+		h.extra = append(h.extra, httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+			Authenticator: authn,
+			Sessions:      h.sessions,
+			Attempts:      NewMockAttemptStore(ctrl),
+			Tokens:        h.tokens,
+		}))
+	}
+
 	post := func(target string) func(*http.Request) *http.Request {
 		return func(r *http.Request) *http.Request { return formRequest(r.Context(), target, "") }
+	}
+
+	// postWith is a form post a re-proof endpoint could act on, so a refusal
+	// before it did is the refusal's doing and not an unreadable body's.
+	postWith := func(target, body string) func(*http.Request) *http.Request {
+		return func(r *http.Request) *http.Request { return formRequest(r.Context(), target, body) }
 	}
 
 	listing := func(r *http.Request) *http.Request { return get(r, reauthMethodsPath) }
@@ -1024,16 +1068,18 @@ func TestReauthAdmission(t *testing.T) {
 			assert:    refusedAsUnauthenticated,
 		},
 		{
-			name:    "a pending second factor meets the MFA gate",
-			session: full(session.MFAPending),
-			request: post(reauthVerifyTOTP),
-			assert:  challengedWith(policy.ChallengeMFA),
+			name:      "a pending second factor meets the MFA gate and verifies nothing",
+			session:   full(session.MFAPending),
+			untouched: neverVerifies,
+			request:   postWith(httpsec.DefaultReauthenticationPrefix+"/verify/spy", "code=123456"),
+			assert:    challengedWith(policy.ChallengeMFA),
 		},
 		{
-			name:    "a pending password change meets the password-change gate",
-			session: owingPasswordChange,
-			request: post(reauthPasswordPath),
-			assert:  challengedWith(policy.ChallengePasswordChange),
+			name:      "a pending password change meets the password-change gate and checks no password",
+			session:   owingPasswordChange,
+			untouched: neverChecksPassword,
+			request:   postWith(reauthPasswordPath, "password=s3cret"),
+			assert:    challengedWith(policy.ChallengePasswordChange),
 		},
 		{
 			name:    "an enrolment-only session meets the enrolment gate",
@@ -1048,17 +1094,19 @@ func TestReauthAdmission(t *testing.T) {
 			assert:  challengedWith(policy.ChallengeAccountRecovery),
 		},
 		{
-			name:      "reordered: a pending second factor",
+			name:      "reordered: a pending second factor verifies nothing",
 			session:   full(session.MFAPending),
 			reordered: true,
-			request:   post(reauthVerifyTOTP),
+			untouched: neverVerifies,
+			request:   postWith(httpsec.DefaultReauthenticationPrefix+"/verify/spy", "code=123456"),
 			assert:    refusedAsUnauthenticated,
 		},
 		{
-			name:      "reordered: a pending password change",
+			name:      "reordered: a pending password change checks no password",
 			session:   owingPasswordChange,
 			reordered: true,
-			request:   post(reauthPasswordPath),
+			untouched: neverChecksPassword,
+			request:   postWith(reauthPasswordPath, "password=s3cret"),
 			assert:    refusedAsUnauthenticated,
 		},
 		{
@@ -1115,6 +1163,10 @@ func TestReauthAdmission(t *testing.T) {
 			t.Parallel()
 
 			h := newEnrolHarness(t)
+
+			if tc.untouched != nil {
+				tc.untouched(t, h)
+			}
 
 			var s *session.Session
 			if tc.session != nil {

@@ -1,5 +1,7 @@
 package httpsec_test
 
+//go:generate mockgen -destination=challengemethod_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/mfa ChallengeMethod
+
 import (
 	"bytes"
 	"context"
@@ -27,6 +29,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The passwords and hashes a password re-proof is judged against. The
@@ -86,6 +89,11 @@ type pwFixture struct {
 	// over (withRecovery), and held is ada's recovery it holds.
 	records recovery.RecordStore
 	held    recovery.Record
+
+	// holdTokens is the store the held recovery's finish and cancel tokens
+	// live in, and built the chain a case runs its request on.
+	holdTokens onetime.Store
+	built      *httpsec.Chain
 
 	// capture, when a case sets it, collects every post-authentication input.
 	capture *[]policy.Input
@@ -256,6 +264,11 @@ func (f *pwFixture) withRecovery(t *testing.T, records recovery.RecordStore) {
 	require.NoError(t, records.Insert(t.Context(), other))
 
 	f.records = records
+
+	holdTokens, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(f.clock))
+	require.NoError(t, err)
+
+	f.holdTokens = holdTokens
 	f.chainOpts = append(f.chainOpts,
 		// A recovered session needs a way to become a full one.
 		httpsec.EnablePasswordChangeGate(f.sessions,
@@ -270,8 +283,26 @@ func (f *pwFixture) withRecovery(t *testing.T, records recovery.RecordStore) {
 				recovery.WithAuthenticatorKinds(kind),
 				recovery.WithMessages(recoveryMessages{}),
 				recovery.WithHoldDelay(recoveryHoldDelay),
+				recovery.WithHoldTokenStore(holdTokens),
 				recovery.WithCancelLink("https://app.example.com/cancel"),
 			)))
+}
+
+// finishHeld is the request that finishes ada's held recovery: a POST to the
+// finish endpoint carrying a completion token issued for it, which the hold
+// accepts for as long as the recovery is pending.
+func (f *pwFixture) finishHeld(t *testing.T) *http.Request {
+	t.Helper()
+
+	tokens, err := onetime.New(recovery.FinishTokenPurpose,
+		onetime.WithStore(f.holdTokens), onetime.WithTokenTTL(24*time.Hour), onetime.WithClock(f.clock))
+	require.NoError(t, err)
+
+	token, _, err := tokens.Issue(t.Context(), f.held.ID.String())
+	require.NoError(t, err)
+
+	return postValues(t.Context(), httpsec.DefaultRecoveryFinishPath, e2eSource,
+		url.Values{httpsec.RecoveryCompletionTokenParam: {token}})
 }
 
 // heldStands asserts whether ada's held recovery still stands, and that the
@@ -332,33 +363,37 @@ func emptyUsername() httpsec.Option {
 	return httpsec.RegisterInterceptor(blank, httpsec.After(httpsec.OrderPasswordChange))
 }
 
-// countingMethod is a challenge method whose enrolment lookups are counted.
-type countingMethod struct {
-	*challengeStub
-
-	counter *atomic.Int32
-}
-
-func (m *countingMethod) Enrolled(ctx context.Context, user identity.UserID) (bool, error) {
-	m.counter.Add(1)
-
-	return m.challengeStub.Enrolled(ctx, user)
-}
-
 // countedMethods are methods named a, b and c, in that order, whose lookups
 // all add to counter. enrolled says which of them the user is enrolled on, and
 // errs which of them fail the lookup.
-func countedMethods(counter *atomic.Int32, enrolled [3]bool, errs [3]error) []mfa.Method {
+func countedMethods(t *testing.T, counter *atomic.Int32, enrolled [3]bool, errs [3]error) []mfa.Method {
 	names := [3]string{"a", "b", "c"}
 	methods := make([]mfa.Method, 0, len(names))
 
+	ctrl := gomock.NewController(t)
+
 	for i, name := range names {
-		methods = append(methods, &countingMethod{
-			challengeStub: &challengeStub{
-				name: name, channel: testDeviceChannel, enrolled: enrolled[i], enrolledErr: errs[i],
-			},
-			counter: counter,
-		})
+		stub := &challengeStub{
+			name: name, channel: testDeviceChannel, enrolled: enrolled[i], enrolledErr: errs[i],
+		}
+
+		// The mock stands in for the method and delegates to the scripted
+		// stub, counting only the enrolment lookups.
+		m := NewMockChallengeMethod(ctrl)
+		m.EXPECT().Name().DoAndReturn(stub.Name).AnyTimes()
+		m.EXPECT().Channel().DoAndReturn(stub.Channel).AnyTimes()
+		m.EXPECT().Response().DoAndReturn(stub.Response).AnyTimes()
+		m.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(stub.Verify).AnyTimes()
+		m.EXPECT().BeginChallenge(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(stub.BeginChallenge).AnyTimes()
+		m.EXPECT().PresentedChallenge(gomock.Any()).DoAndReturn(stub.PresentedChallenge).AnyTimes()
+		m.EXPECT().Enrolled(gomock.Any(), gomock.Any()).AnyTimes().
+			DoAndReturn(func(ctx context.Context, user identity.UserID) (bool, error) {
+				counter.Add(1)
+
+				return stub.Enrolled(ctx, user)
+			})
+
+		methods = append(methods, m)
 	}
 
 	return methods
@@ -556,8 +591,8 @@ func TestReauthPassword(t *testing.T) {
 		{
 			// "The password endpoint settles at the first enrolled method".
 			name: "the first enrolled method settles the refusal without asking the others",
-			wire: func(_ *testing.T, f *pwFixture) {
-				f.extra = countedMethods(&f.lookups, [3]bool{true, true, true}, [3]error{})
+			wire: func(t *testing.T, f *pwFixture) {
+				f.extra = countedMethods(t, &f.lookups, [3]bool{true, true, true}, [3]error{})
 			},
 			request: unread,
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
@@ -567,8 +602,8 @@ func TestReauthPassword(t *testing.T) {
 		},
 		{
 			name: "a method after the first enrolled one that would fail is never asked",
-			wire: func(_ *testing.T, f *pwFixture) {
-				f.extra = countedMethods(&f.lookups, [3]bool{true}, [3]error{1: errLookup})
+			wire: func(t *testing.T, f *pwFixture) {
+				f.extra = countedMethods(t, &f.lookups, [3]bool{true}, [3]error{1: errLookup})
 			},
 			request: unread,
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
@@ -579,8 +614,8 @@ func TestReauthPassword(t *testing.T) {
 		},
 		{
 			name: "a lookup that fails before one is enrolled refuses as a failed lookup",
-			wire: func(_ *testing.T, f *pwFixture) {
-				f.extra = countedMethods(&f.lookups, [3]bool{2: true}, [3]error{1: errLookup})
+			wire: func(t *testing.T, f *pwFixture) {
+				f.extra = countedMethods(t, &f.lookups, [3]bool{2: true}, [3]error{1: errLookup})
 			},
 			request: unread,
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
@@ -590,8 +625,8 @@ func TestReauthPassword(t *testing.T) {
 		},
 		{
 			name: "with none enrolled every method is asked and the password re-proves",
-			wire: func(_ *testing.T, f *pwFixture) {
-				f.extra = countedMethods(&f.lookups, [3]bool{}, [3]error{})
+			wire: func(t *testing.T, f *pwFixture) {
+				f.extra = countedMethods(t, &f.lookups, [3]bool{}, [3]error{})
 				f.resets()
 			},
 			request: passwordOf(reauthAdaPassword),
@@ -847,9 +882,13 @@ func TestReauthPassword(t *testing.T) {
 				passwordReproved(t, f.reauthHarness, s, out)
 				f.heldStands(t, false)
 
-				finished, err := f.records.Complete(t.Context(), f.held.ID, f.held.NotBefore)
-				require.NoError(t, err)
-				assert.False(t, finished, "the held recovery still finishes after the re-proof")
+				// The hold's delay has run out, so only the cancellation
+				// stands between the recovery and its completion.
+				finish := f.finishHeld(t)
+				f.clock.Advance(recoveryHoldDelay)
+
+				finished := serve(t, f.built, finish)
+				require.ErrorIs(t, finished.err, recovery.ErrRefused, "the held recovery still finishes after the re-proof")
 			},
 		},
 		{
@@ -955,6 +994,8 @@ func TestReauthPassword(t *testing.T) {
 
 			c, err := f.build(nil)
 			require.NoError(t, err)
+
+			f.built = c
 
 			tok := mfaTokenFor(s.ID)
 			if tc.before != nil {

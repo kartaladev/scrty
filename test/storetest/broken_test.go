@@ -138,6 +138,8 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionSaveMovesRetention,
 		"a stale save of a superseded record changes neither its deadlines nor its retention"),
 	sessionVariant(sessionSupersedeDropsStrictMark, "a supersession without grace is loaded marked as strict"),
+	sessionVariant(sessionSupersedeDropsStrictMark,
+		"a strict rotation through one manager makes a rotation of the old identifier through another a renewal conflict"),
 	sessionVariant(sessionSaveWritesStrictMark, "saving a session never writes the strict mark"),
 	sessionVariant(sessionSaveOntoStrictRow, "saving a strictly superseded session is refused"),
 	sessionVariant(sessionCreateWritesStrictMark, "creating a session never writes the strict mark"),

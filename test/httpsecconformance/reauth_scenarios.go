@@ -14,6 +14,7 @@ import (
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
@@ -21,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/test/httpsecconformance/internal/mocks"
 )
 
 // reauthStaleness is how long ago the session of a re-authentication scenario
@@ -46,12 +48,18 @@ func reauthScenarios() []Scenario {
 
 // staleReadStore is the session store of a scenario that needs a reader to have
 // read a session before a rotation wrote, which sequential requests cannot
-// arrange once the rotation has landed. Until replay is called every read goes
-// to the store underneath; after it, reads of the captured session return it as
-// it was when capture ran, while every write still goes to the store
-// underneath, whose conditional write is what decides the race.
+// arrange once the rotation has landed. Until replayCaptured is called every
+// read goes to the store underneath; after it, reads of the captured session
+// return it as it was when capture ran, while every write still goes to the
+// store underneath, whose conditional write is what decides the race.
+//
+// Store is the double to hand to the session manager: a generated mock whose
+// every method delegates to the store underneath, Load excepted.
 type staleReadStore struct {
-	session.Store
+	// Store is the session store the scenario's manager reads and writes.
+	Store *mocks.MockStore
+
+	under session.Store
 
 	mu       sync.Mutex
 	id       string
@@ -59,11 +67,40 @@ type staleReadStore struct {
 	replay   bool
 }
 
+// newStaleReadStore is a staleReadStore over under, with its expectations set.
+func newStaleReadStore(t *testing.T, under session.Store) *staleReadStore {
+	t.Helper()
+
+	s := &staleReadStore{Store: mocks.NewMockStore(gomock.NewController(t)), under: under}
+
+	m := s.Store.EXPECT()
+	m.Create(gomock.Any(), gomock.Any()).DoAndReturn(under.Create).AnyTimes()
+	m.Save(gomock.Any(), gomock.Any()).DoAndReturn(under.Save).AnyTimes()
+	m.Load(gomock.Any(), gomock.Any()).DoAndReturn(s.load).AnyTimes()
+	m.Supersede(gomock.Any(), gomock.Any()).DoAndReturn(under.Supersede).AnyTimes()
+	m.Delete(gomock.Any(), gomock.Any()).DoAndReturn(under.Delete).AnyTimes()
+	m.DeleteFamily(gomock.Any(), gomock.Any()).DoAndReturn(under.DeleteFamily).AnyTimes()
+	m.DeleteByUser(gomock.Any(), gomock.Any()).DoAndReturn(under.DeleteByUser).AnyTimes()
+	m.DeleteByUserExcept(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(under.DeleteByUserExcept).AnyTimes()
+	m.DeleteByUserAndExternalIssuer(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(under.DeleteByUserAndExternalIssuer).AnyTimes()
+	m.DeleteByExternalSession(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(under.DeleteByExternalSession).AnyTimes()
+	m.DeleteExpired(gomock.Any()).DoAndReturn(under.DeleteExpired).AnyTimes()
+	m.CountActiveByUser(gomock.Any(), gomock.Any()).DoAndReturn(under.CountActiveByUser).AnyTimes()
+	m.MarkPresented(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(under.MarkPresented).AnyTimes()
+	m.RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(under.RecordActivity).AnyTimes()
+	m.SuccessorPresented(gomock.Any(), gomock.Any()).DoAndReturn(under.SuccessorPresented).AnyTimes()
+
+	return s
+}
+
 // capture records the session id as the store now holds it.
 func (s *staleReadStore) capture(t *testing.T, id string) {
 	t.Helper()
 
-	got, err := s.Store.Load(t.Context(), id)
+	got, err := s.under.Load(t.Context(), id)
 	require.NoError(t, err)
 
 	s.mu.Lock()
@@ -80,7 +117,7 @@ func (s *staleReadStore) replayCaptured() {
 	s.replay = true
 }
 
-func (s *staleReadStore) Load(ctx context.Context, id string) (*session.Session, error) {
+func (s *staleReadStore) load(ctx context.Context, id string) (*session.Session, error) {
 	s.mu.Lock()
 	snap := s.snapshot
 	replay := s.replay && id == s.id
@@ -92,7 +129,7 @@ func (s *staleReadStore) Load(ctx context.Context, id string) (*session.Session,
 		return &out, nil
 	}
 
-	return s.Store.Load(ctx, id)
+	return s.under.Load(ctx, id)
 }
 
 // reauthWiring is what a re-authentication scenario builds its chain from.
@@ -129,8 +166,8 @@ func newReauthSpec(t *testing.T, w reauthWiring) ChainSpec {
 
 	var sessionStore session.Store = store
 	if w.renewal {
-		stale = &staleReadStore{Store: store}
-		sessionStore = stale
+		stale = newStaleReadStore(t, store)
+		sessionStore = stale.Store
 	}
 
 	sessions, err := session.New(session.WithClock(clk), session.WithStore(sessionStore))
@@ -181,7 +218,7 @@ func newReauthSpec(t *testing.T, w reauthWiring) ChainSpec {
 	}
 
 	if w.deny {
-		engine, err := policy.NewEngine(reauthDenyPolicy{})
+		engine, err := policy.NewEngine(newReauthDenyPolicy(t))
 		require.NoError(t, err)
 
 		opts = append(opts, httpsec.WithPolicyEngine(engine))
@@ -463,17 +500,18 @@ func renewalLostToReproofIs409() Scenario {
 // errReauthDenied is the reason reauthDenyPolicy refuses with.
 var errReauthDenied = errors.New("httpsecconformance: denied after authentication")
 
-// reauthDenyPolicy denies every user after authentication.
-type reauthDenyPolicy struct{}
+// newReauthDenyPolicy is a policy that denies every user after authentication,
+// with errReauthDenied as its reason.
+func newReauthDenyPolicy(t *testing.T) *mocks.MockPolicy {
+	t.Helper()
 
-func (reauthDenyPolicy) Name() string { return "httpsecconformance/reauth-deny" }
+	p := mocks.NewMockPolicy(gomock.NewController(t))
+	p.EXPECT().Name().Return("httpsecconformance/reauth-deny").AnyTimes()
+	p.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
+	p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).
+		Return(policy.Decision{Outcome: policy.Deny, Reason: errReauthDenied}).AnyTimes()
 
-func (reauthDenyPolicy) Phases() []policy.Phase {
-	return []policy.Phase{policy.PostAuthentication}
-}
-
-func (reauthDenyPolicy) Evaluate(context.Context, *policy.Input) policy.Decision {
-	return policy.Decision{Outcome: policy.Deny, Reason: errReauthDenied}
+	return p
 }
 
 // reauthPasswordRefusedByPostAuthenticationDeny pins spec reauthentication
