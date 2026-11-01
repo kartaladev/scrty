@@ -886,11 +886,11 @@ if errors.Is(err, httpsec.ErrReauthenticationRequired) ||
 | Factor policy | strongest held: a second factor if enrolled, else the password | `httpsec.RequireSecondFactorForReauthentication` (stricter only) |
 | Re-proof challenge lifetime | 5 minutes | `httpsec.WithReauthenticationChallengeTTL` |
 | Re-proof challenges issued | 10 per user, per method, per hour | `httpsec.WithReauthenticationChallengeLimit` |
-| Re-proof challenge store | in-memory, one process only; required whenever the MFA slot was given a store (give both the same one); giving one on a chain without the MFA slot fails `New` with `ErrConfig` | `httpsec.WithReauthenticationChallengeStore` |
+| Re-proof challenge store | in-memory, one process only; required whenever the MFA slot was given a store and has a method with a begin step (give both the same one); giving one on a chain without the MFA slot fails `New` with `ErrConfig` | `httpsec.WithReauthenticationChallengeStore` |
 | MFA challenge store, beside re-authentication | in-memory, one process only; giving one without `httpsec.WithReauthenticationChallengeStore` fails `New` with `ErrConfig` naming both | `httpsec.WithMFAChallengeStore` |
 | Re-proof of a second factor | runs the post-authentication phase with the login's own input; every deny refuses, only a second-factor challenge is ignored; the session's own user only | a consumer policy reads `policy.Input.Reauthenticating` and decides what a re-proof means; no switch turns the phase off |
 | Re-proof whose credential cannot be issued | stores nothing; the caller's credential keeps working | — |
-| Lost rotation race, through any manager sharing the store | 409 `httpsec.ErrSessionRenewalConflict` inside the in-flight window (30 seconds, `session.DefaultRenewalGrace`) | — |
+| Lost rotation race, through any manager sharing the store | 409 `httpsec.ErrSessionRenewalConflict` inside the winner's in-flight window: 30 seconds for a strict rotation (`session.DefaultRenewalGrace`), the renewal's grace for a renewal; after it, 401 (`ErrExpired` until the store's sweep, `ErrNotFound` after) | `httpsec.WithRenewalGrace` (a renewal winner only) |
 | Re-proof response | the login document, `Cache-Control: no-store` | `httpsec.WithReauthenticationResponder` |
 | Begin response | the method's data, `Cache-Control: no-store` | `httpsec.WithReauthenticationBeginResponder` |
 | Method listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithReauthenticationMethodsResponder` |

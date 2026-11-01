@@ -156,10 +156,10 @@ func (i *recoveryInterceptor) codes(ex *Exchange, next Next) error {
 // recovery.ErrReauthenticationRequired, and nothing changes.
 //
 // Only a sign-in or a re-proof moves the time, and a re-proof is available
-// only when the chain enables EnableReauthentication. A chain with the
-// second-factor slot and without it has no way to refresh a session in place:
-// a user whose session is stale regenerates their codes only after signing in
-// again. EnableReauthentication is the remedy.
+// only when the chain enables EnableReauthentication. Without it there is no
+// way to refresh a session in place: a user whose session is stale, on an MFA
+// chain or any other, regenerates their codes only after signing in again.
+// EnableReauthentication is the remedy.
 //
 // Cache-Control: no-store is set before the responder runs, since the
 // response carries the new codes.
