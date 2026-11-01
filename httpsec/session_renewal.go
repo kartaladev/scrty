@@ -43,7 +43,8 @@ const (
 // for every endpoint that issues a credential; a missing or typed-nil
 // required field is refused when the chain is built.
 type SessionRenewalDeps struct {
-	// Sessions rotates the renewed session (session.Sessions.RotateWithGrace),
+	// Sessions rotates the renewed session
+	// (session.Sessions.RotateWithGraceIssuing),
 	// and loads a late one under unused-successor recovery
 	// (session.Sessions.LoadForRenewal).
 	//
@@ -175,17 +176,45 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
-	successor, kind, err := r.sessions.RotateWithGrace(ctx, s, r.grace, r.rotateOptions(ex, s)...)
-	if err != nil {
-		return renewalRefusal(err)
-	}
+	// The successor's credential is issued between building the successor and
+	// writing the supersession, so a credential that cannot be issued
+	// supersedes nothing: the presented one keeps the standing it had, and
+	// presenting it after the window would have ended is not reuse.
+	var issueErr error
 
-	credential, err := r.issue(ctx, successor, principal)
+	successor, kind, credential, err := r.sessions.RotateWithGraceIssuing(ctx, s, r.grace,
+		func(next *session.Session) (string, error) {
+			tok, err := r.issue(ctx, next, principal)
+			issueErr = err
+
+			return tok, err
+		}, r.rotateOptions(ex, s)...)
 	if err != nil {
-		return err
+		return rotationFailure(err, issueErr)
 	}
 
 	return r.respond(ex, RenewalResult{Credential: credential, Session: successor, User: details, Kind: kind})
+}
+
+// rotationFailure is the error a failed rotation answers with, given the
+// issuing step's own error, nil when the step did not fail.
+//
+// An issuing failure is a dependency failure, returned as the issuer returned
+// it, already behind fixed text: never a refusal, whatever the issuer's error
+// wraps, and nothing was superseded. A refusal of the rotation is answered by
+// renewalRefusal. Anything else, a successor issued only after the grace
+// window had closed included, is the manager's error, a dependency failure
+// behind its fixed text, 500 by default.
+func rotationFailure(err, issueErr error) error {
+	if issueErr != nil {
+		return err
+	}
+
+	if refusal := refusedRenewal(err); refusal != nil {
+		return refusal
+	}
+
+	return err
 }
 
 // admit refuses a renewal of a family that is over its limit, and fails closed
@@ -347,6 +376,16 @@ func (r *sessionRenewal) judgeLate(
 // ErrAuthenticationRequired, as at the bearer. Anything else is the manager's
 // error, already behind fixed text.
 func renewalRefusal(err error) error {
+	if refusal := refusedRenewal(err); refusal != nil {
+		return refusal
+	}
+
+	return err
+}
+
+// refusedRenewal is the refusal err answers with, as renewalRefusal words it,
+// and nil when err is no refusal.
+func refusedRenewal(err error) error {
 	switch {
 	case errors.Is(err, session.ErrReused):
 		return errors.Join(ErrAuthenticationRequired, err)
@@ -357,7 +396,7 @@ func renewalRefusal(err error) error {
 		errors.Is(err, session.ErrUnreadable):
 		return ErrAuthenticationRequired
 	default:
-		return err
+		return nil
 	}
 }
 
@@ -400,19 +439,33 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //     consumer may answer otherwise through WithErrorHandler. A reload the
 //     request's own context ended fails with an error matching that context's
 //     error. Neither rotates anything;
-//  3. rotates the session with session.Sessions.RotateWithGrace. A
-//     credential renewed again inside its window is re-rotated
-//     (session.RenewalReRotation), so a client that lost a renewal response
-//     can retry with the credential it holds. A lost race with a concurrent
-//     renewal of the same session is refused with ErrSessionRenewalConflict,
-//     a 409, and the client retries with the credential it holds. A renewed
-//     credential presented after its window is reuse: the manager revokes the
-//     session's whole family, and the refusal is ErrAuthenticationRequired
-//     joined to session.ErrReused;
-//  4. issues the successor's credential through the chain's bearer mode: the
+//  3. rotates the session with session.Sessions.RotateWithGraceIssuing,
+//     issuing the successor's credential through the chain's bearer mode
+//     once the successor is built and before the rotation is stored: the
 //     successor's identifier with EnableSessionBearer on, and a token from
-//     SessionRenewalDeps.Tokens otherwise;
-//  5. hands the result to the responder.
+//     SessionRenewalDeps.Tokens otherwise. A credential renewed again inside
+//     its window is re-rotated (session.RenewalReRotation), so a client that
+//     lost a renewal response can retry with the credential it holds. A lost
+//     race with a concurrent renewal of the same session is refused with
+//     ErrSessionRenewalConflict, a 409, and the client retries with the
+//     credential it holds; the credential issued for the losing successor
+//     names a session that was never stored and is discarded. A renewed
+//     credential presented after its window is reuse: the manager revokes
+//     the session's whole family, and the refusal is
+//     ErrAuthenticationRequired joined to session.ErrReused;
+//  4. hands the result to the responder.
+//
+// A successor credential that cannot be issued, a key source that cannot
+// sign for example, fails the renewal as a dependency failure, not a refusal:
+// the issuer's fixed text, its cause reachable through errors.Is and
+// errors.As, 500 by default. Nothing is stored, superseded or revoked, so the
+// presented credential keeps the standing it had, and presenting it after the
+// grace window would have ended is not reuse. A credential issued only once
+// the grace window has closed is never handed out either: the renewal fails
+// with the manager's fixed text, matching context.DeadlineExceeded, as a
+// dependency failure, and nothing is stored. Neither failure is a refusal, and
+// neither is charged anywhere but to the renewal limit, which counts every
+// attempt.
 //
 // The endpoint sits inside bearer authentication and inside every gate that
 // confines a session, so a session owing a second factor, confined to
