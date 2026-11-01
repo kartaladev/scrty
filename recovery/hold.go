@@ -304,13 +304,20 @@ func (r *Recoverer) cancelURL(token string) string {
 // the reported mode a reported loss the user no longer holds is dropped rather
 // than refused, since its loss is already remedied; a listing failure is
 // returned with the record still pending; the
-// record is completed by one conditional write, and losing it, to a racing
-// cancel or finish, is ErrRefused; the token is consumed; and the completion
-// sequence runs from the reset on, exactly as Recover's does.
+// recovery-pending session is built and its credential issued through the
+// issuer (WithCredentialIssuer); the record is completed by one conditional
+// write, and losing it, to a racing cancel or finish, is ErrRefused, with the
+// credential discarded; the token is consumed; and the completion sequence
+// runs from the reset on, exactly as Recover's does, storing the session
+// last.
+//
+// An issuing failure is a dependency failure, not a refusal: the record stays
+// pending and the token usable, nothing is removed, ended or replaced, and
+// the same finish succeeds once the issuer is healthy.
 //
 // A token past the completion window, or of another purpose, is ErrRefused.
 // Everything from the conditional write on runs detached from ctx's
-// cancellation.
+// cancellation; the issuer runs before it, on ctx itself.
 func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result, error) {
 	if r.finishTokens == nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgFinishRefused, slog.String("reason", "no-hold-configured"))
@@ -354,6 +361,13 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 		return nil, err
 	}
 
+	// Issued before the record is completed, so a credential that cannot be
+	// issued leaves the record pending and the token usable.
+	issued, err := r.issueSession(ctx, details, now)
+	if err != nil {
+		return nil, err
+	}
+
 	ctx = context.WithoutCancel(ctx)
 
 	completed, err := r.records.Complete(ctx, rec.ID, now)
@@ -370,7 +384,9 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 
 	r.consumeHoldToken(ctx, r.finishTokens, checked)
 
-	return r.complete(ctx, completion{user: rec.User, details: details, plan: plan, savedSpent: rec.SavedSpent}, now)
+	return r.complete(ctx, completion{
+		user: rec.User, details: details, plan: plan, savedSpent: rec.SavedSpent, issued: issued,
+	}, now)
 }
 
 // findHeld checks a hold token with m, spending nothing, and finds the pending

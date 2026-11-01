@@ -106,9 +106,11 @@ type RecoveryDeps recovery.Deps
 // RecoveryResult is what a completed recovery produced, handed to whatever
 // writes the response.
 type RecoveryResult struct {
-	// Token is the access token issued for the recovery-pending session. With
-	// EnableSessionBearer on it is the session's identifier, the session
-	// reference, rather than a signed token.
+	// Token is the access token issued for the recovery-pending session,
+	// before the recovery spent anything, and handed out only once the
+	// session is stored (recovery.Result.Credential). With EnableSessionBearer
+	// on it is the session's identifier, the session reference, rather than a
+	// signed token.
 	Token string
 
 	// Recovery is what the recovery produced: the recovery-pending session,
@@ -306,7 +308,11 @@ func EnableAccountRecovery(deps RecoveryDeps, opts ...RecoveryOption) Option {
 // recovery.WithAuthenticatorKinds), so a chain enabling recovery passes at
 // least those. Repeated calls accumulate, in order. The core's logger defaults
 // to the chain's (WithLogger) rather than slog.Default; a recovery.WithLogger
-// given here replaces it.
+// given here replaces it. The chain always supplies its own password check
+// (with form login) and credential issuer, after these options, so a
+// recovery.WithPasswordCheck or recovery.WithCredentialIssuer given here is
+// replaced: the recovered session's credential is always one the chain's
+// bearer accepts (WithRecoveryTokens).
 func WithRecoveryCore(opts ...recovery.Option) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		i.coreOpts = append(i.coreOpts, opts...)
@@ -487,6 +493,13 @@ func WithRecoveryCountRefusals(count bool) RecoveryOption {
 }
 
 // WithRecoveryTokens issues the recovered session's access token through g.
+//
+// The token is issued after every proof has been checked and before any is
+// spent, and at a finish before the held record is completed. A generator
+// that fails is a dependency failure, answered 500 by default and charged to
+// no source: the recovery spends, removes, ends, replaces and sends nothing,
+// and a held recovery stays pending, so the same proofs or completion token
+// succeed once the generator does.
 //
 // Default: the token generator form login was given (FormLoginDeps.Tokens).
 // A chain without form login must supply one, or New refuses it: a recovery

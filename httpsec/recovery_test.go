@@ -105,6 +105,44 @@ func countingLimiter(t *testing.T, records int) *MockLimiter {
 	return l
 }
 
+// errRecoveryKeys is what a recovery's token generator fails with while its
+// key source is out.
+var errRecoveryKeys = errors.New("key source unreachable")
+
+// recoveryIssuer is a token generator for the recovery endpoints that fails
+// with errRecoveryKeys until h.allow is set, then issues as the harness's own
+// generator does. h.allow is the case's switch.
+func recoveryIssuer(t *testing.T, h *recoveryHarness) *MockGenerator {
+	t.Helper()
+
+	var allow atomic.Bool
+	h.allow = &allow
+
+	g := NewMockGenerator(gomock.NewController(t))
+	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+			if !allow.Load() {
+				return "", errRecoveryKeys
+			}
+
+			return mfaTokenFor(id), nil
+		})
+
+	return g
+}
+
+// issueFailure asserts out is an issuing failure answered as a dependency
+// failure: not a refusal, and none of the generator's text.
+func issueFailure(t *testing.T, out served) {
+	t.Helper()
+
+	require.ErrorIs(t, out.err, errRecoveryKeys)
+	assert.NotErrorIs(t, out.err, recovery.ErrRefused, "an issuing failure is not a refused recovery")
+	assert.False(t, recovery.RefusedAfterValidCode(out.err))
+	assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+	assert.NotContains(t, out.err.Error(), "unreachable", "the generator's text is not returned")
+}
+
 // TestRecoveryComplete_HTTP pins, through HTTP, spec account-recovery "A
 // recovery needs two proofs of different kinds", "Every proof is checked
 // before any is spent" and "A recovery produces a confined session, never a
@@ -507,6 +545,43 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 			assert: func(t *testing.T, h *recoveryHarness, out served) {
 				recovered(t, h, out)
+			},
+		},
+		{
+			name: "a credential that cannot be issued is a dependency failure, charged to no one, that spends and ends nothing",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.recOpts = []httpsec.RecoveryOption{
+					httpsec.WithRecoveryTokens(recoveryIssuer(t, h)),
+					httpsec.WithRecoveryLimiter(countingLimiter(t, 0)),
+					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)),
+				}
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				live, err := h.sessions.Create(t.Context(), e2eUser, session.WithFirstFactor(factor.Password))
+				require.NoError(t, err)
+
+				saved := h.saved(t)
+				values := recoveryForm(
+					httpsec.RecoverySavedCodeParam, saved,
+					httpsec.RecoveryPasswordParam, e2ePassword)
+
+				failed := h.complete(t, values)
+				issueFailure(t, failed)
+
+				_, err = h.sessions.Load(t.Context(), live.ID)
+				require.NoError(t, err, "the user's live session still loads")
+				assert.Equal(t, 1, h.activeSessions(t), "no recovery session was stored")
+				require.NoError(t, h.codes.Confirm(t.Context(), e2eUser, saved), "the saved code still confirms")
+				assert.Zero(t, h.sender.sentWithSubject("Your account was recovered"), "no notice is queued")
+
+				h.allow.Store(true)
+
+				return h.complete(t, values)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, out served) {
+				doc := recovered(t, h, out)
+				assert.Len(t, doc.RecoveryCodes, 10, "the same saved code recovers once the key source is back")
+				assert.Equal(t, 1, h.activeSessions(t), "only the recovery session is live")
 			},
 		},
 		{
@@ -2174,6 +2249,36 @@ func TestRecoveryHold(t *testing.T) {
 	}
 
 	cases := []testCase{
+		{
+			name: "a finish while the credential cannot be issued is a dependency failure, and the same token then finishes",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.withHold()
+				h.recOpts = []httpsec.RecoveryOption{httpsec.WithRecoveryTokens(recoveryIssuer(t, h))}
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				held := h.hold(t)
+				h.clock.Advance(recoveryHoldDelay)
+
+				live, err := h.sessions.Create(t.Context(), e2eUser, session.WithFirstFactor(factor.Password))
+				require.NoError(t, err)
+
+				failed := h.finish(t, held.completion)
+				issueFailure(t, failed)
+
+				_, err = h.sessions.Load(t.Context(), live.ID)
+				require.NoError(t, err, "the user's live session still loads")
+				assert.Equal(t, 1, h.activeSessions(t), "no recovery session was stored")
+				assert.Zero(t, h.sender.sentWithSubject("Your account was recovered"), "no notice is queued")
+
+				h.allow.Store(true)
+
+				return h.finish(t, held.completion)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, out served) {
+				recovered(t, h, out)
+				assert.Equal(t, 1, h.activeSessions(t), "the earlier session ended, and the recovery session is live")
+			},
+		},
 		{
 			name:    "a fixed delay answers 202 with the completion token and the instant, and creates no session",
 			arrange: func(_ *testing.T, h *recoveryHarness) { h.withHold() },

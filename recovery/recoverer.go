@@ -121,6 +121,7 @@ type Recoverer struct {
 	revokeSessions  bool
 	sessionLifetime time.Duration
 	ids             id.Generator
+	issue           IssueFunc
 
 	delay        time.Duration
 	window       time.Duration
@@ -176,6 +177,8 @@ type config struct {
 	sessionLifetime time.Duration
 	ids             id.Generator
 	idsSet          bool
+	issue           IssueFunc
+	issueSet        bool
 
 	delay        time.Duration
 	delaySet     bool

@@ -140,9 +140,13 @@ func TestRecoverer_Complete(t *testing.T) {
 			},
 		},
 		{
-			name:  "other sessions end, and the recovery session is confined",
-			setup: func(t *testing.T, e *completeEnv) { e.prior = e.priorSessions(t, 2) },
-			req:   savedAndIssuedReq,
+			name: "other sessions end, and the recovery session is confined, stored in one write with its credential",
+			setup: func(t *testing.T, e *completeEnv) {
+				e.prior = e.priorSessions(t, 2)
+				// A second write, saving the mark after the creation, would fail.
+				e.faults.arm(faultSessionsSave, errors.New("a second write"))
+			},
+			req: savedAndIssuedReq,
 			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
 				require.NoError(t, err)
 				for _, sid := range e.prior {
@@ -156,6 +160,7 @@ func TestRecoverer_Complete(t *testing.T) {
 				assert.Equal(t, session.MFARecoveryPending, s.MFA)
 				assert.Equal(t, factor.Recovery, s.FirstFactor)
 				assert.True(t, s.RecoveredAt.Equal(monday1000), "recovered at %s", s.RecoveredAt)
+				assert.Equal(t, issuedForPrefix+s.ID, res.Credential, "the credential names the stored session")
 			},
 		},
 		{
@@ -421,7 +426,7 @@ func TestRecoverer_Complete(t *testing.T) {
 }
 
 // TestRecoverer_CompleteFailures pins D7's rule that a failure at any step
-// from the record to the saved session is returned, with the proofs spent and
+// from the record to the stored session is returned, with the proofs spent and
 // the earlier steps done, and that no notice is sent for a recovery that did
 // not complete.
 func TestRecoverer_CompleteFailures(t *testing.T) {
@@ -476,23 +481,13 @@ func TestRecoverer_CompleteFailures(t *testing.T) {
 			},
 		},
 		{
-			name:  "a session creation failure is returned after the reissue",
+			name:  "a failure of the session's one write is returned after the reissue, discarding the credential",
 			fault: faultSessionsCreate,
 			req:   savedAndIssuedReq,
 			assert: func(t *testing.T, e *completeEnv) {
 				assert.Empty(t, e.held.snapshot(), "the reset ran")
-				sessionsLeft(t, e, 0, "no session was created")
+				sessionsLeft(t, e, 0, "no session was stored")
 				assert.False(t, e.savedUsable(t.Context(), t, e.saved[1]), "the set was replaced")
-			},
-		},
-		{
-			name:  "a session save failure is returned after the creation",
-			fault: faultSessionsSave,
-			req:   savedAndIssuedReq,
-			assert: func(t *testing.T, e *completeEnv) {
-				assert.Empty(t, e.held.snapshot(), "the reset ran")
-				assert.False(t, e.savedUsable(t.Context(), t, e.saved[1]), "the set was replaced")
-				sessionsLeft(t, e, 0, "the created session was deleted after the save failed, and its handle was never returned")
 			},
 		},
 	}
@@ -543,4 +538,136 @@ func TestRecoverer_IDGenerator(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, anaID, rec.User)
 	assert.True(t, rec.CompletedAt.Equal(monday1000))
+}
+
+// TestRecoverer_IssueFailureSpendsAndEndsNothing pins that a recovery
+// completing at once issues its session's credential after every check and
+// before anything is spent: a credential that cannot be issued spends no
+// proof, removes no authenticator, ends no session, replaces no code, writes
+// no record and sends no notice, and is a dependency failure counted against
+// nobody. The same request then recovers once the issuer is healthy.
+func TestRecoverer_IssueFailureSpendsAndEndsNothing(t *testing.T) {
+	t.Parallel()
+
+	errKeys := errors.New("key source unreachable")
+
+	type testCase struct {
+		name  string
+		setup func(e *completeEnv)
+		req   func(e *completeEnv) recovery.Request
+		ctx   func(ctx context.Context) context.Context
+		// issueErr is what the issuer fails with.
+		issueErr error
+		assert   func(t *testing.T, e *completeEnv, r *recovery.Recoverer, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a saved code and the password",
+			req: func(e *completeEnv) recovery.Request {
+				return recovery.Request{Username: anaUsername, Saved: e.saved[0], Password: []byte(anaPassword)}
+			},
+			issueErr: errKeys,
+			assert: func(t *testing.T, _ *completeEnv, _ *recovery.Recoverer, err error) {
+				require.ErrorIs(t, err, errKeys)
+				assert.NotContains(t, err.Error(), "unreachable", "the issuer's text is not returned")
+			},
+		},
+		{
+			name:     "a saved and an issued code",
+			req:      savedAndIssuedReq,
+			issueErr: errKeys,
+			assert: func(t *testing.T, e *completeEnv, r *recovery.Recoverer, err error) {
+				require.ErrorIs(t, err, errKeys)
+				assert.True(t, e.issuedUsable(t.Context(), t, r, anaID, e.issued), "the issued code is not consumed")
+			},
+		},
+		{
+			name: "a saved code and an MFA code, whose time step is not recorded",
+			setup: func(e *completeEnv) {
+				e.totp.EXPECT().Enrolled(gomock.Any(), anaID).Return(true, nil).AnyTimes()
+				// Once only: by the recovery that succeeds after the outage.
+				e.totp.EXPECT().Verify(gomock.Any(), anaID, []byte("123456")).Return(nil).Times(1)
+			},
+			req: func(e *completeEnv) recovery.Request {
+				return recovery.Request{Username: anaUsername, Saved: e.saved[0], MFAMethod: "totp", MFACode: "123456"}
+			},
+			issueErr: errKeys,
+			assert: func(t *testing.T, _ *completeEnv, _ *recovery.Recoverer, err error) {
+				require.ErrorIs(t, err, errKeys)
+			},
+		},
+		{
+			name: "a client that leaves while the credential is issued",
+			req:  savedAndIssuedReq,
+			ctx: func(ctx context.Context) context.Context {
+				ctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return ctx
+			},
+			issueErr: context.Canceled,
+			assert: func(t *testing.T, _ *completeEnv, _ *recovery.Recoverer, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := newCompleteEnv(t)
+			if tc.setup != nil {
+				tc.setup(e)
+			}
+
+			r := e.recoverer(t)
+			e.prior = e.priorSessions(t, 2)
+			req := tc.req(e)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			e.failIssue(tc.issueErr)
+			res, err := r.Recover(ctx, req)
+
+			require.Error(t, err)
+			assert.Nil(t, res, "no session, credential or code is handed out")
+			require.NotErrorIs(t, err, recovery.ErrRefused, "an issuing failure is not a refusal")
+			assert.False(t, recovery.RefusedAfterValidCode(err), "nor a refusal after a valid code")
+			tc.assert(t, e, r, err)
+
+			for _, sid := range e.prior {
+				assert.True(t, e.loads(t, sid), "the user's earlier sessions still load")
+			}
+
+			n, cerr := e.sessions.CountActiveByUser(t.Context(), anaID)
+			require.NoError(t, cerr)
+			assert.Equal(t, 2, n, "no recovery session was stored")
+
+			for _, code := range e.saved {
+				assert.True(t, e.savedUsable(t.Context(), t, code), "every saved code still confirms")
+			}
+
+			assert.Equal(t, []recovery.AuthenticatorRef{refTOTP, refEmail}, e.held.snapshot(), "nothing is reset")
+			assert.Empty(t, e.out.messages(), "no notice is queued")
+			assert.Zero(t, e.failures.Load(), "nothing is recorded against the user")
+
+			_, ok, lerr := e.records.LatestCompletion(t.Context(), anaID)
+			require.NoError(t, lerr)
+			assert.False(t, ok, "no recovery record is written")
+
+			assertCleanLogs(t, e, res)
+
+			e.failIssue(nil)
+
+			again, err := r.Recover(t.Context(), req)
+			require.NoError(t, err, "the same proofs recover once the issuer is healthy")
+			require.NotNil(t, again.Session)
+			assert.Equal(t, issuedForPrefix+again.Session.ID, again.Credential)
+		})
+	}
 }
