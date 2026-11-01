@@ -263,7 +263,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
 
 ## 12. Second review (`reauthentication`, `multi-factor-auth`, `sessions`, `framework-adapters`)
 
-Each defect task's red step is the reproduction named in its design decision, rewritten into the package's own tests; the reproductions live under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/5335ea06-576b-4616-b14e-50643ee94c82/scratchpad/repro2/` and are read, never copied.
+Each defect task's red step is the reproduction named in its design decision, written into the package's own tests: the design states what each reproduction set up and how it failed. The reproductions themselves were disposable and are gone.
 
 - [ ] 12.1 A rotation without grace runs the caller's step before anything is stored (D6 Resolve step 3):
   - `Sessions.RotateIssuing(ctx, s, issue func(*Session) (string, error)) (*Session, string, error)` builds the successor, calls `issue`, and stores the supersession only when it succeeds; `Rotate` is it with no step;
