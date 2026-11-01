@@ -417,8 +417,8 @@ func TestReauthResolve(t *testing.T) {
 					reprove served
 				)
 				f.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().
-					DoAndReturn(func(context.Context, identity.UserID) (*identity.Details, error) {
-						once.Do(func() { reprove = serve(t, c, totpPost(t.Context(), mfaTokenFor(s.ID))) })
+					DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+						once.Do(func() { reprove = serve(t, c, totpPost(ctx, mfaTokenFor(s.ID))) })
 
 						return &identity.Details{ID: testMFAUser, Username: mfaUsername, Active: true}, nil
 					})
