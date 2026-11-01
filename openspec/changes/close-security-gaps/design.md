@@ -1,6 +1,6 @@
 # Design
 
-> **Draft.** Written against the specs as `reauthentication` and `key-port-context` will leave them. Every decision below that touches guards, the error table, session rotation, the bearer interceptor or token issuance must be rechecked against what those changes land, before implementation starts.
+> Reconciled on 2026-11-02 with `reauthentication` (archived on `main`) and `key-port-context` (PR #39, about to merge). D1 records what that changed.
 
 ## Context
 
@@ -9,12 +9,14 @@ See `proposal.md` for the gaps and why they close together before `v0.1.0`. The 
 - `httpsec` is one ordered interceptor chain that runs unchanged behind net/http, gin and fiber, through its own `Request` and `ResponseWriter` interfaces. Anything a browser-hardening layer needs must be expressible through those interfaces, because fiber is not net/http.
 - `httpsec.Request` has no host and no notion of transport security today. HSTS, the CSRF Origin check and the DPoP `htu` check all need both.
 - Attribution reads the TCP peer and never a forwarding header (`http-security-chain`). gin and fiber defer to their frameworks' own proxy settings (`framework-adapters`). Behind a reverse proxy, every per-source limit therefore keys on the proxy.
-- After `reauthentication`, the chain also has:
-  - a recency check on the session (`Session.AuthenticatedWithin`);
-  - re-proof endpoints that rotate the session;
-  - a status table carrying 409 and 403 rows for its refusals.
-
-  After `key-port-context`, the bearer requirement and token issuance take a context-aware key port. This change builds on both.
+- `reauthentication` (archived) gave the chain:
+  - a recency guard (`Session.AuthenticatedWithin`, `WithRecentAuthenticationWindow`);
+  - re-proof endpoints (`EnableReauthentication`) that rotate through `RotateIssuing`;
+  - 403 and 409 rows in the status table.
+- `key-port-context` (PR #39) gives every key port a per-call context, and three rules this change must keep:
+  - an outage is not a refusal: it fails the request with fixed library text and is answered 500;
+  - a request whose own context ended is not refused (`internal/hangup.ByCaller`);
+  - a credential is issued before anything is stored or spent (`Prepare`/`Commit`, `RotateWithGraceIssuing`).
 - Nothing is tagged, so the breaking items here are decisions, not migrations for consumers.
 
 ## Goals / Non-Goals
@@ -32,13 +34,18 @@ See `proposal.md` for the gaps and why they close together before `v0.1.0`. The 
 
 ## Decisions
 
-### D1. Draft baseline: the in-progress changes, not the archived specs
+### D1. Reconciled with `reauthentication` and `key-port-context` (2026-11-02)
 
-- Spec deltas add requirements beside those `reauthentication` and `key-port-context` modify, and do not re-modify them. The new refusals are one ADDED requirement in `http-error-propagation`, not an edit of the contract and table requirements that `reauthentication` modifies. This keeps the three changes mergeable in any archive order.
-- When `reauthentication` merges, the review pass:
-  - re-reads its landed specs;
-  - folds this change's refusals into the contract and table requirements if the project prefers one list;
-  - rechecks D8's binding on re-proof rotation and D12's use of the recency check.
+The draft was written before either change landed. The reconciliation changed these points:
+
+- **The error contract and table are MODIFIED, not extended beside.** No other open change modifies those two `http-error-propagation` requirements. The table's 422 row named the `password-encoding` reuse error, which D10 moves to `password-policy`, so it had to change anyway. The separate ADDED requirement is gone.
+- **The reuse error is `password.ErrReused`,** not `ErrPasswordReused`.
+- **No listing index.** `sessions_user ON sessions (user_id)` already exists, so the migration adds columns only (D12).
+- **DPoP is a top-level `EnableDPoP`** (D8). Session-reference authentication is its own interceptor (`EnableSessionBearer`), and the issuing endpoints belong to neither bearer.
+- **Issue before spend (`key-port-context` D7).** The DPoP proof is checked in an issuing endpoint's side-effect-free checks, before any link, code or attempt is spent. The binding is set when the session is built, and `Prepared.Commit`'s "stored as built" rule covers it.
+- **Outage and hang-up (`key-port-context` D3, D8).** The DPoP replay store, the breach lookup, the challenge verifier and the session listing each fail as a dependency failure (500, fixed text, not charged), or with the context's error when the caller left. This reverses the draft's "a verifier error refuses with challenge-required" (D15).
+- **Rotation refuses an ended family** (`key-port-context`, `86e7d4c`). A binding is never carried into a family that has ended.
+- **Recency for ending sessions** uses `reauthentication`'s guard and its default window, unchanged (D12).
 
 ### D2. `Request` gains `Host()` and `Secure()` (BREAKING, pre-tag)
 
@@ -291,27 +298,29 @@ func ClientFromContext(ctx context.Context) Client // IP, Secure, Host, ViaProxy
   - *Reading both header families.* A client can inject the family the proxy does not overwrite.
   - *Trusting all fields once the proxy is trusted.* nginx passes client headers through unless each one is overwritten.
 
-### D8. DPoP: accepted by default, required by option, bound at every issuing endpoint
+### D8. DPoP: one chain-wide feature, accepted once enabled, required by option, bound at every issuing endpoint
 
 ```go
-httpsec.EnableBearerToken(deps, httpsec.WithDPoP(httpsec.DPoP{
+httpsec.EnableDPoP(httpsec.DPoP{
     Require:     false,             // default
     ProofMaxAge: 60 * time.Second,  // default
     Replay:      replayStore,       // default: in-memory, per process
     Algorithms:  []jwa.SignatureAlgorithm{jwa.ES256()}, // default
     Nonce:       false,             // default; true turns on server nonces
     PublicURL:   "",                // default: built from the resolved scheme and host (D2, D7)
-}))
+    MaxProofSize: 8 << 10,          // default 8 KiB
+})
 ```
 
-- **Verification:**
-  - `typ`, an asymmetric `alg` from the set, and a public `jwk`;
-  - the signature;
-  - `htm`, and `htu` against the resolved public URL;
-  - `iat` within the lifetime either side;
-  - `jti` unseen;
-  - `ath` when a token is presented;
-  - `nonce` when enabled.
+- **Why top-level (changed 2026-11-02).** The draft put DPoP on `EnableBearerToken`. But session-reference mode is its own interceptor, and the issuing endpoints (login, magic link, OIDC handoff, passkey, MFA, recovery, re-authentication, renewal) belong to neither bearer. A feature that spans issuance and verification is `EnableX` by D19, as `EnableCertificateBinding` already is. Enabling it with neither bearer mode is a configuration error.
+- **Verification, in this order:**
+  1. size within the bound, exactly one `DPoP` header, then `typ`, an asymmetric `alg` from the set (never `none` or a MAC), and a public `jwk` whose key type fits `alg`;
+  2. the signature;
+  3. `htm`, and `htu` against the resolved public URL, both normalised (scheme and host case, default port) and without query or fragment (RFC 9449 §4.3);
+  4. `iat` within the lifetime either side, by the chain's clock;
+  5. `ath` when a token is presented, and absent when none is;
+  6. `nonce` when enabled;
+  7. `jti` unseen, then recorded. It is recorded last, so a proof refused for any other reason consumes nothing, and nobody can fill the store with proofs that never verified.
   - JWS parsing and the RFC 7638 thumbprint use jwx v4, the project's single JOSE stack.
 ```
  client (key pair, private key non-exportable)          scrty
@@ -338,13 +347,17 @@ httpsec.EnableBearerToken(deps, httpsec.WithDPoP(httpsec.DPoP{
 
 - **Binding:** an issuing endpoint whose request carries a valid proof without `ath` binds the token (`cnf.jkt`) and the session. The issuing endpoints are login completion, MFA verify, passkey login, magic link, OIDC handoff, recovery completion, re-authentication and renewal. Successors inherit the binding (`sessions`).
   - In session-reference mode the binding lives on the session alone, since the bearer value is opaque.
+  - **Proof before spend.** The proof is verified in the endpoint's checks, before `key-port-context` D7's issue-then-spend step. A bad proof leaves a magic link, a handoff code, a challenge's attempts and recovery proofs unspent. It is charged as a malformed request, never as a failed credential, so it cannot lock an account.
+  - **The binding is fixed at sign-in.** It is set on the built session (`Prepare`), so the issuing step's token carries it, and `Commit` refuses a binding changed in between. Renewal never adds, changes or removes one. Otherwise a thief holding an unbound session could renew it under their own key and lock out its owner. Re-authentication may bind an unbound session, because it is a fresh proof of the user's factor, and keeps a bound one bound.
+  - **Token type.** The issued result tells the responder `DPoP` or `Bearer`, so its token response can say which (RFC 9449 §5).
 - **Refusals:**
   - a bound token as `Bearer`, as RFC 9449 §7.1 requires;
   - a proof from another key;
-  - renewal without the bound key.
-  - All answer 401 with `WWW-Authenticate: DPoP error=...`.
-- **Replay store:** a `onetime.Store`-shaped port keyed by the `jti` digest. It shares the multi-replica caveat of the rate limiter and accepts a shared store. A store failure refuses (500).
-- **Nonces:** off by default (open question). They cost a round trip, and the 60-second lifetime with `jti` already bounds replay.
+  - renewal or re-authentication without the bound key;
+  - a token whose `cnf` the chain cannot honour: an unknown member, both members, or a binding whose feature is off. Such a token is never accepted as a plain bearer token.
+  - All answer 401 with `WWW-Authenticate: DPoP error=...`. A missing token with DPoP optional gets both the `DPoP` and the `Bearer` challenge.
+- **Replay store:** a port with one atomic insert-if-absent, keyed by a digest of the `jti` and the key thumbprint. It shares the multi-replica caveat of the rate limiter and accepts a shared store. A store failure is a dependency failure: 500, fixed text, not charged. A request whose context ended fails with the context's error (`key-port-context` D8).
+- **Nonces:** off by default. They cost a round trip, and the 60-second lifetime with `jti` already bounds replay. When on, they are stateless (sealed with the chain's key material), so every replica can verify them without a shared store.
 - **Default:** accepted, not required, so existing bearer clients keep working while browser clients opt in by sending proofs.
 - **Alternatives rejected:**
   - *Required by default.* That would break every non-DPoP client on upgrade.
@@ -354,8 +367,10 @@ httpsec.EnableBearerToken(deps, httpsec.WithDPoP(httpsec.DPoP{
 
 - **Default:** off. **Override:** `EnableCertificateBinding(...)`, a top-level option, because the binding spans token issuance and its own slot (D19).
 - **Behaviour:** an issuing request with a client certificate binds `cnf.x5t#S256`. A bound token is accepted only with the same certificate, checked in the existing `OrderMTLS` slot.
-- **Behind a TLS-terminating proxy:** the certificate comes from a header the consumer names in the trusted-proxy configuration. It is read only from a trusted peer, and parsed as URL-encoded PEM.
-- **Open:** which header and encoding each common proxy uses must be verified before the spec for that part is final (open question).
+- **Behind a TLS-terminating proxy:** the certificate comes from a header the consumer names in the trusted-proxy configuration. It is read only from a trusted peer, removed with the other forwarded headers, and decoded as URL-encoded PEM by default, or by a decoder the consumer supplies.
+- **Proxy formats (changed 2026-11-02).** The draft left the header and encoding of each proxy open. A replaceable decoder settles the spec without that survey. The README gives examples for proxies whose format has been verified against their documentation (task 9.4), and a value that does not decode means no certificate.
+- **Validity is not checked here.** The library compares thumbprints only (RFC 8705 §3). The TLS server or the proxy validates the chain and dates, and the godoc says so.
+- **Both offered:** a request with a valid DPoP proof and a client certificate binds DPoP only. A token carries one confirmation, and DPoP survives proxies that do not forward certificates.
 ```
  direct TLS:      client cert C --TLS--> app          cert = connection's peer certificate
  behind a proxy:  client cert C --TLS--> proxy --HTTP + cert header--> app
@@ -401,13 +416,16 @@ err = policy.Change(ctx, user, candidate, write)
 
 - **Defaults:**
   - minimum length 15 (NIST SP 800-63B-4, single-factor);
-  - maximum at least 64, never truncated;
+  - maximum 128 code points by default, replaceable but never below 64, never truncated, trimmed or normalised;
+  - with a bcrypt encoder, the check also refuses more than 72 bytes, so a check and a change agree;
   - a bundled common-password list of at least 3,000 entries (ASVS 6.2.4);
   - no composition rules (NIST: SHALL NOT);
   - rules run cheapest first.
+- **Context words (changed 2026-11-02).** A candidate is refused when it equals a context word, or contains one of 4 or more characters, case-insensitively. Equality alone lets `alice.smith2026!` through. Words shorter than 4 characters are refused only on equality, so a short service name does not refuse ordinary passphrases.
 - **Options replace only the rule they name.** `WithoutCommonPasswords()` removes that default explicitly, so setting one rule never silently drops a safe default.
 - **Breach check:** opt-in. It uses the HIBP range API through the confined outbound client, with `Add-Padding: true`, and the lookup source is replaceable for an offline corpus.
-  - `OnLookupFailure` is required: Spring's checker fails open, and the safe and convenient answers differ, so the consumer chooses.
+  - `OnLookupFailure` is required: Spring's checker fails open, and the safe and convenient answers differ, so the consumer chooses. A timeout, a non-success status (429 included) and an unparseable body are all lookup failures. A hang-up fails with the context's error, whichever mode was chosen.
+  - Padded entries (count 0) are discarded, as HIBP documents.
 - **Reuse** is the `NoReuse` rule, with every guarantee the reuse guard had.
   - `NewReuseGuard` is removed, which is BREAKING before the tag.
   - The `password-encoding` reuse requirements are REMOVED there and ADDED here.
@@ -418,7 +436,9 @@ err = policy.Change(ctx, user, candidate, write)
 ### D11. Rehash on login
 
 - **Encoder side:** an optional `password.Upgrader` interface (`NeedsUpgrade(encoded) bool`), type-asserted as `Recognizer` is. The built-ins implement it; a consumer encoder without it never upgrades.
-- **Login side:** `httpsec.WithLoginRehash(func(ctx, user, newHash) error)` runs after a successful password login. It costs one extra key derivation on that request. Its error is logged and never fails the login.
+- **Login side:** `httpsec.WithLoginRehash(func(ctx, user, oldHash, newHash) error)` runs after a password verified and the request was not refused afterwards: form login, Basic authentication and password re-proof, including a login challenged for a second factor. It costs one extra key derivation on that request. Its error is logged and never changes the outcome.
+- **The write receives the hash it replaces (changed 2026-11-02).** A login that verified the old password can finish after a concurrent password change stored a new hash. An unconditional write would then put the old password back. Handing the write the replaced hash lets the consumer update only while it is still the stored one (compare-and-swap). The ready-made provisioner write does exactly that.
+- **Upgrade judged by the current encoder.** `NeedsUpgrade` is asked of the policy's current encoder, so a bcrypt hash under an Argon2id encoder upgrades, and a value it cannot parse never does.
 - **Default:** no rehash without a write.
 - **Alternatives rejected:** *rehashing in the background.* It would need a goroutine that outlives the request, holding the plaintext.
 
@@ -440,10 +460,14 @@ err = policy.Change(ctx, user, candidate, write)
  DELETE /sessions/Fx (u-2) -> 404, nothing revoked
 ```
 
-- **`session.Store` gains `ListByUser`.** Every store implements it, and the security-state migration adds the listing index (`schema-migrations`).
-- **Sign-in metadata** (client address, user agent) is off by default, because both are personal data. `WithSessionMetadata()` turns it on.
+- **`session.Store` gains `ListByUser`.** Every store implements it from the existing `sessions_user` index, judging liveness by the time the caller passes, as `CountActiveByUser` does. The security-state migration adds the metadata and binding columns, and no index (`schema-migrations`).
+- **Sign-in metadata** (client address, user agent) is off by default, because both are personal data. `WithSessionMetadata()` turns it on. The user agent is truncated to 512 bytes at a UTF-8 boundary.
 - **Endpoints:** `httpsec.EnableSessionManagement` registers `GET /sessions`, `DELETE /sessions/{handle}` and `DELETE /sessions`, all under a replaceable prefix and off by default.
-  - Ending sessions requires a recent authentication, using `reauthentication`'s recency check (ASVS 7.5.2).
+  - Ending sessions requires a recent authentication, using `reauthentication`'s recency guard and window (ASVS 7.5.2). Listing does not.
+  - "End others" uses the existing `DeleteByUserExcept`, which already keeps a successor that a racing renewal inserts.
+  - Ending the current sign-in by its own handle acts as a logout. Refusing it would only send the client to another endpoint.
+  - A sign-in still owing a second factor or a recovery step is listed and marked, because an unknown pending sign-in is exactly what the user needs to see.
+  - A malformed, unknown or foreign handle is 404 and revokes nothing. Every response is `no-store`.
 
 ### D13. Security events
 
@@ -461,7 +485,8 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 ```
 
 - **Default:** no sink, no events.
-- **Delivery:** synchronous, on a context without cancellation. The sink's errors are ignored, and it cannot change outcomes.
+- **Delivery:** synchronous, on a context without cancellation. The sink's errors are ignored, and it cannot change outcomes: a panic is recovered and logged without the event's contents (changed 2026-11-02, because an unrecovered panic would turn a decided outcome into a 500).
+- **Only what happened.** A creation event is emitted after the session is stored and its credential handed out. A credential that `key-port-context` D7 issues and then discards (a lost race, a failed commit, a step that outlived its window) emits nothing. A hang-up or a dependency failure emits no refusal event.
 - **Observers:** the lockout and reuse observers keep working and are also delivered as events.
 - **Alternatives rejected:**
   - *An asynchronous queue in the library.* It would bound memory and lose events, which is the consumer's trade-off to make.
@@ -471,19 +496,23 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 
 - **Passkey removal** notifies by default, with `WithoutPasskeyRemovalNotification()` to turn it off. NIST 800-63B-4 §4.5 SHOULD.
 - **MFA:** there is no user-facing MFA removal endpoint today, and operator resets already notify.
-- **An unseen-device sign-in notice** is opt-in. It requires session metadata and a sender, and matches against the user's sessions of the last 90 days.
+- **An unseen-device sign-in notice** is opt-in. It requires session metadata and a sender.
+  - **Matching against live sign-ins (changed 2026-11-02).** The draft matched the user's sessions of the last 90 days. Expired sessions are swept, so that history does not exist. The notice therefore matches the user's other live sign-ins, by user agent by default, through a replaceable matcher. A consumer who keeps device history supplies a seen-devices port, which is consulted beside them.
+  - A user's first sign-in, with nothing to compare, is not notified. A sign-in whose session was never stored is not notified.
 
 ### D15. Automation challenge
 
 - **The port:** `ChallengeVerifier.Verify(ctx, req, signals) (Decision, error)`, where `signals` reports recent limiter failures for the source and identifier.
 - **Flows:** with a verifier given, it runs before login, Basic, magic-link request, passwordless begin and recovery start, all selected by default. `WithChallengeFlows` narrows them.
-- **Refusals** count against the source limit by default.
+- **Order:** the source limit first, then the verifier, then the flow's work. A request the source limit refuses never reaches the verifier.
+- **Refusals** count against the source limit by default, never against the identifier's lockout.
+- **A verifier error is a dependency failure (changed 2026-11-02).** The draft refused it with challenge-required. `key-port-context` D3 makes an outage a 500 with fixed text, charged to nobody, and this follows it. A hang-up fails with the context's error.
 - **No vendor is bundled.**
 
 ### D16. Supply chain
 
-- SHA-pinned actions with the tag in a comment, enforced by a CI check.
-- Dependabot for `gomod`, in every published module, and for `github-actions`.
+- SHA-pinned actions and reusable workflows (full 40-character SHA) with the tag in a comment, container actions pinned by digest, and local actions exempt. A CI check enforces it.
+- Dependabot for `gomod`, in every published module including the nested ones, and for `github-actions`.
 - An SBOM per published module, produced in the release gate. The generator is a `tool` directive in the `tools` module, chosen in the tasks.
 - `govulncheck` blocks a release.
 - **Coordinates with `release-readiness`**, which owns the release gate and `SECURITY.md`.
@@ -500,11 +529,13 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 |---|---|
 | `ErrCrossSiteRequest` | 403 |
 | `ErrHostNotAllowed` | 400 |
-| `ErrInvalidDPoPProof` (and the nonce variant), `ErrCertificateBinding` | 401 |
+| `ErrInvalidDPoPProof` (and `ErrDPoPNonceRequired`, which also matches it), `ErrCertificateBinding` | 401 |
 | `ErrChallengeRequired` | 403 |
-| `password.ErrPasswordRejected` | 422; `ErrPasswordReused` stays 422 and is also `ErrPasswordRejected` |
-| a session handle not found | 404 |
-| replay-store, history and breach-lookup failures | 500 (dependency failures) |
+| `password.ErrPasswordRejected` | 422; `password.ErrReused` stays 422 and is also `ErrPasswordRejected` |
+| `ErrSessionHandleNotFound` | 404 |
+| replay-store, history, breach-lookup (failures refusing), challenge-verifier and session-listing failures | 500 (dependency failures, fixed text, not charged) |
+
+These rows MODIFY the `http-error-propagation` contract and table (D1). A request whose own context ended in any of those dependencies fails with the context's error, as `key-port-context` D8 does at verification.
 
 ### D19. Top-level options that switch on a security feature are named `Enable…`
 
@@ -518,8 +549,8 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 ```
 
 - **Rule:** every top-level `httpsec.New` option that switches on a security feature is `EnableX`, registered through the existing `config.enable` seam so its dependencies are checked when the chain is built. A top-level option that only sets something or declares a fact is `WithX`. Options inside a feature are `WithX` of that feature's option type, and turning off an on-by-default behaviour is `WithoutX`. This states the convention the existing API already follows (`EnableFormLogin` beside `WithClock` and `WithLoginLimiter`).
-- **This change's top-level options:** `EnableSecurityHeaders`, `EnableCORS`, `EnableCSRFProtection`, `EnableTrustedProxies`, `EnableSessionManagement`, `EnableCertificateBinding`, `EnableAutomationChallenge`, `EnableSignInNotice`, `EnableSecurityEvents`. `WithHTTPSDeployment` stays `With`, because it declares a fact about the deployment and switches nothing on.
-- **Inside features:** DPoP is configured through `WithDPoP` on `EnableBearerToken`, and its nonce and public URL are fields of its config, not top-level options. The forwarded-host allowlist is the argument of `ForwardedHost(...)`, so a trusted host can never be configured without one.
+- **This change's top-level options:** `EnableSecurityHeaders`, `EnableCORS`, `EnableCSRFProtection`, `EnableTrustedProxies`, `EnableDPoP`, `EnableCertificateBinding`, `EnableSessionManagement`, `EnableAutomationChallenge`, `EnableSignInNotice`, `EnableSecurityEvents`. Each may be given once; a second call is a configuration error. `WithHTTPSDeployment` stays `With`, because it declares a fact about the deployment and switches nothing on.
+- **Inside features:** DPoP's nonce, public URL and replay store are fields of its config, not top-level options. The forwarded-host allowlist is the argument of `ForwardedHost(...)`, so a trusted host can never be configured without one.
 - **Alternatives rejected:** *`Enable` everywhere, including inside features.* It contradicts the sub-option style of the whole existing API, and `Enable` nested in `Enable` reads as two features.
 
 ## Risks / Trade-offs
@@ -530,17 +561,18 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 - [The DPoP replay store is per process by default, so across replicas a proof could be replayed within its 60 seconds] → The same documented limit as the in-memory rate limiter, with the same remedy: a shared store.
 - [Building DPoP and mTLS doubles the bearer interceptor's paths] → Both share one binding abstraction on the session and token, and conformance runs each on all three adapters.
 - [The bundled common-password list adds size to the core module] → A few tens of kilobytes, compressed in the binary. The list is replaceable.
-- [Draft drift: `reauthentication` may land differently] → D1's review pass before implementation.
+- [`key-port-context` lands differently from PR #39's head] → It is reviewed and green. This change only names its published rules (D1), and task 1.1 rechecks them against the merged text before group 8.
+- [Thirty-four requirements exceed OpenSpec's 500-character advisory] → `openspec validate --strict` reports them as warnings, as it does for `key-port-context`. No CI step runs it. Splitting them is left to archive time, when the main specs are rewritten anyway.
 
 ## Migration Plan
 
-- **Implement only after** `reauthentication` (and `key-port-context`) merge and this draft is reviewed (D1). Branch from `main`.
+- **Implement after** `key-port-context` merges. `reauthentication` already has. Branch from `main`.
 - **Breaking before the tag:**
   - `Request.Host()`/`Secure()` (D2);
   - `ginsec.WithForwardedClientIP` removed (D7);
   - `NewReuseGuard` removed (D10);
   - `session.Store.ListByUser` (D12).
-- **Schema:** one new security-state migration (D12). It is nullable, so it applies to populated databases and rolls back fully.
+- **Schema:** one new security-state migration (D12), columns only. They are nullable, so it applies to populated databases and rolls back fully.
 - **Other changes:**
   - `trusted-proxy-client-ip` is marked superseded;
   - `bff-resource-server` drops `csrf-protection` from its capabilities;
@@ -549,10 +581,9 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 
 ## Open Questions
 
-- The CSRF token style: a synchronizer token stored on the session, or a double-submit cookie signed with a server key. Either satisfies the spec; it matters once cookie sessions exist.
-- The forwarded client-certificate header and encoding per proxy (nginx `$ssl_client_escaped_cert`, Traefik's TLS client-certificate middleware, API gateways). Verify against each proxy's documentation before finalising D9.
-- Whether header profiles also accept `authorize.Rule` matchers (D4).
-- Whether DPoP server nonces stay off by default (D8).
+- The CSRF token style: a synchronizer token stored on the session, or a double-submit cookie signed with a server key. Either satisfies the spec, which now requires the token to survive a sign-in's renewals and not a new sign-in. It matters once cookie sessions exist, and blocks only task 5.3.
+
+Settled on 2026-11-02: the forwarded-certificate format (a replaceable decoder, D9); header profiles take a path prefix or a function, and an `authorize.Rule` adapter is additive later (D4); DPoP server nonces stay off by default (D8).
 
 ## References
 
@@ -604,6 +635,13 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 - [OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html): event names.
 - [NIST SP 800-63B-4: events](https://pages.nist.gov/800-63-4/sp800-63b/events/): §4.1.2.1 and §4.5 notifications.
 - [Ory Kratos API](https://github.com/ory/kratos/blob/master/spec/api.json): session listing and revocation endpoints.
+
+**D1, D6, D10, D11, D14: reconciliation and edge cases** (accessed 2026-11-02)
+- [OSV GO-2025-3955 / CVE-2025-47910](https://osv.dev/vulnerability/GO-2025-3955): `net/http.CrossOriginProtection` bypass patterns matched more than intended. Why CSRF exemptions match the exact routed path only (D6).
+- [HIBP API v3, padding](https://haveibeenpwned.com/API/v3): "padded entries always have a password count of 0 and can be discarded". Why the breach check ignores count-zero entries (D10).
+- [RFC 9449 §4.3, §5, §7.1](https://www.rfc-editor.org/rfc/rfc9449.html): `htu` normalisation, one `DPoP` header, `token_type`, refusing bound tokens as bearer (D8).
+- [RFC 8705 §3](https://www.rfc-editor.org/rfc/rfc8705#section-3): the resource server compares the certificate thumbprint (D9).
+- Reasoned from scrty's own settled specs and the `key-port-context` design: issue before spend, outage versus refusal, hang-up (D1, D11, D13, D14, D15).
 
 **D15: automation challenge**
 - [OWASP Credential Stuffing Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Credential_Stuffing_Prevention_Cheat_Sheet.html): challenge only suspicious traffic.

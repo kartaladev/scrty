@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: An encoder can report that a stored hash needs upgrading
-Each built-in encoder SHALL report, for a stored hash it recognises, whether the hash was produced with parameters weaker than the encoder's current ones or by another algorithm the caller's encoder supersedes, without deriving a key. The report SHALL be optional for a consumer's own encoder, and an encoder that does not offer it SHALL be treated as never needing an upgrade.
+Each built-in encoder SHALL report, for a stored hash, whether it needs upgrading to the encoder's current output: a hash of the encoder's own algorithm produced with weaker parameters, or a hash of any other algorithm, needs upgrading; a hash produced with the current parameters, or stronger ones, does not. The report SHALL derive no key. The report SHALL be optional for a consumer's own encoder, and an encoder that does not offer it SHALL be treated as never needing an upgrade.
 
 #### Scenario: Raised Argon2id memory
 - **WHEN** an Argon2id encoder at 128 MiB is asked about a stored Argon2id hash at 64 MiB
@@ -10,6 +10,18 @@ Each built-in encoder SHALL report, for a stored hash it recognises, whether the
 #### Scenario: Current parameters
 - **WHEN** the same encoder is asked about a hash it produced itself
 - **THEN** it reports that no upgrade is needed
+
+#### Scenario: Stronger parameters
+- **WHEN** an Argon2id encoder at 64 MiB is asked about a stored Argon2id hash at 128 MiB
+- **THEN** it reports that no upgrade is needed
+
+#### Scenario: Another algorithm
+- **WHEN** an Argon2id encoder is asked about a stored bcrypt hash
+- **THEN** it reports that the hash needs upgrading
+
+#### Scenario: Unparseable hash
+- **WHEN** an encoder is asked about a value that is no hash it can parse
+- **THEN** it reports that no upgrade is needed, so a login never re-encodes a password whose stored value it could not have verified
 
 ## REMOVED Requirements
 
@@ -39,7 +51,7 @@ Each built-in encoder SHALL report, for a stored hash it recognises, whether the
 
 ### Requirement: Reuse refusals and history failures carry no credential
 **Reason**: Moved to the `password-policy` capability, which extends it to every rule.
-**Migration**: None needed; the password-reused and history-unavailable errors keep their identities.
+**Migration**: None needed; the password-reused (`password.ErrReused`) and history-unavailable errors keep their identities.
 
 ### Requirement: Reuse guard wiring mistakes fail at construction
 **Reason**: Moved to the `password-policy` capability.

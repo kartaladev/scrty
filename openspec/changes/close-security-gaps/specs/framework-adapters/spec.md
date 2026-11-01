@@ -38,9 +38,21 @@ The gin and fiber adapters SHALL supply the request's host from its `Host` heade
 - **WHEN** a fiber app serves a request over TLS for host `app.example.com` with no trusted proxies
 - **THEN** the chain sees host `app.example.com` and a secure request, as the net/http adapter would
 
+#### Scenario: gin's proxy settings do not make a request secure
+- **WHEN** gin is configured to trust every proxy, no trusted proxies are configured on the chain, and a plain-HTTP request carries `X-Forwarded-Proto: https`
+- **THEN** the chain sees an insecure request
+
+#### Scenario: fiber's proxy header does not change the host
+- **WHEN** fiber's own proxy header settings name `X-Forwarded-Host`, no trusted proxies are configured on the chain, and a request carries `X-Forwarded-Host: evil.example` with `Host: app.example.com`
+- **THEN** the chain sees host `app.example.com`
+
 ### Requirement: Removing forwarded headers reaches the framework's request
 When the chain removes consumed forwarded headers, every adapter SHALL remove them from the request its framework hands to the handlers after the chain, so a gin or fiber handler cannot read them either.
 
 #### Scenario: gin handler after the chain
 - **WHEN** trusted proxies are configured with default removal and a gin handler after the chain reads `X-Forwarded-For`
+- **THEN** the header is absent
+
+#### Scenario: fiber handler after the chain
+- **WHEN** trusted proxies are configured with default removal and a fiber handler after the chain reads `X-Forwarded-Host`
 - **THEN** the header is absent

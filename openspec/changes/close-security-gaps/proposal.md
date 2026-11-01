@@ -1,6 +1,6 @@
 # Proposal
 
-> **Draft.** Written against the specs as `reauthentication` and `key-port-context` will leave them, not against today's archived specs. Review and update every artifact once `reauthentication` has merged, before any implementation starts.
+> Reconciled on 2026-11-02 with `reauthentication` (archived) and `key-port-context` (PR #39). `design.md` D1 records what changed.
 
 ## Why
 
@@ -40,10 +40,10 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
   - downstream code reads the resolved values through an accessor, and the request is not rewritten.
 - **`httpsec.Request` gains `Host()` and `Secure()`**, and every adapter implements them. **BREAKING** for a consumer's own `Request` implementation; nothing is tagged yet.
 - **Sender-constrained tokens:**
-  - DPoP (RFC 9449): proofs verified on every request, tokens bound with `cnf.jkt` at every issuing endpoint, and a bound token presented as a bearer token refused;
-  - mTLS-bound tokens (RFC 8705), including a client certificate forwarded by a trusted proxy.
+  - DPoP (RFC 9449), opt-in through `httpsec.EnableDPoP` for both bearer modes and every issuing endpoint: proofs verified on every request, tokens bound with `cnf.jkt` at sign-in and kept through every rotation, a bad proof leaving links and codes unspent, and a bound token presented as a bearer token refused;
+  - mTLS-bound tokens (RFC 8705), including a client certificate forwarded by a trusted proxy and decoded by a replaceable decoder.
 - **One password policy.** `password.Policy` holds minimum length, a common-password list, context words and an opt-in breach check, and absorbs the reuse guard as its `NoReuse` rule. **BREAKING**: `NewReuseGuard` is removed before the tag.
-- **Rehash on login** when a stored hash's algorithm or parameters are outdated, through an optional encoder interface and a consumer write.
+- **Rehash on login** when a stored hash's algorithm or parameters are outdated, through an optional encoder interface and a consumer write that receives the hash it replaces, so a concurrent password change is never undone.
 - **User-facing session management:**
   - list a user's live sessions and revoke one, or all others;
   - sign-in metadata is recorded only when the consumer opts in.
@@ -51,7 +51,7 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
 - **A security-event port** emitting OWASP Logging Vocabulary events, which the existing lockout and reuse observers fold into.
 - **Security notices:**
   - removing a passkey notifies the user by default;
-  - an opt-in notice for a sign-in from an unseen device.
+  - an opt-in notice for a sign-in from a device matching none of the user's live sign-ins.
 - **An automation-challenge seam** before login, magic-link requests and recovery start. No vendor is bundled.
 - **Supply-chain hygiene:** CI actions pinned to commit SHAs, automated dependency updates, and an SBOM per release.
 
@@ -80,11 +80,11 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
   - Clear-Site-Data at logout;
   - sign-in notices.
 - `framework-adapters`: every adapter resolves the client address, host and scheme through scrty's own trusted-proxy rules, and implements `Host()` and `Secure()`.
-- `http-error-propagation`: the new refusals and their statuses join the public contract.
+- `http-error-propagation`: the new refusals join the public contract and the status table, whose reused-password row moves to `password-policy`.
 - `sessions`: listing a user's sessions, opt-in sign-in metadata, and a key binding carried through every rotation.
 - `security-state-stores`: durable stores list sessions by user and persist the metadata and key binding.
 - `store-conformance`: the session suite covers listing, metadata and binding.
-- `schema-migrations`: a security-state migration adds the session metadata and binding columns.
+- `schema-migrations`: a security-state migration adds the session metadata and binding columns; listing uses the existing user index.
 - `password-encoding`: the reuse-guard requirements move to `password-policy`; encoders can report that a hash needs upgrading.
 - `token-issuance`: issued tokens can carry a confirmation claim.
 - `passkey-authentication`: removing a passkey notifies the user by default.
@@ -107,11 +107,11 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
   - `trusted-proxy-client-ip` is superseded by this change;
   - `bff-resource-server` no longer owns `csrf-protection`;
   - `release-readiness` lists this change among those that land before it.
-- **Builds on** `reauthentication`:
+- **Builds on** `reauthentication` (archived):
   - the guards and recency check;
   - the re-proof endpoints, which the CSRF layer covers and which bind DPoP tokens on rotation;
   - the error table this change extends.
-- **Also builds on** `key-port-context`: the bearer and token-issuance requirements, which DPoP extends.
+- **Also builds on** `key-port-context` (PR #39): the bearer and token-issuance requirements, which DPoP extends; issue before spend, which decides where a proof is checked; and the outage and hang-up rules every new dependency follows.
 - **Consumers:** none yet. Nothing is tagged, so every breaking item above is recorded as a decision, not a compatibility obligation.
 
 ## References

@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **DRAFT.** Written against the `reauthentication` and `key-port-context` work in progress on `feat/reauthentication`. Task group 1 re-reads what those changes landed and corrects this plan before any other task starts. Nothing below is to be executed before that.
+> Reconciled on 2026-11-02 with `reauthentication` (archived) and `key-port-context` (PR #39). Implementation starts after `key-port-context` merges; task 1.1 rechecks its merged text first.
 
-**Goal:** Close the thirteen security gaps in `proposal.md` before `v0.1.0`.
+**Goal:** Close the thirteen security gaps in `proposal.md` before `v0.1.0`, with every edge case the specs pin.
 
-**Architecture:** Every browser-facing layer is a chain interceptor in a new outer slot (headers 25, CORS 50, CSRF 75), written once against `httpsec.Request` and `ResponseWriter`, so net/http, gin and fiber share it. Trusted-proxy resolution wraps the adapter's `Request` once when the chain starts, and every interceptor and the handler read its answer. Sender-constrained tokens, sign-in listing and the password policy extend the existing `session`, `token` and `authenticate/password` cores.
+**Architecture:** Every browser-facing layer is a chain interceptor in a new outer slot (headers 25, CORS 50, CSRF 75), written once against `httpsec.Request` and `ResponseWriter`, so net/http, gin and fiber share it. Trusted-proxy resolution wraps the adapter's `Request` once when the chain starts, and every interceptor and the handler read its answer. DPoP is one chain-wide feature (`EnableDPoP`) that both bearer modes and every issuing endpoint read; proofs are checked in each endpoint's side-effect-free checks, before `key-port-context`'s issue-then-spend step. Sign-in listing, the key binding and the password policy extend the existing `session`, `token` and `authenticate/password` cores.
 
 **Tech Stack:** Go 1.27, `net/http`, gin, fiber v3, `github.com/lestrrat-go/jwx/v4` (JOSE), testify, `go.uber.org/mock`, testcontainers-go (PostgreSQL 15 and 18).
 
-**Spec:** `openspec/changes/close-security-gaps/` — `proposal.md`, `design.md` (decisions D1–D18), `specs/**/spec.md`, `tasks.md`.
+**Spec:** `openspec/changes/close-security-gaps/` — `proposal.md`, `design.md` (decisions D1–D19), `specs/**/spec.md`, `tasks.md`.
 
 ## Global Constraints
 
@@ -18,428 +18,444 @@
 - The core module adds no dependency; the breach check uses the existing confined outbound client; JOSE work uses jwx v4 only.
 - Nothing in `github.com/kartaladev/scrty/test` is imported by another scrty module, including from `_test.go` files.
 - Test-first for every task (`golang-tdd.md`): run the new test and see it fail for the intended reason before writing code; a compile error is not a red step.
-- Table tests follow the `table-test` skill (`assert` closures, `ctx` modifier, `t.Context()`); mocks come from `use-mockgen`; PostgreSQL comes from `use-testcontainers` helpers already in `test/`.
+- Table tests follow the `table-test` skill (`assert` closures, `ctx` modifier, `t.Context()`); mocks come from `use-mockgen`; PostgreSQL comes from the `use-testcontainers` helpers already in `test/`.
 - Every option's godoc names the default it replaces; every port says what the library uses when none is supplied (`library-design.md`).
-- Wiring mistakes fail at construction with an error wrapping `httpsec.ErrConfig` (or the package's own `ErrConfig`) that names the option.
-- No error text, log record or event carries a password, token, proof, certificate, CSRF token, session identifier or stored hash.
-- A defect found along the way is claimed only with a failing test (`defect-claims.md`).
-- The predecessor is never cited in code, docs or commits (`legacy-reference.md`).
+- Wiring mistakes fail at construction with an error wrapping `httpsec.ErrConfig` (or the package's own `ErrConfig`) that names the option. Every `EnableX` given twice is a configuration error.
+- No error text, log record or event carries a password, token, proof, certificate, CSRF token, session identifier, stored hash, context word or forwarded host.
+- Outages and hang-ups follow `key-port-context`: a failing dependency (replay store, breach lookup with failures refusing, challenge verifier, session listing) fails with fixed library text, maps to 500 and is charged to no throttle; a request whose own context ended fails matching the context's error (`internal/hangup.ByCaller`) and logs nothing at ERROR.
+- Issue before spend (`key-port-context` D7): nothing an issuing endpoint adds may spend or store before the credential is issued; DPoP proofs are verified in the checks.
+- A defect found along the way is claimed only with a failing test (`defect-claims.md`). The predecessor is never cited (`legacy-reference.md`).
 - Slot values: `OrderSecurityHeaders = 25`, `OrderCORS = 50`, `OrderCSRF = 75`.
-- Naming (design D19): a top-level `httpsec.New` option that switches on a security feature is `EnableX` and registers through `config.enable`; a top-level setting or declaration is `WithX` (`WithHTTPSDeployment`); options inside a feature are `WithX`/`WithoutX` of that feature's option type.
-- Defaults pinned by the specs: HSTS `max-age=31536000; includeSubDomains`; CORS max age 10 minutes; DPoP proof lifetime 60 seconds; DPoP algorithms `ES256`; trusted-proxy `MaxHops` 1; password minimum 15 (floor 8), maximum accepted at least 64, common list at least 3,000 entries; unseen-device window 90 days.
+- Naming (D19): top-level features are `EnableX`; declarations are `WithX` (`WithHTTPSDeployment`); options inside a feature are `WithX`/`WithoutX`.
+- Defaults pinned by the specs: HSTS `max-age=31536000; includeSubDomains`; CORS max age 10 minutes, methods `GET, HEAD, POST`; DPoP proof lifetime 60 s, algorithms `ES256`, proof size 8 KiB, `jti` at most 256 bytes; trusted-proxy `MaxHops` 1; password minimum 15 (floor 8), maximum 128 (floor 64), common list at least 3,000 entries, context-word containment from 4 characters; user agent 512 bytes; CSRF names `X-CSRF-Token` / `csrf_token`.
 
 ## Review Focus
 
-- An IPv4-mapped IPv6 peer (`::ffff:10.20.0.2`) must match a trusted IPv4 prefix (`10.20.0.0/16`), and vice versa nothing else must. Test added to 2.5.
-- Forwarded entries with ports, brackets, `unknown` or RFC 7239 obfuscated identifiers (`203.0.113.7:4711`, `[2001:db8::1]:443`, `for=_hidden`): ports stripped, non-IP identifiers ending the walk as an unattributable client. Test added to 2.5.
-- A host compared with the allowlist case-insensitively and without its port (`App.Example.com:443` matches `app.example.com`). Test added to 2.6.
-- DPoP `htu` normalisation: scheme and host lower-cased, default port dropped, path compared as sent (`https://APP.example.com:443/api/orders` equals `https://app.example.com/api/orders`). Test added to 8.6.
-- `Origin: null` from a sandboxed iframe or a `file:` page, with no `Sec-Fetch-Site`, is refused on an unsafe method. Test added to 5.1.
+- A request whose `Origin` and `Host` are equal but differ only by a default port (`https://app.example.com:443` against host `app.example.com`): CSRF's Origin comparison must normalise the default port as CORS does, or a same-origin request from a browser behind a proxy that keeps the port is refused. Test added to 5.1.
+- A DPoP proof presented on a `HEAD` request or with a percent-encoded path (`/api/ord%65rs`): `htm` compares the method exactly, and `htu` compares the path as the client sent it, not decoded. Test added to 8.3.
+- A sign-in listing for a user with many renewed families (100 families, each renewed 10 times): one entry per family and one store query, not a query per family. Test added to 6.2.
+- A password candidate holding a NUL byte: the policy refuses nothing new, but a change must surface the encoder's `ErrContainsNUL` unchanged, not panic or truncate. Test added to 10.2.
+- A forwarded header line of 64 KiB from a trusted peer: resolution walks from the right and stops at the client, so it must not split and parse every entry. Test added to 2.5 (a benchmark-free assertion: the parser is handed only the tail it reaches).
 
 ---
 
 ## Delegation lanes
 
-Each lane owns its files; a file not listed is held by the main session for review only. Lanes inside one phase run in parallel, each in its own worktree where noted, and merge in the order given. A lane longer than six tasks runs as sequential dispatches; after each dispatch the main session runs the verification commands and a fresh reviewer checks the diff.
+Each lane owns its files; a file not listed is held by the main session for review only. Lanes inside one phase run in parallel, each in its own worktree where noted. A lane longer than six tasks runs as sequential dispatches; after each dispatch the main session runs the verification commands and a fresh reviewer checks the diff.
 
-| Phase | Lane | Tasks | Owns | Model (reason) |
+| Phase | Lane | Tasks (dispatches) | Owns | Model (reason) |
 |---|---|---|---|---|
-| 0 | main session | 1.1–1.3 | OpenSpec artifacts only | — |
-| A | R: request and proxies | 2.1–2.5, then 2.6–2.10 | `httpsec/nethttp.go`, `httpsec/client.go` (new), `httpsec/proxies.go` (new), `httpsec/chain.go`, `httpsec/throttle.go`, `httpsec/options.go`, `httpsec/errors.go`, `httpsec/ginsec/*`, `httpsec/fibersec/*`, `test/httpsecconformance/proxy_scenarios.go` (new) | Opus (an interface every other lane compiles against; security-critical refusal logic) |
-| B (worktrees) | H: headers, CORS, CSRF | 3.1–3.5; 3.6–3.10; 4.1–4.5; 5.1–5.4; 5.5–5.7 | `httpsec/order_outer.go`, `headers.go`, `cors.go`, `csrf.go` (all new), `httpsec/logout.go`, conformance `headers_scenarios.go`, `cors_scenarios.go`, `csrf_scenarios.go` | Sonnet for 3.x (known pattern); Opus for 4.x and 5.x (refusal logic written for the first time) |
-| B (worktrees) | S: sessions | 6.1–6.6; 7.1–7.5 | `session/*`, `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, `store/migrate/securitystate/` (new file), `test/storetest/session*.go`, `httpsec/session_management.go` (new), `authenticate/passkey` removal path, `notify` templates | Opus (store contract other modules implement; owner checks) |
-| B (worktrees) | P: passwords | 10.1–10.5; 10.6–10.8 | `authenticate/password/*`, `httpsec/login.go`, `httpsec/basic.go`, `test/identity` history conformance | Opus for 10.1–10.5 (behaviour-preserving move of the reuse guard); Sonnet for 10.6–10.8 |
+| 0 | main session | 1.1–1.2 | OpenSpec artifacts only | — |
+| A | R: request and proxies | 2.1–2.6; 2.7–2.11 | `httpsec/nethttp.go`, `client.go` (new), `proxies.go` (new), `chain.go`, `throttle.go`, `options.go`, `errors.go`, `httpsec/ginsec/*`, `httpsec/fibersec/*`, `test/httpsecconformance/proxy_scenarios.go` (new) | Opus (an interface every lane compiles against; refusal logic) |
+| B (worktrees) | H: headers, CORS, CSRF | 3.1–3.6; 3.7–3.11; 4.1–4.6; 5.1–5.4; 5.5–5.7 | `httpsec/order_outer.go`, `headers.go`, `cors.go`, `csrf.go` (all new), `httpsec/logout.go`, conformance `headers_scenarios.go`, `cors_scenarios.go`, `csrf_scenarios.go` | Sonnet for 3.x (known pattern); Opus for 4.x and 5.x (refusal logic written for the first time) |
+| B (worktrees) | S: sessions | 6.1–6.4; 6.5–6.7; 7.1–7.5 | `session/*`, `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, `store/migrate/securitystate/` (new file), `test/storetest/session*.go`, `httpsec/session_management.go` (new), `httpsec/signin_notice.go` (new), the passkey removal path, `notify` templates | Opus (store contract other modules implement; owner checks; `Commit` rules) |
+| B (worktrees) | P: passwords | 10.1–10.6; 10.7–10.10 | `authenticate/password/*`, `httpsec/login.go`, `httpsec/basic.go`, the password re-proof path, `test/identity` history conformance | Opus for 10.1–10.6 (behaviour-preserving move of the reuse guard); Sonnet for 10.7–10.10 |
 | B | T: supply chain | 13.1–13.4 | `.github/`, `tools/`, `Makefile` | Sonnet |
-| C | D: sender-constrained tokens | 8.1–8.5; 8.6–8.9; 9.1–9.4 | `token/*`, `httpsec/dpop.go`, `httpsec/certbinding.go` (new), `httpsec/bearer.go`, `session_bearer.go`, `session_renewal.go`, `complete.go`, `mfa_verify.go`, `passkey_login.go`, `magiclink.go`, `oidc_redeem.go`, `recovery.go`, `reauth*.go`, conformance `dpop_scenarios.go` | Opus (security-critical verification; touches several packages) |
-| C, after D | C: automation challenge | 12.1–12.3 | `httpsec/challenge.go` (new) and the call sites in `login.go`, `basic.go`, `magiclink.go`, `passkey_login.go`, `recovery.go` | Opus (refusal ordering before account lookup) |
-| D | E: security events | 11.1–11.4 | a new `security` package, and every emitting call site | Opus (touches every package) |
+| C | D: sender-constrained tokens | 8.1–8.5; 8.6–8.9; 8.10–8.12; 9.1–9.4 | `token/*`, `httpsec/dpop.go`, `dpop_replay.go`, `dpop_nonce.go`, `certbinding.go` (new), `bearer.go`, `session_bearer.go`, `session_renewal.go`, `complete.go`, `mfa_verify.go`, `passkey_login.go`, `magiclink.go`, `oidc_redeem.go`, `redemption.go`, `recovery.go`, `reauth*.go`, conformance `dpop_scenarios.go` | Opus (security-critical verification; issue-before-spend ordering; several packages) |
+| C, after D | C: automation challenge | 12.1–12.4 | `httpsec/challenge.go` (new) and its call sites in `login.go`, `basic.go`, `magiclink.go`, `passkey_login.go`, `recovery.go` | Opus (refusal ordering before account lookup; outage split) |
+| D | E: security events | 11.1–11.5 | a new `security` package, and every emitting call site | Opus (touches every package; "only what happened" ordering) |
 | D, last | main session + reviewer | 14.1–14.3 | none | Opus reviewer |
 
-`httpsec/errors.go` is owned by lane R in phase A; in phase B and later, each lane adds its own sentinel in its own file and appends its rows to the status table in `errors.go` within its worktree; the main session resolves the table merge (a few lines, stated when it happens).
+`httpsec/errors.go` is owned by lane R in phase A; afterwards each lane adds its sentinel in its own file and appends its rows to the status table in its worktree; the main session resolves the table merge (a few lines, stated when it happens).
 
 ---
 
-## Task group 1: draft review (main session)
+## Task group 1: baseline check (main session)
 
-### Task 1.1: Reconcile with `reauthentication`
+### Task 1.1: Recheck `key-port-context` as merged
+- [ ] Read the merged `key-port-context` specs and `httpsec/bearer.go`, `session/prepared.go`, `session/reuse.go`, `internal/hangup/hangup.go`, and `StatusForError`'s issuing mark.
+- [ ] Where the merged text differs from D1, update `design.md` D1 and the affected deltas; run `openspec validate close-security-gaps`. Expected: no errors (the 500-character warnings are known).
+- [ ] If a signature in this plan changed, regenerate the affected tasks through `/superpowers:writing-plans`.
 
-- [ ] Read the landed `reauthentication` specs (`openspec/specs/reauthentication`, the modified `http-error-propagation`, `sessions`, `multi-factor-auth`, `passkey-authentication`, `framework-adapters`) and `httpsec/reauth*.go`.
-- [ ] Update this change's deltas where the landed text differs: the error table (fold the ADDED requirement into the modified contract if preferred), `Session.AuthenticatedWithin`, re-proof rotation (D8 binding), guard construction.
-- [ ] Run `openspec validate close-security-gaps --strict`. Expected: no errors.
-- [ ] Record the changes in `design.md` D1.
-
-### Task 1.2: Reconcile with `key-port-context`
-
-- [ ] Read the landed bearer requirement and `token-issuance` delta, and the new key-port signatures in `token/`.
-- [ ] Update the `token-issuance` delta and D8 to the landed signatures; validate as in 1.1.
-
-### Task 1.3: Settle the blocking open questions
-
-- [ ] CSRF token style (synchronizer token on the session, or HMAC-signed double-submit cookie): decide, record in D6 with sources.
-- [ ] Forwarded client-certificate header and encoding for nginx (`$ssl_client_escaped_cert`), Traefik and the team's gateway, from each proxy's documentation: record in D9 with sources.
-- [ ] Run `openspec validate close-security-gaps --strict`; regenerate this plan's affected tasks (5.3, 9.2) through `/superpowers:writing-plans` if their shape changed.
+### Task 1.2: Settle the CSRF token style
+- [ ] Decide synchronizer token on the sign-in, or HMAC-signed double-submit cookie keyed by the family; both must survive renewal and not a new sign-in. Record in D6 with sources; empty the Open Questions; regenerate task 5.3 if its shape changed.
 
 ---
 
 ## Task group 2: request host and scheme, trusted proxies (lane R)
 
 **Interfaces produced (every later lane consumes these):**
-- `type Request interface { ...existing...; Host() string; Secure() bool }` in `httpsec/exchange.go`'s interface block.
+- `type Request interface { ...existing...; Host() string; Secure() bool }`
 - `func WithHTTPSDeployment() Option`
 - `type TrustedProxies struct { Prefixes []netip.Prefix; Headers HeaderFamily; MaxHops int }`
 - `func XForwarded(fields ...ForwardedField) HeaderFamily`, `func Forwarded(fields ...ForwardedField) HeaderFamily`
-- `const ForwardedFor, ForwardedProto ForwardedField`; `func ForwardedHost(allowed ...string) ForwardedField` (the allowlist is the field's argument; D19)
-- `func EnableTrustedProxies(tp TrustedProxies, opts ...ProxyOption) Option`, `func TrustAllProxies() ProxyOption`, `func KeepForwardedHeaders() ProxyOption`
+- `const ForwardedFor, ForwardedProto ForwardedField`; `func ForwardedHost(allowed ...string) ForwardedField`
+- `func EnableTrustedProxies(tp TrustedProxies, opts ...ProxyOption) Option`, `func TrustAllProxies() ProxyOption`, `func KeepForwardedHeaders() ProxyOption`, `func WithClientCertificateHeader(name string, decode func(string) (*x509.Certificate, error)) ProxyOption` (decoder nil = URL-encoded PEM; consumed by group 9)
 - `type Client struct { IP string; Secure bool; Host string; ViaProxy bool }`, `func ClientFromContext(ctx context.Context) (Client, bool)`
 - `var ErrHostNotAllowed = errors.New("httpsec: host not allowed")`
 
 ### Task 2.1: `Host()` and `Secure()` on the net/http request
 **Files:** Modify `httpsec/exchange.go` (interface), `httpsec/nethttp.go`; Test `httpsec/nethttp_test.go`
-- [ ] Red: `TestHTTPRequest_HostAndSecure`, table over `httptest.NewRequest` with `r.Host = "app.example.com"` and `r.TLS` set / nil; assert `Host()` and `Secure()`.
-- [ ] Run `go test -run TestHTTPRequest_HostAndSecure -count=1 ./httpsec/` — expect FAIL: `Host` undefined is a compile error, so first add the methods returning zero values, re-run, expect FAIL on the assertions.
-- [ ] Green: `func (h *httpRequest) Host() string` returns `h.r.Host`; `Secure()` returns `h.r.TLS != nil`.
-- [ ] Run again — PASS. Commit `feat(httpsec): requests expose host and transport security`.
+- [ ] Red `TestHTTPRequest_HostAndSecure`: table over `httptest.NewRequest` with `r.Host = "app.example.com"` and `r.TLS` set / nil. Add the methods returning zero values first, so the red step fails on the assertions.
+- [ ] Run `go test -run TestHTTPRequest_HostAndSecure -count=1 ./httpsec/`: FAIL on values. Green: `Host()` returns `r.Host`, `Secure()` returns `r.TLS != nil`. PASS; commit.
 
 ### Task 2.2: Adapters implement them
-**Files:** Modify `httpsec/fibersec/exchange.go`; gin reuses `NewHTTPRequest`; Test `httpsec/fibersec/exchange_test.go`, `httpsec/ginsec/middleware_test.go`
-- [ ] Red: `TestRequest_HostAndSecure` in each adapter module, a fiber app served over `httptest` TLS and plain; assert host `app.example.com` and secure flag.
-- [ ] Run `go test -run TestRequest_HostAndSecure ./...` in each module — expect FAIL.
-- [ ] Green: fiber reads the request's `Host` header and the connection's TLS state, never `c.Hostname()`, `c.Secure()` or `c.Scheme()` (they honour fiber's proxy trust).
-- [ ] PASS; commit.
+**Files:** Modify `httpsec/fibersec/exchange.go`; gin reuses `NewHTTPRequest`; Test the adapter modules
+- [ ] Red `TestRequest_HostAndSecure` in each adapter: over TLS and plain for `app.example.com`; gin with `SetTrustedProxies(nil)`-free engine trusting everything and `X-Forwarded-Proto: https` → insecure; fiber with `ProxyHeader: "X-Forwarded-Host"` and that header set → host stays `app.example.com`.
+- [ ] FAIL; Green: fiber reads the `Host` header and the connection's TLS state, never `c.Hostname()`, `c.Secure()` or `c.Scheme()`. PASS; commit.
 
 ### Task 2.3: `WithHTTPSDeployment`
-**Files:** Create `httpsec/client.go`; Modify `httpsec/options.go`; Test `httpsec/client_test.go`
-- [ ] Red: `TestHTTPSDeployment` — a plain request through a chain with the option sees `Secure() == true`; a chain with both this option and `EnableTrustedProxies` fails `New` with `ErrConfig` naming `WithHTTPSDeployment`.
-- [ ] Run; expect FAIL. Green: a resolved-request wrapper in `client.go` overriding `Secure()`; the conflict check in `New`. PASS; commit.
+**Files:** Create `httpsec/client.go`; Modify `options.go`; Test `client_test.go`
+- [ ] Red `TestHTTPSDeployment`: plain request judged secure, host from `Host`, client from the peer; with `EnableTrustedProxies` too, `New` fails naming both options. FAIL; Green: a resolved-request wrapper overriding `Secure()`; the conflict check in `New`. PASS; commit.
 
 ### Task 2.4: Trusted-proxy construction rules
-**Files:** Create `httpsec/proxies.go`; Test `httpsec/proxies_test.go`
-- [ ] Red: `TestTrustedProxies_Construction`, one table: empty prefixes; `0.0.0.0/0`; `::/0`; no family; family with no fields; `ForwardedHost()` with no allowed host; `MaxHops: 0`; `TrustAllProxies()` with `0.0.0.0/0` succeeds. Each assert names the option in the error.
-- [ ] Run; expect FAIL. Green: validation in `EnableTrustedProxies` and `New`. `MaxHops` zero value means "unset" and defaults to 1; an explicit negative is refused. PASS; commit.
+**Files:** Create `httpsec/proxies.go`; Test `proxies_test.go`
+- [ ] Red `TestTrustedProxies_Construction`, one table: empty prefixes; invalid prefix; `0.0.0.0/0`; `::/0`; no family; no field; `ForwardedHost()` with no host; `ForwardedHost("https://app.example.com")`, `""`, `"a/b"`, `"u@h"`; `MaxHops: -1`; enabled twice; `TrustAllProxies()` with `0.0.0.0/0` builds. Each names the option.
+- [ ] FAIL; Green. `MaxHops` zero means unset and defaults to 1. PASS; commit.
 
-### Task 2.5: Right-to-left resolution
-**Files:** Modify `httpsec/proxies.go`, `httpsec/client.go`, `httpsec/chain.go` (wrap the adapter request before the first interceptor); Test `httpsec/proxies_test.go`
-- [ ] Red: `TestTrustedProxies_Resolve`, a table built from the `trusted-proxies` scenarios: forged left-most entry (`1.2.3.4, 203.0.113.7` → `203.0.113.7`); bypassed proxy; two hops with `MaxHops: 2`; repeated `X-Forwarded-For` headers joined; other family ignored; unnamed field ignored; unparsable header ignored. Review Focus rows: `::ffff:10.20.0.2` matching `10.20.0.0/16`; entries with ports and brackets; `unknown` and `for=_hidden` ending the walk as an unattributable client.
-- [ ] Run; expect FAIL. Green: parse with `netip.ParseAddr` after stripping port and brackets, `Unmap()` before prefix checks; scheme and host taken from the client's hop (`X-Forwarded-Proto`/`-Host` read as single values set by the nearest trusted proxy; RFC 7239 `proto=`/`host=` from the client's element). PASS; commit.
+### Task 2.5: Right-to-left resolution of the client address
+**Files:** Modify `proxies.go`, `client.go`, `chain.go` (wrap before the first interceptor); Test `proxies_test.go`
+- [ ] Red `TestTrustedProxies_Resolve`, rows from the `trusted-proxies` scenarios: forged left-most (`1.2.3.4, 203.0.113.7` → `203.0.113.7`); bypassed proxy; two hops with `MaxHops: 2`; hop limit reached (`→ 10.20.5.5`); every entry trusted (`→ 10.20.9.9`); two header lines joined; peer `::ffff:10.20.0.2`; `Forwarded: for="[2001:db8::7]:4711"`; `for=unknown` and `for=_hidden` → `ClientIP() == ""`; `not-an-ip, 203.0.113.7` → `203.0.113.7`; `203.0.113.7, not-an-ip` → `""` (not `10.20.0.2`); trusted peer, no header → peer. Review Focus row: a 64 KiB header whose last entry is the client resolves without splitting the whole value (assert through an `export_test.go` counter of entries parsed, expecting 1).
+- [ ] FAIL; Green: walk entries from the right with `strings.LastIndexByte`, strip port and brackets, `netip.ParseAddr`, `Unmap()` and drop the zone before prefix checks. PASS; commit.
 
-### Task 2.6: Host allowlist
-**Files:** Modify `httpsec/proxies.go`, `httpsec/errors.go`; Test `httpsec/proxies_test.go`, `httpsec/errors_test.go`
-- [ ] Red: `TestTrustedProxies_HostNotAllowed` (`evil.example` refused before the handler runs; Review Focus row: `App.Example.com:443` accepted for `app.example.com`), and a `TestStatusForError` row `ErrHostNotAllowed → 400`.
-- [ ] Run; expect FAIL. Green: compare lower-cased host without port; register the sentinel and row. PASS; commit.
+### Task 2.6: Scheme and host from the client's hop
+- [ ] Red `TestTrustedProxies_SchemeHost`: `Forwarded` element's `proto`/`host`; single-valued `X-Forwarded-Proto`; aligned lists read at the client's index; `https, http` against three addresses → transport; `wss` → transport; `X-Forwarded-Port: 8443` ignored.
+- [ ] FAIL; Green; PASS; commit.
 
-### Task 2.7: Header removal on every adapter
-**Files:** Modify `httpsec/proxies.go`, `httpsec/fibersec/exchange.go`, `httpsec/ginsec/middleware.go`; Test the three modules
-- [ ] Red: `TestTrustedProxies_RemovesHeaders` in core, gin and fiber: a handler after the chain sees no `X-Forwarded-*` and no `Forwarded`; with `KeepForwardedHeaders()` it sees them unchanged.
-- [ ] Run; expect FAIL. Green: an optional `headerRemover` interface the adapters' requests implement (`DelHeader(name string)`), called after resolution. PASS; commit.
+### Task 2.7: Host allowlist
+**Files:** Modify `proxies.go`, `errors.go`; Test `proxies_test.go`, `errors_test.go`
+- [ ] Red `TestTrustedProxies_HostNotAllowed`: `evil.example` refused before any interceptor (a recording interceptor at `Before(OrderSecurityHeaders)` is not called) and its text does not contain `evil.example`; `App.Example.COM:8443` allowed with resolved host `app.example.com:8443`; `app.example.com.evil.example` refused; the same header from an untrusted peer ignored, not refused; `TestStatusForError` row → 400.
+- [ ] FAIL; Green: compare lower-cased host name without port and trailing dot. PASS; commit.
 
-### Task 2.8: `ClientFromContext` and the source guards
-**Files:** Modify `httpsec/client.go`, `httpsec/throttle.go`; Test `httpsec/client_test.go`, `httpsec/throttle_test.go`
-- [ ] Red: `TestClientFromContext` (IP, Secure, Host, ViaProxy for a proxied request) and `TestSourceGuard_UsesResolvedClient` (the limiter key is the forwarded client, not the proxy).
-- [ ] Run; expect FAIL. Green: store `Client` in the request context at resolution; source guards read `Request.ClientIP()` of the resolved request. PASS; commit.
+### Task 2.8: Header removal on every adapter
+**Files:** Modify `proxies.go`, `fibersec/exchange.go`, `ginsec/middleware.go`; Test the three modules
+- [ ] Red `TestTrustedProxies_RemovesHeaders` in core, gin and fiber: after the chain no `Forwarded`, no `X-Forwarded-*` (including `-Port`, `-Prefix`), no named certificate header, from trusted and untrusted peers; with `KeepForwardedHeaders()` unchanged; without the feature, untouched.
+- [ ] FAIL; Green: an optional `headerRemover` interface (`DelHeader(name string)`) the adapters' requests implement, called after resolution. PASS; commit.
 
-### Task 2.9: Adapters stop deferring to their frameworks (BREAKING)
-**Files:** Modify `httpsec/ginsec/middleware.go`, `httpsec/fibersec/middleware.go`; Create `test/httpsecconformance/proxy_scenarios.go`; Modify `test/httpsecconformance/runner.go`
-- [ ] Red: conformance scenarios "gin's own trusted proxies do not change the chain", "Same answer on every adapter", "Opting into gin's client address", "fiber with a trusted proxy".
-- [ ] Run `go test -run 'TestConformance' ./...` in `test`; expect FAIL on gin.
+### Task 2.9: `ClientFromContext` and the source guards
+**Files:** Modify `client.go`, `throttle.go`; Test `client_test.go`, `throttle_test.go`
+- [ ] Red `TestClientFromContext` (proxied request; no trusted proxies → peer, `ViaProxy == false`) and `TestSourceGuard_UsesResolvedClient` (two forwarded clients keyed apart).
+- [ ] FAIL; Green: store `Client` in the context at resolution; `ClientIP()`, `Host()`, `Secure()` of the wrapper return it. PASS; commit.
+
+### Task 2.10: Adapters stop deferring to their frameworks (BREAKING)
+**Files:** Modify `ginsec/middleware.go`, `fibersec/middleware.go`; Create `test/httpsecconformance/proxy_scenarios.go`; Modify `runner.go`
+- [ ] Red: conformance "gin's own trusted proxies do not change the chain", "Same answer on every adapter", "Opting into gin's client address", "fiber with a trusted proxy", "gin handler after the chain", "fiber handler after the chain". FAIL on gin.
 - [ ] Green: remove `ginsec.WithForwardedClientIP`; both adapters hand the raw peer to the chain. PASS; commit `feat(httpsec)!: adapters resolve clients through the chain's trusted proxies`.
 
-### Task 2.10: Documentation
-**Files:** godoc in `httpsec/proxies.go`, `client.go`; `README.md`
-- [ ] Godoc each option with its default; README section with the nginx and Traefik configurations from the gap review (Case 3). Verify `go doc ./httpsec EnableTrustedProxies` and `go vet ./...` clean. Commit.
+### Task 2.11: Documentation
+- [ ] Godoc each option with its default; README section with nginx and Traefik configurations, advising a test before trusting Traefik's host field. Verify `go doc ./httpsec EnableTrustedProxies`, `go vet ./...`. Commit.
 
 ---
 
-## Task group 3: outer slots and security headers (lane H, dispatches H1: 3.1–3.5, H2: 3.6–3.10)
+## Task group 3: outer slots and security headers (lane H, dispatches H1: 3.1–3.6, H2: 3.7–3.11)
 
 **Interfaces produced:**
 - `const OrderSecurityHeaders Order = 25; OrderCORS Order = 50; OrderCSRF Order = 75` in `httpsec/order_outer.go`
 - `func EnableSecurityHeaders(opts ...HeaderOption) Option`
-- `func WithHSTS(maxAge time.Duration, opts ...HSTSOption) HeaderOption`, `func HSTSIncludeSubdomains() HSTSOption`, `func HSTSPreload() HSTSOption`
-- `type CSPPolicy`, `func StrictCSP(directives ...CSPDirectiveValue) CSPPolicy`, `func HashCSP(sha256Hashes ...string) CSPPolicy`, `func CSPDirective(name string, sources ...string) CSPDirectiveValue`, `func WithCSP(p CSPPolicy) HeaderOption`
-- `func WithCSPReportOnly() HeaderOption`, `func WithReportingEndpoint(name, url string) HeaderOption`
+- `func WithHSTS(maxAge time.Duration, opts ...HSTSOption) HeaderOption`, `func HSTSIncludeSubdomains() HSTSOption`, `func WithoutHSTSSubdomains() HSTSOption`, `func HSTSPreload() HSTSOption`
+- `type CSPPolicy`, `func StrictCSP(directives ...CSPDirectiveValue) CSPPolicy`, `func HashCSP(hashes ...string) CSPPolicy`, `func CSPDirective(name string, sources ...string) CSPDirectiveValue`, `func WithCSP(p CSPPolicy) HeaderOption`
+- `func WithCSPReportOnly() HeaderOption`, `func WithCSPReportOnlyPolicy(p CSPPolicy) HeaderOption` (beside the enforced one), `func WithReportingEndpoint(name, url string) HeaderOption`
 - `type HeaderProfile`, `func APIHeaders() HeaderProfile`, `func WithHeaderProfile(p HeaderProfile, m RouteMatcher) HeaderOption`, `type RouteMatcher func(Request) bool`, `func PathPrefix(prefix string) RouteMatcher`
 - `func WithHeader(name, value string) HeaderOption`, `func WithoutHeader(name string) HeaderOption`
 - `func CSPNonce(ctx context.Context) (string, bool)`
 - `func WithLogoutClearSiteData(directives ...string) LogoutOption`
 
 ### Task 3.1: Outer slots
-- [ ] Red `TestOrder_OuterSlots`: `OrderSecurityHeaders < OrderCORS < OrderCSRF < OrderJWKS`, each 25 apart. Fail, add constants, pass, commit.
+- [ ] Red `TestOrder_OuterSlots`: 25 < 50 < 75 < `OrderJWKS`, 25 apart. FAIL; add constants; PASS; commit.
 
 ### Task 3.2: Default document headers
-**Files:** Create `httpsec/headers.go`; Test `httpsec/headers_test.go`
-- [ ] Red `TestSecurityHeaders_Defaults`: the four headers with the exact spec values; none of `X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-Policy`, `Origin-Agent-Cluster`; a 401 from a bearer refusal carries the same headers; a chain without the layer sets none.
-- [ ] Fail; Green: interceptor at `OrderSecurityHeaders` that calls `SetHeader` before `next`. Pass; commit.
+**Files:** Create `httpsec/headers.go`; Test `headers_test.go`
+- [ ] Red `TestSecurityHeaders_Defaults`: the four headers with the exact spec values; none of the four not sent; a 401 bearer refusal carries the same headers; a host-not-allowed 400 carries them; without the layer none; enabled twice fails `New`.
+- [ ] FAIL; Green: interceptor at `OrderSecurityHeaders` setting headers before `next`. PASS; commit.
 
-### Task 3.3: Nonce
-- [ ] Red `TestSecurityHeaders_Nonce`: `CSPNonce` equals the header's nonce; two responses differ; decoded length ≥ 16 bytes; a failing randomness source (test seam `export_test.go`) yields 500 and no CSP header.
-- [ ] Fail; Green: 16 bytes from `crypto/rand`, base64 std encoding, context value. Pass; commit.
+### Task 3.3: Directive editing
+- [ ] Red `TestSecurityHeaders_Directives`: `img-src 'self' data:` added; `frame-ancestors 'self'` replaces `'none'` once; `WithoutHeader("Cross-Origin-Opener-Policy")` removes it; a source with `;`, `,` or `\n` fails `New` naming the policy. FAIL; Green; PASS; commit.
 
-### Task 3.4: Profiles
-- [ ] Red `TestSecurityHeaders_Profiles`: `/api/orders` under `PathPrefix("/api/")` gets the API profile and no nonce; `/` gets the document set; the first matching profile wins.
-- [ ] Fail; Green; pass; commit.
+### Task 3.4: Nonce
+- [ ] Red `TestSecurityHeaders_Nonce`: `CSPNonce` equals the header's nonce; two responses differ; decoded length ≥ 16 bytes; a failing randomness seam (`export_test.go`) yields 500 and the handler is not called; an API-profile route finds no nonce. FAIL; Green: 16 bytes from `crypto/rand`, base64 std encoding. PASS; commit.
 
-### Task 3.5: HSTS
-- [ ] Red `TestSecurityHeaders_HSTS`: secure request gets the header; insecure does not; behind a trusted proxy forwarding `https` it does; `HSTSPreload()` with `maxAge < 365*24h` or without subdomains fails `New` naming `WithHSTS`.
-- [ ] Fail; Green (reads `Request.Secure()` from group 2); pass; commit.
+### Task 3.5: Profiles
+- [ ] Red `TestSecurityHeaders_Profiles`: `/api/orders` under `PathPrefix("/api/")` gets the API profile; `/apix` does not; `/api/admin/` profile registered first wins for `/api/admin/users`; unmatched gets the document set. FAIL; Green; PASS; commit.
 
-### Task 3.6: Handler wins, streaming intact
-- [ ] Red `TestSecurityHeaders_HandlerWins` (handler's `Referrer-Policy: no-referrer` is sent) and `TestSecurityHeaders_Streaming` (`http.NewResponseController(w).Flush()` and `Hijack()` succeed behind the layer).
-- [ ] Fail if wrapping was introduced, else these pass at once: invert temporarily (wrap the writer in a test build) to see them fail, then restore. Commit.
+### Task 3.6: HSTS
+- [ ] Red `TestSecurityHeaders_HSTS`: secure → header; insecure → none; trusted proxy forwarding `https` → header; untrusted peer's `X-Forwarded-Proto: https` → none; `WithHSTS(0)` → `max-age=0; includeSubDomains`; negative age, and `HSTSPreload()` below a year or with `WithoutHSTSSubdomains()`, fail `New` naming `WithHSTS`. FAIL; Green; PASS; commit.
 
-### Task 3.7: Report-only and hash preset
-- [ ] Red `TestSecurityHeaders_ReportOnly` (`Content-Security-Policy-Report-Only` present, enforced header absent, `Reporting-Endpoints: csp="https://reports.example.com/csp"`, policy carries `report-to csp` and `report-uri https://reports.example.com/csp`) and `TestSecurityHeaders_HashPreset` (`script-src 'sha256-…'`, no nonce generated).
-- [ ] Fail; Green; pass; commit.
+### Task 3.7: Handler wins, streaming intact
+- [ ] Red `TestSecurityHeaders_HandlerWins` and `TestSecurityHeaders_Streaming` (`http.NewResponseController(w).Flush()` and `Hijack()`). These pass at once without a wrapper: invert temporarily (wrap the writer in the test) to see them fail, then restore. Commit.
 
-### Task 3.8: Clear-Site-Data on logout
-**Files:** Modify `httpsec/logout.go`; Test `httpsec/logout_test.go`
-- [ ] Red `TestLogout_ClearSiteData`: opted in with `"cache"`, `"storage"` over HTTPS → `Clear-Site-Data: "cache", "storage"`; over HTTP → absent; not opted in → absent; an unknown directive fails construction.
-- [ ] Fail; Green; pass; commit.
+### Task 3.8: Report-only and hash preset
+- [ ] Red `TestSecurityHeaders_ReportOnly` (report-only alone; enforced plus a report-only candidate sharing one nonce; `Reporting-Endpoints: csp="https://reports.example.com/csp"` with `report-to csp` and `report-uri`; `http://` endpoint fails `New`) and `TestSecurityHeaders_HashPreset` (`script-src 'sha256-…'`, no nonce; `sha256-not-base64!` and no hash fail `New`). FAIL; Green; PASS; commit.
 
-### Task 3.9: Conformance on three adapters
-- [ ] Create `test/httpsecconformance/headers_scenarios.go` with the spec scenarios; register in `runner.go`; run `go test -run TestConformance ./...` in `test` (fail before registration of the interceptor in the adapters' builds is impossible, so invert one expected value to see a failure, then restore). Commit.
+### Task 3.9: Clear-Site-Data on logout
+**Files:** Modify `httpsec/logout.go`; Test `logout_test.go`
+- [ ] Red `TestLogout_ClearSiteData`: `"cache"`, `"storage"` over HTTPS → `Clear-Site-Data: "cache", "storage"`; over HTTP → none; refused logout → none; not opted in → none; no directive or `"executionContexts"` fails construction. FAIL; Green; PASS; commit.
 
-### Task 3.10: Docs
-- [ ] Godoc each option with its default; README section with the Vite (`html.cspNonce: '__CSP_NONCE__'`), Next.js and `html/template` examples. `go doc ./httpsec EnableSecurityHeaders`. Commit.
+### Task 3.10: Conformance on three adapters
+- [ ] `test/httpsecconformance/headers_scenarios.go` with the spec scenarios, including a refusal through each adapter's default error handling; invert one expected value to see it fail, restore. Commit.
+
+### Task 3.11: Docs
+- [ ] Godoc each option with its default; README with the Vite, Next.js and `html/template` nonce examples. `go doc ./httpsec EnableSecurityHeaders`. Commit.
 
 ---
 
 ## Task group 4: CORS (lane H, dispatch H3)
 
 **Interfaces produced:**
-- `type CORSPolicy struct { AllowedOrigins, AllowedMethods, AllowedHeaders, ExposedHeaders []string; AllowCredentials bool; MaxAge time.Duration }`
+- `type CORSPolicy struct { AllowedOrigins, AllowedMethods, AllowedHeaders, ExposedHeaders []string; AllowCredentials bool; MaxAge time.Duration }` (methods default `GET, HEAD, POST`; max age 10 min)
 - `func EnableCORS(p CORSPolicy, opts ...CORSOption) Option`, `func WithOriginPattern(pattern string) CORSOption`, `func WithoutAutomaticCORSHeaders() CORSOption`
-- Unexported hooks read from the chain config: `config.dpopEnabled bool`, `config.csrfTokenHeader string` (set by groups 5 and 8).
+- Unexported: `config.corsOrigins() (exact []string, patterns []originPattern)` read by group 5; `config.dpopEnabled bool`, `config.csrfTokenHeader string` set by groups 8 and 5.
 
-### Task 4.1: Construction refusals
-- [ ] Red `TestCORS_Construction` table: no origins; `null`; origin with path, query, fragment, userinfo; `*` with credentials; `https://*.example.com` without `WithOriginPattern`. Each names the field. Fail; Green in `httpsec/cors.go`; pass; commit.
+### Task 4.1: Construction
+- [ ] Red `TestCORS_Construction`: `HTTPS://App.Example.com:443` normalised; refused: none, `null`, `ftp://…`, path, query, fragment, userinfo, `*` with credentials, `*` beside another origin, `https://*.example.com` without `WithOriginPattern`, `https://a*.example.com` as a pattern, enabled twice. FAIL; Green in `httpsec/cors.go`; PASS; commit.
 
 ### Task 4.2: Matching and actual responses
-- [ ] Red `TestCORS_Origins`: exact match (scheme and host case-insensitive) gets `Access-Control-Allow-Origin` and `Vary: Origin`; `https://app.example.com.evil.example` gets nothing; credentials never with `*`; disallowed origin request still reaches the handler. Fail; Green; pass; commit.
+- [ ] Red `TestCORS_Origins`: exact match gets `Access-Control-Allow-Origin` and `Vary: Origin`; look-alike, `http://` and `:8443` get none; pattern matches `a.example.com` only; no `Origin` still gets `Vary: Origin`; `*` without credentials → `*`; credentials → `Access-Control-Allow-Credentials: true` and the echoed origin; exposed headers on actual responses. FAIL; Green; PASS; commit.
 
-### Task 4.3: Preflight
-- [ ] Red `TestCORS_Preflight`: allowed preflight → 204, allow headers, `Access-Control-Max-Age: 600`, no authentication interceptor called (a recording interceptor at `OrderBearerToken`); `MaxAge: time.Hour` → `3600`; disallowed origin or method → 204 without CORS headers. Fail; Green; pass; commit.
+### Task 4.3: A refusal is readable
+- [ ] Red `TestCORS_RefusalReadable`: a bearer 401 for an allowed origin carries the allow-origin and `Access-Control-Expose-Headers: WWW-Authenticate`. FAIL; Green (set before `next`); PASS; commit.
 
-### Task 4.4: Follows the chain
-- [ ] Red `TestCORS_FollowsChain`: with `config.dpopEnabled` set through `export_test.go`, `DPoP` is allowed and `DPoP-Nonce`, `WWW-Authenticate` exposed; with `config.csrfTokenHeader = "X-CSRF-Token"` it is allowed; `WithoutAutomaticCORSHeaders()` adds nothing. Fail; Green; pass; commit.
+### Task 4.4: Preflight
+- [ ] Red `TestCORS_Preflight`: allowed → 204, allow headers, `Access-Control-Max-Age: 600`, `Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers`, no interceptor at `OrderBearerToken` called; `MaxAge: time.Hour` → `3600`; `DELETE` with default methods → bare 204; `x-debug` → bare 204; `content-type` plus a second line `AUTHORIZATION` → allowed; `OPTIONS` without `Access-Control-Request-Method` reaches the bearer. FAIL; Green; PASS; commit.
 
-### Task 4.5: Conformance and docs
-- [ ] `test/httpsecconformance/cors_scenarios.go`; run in `test`; godoc with defaults. Commit.
+### Task 4.5: Follows the chain
+- [ ] Red `TestCORS_FollowsChain`: `config.dpopEnabled` → `DPoP` allowed, `DPoP-Nonce` and `WWW-Authenticate` exposed; `config.csrfTokenHeader` → allowed; `WithoutAutomaticCORSHeaders()` → a `dpop` preflight gets a bare 204. FAIL; Green; PASS; commit.
+
+### Task 4.6: Conformance and docs
+- [ ] `cors_scenarios.go` on three adapters; godoc with defaults (`go doc ./httpsec EnableCORS`). Commit.
 
 ---
 
 ## Task group 5: CSRF protection (lane H, dispatches H4: 5.1–5.4, H5: 5.5–5.7)
 
 **Interfaces produced:**
-- `func EnableCSRFProtection(opts ...CSRFOption) Option`, `func WithCSRFTrustedOrigins(origins ...string) CSRFOption`, `func WithoutCORSOriginsTrustedForCSRF() CSRFOption`, `func WithCSRFTokenNames(header, field string) CSRFOption`, `func WithCSRFExemption(method, pattern string) CSRFOption`, `func WithoutCSRFProtection() Option`
+- `func EnableCSRFProtection(opts ...CSRFOption) Option`, `func WithCSRFTrustedOrigins(origins ...string) CSRFOption`, `func WithoutCORSOriginsTrustedForCSRF() CSRFOption`, `func WithCSRFTokenNames(header, field string) CSRFOption`, `func WithCSRFExemption(method, pattern string) CSRFOption`, `func WithoutBackchannelLogoutExemption() CSRFOption`, `func WithoutCSRFProtection() Option`
 - `func CSRFToken(ctx context.Context) (string, bool)`
 - `var ErrCrossSiteRequest = errors.New("httpsec: cross-site request refused")`
-- Interceptors that authenticate by cookie declare it through an unexported `cookieAuthenticator` marker the construction check reads.
+- Interceptors that authenticate by cookie carry an unexported `cookieAuthenticator` marker the construction check reads.
 
 ### Task 5.1: Fetch Metadata and Origin
-- [ ] Red `TestCSRF_FetchMetadata`: a table over method × `Sec-Fetch-Site` × `Origin`, each row also run through `net/http.CrossOriginProtection` as the oracle for rows where both should agree (same-site rows differ only when the origin is trusted); Review Focus row: `Origin: null`, no `Sec-Fetch-Site`, `POST` → refused.
-- [ ] Fail; Green in `httpsec/csrf.go` at `OrderCSRF`, comparing against `Request.Secure()`/`Host()`; pass; commit.
+- [ ] Red `TestCSRF_FetchMetadata`: method × `Sec-Fetch-Site` × `Origin`, each row also run through `net/http.CrossOriginProtection` as the oracle where both should agree; login CSRF (`POST /login`, no credential checked, no session); `Origin: null`; `:8443`; `get` and `PROPFIND` unsafe; behind a trusted proxy passes; safe `GET` passes. Review Focus row: `Origin: https://app.example.com:443` against host `app.example.com` passes.
+- [ ] FAIL; Green in `httpsec/csrf.go` at `OrderCSRF`, comparing a normalised `Origin` with `Secure()`/`Host()`. PASS; commit.
 
 ### Task 5.2: Trusted origins
-- [ ] Red `TestCSRF_TrustedOrigins`: CORS-allowed sibling passes on `same-site`; with `WithoutCORSOriginsTrustedForCSRF()` it is refused; `WithCSRFTrustedOrigins` adds one. Fail; Green; pass; commit.
+- [ ] Red `TestCSRF_TrustedOrigins`: CORS sibling passes on `same-site`; opt-out refuses it; `WithCSRFTrustedOrigins` adds one (normalised; `null` fails `New`); CORS `*` trusts nothing; unlisted `blog.example.com` refused. FAIL; Green; PASS; commit.
 
-### Task 5.3: Token layer (style from task 1.3)
-- [ ] Red `TestCSRF_Token`: cookie-authenticated `POST` with no token, a malformed token, another session's token → refused; correct token → passes; bearer-only `POST` with no token → passes; `CSRFToken(ctx)` returns the token for the session.
-- [ ] Fail; Green; pass; commit.
+### Task 5.3: Token layer (style from task 1.2)
+- [ ] Red `TestCSRF_Token`: missing, malformed, another sign-in's → refused; correct → passes; token read before a renewal passes after it; token read before logout refused after a new login; bearer-only `POST` passes; `CSRFToken(ctx)` returns the sign-in's token; comparison through `subtle.ConstantTimeCompare`.
+- [ ] FAIL; Green; PASS; commit.
 
 ### Task 5.4: Mandatory with cookie authentication
-- [ ] Red `TestCSRF_RequiredWithCookies`: a test interceptor carrying the cookie marker without `EnableCSRFProtection` fails `New` naming CSRF protection; with `WithoutCSRFProtection()` it builds. Fail; Green; pass; commit.
+- [ ] Red `TestCSRF_RequiredWithCookies`: a test interceptor carrying the marker without protection fails `New` naming CSRF protection; with `WithoutCSRFProtection()` builds. FAIL; Green; PASS; commit.
 
 ### Task 5.5: Exemptions
-- [ ] Red `TestCSRF_Exemptions`: `WithCSRFExemption("POST", "/webhooks/payments")` passes cross-site; back-channel logout path passes by default; no option exempts everything (the API has none — assert via a compile-time absent symbol check is not possible, so assert that an empty pattern fails construction). Fail; Green; pass; commit.
+- [ ] Red `TestCSRF_Exemptions`: `POST /webhooks/payments` exempt; `/webhooks/payments/`, `/Webhooks/payments`, `/webhooks/payments/../../settings` and `DELETE /webhooks/payments` judged; `/webhooks/*/events` matches one segment only; back-channel logout exempt by default and judged after `WithoutBackchannelLogoutExemption()`; empty method or path `/` fails `New`. FAIL; Green: match the chain's routed path exactly (the CVE-2025-47910 lesson). PASS; commit.
 
 ### Task 5.6: Status and conformance
-- [ ] Red `TestStatusForError` row `ErrCrossSiteRequest → 403`; conformance `csrf_scenarios.go`, including a cross-site post to the password re-proof endpoint. Fail; Green; pass; commit.
+- [ ] Red `TestStatusForError` row `ErrCrossSiteRequest → 403`; conformance `csrf_scenarios.go` including the password re-proof and `DELETE /sessions`. FAIL; Green; PASS; commit.
 
 ### Task 5.7: Docs
-- [ ] Godoc with defaults; README on the token accessor and exemptions. Commit.
+- [ ] Godoc with defaults; README on the token accessor and exemption rules. `go doc ./httpsec EnableCSRFProtection`. Commit.
 
 ---
 
-## Task group 6: sessions — listing, metadata, binding (lane S, dispatch S1)
+## Task group 6: sessions — listing, metadata, binding (lane S, dispatches S1: 6.1–6.4, S2: 6.5–6.7)
 
 **Interfaces produced:**
-- `session.Store`: `ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error)` (live, non-superseded members; the manager groups by family).
-- `type SignIn struct { Handle id.ID; CreatedAt, LastUsedAt time.Time; FirstFactor identity.FirstFactor; ClientIP, UserAgent string; Current bool }`
-- `func (m *Sessions) ListSignIns(ctx context.Context, user identity.UserID, current string) ([]SignIn, error)`
-- `func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle id.ID) error` (returns `ErrNotFound` for another user's family), `func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, keep string) (int, error)`
-- `func WithSessionMetadata() Option`; `CreateOption`s `WithClientMetadata(ip, userAgent string)` and `WithKeyBinding(b KeyBinding)`
-- `type KeyBinding struct { JKT string; X5TS256 string }` (at most one set); `Session.KeyBinding` field, written by `Create` only.
+- `session.Store`: `ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error)` — live, non-superseded members, exact user match.
+- `type SignIn struct { Handle id.ID; CreatedAt, LastUsedAt time.Time; FirstFactor identity.FirstFactor; Pending policy.ChallengeKind; ClientIP, UserAgent string; Current bool }`
+- `func (m *Sessions) ListSignIns(ctx context.Context, user identity.UserID, current *Session) ([]SignIn, error)`
+- `func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle string) error` (`ErrNotFound` for malformed, unknown or foreign), `func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, current *Session) (int, error)` over `DeleteByUserExcept`
+- `func WithSessionMetadata() Option`; `CreateOption`s `WithClientMetadata(ip, userAgent string)` and `WithKeyBinding(b KeyBinding)`; `RotateOption` `WithReauthenticationBinding(b KeyBinding)`
+- `type KeyBinding struct { JKT, X5TS256 string }` (at most one); `Session.KeyBinding`, `Session.ClientIP`, `Session.UserAgent` written by `Create` and `Supersede` only.
+- `var ErrListUnavailable` (fixed text, wraps the store error).
 
 ### Task 6.1: `ListByUser` in memory
-- [ ] Red `TestMemoryStore_ListByUser` and `TestSessions_ListSignIns`: two families, one renewed twice → two sign-ins; expired-only family absent; superseded members absent; another user's absent. Fail; Green in `session/store_memory.go`, `session/sessions.go`; pass; commit.
+- [ ] Red `TestMemoryStore_ListByUser`: live heads only, judged by `now`; `Alice` and `alice` apart; another user's absent. FAIL; Green in `session/store_memory.go`; PASS; commit.
 
-### Task 6.2: Metadata
-- [ ] Red `TestSessions_Metadata`: off by default (empty fields); with `WithSessionMetadata()` the chain-resolved IP and a user agent truncated to 256 bytes are kept across renewal. Fail; Green; pass; commit.
+### Task 6.2: The manager's listing
+- [ ] Red `TestSessions_List`: two devices, one renewed twice → two; expired-only family absent; within grace → one entry with the successor's last use; pending second factor → `Pending` set; no identifier or digest in any field; store error → `ErrListUnavailable`; cancelled context → matches `context.Canceled`. Review Focus row: 100 families × 10 renewals → 100 entries and exactly one `ListByUser` call (a counting store). FAIL; Green; PASS; commit.
 
-### Task 6.3: Key binding
-- [ ] Red `TestSessions_KeyBinding`: successor of rotation, renewal and re-authentication rotation keeps the binding; `Save` of a copy with the binding cleared leaves it stored. Fail; Green (successor construction in `sessions.go`; `Save` preserves the field like `MFAAtFirstFactor`); pass; commit.
+### Task 6.3: Metadata
+- [ ] Red `TestSessions_Metadata`: off → empty; on → `203.0.113.7` and `Firefox/140` kept across renewal; a 2,000-byte agent with a multi-byte character at byte 512 → ≤ 512 bytes and `utf8.ValidString`; `""` client IP kept absent. FAIL; Green; PASS; commit.
 
-### Task 6.4: End by handle
-- [ ] Red `TestSessions_EndSignIn`: own handle revokes the family; another user's handle → `ErrNotFound`, nothing revoked; `EndOtherSignIns` keeps the current family. Fail; Green over `RevokeFamily`; pass; commit.
+### Task 6.4: Key binding
+- [ ] Red `TestSessions_KeyBinding`: rotation, renewal and re-authentication successors keep `K`; the successor handed to `RotateIssuing`'s and `RotateWithGraceIssuing`'s step already carries `K`; `Save` of a cleared copy leaves it; `Prepare` with `K`, set `K2`, `Commit` → `ErrConfig`, nothing stored; `WithReauthenticationBinding(K2)` on a session bound to `K` → `ErrConfig`; on an unbound one → bound to `K2`; both members set → `ErrConfig`. FAIL; Green (successor construction; `Commit`'s built-field check; `Save` preserves like `MFAAtFirstFactor`). PASS; commit.
 
-### Task 6.5: Migration
-**Files:** Create `store/migrate/securitystate/20261101000000_session_signins.sql` (date set at implementation); Test `test/migrate_securitystate_test.go`
-- [ ] Red: populated-database test (sessions created under the previous migration still load, unbound, without metadata) and rollback test, on PostgreSQL 15 and 18.
-- [ ] Fail; Green: nullable `client_ip text`, `user_agent text`, `binding_jkt text`, `binding_x5t text`, index on `(user_ref, absolute_expires_at)` (column names reconciled with the existing table at implementation). Pass; commit.
+### Task 6.5: End by handle
+- [ ] Red `TestSessions_EndSignIn`: own handle revokes the family; current handle revokes the current session; `not-a-family`, unknown and `u-2`'s handle → `ErrNotFound`, nothing revoked; `EndOtherSignIns` racing a renewal keeps the successor (barrier test). FAIL; Green; PASS; commit.
 
-### Task 6.6: Durable stores
-- [ ] Red: new cases in `test/storetest` session suite (listing, metadata, binding round trip, binding untouched by save, another user's sessions never listed). Run `go test ./...` in `test`; expect FAIL for every durable store.
-- [ ] Green in `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, and the sealing decorator in `session/store_encrypted.go`. Pass; commit.
+### Task 6.6: Migration
+**Files:** Create `store/migrate/securitystate/2026MMDD000000_session_signins.sql`; Test `test/migrate_securitystate_test.go`
+- [ ] Red: populated-database and rollback tests on PostgreSQL 15 and 18. FAIL; Green: nullable `client_ip text`, `user_agent text`, `binding_kind text`, `binding_thumbprint text`; no index (listing uses `sessions_user`). PASS; commit.
+
+### Task 6.7: Durable stores
+- [ ] Red: new cases in the `test/storetest` session suite (listing, exact match, metadata and binding round trip, save keeps both, supersession inserts both, a store whose listing returns another user's session fails naming the listing check). FAIL for every durable store.
+- [ ] Green in `store/sqlstore`, `store/pgxstore`, `store/gormstore` session files and the sealing decorator. PASS; commit.
 
 ---
 
-## Task group 7: session management endpoints and notices (lane S, dispatch S2)
+## Task group 7: session management endpoints and notices (lane S, dispatch S3)
 
 **Interfaces produced:**
-- `func EnableSessionManagement(m *session.Sessions, opts ...SessionManagementOption) Option`, `func WithSessionManagementPrefix(p string) SessionManagementOption` (default `/sessions`)
-- `var ErrSignInNotFound` mapped to 404
+- `func EnableSessionManagement(opts ...SessionManagementOption) Option` (uses the chain's `WithSessions` manager; none → `ErrConfig`), `func WithSessionManagementPrefix(p string) SessionManagementOption` (default `/sessions`)
+- `var ErrSessionHandleNotFound` (404)
 - `func WithoutPasskeyRemovalNotification() PasskeyOption`
-- `func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option`, `func SignInNoticeWindow(d time.Duration) SignInNoticeOption` (default 90 days)
+- `func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option`, `func WithSignInMatcher(fn func(new, known SignIn) bool) SignInNoticeOption` (default: equal user agent), `func WithSeenDevices(p SeenDevices) SignInNoticeOption`, `type SeenDevices interface { Seen(ctx context.Context, user identity.UserID, userAgent string) (bool, error) }`
 
 ### Task 7.1: Endpoints
-- [ ] Red `TestSessionManagement`: list marks the current sign-in and carries no session identifier; "Sign out other devices" with a 2-minute-old authentication; "Stale session" with a 2-hour-old one refused with the reauthentication-required error; "Another user's handle" → 404. Fail; Green in `httpsec/session_management.go`, using `Session.AuthenticatedWithin` from `reauthentication`; pass; commit.
+- [ ] Red `TestSessionManagement`: list marks current, carries no identifier, needs no recency; "Sign out other devices"; "Only the current sign-in" → success, nothing revoked; "Stale session" → reauthentication-required, nothing revoked; foreign handle → `ErrSessionHandleNotFound`; own current handle → session gone; "Current during the grace window"; recovery-pending and MFA-pending sessions refused as elsewhere; every response `Cache-Control: no-store`; construction without a manager fails. FAIL; Green in `httpsec/session_management.go` with `reauthentication`'s recency guard. PASS; commit.
 
-### Task 7.2: Status
-- [ ] Red `TestStatusForError` row `ErrSignInNotFound → 404`; fail; register; pass; commit.
+### Task 7.2: Status and outage
+- [ ] Red `TestStatusForError` row → 404, and `TestSessionManagement_Outage` (listing store error → 500, fixed text). FAIL; Green; PASS; commit.
 
 ### Task 7.3: Passkey removal notice
-- [ ] Red `TestPasskey_RemovalNotice` (label and time in the message, no credential ID or user handle; opt-out sends nothing; send failure keeps the removal). Fail; Green in the passkey manage path and `notify`; pass; commit.
+- [ ] Red `TestPasskey_RemovalNotice`: label and time, no credential ID or user handle; opt-out sends nothing; send failure keeps the removal; refused removal (outside freshness) sends nothing. FAIL; Green; PASS; commit.
 
 ### Task 7.4: Unseen-device sign-in notice
-- [ ] Red `TestSignInNotice`: new metadata → notice; matching metadata within 90 days → none; enabled without `WithSessionMetadata` or without a sender → `New` fails naming the notice. Fail; Green after login completion, through the sender (queued senders return at once); pass; commit.
+- [ ] Red `TestSignInNotice`: `Safari/19` beside a live `Firefox/140` → notice; same agent → none; first sign-in → none; seen-devices port answering true → none; a sign-in whose `Commit` fails → none; send failure → sign-in unaffected, logged; notice text has no handle, token or full address; without metadata or sender → `New` fails naming the notice. FAIL; Green after the session is stored. PASS; commit.
 
 ### Task 7.5: Conformance and docs
-- [ ] Conformance scenarios on three adapters; godoc and README with defaults. Commit.
+- [ ] Conformance on three adapters; godoc and README with defaults. Commit.
 
 ---
 
-## Task group 8: confirmation claim and DPoP (lane D, dispatches D1: 8.1–8.5, D2: 8.6–8.9)
+## Task group 8: confirmation claim and DPoP (lane D, dispatches D1: 8.1–8.5, D2: 8.6–8.9, D3: 8.10–8.12)
 
 **Interfaces produced:**
-- `token`: an issuing option `WithConfirmation(c Confirmation)`; `type Confirmation struct { JKT, X5TS256 string }`; the verifier's result exposes `Confirmation`.
-- `httpsec`: `type DPoP struct { Require bool; ProofMaxAge time.Duration; Replay ReplayStore; Algorithms []jwa.SignatureAlgorithm; Nonce bool; PublicURL string }`, `func WithDPoP(d DPoP) BearerTokenOption` (and the session-bearer equivalent), `func WithoutDPoP() BearerTokenOption` (nonces and the public URL are config fields, not top-level options; D19)
-- `type ReplayStore interface { Seen(ctx context.Context, jtiDigest string, until time.Time) (bool, error) }` with an in-memory default
-- `var ErrInvalidDPoPProof`, `var ErrDPoPNonceRequired` (both 401)
+- `token`: issuing option `WithConfirmation(c Confirmation)`; `type Confirmation struct { JKT, X5TS256 string }`; the verifier's result exposes `Confirmation`.
+- `httpsec`: `type DPoP struct { Require bool; ProofMaxAge time.Duration; Replay ReplayStore; Algorithms []jwa.SignatureAlgorithm; Nonce bool; PublicURL string; MaxProofSize int }`, `func EnableDPoP(d DPoP) Option`
+- `type ReplayStore interface { Record(ctx context.Context, key string, until time.Time) (fresh bool, err error) }` (atomic insert-if-absent; key = digest of `jti` and thumbprint), in-memory default
+- `var ErrInvalidDPoPProof`, `var ErrDPoPNonceRequired` (matches `ErrInvalidDPoPProof`; both 401)
+- `type TokenType string; const TokenTypeBearer, TokenTypeDPoP TokenType`, carried on the issued result every responder receives.
 
 ### Task 8.1: `cnf` claim
-- [ ] Red `TestGenerator_Confirmation` (`jkt`, `x5t#S256`, none) and `TestVerifier_Confirmation` (returned; malformed `cnf` refused); both set is a configuration error. Fail; Green in `token/claims.go`, `generator.go`, `verifier.go`; pass; commit.
+- [ ] Red `TestGenerator_Confirmation` (`jkt`, `x5t#S256`, none; both → `ErrConfig`; a 10-character thumbprint → `ErrConfig`) and `TestVerifier_Confirmation` (returned; `{"jkt": 7}`, `{}`, a string `cnf` refused). FAIL; Green in `token/`; PASS; commit.
 
-### Task 8.2: Proof verification
-**Files:** Create `httpsec/dpop.go`; Test `httpsec/dpop_test.go`
-- [ ] Red `TestDPoP_Proof`: a table of proofs signed with jwx v4 — valid; wrong `typ`; `alg: none`; HS256; private key in `jwk`; bad signature; wrong `htm`; wrong `htu`; `iat` 61 s old; `iat` 61 s ahead; missing `jti`; wrong `ath`; two `DPoP` headers. Every failure is `ErrInvalidDPoPProof`.
-- [ ] Fail; Green: parse with `jws.Parse`, verify with the embedded `jwk`, thumbprint per RFC 7638 (`jwk.Key.Thumbprint(crypto.SHA256)`); pass; commit.
+### Task 8.2: `EnableDPoP`
+- [ ] Red `TestDPoP_Construction`: no bearer mode → `ErrConfig`; twice → `ErrConfig`; defaults filled; not enabled → `Authorization: DPoP` passes through and a protected route refuses. FAIL; Green; PASS; commit.
 
-### Task 8.3: Replay store
-- [ ] Red `TestDPoP_Replay` (a `jti` seen within 60 s refused; after 60 s accepted again; store error refuses and maps to 500), run with `-race` and two concurrent identical proofs → exactly one accepted. Fail; Green: in-memory store keyed by the `jti` digest with expiry sweep; pass; commit.
+### Task 8.3: Proof verification
+**Files:** Create `httpsec/dpop.go`; Test `dpop_test.go`
+- [ ] Red `TestDPoP_Proof`, proofs signed with jwx v4: valid; 9 KiB header (no signature verified: a counting key seam); two headers; `DPoP` scheme without a header; wrong `typ`; `none`; `HS256`; `jwk` with `d`; P-384 key under `ES256`; bad signature; wrong `htm`; `htu` for `/api/payments`; `https://APP.example.com:443/api/orders` against `…/api/orders?page=2` passes; `iat` 61 s old and 5 min ahead; `ath` for another token; `ath` on an issuing request. Review Focus rows: `HEAD` proof on `GET` refused; `htu` `/api/orders` against request path `/api/ord%65rs` refused.
+- [ ] FAIL; Green in the D8 order; thumbprint via `jwk.Key.Thumbprint(crypto.SHA256)`. PASS; commit.
 
-### Task 8.4: Bearer interceptors
-- [ ] Red `TestDPoP_Bearer`: `Authorization: DPoP` accepted with a proof; unbound `Bearer` still accepted; bound token as `Bearer` refused; bound token with another key's proof refused; `Require: true` refuses an unbound token; `WithoutDPoP()` refuses the `DPoP` scheme. Fail; Green in `bearer.go` and `session_bearer.go`; pass; commit.
+### Task 8.4: Replay store
+**Files:** Create `httpsec/dpop_replay.go`
+- [ ] Red `TestDPoP_Replay` with `-race`: replay within 60 s refused, accepted after; a proof refused for `htm` leaves its `jti` unrecorded; two identical concurrent proofs → one accepted; 300-byte `jti` refused; store error → fixed text, 500, not charged; cancelled context → matches `context.Canceled`, nothing at ERROR. FAIL; Green; PASS; commit.
 
-### Task 8.5: Binding at every issuing endpoint
-- [ ] Red `TestDPoP_Binding`: one row per endpoint (login, MFA verify, passkey login, magic link, OIDC handoff, recovery completion, re-authentication, renewal) — a proof without `ath` yields a token with `cnf.jkt` and a bound session; renewal of a bound session without the bound key refused. Fail; Green through one helper the issuing paths call (`complete.go` and the endpoints that mint on their own); pass; commit.
+### Task 8.5: Bearer interceptors
+- [ ] Red `TestDPoP_Bearer`: `DPoP` accepted in signed-bearer and session-reference modes (`ath` over the reference); unbound `Bearer` accepted; bound as `Bearer` refused; another key's proof refused; `Require` refuses an old unbound token; `cnf` `{"jwk":…}` refused, not accepted as bearer. FAIL; Green in `bearer.go`, `session_bearer.go`; PASS; commit.
 
-### Task 8.6: Public URL
-- [ ] Red `TestDPoP_PublicURL`: trusted proxy forwards `https` and `app.example.com`, app sees `http://10.20.1.5:8080/api/orders`, proof `htu` `https://app.example.com/api/orders` passes; the config's `PublicURL` overrides; Review Focus row: `https://APP.example.com:443/api/orders` equals `https://app.example.com/api/orders`. Fail; Green; pass; commit.
+### Task 8.6: Proof before spend, binding at issue
+- [ ] Red `TestDPoP_Binding` and `TestDPoP_ProofBeforeSpend`, one row per endpoint (login, MFA verify, passkey, magic link, OIDC handoff, recovery, re-authentication, renewal): valid proof → `cnf.jkt` and a bound stored session; no proof → unbound; bad proof → `ErrInvalidDPoPProof` with the link, handoff code, challenge attempts or recovery proofs unspent and no session stored; bad proof at `/login` → no lockout failure; `Require` without a proof → refused before any account lookup (a mock `UserLoader` with no expected calls).
+- [ ] FAIL; Green: verify in each endpoint's checks; pass `WithKeyBinding` to `Prepare` and `WithConfirmation` to the issuer. PASS; commit.
 
-### Task 8.7: Nonces and challenges
-- [ ] Red `TestDPoP_Nonce` (opt-in; missing nonce → 401 `WWW-Authenticate: DPoP error="use_dpop_nonce"` plus `DPoP-Nonce`), `TestDPoP_Challenge` (invalid signature → `DPoP error="invalid_dpop_proof", algs="ES256"`), and `TestStatusForError` rows → 401. Fail; Green; pass; commit.
+### Task 8.7: Binding through rotation
+- [ ] Red `TestDPoP_Rotation`: renewal with a proof leaves an unbound session unbound; re-authentication binds an unbound one and keeps a bound one; renewal and re-authentication with another key refused, nothing rotated; an ended family with the bound key → expired, nothing stored. FAIL; Green; PASS; commit.
 
-### Task 8.8: End to end
-- [ ] Conformance `dpop_scenarios.go` on three adapters; a recorded proof vector produced by the gap review's `dpop.ts` in a headless browser (fixture in `test/testdata/dpop/`) verifies against a test server. Commit.
+### Task 8.8: Token type
+- [ ] Red `TestDPoP_TokenType`: every issuing endpoint's responder receives `TokenTypeDPoP` with a proof and `TokenTypeBearer` without. FAIL; Green; PASS; commit.
 
-### Task 8.9: Docs
-- [ ] Godoc `WithDPoP` with its defaults; README with the React, Next.js and htmx samples. Commit.
+### Task 8.9: Public URL
+- [ ] Red `TestDPoP_PublicURL`: behind a trusted proxy `https://app.example.com/api/orders` passes for `http://10.20.1.5:8080/api/orders`; `PublicURL` overrides. FAIL; Green; PASS; commit.
+
+### Task 8.10: Nonces and challenges
+**Files:** Create `httpsec/dpop_nonce.go`
+- [ ] Red `TestDPoP_Nonce` (missing and expired nonce → 401, `error="use_dpop_nonce"`, fresh `DPoP-Nonce`; a nonce from a second chain with the same key material accepted), `TestDPoP_Challenge` (`DPoP error="invalid_dpop_proof", algs="ES256"`; missing token with DPoP optional → both `DPoP` and `Bearer` challenges) and `TestStatusForError` rows → 401. FAIL; Green: nonces sealed with the chain's key material; PASS; commit.
+
+### Task 8.11: End to end
+- [ ] Conformance `dpop_scenarios.go` on three adapters; a recorded proof vector from the doc's `dpop.ts` (fixture in `test/testdata/dpop/`) verifies against a test server. Commit.
+
+### Task 8.12: Docs
+- [ ] Godoc `EnableDPoP` with defaults; README with React, Next.js and htmx samples. `go doc ./httpsec EnableDPoP`. Commit.
 
 ---
 
-## Task group 9: mTLS-bound tokens (lane D, dispatch D3)
+## Task group 9: mTLS-bound tokens (lane D, dispatch D4)
 
-**Interfaces produced:** `func EnableCertificateBinding(opts ...CertificateBindingOption) Option` (top-level; D19); `TrustedProxies.ClientCertHeader string` (from task 1.3); `var ErrCertificateBinding` (401); the check runs at `OrderMTLS`.
+**Interfaces produced:** `func EnableCertificateBinding(opts ...CertificateBindingOption) Option`; the forwarded header and decoder come from `WithClientCertificateHeader` (group 2); `var ErrCertificateBinding` (401); the check runs at `OrderMTLS`.
 
 ### Task 9.1: Direct TLS
-- [ ] Red `TestCertificateBinding_Direct` over `httptest.NewUnstartedServer` with `tls.RequireAnyClientCert`: signing in with certificate C binds `x5t#S256`; later request with C passes. Fail; Green in `httpsec/certbinding.go`; pass; commit.
+- [ ] Red `TestCertificateBinding_Direct` over `httptest.NewUnstartedServer` with `tls.RequireAnyClientCert`: certificate C binds `x5t#S256`; C passes; none and D refused. FAIL; Green in `httpsec/certbinding.go`; PASS; commit.
 
 ### Task 9.2: Forwarded certificate
-- [ ] Red `TestCertificateBinding_Forwarded`: header from a trusted peer parsed (encoding from 1.3); same header from an untrusted peer ignored. Fail; Green; pass; commit.
+- [ ] Red `TestCertificateBinding_Forwarded`: URL-encoded PEM from a trusted peer binds C; a consumer decoder is used when given; untrusted peer ignored; undecodable value → no certificate, bound token refused. FAIL; Green; PASS; commit.
 
-### Task 9.3: Refusal and conformance
-- [ ] Red: bound token without its certificate → `ErrCertificateBinding` → 401; conformance on three adapters. Fail; Green; pass; commit.
+### Task 9.3: Both offered, switched off, conformance
+- [ ] Red: proof and certificate → `cnf.jkt` only; `x5t#S256` token after the feature is off → `ErrCertificateBinding`; `TestStatusForError` row → 401; conformance on three adapters. FAIL; Green; PASS; commit.
 
 ### Task 9.4: Docs
-- [ ] Godoc and README with the proxy configuration. Commit.
+- [ ] Godoc and README: default off, the decoder, validity left to TLS or the proxy, and proxy examples checked against each proxy's documentation. Commit.
 
 ---
 
-## Task group 10: password policy and rehash (lane P, dispatches P1: 10.1–10.5, P2: 10.6–10.8)
+## Task group 10: password policy and rehash (lane P, dispatches P1: 10.1–10.6, P2: 10.7–10.10)
 
 **Interfaces produced:**
 - `func NewPolicy(opts ...PolicyOption) (*Policy, error)`; `func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate string) error`; `func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate string, write WriteFunc) error`
-- Options: `MinLength(n int)`, `MaxLength(n int)`, `WithoutCommonPasswords()`, `CommonPasswords(list []string)`, `ContextWords(fn func(*identity.Details) []string)`, `Breached(src BreachSource, onFailure LookupFailure)`, `PwnedPasswords(c *outbound.Client) BreachSource`, `const Refuse, Accept LookupFailure`, `NoReuse(h History, depth int, opts ...ReuseOption)`, `WithEncoder(e Encoder)`, `WithClock(c clock.Clock)`
-- `var ErrPasswordRejected`; `type RejectedError struct { Rule Rule }`; `ErrPasswordReused` also matches `ErrPasswordRejected`
+- Options: `MinLength(n int)`, `MaxLength(n int)`, `WithoutCommonPasswords()`, `CommonPasswords(list []string)`, `ContextWords(fn func(context.Context, *identity.Details) ([]string, error))`, `Breached(src BreachSource, onFailure LookupFailure)`, `PwnedPasswords(c *outbound.Client) BreachSource`, `const Refuse, Accept LookupFailure`, `NoReuse(h History, depth int, opts ...ReuseOption)`, `WithEncoder(e Encoder)`, `WithClock(c clock.Clock)`
+- `var ErrPasswordRejected`; `type RejectedError struct { Rule Rule }`; `const RuleTooShort, RuleTooLong, RuleCommon, RuleContextWord, RuleBreached, RuleReused Rule`; `ErrReused` also matches `ErrPasswordRejected`; `var ErrLookupUnavailable` (500)
 - `type Upgrader interface { NeedsUpgrade(encoded []byte) bool }`
-- `httpsec`: `func WithLoginRehash(fn func(ctx context.Context, user *identity.Details, hash []byte) error) LoginOption` (and the Basic equivalent)
+- `httpsec`: `type RehashFunc func(ctx context.Context, user *identity.Details, replaced, upgraded []byte) error`; `func WithLoginRehash(fn RehashFunc) LoginOption` and the Basic and re-proof equivalents; `password.ConditionalProvisionerRehash(p identity.Provisioner) RehashFunc`
 
-### Task 10.1: Defaults and option semantics
-- [ ] Red `TestPolicy_Defaults` and `TestPolicy_Options` with the `password-policy` scenarios (a 16-character list entry; `short`; `MinLength(8)` keeps the list; `WithoutCommonPasswords()` removes it). Fail; Green in `authenticate/password/policy.go`; embed the list as `authenticate/password/common.txt` via `embed`; pass; commit.
+### Task 10.1: Defaults and ordering
+- [ ] Red `TestPolicy_Defaults` and `TestPolicy_Options`: the `password-policy` scenarios; a too-short candidate makes no breach lookup (a mock source with no expected calls). FAIL; Green in `authenticate/password/policy.go`, the list embedded as `common.txt`; PASS; commit.
 
-### Task 10.2: Length and context words
-- [ ] Red `TestPolicy_Length` (15 three-byte characters pass; 64 accepted; `MinLength(6)` refused at construction) and `TestPolicy_ContextWords`. Fail; Green with `utf8.RuneCountInString`; pass; commit.
+### Task 10.2: Length
+- [ ] Red `TestPolicy_Length`: 15 three-byte characters pass; spaces kept; `""` too short; 129 too long; bcrypt with 30 three-byte characters too long at `Check`. Review Focus row: a change with `"pass\x00word…"` returns `ErrContainsNUL` unchanged. FAIL; Green with `utf8.RuneCountInString`; PASS; commit.
 
-### Task 10.3: Breach check
-- [ ] Red `TestPolicy_Breached` against an `httptest` range server: request path is the first 5 SHA-1 hex characters only, carries `Add-Padding: true`; hit refused; padded zero-count rows ignored; timeout with `Refuse` → policy-unavailable error; with `Accept` → accepted; no failure mode → construction error. Fail; Green; pass; commit.
+### Task 10.3: Context words
+- [ ] Red `TestPolicy_ContextWords`: `Alice.Smith2026`; `my-alice.smith2026-pass`; `abc` only on equality; a failing word function returns its error, not a rejection. FAIL; Green; PASS; commit.
 
-### Task 10.4: Move the reuse guard into `NoReuse` (BREAKING)
-- [ ] Red: port every test in `authenticate/password/reuse_test.go` and the history conformance in `test/identity` to `NewPolicy(NoReuse(...))`; they fail to compile only on the removed name, then — after a stub `NoReuse` returning a rule that accepts everything — fail on behaviour.
-- [ ] Green: move the guard's logic behind `NoReuse`; delete `NewReuseGuard`; sign-up rule (no stored hash, no history → accept). Pass; commit `feat(password)!: one password policy, reuse included`.
+### Task 10.4: Breach check
+- [ ] Red `TestPolicy_Breached` against an `httptest` range server asserting the path is the 5-character prefix and `Add-Padding: true`: count 3 refused; count 0 ignored; timeout, 429 and a malformed body → `ErrLookupUnavailable` with `Refuse`, accepted with `Accept`; cancelled context → `context.Canceled` under both; no failure mode → construction error. FAIL; Green; PASS; commit.
 
-### Task 10.5: Status
-- [ ] Red `TestStatusForError` rows: each rule's refusal → 422; `ErrPasswordReused` → 422 and `errors.Is(err, ErrPasswordRejected)`. Fail; Green; pass; commit.
+### Task 10.5: Move the reuse guard into `NoReuse` (BREAKING)
+- [ ] Red: port every test in `reuse_test.go` and the history conformance in `test/identity` to `NewPolicy(NoReuse(...))`; they fail to compile only on the removed name, then, after a stub rule that accepts everything, fail on behaviour.
+- [ ] Green: move the logic behind `NoReuse`; delete `NewReuseGuard`; no stored hash and no history → accept. PASS; commit `feat(password)!: one password policy, reuse included`.
 
-### Task 10.6: Upgrader
-- [ ] Red `TestEncoder_NeedsUpgrade`: Argon2id 128 MiB asked about 64 MiB → true; own hash → false; bcrypt cost raised → true; scrypt N raised → true. Fail; Green; pass; commit.
+### Task 10.6: Construction and no secrets
+- [ ] Red `TestPolicy_Construction` (max 32, max below min, empty replacement list, plus the moved reuse cases) and `TestPolicy_NoSecrets` (refusal texts and a captured log carry no candidate, hash or context word). FAIL; Green; PASS; commit.
 
-### Task 10.7: Login rehash
-- [ ] Red `TestLogin_Rehash`: outdated hash with a write → write gets a 128 MiB hash; no write → nothing; write error → login still succeeds and the log record carries no password or hash. Fail; Green in `login.go`, `basic.go`; pass; commit.
+### Task 10.7: Status
+- [ ] Red `TestStatusForError` rows: each rule → 422; `ErrReused` → 422 and `errors.Is(err, ErrPasswordRejected)`; `ErrLookupUnavailable` → 500. FAIL; Green; PASS; commit.
 
-### Task 10.8: Docs
-- [ ] Godoc each option with its default; README password section, including the breach check's failure-mode choice. Commit.
+### Task 10.8: Upgrader
+- [ ] Red `TestEncoder_NeedsUpgrade`: Argon2id 128 MiB about 64 MiB → true; own → false; 128 MiB hash under a 64 MiB encoder → false; bcrypt hash under Argon2id → true; garbage → false; bcrypt and scrypt raised costs → true. FAIL; Green; PASS; commit.
+
+### Task 10.9: Login rehash
+- [ ] Red `TestLogin_Rehash` for form login, Basic and the password re-proof: write receives the 64 MiB hash replaced and a 128 MiB hash; no write → no encode; wrong password → no call; write error → success, log without hashes; MFA challenge → write called; `ConditionalProvisionerRehash` after a concurrent password change leaves the new hash. FAIL; Green; PASS; commit.
+
+### Task 10.10: Docs
+- [ ] Godoc each option with its default; README password section with the failure-mode choice and the conditional rehash write. `go doc ./authenticate/password NewPolicy`. Commit.
 
 ---
 
-## Task group 11: security events (lane E)
+## Task group 11: security events (lane E, dispatches E1: 11.1–11.3, E2: 11.4–11.5)
 
-**Interfaces produced:** package `github.com/kartaladev/scrty/security`: `type Event struct { Name string; At time.Time; Outcome string; User identity.UserID; ClientIP string; Factor identity.FirstFactor; Session string }`, `type Sink func(ctx context.Context, e Event)`, name constants (`LoginSuccess = "authn_login_success"`, ...); `httpsec.EnableSecurityEvents(s security.Sink) Option`.
+**Interfaces produced:** package `github.com/kartaladev/scrty/security`: `type Event struct { Name string; At time.Time; Outcome string; User identity.UserID; ClientIP string; Factor identity.FirstFactor; Session string }`, `type Sink func(ctx context.Context, e Event)`, name constants; `httpsec.EnableSecurityEvents(s security.Sink) Option`.
 
 ### Task 11.1: Package and sink
-- [ ] Red `TestSecurityEvents_Sink` (no sink → nothing; failed login → one `authn_login_fail`). Fail; Green; pass; commit.
+- [ ] Red `TestSecurityEvents_Sink`: no sink → nothing; failed login → one `authn_login_fail`; a panicking sink → login succeeds, panic logged; a cancelled request context → the sink's context not done. FAIL; Green; PASS; commit.
 
 ### Task 11.2: Emission everywhere
-- [ ] Red `TestSecurityEvents_Emitted`: one table row per event name in the spec list and per `scrty_` name; each asserts no secret in any field. Fail; Green at each call site; pass; commit.
+- [ ] Red `TestSecurityEvents_Emitted`: one row per name in the spec list and per `scrty_` name, each asserting the resolved client address and no secret in any field. FAIL; Green at each call site; PASS; commit.
 
-### Task 11.3: Observers as events
-- [ ] Red `TestSecurityEvents_Observers`: lockout report → `authn_login_lock`; reuse → `authn_token_reuse`; configured observers still called. Fail; Green; pass; commit.
+### Task 11.3: Only what happened
+- [ ] Red `TestSecurityEvents_OnlyWhatHappened`: lost magic-link race → one `authn_token_created`; failed `Commit` → no creation event; session store outage at the bearer → no `authn_login_fail`, no `authz_fail`; hang-up → no failure event. FAIL; Green: emit after `Commit` and hand-out. PASS; commit.
 
-### Task 11.4: Docs
-- [ ] Godoc lists every name. Commit.
+### Task 11.4: Observers as events
+- [ ] Red `TestSecurityEvents_Observers`: lockout → `authn_login_lock`; reuse → `authn_token_reuse`; configured observers still called. FAIL; Green; PASS; commit.
+
+### Task 11.5: Docs
+- [ ] Godoc lists every name and the sink's contract, including a blocking sink. Commit.
 
 ---
 
 ## Task group 12: automation challenge (lane C)
 
-**Interfaces produced:** `type ChallengeVerifier interface { Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error) }`, `type ChallengeSignals struct { SourceFailures, IdentifierFailures int }`, `const ChallengePass, ChallengeRefuse, ChallengeNotNeeded`, `func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option`, `func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption`, `func WithoutChallengeRefusalCounting() ChallengeOption`, `var ErrChallengeRequired` (403).
+**Interfaces produced:** `type ChallengeVerifier interface { Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error) }`, `type ChallengeSignals struct { SourceHasFailures, IdentifierHasFailures bool }`, `const ChallengePass, ChallengeRefuse, ChallengeNotNeeded ChallengeDecision`, `func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option`, `func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption`, `func WithoutChallengeRefusalCounting() ChallengeOption`, `var ErrChallengeRequired` (403), `var ErrChallengeUnavailable` (500).
 
-### Task 12.1: Flows
-- [ ] Red `TestChallenge_Flows` with a mockgen `ChallengeVerifier`: refusal before account lookup and without a lockout failure, for each of the five flows; unselected flow not called; no verifier → no calls. Fail; Green; pass; commit.
+### Task 12.1: Flows and construction
+- [ ] Red `TestChallenge_Flows` and `TestChallenge_Construction` with a mockgen verifier: refusal before account lookup and without a lockout failure, for each of the five flows; unselected flow not called; no verifier → no calls; nil verifier and no flows fail `New`. FAIL; Green (after the source limit); PASS; commit.
 
-### Task 12.2: Signals, counting, status
-- [ ] Red `TestChallenge_Signals`, `TestChallenge_CountsAgainstSource`, `TestStatusForError` row → 403. Fail; Green; pass; commit.
+### Task 12.2: Outage and hang-up
+- [ ] Red `TestChallenge_Outage`: verifier error → `ErrChallengeUnavailable`, 500, no lookup, nothing charged; cancelled context → `context.Canceled`, nothing at ERROR. FAIL; Green; PASS; commit.
 
-### Task 12.3: Conformance and docs
+### Task 12.3: Signals, counting, status
+- [ ] Red `TestChallenge_Signals` (clean source; suspicious identifier; failing limiter reported as failures), `TestChallenge_CountsAgainstSource` (limit exhausted → refused before the verifier; not charged to lockout; opt-out keeps reaching the verifier), `TestStatusForError` row → 403. FAIL; Green; PASS; commit.
+
+### Task 12.4: Conformance and docs
 - [ ] Three adapters; godoc and README. Commit.
 
 ---
@@ -447,35 +463,35 @@ Each lane owns its files; a file not listed is held by the main session for revi
 ## Task group 13: supply chain (lane T)
 
 ### Task 13.1: SHA pins and the check
-- [ ] Red: a check script `tools/cmd/pincheck` (or a vetted `tool` directive) run in CI on a scratch branch referencing `actions/checkout@v5` → fails naming the workflow and action.
-- [ ] Green: pin every action in `.github/workflows/ci.yml` to its commit SHA with `# vX.Y.Z`; the check passes on `main`. Commit.
+- [ ] Red: a check (`tools/cmd/pincheck`) run on a scratch branch with `actions/checkout@v5` and with a 7-character SHA → fails naming the workflow and action; `./.github/actions/setup` passes.
+- [ ] Green: pin every action and reusable workflow to a 40-character SHA with `# vX.Y.Z`, container actions by digest; the check passes on `main`. Commit.
 
 ### Task 13.2: Dependabot
-- [ ] Add `.github/dependabot.yml` with a `gomod` entry per published module directory and one `github-actions` entry, weekly. Verify GitHub's configuration check accepts it. Commit.
+- [ ] `.github/dependabot.yml`: a `gomod` entry for every directory with a published `go.mod` (nested included), one `github-actions` entry, weekly. Verify GitHub's check accepts it. Commit.
 
 ### Task 13.3: SBOM
-- [ ] Add the generator as a `tool` directive in `tools/go.mod`; a `sbom` target in `Makefile` producing one file per published module; the release gate fails when generation fails (prove with a broken module path first). Commit.
+- [ ] Generator as a `tool` directive in `tools/go.mod`; a `sbom` target producing one file per published module; the gate fails when generation fails (prove with a broken module path first). Commit.
 
 ### Task 13.4: Vulnerabilities block the release
-- [ ] On a disposable branch, pin a module to a known-vulnerable version and see the gate fail; make `vuln` part of the release gate; the gate passes on `main`. Commit.
+- [ ] On a disposable branch, pin a module to a known-vulnerable version and see the gate fail; make `vuln` part of the gate; it passes on `main`. Commit.
 
 ---
 
 ## Task group 14: integration (main session and a fresh reviewer)
 
 ### Task 14.1
-- [ ] `make check` in the root and `go test -race ./...` in every module, including the full conformance suite. Expected: all pass.
+- [ ] `make check` and `go test -race ./...` in every module, with the full conformance suite. Expected: all pass.
 
 ### Task 14.2
 - [ ] `govulncheck ./...`, `gofmt -l .`, `go vet ./...` in every module. Expected: clean.
 
 ### Task 14.3
-- [ ] An Opus reviewer that wrote none of the code checks the whole branch against every requirement in `specs/`, listing each as met or filing a finding (with a failing test or `UNREPRODUCED`).
+- [ ] An Opus reviewer that wrote none of the code checks the branch against every requirement in `specs/`, listing each as met or filing a finding (with a failing test or `UNREPRODUCED`).
 
 ---
 
 ## Self-review notes
 
-- Spec coverage: every requirement in the nine new and ten modified capability deltas maps to a task above; `supply-chain` maps to group 13; `http-error-propagation` rows are spread across 2.6, 5.6, 7.2, 8.7, 9.3, 10.5 and 12.2.
-- Interfaces: names introduced in a group's Interfaces block are the ones later groups use (`Request.Host/Secure`, `ClientFromContext`, `config.dpopEnabled`, `session.KeyBinding`, `token.Confirmation`). Top-level options that switch on a feature are `Enable…` (design D19); feature sub-options stay `With…`.
-- Draft caveat: every signature touching `reauthentication` (`Session.AuthenticatedWithin`, the re-proof rotation) or `key-port-context` (token issuance options) is re-checked in task group 1.
+- Spec coverage: every requirement in the nine new and ten modified capability deltas maps to a task; `http-error-propagation`'s MODIFIED contract and table rows are spread across 2.7, 5.6, 7.2, 8.10, 9.3, 10.7 and 12.3; `supply-chain` is group 13.
+- Interfaces: names in a group's Interfaces block are the ones later groups use (`Request.Host/Secure`, `ClientFromContext`, `WithClientCertificateHeader`, `config.dpopEnabled`, `session.KeyBinding`, `token.Confirmation`, `TokenType`, `RehashFunc`).
+- Task numbers match `tasks.md` one to one; no step adds scope beyond it.
