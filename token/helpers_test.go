@@ -151,8 +151,8 @@ func signRaw(t *testing.T, signer crypto.Signer, kid string, alg signingkey.Alg,
 func signClaims(t *testing.T, keys signingkey.KeySource, claims map[string]any) string {
 	t.Helper()
 
-	kid, signer, ok := keys.Signer(signingkey.RS256)
-	require.True(t, ok)
+	kid, signer, signerErr := keys.Signer(t.Context(), signingkey.RS256)
+	require.NoError(t, signerErr)
 
 	return signRaw(t, signer, kid, signingkey.RS256, claims)
 }
@@ -192,7 +192,7 @@ func tamperPayload(t *testing.T, raw string) string {
 func verificationKeySet(t *testing.T, source signingkey.KeySource) jwk.Set {
 	t.Helper()
 
-	published, err := source.VerificationKeys()
+	published, err := source.VerificationKeys(t.Context())
 	require.NoError(t, err)
 
 	set := jwk.NewSet()

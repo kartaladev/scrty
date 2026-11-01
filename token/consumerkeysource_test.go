@@ -1,6 +1,7 @@
 package token_test
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -42,15 +43,15 @@ type externalKeySource struct {
 // tests that use it.
 var _ signingkey.KeySource = (*externalKeySource)(nil)
 
-func (s *externalKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (s *externalKeySource) Signer(_ context.Context, alg signingkey.Alg) (string, crypto.Signer, error) {
 	if alg != signingkey.RS256 {
-		return "", nil, false
+		return "", nil, signingkey.ErrNoKey
 	}
 
-	return s.kid, s.signer, true
+	return s.kid, s.signer, nil
 }
 
-func (s *externalKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
+func (s *externalKeySource) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
 	return []signingkey.PublicKey{{
 		Kid: s.kid,
 		Alg: signingkey.RS256,

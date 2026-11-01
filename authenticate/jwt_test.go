@@ -1,6 +1,7 @@
 package authenticate_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -340,7 +341,9 @@ type verificationKeysDown struct {
 	err error
 }
 
-func (s verificationKeysDown) VerificationKeys() ([]signingkey.PublicKey, error) { return nil, s.err }
+func (s verificationKeysDown) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
+	return nil, s.err
+}
 
 // TestJWTProvider_KeySourceOutage pins that the bearer-token provider answers
 // a verifier that could not obtain its keys as a dependency failure, not as

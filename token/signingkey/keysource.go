@@ -1,10 +1,12 @@
 package signingkey
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -106,6 +108,15 @@ func clonePublicKey(key crypto.PublicKey) (crypto.PublicKey, error) {
 	}
 }
 
+// ErrNoKey is what a KeySource answers when it holds no key to sign with for
+// the algorithm it was asked for. It is a fact about the source's keys, not a
+// failure to reach them: Keys returns it for an algorithm it was not
+// configured with, a key another replica published for that algorithm
+// included, and a consumer's source returns it, or an error wrapping it, when
+// it has no such key. Any other error from Signer means the source could not
+// answer.
+var ErrNoKey = errors.New("signingkey: no key for the algorithm")
+
 // KeySource supplies the key to sign with and the set to verify against.
 // *Keys implements it, and it is the only contract token issuance and
 // verification depend on.
@@ -115,26 +126,52 @@ func clonePublicKey(key crypto.PublicKey) (crypto.PublicKey, error) {
 // with its keys, with no Keys constructed at all. There is no default:
 // something has to hold the keys, so the source is always supplied by the
 // caller.
+//
+// Every request carries the caller's context: issuing passes the context it
+// was given, and verifying passes its own, with no context or deadline of the
+// library's substituted. An implementation over a remote service should honour
+// it, so the service call receives the request's deadline and cancellation.
+// Keys does no input or output and answers whatever state the context is in.
+//
+// A remote service's quotas make a call per token impractical at scale, so such
+// an implementation is expected to cache what it can — the verification keys
+// above all — or to sign through a key it holds locally under envelope
+// encryption.
 type KeySource interface {
 	// Signer returns the key identifier and signer currently signing for
-	// alg, and whether there is one. An implementation that does not hold a
-	// key for alg reports false rather than substituting another algorithm.
-	Signer(alg Alg) (kid string, signer crypto.Signer, ok bool)
+	// alg.
+	//
+	// A source that holds no key for alg returns an error matching ErrNoKey,
+	// rather than substituting another algorithm; issuing then fails as "no
+	// current key for the algorithm". Any other error means the source could
+	// not answer — an outage — and issuing fails with it behind fixed library
+	// text, never reported as a missing key. So does a nil signer returned
+	// with a nil error. Whichever it is, the endpoint that was issuing answers
+	// a dependency failure, not a refusal.
+	//
+	// The signer serves the one issuance ctx belongs to. The generator asks
+	// for a signer once for each token and never keeps or reuses it, so an
+	// implementation over a remote signing service may return a crypto.Signer
+	// bound to ctx, whose Sign call carries the request's deadline and
+	// cancellation to the service.
+	Signer(ctx context.Context, alg Alg) (kid string, signer crypto.Signer, err error)
 
 	// VerificationKeys returns the public keys verification selects from,
 	// each carrying its key identifier and the algorithm it verifies, and
-	// none of them carrying private material.
+	// none of them carrying private material. ctx is the verifying call's
+	// own.
 	//
 	// It is asked on every verification, so an implementation that reaches a
 	// remote key service is expected to cache. An error is an outage — the
 	// check did not happen — and is never reported as a refused token, so an
 	// implementation returns one rather than an empty result when it cannot
-	// answer.
+	// answer. The HTTP chain answers it as a dependency failure, 500 under the
+	// default status mapping, and never as a request to authenticate again.
 	//
 	// The keys returned belong to the caller: an implementation that holds
 	// its own keys hands over copies, because crypto.PublicKey is a pointer
 	// or a slice into the material it verifies with.
-	VerificationKeys() ([]PublicKey, error)
+	VerificationKeys(ctx context.Context) ([]PublicKey, error)
 }
 
 // LifetimeReporter is the optional half of KeySource: a source that knows how

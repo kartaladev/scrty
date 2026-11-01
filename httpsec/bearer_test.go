@@ -1192,7 +1192,9 @@ type verificationKeysDown struct {
 	err error
 }
 
-func (s verificationKeysDown) VerificationKeys() ([]signingkey.PublicKey, error) { return nil, s.err }
+func (s verificationKeysDown) VerificationKeys(context.Context) ([]signingkey.PublicKey, error) {
+	return nil, s.err
+}
 
 // The issuer and audience the key-source tests issue and verify under.
 const (

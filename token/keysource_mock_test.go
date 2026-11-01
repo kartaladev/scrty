@@ -10,6 +10,7 @@
 package token_test
 
 import (
+	context "context"
 	crypto "crypto"
 	reflect "reflect"
 
@@ -42,19 +43,19 @@ func (m *MockKeySource) EXPECT() *MockKeySourceMockRecorder {
 }
 
 // Signer mocks base method.
-func (m *MockKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (m *MockKeySource) Signer(ctx context.Context, alg signingkey.Alg) (string, crypto.Signer, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Signer", alg)
+	ret := m.ctrl.Call(m, "Signer", ctx, alg)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(crypto.Signer)
-	ret2, _ := ret[2].(bool)
+	ret2, _ := ret[2].(error)
 	return ret0, ret1, ret2
 }
 
 // Signer indicates an expected call of Signer.
-func (mr *MockKeySourceMockRecorder) Signer(alg any) *MockKeySourceSignerCall {
+func (mr *MockKeySourceMockRecorder) Signer(ctx, alg any) *MockKeySourceSignerCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Signer", reflect.TypeOf((*MockKeySource)(nil).Signer), alg)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Signer", reflect.TypeOf((*MockKeySource)(nil).Signer), ctx, alg)
 	return &MockKeySourceSignerCall{Call: call}
 }
 
@@ -64,36 +65,36 @@ type MockKeySourceSignerCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockKeySourceSignerCall) Return(kid string, signer crypto.Signer, ok bool) *MockKeySourceSignerCall {
-	c.Call = c.Call.Return(kid, signer, ok)
+func (c *MockKeySourceSignerCall) Return(kid string, signer crypto.Signer, err error) *MockKeySourceSignerCall {
+	c.Call = c.Call.Return(kid, signer, err)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeySourceSignerCall) Do(f func(signingkey.Alg) (string, crypto.Signer, bool)) *MockKeySourceSignerCall {
+func (c *MockKeySourceSignerCall) Do(f func(context.Context, signingkey.Alg) (string, crypto.Signer, error)) *MockKeySourceSignerCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeySourceSignerCall) DoAndReturn(f func(signingkey.Alg) (string, crypto.Signer, bool)) *MockKeySourceSignerCall {
+func (c *MockKeySourceSignerCall) DoAndReturn(f func(context.Context, signingkey.Alg) (string, crypto.Signer, error)) *MockKeySourceSignerCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
 
 // VerificationKeys mocks base method.
-func (m *MockKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
+func (m *MockKeySource) VerificationKeys(ctx context.Context) ([]signingkey.PublicKey, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "VerificationKeys")
+	ret := m.ctrl.Call(m, "VerificationKeys", ctx)
 	ret0, _ := ret[0].([]signingkey.PublicKey)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // VerificationKeys indicates an expected call of VerificationKeys.
-func (mr *MockKeySourceMockRecorder) VerificationKeys() *MockKeySourceVerificationKeysCall {
+func (mr *MockKeySourceMockRecorder) VerificationKeys(ctx any) *MockKeySourceVerificationKeysCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerificationKeys", reflect.TypeOf((*MockKeySource)(nil).VerificationKeys))
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerificationKeys", reflect.TypeOf((*MockKeySource)(nil).VerificationKeys), ctx)
 	return &MockKeySourceVerificationKeysCall{Call: call}
 }
 
@@ -109,13 +110,13 @@ func (c *MockKeySourceVerificationKeysCall) Return(arg0 []signingkey.PublicKey, 
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeySourceVerificationKeysCall) Do(f func() ([]signingkey.PublicKey, error)) *MockKeySourceVerificationKeysCall {
+func (c *MockKeySourceVerificationKeysCall) Do(f func(context.Context) ([]signingkey.PublicKey, error)) *MockKeySourceVerificationKeysCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeySourceVerificationKeysCall) DoAndReturn(f func() ([]signingkey.PublicKey, error)) *MockKeySourceVerificationKeysCall {
+func (c *MockKeySourceVerificationKeysCall) DoAndReturn(f func(context.Context) ([]signingkey.PublicKey, error)) *MockKeySourceVerificationKeysCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

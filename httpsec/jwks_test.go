@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -139,7 +140,7 @@ func TestJWKSEndpoint(t *testing.T) {
 	}
 
 	serves := func(_ *testing.T, keys *MockKeySetProvider) {
-		keys.EXPECT().JWKS().Return([]byte(publicKeySet), nil)
+		keys.EXPECT().JWKS(gomock.Any()).Return([]byte(publicKeySet), nil)
 	}
 
 	// No expectation at all: a request the endpoint does not claim must not
@@ -199,7 +200,7 @@ func TestJWKSEndpoint(t *testing.T) {
 		{
 			name: "a provider failure propagates as an error",
 			wire: func(_ *testing.T, keys *MockKeySetProvider) {
-				keys.EXPECT().JWKS().Return(nil, errKeySetUnavailable)
+				keys.EXPECT().JWKS(gomock.Any()).Return(nil, errKeySetUnavailable)
 			},
 			request: func(ctx context.Context) *http.Request {
 				return jwksRequest(ctx, http.MethodGet, httpsec.DefaultJWKSPath)
@@ -301,6 +302,90 @@ func TestJWKSEndpointConstruction(t *testing.T) {
 
 			chain, err := httpsec.New(tc.build(t)...)
 			tc.assert(t, chain, err)
+		})
+	}
+}
+
+// jwksMark is the key the key set tests mark a request's context with.
+type jwksMark struct{}
+
+// TestJWKS_RequestContextAndOutage pins that the endpoint asks the provider
+// with the request's own context, and answers a provider that cannot produce
+// the set as a dependency failure: fixed library text, the provider's error
+// reachable, 500 by default, and never a refusal of the caller.
+// Standalone rather than rows of TestJWKSEndpoint: each case inspects the
+// context the provider received, which that table's wiring does not capture.
+func TestJWKS_RequestContextAndOutage(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		answer func(ctx context.Context) ([]byte, error)
+		assert func(t *testing.T, s served, asked context.Context)
+	}
+
+	cases := []testCase{
+		{
+			name: "the provider is asked with the request's context",
+			answer: func(context.Context) ([]byte, error) {
+				return []byte(publicKeySet), nil
+			},
+			assert: func(t *testing.T, s served, asked context.Context) {
+				require.NoError(t, s.err)
+				assert.Equal(t, http.StatusOK, s.rec.Code)
+				require.NotNil(t, asked)
+				assert.Equal(t, "request-1", asked.Value(jwksMark{}),
+					"the provider receives the request's own context")
+			},
+		},
+		{
+			name: "a provider outage is a dependency failure",
+			answer: func(context.Context) ([]byte, error) {
+				return nil, errKeySetUnavailable
+			},
+			assert: func(t *testing.T, s served, asked context.Context) {
+				require.EqualError(t, s.err, "httpsec: the public key set could not be read",
+					"the provider's own text is never repeated")
+				assert.ErrorIs(t, s.err, errKeySetUnavailable, "the provider's error stays reachable")
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired,
+					"a key set that cannot be read refuses nobody")
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.Empty(t, s.rec.Body.String(), "nothing was served in its place")
+				require.NotNil(t, asked)
+				assert.Equal(t, "request-1", asked.Value(jwksMark{}))
+			},
+		},
+		{
+			name: "the provider's own timeout is a dependency failure",
+			answer: func(context.Context) ([]byte, error) {
+				return nil, fmt.Errorf("vault: %w", context.DeadlineExceeded)
+			},
+			assert: func(t *testing.T, s served, _ context.Context) {
+				require.EqualError(t, s.err, "httpsec: the public key set could not be read")
+				assert.ErrorIs(t, s.err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var asked context.Context
+			keys := NewMockKeySetProvider(gomock.NewController(t))
+			keys.EXPECT().JWKS(gomock.Any()).DoAndReturn(func(ctx context.Context) ([]byte, error) {
+				asked = ctx
+				return tc.answer(ctx)
+			}).Times(1)
+
+			chain, err := httpsec.New(httpsec.EnableJWKSEndpoint(keys))
+			require.NoError(t, err)
+
+			ctx := context.WithValue(t.Context(), jwksMark{}, "request-1")
+			s := serveIn(ctx, t, chain, jwksRequest(ctx, http.MethodGet, httpsec.DefaultJWKSPath))
+			tc.assert(t, s, asked)
 		})
 	}
 }

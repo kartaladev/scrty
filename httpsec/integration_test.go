@@ -3221,7 +3221,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			name: "jwks endpoint: the public key set could not be read",
 			act: func(t *testing.T) *errorSink {
 				keys := NewMockKeySetProvider(gomock.NewController(t))
-				keys.EXPECT().JWKS().Return(nil, errFixtureFailure)
+				keys.EXPECT().JWKS(gomock.Any()).Return(nil, errFixtureFailure)
 
 				return refusedBy(t,
 					httptest.NewRequestWithContext(t.Context(), http.MethodGet, httpsec.DefaultJWKSPath, nil),

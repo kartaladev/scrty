@@ -1230,7 +1230,7 @@ func (challengingPolicy) Challenges() []policy.ChallengeKind {
 // the response body against byte for byte.
 type fixtureKeySet struct{}
 
-func (fixtureKeySet) JWKS() ([]byte, error) { return []byte(KeySetBody), nil }
+func (fixtureKeySet) JWKS(context.Context) ([]byte, error) { return []byte(KeySetBody), nil }
 
 // The fixtures satisfy the ports the chain is wired with, so a change to any of
 // them is a compile error here rather than a failure inside a scenario.

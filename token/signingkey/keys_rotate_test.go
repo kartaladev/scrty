@@ -51,8 +51,8 @@ func TestRotationAtTheConfiguredInterval(t *testing.T) {
 	k2 := currentKid(t, km, signingkey.RS256)
 	require.NotEqual(t, k1, k2, "the interval elapsed, so the key rotated")
 
-	assert.True(t, publishes(km, k2), "the new key is published")
-	assert.True(t, publishes(km, k1),
+	assert.True(t, publishes(t, km, k2), "the new key is published")
+	assert.True(t, publishes(t, km, k1),
 		"the key it replaced stays published until housekeeping removes it")
 
 	recs, err := store.LoadAll(t.Context())
@@ -92,14 +92,14 @@ func TestRotationFailureIsObservable(t *testing.T) {
 		require.GreaterOrEqual(t, len(rejected), 2, "each retry minted and offered a key")
 		for _, kid := range rejected {
 			require.NotEqual(t, previous, kid, "each attempt minted a distinct key")
-			assert.False(t, publishes(km, kid), "a key the store rejected is never published")
+			assert.False(t, publishes(t, km, kid), "a key the store rejected is never published")
 		}
 		assert.NotContains(t, rejected, currentKid(t, km, signingkey.EdDSA),
 			"a key the store rejected is never current")
 
 		assert.Equal(t, previous, currentKid(t, km, signingkey.EdDSA),
 			"the previous key stays current")
-		assert.True(t, publishes(km, previous), "and stays published, so it still signs")
+		assert.True(t, publishes(t, km, previous), "and stays published, so it still signs")
 
 		records := rec.records(t)
 		require.NotEmpty(t, records, "the failure reaches the logger")
@@ -204,7 +204,7 @@ func TestRotation_IsNotUndoneByAFutureDatedStoredKey(t *testing.T) {
 
 	assert.NotEqual(t, future.Kid, currentKid(t, km, signingkey.EdDSA),
 		"a key dated a year ahead never signs")
-	assert.False(t, publishes(km, future.Kid), "and is not published")
+	assert.False(t, publishes(t, km, future.Kid), "and is not published")
 }
 
 // TestErrorHookMayReadTheManagerBack pins the half of WithErrorHook's contract
@@ -233,9 +233,9 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	// hook does everything WithErrorHook's godoc names as safe from the hook,
 	// and counts the times all of it answered.
 	hook := func(err error) {
-		kid, signer, ok := km.Signer(signingkey.EdDSA)
-		published, keysErr := km.VerificationKeys()
-		if ok && signer != nil && kid != "" &&
+		kid, signer, signerErr := km.Signer(t.Context(), signingkey.EdDSA)
+		published, keysErr := km.VerificationKeys(t.Context())
+		if signerErr == nil && signer != nil && kid != "" &&
 			keysErr == nil && len(published) > 0 &&
 			len(km.SupportedAlgs()) == 1 && km.KeyLifetime() > 0 {
 			reads.Add(1)
@@ -556,12 +556,12 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 	const bothReplicas = 2 * loopCount
 
 	advance(t, clk, 9*time.Second, bothReplicas)
-	assert.False(t, publishes(replicaB, k2),
+	assert.False(t, publishes(t, replicaB, k2),
 		"nothing is reloaded before the consumer's 10-second interval has elapsed")
 
 	advance(t, clk, time.Second, bothReplicas) // ten seconds since replica A rotated
-	kid, _, ok := replicaB.Signer(signingkey.EdDSA)
-	require.True(t, publishes(replicaB, k2) && ok && kid == k2,
+	kid, _, signerErr := replicaB.Signer(t.Context(), signingkey.EdDSA)
+	require.True(t, publishes(t, replicaB, k2) && signerErr == nil && kid == k2,
 		"within one reload interval replica B publishes k2 and adopts it as current")
 
 	setB := publishedSet(t, replicaB)
@@ -569,7 +569,7 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 	require.NoError(t, err, "replica B verifies a token replica A signed with k2")
 	assert.Equal(t, "issued by replica A", string(payload))
 
-	assert.True(t, publishes(replicaB, k1), "and keeps publishing the key k2 replaced")
+	assert.True(t, publishes(t, replicaB, k1), "and keeps publishing the key k2 replaced")
 }
 
 // Standalone: another replica's writes land between construction and the reload.
@@ -602,13 +602,13 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 
 	advance(t, clk, 10*time.Second, loopCount)
-	kid, _, ok := km.Signer(signingkey.RS256)
-	require.True(t, publishes(km, newest.Kid) && ok && kid == newest.Kid,
+	kid, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+	require.True(t, publishes(t, km, newest.Kid) && signerErr == nil && kid == newest.Kid,
 		"a reload publishes the stored key and re-picks the latest CreatedAt as current")
 
-	assert.False(t, publishes(km, expired.Kid),
+	assert.False(t, publishes(t, km, expired.Kid),
 		"a non-current key older than the lifetime is never republished")
-	assert.True(t, publishes(km, held.Kid), "the key it replaced is still published")
+	assert.True(t, publishes(t, km, held.Kid), "the key it replaced is still published")
 
 	recs, err := store.LoadAll(t.Context())
 	require.NoError(t, err)
@@ -650,7 +650,7 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 
 	assert.Equal(t, held, currentKid(t, km, signingkey.EdDSA),
 		"the manager keeps signing with the keys it already holds")
-	assert.True(t, publishes(km, held))
+	assert.True(t, publishes(t, km, held))
 
 	set := publishedSet(t, km)
 	payload, err := jws.Verify(token, jws.WithKeySet(set))
@@ -690,8 +690,8 @@ func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
 	clk.back.Store(int64(time.Hour))
 	advance(t, clk.FakeClock, time.Minute, loopCount)
 
-	kid, signer, ok := km.Signer(signingkey.RS256)
-	require.True(t, ok, "a reload never leaves a configured algorithm without a current key")
+	kid, signer, signerErr := km.Signer(t.Context(), signingkey.RS256)
+	require.NoError(t, signerErr, "a reload never leaves a configured algorithm without a current key")
 	assert.NotNil(t, signer)
 	assert.Equal(t, held, kid, "the previous current key stays current")
 }
@@ -720,8 +720,8 @@ func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
 
 	advance(t, clk, time.Minute, loopCount)
 
-	kid, _, ok := km.Signer(signingkey.RS256)
-	require.True(t, ok)
+	kid, _, signerErr := km.Signer(t.Context(), signingkey.RS256)
+	require.NoError(t, signerErr)
 	assert.Equal(t, ahead.Kid, kid, "a key within one reload interval ahead is adopted as current")
 }
 
@@ -753,7 +753,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 				return recs, recs, later.Kid
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, atReload []signingkey.Record) {
-				assert.False(t, publishes(km, atReload[0].Kid),
+				assert.False(t, publishes(t, km, atReload[0].Kid),
 					"a key past its lifetime that is not current is never republished")
 			},
 		},
@@ -765,7 +765,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 				return []signingkey.Record{held}, []signingkey.Record{arrived, held}, held.Kid
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, atReload []signingkey.Record) {
-				assert.True(t, publishes(km, atReload[0].Kid),
+				assert.True(t, publishes(t, km, atReload[0].Kid),
 					"the arriving key is within its lifetime, so it is published")
 			},
 		},
@@ -842,36 +842,36 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 
 	require.Equal(t, []signingkey.Alg{signingkey.RS256}, km.SupportedAlgs())
 
-	kid, signer, ok := km.Signer(signingkey.ES256)
-	assert.False(t, ok, "Signer answers only for the configured algorithms")
+	kid, signer, signerErr := km.Signer(t.Context(), signingkey.ES256)
+	assert.ErrorIs(t, signerErr, signingkey.ErrNoKey, "Signer answers only for the configured algorithms")
 	assert.Empty(t, kid)
 	assert.Nil(t, signer)
 
 	require.NotEmpty(t, currentKid(t, km, signingkey.RS256),
 		"and the manager minted its own RS256 key rather than counting the stored ES256 one")
 
-	require.True(t, publishes(km, fresh.Kid),
+	require.True(t, publishes(t, km, fresh.Kid),
 		"another replica's key is published, so the tokens it signed verify here")
-	require.True(t, publishes(km, stale.Kid))
-	require.False(t, publishes(km, expired.Kid),
+	require.True(t, publishes(t, km, stale.Kid))
+	require.False(t, publishes(t, km, expired.Kid),
 		"a foreign key is never the newest of a configured algorithm, so construction "+
 			"publishes none past its lifetime")
 
 	require.NoError(t, km.Start(t.Context()))
 
 	advance(t, clk, time.Second, loopCount)
-	require.False(t, publishes(km, stale.Kid),
+	require.False(t, publishes(t, km, stale.Kid),
 		"housekeeping retires a foreign key past its lifetime")
-	require.True(t, publishes(km, fresh.Kid), "the one inside the lifetime is kept")
+	require.True(t, publishes(t, km, fresh.Kid), "the one inside the lifetime is kept")
 
 	// The newest foreign key is the one a current-key exemption would protect
 	// for the life of the process.
 	advance(t, clk, 25*time.Hour, loopCount)
-	assert.False(t, publishes(km, fresh.Kid),
+	assert.False(t, publishes(t, km, fresh.Kid),
 		"no foreign key is current, so none is exempt from housekeeping")
 
-	_, _, ok = km.Signer(signingkey.ES256)
-	assert.False(t, ok, "and none of it made the manager an ES256 signer")
+	_, _, signerErr = km.Signer(t.Context(), signingkey.ES256)
+	assert.ErrorIs(t, signerErr, signingkey.ErrNoKey, "and none of it made the manager an ES256 signer")
 }
 
 // TestHousekeeping drives housekeeping under a controlled clock.
@@ -910,7 +910,7 @@ func TestHousekeeping(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, current string) {
-				assert.True(t, publishes(km, current), "the current key is untouched")
+				assert.True(t, publishes(t, km, current), "the current key is untouched")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256))
 
 				recs, err := store.LoadAll(t.Context())
@@ -933,7 +933,7 @@ func TestHousekeeping(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, current string) {
-				assert.True(t, publishes(km, current),
+				assert.True(t, publishes(t, km, current),
 					"a current key past its lifetime is still published")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256),
 					"and is still the key that signs")
@@ -963,13 +963,13 @@ func TestHousekeeping(t *testing.T) {
 
 			expired, current := seed[0].Kid, seed[len(seed)-1].Kid
 			require.Equal(t, current, currentKid(t, km, signingkey.RS256))
-			require.True(t, publishes(km, expired),
+			require.True(t, publishes(t, km, expired),
 				"a key exactly one lifetime old is published to begin with")
 
 			require.NoError(t, km.Start(t.Context()))
 
 			advance(t, clk, time.Second, loopCount)
-			require.False(t, publishes(km, expired),
+			require.False(t, publishes(t, km, expired),
 				"housekeeping should have stopped publishing the expired key")
 
 			tc.assert(t, km, store, current)
@@ -1007,7 +1007,7 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 		kid = next
 	}
 
-	keys, err := km.VerificationKeys()
+	keys, err := km.VerificationKeys(t.Context())
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(keys), 3,
 		"keys past the 2-hour lifetime stopped being published as the rounds went by")
@@ -1052,14 +1052,14 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 
 	advance(t, clk, sweep, loopCount)
-	require.False(t, publishes(km, stale.Kid),
+	require.False(t, publishes(t, km, stale.Kid),
 		"the sweep ran: a key an hour past its lifetime stopped being published")
-	assert.True(t, publishes(km, boundary.Kid),
+	assert.True(t, publishes(t, km, boundary.Kid),
 		"a key whose age is exactly the lifetime has not outlived it")
 
 	advance(t, clk, sweep, loopCount)
-	assert.False(t, publishes(km, boundary.Kid), "and one a sweep older has")
-	assert.True(t, publishes(km, newest.Kid), "the current key is kept throughout")
+	assert.False(t, publishes(t, km, boundary.Kid), "and one a sweep older has")
+	assert.True(t, publishes(t, km, newest.Kid), "the current key is kept throughout")
 }
 
 // steppedClock is a controlled clock whose reading can be stepped back, as a
@@ -1096,7 +1096,7 @@ func TestHousekeep_RetiresFarFutureKey(t *testing.T) {
 	)
 	require.NoError(t, err)
 	shutdownAndVerify(t, km)
-	require.True(t, publishes(km, ahead.Kid), "the non-current key is published to begin with")
+	require.True(t, publishes(t, km, ahead.Kid), "the non-current key is published to begin with")
 	require.NoError(t, km.Start(t.Context()))
 
 	// The clock steps back two days: the non-current key is now dated nearly
@@ -1104,8 +1104,8 @@ func TestHousekeep_RetiresFarFutureKey(t *testing.T) {
 	clk.back.Store(int64(48 * time.Hour))
 	advance(t, clk.FakeClock, time.Second, loopCount)
 
-	assert.False(t, publishes(km, ahead.Kid),
+	assert.False(t, publishes(t, km, ahead.Kid),
 		"a non-current key dated more than one lifetime ahead stops being published")
-	assert.True(t, publishes(km, current.Kid), "the current key is kept")
+	assert.True(t, publishes(t, km, current.Kid), "the current key is kept")
 	assert.Equal(t, current.Kid, currentKid(t, km, signingkey.RS256))
 }

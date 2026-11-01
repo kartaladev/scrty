@@ -10,6 +10,7 @@
 package httpsec_test
 
 import (
+	context "context"
 	reflect "reflect"
 
 	gomock "go.uber.org/mock/gomock"
@@ -40,18 +41,18 @@ func (m *MockKeySetProvider) EXPECT() *MockKeySetProviderMockRecorder {
 }
 
 // JWKS mocks base method.
-func (m *MockKeySetProvider) JWKS() ([]byte, error) {
+func (m *MockKeySetProvider) JWKS(ctx context.Context) ([]byte, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "JWKS")
+	ret := m.ctrl.Call(m, "JWKS", ctx)
 	ret0, _ := ret[0].([]byte)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // JWKS indicates an expected call of JWKS.
-func (mr *MockKeySetProviderMockRecorder) JWKS() *MockKeySetProviderJWKSCall {
+func (mr *MockKeySetProviderMockRecorder) JWKS(ctx any) *MockKeySetProviderJWKSCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "JWKS", reflect.TypeOf((*MockKeySetProvider)(nil).JWKS))
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "JWKS", reflect.TypeOf((*MockKeySetProvider)(nil).JWKS), ctx)
 	return &MockKeySetProviderJWKSCall{Call: call}
 }
 
@@ -67,13 +68,13 @@ func (c *MockKeySetProviderJWKSCall) Return(arg0 []byte, arg1 error) *MockKeySet
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeySetProviderJWKSCall) Do(f func() ([]byte, error)) *MockKeySetProviderJWKSCall {
+func (c *MockKeySetProviderJWKSCall) Do(f func(context.Context) ([]byte, error)) *MockKeySetProviderJWKSCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeySetProviderJWKSCall) DoAndReturn(f func() ([]byte, error)) *MockKeySetProviderJWKSCall {
+func (c *MockKeySetProviderJWKSCall) DoAndReturn(f func(context.Context) ([]byte, error)) *MockKeySetProviderJWKSCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

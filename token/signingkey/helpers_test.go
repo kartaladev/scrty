@@ -71,8 +71,8 @@ func advance(t *testing.T, clk *clockwork.FakeClock, d time.Duration, n int) {
 func currentKid(t *testing.T, km *signingkey.Keys, alg signingkey.Alg) string {
 	t.Helper()
 
-	kid, signer, ok := km.Signer(alg)
-	require.True(t, ok, "there is a current %s key", alg)
+	kid, signer, signerErr := km.Signer(t.Context(), alg)
+	require.NoError(t, signerErr, "there is a current %s key", alg)
 	require.NotNil(t, signer, "the current %s key signs", alg)
 	return kid
 }
@@ -304,8 +304,8 @@ func realRecord(t *testing.T, createdAt time.Time) signingkey.Record {
 func signWithCurrent(t *testing.T, source signingkey.KeySource, payload string) []byte {
 	t.Helper()
 
-	kid, signer, ok := source.Signer(signingkey.EdDSA)
-	require.True(t, ok)
+	kid, signer, signerErr := source.Signer(t.Context(), signingkey.EdDSA)
+	require.NoError(t, signerErr)
 
 	private, err := jwk.Import[jwk.Key](signer)
 	require.NoError(t, err)
@@ -320,8 +320,10 @@ func signWithCurrent(t *testing.T, source signingkey.KeySource, payload string) 
 // than the manager so a consumer's own key source can be asked the same
 // question, and it is safe to call from a polling closure: keys that cannot
 // be obtained count as not publishing it.
-func publishes(source signingkey.KeySource, kid string) bool {
-	keys, err := source.VerificationKeys()
+func publishes(t *testing.T, source signingkey.KeySource, kid string) bool {
+	t.Helper()
+
+	keys, err := source.VerificationKeys(t.Context())
 	if err != nil {
 		return false
 	}
@@ -344,7 +346,7 @@ func publishes(source signingkey.KeySource, kid string) bool {
 func publishedSet(t *testing.T, source signingkey.KeySource) jwk.Set {
 	t.Helper()
 
-	published, err := source.VerificationKeys()
+	published, err := source.VerificationKeys(t.Context())
 	require.NoError(t, err)
 
 	set := jwk.NewSet()
