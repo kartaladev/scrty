@@ -210,7 +210,9 @@ type RecoveryOption func(*recoveryInterceptor) error
 //     recoveries as soon as its first factor has authenticated, before the
 //     policy phase and before its session is created, so a login the policy
 //     then denies has still cancelled them; a cancellation the record store
-//     cannot record refuses the login;
+//     cannot record refuses the login. A password re-authentication
+//     (EnableReauthentication) cancels them the same way, after the password
+//     verifies;
 //   - the saved-code endpoints answer on DefaultRecoveryCodesPath
 //     (WithRecoveryCodesPath), served by the recovery gate for a full session
 //     only, and exist only when the core enables recovery.ProofSaved;

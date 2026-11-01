@@ -259,8 +259,9 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 // WithMFATokens issues the rotated session's access token through g.
 //
 // There is no default, and it is required in the signed-token mode: rotation
-// deletes the handle the caller arrived with, and the session identifier is
-// the token's jti, so without a generator a caller who passed their second
+// supersedes the handle the caller arrived with, marking it so that it stops
+// working at once (the marked row is kept only for its in-flight window),
+// and the session identifier is the token's jti, so without a generator a caller who passed their second
 // factor would hold a credential naming a session that no longer exists. With
 // EnableSessionBearer on, it must not be given: the endpoint hands back the
 // rotated session's identifier instead, and a generator is a configuration

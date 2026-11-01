@@ -254,7 +254,9 @@ func isFullSession(s *session.Session) bool {
 
 // offered is the factor policy: how the user of s may re-prove. Every endpoint
 // decides through it, so the listing never offers what an endpoint refuses,
-// and no endpoint accepts what the listing did not offer.
+// and no endpoint accepts what the listing did not offer. Strictly, offered
+// serves the password endpoint and the listing; begin and verify look up only
+// the method the request names, and refuse it when the user is not enrolled.
 //
 // methods are the MFA slot's configured methods the user is enrolled on, in
 // configuration order, whatever their channel: the same-channel rule of a

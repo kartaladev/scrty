@@ -442,8 +442,8 @@ proved they kept it.
 - **No waiting period by default.** A recovery that presents its two proofs completes at once.
   `recovery.WithHoldDelay` holds every recovery for a fixed time before it can complete, and
   `recovery.WithCancelLink` is required with any hold — a delay or `recovery.WithRisk`'s hook: the
-  held-recovery notice links to it, so a normal login, or the link itself, cancels a recovery the
-  real user did not make.
+  held-recovery notice links to it, so a normal login, a password re-authentication, or the link
+  itself, cancels a recovery the real user did not make.
 - **A cool-down after recovery.** `httpsec.EnableRecoveryCooldown(records, d, routes...)` refuses
   the routes a consumer marks as sensitive — changing the account's email address, say — for `d`
   after the user's latest completed recovery. It is per user, not per session, so logging out and
@@ -796,9 +796,11 @@ authentication time to now on the chain's clock (a second factor on a different 
 session's first factor also records the second factor as satisfied; a same-channel re-proof, such as a
 passkey session re-proved with the passkey, refreshes freshness only), rotates the session, and answers with the rotated session's credential; the credential
 the caller arrived with stops working. A re-proof that loses a race with a renewal of the same
-session, or with a concurrent re-proof or MFA verification of it on one server, is refused 409
-(`httpsec.ErrSessionRenewalConflict`), and a failed re-proof changes
-nothing.
+session, or with a concurrent re-proof or MFA verification of it (on this server or on any server
+sharing the session store), is refused 409 (`httpsec.ErrSessionRenewalConflict`), and a failed
+re-proof changes nothing. A password re-proof runs the chain's post-authentication phase like a
+login, with the input marked as a re-authentication, so a session cap admits it rather than
+counting it as a new session.
 
 ### The factor policy
 
