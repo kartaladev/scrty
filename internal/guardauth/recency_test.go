@@ -30,7 +30,8 @@ func TestRecency_Judge(t *testing.T) {
 	type testCase struct {
 		name     string
 		authTime func(ctx context.Context) (time.Time, bool)
-		window   time.Duration // the route's window; zero means the guards'
+		window   time.Duration                             // the route's window; zero means the guards'
+		ctx      func(ctx context.Context) context.Context // nil means identity
 		assert   func(t *testing.T, recent bool, judged time.Duration)
 	}
 
@@ -49,6 +50,10 @@ func TestRecency_Judge(t *testing.T) {
 			assert.Equal(t, want, judged)
 		}
 	}
+
+	// requestKey carries a value on the request's context, which only a time
+	// source handed that very context can read.
+	type requestKey struct{}
 
 	cases := []testCase{
 		{
@@ -93,40 +98,35 @@ func TestRecency_Judge(t *testing.T) {
 			authTime: authenticatedAt(now.Add(time.Hour)),
 			assert:   recentAgainst(guardsWindow),
 		},
+		{
+			name: "the time source reads the request's context",
+			authTime: func(ctx context.Context) (time.Time, bool) {
+				return now, ctx.Value(requestKey{}) == "request"
+			},
+			ctx: func(ctx context.Context) context.Context {
+				return context.WithValue(ctx, requestKey{}, "request")
+			},
+			assert: recentAgainst(guardsWindow),
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
 			r, reason := guardauth.NewRecency(guardsWindow, clockwork.NewFakeClockAt(now), tc.authTime)
 			require.Empty(t, reason)
 			require.NotNil(t, r)
 
-			recent, judged := r.Judge(t.Context(), tc.window)
+			recent, judged := r.Judge(ctx, tc.window)
 			tc.assert(t, recent, judged)
 		})
 	}
-}
-
-func TestRecency_JudgePassesTheRequestContext(t *testing.T) {
-	t.Parallel()
-
-	type key struct{}
-
-	var seen any
-
-	r, reason := guardauth.NewRecency(time.Minute, clockwork.NewFakeClockAt(now),
-		func(ctx context.Context) (time.Time, bool) {
-			seen = ctx.Value(key{})
-			return now, true
-		})
-	require.Empty(t, reason)
-
-	recent, _ := r.Judge(context.WithValue(t.Context(), key{}, "request"), 0)
-
-	assert.True(t, recent)
-	assert.Equal(t, "request", seen, "the time source reads the request's context")
 }
 
 func TestNewRecency(t *testing.T) {

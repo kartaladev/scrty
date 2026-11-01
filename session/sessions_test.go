@@ -1793,7 +1793,8 @@ func TestManagerRotate(t *testing.T) {
 type rotationFixture struct {
 	m      *session.Sessions
 	clk    *clockwork.FakeClock
-	store  *mutationCountingStore
+	store  *MockStore
+	writes *atomic.Int32
 	old    *session.Session
 	reused *atomic.Int32
 }
@@ -1824,7 +1825,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			require.NoError(t, err)
 
 			f.clk.Advance(after)
-			f.store.reset()
+			f.writes.Store(0)
 
 			again, err := f.m.Rotate(t.Context(), f.old)
 			assert.Nil(t, again)
@@ -1841,7 +1842,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			require.NoError(t, err)
 
 			f.clk.Advance(after)
-			f.store.reset()
+			f.writes.Store(0)
 
 			return successor, next(t, f)
 		}
@@ -1852,7 +1853,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 		return strictThen(after, func(t *testing.T, f *rotationFixture) error {
 			_, err := f.m.DeleteExpired(t.Context())
 			require.NoError(t, err)
-			f.store.reset()
+			f.writes.Store(0)
 
 			return next(t, f)
 		})
@@ -1894,7 +1895,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			act:  rotateThenAgainAt(10 * time.Second),
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrRenewalConflict)
-				assert.Zero(t, f.store.writes(), "the loser writes nothing to the store")
+				assert.Zero(t, f.writes.Load(), "the loser writes nothing to the store")
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1904,7 +1905,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrExpired)
 				assert.NotErrorIs(t, err, session.ErrReused)
-				assert.Zero(t, f.store.writes())
+				assert.Zero(t, f.writes.Load())
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1913,7 +1914,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			act:  sweptThen(31*time.Second, rotateOld),
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrNotFound)
-				assert.Zero(t, f.store.writes())
+				assert.Zero(t, f.writes.Load())
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1922,7 +1923,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			act:  strictThen(5*time.Second, renewOld),
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrRenewalConflict)
-				assert.Zero(t, f.store.writes(), "the loser writes nothing to the store")
+				assert.Zero(t, f.writes.Load(), "the loser writes nothing to the store")
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1932,7 +1933,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrExpired)
 				assert.NotErrorIs(t, err, session.ErrReused)
-				assert.Zero(t, f.store.writes())
+				assert.Zero(t, f.writes.Load())
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1941,7 +1942,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			act:  sweptThen(31*time.Second, renewOld),
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrNotFound)
-				assert.Zero(t, f.store.writes())
+				assert.Zero(t, f.writes.Load())
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1950,7 +1951,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			act:  strictThen(10*time.Second, loadOld),
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrNotFound)
-				assert.Zero(t, f.store.writes(), "the load revokes nothing")
+				assert.Zero(t, f.writes.Load(), "the load revokes nothing")
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1960,7 +1961,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrExpired)
 				assert.NotErrorIs(t, err, session.ErrReused)
-				assert.Zero(t, f.store.writes(), "the load revokes nothing")
+				assert.Zero(t, f.writes.Load(), "the load revokes nothing")
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -1969,7 +1970,7 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			act:  sweptThen(40*time.Second, loadOld),
 			assert: func(t *testing.T, f *rotationFixture, successor *session.Session, err error) {
 				require.ErrorIs(t, err, session.ErrNotFound)
-				assert.Zero(t, f.store.writes())
+				assert.Zero(t, f.writes.Load())
 				successorStillLoads(t, f, successor)
 			},
 		},
@@ -2045,9 +2046,8 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 			t.Parallel()
 
 			f := &rotationFixture{clk: clockwork.NewFakeClockAt(createdAt), reused: &atomic.Int32{}}
-			f.store = &mutationCountingStore{
-				Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
-			}
+			f.store, f.writes = newMutationCountingStore(t,
+				must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))))
 			f.m = managerFor(t, session.WithStore(f.store), session.WithClock(f.clk),
 				session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.reused.Add(1) }))
 
@@ -2061,45 +2061,64 @@ func TestManagerRotateInFlightWindow(t *testing.T) {
 	}
 }
 
-// mutationCountingStore counts every write that could store a session or
-// remove one, so a case can pin that a refused rotation touched nothing.
-type mutationCountingStore struct {
-	session.Store
+// newMutationCountingStore is a MockStore whose every method delegates to under, and
+// that adds to the returned counter on every write that could store a session
+// or remove one (Create, Save, Supersede, Delete, DeleteFamily), so a case can
+// pin that a refused rotation touched nothing. The other writes are passed
+// through uncounted.
+func newMutationCountingStore(t *testing.T, under session.Store) (*MockStore, *atomic.Int32) {
+	t.Helper()
 
-	n atomic.Int32
-}
+	writes := &atomic.Int32{}
+	store := NewMockStore(gomock.NewController(t))
+	m := store.EXPECT()
 
-func (s *mutationCountingStore) reset()        { s.n.Store(0) }
-func (s *mutationCountingStore) writes() int32 { return s.n.Load() }
+	m.Create(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, s *session.Session) error {
+			writes.Add(1)
 
-func (s *mutationCountingStore) Create(ctx context.Context, sess *session.Session) error {
-	s.n.Add(1)
+			return under.Create(ctx, s)
+		})
+	m.Save(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, s *session.Session) error {
+			writes.Add(1)
 
-	return s.Store.Create(ctx, sess)
-}
+			return under.Save(ctx, s)
+		})
+	m.Supersede(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, op session.Supersession) error {
+			writes.Add(1)
 
-func (s *mutationCountingStore) Save(ctx context.Context, sess *session.Session) error {
-	s.n.Add(1)
+			return under.Supersede(ctx, op)
+		})
+	m.Delete(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, id string) error {
+			writes.Add(1)
 
-	return s.Store.Save(ctx, sess)
-}
+			return under.Delete(ctx, id)
+		})
+	m.DeleteFamily(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, family id.ID) (int, error) {
+			writes.Add(1)
 
-func (s *mutationCountingStore) Supersede(ctx context.Context, op session.Supersession) error {
-	s.n.Add(1)
+			return under.DeleteFamily(ctx, family)
+		})
 
-	return s.Store.Supersede(ctx, op)
-}
+	m.Load(gomock.Any(), gomock.Any()).DoAndReturn(under.Load).AnyTimes()
+	m.DeleteByUser(gomock.Any(), gomock.Any()).DoAndReturn(under.DeleteByUser).AnyTimes()
+	m.DeleteByUserExcept(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(under.DeleteByUserExcept).AnyTimes()
+	m.DeleteByUserAndExternalIssuer(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(under.DeleteByUserAndExternalIssuer).AnyTimes()
+	m.DeleteByExternalSession(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(under.DeleteByExternalSession).AnyTimes()
+	m.DeleteExpired(gomock.Any()).DoAndReturn(under.DeleteExpired).AnyTimes()
+	m.CountActiveByUser(gomock.Any(), gomock.Any()).DoAndReturn(under.CountActiveByUser).AnyTimes()
+	m.MarkPresented(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(under.MarkPresented).AnyTimes()
+	m.RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(under.RecordActivity).AnyTimes()
+	m.SuccessorPresented(gomock.Any(), gomock.Any()).DoAndReturn(under.SuccessorPresented).AnyTimes()
 
-func (s *mutationCountingStore) Delete(ctx context.Context, id string) error {
-	s.n.Add(1)
-
-	return s.Store.Delete(ctx, id)
-}
-
-func (s *mutationCountingStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
-	s.n.Add(1)
-
-	return s.Store.DeleteFamily(ctx, family)
+	return store, writes
 }
 
 // TestManagerRotateConcurrent pins that rotation cannot be made to hand out

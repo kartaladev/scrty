@@ -28,8 +28,13 @@ func TestEnablePasskeys_NeedsReauthenticationOnAnMFAChain(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		noMFA  bool
+		name  string
+		noMFA bool
+
+		// noPasskeys leaves the passkey endpoints off a chain that keeps its
+		// MFA slot.
+		noPasskeys bool
+
 		reauth func(h *passkeyHarness, opts []httpsec.Option) []httpsec.Option
 		assert func(t *testing.T, err error)
 	}{
@@ -62,6 +67,12 @@ func TestEnablePasskeys_NeedsReauthenticationOnAnMFAChain(t *testing.T) {
 			reauth: func(_ *passkeyHarness, opts []httpsec.Option) []httpsec.Option { return opts },
 			assert: func(t *testing.T, err error) { t.Helper(); require.NoError(t, err) },
 		},
+		{
+			name:       "the MFA slot without passkeys builds without re-authentication",
+			noPasskeys: true,
+			reauth:     func(_ *passkeyHarness, opts []httpsec.Option) []httpsec.Option { return opts },
+			assert:     func(t *testing.T, err error) { t.Helper(); require.NoError(t, err) },
+		},
 	}
 
 	for _, tc := range tests {
@@ -72,6 +83,14 @@ func TestEnablePasskeys_NeedsReauthenticationOnAnMFAChain(t *testing.T) {
 			h.withoutEnrolment = true
 			h.withoutReauth = true
 			opts := h.chainOptions(t, h.sessionIn(t, factor.Password, session.MFANone))
+			if tc.noPasskeys {
+				// The MFA slot alone: nothing here reaches passkey
+				// management, so nothing needs a re-proof path.
+				opts = []httpsec.Option{
+					httpsec.EnableMFA([]mfa.Method{h.method}, httpsec.WithMFATokens(h.tokens)),
+					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}),
+				}
+			}
 			if tc.noMFA {
 				// chainOptions ran, so the manager exists; the chain below
 				// carries the passkey endpoints alone.

@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
@@ -183,4 +186,75 @@ func TestConcurrentSessionPolicyTakesASessionStore(t *testing.T) {
 
 	d := p.Evaluate(t.Context(), &policy.Input{User: concurrentUser})
 	assert.Equal(t, policy.Allow, d.Outcome, "a user holding no sessions was refused another")
+}
+
+// TestConcurrentSessionPolicyCountsEnrolmentOnlySessionsUntilTheyExpire pins
+// the scenario "Enrolment-only sessions count until they expire" through the
+// policy, over the session manager that does the counting: a user holding one
+// enrolment-only session, with a cap of one, is refused another while the
+// session's lowered deadline has not passed, and allowed one after.
+func TestConcurrentSessionPolicyCountsEnrolmentOnlySessionsUntilTheyExpire(t *testing.T) {
+	t.Parallel()
+
+	// enrolmentLifetime is the default enrolment lifetime.
+	const enrolmentLifetime = 15 * time.Minute
+
+	started := time.Date(2026, time.March, 2, 9, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name string
+		// at is when the login is judged.
+		at     time.Time
+		assert func(t *testing.T, d policy.Decision)
+	}
+
+	cases := []testCase{
+		{
+			name: "a login before the lowered deadline is denied as too many sessions",
+			at:   started.Add(10 * time.Minute),
+			assert: func(t *testing.T, d policy.Decision) {
+				t.Helper()
+
+				require.Equal(t, policy.Deny, d.Outcome, "the enrolment-only session was not counted")
+				require.ErrorIs(t, d.Reason, policy.ErrTooManySessions)
+			},
+		},
+		{
+			name: "a login after the lowered deadline is allowed",
+			at:   started.Add(16 * time.Minute),
+			assert: func(t *testing.T, d policy.Decision) {
+				t.Helper()
+
+				assert.Equal(t, policy.Allow, d.Outcome, "an expired enrolment-only session was still counted")
+				assert.NoError(t, d.Reason)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(started)
+
+			store, err := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+			require.NoError(t, err)
+
+			sessions, err := session.New(session.WithStore(store), session.WithClock(clk))
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), concurrentUser, session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			sessions.MarkEnrolmentPending(s, enrolmentLifetime)
+			require.NoError(t, sessions.Save(t.Context(), s))
+
+			p, err := policy.NewConcurrentSessions(sessions, 1)
+			require.NoError(t, err)
+
+			clk.Advance(tc.at.Sub(clk.Now()))
+
+			tc.assert(t, p.Evaluate(t.Context(), &policy.Input{User: concurrentUser}))
+		})
+	}
 }
