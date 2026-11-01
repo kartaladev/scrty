@@ -624,6 +624,22 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			assert: unreadable(seal.ErrDecryptionFailed),
 		},
 		{
+			name: "a cipher failing with the context's deadline reaches the caller as it, not as a value that does not open",
+			cipher: func(*gomock.Controller) seal.Cipher {
+				return faultyCipher{Cipher: cs.current, openErr: context.DeadlineExceeded}
+			},
+			setup: func(t *testing.T, f enrolmentFixture) {
+				putSealed(t, f.inner, cs.current, pendingEnrolment(t, userRef))
+			},
+			assert: func(t *testing.T, _ enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, seal.ErrDecryptionFailed, "a context error was reported as a value that does not open")
+				assert.NotErrorIs(t, err, seal.ErrUnknownKeyID, "a context error was reported as a missing key")
+				assert.False(t, found)
+				assert.Equal(t, mfa.Enrolment{}, e)
+			},
+		},
+		{
 			name: "a secret copied from another user's enrolment does not open",
 			setup: func(t *testing.T, f enrolmentFixture) {
 				e := pendingEnrolment(t, userRef)
@@ -1396,7 +1412,7 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 	type testCase struct {
 		name   string
 		cipher seal.Cipher
-		expect func(r *MockEnrolmentResealer)
+		expect func(t *testing.T, r *MockEnrolmentResealer, readCtx context.Context)
 		assert func(t *testing.T, e mfa.Enrolment, found bool, err error, before, after []byte)
 	}
 
@@ -1437,8 +1453,14 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 		{
 			name:   "the re-seal write fails because the read's context was cancelled",
 			cipher: cs.current,
-			expect: func(r *MockEnrolmentResealer) {
-				r.EXPECT().ResealEnrolmentSecret(gomock.Any(), userRef, gomock.Any(), gomock.Any()).Return(context.Canceled)
+			expect: func(t *testing.T, r *MockEnrolmentResealer, readCtx context.Context) {
+				r.EXPECT().ResealEnrolmentSecret(gomock.Any(), userRef, gomock.Any(), gomock.Any()).DoAndReturn(
+					func(ctx context.Context, _ identity.UserID, _, _ []byte) error {
+						// The write runs under the read's own context.
+						assert.Equal(t, readCtx, ctx)
+
+						return context.Canceled
+					})
 			},
 			assert: func(t *testing.T, e mfa.Enrolment, found bool, err error, _, _ []byte) {
 				t.Helper()
@@ -1457,15 +1479,16 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 			// keys must not write.
 			inner := mfa.NewMemoryEnrolmentStore()
 			resealer := NewMockEnrolmentResealer(gomock.NewController(t))
+			readCtx := t.Context()
 			if tc.expect != nil {
-				tc.expect(resealer)
+				tc.expect(t, resealer, readCtx)
 			}
 			store, err := seal.NewEnrolmentStore(inner, resealer, tc.cipher)
 			require.NoError(t, err)
 
 			before := putSealed(t, inner, cs.retired, pendingEnrolment(t, userRef))
 
-			e, found, err := store.Get(t.Context(), userRef)
+			e, found, err := store.Get(readCtx, userRef)
 			tc.assert(t, e, found, err, before, innerSecret(t, inner, userRef))
 		})
 	}

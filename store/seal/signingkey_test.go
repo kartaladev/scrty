@@ -432,6 +432,8 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ signingFixture, recs []signingkey.Record, err error) {
 				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, seal.ErrDecryptionFailed, "a context error was reported as a value that does not open")
+				assert.NotErrorIs(t, err, seal.ErrUnknownKeyID, "a context error was reported as a missing key")
 				assert.Nil(t, recs)
 			},
 		},
