@@ -36,6 +36,12 @@ const maxKeyIDLen = 64
 // for a data key. StaticKeyring performs no input or output and ignores the
 // context.
 //
+// An implementation over such a service marks a retryable failure, such as
+// throttling or a timeout, by wrapping it with ErrUnavailable, for example
+// errors.Join(ErrUnavailable, err). The default cipher passes the marker on,
+// so sessions read the failure as an outage and not as a session that cannot
+// be read.
+//
 //go:generate mockgen -source=keyring.go -package=seal_test -destination=keyring_mock_test.go -typed
 type Keyring interface {
 	// Active returns the id and bytes of the key new values are sealed under.

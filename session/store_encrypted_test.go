@@ -578,6 +578,16 @@ func TestSealingStore_OpenFailureClassification(t *testing.T) {
 			},
 		},
 		{
+			name:      "a context error wins over an error of the cipher's own joined with it",
+			openError: errors.Join(context.DeadlineExceeded, errors.New("bad tag")),
+			assert: func(t *testing.T, loaded *session.Session, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, session.ErrUnreadable,
+					"an abandoned open was reported as a session that cannot be read")
+				assert.Nil(t, loaded)
+			},
+		},
+		{
 			name:      "an error of the cipher's own stays unreadable",
 			openError: errors.New("bad tag"),
 			assert: func(t *testing.T, loaded *session.Session, err error) {

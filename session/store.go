@@ -32,7 +32,8 @@ var ErrExpired = errors.New("session: session expired")
 // It is deliberately not ErrNotFound. A key that has been retired out
 // from under live sessions is an operational mistake, and reporting it as a
 // missing session would hide it behind a perfectly ordinary-looking login
-// prompt.
+// prompt. It is never reported for an outage of the cipher (see
+// ErrCipherUnavailable).
 var ErrUnreadable = errors.New("session: session cannot be read")
 
 // ErrCipherUnavailable is the marker a Cipher wraps an outage with: a failure

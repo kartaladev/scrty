@@ -995,6 +995,28 @@ func TestSessionCipher_TranslatesUnavailable(t *testing.T) {
 	outage := errors.Join(seal.ErrUnavailable, errKMS)
 	hungUp := fmt.Errorf("kms: %w", context.Canceled)
 	tampered := fmt.Errorf("aead: %w", seal.ErrDecryptionFailed)
+	errThrottled := errors.New("kms: throttled")
+
+	// openOverKeyring runs the adapter's Open over the default AEAD cipher on
+	// a keyring whose lookup fails with err, as a KMS-backed keyring marking
+	// an outage would.
+	openOverKeyring := func(err error) func(t *testing.T, ctx context.Context) error {
+		return func(t *testing.T, ctx context.Context) error {
+			sealed, serr := mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo)).
+				Seal(ctx, []byte(secretPlaintext), boundAAD)
+			require.NoError(t, serr)
+
+			kr := NewMockKeyring(gomock.NewController(t))
+			kr.EXPECT().ByID(gomock.Any(), "k2").Return(nil, err).Times(1)
+
+			c, cerr := seal.NewAEADCipher(kr)
+			require.NoError(t, cerr)
+
+			_, got := seal.SessionCipher(c).Open(ctx, sealed, boundAAD)
+
+			return got
+		}
+	}
 
 	// open and sealWith run the adapter's Open or Seal over a cipher failing
 	// that method with err.
@@ -1021,6 +1043,13 @@ func TestSessionCipher_TranslatesUnavailable(t *testing.T) {
 		require.ErrorIs(t, err, errKMS, "the cipher's own error is no longer reachable")
 		assert.NotErrorIs(t, err, session.ErrUnreadable)
 	}
+	translatedKeyring := func(t *testing.T, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, session.ErrCipherUnavailable)
+		require.ErrorIs(t, err, seal.ErrUnavailable, "the seal marker is no longer reachable")
+		require.ErrorIs(t, err, errThrottled, "the keyring's own error is no longer reachable")
+		assert.NotErrorIs(t, err, session.ErrUnreadable)
+	}
 	unchanged := func(want error) func(t *testing.T, err error) {
 		return func(t *testing.T, err error) {
 			t.Helper()
@@ -1045,6 +1074,11 @@ func TestSessionCipher_TranslatesUnavailable(t *testing.T) {
 			name:   "a seal marked as an outage is reported as the session cipher's, keeping the cause",
 			call:   sealWith(outage),
 			assert: translated,
+		},
+		{
+			name:   "an open over a keyring marking an outage with seal.ErrUnavailable is reported as the session cipher's",
+			call:   openOverKeyring(errors.Join(seal.ErrUnavailable, errThrottled)),
+			assert: translatedKeyring,
 		},
 		{
 			name:   "a context error on an open passes through unchanged",

@@ -214,10 +214,10 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 // A failure that is an outage — the context ended, or the cipher marked it
 // with ErrCipherUnavailable — says nothing about the value, so it comes back
 // as a store failure wrapping the cause, never as ErrUnreadable, which ends
-// the session. The marker wins over anything joined with it. Every other
-// failure is ErrUnreadable, the safe default: a value that truly does not
-// open lets the user log in again instead of failing every request until it
-// expires.
+// the session. An outage — a context error or the marker — wins over anything
+// joined with it. Every other failure is ErrUnreadable, the safe default: a
+// value that truly does not open lets the user log in again instead of
+// failing every request until it expires.
 func openFailed(err error) error {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
