@@ -1716,7 +1716,7 @@ func TestManagerRotate(t *testing.T) {
 		},
 		{
 			// Judged, not read off the record: a superseded session
-			// presented after its window is reuse, and its family goes.
+			// presented after its window is reuse.
 			name:  "a session superseded with grace, past its window, never calls the step",
 			store: memoryOn,
 			issue: func(successor *session.Session) (string, error) { return "credential-for:" + successor.ID, nil },
