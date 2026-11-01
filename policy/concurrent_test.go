@@ -28,11 +28,21 @@ func TestConcurrentSessionPolicyEvaluate(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		count  int
-		err    error
-		ctx    func(ctx context.Context) context.Context
-		assert func(t *testing.T, d policy.Decision)
+		name  string
+		count int
+		err   error
+		// reauthenticating marks the input as the re-authentication of a
+		// session the user already holds.
+		reauthenticating bool
+		ctx              func(ctx context.Context) context.Context
+		assert           func(t *testing.T, d policy.Decision)
+	}
+
+	allows := func(t *testing.T, d policy.Decision) {
+		t.Helper()
+
+		assert.Equal(t, policy.Allow, d.Outcome)
+		assert.NoError(t, d.Reason)
 	}
 
 	deniesAsTooMany := func(t *testing.T, d policy.Decision) {
@@ -46,14 +56,9 @@ func TestConcurrentSessionPolicyEvaluate(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:  "a user under the cap is allowed another session",
-			count: 2,
-			assert: func(t *testing.T, d policy.Decision) {
-				t.Helper()
-
-				assert.Equal(t, policy.Allow, d.Outcome)
-				assert.NoError(t, d.Reason)
-			},
+			name:   "a user under the cap is allowed another session",
+			count:  2,
+			assert: allows,
 		},
 		{
 			// "At the cap": a maximum of 3 and a user already holding 3.
@@ -67,6 +72,38 @@ func TestConcurrentSessionPolicyEvaluate(t *testing.T) {
 			name:   "a user above the cap is denied",
 			count:  4,
 			assert: deniesAsTooMany,
+		},
+		{
+			// "A re-proof at the cap": the re-proved session is one of the
+			// three counted, and a re-proof adds none.
+			name:             "a re-authentication by a user at the cap is allowed",
+			count:            3,
+			reauthenticating: true,
+			assert:           allows,
+		},
+		{
+			name:             "a re-authentication by a user above the cap is denied",
+			count:            4,
+			reauthenticating: true,
+			assert:           deniesAsTooMany,
+		},
+		{
+			name:             "a re-authentication under the cap is allowed",
+			count:            2,
+			reauthenticating: true,
+			assert:           allows,
+		},
+		{
+			name:             "a re-authentication whose count fails denies, carrying the cause",
+			err:              errCountUnavailable,
+			reauthenticating: true,
+			assert: func(t *testing.T, d policy.Decision) {
+				t.Helper()
+
+				require.Equal(t, policy.Deny, d.Outcome, "a re-proof was let through on a count nobody made")
+				assert.ErrorIs(t, d.Reason, errCountUnavailable)
+				assert.ErrorIs(t, d.Reason, policy.ErrTooManySessions)
+			},
 		},
 		{
 			// "Count failure": the reason wraps the error, so a caller can
@@ -116,7 +153,7 @@ func TestConcurrentSessionPolicyEvaluate(t *testing.T) {
 			p, err := policy.NewConcurrentSessions(counter, 3)
 			require.NoError(t, err)
 
-			tc.assert(t, p.Evaluate(ctx, &policy.Input{User: concurrentUser}))
+			tc.assert(t, p.Evaluate(ctx, &policy.Input{User: concurrentUser, Reauthenticating: tc.reauthenticating}))
 		})
 	}
 }

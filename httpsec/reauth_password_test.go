@@ -21,9 +21,11 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -44,6 +46,9 @@ var (
 
 // errReauthDenied is a pre-authentication policy's refusal.
 var errReauthDenied = errors.New("reauthpassword_test: pre-authentication denies")
+
+// errReauthPostDenied is a post-authentication policy's refusal.
+var errReauthPostDenied = errors.New("reauthpassword_test: post-authentication denies")
 
 // errReauthUserStore is the user store's outage, whose text no refusal carries.
 var errReauthUserStore = errors.New("reauthpassword_test: user store down, dsn=secret")
@@ -68,6 +73,22 @@ type pwFixture struct {
 	// noHash makes the store report ada with no password, and storeDown makes
 	// it fail.
 	noHash, storeDown bool
+
+	// changedAt is when the store reports ada last changed her password; the
+	// zero time reports it unknown.
+	changedAt time.Time
+
+	// records is the recovery record store a case enabled account recovery
+	// over (withRecovery), and held is ada's recovery it holds.
+	records recovery.RecordStore
+	held    recovery.Record
+
+	// capture, when a case sets it, collects every post-authentication input.
+	capture *[]policy.Input
+
+	// loginIssued is the last credential issued before the request under
+	// test, by a login a case ran first.
+	loginIssued any
 }
 
 func newPwFixture(t *testing.T) *pwFixture {
@@ -112,7 +133,10 @@ func newPwFixtureOn(t *testing.T, h *reauthHarness) *pwFixture {
 			case f.storeDown:
 				return nil, errReauthUserStore
 			case username == mfaUsername:
-				d := &identity.Details{ID: testMFAUser, Username: mfaUsername, Password: reauthAdaHash, Active: true}
+				d := &identity.Details{
+					ID: testMFAUser, Username: mfaUsername, Password: reauthAdaHash, Active: true,
+					PasswordChangedAt: f.changedAt,
+				}
 				if f.noHash {
 					d.Password = nil
 				}
@@ -194,6 +218,98 @@ func passwordReproved(t *testing.T, h *reauthHarness, s *session.Session, out se
 	assert.True(t, rotated.MFASatisfiedAt.Equal(s.MFASatisfiedAt), "a password satisfies no second factor")
 
 	return rotated
+}
+
+// reauthOtherHeldID names a recovery held for another user, which no re-proof
+// of ada's may cancel.
+var reauthOtherHeldID = id.MustParse("01900000-0000-7000-8000-0000000000b2")
+
+// withRecovery enables account recovery with a hold over records, which then
+// holds a recovery of ada's and one of another user's. A hold is what makes
+// a first factor cancel the user's held recoveries.
+func (f *pwFixture) withRecovery(t *testing.T, records recovery.RecordStore) {
+	t.Helper()
+
+	totpMethod, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example")
+	require.NoError(t, err)
+
+	kind, err := recovery.MFAEnrolments(totpMethod)
+	require.NoError(t, err)
+
+	codes, err := recovery.NewCodes()
+	require.NoError(t, err)
+
+	now := f.clock.Now()
+	f.held = recovery.Record{
+		ID: id.MustParse("01900000-0000-7000-8000-0000000000b1"), User: testMFAUser,
+		StartedAt: now, NotBefore: now.Add(recoveryHoldDelay),
+	}
+	other := recovery.Record{
+		ID: reauthOtherHeldID, User: "u-9",
+		StartedAt: now, NotBefore: now.Add(recoveryHoldDelay),
+	}
+	require.NoError(t, records.Insert(t.Context(), f.held))
+	require.NoError(t, records.Insert(t.Context(), other))
+
+	f.records = records
+	f.chainOpts = append(f.chainOpts,
+		// A recovered session needs a way to become a full one.
+		httpsec.EnablePasswordChangeGate(f.sessions,
+			httpsec.WithPasswordChangeEndpoint(passwordResolvePath, func(*httpsec.Exchange) error { return nil })),
+		httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
+			Users: f.users, Sessions: f.sessions, Sender: &capturingSender{}, Codes: codes, Records: records,
+		},
+			httpsec.WithRecoveryTokens(f.tokens),
+			httpsec.WithRecoveryCore(
+				recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
+				recovery.WithRepudiationContact("Write to security@example.com if this was not you."),
+				recovery.WithAuthenticatorKinds(kind),
+				recovery.WithMessages(recoveryMessages{}),
+				recovery.WithHoldDelay(recoveryHoldDelay),
+				recovery.WithCancelLink("https://app.example.com/cancel"),
+			)))
+}
+
+// heldStands asserts whether ada's held recovery still stands, and that the
+// other user's always does.
+func (f *pwFixture) heldStands(t *testing.T, stands bool) {
+	t.Helper()
+
+	got, err := f.records.Find(t.Context(), f.held.ID)
+	require.NoError(t, err)
+	assert.Equal(t, stands, got.CancelledAt.IsZero(), "ada's held recovery cancelled: %s", got.CancelledAt)
+
+	other, err := f.records.Find(t.Context(), reauthOtherHeldID)
+	require.NoError(t, err)
+	assert.True(t, other.CancelledAt.IsZero(), "another user's held recovery stands")
+}
+
+// capturingInputs is a post-authentication policy that allows and records
+// every input it is given.
+func capturingInputs(t *testing.T, seen *[]policy.Input) *policy.Engine {
+	t.Helper()
+
+	p := NewMockPolicy(gomock.NewController(t))
+	p.EXPECT().Name().Return("test: capture").AnyTimes()
+	p.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
+	p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, in *policy.Input) policy.Decision {
+			*seen = append(*seen, *in)
+
+			return policy.Decision{Outcome: policy.Allow}
+		})
+
+	return engineOf(t, p)
+}
+
+// adaLogin is a form login by ada with her correct password.
+func adaLogin(t *testing.T, c *httpsec.Chain) served {
+	t.Helper()
+
+	return serve(t, c, formRequest(t.Context(), httpsec.DefaultLoginPath, url.Values{
+		httpsec.DefaultLoginUsernameParam: {mfaUsername},
+		httpsec.DefaultLoginPasswordParam: {reauthAdaPassword},
+	}.Encode()))
 }
 
 // emptyUsername replaces the published caller with one that names no
@@ -479,6 +595,223 @@ func TestReauthPassword(t *testing.T) {
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				unchecked(errReauthDenied)(t, f, s, out)
 				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "a policy refusal spent the source's allowance")
+			},
+		},
+		{
+			// "Post-authentication deny": refused as ada's login is refused,
+			// with nothing reset, rotated or refreshed.
+			name: "a post-authentication deny refuses with the policy's reason and resets nothing",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(denyingIn(t, policy.PostAuthentication, errReauthPostDenied)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errReauthPostDenied)(t, f, s, out)
+				assert.Equal(t, int32(1), f.adaMatches.Load(), "the password was proved first")
+			},
+		},
+		{
+			// Form login charges the source nothing for a policy's refusal
+			// after the password, so neither does a re-proof.
+			name: "a post-authentication deny is not charged to the source",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.loginOpts = append(f.loginOpts, httpsec.WithLoginLimiter(memLimiter(t, 1, time.Hour)))
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(denyingIn(t, policy.PostAuthentication, errReauthPostDenied)))
+			},
+			before: func(t *testing.T, _ *pwFixture, c *httpsec.Chain, tok string) {
+				out := serve(t, c, passwordOf(reauthAdaPassword)(t.Context(), t, tok))
+				require.ErrorIs(t, out.err, errReauthPostDenied)
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errReauthPostDenied)(t, f, s, out)
+				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "a policy refusal spent the source's allowance")
+			},
+		},
+		{
+			// "Post-authentication challenge": refused with the challenge,
+			// carrying no session, and nothing marked pending.
+			name: "a post-authentication password-change challenge refuses with no session and marks nothing",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts,
+					httpsec.EnableGateForTest(policy.ChallengePasswordChange),
+					httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengePasswordChange)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				var ce *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ce)
+				assert.Equal(t, policy.ChallengePasswordChange, ce.Kind)
+				assert.Nil(t, ce.Session, "a re-proof establishes no pending session")
+				assert.Empty(t, ce.Token, "a re-proof issues no credential for a challenge")
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, out.rec.Body.Len(), "nothing was written")
+				unchanged(t, f.reauthHarness, s)
+				assert.False(t, f.stored(t, s.ID).PasswordChangePending, "no pending mark was stored")
+			},
+		},
+		{
+			// A challenge nothing on the chain enforces is the wiring
+			// mistake a login refuses it as, before anything is marked.
+			name: "an unenforced post-authentication challenge is a configuration error",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengeMFAEnrolment)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert:  refusedWith(httpsec.ErrConfig),
+		},
+		{
+			// An allowing policy leaves the re-proof as it was.
+			name: "an allowing post-authentication policy re-proves",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(allowingEngine(t)))
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+			},
+		},
+		{
+			// "A user at the session cap re-proves": the re-proved session is
+			// the user's only one, under a cap of one.
+			name: "a user at the session cap re-proves the session already counted",
+			wire: func(t *testing.T, f *pwFixture) {
+				capPolicy, err := policy.NewConcurrentSessions(f.sessions, 1)
+				require.NoError(t, err)
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(engineOf(t, capPolicy)))
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+			},
+		},
+		{
+			// "Consumer policy sees a re-proof": the phase is told it judges a
+			// re-authentication, and a login through the same chain is not.
+			name: "the post-authentication phase is told the re-proof re-authenticates and a login is not",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.capture = new([]policy.Input)
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(capturingInputs(t, f.capture)))
+				f.attempts.EXPECT().Reset(gomock.Any(), mfaUsername).Return(nil).Times(2)
+			},
+			before: func(t *testing.T, f *pwFixture, c *httpsec.Chain, _ string) {
+				out := adaLogin(t, c)
+				require.NoError(t, out.err)
+				require.Len(t, *f.capture, 1, "the login ran the phase once")
+				assert.False(t, (*f.capture)[0].Reauthenticating, "a login is not a re-authentication")
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+				require.Len(t, *f.capture, 2, "the re-proof ran the phase once")
+
+				in := (*f.capture)[1]
+				assert.True(t, in.Reauthenticating, "the phase was not told it judges a re-proof")
+				assert.Equal(t, testMFAUser, in.User)
+				assert.Equal(t, mfaUsername, in.Username)
+				assert.Equal(t, factor.Password, in.FirstFactor)
+			},
+		},
+		{
+			// The phase receives login's input: a gate keyed on the user's
+			// password-change time refuses the re-proof as it challenges
+			// ada's login through the same chain.
+			name: "a password-age gate refuses the re-proof as it challenges the login",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.changedAt = f.clock.Now().Add(-2 * maxPasswordAge)
+				f.chainOpts = append(f.chainOpts,
+					httpsec.EnableGateForTest(policy.ChallengePasswordChange),
+					httpsec.WithPolicyEngine(engineOf(t, passwordAgeGate(t))))
+				// Login clears failures before its phase; the refused
+				// re-proof clears nothing.
+				f.resets()
+			},
+			before: func(t *testing.T, f *pwFixture, c *httpsec.Chain, _ string) {
+				var ce *httpsec.ChallengeError
+				require.ErrorAs(t, adaLogin(t, c).err, &ce, "the gate let ada's stale login through")
+				require.Equal(t, policy.ChallengePasswordChange, ce.Kind)
+				f.loginIssued = f.issuedFor.Load()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				var ce *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ce, "the gate let a stale password re-prove")
+				assert.Equal(t, policy.ChallengePasswordChange, ce.Kind)
+				assert.Nil(t, ce.Session)
+				assert.Zero(t, out.rec.Body.Len(), "nothing was written")
+
+				stored := f.stored(t, s.ID)
+				assert.True(t, stored.AuthenticatedAt.Equal(s.AuthenticatedAt), "the authentication time is unchanged")
+				assert.False(t, stored.PasswordChangePending, "no pending mark was stored")
+				assert.Equal(t, f.loginIssued, f.issuedFor.Load(), "the re-proof issued a credential")
+			},
+		},
+		{
+			// "A held recovery is cancelled": a proved password shows the user
+			// holds the account, so the held recovery can no longer finish.
+			name: "a successful re-proof cancels the user's held recovery",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.withRecovery(t, recovery.NewMemoryRecordStore())
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+				f.heldStands(t, false)
+
+				finished, err := f.records.Complete(t.Context(), f.held.ID, f.held.NotBefore)
+				require.NoError(t, err)
+				assert.False(t, finished, "the held recovery still finishes after the re-proof")
+			},
+		},
+		{
+			// As at login, the cancel runs before the phase, so a re-proof the
+			// phase refuses has still cancelled.
+			name: "a re-proof the phase denies still cancels the user's held recovery",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.withRecovery(t, recovery.NewMemoryRecordStore())
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(denyingIn(t, policy.PostAuthentication, errReauthPostDenied)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errReauthPostDenied)(t, f, s, out)
+				f.heldStands(t, false)
+			},
+		},
+		{
+			// A wrong password proves nothing, so nothing is cancelled.
+			name: "a wrong password cancels nothing",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.withRecovery(t, recovery.NewMemoryRecordStore())
+				f.recordsAttempt()
+			},
+			request: passwordOf("not-the-password"),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(authenticate.ErrAuthenticationFailed)(t, f, s, out)
+				f.heldStands(t, true)
+			},
+		},
+		{
+			// A cancellation the store cannot record refuses, as at login,
+			// before the phase runs and with nothing reset or rotated.
+			name: "a cancellation the record store cannot record refuses and leaves the session",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.capture = new([]policy.Input)
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(capturingInputs(t, f.capture)))
+				f.withRecovery(t, recordsCancelPendingFails(t))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errRecordStoreDown)(t, f, s, out)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.NotContains(t, out.err.Error(), "10.0.0.9", "the store's text is not the library's")
+				assert.Empty(t, *f.capture, "the phase ran although the cancel failed")
 			},
 		},
 		{

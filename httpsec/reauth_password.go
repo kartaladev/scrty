@@ -1,7 +1,11 @@
 package httpsec
 
 import (
+	"context"
+
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/policy"
 )
 
 // reprove answers a password re-proof at POST <prefix>/password.
@@ -29,9 +33,26 @@ import (
 //     password recorded against the user. The source is charged what a login
 //     charges: a lock and a refused password check, an unavailable user
 //     store included. Any other pre-authentication refusal, a policy deny or
-//     an unenforced challenge, is not.
-//  6. Success clears the user's recorded failures, as a login does, and
-//     resolves the re-proof.
+//     an unenforced challenge, is not. The account the password proved must
+//     be the session's own user.
+//  6. The user's held account recoveries are cancelled, as a login cancels
+//     them once its first factor is proved: the password shows the user
+//     still holds the account. A cancellation the recovery store cannot
+//     record refuses the re-proof with its error, as it refuses a login,
+//     and leaves the session as it was. A re-proof the phase then refuses
+//     has still cancelled, as a refused login has.
+//  7. The post-authentication policy phase, with the input a login builds
+//     for the same principal, first factor, username and password-change
+//     time, read at the chain's time, and marked as the re-authentication
+//     of an existing session (policy.Input.Reauthenticating), so a policy
+//     counting sessions knows none is added (postAuthenticate). A deny
+//     refuses with the policy's reason; a challenge refuses with a
+//     *ChallengeError of its kind carrying no session, or as a configuration
+//     error when nothing on the chain enforces it. Neither clears failures,
+//     charges the source, rotates or refreshes anything.
+//  8. Success clears the user's recorded failures, as a login does, and
+//     resolves the re-proof. A login clears them before its phase, so one a
+//     policy denies has still cleared them; a re-proof clears them only here.
 func (i *reauthInterceptor) reprove(ex *Exchange) error {
 	s, err := i.admit(ex)
 	if err != nil {
@@ -63,7 +84,9 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return authenticate.ErrAuthenticationFailed
 	}
 
-	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, i.now())
+	now := i.now()
+
+	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, now)
 	if err != nil {
 		return err
 	}
@@ -74,9 +97,54 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return authenticate.ErrAuthenticationFailed
 	}
 
+	// The proved password shows the user still holds the account, so their
+	// held recoveries are cancelled as a login cancels them, before the phase.
+	if l.cancelHeld != nil {
+		if err := l.cancelHeld(ctx, s.UserID); err != nil {
+			return err
+		}
+	}
+
+	in := postAuthenticationInput(auth.Principal, factor.Password, username, auth.PasswordChangedAt, now)
+	in.Reauthenticating = true
+
+	if err := postAuthenticate(ctx, l, in); err != nil {
+		return err
+	}
+
 	l.resetFailures(ctx, username)
 
 	return i.resolve(ex, s, nil)
+}
+
+// postAuthenticate applies the post-authentication phase to a proved
+// password re-proof, on form login's engine and with the input a login builds,
+// and refuses as a login refuses: a deny with the policy's reason, and a
+// challenge nothing on the chain enforces (or one only a built-in gate raises)
+// with a configuration error.
+//
+// Any other challenge refuses with a *ChallengeError of its kind carrying no
+// session and no token. A re-proof never marks or rotates a session into a
+// pending state; the user meets the challenge by signing in, where a login
+// marks it. A refusal here charges nothing to the source and records nothing
+// against the user, as at login, where the phase runs after the password has
+// been accepted.
+func postAuthenticate(ctx context.Context, l *formLogin, in *policy.Input) error {
+	d := evaluatePhase(ctx, l.engine, policy.PostAuthentication, in)
+
+	switch d.Outcome {
+	case policy.Deny:
+		return policyDenyReason(d)
+	case policy.Challenge:
+		if err := refuseUnenforced(l.enforced, d.Challenge); err != nil {
+			return err
+		}
+
+		return &ChallengeError{Kind: d.Challenge}
+	case policy.Allow:
+	}
+
+	return nil
 }
 
 // readPassword reads only the password out of a re-proof request, the way
