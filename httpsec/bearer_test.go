@@ -1347,6 +1347,9 @@ func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
 		// the manager that signed the presented token.
 		verifyingWith func(signedBy *signingkey.Keys) signingkey.KeySource
 
+		// verifier, when set, replaces the real verifier with a double.
+		verifier func(ctrl *gomock.Controller) token.Verifier
+
 		assert func(t *testing.T, h *authHarness, out served)
 	}
 
@@ -1379,6 +1382,40 @@ func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
 						i, r.Level, r.Message)
 					assert.NotContains(t, recordText(r), context.Canceled.Error(),
 						"record %d carries the error's text", i)
+				}
+			},
+		},
+		{
+			// The verifier reached a verdict, and the context ending beside it
+			// does not take the verdict back: a rejection is classified before
+			// a hang-up.
+			name: "a rejection that reaches the bearer beside the ended context is still a refusal",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, errors.Join(token.ErrInvalid, ctx.Err())
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"a verdict was reported as a hang-up")
+				assert.NotEqual(t, "httpsec: the request ended while its token was verified", out.err.Error())
+				assert.False(t, out.handlerRan)
+
+				for i, r := range h.logs.records() {
+					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
+						i, r.Level, r.Message)
 				}
 			},
 		},
@@ -1417,12 +1454,17 @@ func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
 			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testSubject})
 			require.NoError(t, err)
 
-			verifier, err := token.NewVerifier(
-				token.WithVerifyKeySource(tc.verifyingWith(keys)),
-				token.WithVerifyIssuer(keySourceTestIssuer),
-				token.WithVerifyAudience(keySourceTestAudience),
-			)
-			require.NoError(t, err)
+			var verifier token.Verifier
+			if tc.verifier != nil {
+				verifier = tc.verifier(gomock.NewController(t))
+			} else {
+				verifier, err = token.NewVerifier(
+					token.WithVerifyKeySource(tc.verifyingWith(keys)),
+					token.WithVerifyIssuer(keySourceTestIssuer),
+					token.WithVerifyAudience(keySourceTestAudience),
+				)
+				require.NoError(t, err)
+			}
 
 			// No expectation on the store or the loader: a token that was not
 			// verified names nothing worth looking up.

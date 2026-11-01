@@ -76,11 +76,12 @@ func (b *bearerToken) wire(c *Chain) {
 // client needs, and it is the library's protocol-failure text rather than a
 // store's. A token that could not be checked because the verification keys
 // were unavailable is a dependency failure, and one whose request ended while
-// it was verified is a hang-up, neither refused nor an outage (notVerified). Every dependency
-// failure that is recorded is recorded by a fixed reason and its error's Go
-// type, never its text, and every one returned comes back behind fixed text,
-// its error still matching through errors.Is and errors.As. A consumer who
-// wants a store's full error logs it inside their own implementation.
+// it was verified is a hang-up, neither refused nor an outage (notVerified).
+// Every dependency failure that is recorded is recorded by a fixed reason and
+// its error's Go type, never its text, and every one returned comes back
+// behind fixed text, its error still matching through errors.Is and
+// errors.As. A consumer who wants a store's full error logs it inside their
+// own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	presented, ok := b.presented(ex.Request.Header("Authorization"))
 	if !ok {
@@ -115,10 +116,11 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 // A request whose own context ended while its token was verified, and whose
 // err is that context's error (endedByRequest), is a hang-up: neither a
 // refusal, since no verdict was reached, nor an outage, since nothing failed.
-// It is returned behind fixed text of its own, matching the context's error,
-// and recorded at debug with no error text. It is told by the request's own
-// context, never by err alone: a key source that times out on a deadline of
-// its own while the request still waits is an outage.
+// It is returned behind fixed text of its own, or as the context's error
+// itself when the verifier returns it bare, matching the context's error
+// either way, and recorded at debug with no error text. It is told by the
+// request's own context, never by err alone: a key source that times out on a
+// deadline of its own while the request still waits is an outage.
 //
 // Anything else, a key source that could not supply the keys above all, is a
 // dependency failure: the check never happened, and answering it as a refused
@@ -262,7 +264,8 @@ type BearerTokenOption func(*bearerToken) error
 // its session loaded or its user reloaded fails with an error matching that
 // context's error, and is neither refused nor reported as an outage; so does
 // one whose context ended while its token was verified, with fixed text of
-// its own and no ERROR record. A verification key source that times out on a
+// its own (or the context's error itself, when the verifier returns it bare)
+// and no ERROR record. A verification key source that times out on a
 // deadline of its own while the request is still live is an outage.
 //
 // A token the verifier rejects is recorded at debug with the verifier's own

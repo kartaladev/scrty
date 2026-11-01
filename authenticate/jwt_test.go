@@ -463,6 +463,9 @@ func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 		// the manager that signed the presented token.
 		verifyingWith func(signedBy *signingkey.Keys) signingkey.KeySource
 
+		// verifier, when set, replaces the real verifier with a double.
+		verifier func(ctrl *gomock.Controller) token.Verifier
+
 		assert func(t *testing.T, got *authenticate.Authentication, err error)
 	}
 
@@ -485,6 +488,35 @@ func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 					"a caller that left was answered as a refused token")
 				assert.Equal(t, "authenticate: the caller left while the token was verified", err.Error(),
 					"a caller that left is not reported as a key outage")
+			},
+		},
+		{
+			// The verifier reached a verdict, and the context ending beside it
+			// does not take the verdict back: a rejection is classified before
+			// a hang-up.
+			name: "a rejection that reaches the provider beside the ended context is still a refusal",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, errors.Join(token.ErrInvalid, ctx.Err())
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a verdict was reported as a hang-up")
+				assert.Nil(t, got)
+				assert.NotEqual(t, "authenticate: the caller left while the token was verified", err.Error())
 			},
 		},
 		{
@@ -516,12 +548,17 @@ func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 			tok, err := gen.Generate(t.Context(), tokenID.String(), &identity.Principal{ID: "u-1", Username: "ada"})
 			require.NoError(t, err)
 
-			verifier, err := token.NewVerifier(
-				token.WithVerifyKeySource(tc.verifyingWith(keys)),
-				token.WithVerifyIssuer(issuer),
-				token.WithVerifyAudience(audience),
-			)
-			require.NoError(t, err)
+			var verifier token.Verifier
+			if tc.verifier != nil {
+				verifier = tc.verifier(gomock.NewController(t))
+			} else {
+				verifier, err = token.NewVerifier(
+					token.WithVerifyKeySource(tc.verifyingWith(keys)),
+					token.WithVerifyIssuer(issuer),
+					token.WithVerifyAudience(audience),
+				)
+				require.NoError(t, err)
+			}
 
 			auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(verifier))
 			require.NoError(t, err)

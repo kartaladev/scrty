@@ -105,10 +105,11 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // A caller whose own context ended while the token was verified, the
 // verifier failing with that context's error, is neither refused nor an
 // outage: no verdict was reached, and nothing failed. It is returned behind
-// fixed library text of its own, matching the context's error, and it does not
-// match ErrAuthenticationFailed. It is told by ctx itself, never by the error
-// alone: a key source that times out on a deadline of its own while ctx is
-// still live is an outage.
+// fixed library text of its own, or as the context's error itself when the
+// verifier returns it bare, matching the context's error either way, and it
+// does not match ErrAuthenticationFailed. It is told by ctx itself, never by
+// the error alone: a key source that times out on a deadline of its own while
+// ctx is still live is an outage.
 //
 // Any other verification error, a key source that could not supply the
 // verification keys above all, is not a refusal: the check never happened. It
