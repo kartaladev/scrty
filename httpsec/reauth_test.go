@@ -1083,6 +1083,20 @@ func TestReauthAdmission(t *testing.T) {
 			assert:    refusedAsUnauthenticated,
 		},
 		{
+			name:    "a session still carrying the enrolment marker meets no gate and is refused",
+			session: stillMarked,
+			request: listing,
+			assert:  refusedAsUnauthenticated,
+		},
+		{
+			// No library path writes a state outside the named ones; a store
+			// could hand one back.
+			name:    "a session in an unnamed second-factor state is refused",
+			session: full(session.MFAState(99)),
+			request: listing,
+			assert:  refusedAsUnauthenticated,
+		},
+		{
 			name:    "a satisfied session is served",
 			session: full(session.MFASatisfied),
 			request: listing,

@@ -778,10 +778,13 @@ func (i *mfaInterceptor) list(ex *Exchange) error {
 	return i.listing.respond(ex, methods)
 }
 
-// methodListingDocument is the default listing's body. Its member names are
-// the documented contract of the endpoint.
+// methodListingDocument is the default body of both method listings, the MFA
+// slot's and re-authentication's. Its member names are the documented
+// contract of the endpoints. Password is re-authentication's own member: nil,
+// and so absent, in the MFA listing.
 type methodListingDocument struct {
-	Methods []methodListingEntry `json:"methods"`
+	Methods  []methodListingEntry `json:"methods"`
+	Password *bool                `json:"password,omitempty"`
 }
 
 type methodListingEntry struct {
@@ -791,9 +794,20 @@ type methodListingEntry struct {
 }
 
 // writeMethodListing is the listing's response when the consumer supplies no
-// responder: 200, the methods as JSON, an empty list as [] rather than null.
+// responder: 200, the methods as JSON, {"methods":[{"name":…,"channel":…,
+// "begins":…}]}, written by writeMethodsDocument.
 func writeMethodListing(ex *Exchange, methods []MFAMethod) error {
-	doc := methodListingDocument{Methods: make([]methodListingEntry, 0, len(methods))}
+	return writeMethodsDocument(ex, methods, nil)
+}
+
+// writeMethodsDocument is the one writer of a default method listing, shared
+// by the MFA listing and the re-authentication listing so the two cannot
+// drift: 200 and a JSON document of methods, an empty list as [] rather than
+// null, marked Cache-Control: no-store because it describes the user's
+// factors. password is the re-authentication listing's extra member, written
+// when it is non-nil and left out when it is nil.
+func writeMethodsDocument(ex *Exchange, methods []MFAMethod, password *bool) error {
+	doc := methodListingDocument{Methods: make([]methodListingEntry, 0, len(methods)), Password: password}
 	for _, m := range methods {
 		doc.Methods = append(doc.Methods, methodListingEntry{
 			Name:    m.Name,
