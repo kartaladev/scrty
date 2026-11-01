@@ -741,6 +741,11 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 // manager sharing the store, the deadlines and family carried over. s is not
 // modified.
 //
+// A step that succeeds only once the session's family has ended, that is,
+// when the manager's clock read after the step is not before the family's end
+// under its family maximum, stores nothing and supersedes nothing: the
+// rotation fails with ErrExpired and returns no credential.
+//
 // The in-flight window (AcceptUntil and RetainUntil) is counted from the
 // instant the manager read its clock before the step ran, not from the moment
 // the supersession is written. A step slower than the window therefore leaves
@@ -801,6 +806,13 @@ func (m *Sessions) RotateIssuing(
 	if issue != nil {
 		if tok, err = issue(rotated); err != nil {
 			return nil, "", err
+		}
+
+		// A step that outlived the family would have a successor stored for
+		// a family that has ended, so nothing is written and the rotation is
+		// refused as expired.
+		if !m.clock.Now().Before(m.familyEnd(stored)) {
+			return nil, "", ErrExpired
 		}
 	}
 

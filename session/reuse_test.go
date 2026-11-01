@@ -2780,6 +2780,7 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 type graceIssuingFixture struct {
 	m      *session.Sessions
 	clk    *clockwork.FakeClock
+	store  session.Store
 	old    *session.Session
 	reused *atomic.Int32
 }
@@ -2846,6 +2847,35 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 	}
 	issueFor := func(_ *clockwork.FakeClock, successor *session.Session) (string, error) {
 		return "credential-for:" + successor.ID, nil
+	}
+	// spyOn is a memory store behind a supersession counter.
+	spyOn := func(clk *clockwork.FakeClock) session.Store {
+		return &supersedeSpyStore{Store: memoryOn(clk)}
+	}
+	// stepTaking is a step that succeeds after d.
+	stepTaking := func(d time.Duration) func(*clockwork.FakeClock, *session.Session) (string, error) {
+		return func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+			clk.Advance(d)
+
+			return "credential-for:" + successor.ID, nil
+		}
+	}
+	// familyEndedWithNothingWritten asserts a renewal refused as expired
+	// because its step ended after the family did: nothing stored, nothing
+	// superseded, nothing revoked.
+	familyEndedWithNothingWritten := func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrExpired)
+		assert.NotErrorIs(t, err, session.ErrReused)
+		assert.Nil(t, r.got, "a successor was returned after the family ended")
+		assert.Empty(t, r.tok)
+		require.NotNil(t, r.given, "the step ran")
+
+		_, loadErr := f.m.Load(t.Context(), r.given.ID)
+		require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+		assert.Zero(t, f.store.(*supersedeSpyStore).supersedes.Load(), "a supersession was written")
+		assert.Zero(t, f.reused.Load(), "a reuse was reported")
 	}
 	// unsuperseded asserts the old identifier loads and is not superseded.
 	unsuperseded := func(t *testing.T, f *graceIssuingFixture) {
@@ -3171,6 +3201,51 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 			},
 		},
 		{
+			// "A step that outlives the family stores nothing", with no grace:
+			// the family ends at 21:00:00, the rotation starts at 20:59:50
+			// and the step ends at 21:00:05.
+			name:  "with no grace, a step that outlives the family stores nothing and supersedes nothing",
+			store: spyOn,
+			opts:  []session.Option{session.WithIdleTimeout(12 * time.Hour)},
+			grace: 0,
+			prepare: func(_ *testing.T, f *graceIssuingFixture) {
+				f.clk.Advance(12*time.Hour - 10*time.Second)
+			},
+			issue:  stepTaking(15 * time.Second),
+			assert: familyEndedWithNothingWritten,
+		},
+		{
+			// The instant the family ends is already past it: the rotation
+			// starts at 20:59:50 and the step ends at exactly 21:00:00.
+			name:  "with no grace, a step that ends exactly when the family does stores nothing and supersedes nothing",
+			store: spyOn,
+			opts:  []session.Option{session.WithIdleTimeout(12 * time.Hour)},
+			grace: 0,
+			prepare: func(_ *testing.T, f *graceIssuingFixture) {
+				f.clk.Advance(12*time.Hour - 10*time.Second)
+			},
+			issue:  stepTaking(10 * time.Second),
+			assert: familyEndedWithNothingWritten,
+		},
+		{
+			// The same under a family maximum a second manager lowered over
+			// the same store, so the old record's own deadline is past the
+			// family's end and does not cap the window.
+			name:  "under a lowered family maximum, a step that outlives the family stores nothing and supersedes nothing",
+			store: spyOn,
+			opts:  []session.Option{session.WithIdleTimeout(12 * time.Hour)},
+			grace: 30 * time.Second,
+			prepare: func(t *testing.T, f *graceIssuingFixture) {
+				f.m = managerFor(t,
+					session.WithStore(f.store), session.WithClock(f.clk),
+					session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
+					session.WithMaxAbsoluteLifetime(6*time.Hour), session.WithMaxFamilyLifetime(6*time.Hour))
+				f.clk.Advance(6*time.Hour - 10*time.Second)
+			},
+			issue:  stepTaking(15 * time.Second),
+			assert: familyEndedWithNothingWritten,
+		},
+		{
 			name:   "no step renews as RotateWithGrace does",
 			store:  memoryOn,
 			grace:  30 * time.Second,
@@ -3197,9 +3272,9 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 			}
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			f := &graceIssuingFixture{clk: clk, reused: &atomic.Int32{}}
+			f := &graceIssuingFixture{clk: clk, store: tc.store(clk), reused: &atomic.Int32{}}
 			f.m = managerFor(t, append([]session.Option{
-				session.WithStore(tc.store(clk)),
+				session.WithStore(f.store),
 				session.WithClock(clk),
 				session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.reused.Add(1) }),
 			}, tc.opts...)...)

@@ -243,6 +243,12 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 // lost race already visible in the stored record, a reuse verdict — never
 // calls issue.
 //
+// A step that succeeds only once the session's family has ended, that is,
+// when the manager's clock read after the step is not before the family's end
+// under its family maximum, stores nothing, supersedes nothing and revokes
+// nothing, with or without a grace: the rotation fails with ErrExpired, and
+// no credential is returned. The check runs ahead of the window check below.
+//
 // The grace window (AcceptUntil) is counted from the instant the manager read
 // its clock before the step ran, not from the moment the supersession is
 // written, as RotateIssuing counts its in-flight window; the successor's
@@ -363,6 +369,14 @@ func (m *Sessions) RotateWithGraceIssuing(
 	if issue != nil {
 		if tok, err = issue(next); err != nil {
 			return nil, 0, "", err
+		}
+
+		// A step that outlived the family would store a successor for a
+		// family that has ended, whatever grace was asked for and whatever
+		// deadline the old record itself still carries, so it is refused
+		// ahead of the window check, which a grace of zero skips.
+		if !m.clock.Now().Before(familyEnd) {
+			return nil, 0, "", ErrExpired
 		}
 
 		// A step that outlived the whole window would have the supersession

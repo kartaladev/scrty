@@ -1787,6 +1787,89 @@ func TestManagerRotate(t *testing.T) {
 	}
 }
 
+// TestRotateIssuing_StepOutlivingTheFamilyStoresNothing pins "A step that
+// outlives the family stores nothing" for the strict rotation: the family ends
+// at 21:00:00, the rotation starts at 20:59:50 and the step succeeds at
+// 21:00:05, so the rotation fails as expired with nothing stored or
+// superseded.
+func TestRotateIssuing_StepOutlivingTheFamilyStoresNothing(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// rotator is the manager that rotates, given the manager that created
+		// the session and the store they share.
+		rotator func(t *testing.T, clk *clockwork.FakeClock, store session.Store, creator *session.Sessions) *session.Sessions
+		// advance is how far the clock moves before the rotation starts.
+		advance time.Duration
+		// stepTakes is how long the caller's step runs.
+		stepTakes time.Duration
+	}
+
+	cases := []testCase{
+		{
+			name: "the family ends at the manager's own maximum",
+			rotator: func(_ *testing.T, _ *clockwork.FakeClock, _ session.Store, creator *session.Sessions) *session.Sessions {
+				return creator
+			},
+			advance:   12*time.Hour - 10*time.Second,
+			stepTakes: 15 * time.Second,
+		},
+		{
+			// The instant the family ends is already past it.
+			name: "the step ends exactly when the family does",
+			rotator: func(_ *testing.T, _ *clockwork.FakeClock, _ session.Store, creator *session.Sessions) *session.Sessions {
+				return creator
+			},
+			advance:   12*time.Hour - 10*time.Second,
+			stepTakes: 10 * time.Second,
+		},
+		{
+			name: "the family ends at a maximum a second manager lowered",
+			rotator: func(t *testing.T, clk *clockwork.FakeClock, store session.Store, _ *session.Sessions) *session.Sessions {
+				return managerFor(t, session.WithStore(store), session.WithClock(clk),
+					session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
+					session.WithMaxAbsoluteLifetime(6*time.Hour), session.WithMaxFamilyLifetime(6*time.Hour))
+			},
+			advance:   6*time.Hour - 10*time.Second,
+			stepTakes: 15 * time.Second,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			spy := &supersedeSpyStore{Store: inner}
+			creator := managerFor(t, session.WithStore(spy), session.WithClock(clk), session.WithIdleTimeout(12*time.Hour))
+			old, err := creator.Create(t.Context(), testUser)
+			require.NoError(t, err)
+
+			clk.Advance(tc.advance)
+
+			var given *session.Session
+			got, tok, err := tc.rotator(t, clk, spy, creator).RotateIssuing(t.Context(), old,
+				func(successor *session.Session) (string, error) {
+					given = snapshot(successor)
+					clk.Advance(tc.stepTakes)
+
+					return "credential-for:" + successor.ID, nil
+				})
+
+			require.ErrorIs(t, err, session.ErrExpired)
+			assert.NotErrorIs(t, err, session.ErrReused)
+			assert.Nil(t, got, "a successor was returned after the family ended")
+			assert.Empty(t, tok)
+			require.NotNil(t, given, "the step ran")
+			_, loadErr := creator.Load(t.Context(), given.ID)
+			require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+			assert.Zero(t, spy.supersedes.Load(), "a supersession was written")
+		})
+	}
+}
+
 // rotationFixture is one manager on a fake clock, a session created through
 // it at 09:00:00, and the counts that show whether a later call wrote to the
 // store or revoked anything.
