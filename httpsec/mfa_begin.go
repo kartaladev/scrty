@@ -299,6 +299,13 @@ func WithMFAChallengeTTL(d time.Duration) MFAOption {
 // skipped sweep is logged, once a window, so a store whose records are removed
 // some other way is a choice, not a surprise.
 //
+// Giving a store here and enabling re-authentication (EnableReauthentication)
+// also requires WithReauthenticationChallengeStore: a deployment that shares
+// this store across replicas would otherwise have its re-proof challenges in
+// per-process memory, and a re-proof begun on one replica would fail on
+// another. New fails with ErrConfig naming both options. Passing the same
+// store to both is fine, as purposes keep the two kinds of challenge apart.
+//
 // A nil store, including an interface holding a nil pointer, is refused.
 func WithMFAChallengeStore(s onetime.Store) MFAOption {
 	return func(i *mfaInterceptor) error {
@@ -307,6 +314,7 @@ func WithMFAChallengeStore(s onetime.Store) MFAOption {
 		}
 
 		i.challengeStore = s
+		i.challengeStoreGiven = true
 
 		return nil
 	}

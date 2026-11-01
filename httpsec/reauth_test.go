@@ -14,8 +14,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -154,6 +156,97 @@ func get(r *http.Request, target string) *http.Request {
 	return httptest.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
 }
 
+// enablePasskeys enables passkey registration on the harness's chain, with
+// the manager and stub verifier the passkey tests use.
+func enablePasskeys(opts ...httpsec.PasskeyOption) func(*testing.T, *reauthHarness) {
+	return func(t *testing.T, h *reauthHarness) {
+		t.Helper()
+
+		m, err := passkey.New(passkey.Deps{
+			Verifier: newPasskeyVerifierStub(t).mock,
+			Users:    h.users,
+			Sender:   &capturingSender{},
+			Sessions: h.sessions,
+		}, passkey.WithRepudiationContact("help@example.com"), passkey.WithOptionalRecoveryCodes())
+		require.NoError(t, err)
+
+		h.chainOpts = append(h.chainOpts,
+			httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, opts...))
+	}
+}
+
+// enableEnrolment enables second-factor enrolment on the harness's chain.
+func enableEnrolment(opts ...httpsec.EnrolmentOption) func(*testing.T, *reauthHarness) {
+	return func(t *testing.T, h *reauthHarness) {
+		t.Helper()
+
+		e := newEnrolHarness(t)
+		// Enrolment needs a method it can enrol, which the harness's scripted
+		// one is not, so the real TOTP method takes the MFA slot.
+		h.noMFA = true
+
+		h.chainOpts = append(h.chainOpts,
+			httpsec.EnableMFA([]mfa.Method{e.totp},
+				httpsec.WithMFAVerifyLimiter(h.limiter), httpsec.WithMFATokens(h.tokens)),
+			httpsec.EnableMFAEnrolment(e.deps(), opts...),
+			httpsec.WithPolicyEngine(enrolmentEngine(t)))
+	}
+}
+
+// enableMagicLink enables magic-link login on the harness's chain.
+func enableMagicLink(opts ...httpsec.MagicLinkOption) func(*testing.T, *reauthHarness) {
+	return func(t *testing.T, h *reauthHarness) {
+		t.Helper()
+
+		m := newMagicLinkHarness(t)
+		h.chainOpts = append(h.chainOpts, httpsec.EnableMagicLink(m.manager, append([]httpsec.MagicLinkOption{
+			httpsec.WithMagicLinkSessions(h.sessions),
+			httpsec.WithMagicLinkTokens(h.tokens),
+		}, opts...)...))
+	}
+}
+
+// enableOIDC enables federated login on the harness's chain.
+func enableOIDC(opts ...httpsec.OIDCOption) func(*testing.T, *reauthHarness) {
+	return func(t *testing.T, h *reauthHarness) {
+		t.Helper()
+
+		o := newOIDCHarness(t)
+		h.chainOpts = append(h.chainOpts, httpsec.EnableOIDCLogin(
+			httpsec.OIDCDeps{RelyingParty: o.manager, Handoff: o.handoffs},
+			append([]httpsec.OIDCOption{
+				httpsec.WithOIDCTokens(h.tokens),
+				httpsec.WithOIDCSessions(h.sessions),
+			}, opts...)...))
+	}
+}
+
+// enableRecovery enables account recovery on the harness's chain, over the
+// recovery tests' own collaborators.
+func enableRecovery(opts ...httpsec.RecoveryOption) func(*testing.T, *reauthHarness) {
+	return func(t *testing.T, h *reauthHarness) {
+		t.Helper()
+
+		r := newRecoveryHarness(t)
+
+		kind, err := recovery.MFAEnrolments(r.totp)
+		require.NoError(t, err)
+
+		h.chainOpts = append(h.chainOpts,
+			httpsec.EnablePasswordChangeGate(h.sessions,
+				httpsec.WithPasswordChangeEndpoint(passwordResolvePath, func(*httpsec.Exchange) error { return nil })),
+			httpsec.EnableAccountRecovery(r.deps(), append([]httpsec.RecoveryOption{
+				httpsec.WithRecoveryTokens(h.tokens),
+				httpsec.WithRecoveryCore(
+					recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
+					recovery.WithRepudiationContact("Write to security@example.com if this was not you."),
+					recovery.WithAuthenticatorKinds(kind),
+					recovery.WithMessages(recoveryMessages{}),
+				),
+			}, opts...)...))
+	}
+}
+
 // TestEnableReauthentication pins how re-authentication is wired: every
 // construction mistake is a configuration error from New naming its cause,
 // the endpoints exist only when enabled and only under their prefix, and a
@@ -166,6 +259,10 @@ func TestEnableReauthentication(t *testing.T) {
 
 		// wire configures the harness before the chain is built.
 		wire func(h *reauthHarness)
+
+		// setup, when set, runs after wire and may add chain options that
+		// need the test, such as a manager built for another endpoint.
+		setup func(t *testing.T, h *reauthHarness)
 
 		// request, when set, is served through the built chain, carrying a
 		// full session; nil asserts on construction alone.
@@ -429,11 +526,6 @@ func TestEnableReauthentication(t *testing.T) {
 				`the MFA begin prefix "/mfa/begin"`),
 		},
 		{
-			name:   "the prefix is the logout path",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultLogoutPath)),
-			assert: refusedConfig(`the logout path "` + httpsec.DefaultLogoutPath + `"`),
-		},
-		{
 			// Logout moved under the re-proof verify prefix would be answered
 			// as a re-proof, whichever option came first.
 			name: "the logout path under the re-proof verify prefix",
@@ -443,9 +535,143 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: refusedConfig(`the logout path "/reauth/verify/out"`),
 		},
 		{
-			name:   "the prefix is the form login path",
-			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultLoginPath)),
-			assert: refusedConfig(`the form login path "` + httpsec.DefaultLoginPath + `"`),
+			// Form login matches its path exactly, so a prefix that only
+			// begins with it claims nothing of its.
+			name: "a prefix under the form login path builds, and the listing answers",
+			wire: with(httpsec.WithReauthenticationPrefix(httpsec.DefaultLoginPath + "/reauth")),
+			request: func(r *http.Request) *http.Request {
+				return get(r, httpsec.DefaultLoginPath+"/reauth/methods")
+			},
+			assert: func(t *testing.T, out served, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NoError(t, out.err)
+				assert.False(t, out.handlerRan, "the listing answered under the moved prefix")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name: "a prefix under the form login path leaves form login answering",
+			wire: with(httpsec.WithReauthenticationPrefix(httpsec.DefaultLoginPath + "/reauth")),
+			request: func(r *http.Request) *http.Request {
+				return formRequest(r.Context(), httpsec.DefaultLoginPath, "")
+			},
+			assert: claimed,
+		},
+		{
+			name: "a prefix under the logout path builds, and the listing answers",
+			wire: with(httpsec.WithReauthenticationPrefix(httpsec.DefaultLogoutPath + "/reauth")),
+			request: func(r *http.Request) *http.Request {
+				return get(r, httpsec.DefaultLogoutPath+"/reauth/methods")
+			},
+			assert: func(t *testing.T, out served, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NoError(t, out.err)
+				assert.False(t, out.handlerRan, "the listing answered under the moved prefix")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name: "a prefix under the logout path leaves logout answering",
+			wire: with(httpsec.WithReauthenticationPrefix(httpsec.DefaultLogoutPath + "/reauth")),
+			request: func(r *http.Request) *http.Request {
+				return formRequest(r.Context(), httpsec.DefaultLogoutPath, "")
+			},
+			assert: func(t *testing.T, out served, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.False(t, out.handlerRan, "logout answered, not the application")
+			},
+		},
+		{
+			name: "the form login path as the password path",
+			wire: func(h *reauthHarness) {
+				h.loginOpts = []httpsec.LoginOption{httpsec.WithLoginRequestPath("/reauth/password")}
+			},
+			assert: refusedConfig(`the form login path "/reauth/password"`),
+		},
+		{
+			// The trailing slash is dropped from the prefix, so it collides as
+			// its slash-free form does.
+			name:   "a prefix with a trailing slash under the MFA verify prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFAVerifyPrefix + "/")),
+			assert: refusedConfig(`the MFA verify prefix "/mfa/verify"`),
+		},
+		{
+			name:   "a prefix that is the passkey registration prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultPasskeyRegistrationPrefix)),
+			setup:  enablePasskeys(),
+			assert: refusedConfig(`the passkey registration prefix "/passkey/register"`),
+		},
+		{
+			name:   "a prefix that is the passkey credentials prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultPasskeyCredentialsPrefix)),
+			setup:  enablePasskeys(),
+			assert: refusedConfig(`the passkey credentials prefix "/passkey/credentials"`),
+		},
+		{
+			name:   "a prefix that is the passwordless login prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultPasswordlessPrefix)),
+			setup:  enablePasskeys(httpsec.WithPasskeyPasswordlessLogin()),
+			assert: refusedConfig(`the passwordless begin path`),
+		},
+		{
+			name:   "a prefix that is the MFA enrolment prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix("/mfa/enrol")),
+			setup:  enableEnrolment(),
+			assert: refusedConfig(`the MFA enrolment begin prefix "/mfa/enrol/begin"`),
+		},
+		{
+			name: "the renewal path is the password path",
+			wire: func(h *reauthHarness) {
+				h.chainOpts = append(h.chainOpts, httpsec.EnableSessionRenewal(
+					httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users, Tokens: h.tokens},
+					httpsec.WithRenewalPath("/reauth/password")))
+			},
+			assert: refusedConfig(`the session renewal path "/reauth/password"`),
+		},
+		{
+			name: "the password-change endpoint is the password path",
+			wire: func(h *reauthHarness) {
+				h.chainOpts = append(h.chainOpts, httpsec.EnablePasswordChangeGate(h.sessions,
+					httpsec.WithPasswordChangeEndpoint("/reauth/password",
+						func(*httpsec.Exchange) error { return nil })))
+			},
+			assert: refusedConfig(`the password-change endpoint "/reauth/password"`),
+		},
+		{
+			name:   "the recovery start path is the password path",
+			wire:   func(*reauthHarness) {},
+			setup:  enableRecovery(httpsec.WithRecoveryStartPath("/reauth/password")),
+			assert: refusedConfig(`the recovery start path "/reauth/password"`),
+		},
+		{
+			name:   "the magic-link request path is the password path",
+			wire:   func(*reauthHarness) {},
+			setup:  enableMagicLink(httpsec.WithMagicLinkRequestPath("/reauth/password")),
+			assert: refusedConfig(`the magic-link request path "/reauth/password"`),
+		},
+		{
+			name:   "the magic-link consume path is under the verify prefix",
+			wire:   func(*reauthHarness) {},
+			setup:  enableMagicLink(httpsec.WithMagicLinkConsumePath("/reauth/verify/link")),
+			assert: refusedConfig(`the magic-link consume path "/reauth/verify/link"`),
+		},
+		{
+			name:   "a prefix under the OIDC authorize prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix("/oauth2/authorization")),
+			setup:  enableOIDC(),
+			assert: refusedConfig(`the OIDC authorize prefix "/oauth2/authorization/"`),
+		},
+		{
+			name:   "the OIDC handoff path is the password path",
+			wire:   func(*reauthHarness) {},
+			setup:  enableOIDC(httpsec.WithOIDCHandoffPath("/reauth/password")),
+			assert: refusedConfig(`the OIDC handoff path "/reauth/password"`),
 		},
 		{
 			name: "the listing path is the MFA listing path",
@@ -538,6 +764,59 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: refusedConfig("WithReauthenticationChallengeStore needs a one-time store"),
 		},
 		{
+			// "A shared MFA challenge store needs a re-proof store".
+			name: "an MFA challenge store without a re-proof store",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(newReauthMemoryStore(t, h)))
+			},
+			assert: func(t *testing.T, _ served, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithReauthenticationChallengeStore")
+				assert.ErrorContains(t, err, "WithMFAChallengeStore")
+			},
+		},
+		{
+			// "One store for both".
+			name: "one store given to the MFA slot and to re-authentication",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				store := newReauthMemoryStore(t, h)
+				h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(store))
+				h.reauthOpts = append(h.reauthOpts, httpsec.WithReauthenticationChallengeStore(store))
+			},
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
+		},
+		{
+			name: "a re-proof store without an MFA store",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.reauthOpts = append(h.reauthOpts,
+					httpsec.WithReauthenticationChallengeStore(newReauthMemoryStore(t, h)))
+			},
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
+		},
+		{
+			name: "the key set endpoint path is the listing path",
+			wire: func(h *reauthHarness) {
+				h.reauthOpts = []httpsec.ReauthenticationOption{httpsec.WithReauthenticationPrefix("/keys")}
+			},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.chainOpts = append(h.chainOpts, httpsec.EnableJWKSEndpoint(
+					NewMockKeySetProvider(gomock.NewController(t)),
+					httpsec.WithJWKSEndpointPath("/keys/methods")))
+			},
+			assert: refusedConfig(`the key set endpoint "/keys/methods"`),
+		},
+		{
+			// The segment boundary: "/mfa/verifyx" is not under "/mfa/verify".
+			name:   "a prefix that only starts like the MFA verify prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFAVerifyPrefix + "x")),
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
+		},
+		{
 			name:   "an absent responder",
 			wire:   with(httpsec.WithReauthenticationResponder(nil)),
 			assert: refusedConfig("WithReauthenticationResponder was given no function"),
@@ -568,6 +847,10 @@ func TestEnableReauthentication(t *testing.T) {
 
 			h := newReauthHarness(t)
 			tc.wire(h)
+
+			if tc.setup != nil {
+				tc.setup(t, h)
+			}
 
 			s := h.fullSession(t, factor.Password)
 
@@ -1060,4 +1343,50 @@ func TestReauthMethods(t *testing.T) {
 			tc.assert(t, serve(t, c, get(base, reauthMethodsPath)))
 		})
 	}
+}
+
+// newReauthMemoryStore is an in-memory one-time store on the harness's clock.
+func newReauthMemoryStore(t *testing.T, h *reauthHarness) onetime.Store {
+	t.Helper()
+
+	store, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(h.clock))
+	require.NoError(t, err)
+
+	return store
+}
+
+// TestReauthChallengeStoreSharedAcrossChains pins "One store for both": two
+// chains sharing the MFA store, the re-proof store and the session store let a
+// re-proof begun through one be verified through the other.
+func TestReauthChallengeStoreSharedAcrossChains(t *testing.T) {
+	t.Parallel()
+
+	h := reauthBearer(t)
+	h.neverVerifies()
+	h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).AnyTimes()
+	h.limiter.EXPECT().RecordFailure(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(nil).AnyTimes()
+
+	h.extra = []mfa.Method{newChallengeStub()}
+
+	shared := newReauthMemoryStore(t, h)
+	h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(shared))
+	h.reauthOpts = append(h.reauthOpts, httpsec.WithReauthenticationChallengeStore(shared))
+
+	s := h.fullSession(t, factor.Password)
+	h.clock.Advance(10 * time.Minute)
+
+	first, err := h.build(nil)
+	require.NoError(t, err)
+
+	second, err := h.build(nil)
+	require.NoError(t, err)
+
+	tok := mfaTokenFor(s.ID)
+
+	begun := serve(t, first, bearerPost(t.Context(), reauthBeginPasskey, tok))
+	require.NoError(t, begun.err)
+
+	out := serve(t, second, bearerJSON(t.Context(), reauthVerifyPasskey, tok, answer(issuedChallenge(t, begun))))
+	require.NoError(t, out.err)
+	assert.Equal(t, http.StatusOK, out.rec.Code)
 }

@@ -855,7 +855,8 @@ if errors.Is(err, httpsec.ErrReauthenticationRequired) ||
 | Factor policy | strongest held: a second factor if enrolled, else the password | `httpsec.RequireSecondFactorForReauthentication` (stricter only) |
 | Re-proof challenge lifetime | 5 minutes | `httpsec.WithReauthenticationChallengeTTL` |
 | Re-proof challenges issued | 10 per user, per method, per hour | `httpsec.WithReauthenticationChallengeLimit` |
-| Re-proof challenge store | in-memory, one process only | `httpsec.WithReauthenticationChallengeStore` |
+| Re-proof challenge store | in-memory, one process only; required whenever the MFA slot was given a store (give both the same one) | `httpsec.WithReauthenticationChallengeStore` |
+| MFA challenge store, beside re-authentication | in-memory, one process only; giving one without `httpsec.WithReauthenticationChallengeStore` fails `New` with `ErrConfig` naming both | `httpsec.WithMFAChallengeStore` |
 | Re-proof response | the login document, `Cache-Control: no-store` | `httpsec.WithReauthenticationResponder` |
 | Begin response | the method's data, `Cache-Control: no-store` | `httpsec.WithReauthenticationBeginResponder` |
 | Method listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithReauthenticationMethodsResponder` |

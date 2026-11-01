@@ -95,6 +95,11 @@ type mfaInterceptor struct {
 	challengeStore onetime.Store
 	challenges     map[string]*onetime.Tokens
 
+	// challengeStoreGiven records that WithMFAChallengeStore was given, because
+	// the slot may default its store later and re-authentication has to know
+	// whether the consumer chose one.
+	challengeStoreGiven bool
+
 	// challengeCap is how many challenges begin issues a user for one method
 	// within the store's issuance window (WithMFAChallengeLimit), and sweeps
 	// spaces each challenge method's sweeps of its expired challenges, keyed
