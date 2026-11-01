@@ -39,3 +39,34 @@ The library SHALL provide a store wrapper that seals a session's provider ID tok
 #### Scenario: An unmarked cipher failure stays unreadable
 - **WHEN** a session with an ID token is loaded through a consumer cipher whose open fails with an error of its own that is neither a context error nor marked as an outage
 - **THEN** the session-unreadable error is returned
+
+## ADDED Requirements
+
+### Requirement: Creating a session can be completed by the caller before it is stored
+The manager SHALL let a caller build a session, act on it, such as marking a pending challenge or issuing its credential, and only then store it, in the one write that creates it. A built session that has not been stored SHALL load nothing. When the caller's step fails, the creation SHALL fail with its error and SHALL store nothing. A creation with no caller's step SHALL behave as a creation does today.
+
+#### Scenario: The caller's step fails at creation
+- **WHEN** a caller builds a session for `u-1` and its step fails
+- **THEN** the creation fails with the step's error
+- **AND** the store holds no session for `u-1`
+
+#### Scenario: A built session loads nothing until stored
+- **WHEN** a caller builds a session and, inside its step, the session's identifier is loaded
+- **THEN** the load reports the session as not found
+- **AND** after the step succeeds and the session is stored, the identifier loads
+
+### Requirement: A rotation with grace stores nothing when the caller cannot complete it
+A rotation with a grace window SHALL let the caller act on the successor, such as issuing its credential, after the successor is built and before anything is stored. When that step fails, the rotation SHALL fail with its error and SHALL store, supersede and revoke nothing, so the old identifier keeps the standing it had. The store SHALL still decide racing rotations.
+
+#### Scenario: The caller's step fails
+- **WHEN** a live session is rotated with a 30-second grace and the caller's step fails
+- **THEN** the rotation fails with the step's error, and nothing is stored or superseded
+- **AND** 31 seconds later the old identifier still loads, and no reuse is reported
+
+#### Scenario: A losing rotation's step is discarded
+- **WHEN** two rotations with grace of one session run concurrently and both callers' steps succeed
+- **THEN** one rotation stores its successor, and the other's successor is never stored and loads nothing
+
+#### Scenario: The window counts from before the caller's step
+- **WHEN** a session is rotated at 10:00:00 with a 30-second grace, and the caller's step takes 5 seconds before it succeeds
+- **THEN** the old identifier loads until 10:00:30 and is superseded after it

@@ -2,42 +2,43 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the key and cipher ports a per-call context, report a missing signing key apart from an outage, and stop an outage from reading as a refusal on the session path, as the five spec deltas and design decisions D1–D5 require.
+**Goal:** Give the key and cipher ports a per-call context, report a missing signing key apart from an outage, stop an outage or a hang-up from reading as a refusal on the verification, issuing and session-resolution paths, and issue every credential before anything is stored or spent, as the eleven spec deltas and design decisions D1–D8 require.
 
 **Architecture:**
-- **Defect claims come first, on today's signatures (tasks 2.x).** The two misclassifications are reproduced by failing tests and fixed before any port changes, so each claim is proven or dropped on its own.
-- **The ports then change one at a time:** `seal` (3.x), `session.Cipher` and its outage marker (4.x), and `KeySource` (5.x). Each lane owns its port, its implementations and every caller `gopls` finds.
+- **Defects first, on today's signatures (tasks 2.x).** Each misclassification is reproduced by a failing test and fixed before any port changes, so every claim is proven or dropped on its own.
+- **The ports then change one at a time:** `seal` (3.x), `session.Cipher` and its marker (4.x), `KeySource` and `KeySetProvider` (5.x). Each lane owns its port, its implementations and every caller `gopls` finds.
+- **Issue, then commit, last (6.x).** `session` gains a creation and a grace rotation the caller completes before the write, the shape `RotateIssuing` has; each issuing path in `httpsec` and `recovery` then moves onto them.
 
 **Tech Stack:** Go 1.27 workspace, testify, mockgen v0.6 (`--typed`), jwx v4 (signing through `crypto.Signer`), testcontainers suites in `test/` (CI only).
 
-**Spec:** `openspec/changes/key-port-context/`: `proposal.md`, `design.md` (D1–D5), `specs/*/spec.md` and `tasks.md`. Step labels cite `tasks.md`.
+**Spec:** `openspec/changes/key-port-context/`: `proposal.md`, `design.md` (D1–D8), `specs/*/spec.md` and `tasks.md`. Step labels cite `tasks.md`.
 
 ## Global Constraints
 
-- **Lands after `restructure-layout` and `idiomatic-api-shape`.**
-  - Paths: `store/seal`, `token/signingkey`, `store/sqlstore`, `store/gormstore`, `store/pgxstore`.
-  - Names: `session.ErrUnreadable`, `session.ErrNotFound`, `seal.ErrConfig`, `signingkey.Keys`, `*seal.AEADCipher`, `*seal.StaticKeyring`.
-  - File names follow `restructure-layout` D1. Locate each file with `gopls`, not by the pre-restructure names.
-- **`ctx context.Context` is always the first parameter.** No caller substitutes a context or imposes a deadline of its own (D1).
-- **No nil-context check is added** (`idiomatic-api-shape` D6). The in-memory implementations ignore their context entirely.
+- **Paths are `main` after `reauthentication` merged.** Locate each symbol with `gopls`, not by the file names below, which are where they are on 2026-11-01.
+- **`ctx context.Context` is always the first parameter.** No caller substitutes a context or imposes a deadline of its own (D1). No nil-context check is added (`idiomatic-api-shape` D6). The in-memory implementations ignore their context entirely.
 - **New sentinels, exact text:**
   - `signingkey.ErrNoKey = errors.New("signingkey: no key for the algorithm")`;
   - `session.ErrCipherUnavailable = errors.New("session: cipher unavailable")`;
   - `seal.ErrUnavailable = errors.New("seal: keys unavailable")`.
 
   None of them matches any existing sentinel.
-- **Table tests** follow `.claude/skills/table-test`: the `assert` closure, a `ctx` modifier where context matters, and `t.Context()`. Test doubles come from `use-mockgen`, by regenerating the existing directives (for example `store/seal`'s `cipher_mock_test.go` and `keyring_mock_test.go`, `session`'s `store_encrypted_mock_test.go`, `token`'s `keysource_mock_test.go`). The Docker suites use `use-testcontainers` helpers.
+- **A dependency failure returned by `httpsec`, `authenticate` or `recovery` carries fixed library text** through `internal/diag.Wrap(err, text, kinds...)`, and its log record uses `diag.Failure(reason, err)`, never the error's text (`diagnostic-redaction`). It never matches `httpsec.ErrAuthenticationRequired` or `authenticate.ErrAuthenticationFailed`.
+- **A hang-up is classified with `ctx.Err() != nil && errors.Is(err, ctx.Err())`**, the request's own context, never a bare `errors.Is(err, context.Canceled)`: a dependency's own timeout is an outage, not a hang-up (D8).
+- **An issuing failure is a dependency failure on every path** (D7): never counted against a source or user, never answered as an invalid link, handoff or recovery.
+- **Table tests** follow `.claude/skills/table-test`: the `assert` closure, a `ctx` modifier where context matters, and `t.Context()`. Test doubles come from `use-mockgen`, by regenerating the existing directives (`store/seal`'s `cipher_mock_test.go` and `keyring_mock_test.go`, `session`'s `store_encrypted_mock_test.go`, `token`'s `keysource_mock_test.go`, `httpsec`'s `KeySetProvider` mock). The Docker suites use `use-testcontainers` helpers.
+- **Defect reproductions named in `tasks.md` are rewritten as the red step**, under a name that states the behaviour (`TestSealingStore_OpenDeadlineIsAStoreFailure`, not `TestRepro_…`). If one passes before the fix, stop and report: the decision it supports is withdrawn (`defect-claims.md`).
 - **Never run** `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`.
 - **Agents never edit `openspec/`,** and never read, copy or cite `.claude/.legacy`.
-- **A defect found in passing** is reported `REPRODUCED` with its failing test (`defect-claims.md`). It is not fixed in passing.
+- **A defect found in passing** is reported `REPRODUCED` with its failing test, or `UNREPRODUCED`. It is not fixed in passing.
 
 ## Review Focus
 
-1. **A context error wrapped by the cipher** (`fmt.Errorf("kms: %w", context.Canceled)`) must still read as an outage, not as unreadable. Matching uses `errors.Is`. A table case is added in 2.1.
-2. **An error that joins a marker with a context error**, or a marker with `seal.ErrDecryptionFailed`, is an outage. The marker wins, because the cipher said it could not reach its keys. Table cases are added in 4.2 and 4.3.
-3. **`identity.ErrUserNotFound` wrapped by a consumer loader** (`fmt.Errorf("db: %w", identity.ErrUserNotFound)`) is still a 401 refusal, not a 500. A table case is added in 2.3.
-4. **A key source whose `Signer` returns `nil` error with a nil signer.** Issuing must fail as an outage behind fixed text, never panic, and never produce a token. A table case is added in 5.2.
-5. **A session-store outage on the renewal endpoint's own request**, where resolution lets a renewal-required session through. A store failure there must still fail the request, not go on unauthenticated. A table case is added in 2.2.
+1. **A context error wrapped by the cipher** (`fmt.Errorf("kms: %w", context.Canceled)`) must still read as an outage, not as unreadable. Matching uses `errors.Is`. Table case in 2.1.
+2. **`identity.ErrUserNotFound` wrapped by a consumer loader** (`fmt.Errorf("db: %w", identity.ErrUserNotFound)`) is still a 401 refusal, not a 500, at resolution and at renewal. Table case in 2.3.
+3. **A key source whose `Signer` returns a nil error with a nil signer.** Issuing fails as an outage behind fixed text, never panics, never produces a token. Table case in 5.2.
+4. **The caller's step succeeds and the write then fails**, by a lost race or a store outage. The issued credential is never handed out, and it authenticates nothing. Table cases in 6.1 and 6.2.
+5. **Two redemptions of one magic link both issue.** Only the consume's winner stores a session; the loser's token, presented as a bearer, is refused as authentication-required. Test in 6.5.
 
 ---
 
@@ -45,165 +46,172 @@
 
 | Dispatch | Tasks | Owns | Model, reason | Reviewer |
 |---|---|---|---|---|
-| main session | 1.1 | `openspec/changes/key-port-context/` | design decision against the established design | none |
-| A1 | 2.1 | `session` sealing store file and its test | Sonnet: an `errors.Is` classification the design fixes exactly | Sonnet |
-| A2 | 2.2–2.4 | `httpsec` resolution (`resolve.go`) and its tests | Opus: refusal logic on a security path, written for the first time | Opus |
-| B | 3.1–3.3 | `store/seal` (all files), the passkey credential stores in `store/sqlstore`, `store/gormstore` and `store/pgxstore`, `internal/storekit` if it calls the cipher, `test/internal/storefix/ciphers.go` | Opus: an interface other packages and modules compile against | Opus |
-| D | 5.1–5.4 | `token/signingkey` (`KeySource`, `Keys`), `token` generator and verifier, every other `KeySource` caller or implementation `gopls` finds (including in `httpsec` and `test/`) | Opus: an interface several packages compile against | Opus |
-| C | 4.1–4.4 | `session.Cipher` and the sealing store file, `store/seal/cipher.go`, `store/seal` errors file, `session` and `store/seal` cipher mocks, `test/internal/storefix/ciphers.go` | Opus: an interface two packages compile against, and outage classification | Opus |
-| main session + Opus reviewer | 6.1–6.2 | whole branch | | Opus |
+| main session | 1.1 | `openspec/changes/key-port-context/` | done 2026-11-01 | none |
+| A | 2.1 | `session/store_encrypted.go` and its test | Sonnet: an `errors.Is` classification the design fixes exactly | Sonnet |
+| R1 | 2.2, 2.3, 2.5 | `httpsec/resolve.go`, `httpsec/session_renewal.go` (its user reload only), `httpsec/bearer_test.go`, `httpsec/session_bearer_test.go`, `httpsec/session_renewal_test.go`, a new `httpsec/resolve_test.go` | Opus: refusal logic on a security path, written for the first time | Opus |
+| R2 | 2.6, 2.4, 2.7 | `httpsec/session_bearer.go`, `httpsec/session_renewal.go` (its throttle only), `httpsec/bearer.go`, `authenticate/jwt.go`, their tests | Opus: refusal and charging logic on a security path | Opus |
+| B | 3.1–3.3 | `store/seal` (all files), the passkey credential files in `store/sqlstore`, `store/gormstore`, `store/pgxstore`, `test/internal/storefix`, `test/storetest` sealed-column suite and `broken_sealed_test.go` | Opus: an interface other packages and modules compile against | Opus |
+| C | 4.1–4.4 | `session/store_encrypted.go`, `session` errors, `store/seal/cipher.go` (`SessionCipher` only), `store/seal/errors.go`, `session/helpers_test.go`, `test/storetest/memory_test.go`, `NewSessionStore` godoc in the three SQL stores | Opus: an interface two packages compile against, and outage classification | Opus |
+| D | 5.1–5.5 | `token/signingkey` (all files), `token/generator.go`, `token/verifier.go`, their tests and doubles, `httpsec/jwks.go` and its test, every other `KeySource` or `KeySetProvider` caller `gopls` finds | Opus: interfaces several packages compile against | Opus |
+| S1 | 6.1, 6.2 | `session/sessions.go`, `session/reuse.go`, their tests | Opus: ordering under races, decided by the store | Opus |
+| S2 | 6.3, 6.4 | `httpsec/session_renewal.go`, `httpsec/complete.go`, `httpsec/login.go`, `httpsec/passkey_login.go`, their tests | Opus: credential ordering on a security path | Opus |
+| S3 | 6.5, 6.6 | `httpsec/magiclink.go`, `httpsec/oidc_redeem.go`, `authenticate/magiclink/links.go` (godoc), `authenticate/oidc/handoff.go` (godoc), their tests | Opus: check-then-consume | Opus |
+| S4 | 6.7, 6.8, 6.9 | `recovery/recover.go`, `recovery/recover_complete.go`, `recovery/hold.go`, `httpsec/recovery.go`, their tests, README | Opus: a refactor of an ordered, security-critical flow | Opus |
+| main session + Opus reviewer | 7.1–7.2 | whole branch | | Opus |
 
-**Order:**
-1. **1.1 runs first.** If it revises a decision, the affected tasks change before any dispatch starts.
-2. **A1 and A2 run in parallel.** `httpsec` imports `session`, but A1 changes no signature.
-3. **B and D then run in parallel.**
-   - Their files do not overlap.
-   - `store/seal` imports `token/signingkey` only for `Record` and `KeyStore`, which D does not change.
-   - Each runs only its own packages' tests while the other works. The test module is built only after both have landed.
-4. **C runs after B and A1.** It changes `store/seal/cipher.go` (B's file) and the sealing store file (A1's file).
+**Order** (one lane's dispatches never overlap; different lanes run in parallel where their files and compile units allow):
+1. **A and R1 in parallel.** `httpsec` imports `session`, but A changes no signature.
+2. **R2 and B in parallel.** No shared file; B builds only `store/*` and `test` while R2 builds `httpsec` and `authenticate`.
+3. **C (after A and B) and D (after R2) in parallel.** C changes `session` and `store/seal/cipher.go`; D changes `token`, `token/signingkey` and `httpsec/jwks.go`. The `test` module is built only after both have landed.
+4. **S1 after C**, since both are in `session`. **S2 after S1 and D. S3 after S2**, which owns `complete.go`. **S4 after S3.**
+5. **7.1 and 7.2 last.**
+
+After each dispatch the main session runs its verification commands, then a fresh reviewer of the stated model checks the diff against the scenarios the dispatch covers.
 
 ---
 
-### Task 1: Compare with the established design (task 1.1, main session)
+### Task 2.1: A context error on open is a store failure (dispatch A)
 
-- [ ] **Step 1:** Obtain the reference snapshot (`legacy-reference.md`, "Recreating the snapshot"). If it is unavailable, stop and ask the user. Do not start the dispatches on a pending D5.
-- [ ] **Step 2:** For each of D1–D4, record in `design.md` whether the established design agrees. Record each departure with its reason, or revise the decision and the deltas.
-- [ ] **Step 3:** `openspec validate key-port-context --strict`. Expected: valid. Commit: `docs(openspec): compare key-port-context with the established design`.
+**Files:** Modify `session/store_encrypted.go` (`Load`'s open classification). Test `session/store_encrypted_test.go`.
 
-### Task 2: A context error on open is not unreadable (task 2.1, dispatch A1)
+**Interfaces:** Produces the classification C extends in 4.2: an open error matching `context.Canceled` or `context.DeadlineExceeded` is returned wrapped, not as `session.ErrUnreadable`.
 
-**Files:**
-- Modify: the `session` sealing store (`encryptedStore.Load`)
-- Test: its test file
+- [ ] **Step 1: Write the failing table** `TestSealingStore_OpenFailureClassification` with rows: `context.DeadlineExceeded`; `fmt.Errorf("kms: %w", context.Canceled)`; a plain `errors.New("bad tag")`. Assert the first two match their context error and do not match `session.ErrUnreadable`; the third matches `session.ErrUnreadable`.
+- [ ] **Step 2: Run** `go test -run TestSealingStore_OpenFailureClassification -count=1 ./session/`. Expected FAIL: the deadline rows match `session.ErrUnreadable` (`session: session cannot be read … context deadline exceeded`).
+- [ ] **Step 3: Implement** the split in `Load`: context errors wrap through unchanged; everything else stays `ErrUnreadable`.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/`. Expected PASS, with "Sealed round trip", "Value moved between sessions" and "No rewrite on read" green.
+- [ ] **Step 5: Commit** `fix(session): a cancelled or timed-out open is a store failure, not an unreadable session`.
 
-**Interfaces:**
-- Produces: `encryptedStore.Load` returns `storeFailed(err, …)` for an open error matching `context.Canceled` or `context.DeadlineExceeded`. Its result does not match `session.ErrUnreadable`.
+### Task 2.2, 2.3, 2.5: Resolution answers outages and hang-ups as what they are (dispatch R1)
 
-- [ ] **Step 1: Failing test.** `TestEncryptedStore_LoadClassifiesOpenFailure`, a table over the session `MockCipher`'s `Open` result. Each case loads a session that has an ID token. The cases:
-  - `"deadline"`: `context.DeadlineExceeded`. Asserts `errors.Is(err, context.DeadlineExceeded)` and `!errors.Is(err, session.ErrUnreadable)`.
-  - `"cancelled, wrapped"`: `fmt.Errorf("kms: %w", context.Canceled)`. Asserts the same with `context.Canceled`.
-  - `"own error"`: `errors.New("tag mismatch")`. Asserts `errors.Is(err, session.ErrUnreadable)`.
-- [ ] **Step 2:** `go test -run TestEncryptedStore_LoadClassifiesOpenFailure -count=1 ./session/`. Expected: FAIL on `"deadline"` and `"cancelled, wrapped"`, because the error matches `session.ErrUnreadable`. If both pass, the claim was wrong: report that, with the output, and stop (`defect-claims.md`).
-- [ ] **Step 3:** In `Load`, test the open error with `errors.Is` against both context errors before the unreadable wrap, and return `storeFailed(err, "session: the provider ID token could not be opened")`.
-- [ ] **Step 4:** Rerun, then `go test -count=1 ./session/...`. Expected: PASS, including "Sealed round trip", "Value moved between sessions" and "No rewrite on read". Commit: `fix(session): report a cancelled open as a store failure`.
+**Files:** Modify `httpsec/resolve.go` (session load and user reload classification), `httpsec/session_renewal.go` (its user reload). Test `httpsec/resolve_test.go` (new), `httpsec/bearer_test.go`, `httpsec/session_bearer_test.go`, `httpsec/session_renewal_test.go`.
 
-### Task 3: Resolution answers a dependency failure as one (tasks 2.2–2.4, dispatch A2)
+**Interfaces:** Produces one classifier both paths use, for example `func classifyLoad(ctx context.Context, err error) error` and `func classifyReload(ctx context.Context, err error) error` in `httpsec/resolve.go`: refusals keep their errors; a hang-up returns an error matching `ctx.Err()`; anything else returns `diag.Wrap(err, "httpsec: session could not be resolved")` or `"httpsec: user could not be reloaded"`. R2 reads the result to decide charging.
 
-**Files:**
-- Modify: `httpsec/resolve.go` (`sessionResolver.resolve`)
-- Test: `resolve_test.go`, or the bearer and session-bearer test files the restructure produces
+- [ ] **Step 1: Write the failing table** `TestResolve_DependencyFailureIsNotARefusal`, through the signed bearer and the session-reference bearer, rows:
+  - session store returns `errors.New("db down")` → error does not match `ErrAuthenticationRequired`, `errors.Is(err, dbDown)`, text is fixed, status 500 through the default mapping, no undecryptable-session record;
+  - user loader returns `errors.New("db down")` → same, no record;
+  - user loader returns `fmt.Errorf("db: %w", identity.ErrUserNotFound)` → matches `ErrAuthenticationRequired` (Review Focus 2);
+  - session store returns `session.ErrUnreadable` → matches `ErrAuthenticationRequired`, ERROR record written.
+- [ ] **Step 2: Write the failing renewal rows** `TestSessionRenewal_UserReloadOutageIsNotARefusal` (outage → 500, no rotation; wrapped not-found → 401), the reproduction of `TestRepro_RenewalUserStoreOutageIsNotARefusal`.
+- [ ] **Step 3: Write the failing hang-up table** `TestResolve_HangUpIsNotARefusal`: cancel the request context inside the store's `Load` and inside the loader, at the bearer, the session-reference bearer and the renewal endpoint. Assert `errors.Is(err, context.Canceled)`, not `ErrAuthenticationRequired`, no ERROR record.
+- [ ] **Step 4: Run** `go test -run 'TestResolve_|TestSessionRenewal_UserReloadOutage' -count=1 ./httpsec/`. Expected FAIL: `found: "httpsec: authentication required"`, `expected: 500, actual: 401`.
+- [ ] **Step 5: Implement** the two classifiers and use them in resolution and the renewal reload.
+- [ ] **Step 6: Rewrite on purpose** `bearer_test.go` "the user store is down" and `session_bearer_test.go` "a user store that is down" to expect the dependency failure, and make `TestSessionRenewal_UserReloadPrecedesRotation` and `TestSessionRenewalThrottle_RemovedUserIsNotCharged` return `identity.ErrUserNotFound` for a removed user.
+- [ ] **Step 7: Run** `go test -race -count=1 ./httpsec/...`. Expected PASS.
+- [ ] **Step 8: Commit** `fix(httpsec): an outage or a hang-up at session resolution is not a refusal`.
 
-**Interfaces:**
-- Consumes: `session.Sessions.Load` errors, and `identity.ErrUserNotFound`.
-- Produces: `resolve` returns the load or reload error itself for any error not in the refusal set (D4 table).
+### Task 2.6, 2.4, 2.7: Charging refusals only, and the verification outage (dispatch R2)
 
-- [ ] **Step 1 (2.2): Failing test.** `TestResolve_SessionLoadFailure`, a table over the session store's `Load` result, driving a valid signed bearer request through the chain. A failing store comes from a regenerated `session.Store` mock. The cases:
-  - `"store down"`: `errors.New("pg: connection refused")`. Asserts:
-    - `!errors.Is(err, httpsec.ErrAuthenticationRequired)`;
-    - `httpsec.StatusForError(err) == 500`;
-    - no log record with message `"httpsec: a session could not be decrypted"`.
-  - `"store down, session-reference bearer"`: the same, with session-reference mode and a well-formed identifier.
-  - `"store down on the renewal endpoint"`: the same, on the renewal endpoint's own request (Review Focus 5).
-  - `"not found"` and `"expired"`: assert `errors.Is(err, httpsec.ErrAuthenticationRequired)`.
-- [ ] **Step 2:** `go test -run TestResolve_SessionLoadFailure -count=1 ./httpsec/`. Expected: FAIL on the three outage cases, because the error matches `ErrAuthenticationRequired`. If they pass, the claim was wrong: report that, with the output, and stop.
-- [ ] **Step 3:** In `resolve`, keep every existing refusal branch. The final `return ErrAuthenticationRequired` applies only when the error matches `session.ErrNotFound`, `session.ErrExpired` or `session.ErrUnreadable`. Any other error is returned unchanged.
-- [ ] **Step 4 (2.3): Failing test.** `TestResolve_UserReloadFailure`, a table over the `UserLoader` mock:
-  - `"loader down"`: `errors.New("db down")`. Asserts it is not `ErrAuthenticationRequired`, and the status is 500.
-  - `"not found"`: `identity.ErrUserNotFound`. Asserts `ErrAuthenticationRequired`.
-  - `"not found, wrapped"`: `fmt.Errorf("db: %w", identity.ErrUserNotFound)`. Asserts `ErrAuthenticationRequired` (Review Focus 3).
+**Files:** Modify `httpsec/session_bearer.go` (guard charging), `httpsec/session_renewal.go` (late-renewal charging), `httpsec/bearer.go` (verify join), `authenticate/jwt.go` (bearer provider). Test their `_test.go` files.
 
-  Run as in step 2. Expected: FAIL on `"loader down"` only.
-- [ ] **Step 5:** After `by.load`, return `ErrAuthenticationRequired` only for `errors.Is(err, identity.ErrUserNotFound)`. Otherwise return the error unchanged.
-- [ ] **Step 6 (2.4):** `go test -count=1 ./httpsec/... && (cd httpsec/ginsec && go test ./...) && (cd httpsec/fibersec && go test ./...)`. Expected: PASS, with "Expired session", "Superseded identifier presented after its window", "Session sealed under a retired key" and every renewal test unchanged. Commit: `fix(httpsec): fail a session or user store outage instead of asking for a new login`.
+**Interfaces:** Consumes R1's classifiers. Produces: only `errors.Is(err, token.ErrInvalid)` is joined with `authenticate.ErrAuthenticationFailed`; any other `Verify` error is `diag.Wrap(err, "httpsec: verification keys unavailable")`, logged with `diag.Failure`.
 
-### Task 4: Context on `seal.Keyring` and `seal.Cipher` (tasks 3.1–3.3, dispatch B)
+- [ ] **Step 1: Write the failing charging table** `TestSessionReferenceGuard_ChargesRefusalsOnly`: 101 presentations from one source while the store fails → none refused by the guard; rows that an unreadable session and a user who is not the session's, or disabled, are charged. And `TestLateRenewal_OutageIsNotCharged`.
+- [ ] **Step 2: Write the failing verification table** `TestBearer_KeySourceOutageIsNotARefusal` with the real `signingkey.Keys`, generator and verifier over a key source whose `VerificationKeys` fails with `errors.New("kms: dependency timeout")`: status 500, error matches neither `ErrAuthenticationFailed` nor `ErrAuthenticationRequired`, no record contains `kms: dependency timeout`. Same split in `authenticate`: `TestJWTProvider_KeySourceOutage`.
+- [ ] **Step 3: Run** `go test -run 'TestSessionReferenceGuard_ChargesRefusalsOnly|TestLateRenewal_OutageIsNotCharged|TestBearer_KeySourceOutage' -count=1 ./httpsec/` and `go test -run TestJWTProvider_KeySourceOutage -count=1 ./authenticate/`. Expected FAIL: outages charged; `expected: 500, actual: 401`.
+- [ ] **Step 4: Implement** charging on refusals only, and the `token.ErrInvalid` split in both places. Rewrite `TestBearerToken`'s tampered-token case to mock `Verify` with an error wrapping `token.ErrInvalid`.
+- [ ] **Step 5: Run** `go test -race -count=1 ./httpsec/... ./authenticate/...` and `go test ./...` in `test` (2.7: the refusal scenarios pass unchanged). Expected PASS.
+- [ ] **Step 6: Commit** `fix(httpsec): charge refusals only; a key source outage at verification is a dependency failure`.
 
-**Files:**
-- Modify: `store/seal/keyring.go`, `store/seal/cipher.go` (the AEAD cipher, and `SessionCipher`, which calls `seal.Cipher` and keeps its `session.Cipher` signature until Task 6), the `store/seal` enrolment and signing-key store files
-- Modify: the passkey credential files in `store/sqlstore`, `store/gormstore` and `store/pgxstore`; `test/internal/storefix/ciphers.go`; every other caller `gopls references` finds
-- Regenerate: `store/seal`'s `cipher_mock_test.go` and `keyring_mock_test.go`
+### Task 3.1–3.3: Context on `seal.Keyring` and `seal.Cipher` (dispatch B)
 
-**Interfaces:**
-- Produces:
-  - `Keyring.Active(ctx context.Context) (id string, key []byte, err error)`
-  - `Keyring.ByID(ctx context.Context, id string) ([]byte, error)`
-  - `Cipher.Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error)`
-  - `Cipher.Open(ctx context.Context, sealed, aad []byte) (plaintext []byte, keyID string, err error)`
-  - `Cipher.ActiveKeyID(ctx context.Context) (string, error)`
+**Files:** Modify `store/seal/keyring.go`, `store/seal/cipher.go`, `store/seal/mfa.go`, `store/seal/signingkey.go`, the passkey credential files in `store/sqlstore`, `store/gormstore`, `store/pgxstore`, `test/internal/storefix`, `test/storetest` (sealed-column suite, `broken_sealed_test.go`). Regenerate `store/seal` mocks.
 
-- [ ] **Step 1 (3.1): Failing tests.**
-  - `TestAEADCipher_Context`, a table with a `ctx` modifier:
-    - `"cancelled"`: seal, then open, under a cancelled context. Asserts the plaintext round-trips with no error.
-    - `"passed to keyring"`: a `MockKeyring` expects `Active` and `ByID` with the exact context value carried by `context.WithValue(t.Context(), key{}, "v")`.
-  - The same `"cancelled"` case for `*StaticKeyring`.
+**Interfaces:** Produces the D1 signatures for `Keyring` and `Cipher` exactly as `design.md` gives them. C consumes `Cipher.Open(ctx, …)` in `SessionCipher`.
 
-  Run `go test -run 'TestAEADCipher_Context|TestStaticKeyring_Context' -count=1 ./store/seal/` once the signatures are stubbed. Expected: FAIL on `"passed to keyring"`, because the keyring receives no context.
-- [ ] **Step 2:** Change the two ports and both implementations, and regenerate the mocks. Run the step 1 command. Expected: PASS.
-- [ ] **Step 3 (3.2): Failing test.** `TestEnrolmentStore_PassesContextToCipher`: store and read an enrolment under a value-carrying context through a `MockCipher` that asserts the value on `Seal` and `Open`. Expected: FAIL until the stores pass their context. Then pass the store method's context at every call site `gopls references` lists, including re-sealing on read and the passkey row helpers, which gain a `ctx` parameter.
-- [ ] **Step 4:** `go build ./...` in the core and in `store/gormstore` and `store/pgxstore`. Then `go test -count=1 ./store/...` and, in those two modules, `go test ./...`. Expected: PASS, including every existing `secrets-at-rest` scenario.
-- [ ] **Step 5 (3.3):** Add to the `Keyring` and `Cipher` godoc: honour the context; cache or use envelope encryption because of service quotas. `go doc ./store/seal Cipher` shows it. Commit: `feat(seal)!: pass the caller's context to the keyring and cipher`.
+- [ ] **Step 1: Write the failing tests:** `TestAEADCipher_AnswersUnderCancelledContext` (seal and open under a cancelled context succeed and round-trip); `TestAEADCipher_PassesContextToKeyring` (a recording keyring sees the cipher's context value); `TestEnrolmentStore_CipherCarriesStoreContext` (seal and open carry the store call's context value); `TestEnrolmentStore_ResealOutageDoesNotFailRead` (cipher opens, then fails `ActiveKeyID` with `errors.New("kms: unavailable")`: read returns the secret, stored value unchanged; C adds the `seal.ErrUnavailable` row in 4.3).
+- [ ] **Step 2: Run** `go test -run 'TestAEADCipher_|TestEnrolmentStore_' -count=1 ./store/seal/`. A compile error is not the red step: first add the parameters with bodies that ignore `ctx`, then run. Expected FAIL on the context assertions (`context value: <nil>`).
+- [ ] **Step 3: Implement** the signatures through every caller in the Files list, including `activeKeyForReseal(ctx)`, the passkey `scan`/`query`/`list`/`fromRow`/`one`/`List` helpers and `ChargeEmailAttempt`; regenerate the mocks; update `storefix` and `broken_sealed_test.go`.
+- [ ] **Step 4: Extend the sealed-column suite** with `cipher carries the operation's context`: a recording cipher, every sealed column written and read under a context value, the passkey emailed code included; prove it fails against a store whose helper uses `context.Background()` by temporarily inverting one helper.
+- [ ] **Step 5: Run** `go test -race -count=1 ./store/...`, `make check`. Expected PASS; the Docker suites run in CI.
+- [ ] **Step 6: Godoc (3.3)** on `Keyring` and `Cipher`: honour the context; cache or use envelope encryption. Check with `go doc ./store/seal Keyring`.
+- [ ] **Step 7: Commit** `feat(seal)!: the keyring and the cipher take a per-call context`.
 
-### Task 5: Context on `KeySource`, and `ErrNoKey` (tasks 5.1–5.4, dispatch D)
+### Task 4.1–4.4: Context on `session.Cipher`, and the outage marker (dispatch C)
 
-**Files:**
-- Modify: the `token/signingkey` key source file and `Keys`' signer method; the `token` generator and verifier files; every `KeySource` implementation and caller `gopls implementation` and `references` find
-- Regenerate: `token`'s `keysource_mock_test.go`
+**Files:** Modify `session/store_encrypted.go`, `session` errors, `store/seal/cipher.go` (`SessionCipher`), `store/seal/errors.go`, `session/helpers_test.go`, `test/storetest/memory_test.go`, `NewSessionStore` godoc in `store/sqlstore`, `store/pgxstore`, `store/gormstore`. Regenerate the `session` cipher mock.
 
-**Interfaces:**
-- Produces:
-  - `KeySource.Signer(ctx context.Context, alg Alg) (kid string, signer crypto.Signer, err error)`
-  - `KeySource.VerificationKeys(ctx context.Context) ([]PublicKey, error)`
-  - `signingkey.ErrNoKey`
+**Interfaces:** Produces `session.Cipher` with `ctx` first, `session.ErrCipherUnavailable`, `seal.ErrUnavailable`.
 
-- [ ] **Step 1 (5.1): Failing test.** `TestKeys_Signer`, a table with a `ctx` modifier over a `Keys` configured for RS256 only:
-  - `"configured"`: returns a non-nil signer, a kid and a nil error.
-  - `"unconfigured"`: asks for EdDSA, and asserts `errors.Is(err, signingkey.ErrNoKey)`.
-  - `"cancelled"`: asks for RS256 under a cancelled context, and asserts success.
+- [ ] **Step 1: Write the failing tests:** `TestSealingStore_CipherCarriesContext` (save and load context values reach the cipher); extend `TestSealingStore_OpenFailureClassification` with rows: an error joining `session.ErrCipherUnavailable` → matches it, not `ErrUnreadable`; joining the marker with `errors.New("bad tag")` → outage (the marker wins); `TestSessionCipher_TranslatesUnavailable` (`seal.ErrUnavailable` → `session.ErrCipherUnavailable`; `context.Canceled` passes through; `seal.ErrUnavailable` matches neither `seal.ErrDecryptionFailed` nor `seal.ErrUnknownKeyID`); `TestEnrolmentStore_OutageIsDistinguishable` (an enrolment read through a cipher whose open wraps `seal.ErrUnavailable` → matches it, not `ErrDecryptionFailed` or `ErrUnknownKeyID`); and a `seal.ErrUnavailable` row in `TestEnrolmentStore_ResealOutageDoesNotFailRead`.
+- [ ] **Step 2: Run** `go test -run 'TestSealingStore_|TestSessionCipher_' -count=1 ./session/ ./store/seal/`. Expected FAIL on the marker rows (`matches session.ErrUnreadable`).
+- [ ] **Step 3: Implement** the signature through the sealing helper reached from `Create`, `Save` and `Supersede`, the marker classification, and the translation.
+- [ ] **Step 4: Godoc (4.4):** which errors read as an outage and how a remote cipher marks one, on `session.Cipher`, `seal.Cipher`, `seal.SessionCipher` and each `NewSessionStore`.
+- [ ] **Step 5: Run** `go test -race -count=1 ./session/ ./store/...` and `go vet ./...` in `test`. Expected PASS.
+- [ ] **Step 6: Commit** `feat(session)!: the session cipher takes a context, and a marked outage is not an unreadable session`.
 
-  Expected: FAIL on `"unconfigured"` once the signature is stubbed to return a nil error.
-- [ ] **Step 2:** Implement. Rerun `go test -run TestKeys_Signer -count=1 ./token/signingkey/`. Expected: PASS.
-- [ ] **Step 3 (5.2): Failing test.** `TestGenerator_SignerResult`, a table over the `MockKeySource`:
-  - `"no key"`: `ErrNoKey`. Asserts an error and no token, as "No key for the algorithm".
-  - `"outage"`: `errors.New("kms down")`. Asserts that `errors.Is` matches it and does not match `ErrNoKey`, that the error text does not contain `"kms down"`, and that no token is produced.
-  - `"nil signer, nil error"`: asserts an error, no panic, and no token (Review Focus 4).
-  - `"context reaches the source"`: `Generate` under a value-carrying context, and the mock asserts it.
-  - `"once per token"`: three `Generate` calls. Asserts `Signer` was called three times, and each returned signer's `Sign` was called exactly once.
+### Task 5.1–5.5: `KeySource`, `ErrNoKey` and `KeySetProvider` (dispatch D)
 
-  Run `go test -run TestGenerator_SignerResult -count=1 ./token/`. Expected: FAIL on `"outage"`, `"context reaches the source"` and `"nil signer, nil error"`.
-- [ ] **Step 4:** In `Generate`, pass `ctx` and call `Signer` once. Keep the existing "no current key for algorithm" text for `ErrNoKey`, and wrap any other error with `diag.Wrap(err, "token: obtain signing key")`. Treat a nil signer as an outage. Rerun. Expected: PASS.
-- [ ] **Step 5 (5.3): Failing test.** `TestVerifier_PassesContextToKeySource`: verification under a value-carrying context, and the mock asserts it on `VerificationKeys`. Implement, then run `go test -count=1 ./token/... ./httpsec/...`. Expected: PASS, including "Typed-nil RSA key".
-- [ ] **Step 6 (5.4):** Godoc for `KeySource` and `Signer`: the meaning of `ErrNoKey`, that any other error is an outage, one issuance per signer (which may be bound to `ctx`), and the caching advice. `go doc ./token/signingkey KeySource` shows it. Commit: `feat(signingkey)!: pass the caller's context to the key source and report a missing key`.
+**Files:** Modify `token/signingkey/keysource.go`, `token/signingkey/keys.go`, `token/generator.go`, `token/verifier.go`, `httpsec/jwks.go`, the doubles in `token/consumerkeysource_test.go`, `token/generator_test.go`, `token/verifier_test.go`, `token/signingkey/keysource_test.go`, `test/httpsecconformance` if it implements either port. Regenerate the `KeySource` and `KeySetProvider` mocks.
 
-### Task 6: Context on `session.Cipher`, and the outage marker (tasks 4.1–4.4, dispatch C)
+**Interfaces:** Produces `Signer(ctx, alg) (string, crypto.Signer, error)`, `VerificationKeys(ctx) ([]PublicKey, error)`, `KeySetProvider.JWKS(ctx) ([]byte, error)`, `signingkey.ErrNoKey`. The generator's failure text is fixed: `token: no current key for the algorithm` for `ErrNoKey`, `token: signing key unavailable` for anything else.
 
-**Files:**
-- Modify: `session.Cipher` and the sealing store; the `session` errors file; `store/seal/cipher.go`; the `store/seal` errors file; `test/internal/storefix/ciphers.go`
-- Regenerate: `session`'s `store_encrypted_mock_test.go`
+- [ ] **Step 1: Write the failing tests:** `TestKeys_SignerReportsNoKey` (EdDSA on an RS256-only manager; ES256 published from another replica) → `errors.Is(err, signingkey.ErrNoKey)`; `TestKeys_AnswersUnderCancelledContext`; `TestGenerator_KeySourceOutage` (rows: outage error → wraps it, not `ErrNoKey`, no token; nil error with nil signer → outage, no panic — Review Focus 3); `TestGenerator_AsksForASignerPerToken` (three tokens, three requests, each signer signs once); `TestKeySource_ReceivesCallersContext` (issue and verify under distinct context values); `TestJWKS_RequestContextAndOutage`.
+- [ ] **Step 2: Run** `go test -run 'TestKeys_|TestGenerator_|TestKeySource_' -count=1 ./token/...` and `go test -run TestJWKS_ -count=1 ./httpsec/`. Expected FAIL on the assertions after the signatures compile (`ok == false` mapped to plain text; context value `<nil>`).
+- [ ] **Step 3: Implement** the signatures and the generator's two failure texts through every caller `gopls` finds; the JWKS endpoint passes the request context and returns `diag.Wrap`.
+- [ ] **Step 4: Godoc (5.5)** of `KeySource`, `Signer`, `KeySetProvider`, as `tasks.md` 5.5 lists.
+- [ ] **Step 5: Run** `go test -race -count=1 ./token/... ./httpsec/...`, then `go vet ./...` in `test` once C has landed. Expected PASS.
+- [ ] **Step 6: Commit** `feat(signingkey)!: the key source takes a context and reports a missing key apart from an outage`.
 
-**Interfaces:**
-- Consumes: Task 4's `seal.Cipher`, and Task 2's context classification.
-- Produces:
-  - `session.Cipher.Seal(ctx context.Context, plaintext, additionalData []byte) ([]byte, error)`
-  - `session.Cipher.Open(ctx context.Context, ciphertext, additionalData []byte) ([]byte, error)`
-  - `session.ErrCipherUnavailable`, `seal.ErrUnavailable`
+### Task 6.1, 6.2: Creation and grace rotation the caller completes (dispatch S1)
 
-- [ ] **Step 1 (4.1): Failing test.** `TestEncryptedStore_PassesContextToCipher`: save and load under a value-carrying context, and the `MockCipher` asserts the value on `Seal` and `Open`. Implement the signature and pass the context through `seal.SessionCipher`. Run `go test -count=1 ./session/... ./store/seal/...`. Expected: PASS, including "Consumer cipher used".
-- [ ] **Step 2 (4.2): Failing test.** Extend Task 2's table with these cases:
-  - `"marked"`: `errors.Join(session.ErrCipherUnavailable, errors.New("503"))`. Asserts `errors.Is(err, session.ErrCipherUnavailable)` and not `ErrUnreadable`.
-  - `"marked with a context error"`: `errors.Join(session.ErrCipherUnavailable, context.Canceled)` (Review Focus 2).
+**Files:** Modify `session/sessions.go`, `session/reuse.go`. Test their `_test.go` files.
 
-  A separate assertion checks that the sentinel matches neither `ErrUnreadable` nor `ErrNotFound`. Expected: FAIL until the marker is classified with the context errors.
-- [ ] **Step 3 (4.3): Failing test.** `TestSessionCipher_TranslatesOutage`, a table over the `seal` `MockCipher`'s `Open` result:
-  - `"unavailable"`: `seal.ErrUnavailable`. Asserts `errors.Is(err, session.ErrCipherUnavailable)`.
-  - `"unavailable and decryption failed"`: `errors.Join(seal.ErrUnavailable, seal.ErrDecryptionFailed)`. Asserts the same.
-  - `"cancelled"`: `context.Canceled`. Asserts it passes through unchanged and matches no marker.
-  - `"decryption failed"`: `seal.ErrDecryptionFailed`. Asserts no marker.
+**Interfaces:** Produces, beside `RotateIssuing` and in its style (names indicative; record any change in the report):
+- `func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepared, error)`;
+- `func (p *Prepared) Session() *Session`;
+- `func (p *Prepared) Commit(ctx context.Context) (*Session, error)`;
+- `func (m *Sessions) CreateIssuing(ctx context.Context, user identity.UserID, issue func(*Session) (string, error), opts ...CreateOption) (*Session, string, error)`;
+- `func (m *Sessions) RotateWithGraceIssuing(ctx context.Context, s *Session, grace time.Duration, issue func(*Session) (string, error), opts ...RotateOption) (*Session, RenewalKind, string, error)`.
 
-  Then implement the translation, wrapping as `errors.Join(session.ErrCipherUnavailable, err)`. Rerun. Expected: PASS.
-- [ ] **Step 4:** Update the storefix ciphers. Run `go test -count=1 ./session/... ./store/...`, then build the test module (`cd test && go build ./... && go vet ./...`). Expected: PASS.
-- [ ] **Step 5 (4.4):** Godoc for `session.Cipher`, `seal.Cipher` and `seal.SessionCipher`: which errors read as an outage, and how to mark one. Commit: `feat(session)!: pass the caller's context to the session cipher and mark cipher outages`.
+`Create` becomes `Prepare` then `Commit`; `RotateWithGrace` becomes `RotateWithGraceIssuing` with no step.
 
-### Task 7: Final integration (tasks 6.1–6.2, main session)
+- [ ] **Step 1: Write the failing tables** `TestCreateIssuing` (step fails → nothing stored for the user; a load of the identifier inside the step → not found; success → loads; the store's `Create` fails after the step succeeded → error, credential not returned — Review Focus 4) and `TestRotateWithGraceIssuing` (step fails → nothing superseded, 31 s later the old identifier loads and no reuse is observed; two concurrent rotations with successful steps → one successor stored, the other loads nothing; a 5-second step at 10:00:00 with 30 s grace → old identifier loads until 10:00:30; the supersession fails after the step → credential not returned).
+- [ ] **Step 2: Run** `go test -run 'TestCreateIssuing|TestRotateWithGraceIssuing' -count=1 ./session/`. Expected FAIL: undefined is a compile error, so stub the methods returning `errors.New("not implemented")` first; then FAIL on the assertions.
+- [ ] **Step 3: Implement**, reading the clock before the step, as `RotateIssuing` does.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/` and the session store conformance suites (`go test ./...` in `test`, CI). Expected PASS, the existing grace and reuse scenarios unchanged.
+- [ ] **Step 5: Commit** `feat(session): creation and grace rotation the caller completes before anything is stored`.
 
-- [ ] **Step 1 (6.1):** `make check`. Expected: PASS. Push, and confirm CI is green on both matrix jobs (the Docker store-conformance suites run there).
-- [ ] **Step 2 (6.2):** Dispatch one fresh Opus reviewer over the whole branch. Check it against the five deltas' requirements and D1–D5, and against the Review Focus list. Defects come back with a failing test or labelled `UNREPRODUCED`. Fold the findings back to a fresh dispatch of the owning lane. Then run `openspec validate key-port-context --strict`. Expected: valid.
+### Task 6.3, 6.4: Renewal and login completion issue first (dispatch S2)
+
+**Files:** Modify `httpsec/session_renewal.go`, `httpsec/complete.go` (`completeLogin`, `credentialIssuer` use), `httpsec/login.go`, `httpsec/passkey_login.go`. Test their `_test.go` files.
+
+**Interfaces:** Consumes S1's methods. Produces, in `httpsec/complete.go`, a completion that accepts an optional spend step run after issuing and before `Commit`, for S3: for example `completeLogin(ctx, ex, in loginInput, spend func(context.Context) error)`. A spend failure discards the credential and stores nothing.
+
+- [ ] **Step 1: Write the failing tests:** `TestSessionRenewal_IssueFailureDoesNotLaterReadAsReuse` (failing generator; clock +31 s; the old credential loads and renews; reuse observer count 0); `TestFormLogin_TokenCannotBeIssued` (key source fails → error matches neither `ErrAuthenticationFailed` nor `ErrAuthenticationRequired`, the store holds no session); `TestCompleteLogin_ChallengeStoredBeforeHandOut` (enrolment challenge: the session is in the store, enrolment-pending, before the response is written, in one write).
+- [ ] **Step 2: Run** `go test -run 'TestSessionRenewal_IssueFailure|TestFormLogin_TokenCannotBeIssued|TestCompleteLogin_ChallengeStored' -count=1 ./httpsec/`. Expected FAIL: `session: a superseded session was presented after its window`, reuse observer `1`; a session stored for the failed login.
+- [ ] **Step 3: Implement** renewal through `RotateWithGraceIssuing`, and `completeLogin` through `Prepare`, mark, issue, spend, `Commit`, hand out.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/...` and `go test ./...` in `test`. Expected PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): renewal and login completion issue the credential before anything is stored`.
+
+### Task 6.5, 6.6: Redemptions issue inside the check (dispatch S3)
+
+**Files:** Modify `httpsec/magiclink.go`, `httpsec/oidc_redeem.go`; godoc of `magiclink.Check` (`authenticate/magiclink/links.go`) and `oidc.RedeemCheck` (`authenticate/oidc/handoff.go`). Test their `_test.go` files.
+
+**Interfaces:** Consumes S2's completion with its spend step. The redeemer's check builds and issues; the redeemer's consume is the spend; `Commit` runs after the redeemer returns.
+
+- [ ] **Step 1: Write the failing tests:** `TestMagicLink_CredentialCannotBeIssuedKeepsLink` (first redemption fails as a dependency failure, not an invalid link, no session, nothing charged; second succeeds); `TestMagicLink_RacingRedemptionsStoreOneSession` (16 concurrent redemptions → one success, one stored session; a loser's token presented as a bearer → `ErrAuthenticationRequired` — Review Focus 5); `TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode`.
+- [ ] **Step 2: Run** `go test -run 'TestMagicLink_|TestOIDCHandoff_CredentialCannotBeIssued' -count=1 ./httpsec/`. Expected FAIL: the second redemption is refused, the link or code spent.
+- [ ] **Step 3: Implement** the reordering, and the godoc on both check types: the library may issue a credential between the checks and the consume, and discards it on a lost race.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./authenticate/magiclink/... ./authenticate/oidc/...`. Expected PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): a link or handoff code is spent only after its credential is issued`.
+
+### Task 6.7, 6.8, 6.9: Recovery issues before it spends (dispatch S4)
+
+**Files:** Modify `recovery/recover.go` (`Request`), `recovery/recover_complete.go`, `recovery/hold.go`, `httpsec/recovery.go`; README. Test their `_test.go` files.
+
+**Interfaces:** Produces `type IssueFunc func(ctx context.Context, s *session.Session) (string, error)` in `recovery`; `Request.Issue IssueFunc`; `Finish(ctx context.Context, completionToken string, issue IssueFunc) (*Result, error)`; `Result.Credential string`. The core builds the recovery-pending session with S1's `Prepare`, calls `issue` after the checks and before any spend, and `Commit`s after reset, revocation and code replacement. `httpsec/recovery.go` passes its `credentialIssuer` and stops issuing after the core returns.
+
+- [ ] **Step 1: Write the failing tests:** `TestRecover_IssueFailureSpendsAndEndsNothing` (saved code + password, failing issue: the error is a dependency failure; the earlier session loads; a second code of the old set confirms; nothing recorded against the user or the source; no notice queued) and `TestFinish_IssueFailureLeavesRecordPending` (a held recovery finished while issue fails: record pending, token usable, authenticators and sessions unchanged; finish again succeeds).
+- [ ] **Step 2: Run** `go test -run 'TestRecover_IssueFailure|TestFinish_IssueFailure' -count=1 ./recovery/`. Expected FAIL: `session: session not found` for the earlier session; the old code refused.
+- [ ] **Step 3: Implement** the hook and the reordering; one creating write, already recovery-pending.
+- [ ] **Step 4: Godoc and README (6.9)** for every seam 6.1–6.8 changed: issue before store or spend; an issuing failure is a dependency failure.
+- [ ] **Step 5: Run** `go test -race -count=1 ./recovery/... ./httpsec/...`, `golangci-lint run ./...`. Expected PASS.
+- [ ] **Step 6: Commit** `fix(recovery): a recovery spends and replaces nothing for a credential it could not issue`.
+
+### Task 7.1, 7.2: The gate and the whole-branch review (main session)
+
+- [ ] **Step 1 (7.1):** `make check` locally, then CI green on both PostgreSQL and Redis matrix jobs. Record the output.
+- [ ] **Step 2 (7.2):** dispatch a fresh Opus reviewer over the whole branch against every requirement of the eleven deltas and D1–D8. A finding needs a failing test or an `UNREPRODUCED` label.
+- [ ] **Step 3:** `openspec validate key-port-context --strict`. Expected `Change 'key-port-context' is valid`.
