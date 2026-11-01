@@ -286,7 +286,7 @@ Each defect task's red step is the reproduction named in its design decision, wr
 
   (Reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", scenario "The password endpoint settles at the first enrolled method".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
 - [ ] 12.5 Cleanups, behaviour unchanged (D1, D6 "One full-session check", D8):
-  - one full-session check shared by re-proof admission, passkey management and recovery-code regeneration, the strictest of the three;
+  - one full-session check shared by re-proof admission, passkey management and recovery-code regeneration, the strictest of the three, a challenge raised on the request included, which passkey management now refuses too (passkey-authentication scenario "A challenge raised on the request");
   - one method-listing writer shared by the MFA listing and the re-proof listing;
   - `session.AuthenticatedWithin(at, now time.Time, window time.Duration) bool`, which the method delegates to; the recency judge calls it without building a session.
 
