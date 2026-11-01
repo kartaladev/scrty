@@ -392,6 +392,66 @@ func TestPreparedCommit(t *testing.T) {
 			},
 		},
 		{
+			name:  "a changed family is refused and writes nothing",
+			store: &probeStore{},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().FamilyID = storedFamily
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
+			name:  "a changed family start is refused and writes nothing",
+			store: &probeStore{},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().FamilyCreatedAt = p.Session().FamilyCreatedAt.Add(-time.Minute)
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
+			name:  "a changed creation time is refused and writes nothing",
+			store: &probeStore{},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().CreatedAt = p.Session().CreatedAt.Add(time.Second)
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
+			name:  "a changed authentication time is refused and writes nothing",
+			store: &probeStore{},
+			before: func(_ *testing.T, _ *prepareFixture, p *session.Prepared) {
+				p.Session().AuthenticatedAt = p.Session().AuthenticatedAt.Add(-time.Minute)
+			},
+			assert: func(t *testing.T, f *prepareFixture, p *session.Prepared, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, got)
+				assert.Zero(t, f.store.creates.Load(), "the refused commit reached the store")
+
+				_, loadErr := f.m.Load(t.Context(), p.Session().ID)
+				require.ErrorIs(t, loadErr, session.ErrNotFound)
+			},
+		},
+		{
 			name:  "an absolute deadline lengthened within the maximum is refused and writes nothing",
 			store: &probeStore{},
 			mgr:   []session.Option{session.WithMaxAbsoluteLifetime(24 * time.Hour * 365 * 10)},
