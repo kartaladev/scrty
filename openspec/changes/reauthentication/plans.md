@@ -96,6 +96,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 11b | M1b | 12.1 review follow-ups | M1's files plus `httpsec/mfa_enrol_test.go` | Sonnet: the fixes are stated | Sonnet |
 | 11b | M2b | 12.2 revised (D6 "Every deny binds") | M2's files; `httpsec/reauth_options.go` godoc of the verify bullet | Opus: security refusal logic, a reproduced fail-open | Opus |
 | 11c | M2c | 12.2 federated evidence and godoc (Step 7) | M2's files; `policy/mfa_requirement.go`, `session/sessions_options.go` (godoc) | Sonnet: the fix is stated and shown to work | Sonnet |
+| 12b | M4b | 12.5 review follow-ups (Task 33 Step 5) | `httpsec/passkey_manage.go`, `httpsec/passkey_manage_test.go`, `httpsec/full_session.go`, `httpsec/passkey.go` (godoc) | Sonnet: a known refusal pattern and a test row | Sonnet |
 | 11c | M1c | 12.1 test-strength follow-ups | `session/sessions_test.go`, `httpsec/mfa_enrol_test.go` | Sonnet: stated test gaps | Sonnet |
 
 - Wave 11 runs M1, M2 and M3 in parallel worktrees (disjoint files). M3 merged after review. M1 and M2 came back with review findings, so wave 11b re-dispatches both on their own branches, in parallel (disjoint files). Wave 12 runs M4 after wave 11 merges (it touches `mfa_verify.go` after M1), then M5, then the gate.
@@ -763,6 +764,10 @@ Runs on H1's branch after Task 18.
 - [ ] **Step 2: Extract** and delete the copies.
 - [ ] **Step 3: Run** `go test -race -count=1 ./session/ ./internal/guardauth/ ./httpsec/...`, `golangci-lint run`: PASS.
 - [ ] **Step 4: Commit** `refactor: one full-session check, one listing writer, one freshness function`.
+- [ ] **Step 5: Review follow-ups (dispatch M4b, third review).**
+  - A reordered `TestPasskeyManage` row: a consumer interceptor past the gates publishes an `MFAPending` session → `*ChallengeError{Kind: ChallengeMFA}`, nothing changed; seen failing when `fullSession` accepts `MFAPending`.
+  - Passkey management refuses a challenge raised on the request (`Exchange.RaisedChallenge`) with a `*ChallengeError` of that kind, nothing begun (passkey-authentication scenario "A challenge raised on the request"); red first. If the three callers can share the raised-challenge check, share it.
+  - Godoc: `full_session.go` names who checks a raised challenge, and that a binding or a password change ends the confinement; `passkey.go` ~208 says a session owing nothing that is not full is refused as authentication required.
 
 ### Task 34: Docs (tasks.md 12.6)
 

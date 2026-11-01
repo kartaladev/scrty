@@ -8,7 +8,7 @@ The registration endpoints SHALL refuse a request with no session, or whose sess
 - a **recovery-pending session**, without the assurance and freshness checks, since the recovery is its authentication and its lifetime is short by construction;
 - an **enrolment-only session**, without the assurance and freshness checks, since its user has no usable second factor and its lifetime is short by construction.
 
-A session with a pending MFA or password-change challenge never reaches registration, because the gate of its challenge refuses it first.
+A session with a pending MFA or password-change challenge never reaches registration, because the gate of its challenge refuses it first. A request on which the policy raised a challenge that no gate before registration enforced SHALL be refused with a challenge error of that kind, and nothing SHALL be begun, as at re-authentication.
 
 #### Scenario: Fresh full session
 - **WHEN** `u-1`, who has no MFA enrolment, logged in by password at 09:00 and begins a registration at 09:10
@@ -41,6 +41,10 @@ A session with a pending MFA or password-change challenge never reaches registra
 #### Scenario: No session
 - **WHEN** a request without a session posts to the registration begin path
 - **THEN** it is refused as authentication required
+
+#### Scenario: A challenge raised on the request
+- **WHEN** the per-request policy raises a challenge on a fresh full session's request, no gate before the passkey slot enforces it, and the session begins a registration
+- **THEN** it is refused with a challenge error of that kind and no challenge is issued
 
 #### Scenario: Freshness from a re-authentication
 - **WHEN** `u-1`, who has no MFA enrolment, logged in by password at 09:00, re-authenticated with the password at 09:30, and begins a registration at 09:40
