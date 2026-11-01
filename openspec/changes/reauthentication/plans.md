@@ -84,6 +84,8 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 8 | J1 | 9.7 | `internal/guardauth/*`, `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`, their tests | Opus: refactor extracting shared code across three packages | Opus |
 | 8 | K1 → K2 → K3 | 10.1, 10.2, 10.3 | `session/store.go`, `session/session.go`, `session/store_memory.go`, `session/store_encrypted.go`, `session/sessions.go`, `session/reuse.go`, their tests; `test/storetest/*`; `store/migrate/securitystate/` (new file); `internal/pgschema/sessions.go`, `internal/storekit/*`; `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/{session,models}.go`; `test/migrate_securitystate_test.go`, `test/gormstore/statements_test.go`, `test/*/session_test.go` | K1 Opus: an interface every store compiles against; K2 Sonnet: the known column pattern across stores; K3 Opus: ordering under races | Opus, Sonnet, Opus |
 | 8b | K4 | 10.4 | `test/storetest/session_suite.go` (the two-manager case), `httpsec/reauth_resolve_test.go`, `httpsec/session_renewal_test.go` | Sonnet: conformance and test rows against stated outcomes | Sonnet |
+| 10 | L1 | 9.9 | `httpsec/reauth_options.go`, `httpsec/reauth.go`, `httpsec/mfa_options.go`, `httpsec/passkey.go`, `httpsec/recovery_options.go`, `recovery/hold.go` (godoc only), `httpsec/reauth_test.go`, `README.md` | Sonnet: a stated narrowing of a wiring rule, and docs | Sonnet |
+| 10 | K5 | 10.5 | `session/store.go`, `session/sessions.go` (godoc), `session/store_memory.go`, `internal/pgschema/sessions.go`, `internal/storekit/*`, `store/{sqlstore,pgxstore,gormstore}/session.go`, `test/storetest/*`, `test/migrate_securitystate_test.go` | Sonnet: the known conditional-update pattern across stores | Sonnet |
 | 9 | D2 | 11.1 | `test/httpsecconformance/reauth_scenarios.go` | Sonnet: conformance cases in an existing suite | Sonnet |
 | 9 | main | 11.2 | runs the gate; edits nothing | — | whole-branch review: Opus |
 
@@ -648,6 +650,37 @@ Runs on H1's branch after Task 18.
 - [ ] **Step 4: Run** `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in `test`: PASS.
 - [ ] **Step 5: Commit** `fix(httpsec): a password re-proof is marked as one, and cancels a held recovery`.
 
+### Task 28: The MFA-store rule needs a challenge method; docs to current behaviour (tasks.md 9.9)
+
+**Files:**
+- Modify: `httpsec/reauth_options.go` (`settle`'s store check, ~199; godoc ~62, ~124), `httpsec/reauth.go` (`offered` godoc ~255), `httpsec/mfa_options.go` (~262), `httpsec/passkey.go` (`EnablePasskeys` godoc ~254, `wirePasskeys` error ~396), `httpsec/recovery_options.go` (`EnableAccountRecovery` godoc ~208), `recovery/hold.go` (`CancelPending` godoc ~489), `README.md` (~444, ~793, ~799)
+- Test: `httpsec/reauth_test.go` (`TestEnableReauthentication`)
+
+**Interfaces:**
+- Consumes: `isChallengeMethod(mfa.Method) bool` (used by `buildChallenges`).
+
+- [ ] **Step 1: Write the failing row:** a TOTP-only MFA slot with `WithMFAChallengeStore(st)` and `EnableReauthentication()` without a store builds (`require.NoError`); the existing passkey-slot refusal row stays.
+- [ ] **Step 2: Run** `go test -run TestEnableReauthentication -count=1 ./httpsec/` and see it fail with "WithMFAChallengeStore was given a challenge store but WithReauthenticationChallengeStore was not".
+- [ ] **Step 3: Implement:** the check also requires `slices.ContainsFunc(i.mfa.methods, isChallengeMethod)`; reword each godoc and README place listed above to the behaviour D5, D6, D10 and the account-recovery delta state.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./recovery/...`, `golangci-lint run ./httpsec/ ./recovery/`: PASS, 0 issues.
+- [ ] **Step 5: Commit** `fix(httpsec): the MFA-store wiring rule needs a challenge method; docs follow`.
+
+### Task 29: A save of a strictly rotated record is refused (tasks.md 10.5)
+
+**Files:**
+- Modify: `session/store_memory.go` (`Save`), `internal/pgschema/sessions.go` (`SessionUpdate` gains `AND NOT rotated_strictly`), `internal/storekit/*` if the not-found mapping needs it, `store/gormstore/session.go` (`Save`'s update gains the same `Where`), `session/store.go` and `session/sessions.go` (godoc of `Save`)
+- Test: `test/storetest/session_suite.go`, `test/storetest/broken_session_test.go`, `test/storetest/broken_test.go`, `test/migrate_securitystate_test.go`
+
+**Interfaces:**
+- Consumes: `Session.RotatedStrictly`, `Supersession.Strict` (Task 19).
+- Produces: `Store.Save` returns `ErrNotFound` and writes nothing when the stored record carries the mark.
+
+- [ ] **Step 1: Write the failing cases:** suite case "saving a strictly superseded session is refused": supersede A strictly, `Save` a copy of A loaded before → `ErrorIs(err, session.ErrNotFound)`, and the stored A unchanged (its `Data` not the copy's); case "a grace supersession leaves the mark unset" (explicit `RotatedStrictly == false`); variant `session-save-onto-strict-row` (saves anyway) caught by the harness; migration rows reading a superseded and an unsuperseded pre-migration row back through a store as unmarked; `TestReview_SaveOfStrictlyRotatedSessionIsNotFound` rewritten as a manager-level row in `session/sessions_test.go`.
+- [ ] **Step 2: Run** the memory store's suite and each durable backend's, and see the save case fail with "An error is expected but got nil"; the variant reported as uncaught before the case exists.
+- [ ] **Step 3: Implement** the condition in each store; an update matching no row is the existing not-found result.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/ ./internal/... ./store/...` (root, `store/pgxstore`, `store/gormstore`) and `go test -race -count=1 ./storetest/ ./sqlstore/ ./pgxstore/ ./gormstore/` plus `-run Migrat .` in `test`: PASS.
+- [ ] **Step 5: Commit** `fix(session): a save of a strictly rotated record is not found`.
+
 ### Task 11: Conformance (tasks.md 8.1)
 
 **Files:**
@@ -702,6 +735,8 @@ Run by the main session. It edits nothing.
 | 9.6 | Task 24 |
 | 9.7 | Task 25 |
 | 9.8 | Task 27 |
+| 9.9 | Task 28 |
+| 10.5 | Task 29 |
 | 10.1 | Task 19 |
 | 10.2 | Task 20 |
 | 10.3 | Task 21 |

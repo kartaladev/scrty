@@ -146,7 +146,7 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - a re-proof path collides with a path another enabled endpoint answers;
 - it is enabled twice;
 - no credential can be issued for the rotated session;
-- the MFA slot was given a challenge store and re-authentication was not.
+- the MFA slot was given a challenge store, re-authentication was not, and a configured MFA method issues challenges.
 
 #### Scenario: Nothing to re-prove with
 - **WHEN** re-authentication is enabled on a chain without the MFA slot and without form login
@@ -167,6 +167,10 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 #### Scenario: A shared MFA challenge store needs a re-proof store
 - **WHEN** the MFA slot is given a challenge store and re-authentication is enabled without one
 - **THEN** construction fails with a configuration error naming both options
+
+#### Scenario: No challenge method, no store needed
+- **WHEN** the MFA slot holds only TOTP and is given a challenge store, and re-authentication is enabled without one
+- **THEN** construction succeeds
 
 #### Scenario: One store for both
 - **WHEN** the MFA slot and re-authentication are given the same challenge store
