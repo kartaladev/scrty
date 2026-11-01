@@ -206,7 +206,7 @@ Each defect task's red step is the reproducing test named in its design decision
 
   (Reauthentication "A password re-proof applies the post-authentication policy as a login does" scenarios "A user at the session cap re-proves", "Consumer policy sees a re-proof"; "A password re-proof checks the session's own user under the account lockout" scenario "A held recovery is cancelled"; MODIFIED account-recovery "A held recovery is cancelled by the user"; MODIFIED security-policy "Concurrent sessions are capped".) Verify with `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in the `test` module
 
-- [ ] 9.9 Review follow-ups in `httpsec` and the docs (D6, D10):
+- [x] 9.9 Review follow-ups in `httpsec` and the docs (D6, D10):
   - the MFA-store wiring rule applies only when a configured MFA method has a challenge step; a TOTP-only slot with an MFA store and re-authentication without one builds; its error text says what is lost;
   - godoc and README brought to the current behaviour: a lost re-proof is 409 across servers sharing a store, not only one (`reauth_options.go` ~62, README ~799); the configuration-errors paragraph describes the collision rule by matching (`reauth_options.go` ~124); a strict rotation supersedes and marks the old handle (`mfa_options.go` ~262); `offered` is used by the password endpoint and the listing only (`reauth.go` ~255); the passkey rule's godoc and error say re-authentication is the step-up for a full session that has not met its second factor, and that `/mfa/verify` serves none (`passkey.go` ~254, ~396), wrapped to width; a password re-authentication cancels a held recovery (README ~444, `EnableAccountRecovery` and `CancelPending` godoc); the README re-proof section names the post-authentication phase.
   - red: a construction row for the TOTP-only chain, refused today.
@@ -243,7 +243,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
 
   Red: `TestRepro_RotateOnSecondManagerAfterStrictRotationIsRenewalConflict`, rewritten as the suite case. (ADDED store-conformance scenario "Managers sharing a store"; sessions scenarios "Two managers sharing a store" and "A renewal that lost to a strict rotation".) Verify with `go test -race -count=1 ./session/ ./httpsec/` and `go test -race ./...` in the `test` module (needs Docker)
 
-- [ ] 10.5 A save of a strictly rotated record is refused as not-found (D10 "A save of a marked row is refused as not-found"):
+- [x] 10.5 A save of a strictly rotated record is refused as not-found (D10 "A save of a marked row is refused as not-found"):
   - the memory store, `sqlstore`, `pgxstore` and `gormstore` refuse a save whose stored record carries the mark, writing nothing (the shared update statement gains the condition; gorm's update the same);
   - a suite case and a broken variant that saves onto a marked record; the `Store` and `Sessions.Save` godoc name it;
   - coverage gaps from review: the migration test reads both a superseded and an unsuperseded pre-migration row back through a store as unmarked; an explicit case that a grace supersession leaves the mark unset;
