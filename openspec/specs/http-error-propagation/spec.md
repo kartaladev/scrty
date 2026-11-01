@@ -24,7 +24,7 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - request too large;
 - an unknown MFA method named in a second-factor path;
 - an MFA method the session's user may not use;
-- a request to the MFA method-listing endpoint from a session that owes no MFA challenge;
+- a request to the MFA method-listing, verify or begin endpoint from a session that owes no MFA challenge;
 - a refused account recovery, whatever the cause: an unknown user, a disabled user, a wrong or spent proof, or an unknown, spent or cancelled completion token;
 - a malformed recovery: the wrong number or kinds of proofs, a proof kind that is not enabled, or a reported loss the user does not hold;
 - a held recovery presented for completion before its hold ends;
@@ -37,6 +37,8 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - a passkey registration beyond the user's passkey limit;
 - a passkey registration or removal from a session below the account's assurance or outside the freshness window;
 - a passkey identifier that names no passkey of the session's user;
+- a request to a route that requires a more recent authentication than the session's, which SHALL carry the window the route required;
+- a re-proof by a method the re-authentication factor policy does not offer the session's user;
 - a session renewal that lost a concurrent renewal of the same session;
 - a session renewal refused because its family has renewed too often;
 - a session identifier presented after its supersession window, which SHALL also be identifiable as the session-expired refusal of the session capability.
@@ -88,6 +90,10 @@ It SHALL also expose one challenge error type, whose kinds include account recov
 - **WHEN** one passwordless finish is refused for an unknown credential and another for a bad signature
 - **THEN** both errors are the authentication-failed refusal, and neither's text contains a credential ID or a challenge
 
+#### Scenario: Recency refusal carries its window
+- **WHEN** a recency guard with a 5-minute window refuses a stale session
+- **THEN** the refusal is identifiable as the reauthentication-required refusal, reports the 5-minute window, and its text contains no session handle
+
 ### Requirement: One public table maps refusals to a status
 The library SHALL provide a public status-only mapping from an error to an HTTP status code. Every library default response and helper SHALL use it, and it SHALL recognise wrapped and joined errors:
 
@@ -97,7 +103,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | challenge of kind password change, challenge of kind second-factor enrolment, challenge of kind account recovery | 403 |
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
-| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
+| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, reauthentication required by a recency guard, a re-proof method the factor policy does not offer, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
 | malformed login, malformed recovery, invalid federated logout token | 400 |
 | unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found, API key not found | 404 |
 | request too large | 413 |
@@ -178,6 +184,10 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 
 #### Scenario: No MFA challenge pending
 - **WHEN** the error is the refusal of the method-listing endpoint for a fully authenticated session
+- **THEN** the mapping returns 403
+
+#### Scenario: No MFA challenge pending at verify
+- **WHEN** the error is the refusal of the verify endpoint for a fully authenticated session
 - **THEN** the mapping returns 403
 
 #### Scenario: Unrecognised error
@@ -279,6 +289,14 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Unknown API key
 - **WHEN** an error wraps the API key not-found refusal
 - **THEN** the mapping returns 404
+
+#### Scenario: Recency guard refusal
+- **WHEN** the error is the reauthentication-required refusal of a recency guard
+- **THEN** the mapping returns 403
+
+#### Scenario: Re-proof method not usable
+- **WHEN** the error is the refusal of a password re-proof from a user who holds a usable second factor
+- **THEN** the mapping returns 403
 
 ### Requirement: A challenge takes precedence over a sentinel
 When an error is, or wraps, a challenge error, the mapping SHALL use the challenge's status even if the error also wraps a refusal sentinel.

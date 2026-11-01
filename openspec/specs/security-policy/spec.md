@@ -156,12 +156,20 @@ By default, an unknown password change time SHALL be allowed. The policy's docum
 - **THEN** the outcome is a password-change challenge
 
 ### Requirement: Concurrent sessions are capped
-The concurrent session policy SHALL run in the post-authentication phase, with a maximum supplied by the consumer. It SHALL deny with a too-many-sessions reason when the user already holds at least that many unexpired sessions. When counting fails, it SHALL deny with a reason wrapping the error. A maximum of zero or less SHALL fail construction.
+The concurrent session policy SHALL run in the post-authentication phase, with a maximum supplied by the consumer. It SHALL deny with a too-many-sessions reason when the user already holds at least that many unexpired sessions. When counting fails, it SHALL deny with a reason wrapping the error. A maximum of zero or less SHALL fail construction. When the input marks the evaluation as the re-authentication of an existing session, that session is already among those counted and no session is added, so the policy SHALL deny only when the user holds more than the maximum.
 
 Sessions in the enrolment-pending state SHALL count like any other unexpired session. The documentation SHALL state this as a limit: a password holder can occupy a required, unenrolled user's slots, each for at most the enrolment lifetime.
 
 #### Scenario: At the cap
 - **WHEN** a policy with a maximum of 3 evaluates a login by a user holding 3 unexpired sessions
+- **THEN** post-authentication is denied as too many sessions
+
+#### Scenario: A re-authentication at the cap
+- **WHEN** a policy with a maximum of 3 evaluates the re-authentication of one of the 3 unexpired sessions a user holds
+- **THEN** post-authentication is allowed
+
+#### Scenario: A re-authentication above the cap
+- **WHEN** a policy with a maximum of 3 evaluates the re-authentication of a session of a user holding 4 unexpired sessions
 - **THEN** post-authentication is denied as too many sessions
 
 #### Scenario: Enrolment-only sessions count until they expire
@@ -787,3 +795,14 @@ The policy engine SHALL deny an evaluation whose input is nil, and every policy 
 #### Scenario: Old password with no evaluation time
 - **WHEN** the password-age policy evaluates a year-old password with the evaluation time left at its zero value
 - **THEN** the outcome is deny
+
+### Requirement: The second-factor requirement accepts a second factor met at a re-authentication
+In the post-authentication phase, the second-factor requirement policy SHALL allow, instead of challenging for a second factor, an unmet federated login whose input says a second factor was satisfied on a re-authentication. Every refusal it makes before that challenge SHALL be unchanged.
+
+#### Scenario: A federated re-proof behind the requirement
+- **WHEN** the requirement policy in its challenge mode is registered before a policy that challenges for a password change, and a federated session whose provider did not assert the required assurance re-proves with a valid TOTP code
+- **THEN** it is refused with the password-change challenge
+
+#### Scenario: Refuse mode is unchanged
+- **WHEN** the requirement policy refuses unmet federated assurance, and a federated session whose provider did not assert it re-proves with a valid TOTP code
+- **THEN** it is refused for the unmet assurance
