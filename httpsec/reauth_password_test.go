@@ -562,7 +562,7 @@ func TestReauthPassword(t *testing.T) {
 			request: unread,
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				unchecked(httpsec.ErrReauthenticationMethodNotUsable)(t, f, s, out)
-				assert.LessOrEqual(t, f.lookups.Load(), int32(1), "only the first method was asked")
+				assert.Equal(t, int32(1), f.lookups.Load(), "only the first method was asked")
 			},
 		},
 		{
