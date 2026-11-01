@@ -261,6 +261,44 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
 
   Verify that every command exits 0 and its output is recorded.
 
+## 12. Second review (`reauthentication`, `multi-factor-auth`, `sessions`, `framework-adapters`)
+
+Each defect task's red step is the reproduction named in its design decision, rewritten into the package's own tests; the reproductions live under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/5335ea06-576b-4616-b14e-50643ee94c82/scratchpad/repro2/` and are read, never copied.
+
+- [ ] 12.1 A rotation without grace runs the caller's step before anything is stored (D6 Resolve step 3):
+  - `Sessions.RotateIssuing(ctx, s, issue func(*Session) (string, error)) (*Session, string, error)` builds the successor, calls `issue`, and stores the supersession only when it succeeds; `Rotate` is it with no step;
+  - re-proof `resolve` and MFA verify `resolve` issue through it, and roll back nothing they no longer change;
+  - red: `TestRepro2ReproofWhoseTokenCannotBeIssuedDoesNotSignTheCallerOut` (both rows), an MFA verify row with a failing generator, and a session row whose step fails leaving the old identifier unsuperseded.
+
+  (ADDED sessions "A rotation without grace stores nothing when the caller cannot complete it"; ADDED reauthentication "A re-proof whose credential cannot be issued leaves the session as it was"; ADDED multi-factor-auth "A verification whose credential cannot be issued leaves the session pending".) Verify with `go test -race -count=1 ./session/ ./httpsec/...` and `go test ./...` in `test`
+- [ ] 12.2 A second-factor re-proof applies the post-authentication policy's denials (D6 "Why the phase runs", revised):
+  - after a verified response and before resolve, the phase runs with the login input for the session's principal and first factor, `Reauthenticating` set; a deny refuses except `policy.ErrSecondFactorSameChannel`; a challenge is ignored; the session is unchanged on a refusal;
+  - `policy.Input.Reauthenticating` and `ConcurrentSessions` godoc say every re-proof sets it;
+  - red: `TestRepro2ReproofRunsThePostAuthenticationPhase` (the TOTP rows); the existing end-to-end rows "a valid TOTP code re-proves" and "a passkey login re-proves with the passkey" must stay green.
+
+  (ADDED reauthentication "A second-factor re-proof applies the post-authentication policy's denials", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...`
+- [ ] 12.3 Wiring: a re-proof challenge store on a chain without the MFA slot fails `New`; fibersec validates its recency options before the authorizer fallback:
+  - red: the no-MFA-slot row of `TestRepro2_ReauthChallengeStoreWithNoChallengeMethodIsRefused`; `TestRepro2_NewGuardsReportsWindowErrorBeforeMissingAuthorizer` on fiber, with the net/http and gin rows as its contrast.
+
+  (Reauthentication "Re-proof challenge stores are wired consistently", scenario "A re-proof store without the MFA slot"; framework-adapters scenario "One wiring mistake, one error on every adapter".) Verify with `go test -race -count=1 ./httpsec/` and `go test -race ./...` in `httpsec/fibersec` and `httpsec/ginsec`
+- [ ] 12.4 The password endpoint settles at the first enrolled method (D3):
+  - red: `TestRepro2PasswordEndpointStopsLookingAtTheFirstEnrolledMethod`; the listing's every-method row stays.
+
+  (Reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", scenario "The password endpoint settles at the first enrolled method".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
+- [ ] 12.5 Cleanups, behaviour unchanged (D1, D6 "One full-session check", D8):
+  - one full-session check shared by re-proof admission, passkey management and recovery-code regeneration, the strictest of the three;
+  - one method-listing writer shared by the MFA listing and the re-proof listing;
+  - `session.AuthenticatedWithin(at, now time.Time, window time.Duration) bool`, which the method delegates to; the recency judge calls it without building a session.
+
+  Red step for each: a temporary divergence in the shared code that a test on each caller catches, as in 6.8. Verify with `go test -race -count=1 ./session/ ./internal/guardauth/ ./httpsec/...`, `golangci-lint run`
+- [ ] 12.6 Docs (D5, D10):
+  - `rotationRefusal` and `resolve` godoc: a lost race through any manager sharing the store is 409 inside the window;
+  - the recovery-code regeneration endpoint's godoc and the README: on an MFA chain without re-authentication, a stale session regenerates only after signing in again;
+  - every godoc and README place touched by 12.1–12.4 states the new behaviour.
+
+  Verify with `go doc` on the changed symbols and `golangci-lint run ./httpsec/`
+- [ ] 12.7 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
+
 ## Workflow follow-up
 
 - Run one whole-branch review against every spec requirement this change covers before the final gate (8.2, and again before 11.2) and before archive.

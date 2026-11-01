@@ -48,3 +48,10 @@ Because the verify and begin endpoints serve only a session that owes a second f
 #### Scenario: MFA without passkeys
 - **WHEN** a chain enables the MFA slot and not passkeys, without re-authentication
 - **THEN** construction succeeds
+
+### Requirement: A verification whose credential cannot be issued leaves the session pending
+Second-factor verification SHALL obtain the rotated session's credential before the rotation is stored. When the credential cannot be issued, verification SHALL be refused with that failure, nothing SHALL be stored or rotated, and the session SHALL stay pending under the credential the caller arrived with.
+
+#### Scenario: Token generator fails at verification
+- **WHEN** a pending session posts a valid code to `/mfa/verify/totp` and the token generator fails
+- **THEN** verification is refused with the generator's failure, and the session the caller arrived with still loads and is still pending

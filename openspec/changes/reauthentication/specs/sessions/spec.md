@@ -132,6 +132,13 @@ A rotation without grace or with a grace window of an identifier marked as rotat
 - **WHEN** a session whose family was revoked, and which was never rotated, is rotated without grace
 - **THEN** it fails with the not-found error
 
+### Requirement: A rotation without grace stores nothing when the caller cannot complete it
+A rotation without grace SHALL let the caller act on the successor, such as issuing its credential, after the successor is built and before anything is stored. When that step fails, the rotation SHALL fail with its error and SHALL store, supersede and revoke nothing, so the old identifier keeps loading.
+
+#### Scenario: The caller's step fails
+- **WHEN** a session is rotated without grace and the caller's step on the successor fails
+- **THEN** the rotation fails with that error, no successor is stored, and the old identifier still loads unsuperseded
+
 ## REMOVED Requirements
 
 ### Requirement: Rotation at second-factor verification keeps the old identifier only in flight

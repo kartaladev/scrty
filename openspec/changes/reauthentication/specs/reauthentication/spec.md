@@ -146,7 +146,7 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - a re-proof path collides with a path another enabled endpoint answers;
 - it is enabled twice;
 - no credential can be issued for the rotated session;
-- the MFA slot was given a challenge store, re-authentication was not, and a configured MFA method issues challenges.
+- the challenge stores are wired inconsistently, as the challenge-store requirement states.
 
 #### Scenario: Nothing to re-prove with
 - **WHEN** re-authentication is enabled on a chain without the MFA slot and without form login
@@ -164,9 +164,24 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - **WHEN** the re-authentication prefix is set to `/mfa/verify`
 - **THEN** construction fails with a configuration error
 
+#### Scenario: Enabled twice
+- **WHEN** re-authentication is enabled twice on one chain
+- **THEN** construction fails with a configuration error
+
+#### Scenario: No credential to issue
+- **WHEN** re-authentication is enabled on a token-bearer chain without a token generator for it
+- **THEN** construction fails with a configuration error
+
+### Requirement: Re-proof challenge stores are wired consistently
+Construction SHALL fail with a configuration error when the MFA slot was given a challenge store, re-authentication was not, and a configured MFA method issues challenges; and when re-authentication was given a challenge store on a chain without the MFA slot. A TOTP-only slot SHALL accept a re-proof store, and one store MAY be given to both.
+
 #### Scenario: A shared MFA challenge store needs a re-proof store
 - **WHEN** the MFA slot is given a challenge store and re-authentication is enabled without one
 - **THEN** construction fails with a configuration error naming both options
+
+#### Scenario: A re-proof store without the MFA slot
+- **WHEN** re-authentication is given a challenge store on a chain with form login and no MFA slot
+- **THEN** construction fails with a configuration error
 
 #### Scenario: No challenge method, no store needed
 - **WHEN** the MFA slot holds only TOTP and is given a challenge store, and re-authentication is enabled without one
@@ -175,14 +190,6 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 #### Scenario: One store for both
 - **WHEN** the MFA slot and re-authentication are given the same challenge store
 - **THEN** construction succeeds, and a re-proof begun through one server is verified through another server sharing that store
-
-#### Scenario: Enabled twice
-- **WHEN** re-authentication is enabled twice on one chain
-- **THEN** construction fails with a configuration error
-
-#### Scenario: No credential to issue
-- **WHEN** re-authentication is enabled on a token-bearer chain without a token generator for it
-- **THEN** construction fails with a configuration error
 
 ### Requirement: Re-proof paths are checked against every endpoint the chain answers
 Construction SHALL fail with a configuration error when a re-proof path collides with a path any enabled endpoint answers. Two paths collide when they are equal, or when one lies under the other and the other is matched by prefix. Each path is judged as its endpoint matches requests: re-proof begin and verify by prefix, the listing and password exactly, every other endpoint as it matches its own.
@@ -250,7 +257,11 @@ By default a user who holds a usable re-proof second factor SHALL re-prove with 
 - **THEN** `u-3`'s session is re-authenticated, although the passkey shares the first factor's channel
 
 ### Requirement: Each re-proof endpoint looks up only the enrolments its decision needs
-The password endpoint and the method listing SHALL look up every configured method, because they decide that the user holds none. Second-factor begin and verify SHALL look up only the method they name, so a failed lookup of another method SHALL NOT refuse them, and a failed lookup of the named method SHALL.
+The method listing SHALL look up every configured method. The password endpoint SHALL look methods up in order and refuse at the first one the user is enrolled on; a failed lookup before one is found SHALL refuse as a failed lookup. Second-factor begin and verify SHALL look up only the method they name, so a failed lookup of another method SHALL NOT refuse them, and a failed lookup of the named method SHALL.
+
+#### Scenario: The password endpoint settles at the first enrolled method
+- **WHEN** three methods are configured, `u-1` is enrolled on the first, and `u-1` posts a password to `/reauth/password`
+- **THEN** it is refused with the re-proof-method-not-usable error after one enrolment lookup
 
 #### Scenario: Another method's lookup failure does not refuse a second-factor re-proof
 - **WHEN** `u-1` is enrolled on TOTP, the passkey enrolment lookup fails, and `u-1` posts a valid code to `/reauth/verify/totp`
@@ -475,3 +486,25 @@ Every default re-proof responder SHALL set `Cache-Control: no-store`; a consumer
 #### Scenario: Refusal logs
 - **WHEN** a password re-proof and a TOTP re-proof are refused for a wrong secret
 - **THEN** the records written contain neither the password nor the code
+
+### Requirement: A second-factor re-proof applies the post-authentication policy's denials
+After a second-factor response is verified and before the session is rotated, the post-authentication policy phase SHALL be applied with the input a login builds for the session's principal and first factor, marked as a re-authentication. A deny SHALL refuse the re-proof with the policy's reason, except the same-channel refusal, which does not bind a re-proof; a challenge SHALL NOT refuse it. A refusal SHALL leave the session unchanged.
+
+#### Scenario: Above the session cap
+- **WHEN** the concurrent session policy has a maximum of 1, `u-1` holds two sessions, and one of them posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with the too-many-sessions error and the session is unchanged
+
+#### Scenario: A consumer policy denies
+- **WHEN** a consumer policy denies `u-1` in the post-authentication phase and `u-1`'s session posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with the policy's reason, as `u-1`'s password re-proof would be
+
+#### Scenario: The same-channel refusal does not bind a re-proof
+- **WHEN** `u-3` signed in with a passkey and re-proves through `/reauth/verify/passkey` on a chain whose MFA requirement refuses a same-channel second factor
+- **THEN** `u-3`'s session is re-authenticated
+
+### Requirement: A re-proof whose credential cannot be issued leaves the session as it was
+A re-proof SHALL obtain the rotated session's credential before the rotation is stored. When the credential cannot be issued, the re-proof SHALL be refused with that failure, nothing SHALL be stored or rotated, and the credential the caller arrived with SHALL keep authenticating.
+
+#### Scenario: Token generator fails
+- **WHEN** `u-1` posts a valid code to `/reauth/verify/totp` and the token generator fails
+- **THEN** the re-proof is refused with the generator's failure, and `u-1`'s next request with the credential it arrived with is served
