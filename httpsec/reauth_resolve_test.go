@@ -418,6 +418,7 @@ func TestReauthResolve(t *testing.T) {
 				)
 				f.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().
 					DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+						//nolint:contextcheck // the request carries ctx, the renewal's own request context
 						once.Do(func() { reprove = serve(t, c, totpPost(ctx, mfaTokenFor(s.ID))) })
 
 						return &identity.Details{ID: testMFAUser, Username: mfaUsername, Active: true}, nil
