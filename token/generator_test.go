@@ -385,7 +385,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 			id:        "s-1",
 			principal: alice,
 			assert: func(t *testing.T, raw string, err error) {
-				require.EqualError(t, err, "token: no current key for the algorithm")
+				require.EqualError(t, err, `token: no current key for algorithm "EdDSA"`)
 				assert.ErrorIs(t, err, signingkey.ErrNoKey,
 					"a key that is not there is reported as missing, not as an outage")
 				assert.Empty(t, raw, "never an unsigned token")
@@ -485,7 +485,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 	require.NoError(t, err)
 
 	// Two more minutes and it is past its expiry.
-	clock.Advance(2 * time.Minute)
+	clock.Advance(2 * time.Hour)
 	_, err = gen.Verify(t.Context(), raw)
 	require.ErrorIs(t, err, token.ErrInvalid)
 }
@@ -695,7 +695,7 @@ func TestGenerator_KeySourceOutage(t *testing.T) {
 					Times(1)
 			},
 			assert: func(t *testing.T, raw string, err error) {
-				require.EqualError(t, err, "token: no current key for the algorithm")
+				require.EqualError(t, err, `token: no current key for algorithm "RS256"`)
 				assert.ErrorIs(t, err, signingkey.ErrNoKey)
 				assert.Empty(t, raw, "no token is produced")
 			},
@@ -801,11 +801,16 @@ type contextRecordingKeySource struct {
 	mu           sync.Mutex
 	signerMarks  []any
 	verifierMark []any
+
+	signerDeadlines   []time.Time
+	verifierDeadlines []time.Time
 }
 
 func (s *contextRecordingKeySource) Signer(ctx context.Context, alg signingkey.Alg) (string, crypto.Signer, error) {
 	s.mu.Lock()
 	s.signerMarks = append(s.signerMarks, ctx.Value(ctxMark{}))
+	deadline, _ := ctx.Deadline()
+	s.signerDeadlines = append(s.signerDeadlines, deadline)
 	s.mu.Unlock()
 
 	return s.KeySource.Signer(ctx, alg)
@@ -814,6 +819,8 @@ func (s *contextRecordingKeySource) Signer(ctx context.Context, alg signingkey.A
 func (s *contextRecordingKeySource) VerificationKeys(ctx context.Context) ([]signingkey.PublicKey, error) {
 	s.mu.Lock()
 	s.verifierMark = append(s.verifierMark, ctx.Value(ctxMark{}))
+	deadline, _ := ctx.Deadline()
+	s.verifierDeadlines = append(s.verifierDeadlines, deadline)
 	s.mu.Unlock()
 
 	return s.KeySource.VerificationKeys(ctx)
@@ -857,11 +864,20 @@ func TestKeySource_ReceivesCallersContext(t *testing.T) {
 				token.WithIssuer("https://issuer.example"), token.WithAudience("orders-api"))
 			require.NoError(t, err)
 
-			raw, err := gen.Generate(context.WithValue(t.Context(), ctxMark{}, "issuing"), "jti-1", alice())
+			issueDeadline := time.Now().Add(2 * time.Hour)
+			issueCtx, cancelIssue := context.WithDeadline(
+				context.WithValue(t.Context(), ctxMark{}, "issuing"), issueDeadline)
+			defer cancelIssue()
+
+			raw, err := gen.Generate(issueCtx, "jti-1", alice())
 			require.NoError(t, err)
 
-			claims, err := tc.verifier(t, source, gen).
-				Verify(context.WithValue(t.Context(), ctxMark{}, "verifying"), raw)
+			verifyDeadline := time.Now().Add(3 * time.Hour)
+			verifyCtx, cancelVerify := context.WithDeadline(
+				context.WithValue(t.Context(), ctxMark{}, "verifying"), verifyDeadline)
+			defer cancelVerify()
+
+			claims, err := tc.verifier(t, source, gen).Verify(verifyCtx, raw)
 			accepted(t, claims, err)
 
 			source.mu.Lock()
@@ -871,6 +887,29 @@ func TestKeySource_ReceivesCallersContext(t *testing.T) {
 				"the request for a signing key carries the issuing context")
 			assert.Equal(t, []any{"verifying"}, source.verifierMark,
 				"the request for verification keys carries the verifying context")
+			assert.Equal(t, []time.Time{issueDeadline}, source.signerDeadlines,
+				"the generator imposes no deadline of its own on the signer request")
+			assert.Equal(t, []time.Time{verifyDeadline}, source.verifierDeadlines,
+				"the verifier imposes no deadline of its own on the key request")
 		})
 	}
+}
+
+// TestGenerator_NoKeyNamesTheAlgorithm pins that a key source holding nothing
+// for the configured algorithm fails the issue naming that algorithm, while
+// the missing key stays reachable as signingkey.ErrNoKey.
+func TestGenerator_NoKeyNamesTheAlgorithm(t *testing.T) {
+	t.Parallel()
+
+	gen, err := token.NewGenerator(newKeySource(t, signingkey.RS256),
+		token.WithIssuer("https://issuer.example"), token.WithAudience("orders-api"),
+		token.WithSigningAlg(signingkey.EdDSA))
+	require.NoError(t, err)
+
+	raw, err := gen.Generate(t.Context(), "jti-1", alice())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), signingkey.EdDSA, "the error names the configured algorithm")
+	assert.ErrorIs(t, err, signingkey.ErrNoKey)
+	assert.Empty(t, raw, "no token is produced")
 }

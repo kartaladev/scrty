@@ -33,7 +33,7 @@ type Generator interface {
 	// ctx is passed to the key source, which is asked for a signer once for
 	// this token; the signer is never kept. A source that holds no key for the
 	// configured algorithm (signingkey.ErrNoKey) fails it as "no current key
-	// for the algorithm"; any other source error, or no signer at all, fails
+	// for algorithm" naming the configured one; any other source error, or no signer at all, fails
 	// it as an outage behind fixed library text, never as a missing key.
 	// A key source's own crypto.Signer failing to sign comes back behind
 	// fixed library text too. In each case the source's or the signer's own
@@ -202,7 +202,7 @@ func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Prin
 	case errors.Is(err, signingkey.ErrNoKey):
 		// Never fall back to another algorithm, and never to an unsigned
 		// token. Keys rotate, so this cannot be a construction check.
-		return "", diag.Wrap(err, "token: no current key for the algorithm")
+		return "", diag.Wrap(err, fmt.Sprintf("token: no current key for algorithm %q", cfg.alg))
 	case err != nil:
 		// The source could not answer. That is an outage, not a missing key,
 		// and its text is the consumer's: kept reachable, never rendered.
