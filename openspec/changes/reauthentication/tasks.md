@@ -271,17 +271,17 @@ Each defect task's red step is the reproduction named in its design decision, wr
   - red: `TestRepro2ReproofWhoseTokenCannotBeIssuedDoesNotSignTheCallerOut` (both rows), an MFA verify row with a failing generator, and a session row whose step fails leaving the old identifier unsuperseded.
 
   (ADDED sessions "A rotation without grace stores nothing when the caller cannot complete it"; ADDED reauthentication "A re-proof whose credential cannot be issued leaves the session as it was"; ADDED multi-factor-auth "A verification whose credential cannot be issued leaves the session pending".) Verify with `go test -race -count=1 ./session/ ./httpsec/...` and `go test ./...` in `test`
-- [ ] 12.2 A second-factor re-proof applies the post-authentication policy's denials (D6 "Why the phase runs", revised):
-  - after a verified response and before resolve, the phase runs with the login input for the session's principal and first factor, `Reauthenticating` set; a deny refuses except `policy.ErrSecondFactorSameChannel`; a challenge is ignored; the session is unchanged on a refusal;
+- [ ] 12.2 A second-factor re-proof applies the post-authentication policy's denials (D6 "Why the phase runs", "Every deny binds; the input is the login's own"):
+  - after a verified response and before resolve, the phase runs with the login input for the session's principal and first factor, `Reauthenticating` set, and `SecondFactorAtLogin` rebuilt from the session's `MFAAtFirstFactor`; every deny refuses; only a `ChallengeMFA` is ignored, any other challenge refuses as at the password re-proof; a caller other than the session's user is refused before the phase; the session is unchanged on a refusal;
   - `policy.Input.Reauthenticating` and `ConcurrentSessions` godoc say every re-proof sets it;
-  - red: `TestRepro2ReproofRunsThePostAuthenticationPhase` (the TOTP rows); the existing end-to-end rows "a valid TOTP code re-proves" and "a passkey login re-proves with the passkey" must stay green.
+  - red: `TestRepro2ReproofRunsThePostAuthenticationPhase` (the TOTP rows); a same-channel deny ahead of the cap and ahead of a consumer deny; the real `policy.MFA` and `policy.MFARequirement` in both orders on `/reauth/verify/passkey` for a session that met its second factor at login; a password-change challenge; a substituted caller. The existing end-to-end rows "a valid TOTP code re-proves" and "a passkey login re-proves with the passkey" must stay green.
 
-  (ADDED reauthentication "A second-factor re-proof applies the post-authentication policy's denials", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...`
+  (ADDED reauthentication "A second-factor re-proof applies the post-authentication policy's denials", "A second-factor re-proof ignores only a second-factor challenge" and "A second-factor re-proof judges only the session's own user", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...`
 - [ ] 12.3 Wiring: a re-proof challenge store on a chain without the MFA slot fails `New`; fibersec validates its recency options before the authorizer fallback:
   - red: the no-MFA-slot row of `TestRepro2_ReauthChallengeStoreWithNoChallengeMethodIsRefused`; `TestRepro2_NewGuardsReportsWindowErrorBeforeMissingAuthorizer` on fiber, with the net/http and gin rows as its contrast.
 
   (Reauthentication "Re-proof challenge stores are wired consistently", scenario "A re-proof store without the MFA slot"; framework-adapters scenario "One wiring mistake, one error on every adapter".) Verify with `go test -race -count=1 ./httpsec/` and `go test -race ./...` in `httpsec/fibersec` and `httpsec/ginsec`
-- [ ] 12.4 The password endpoint settles at the first enrolled method (D3):
+- [x] 12.4 The password endpoint settles at the first enrolled method (D3):
   - red: `TestRepro2PasswordEndpointStopsLookingAtTheFirstEnrolledMethod`; the listing's every-method row stays.
 
   (Reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", scenario "The password endpoint settles at the first enrolled method".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`

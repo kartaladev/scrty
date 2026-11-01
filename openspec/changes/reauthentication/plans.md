@@ -93,7 +93,10 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 12 | M5 | 12.6 | godoc in `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/recovery_codes.go`, `httpsec/recovery_options.go`; `README.md` | Sonnet: docs | Sonnet |
 | 12 | main | 12.7 | runs the gate; edits nothing | — | whole-branch review: Opus |
 
-- Wave 11 runs M1, M2 and M3 in parallel worktrees (disjoint files). Wave 12 runs M4 after wave 11 merges (it touches `mfa_verify.go` after M1), then M5, then the gate.
+| 11b | M1b | 12.1 review follow-ups | M1's files plus `httpsec/mfa_enrol_test.go` | Sonnet: the fixes are stated | Sonnet |
+| 11b | M2b | 12.2 revised (D6 "Every deny binds") | M2's files; `httpsec/reauth_options.go` godoc of the verify bullet | Opus: security refusal logic, a reproduced fail-open | Opus |
+
+- Wave 11 runs M1, M2 and M3 in parallel worktrees (disjoint files). M3 merged after review. M1 and M2 came back with review findings, so wave 11b re-dispatches both on their own branches, in parallel (disjoint files). Wave 12 runs M4 after wave 11 merges (it touches `mfa_verify.go` after M1), then M5, then the gate.
 
 | 9 | D2 | 11.1 | `test/httpsecconformance/reauth_scenarios.go` | Sonnet: conformance cases in an existing suite | Sonnet |
 | 9 | main | 11.2 | runs the gate; edits nothing | — | whole-branch review: Opus |
@@ -704,6 +707,12 @@ Runs on H1's branch after Task 18.
 - [ ] **Step 3: Implement** `RotateIssuing`; both `resolve`s issue through it; drop the rollback of fields the failed path no longer changes.
 - [ ] **Step 4: Run** `go test -race -count=1 ./session/ ./httpsec/...` and `go test ./...` in `test`: PASS.
 - [ ] **Step 5: Commit** `fix: a rotation whose credential cannot be issued stores nothing`.
+- [ ] **Step 6: Review follow-ups (dispatch M1b).**
+  - `TestReauthResolve` row "two concurrent re-proofs through two chains sharing a session store": take the winner's session ID from the winning response, not from the last ID the generator saw (both racers now issue before `Supersede`); assert the loser's issued ID loads `session.ErrNotFound`. Proof it is fixed: `go test -race -count=50 -run 'TestReauthResolve/two_concurrent_re-proofs_through_two_chains' ./httpsec/` passes 50/50 (36/50 failed before).
+  - Rows and messages that still say "rolls … back" (`reauth_resolve_test.go`, `mfa_verify_test.go`) say the session the caller holds is unchanged.
+  - `mfa_enrol_test.go` "a rotation that fails": assert the stored session (`h.stored(t, s.ID)`) is still `MFAPending` and not `RotatedStrictly`; see it fail by temporarily saving the mutated copy.
+  - `RotateIssuing` pins: a refusal decided before the successor is built never calls `issue`; a step that succeeds with a failing `Supersede` returns an empty credential and the error. The godoc says the in-flight window counts from the instant read before the step.
+  - Run Step 4 again: PASS.
 
 ### Task 31: A second-factor re-proof applies post-authentication denials (tasks.md 12.2)
 
@@ -712,13 +721,20 @@ Runs on H1's branch after Task 18.
 - Test: `httpsec/reauth_verify_test.go`
 
 **Interfaces:**
-- Consumes: `evaluatePhase`, `postAuthenticationInput` with the session's principal, `s.FirstFactor`, the principal's username and zero password-change time; `policy.ErrSecondFactorSameChannel`.
+- Consumes: `evaluatePhase`, `postAuthenticationInput` with the session's principal, `s.FirstFactor`, the principal's username and `ex.Authentication.PasswordChangedAt` (what a login carries); `refuseUnenforced`, `ChallengeError`, `policyDenyReason` as the password path uses them; `assurance.New(s.FirstFactor, s.MFASatisfiedAt)` into `in.SecondFactorAtLogin` when `s.MFAAtFirstFactor`.
 
-- [ ] **Step 1: Write the failing rows** (from `TestRepro2ReproofRunsThePostAuthenticationPhase`): cap of 1 with two sessions → TOTP re-proof refused with `ErrTooManySessions`, session unchanged; consumer deny → refused with the reason; a passkey-login session re-proving with the passkey under the MFA requirement policy → re-authenticated (same-channel deny ignored); an MFA-challenge outcome → re-authenticated (challenge ignored).
+- [ ] **Step 1: Write the failing rows** (from `TestRepro2ReproofRunsThePostAuthenticationPhase`): cap of 1 with two sessions → TOTP re-proof refused with `ErrTooManySessions`, session unchanged; consumer deny → refused with the reason; an MFA-challenge outcome → re-authenticated.
 - [ ] **Step 2: Run** `go test -run TestReauthVerify -count=1 ./httpsec/` and see the cap and deny rows succeed where refusal is expected.
-- [ ] **Step 3: Implement** the phase after `checkResponse` and before `resolve`, with `Reauthenticating = true`; refuse on `Deny` unless `errors.Is(d.Reason, policy.ErrSecondFactorSameChannel)`.
+- [ ] **Step 3: Implement** the phase after `checkResponse` and before `resolve`, with `Reauthenticating = true`; refuse on `Deny`; ignore `Challenge` only for `ChallengeMFA`. *(First cut, dispatch M2; its exemption of `ErrSecondFactorSameChannel` and of every challenge was reproduced as failing open and is replaced by Step 6.)*
 - [ ] **Step 4: Run** `go test -race -count=1 ./policy/... ./httpsec/...`: PASS, including `TestReauthVerifyEndToEnd`.
 - [ ] **Step 5: Commit** `fix(httpsec): a second-factor re-proof applies post-authentication denials`.
+- [ ] **Step 6: Every deny binds; the input is the login's own (dispatch M2b, D6 revised).** Failing rows first, in `TestReauthVerify` / `TestReauthVerifyEndToEnd`:
+  - a synthetic same-channel deny registered ahead of the cap, and ahead of a consumer deny → refused with the first deny's reason (fails today: re-authenticated);
+  - the real `policy.MFA` and `policy.MFARequirement`, in both registration orders, on `/reauth/verify/passkey`, for a session created `WithSecondFactorAtLogin` → re-authenticated (fails today with `{requirement, challenge}`: `policy: this user must enrol a second factor`);
+  - a session without `MFAAtFirstFactor` whose user is enrolled only on passkey, `SameChannelRefuse` → refused with `ErrSecondFactorSameChannel`, session unchanged;
+  - a `ChallengePasswordChange` outcome → `*ChallengeError{Kind: ChallengePasswordChange}`, no session, unchanged; an unenforced kind → configuration error;
+  - a consumer interceptor publishing `u-other` on the session → `ErrAuthenticationRequired` before the phase.
+  Then: drop the same-channel exemption; rebuild `SecondFactorAtLogin` from the session; refuse non-MFA challenges as `postAuthenticate` does; check `ex.Authentication.Principal.ID == s.UserID` before the phase. Godoc on `verify`, `EnableReauthentication` (verify bullet), `policy.Input.Reauthenticating`. Run Step 4: PASS.
 
 ### Task 32: Wiring and the password short-circuit (tasks.md 12.3, 12.4)
 
