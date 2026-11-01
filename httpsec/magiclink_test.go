@@ -684,6 +684,96 @@ func TestRedeemerGuard(t *testing.T) {
 		})
 	}
 
+	user := identity.Principal{ID: magicLinkUserID, Username: magicLinkKnown}
+	another := identity.Principal{ID: "u-someone-else", Username: "else@example.com"}
+
+	// policyOnly runs the policy check, the first the endpoint hands over, and
+	// never the issuing check, the last, so nothing was issued for the login
+	// it reports.
+	policyOnly := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			if err := checks[0](ctx, user, time.Time{}); err != nil {
+				return magiclink.Redemption{}, err
+			}
+
+			return magiclink.Redemption{Principal: user}, nil
+		})
+	}
+
+	// runsTwice is a faithful redeemer that runs every check twice.
+	runsTwice := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			for range 2 {
+				for _, check := range checks {
+					if err := check(ctx, user, time.Time{}); err != nil {
+						return magiclink.Redemption{}, err
+					}
+				}
+			}
+
+			return magiclink.Redemption{Principal: user}, nil
+		})
+	}
+
+	// rechecksAnother runs every check for the user, then runs the policy check
+	// again for another user and ignores what it said, and reports that other
+	// user: the policy decision now names the other user, and the credential
+	// was issued for the first.
+	rechecksAnother := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			for _, check := range checks {
+				if err := check(ctx, user, time.Time{}); err != nil {
+					return magiclink.Redemption{}, err
+				}
+			}
+
+			_ = checks[0](ctx, another, time.Time{})
+
+			return magiclink.Redemption{Principal: another}, nil
+		})
+	}
+
+	// errIssuedForAnother is what issuedForAnother reports when the issuing
+	// check lets it through for a second login.
+	errIssuedForAnother := errors.New("magiclink_test: the issuing check accepted a second login")
+
+	// issuedForAnother is a faithful redeemer that, once it has run every check
+	// for the user, runs them all again for another user, and reports a
+	// sentinel when the issuing check does not refuse that.
+	issuedForAnother := func(*magicLinkHarness) httpsec.Redeemer {
+		return redeemerFunc(func(
+			ctx context.Context,
+			_, _ string,
+			checks ...magiclink.Check,
+		) (magiclink.Redemption, error) {
+			for _, check := range checks {
+				if err := check(ctx, user, time.Time{}); err != nil {
+					return magiclink.Redemption{}, err
+				}
+			}
+
+			for _, check := range checks {
+				if err := check(ctx, another, time.Time{}); err != nil {
+					return magiclink.Redemption{}, err
+				}
+			}
+
+			return magiclink.Redemption{}, errIssuedForAnother
+		})
+	}
+
 	establishedNothing := func(t *testing.T, h *magicLinkHarness) {
 		t.Helper()
 
@@ -715,6 +805,49 @@ func TestRedeemerGuard(t *testing.T) {
 				require.ErrorIs(t, out.err, policy.ErrDenied,
 					"a check that never ran is not an allow")
 				establishedNothing(t, h)
+			},
+		},
+		{
+			// The policy check allowed, so only the guard noticing that the
+			// issuing check never ran can refuse this.
+			name:     "a redeemer that runs the policy check and never the issuing check",
+			redeemer: policyOnly,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied,
+					"nothing was issued for the login it reports")
+				establishedNothing(t, h)
+			},
+		},
+		{
+			name:     "a redeemer that runs every check twice issues once and stores one session",
+			redeemer: runsTwice,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, int64(1), h.issued.Load(), "the credential is issued once")
+				assert.Equal(t, 1, h.activeSessions(t))
+			},
+		},
+		{
+			name:     "a redeemer that runs the policy check again for another user after issuing",
+			redeemer: rechecksAnother,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied,
+					"the decision names a login the credential was not issued for")
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			name:     "a redeemer that runs the issuing check again for another user is refused by it",
+			redeemer: issuedForAnother,
+			engine:   func(*testing.T) *policy.Engine { return nil },
+			assert: func(t *testing.T, h *magicLinkHarness, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied,
+					"the issuing check refuses a second login itself")
+				require.NotErrorIs(t, out.err, errIssuedForAnother)
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
 			},
 		},
 		{
@@ -1407,6 +1540,55 @@ func TestMagicLink_CredentialCannotBeIssuedKeepsLink(t *testing.T) {
 
 	again := h.redeem(t, c, token, nonce)
 	require.ErrorIs(t, again.err, magiclink.ErrInvalidLink, "the redemption that succeeded spent it")
+}
+
+// TestMagicLink_IssuingFailureCancelsNoHeldRecovery pins that a redemption
+// whose credential cannot be issued cancels nothing: the link is not spent, so
+// the first factor is not yet proved, and the user's held recovery still
+// completes once its delay has passed. The same link then redeems once the key
+// source recovers, and that redemption cancels the hold.
+func TestMagicLink_IssuingFailureCancelsNoHeldRecovery(t *testing.T) {
+	t.Parallel()
+
+	h := newRecoveryHarness(t)
+	h.withHold()
+
+	issuer := &recordingIssuer{}
+	h.tokens = issuer.generator(t)
+	h.withMagicLink(t)
+	h.build(t)
+
+	held := h.hold(t)
+
+	asked := serve(t, h.chain, postValues(t.Context(), httpsec.DefaultMagicLinkRequestPath, e2eSource,
+		url.Values{httpsec.DefaultMagicLinkAddressParam: {e2eAddress}, httpsec.DefaultMagicLinkNextParam: {"/"}}))
+	require.NoError(t, asked.err)
+
+	cookie := cookieNamed(asked.rec, httpsec.DefaultBindingCookieName)
+	require.NotNil(t, cookie)
+
+	tok := h.sender.lastToken(t)
+	consume := func() served {
+		req := postValues(t.Context(), httpsec.DefaultMagicLinkConsumePath, e2eSource,
+			url.Values{httpsec.DefaultMagicLinkTokenParam: {tok}})
+		req.AddCookie(bindingCookie(cookie.Value))
+
+		return serve(t, h.chain, req)
+	}
+
+	failed := consume()
+	requireIssuingOutage(t, failed.err, magiclink.ErrInvalidLink)
+	require.Zero(t, h.activeSessions(t), "the failed redemption stored no session")
+
+	issuer.healthy.Store(true)
+	h.clock.Advance(recoveryHoldDelay)
+
+	finished := h.finish(t, held.completion)
+	require.NoError(t, finished.err, "the failed redemption cancelled nothing")
+	require.Equal(t, http.StatusOK, finished.rec.Code)
+
+	redone := consume()
+	require.NoError(t, redone.err, "the link survived the failed redemption")
 }
 
 // TestMagicLink_RacingRedemptionsStoreOneSession pins that of 16 redemptions

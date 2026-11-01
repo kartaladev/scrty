@@ -304,7 +304,11 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 //
 // opts are the caller's own attributes for the session, applied in the write
 // that creates it and before the first factor the tail records from in. Form
-// login, magic-link and passkey login pass none.
+// login passes session.WithAbsoluteLifetime when WithLoginLifetime chooses a
+// positive lifetime and none otherwise; magic-link, OIDC and passkey login
+// pass none. An OIDC redemption records its provider session on the prepared
+// session before it is committed (session.WithExternalSession), not through
+// opts.
 //
 // The first factor recorded is always in.FirstFactor, the tail's own: it is
 // applied last, so a caller's own session.WithFirstFactor in opts cannot
@@ -428,12 +432,13 @@ func prepareLogin(
 		}
 	}
 
-	// The caller's own attributes first, then the first factor: a federated
-	// login records its provider session in the write that creates the
-	// session, so no request ever sees the session without it. The first
-	// factor is applied last so it always wins, even if opts happens to carry
-	// its own session.WithFirstFactor — the factor the policy phase was just
-	// evaluated on is the one that gets recorded.
+	// The caller's own attributes first, then the first factor, which is
+	// applied last so it always wins, even if opts happens to carry its own
+	// session.WithFirstFactor: the factor the policy phase was just evaluated
+	// on is the one that gets recorded. A federated login's provider session
+	// is not among these: an OIDC redemption learns it only from the
+	// redeemer's result, so it sets it on the prepared session before
+	// commit, ahead of the one write that creates the session.
 	//
 	// A login carrying the library's proof that its second factor was met at
 	// the first is created satisfied, in that same write, so the session never

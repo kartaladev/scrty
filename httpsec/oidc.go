@@ -101,6 +101,17 @@ type CallbackSuccess func(ex *Exchange, res oidc.CallbackResult, next string) er
 // the same instant in another location, is the same login. A check that ran
 // and denied refuses with the policy's own reason.
 //
+// The single check the endpoint hands over also issues: once its refusal
+// checks pass, it builds the session and issues the credential for it, so a
+// replacement that never runs it is refused with policy.ErrDenied and stores
+// no session. Running it again for the same candidate issues once. Running it
+// again for another candidate after it has issued is refused with
+// policy.ErrDenied by the check itself, and a replacement that ignores that
+// refusal and reports the other candidate is refused by the endpoint with no
+// session stored. This is a limit of the replaceable port, and the refusal
+// comes after the replacement has consumed the code, so it spends the code
+// and stores nothing.
+//
 // What the endpoint cannot do is un-spend a code a replacement consumed before
 // it was refused.
 type HandoffRedeemer interface {

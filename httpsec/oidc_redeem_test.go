@@ -195,6 +195,34 @@ func TestOIDCRedeem(t *testing.T) {
 		}
 	}
 
+	// redeemerRunning is a consumer redeemer that answers for the linked user
+	// after running the one check it is handed as run says, and reports what
+	// run returns. A mock rather than a hand-written double, like the others.
+	redeemerRunning := func(
+		run func(ctx context.Context, check oidc.RedeemCheck, user identity.Principal) (identity.Principal, error),
+	) func(t *testing.T, h *oidcHarness) httpsec.HandoffRedeemer {
+		return func(t *testing.T, _ *oidcHarness) httpsec.HandoffRedeemer {
+			r := NewMockHandoffRedeemer(gomock.NewController(t))
+			r.EXPECT().Redeem(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ string, checks ...oidc.RedeemCheck) (oidc.HandoffResult, error) {
+					p, err := run(ctx, checks[0], identity.Principal{ID: oidcTestUserID, Username: "ada@example.com"})
+					if err != nil {
+						return oidc.HandoffResult{}, err
+					}
+
+					return oidc.HandoffResult{Principal: p}, nil
+				})
+
+			return r
+		}
+	}
+
+	otherUser := identity.Principal{ID: "u-someone-else", Username: "else@example.com"}
+
+	// errIssuedForAnother is what a faithful redeemer reports when the check
+	// lets a second candidate through after it has issued for the first.
+	errIssuedForAnother := errors.New("oidc_test: the check accepted a second candidate")
+
 	cases := []testCase{
 		{
 			name: "a valid code in the form body is redeemed",
@@ -378,6 +406,69 @@ func TestOIDCRedeem(t *testing.T) {
 			},
 			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
 				requireRefused(t, h, out, policy.ErrDenied, http.StatusForbidden)
+			},
+		},
+		{
+			name: "an implementation that runs the check twice issues once and stores one session",
+			opts: withRedeemer(redeemerRunning(func(
+				ctx context.Context, check oidc.RedeemCheck, user identity.Principal,
+			) (identity.Principal, error) {
+				for range 2 {
+					if err := check(ctx, oidc.RedeemCandidate{Principal: user}); err != nil {
+						return identity.Principal{}, err
+					}
+				}
+
+				return user, nil
+			})),
+			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, int64(1), h.issued.Load(), "the credential is issued once")
+				assert.Equal(t, 1, h.activeSessions(t))
+			},
+		},
+		{
+			name: "an implementation that re-runs the check for another candidate and ignores it is refused",
+			opts: withRedeemer(redeemerRunning(func(
+				ctx context.Context, check oidc.RedeemCheck, user identity.Principal,
+			) (identity.Principal, error) {
+				if err := check(ctx, oidc.RedeemCandidate{Principal: user}); err != nil {
+					return identity.Principal{}, err
+				}
+
+				_ = check(ctx, oidc.RedeemCandidate{Principal: otherUser})
+
+				return otherUser, nil
+			})),
+			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
+				// A token was issued for the first candidate, so this is not
+				// requireRefused; the refusal is what matters, and that no
+				// session was stored for it.
+				require.ErrorIs(t, out.err, policy.ErrDenied)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+			},
+		},
+		{
+			name: "the check refuses a second candidate itself after it has issued for the first",
+			opts: withRedeemer(redeemerRunning(func(
+				ctx context.Context, check oidc.RedeemCheck, user identity.Principal,
+			) (identity.Principal, error) {
+				if err := check(ctx, oidc.RedeemCandidate{Principal: user}); err != nil {
+					return identity.Principal{}, err
+				}
+
+				if err := check(ctx, oidc.RedeemCandidate{Principal: otherUser}); err != nil {
+					return identity.Principal{}, err
+				}
+
+				return identity.Principal{}, errIssuedForAnother
+			})),
+			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
+				require.ErrorIs(t, out.err, policy.ErrDenied)
+				require.NotErrorIs(t, out.err, errIssuedForAnother)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
 			},
 		},
 		{
@@ -603,6 +694,10 @@ type assuranceDeployment struct {
 	// evaluatorDown fails the consumer evaluator a case wires.
 	evaluatorDown atomic.Bool
 
+	// lastIssuedID is the session identifier the last credential was issued
+	// for, which is how a case loads what that credential names.
+	lastIssuedID atomic.Value
+
 	chain *httpsec.Chain
 }
 
@@ -665,6 +760,7 @@ func newAssuranceDeployment(t *testing.T, cfg assuranceConfig) *assuranceDeploym
 	d.h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
 			d.h.issued.Add(1)
+			d.lastIssuedID.Store(id)
 
 			return mfaTokenFor(id), nil
 		})
@@ -852,9 +948,14 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 
 		// The redeemer ran the real checks, so a token was issued inside them
 		// for the login they allowed, before the redeemer changed what it
-		// reported. It names a session that was never stored, and is never
-		// handed out.
-		assert.NotContains(t, out.rec.Body.String(), "access_token", "and no credential is handed out")
+		// reported. It was issued once at most, and names a session that was
+		// never stored, so it authenticates nothing.
+		assert.LessOrEqual(t, d.h.issued.Load(), int64(1), "the credential is issued at most once")
+
+		if id, ok := d.lastIssuedID.Load().(string); ok {
+			_, err := d.h.sessions.Load(t.Context(), id)
+			require.Error(t, err, "the issued credential names no stored session")
+		}
 	}
 
 	cases := []testCase{

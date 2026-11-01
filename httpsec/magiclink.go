@@ -110,6 +110,16 @@ type MagicLinkResponder func(ex *Exchange, result MagicLinkResult) error
 // nothing for the credential it issued. A replacement that runs the checks
 // more than once issues once.
 //
+// The last check the endpoint hands over is the one that issues, and the
+// endpoint holds a replacement to that order as a limit of this port, not a
+// convention. A replacement that skips the issuing check, runs the checks out
+// of order, or runs a check again for another login after the credential was
+// issued is refused with policy.ErrDenied and stores no session: the issuing
+// check refuses a second login itself, and the endpoint refuses a redemption
+// whose decision no longer names the login that was issued for. The refusal
+// comes after the replacement has consumed the link, so it spends the link
+// and stores nothing. Running the checks again for the same login is fine.
+//
 // What the endpoint cannot do is un-spend a link a replacement consumed before
 // it was refused.
 type Redeemer interface {
