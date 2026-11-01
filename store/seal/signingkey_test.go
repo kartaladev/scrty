@@ -423,6 +423,60 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 			},
 		},
 		{
+			name: "a cipher failing with the context's deadline reaches the caller as it",
+			cipher: func(*gomock.Controller) seal.Cipher {
+				return faultyCipher{Cipher: cs.current, openErr: context.DeadlineExceeded}
+			},
+			setup: func(t *testing.T, f signingFixture) {
+				storeSealed(t, f.inner, cs.current, signingRecord("kid-a", 1))
+			},
+			assert: func(t *testing.T, _ signingFixture, recs []signingkey.Record, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.Nil(t, recs)
+			},
+		},
+		{
+			name: "a cipher marking an outage reaches the caller as an outage, not as a bad value",
+			cipher: func(*gomock.Controller) seal.Cipher {
+				return faultyCipher{Cipher: cs.current, openErr: errors.Join(seal.ErrUnavailable, errCipherDown)}
+			},
+			setup: func(t *testing.T, f signingFixture) {
+				storeSealed(t, f.inner, cs.current, signingRecord("kid-a", 1))
+			},
+			assert: func(t *testing.T, _ signingFixture, recs []signingkey.Record, err error) {
+				require.ErrorIs(t, err, seal.ErrUnavailable)
+				assert.NotErrorIs(t, err, seal.ErrDecryptionFailed, "an outage was reported as a value that does not open")
+				assert.NotErrorIs(t, err, seal.ErrUnknownKeyID, "an outage was reported as a missing key")
+				assert.Nil(t, recs)
+				assertNoLeak(t, err, "kid-a")
+			},
+		},
+		{
+			name: "a re-seal whose seal fails with a hang-up does not fail the load",
+			cipher: func(*gomock.Controller) seal.Cipher {
+				return faultyCipher{Cipher: cs.current, sealErr: context.Canceled}
+			},
+			setup: func(t *testing.T, f signingFixture) {
+				storeSealed(t, f.inner, cs.retired, signingRecord("kid-a", 1))
+			},
+			assert: func(t *testing.T, _ signingFixture, recs []signingkey.Record, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []signingkey.Record{signingRecord("kid-a", 1)}, recs)
+			},
+		},
+		{
+			name: "a re-seal write that fails with a hang-up does not fail the load",
+			setup: func(t *testing.T, f signingFixture) {
+				storeSealed(t, f.inner, cs.retired, signingRecord("kid-a", 1))
+				f.resealer.EXPECT().ResealSigningKey(gomock.Any(), "kid-a", gomock.Any(), gomock.Any()).
+					Return(context.Canceled)
+			},
+			assert: func(t *testing.T, _ signingFixture, recs []signingkey.Record, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []signingkey.Record{signingRecord("kid-a", 1)}, recs)
+			},
+		},
+		{
 			name: "an inner store failure is returned behind fixed text",
 			inner: func(ctrl *gomock.Controller) signingkey.KeyStore {
 				inner := NewMockKeyStore(ctrl)

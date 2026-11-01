@@ -1396,6 +1396,7 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 	type testCase struct {
 		name   string
 		cipher seal.Cipher
+		expect func(r *MockEnrolmentResealer)
 		assert func(t *testing.T, e mfa.Enrolment, found bool, err error, before, after []byte)
 	}
 
@@ -1428,6 +1429,24 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 			cipher: faultyCipher{Cipher: cs.current, sealErr: errors.Join(seal.ErrUnavailable, errKMS)},
 			assert: readUnchanged,
 		},
+		{
+			name:   "the seal fails because the read's context was cancelled",
+			cipher: faultyCipher{Cipher: cs.current, sealErr: context.Canceled},
+			assert: readUnchanged,
+		},
+		{
+			name:   "the re-seal write fails because the read's context was cancelled",
+			cipher: cs.current,
+			expect: func(r *MockEnrolmentResealer) {
+				r.EXPECT().ResealEnrolmentSecret(gomock.Any(), userRef, gomock.Any(), gomock.Any()).Return(context.Canceled)
+			},
+			assert: func(t *testing.T, e mfa.Enrolment, found bool, err error, _, _ []byte) {
+				t.Helper()
+				require.NoError(t, err)
+				require.True(t, found)
+				assert.Equal(t, secret, e.Secret)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1437,7 +1456,11 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 			// The resealer expects nothing: a re-seal that cannot reach the
 			// keys must not write.
 			inner := mfa.NewMemoryEnrolmentStore()
-			store, err := seal.NewEnrolmentStore(inner, NewMockEnrolmentResealer(gomock.NewController(t)), tc.cipher)
+			resealer := NewMockEnrolmentResealer(gomock.NewController(t))
+			if tc.expect != nil {
+				tc.expect(resealer)
+			}
+			store, err := seal.NewEnrolmentStore(inner, resealer, tc.cipher)
 			require.NoError(t, err)
 
 			before := putSealed(t, inner, cs.retired, pendingEnrolment(t, userRef))
