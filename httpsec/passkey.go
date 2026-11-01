@@ -206,13 +206,24 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //     refusal.
 //
 // They serve full sessions only: a confined session, or one owing an MFA or
-// password-change challenge, is refused with the ChallengeError it owes. An
+// password-change challenge, is refused with the ChallengeError it owes. A
+// session that owes no challenge but is not full (a confinement marker left
+// without its state, or a second-factor state outside the named ones, which no
+// library path produces) is refused as ErrAuthenticationRequired. An
 // identifier that does not parse, names another user's passkey or names
 // none is passkey.ErrNotFound (404), and nothing changes.
 //
 // Passwordless login is off by default and is enabled with
 // WithPasskeyPasswordlessLogin, which serves its own two endpoints as a first
 // factor at OrderPasskeyLogin.
+//
+// Every registration and management request on which the chain's per-request
+// policy raised a challenge of the consumer's own (Exchange.RaisedChallenge,
+// declared with WithChallengeEnforcer) is refused with a ChallengeError of
+// that kind, whatever the session's state, before anything is begun, stored
+// or changed: the gate enforcing such a challenge is the consumer's and may
+// sit after the passkey slot. A challenge the session itself owes is named in
+// preference to it.
 //
 // Any other method on these paths passes through untouched, and so does
 // every other path. A request without a session, or whose session carries no
@@ -560,6 +571,14 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	// when the passkey method is on the MFA slot to prove the new passkey at.
 	if s.MFA == session.MFARecoveryPending && !p.method {
 		return &ChallengeError{Kind: policy.ChallengeAccountRecovery, Session: s}
+	}
+
+	// A challenge the per-request policy raised on this request is enforced
+	// by a gate of the consumer's. One registered after this slot cannot
+	// refuse a registration that is already begun or finished, so every
+	// registration request, whatever the session's state, is refused here.
+	if err := raisedChallengeRefusal(ex, s); err != nil {
+		return err
 	}
 
 	return serve(ex, s)

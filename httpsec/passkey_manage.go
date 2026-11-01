@@ -121,6 +121,10 @@ func (p *passkeyInterceptor) manage(ex *Exchange) (bool, error) {
 		return true, err
 	}
 
+	if err := raisedChallengeRefusal(ex, s); err != nil {
+		return true, err
+	}
+
 	return true, serve(ex, s)
 }
 

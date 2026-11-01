@@ -19,7 +19,11 @@ import (
 //
 // It reads the session alone. A challenge the policy phase raised on the
 // request (Exchange.RaisedChallenge) is never marked on the session, so each
-// caller checks it beside this one.
+// caller checks it beside this one: re-proof admission refuses it as
+// authentication required, saved-code regeneration passes the request on to
+// the gate enforcing it, and passkey management and registration refuse it
+// with a ChallengeError of that kind (raisedChallengeRefusal). The marker is
+// cleared by the binding, or the password change, that ends the confinement.
 func fullSession(s *session.Session) bool {
 	switch s.MFA {
 	case session.MFANone, session.MFASatisfied:
@@ -49,4 +53,17 @@ func owedChallenge(s *session.Session) policy.ChallengeKind {
 	default:
 		return policy.ChallengeNone
 	}
+}
+
+// raisedChallengeRefusal refuses a request on which the per-request policy
+// raised a challenge of the consumer's own (Exchange.RaisedChallenge) with a
+// ChallengeError of that kind carrying s, and reports nil when it raised none.
+// The gate enforcing such a challenge is the consumer's and may sit after the
+// endpoint that checks this, which would otherwise serve the request first.
+func raisedChallengeRefusal(ex *Exchange, s *session.Session) error {
+	if kind := ex.RaisedChallenge(); kind != policy.ChallengeNone {
+		return &ChallengeError{Kind: kind, Session: s}
+	}
+
+	return nil
 }
