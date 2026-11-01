@@ -176,7 +176,7 @@ func Supersede[Q any](ctx context.Context, tx SessionTx[Q], q Q, ambient bool, o
 		}
 
 		n, err := tx.Exec(ctx, q, pgschema.SessionSupersedeOld, oldDigest, observed, Time(op.Now),
-			Time(op.AcceptUntil), SessionDigest(op.Successor.ID), retainUntil)
+			Time(op.AcceptUntil), SessionDigest(op.Successor.ID), retainUntil, op.Strict)
 		if err != nil {
 			return err
 		}

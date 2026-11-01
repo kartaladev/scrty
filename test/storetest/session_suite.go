@@ -1122,6 +1122,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 	cases = append(cases, sessionActivityCases()...)
 	cases = append(cases, sessionFamilyCases()...)
 	cases = append(cases, sessionSuccessorPresentedCases()...)
+	cases = append(cases, sessionStrictRotationCases()...)
 
 	runSuite(t, cases, newStore)
 }
@@ -2440,23 +2441,6 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 			},
 		},
 	}
-}
-
-// runSessionStrictRotationSuite runs the strict-rotation mark cases,
-// sessionStrictRotationCases, against newStore.
-//
-// It stays apart from RunSessionStoreSuite only until every store this module
-// ships persists the mark: the in-memory default and the encrypting decorator
-// do, the durable stores do not yet. It is reached through export_test.go, so
-// the in-memory runs and the broken variants of this package run it and no
-// other package can. Once the durable stores persist the mark,
-// RunSessionStoreSuite appends sessionStrictRotationCases to its own cases,
-// which makes them required of every session store, a consumer's included,
-// and this runner and its export are removed.
-func runSessionStrictRotationSuite(t *testing.T, newStore func(t *testing.T, clk clock.Clock) session.Store) {
-	t.Helper()
-
-	runSuite(t, sessionStrictRotationCases(), newStore)
 }
 
 // sessionStrictRotationCases are the cases of the strict-rotation mark: a

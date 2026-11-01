@@ -226,7 +226,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
 		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
 		&amr, &sess.FederatedACR, &sess.FamilyID, &familyCreated, &superseded, &acceptUntil,
-		&sess.SuccessorDigest, &presented, &authenticated, &retain)
+		&sess.SuccessorDigest, &presented, &authenticated, &retain, &sess.RotatedStrictly)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, session.ErrNotFound
 	}
