@@ -807,7 +807,7 @@ Runs on H1's branch after Task 18.
 
 - [ ] **Step 1: Write the failing rows** in `TestMFAVerify`: password login with `policy.NewMFA` registered before the password-age challenge → a valid code answers `*ChallengeError{Kind: ChallengePasswordChange}` carrying the rotated session (MFA satisfied, `PasswordChangePending`) and its credential (fails today: 200, no password change owed); a consumer deny after the second factor → refused with its reason, the original session still loads and is pending; nothing behind → 200 as before; a cap of one whose pending session is counted → 200.
 - [ ] **Step 2: Run** `go test -run TestMFAVerify -count=1 ./httpsec/` and see the challenge and deny rows succeed.
-- [ ] **Step 3: Implement** the re-judgement after the verified code with the login input, `MFASatisfied` and `Reauthenticating` set; mark a surfaced challenge on the successor inside `RotateIssuing`'s step, before the credential is issued.
+- [ ] **Step 3: Implement** the re-judgement after the verified code with the login input, `MFASatisfied` and `Reauthenticating` set; mark a surfaced challenge on the satisfied copy before `RotateIssuing` (its step must not modify the successor), so the mark is in the successor's only write and precedes the credential, as in `completeLogin`. Then (dispatch N1b) refuse a caller other than the session's user before the re-judgement, red first.
 - [ ] **Step 4: Run** `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in `test`: PASS.
 
 ### Task 38: The username the login named (tasks.md 13.3)

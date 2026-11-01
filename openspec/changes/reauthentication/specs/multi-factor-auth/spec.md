@@ -67,6 +67,10 @@ After a valid code and before the session is rotated, verification SHALL judge t
 - **WHEN** a consumer policy registered after the MFA policy denies `u-1` in the post-authentication phase only once a second factor is satisfied, and `u-1` posts a valid code to `/mfa/verify/totp`
 - **THEN** verification is refused with the policy's reason, and the session the caller arrived with still loads and is still pending
 
+#### Scenario: A substituted caller at verification
+- **WHEN** a consumer interceptor publishes a principal other than the pending session's user and that session posts a valid code to `/mfa/verify/totp`
+- **THEN** verification is refused as authentication required before the phase is judged, and the session is still pending
+
 #### Scenario: Nothing behind the second factor
 - **WHEN** no other policy objects and `u-1` posts a valid code to `/mfa/verify/totp`
 - **THEN** verification succeeds as before
