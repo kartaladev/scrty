@@ -109,7 +109,7 @@ The library SHALL count failed saved-code presentations per user reference, whet
 - **THEN** a fifth wrong code is still looked up
 
 ### Requirement: Regenerating codes needs a recent authentication and notifies the user
-The endpoint that regenerates a user's set SHALL answer POST requests on its path, `/recovery/codes` by default, and SHALL be answered only for a full session: one with no pending challenge of any kind. It SHALL refuse with a reauthentication-required error unless the session's latest authentication is within the freshness window. The latest authentication is the later of the session's creation and its second-factor satisfaction. The window SHALL be 15 minutes by default, replaceable by an option, and a window of zero or less SHALL fail construction. On success it SHALL return the new codes once, through a replaceable responder, and SHALL notify the user at their contact address. The notice SHALL name the time and SHALL contain no code. The notice SHALL NOT be sent through a sender that delivers synchronously, unless the consumer explicitly accepts synchronous delivery. A GET on the same path SHALL answer any full session with the remaining count and whether it is low, and SHALL NOT return a code.
+The endpoint that regenerates a user's set SHALL answer POST requests on its path, `/recovery/codes` by default, and SHALL be answered only for a full session: one with no pending challenge of any kind. It SHALL refuse with a reauthentication-required error unless the session's latest authentication is within the freshness window. The latest authentication is the session's authentication time, as the `sessions` capability records it: the sign-in, a satisfied second factor or a re-authentication, whichever is latest. The window SHALL be 15 minutes by default, replaceable by an option, and a window of zero or less SHALL fail construction. On success it SHALL return the new codes once, through a replaceable responder, and SHALL notify the user at their contact address. The notice SHALL name the time and SHALL contain no code. The notice SHALL NOT be sent through a sender that delivers synchronously, unless the consumer explicitly accepts synchronous delivery. A GET on the same path SHALL answer any full session with the remaining count and whether it is low, and SHALL NOT return a code.
 
 #### Scenario: Fresh session regenerates
 - **WHEN** a session created at 09:00 posts to `/recovery/codes` at 09:10
@@ -130,6 +130,10 @@ The endpoint that regenerates a user's set SHALL answer POST requests on its pat
 #### Scenario: Pending session refused
 - **WHEN** a session with an MFA challenge pending posts to `/recovery/codes`
 - **THEN** it is refused by the gate enforcing that challenge, and no set is generated
+
+#### Scenario: Fresh after a re-authentication
+- **WHEN** a session created at 09:00 re-authenticates at 09:30 and posts to `/recovery/codes` at 09:40
+- **THEN** a new set is returned
 
 ### Requirement: An issued recovery code is sent by email and is checked before it is consumed
 When issued codes are enabled, starting a recovery for a user SHALL issue a one-time token under a recovery purpose of its own, whose subject is the user reference, and SHALL send it to the user's contact address through the configured sender. The contact address SHALL come from a contact resolver, by default the username, replaceable by the consumer. The code's lifetime SHALL be 15 minutes by default, replaceable by an option. Construction SHALL fail with a configuration error when the lifetime is zero or less, or longer than 24 hours. The message SHALL be plain text, SHALL name no product or organisation by default, and SHALL be replaceable through a message builder, while the library still sets the recipient. The issued code SHALL be checked without being spent, and SHALL be consumed only as the last step of a recovery that succeeds.
@@ -376,12 +380,17 @@ The hold SHALL be the longer of the two. When it is above zero, the proofs SHALL
 ### Requirement: A held recovery is cancelled by the user
 While a recovery is held, the user's existing authenticators and sessions SHALL stay valid. It SHALL be cancelled by:
 - the cancel link, redeemed at the cancel endpoint, `/recovery/cancel` by default, with a POST;
-- any login of the user that completes a first factor through the chain's login completion step.
+- any login of the user that completes a first factor through the chain's login completion step;
+- a password re-authentication of a session of the user, once its password is proved.
 
-Cancellation and completion SHALL each be one conditional write on a pending record, so of a racing cancel and finish at most one SHALL succeed. A cancelled recovery SHALL NOT complete. When a held recovery has spent a saved code, the user's remaining saved set SHALL be voided when the hold starts, and the hold's notice SHALL say that it was, so a cancelled recovery leaves no code of that set usable whichever way it was cancelled. A login that cannot record the cancellation SHALL be refused rather than let the recovery stand.
+Cancellation and completion SHALL each be one conditional write on a pending record, so of a racing cancel and finish at most one SHALL succeed. A cancelled recovery SHALL NOT complete. When a held recovery has spent a saved code, the user's remaining saved set SHALL be voided when the hold starts, and the hold's notice SHALL say that it was, so a cancelled recovery leaves no code of that set usable whichever way it was cancelled. A login or password re-authentication that cannot record the cancellation SHALL be refused rather than let the recovery stand.
 
 #### Scenario: Login cancels
 - **WHEN** a recovery of `u-1` is held and `u-1` then logs in with their password
+- **THEN** the finish is later refused as a recovery-refused error
+
+#### Scenario: A password re-authentication cancels
+- **WHEN** a recovery of `u-1` is held and a session of `u-1` re-authenticates with the password
 - **THEN** the finish is later refused as a recovery-refused error
 
 #### Scenario: Cancel link
@@ -399,6 +408,10 @@ Cancellation and completion SHALL each be one conditional write on a pending rec
 #### Scenario: Cancellation store outage at login
 - **WHEN** a recovery of `u-1` is held, and `u-1` logs in while the recovery store fails
 - **THEN** the login is refused
+
+#### Scenario: Cancellation store outage at re-authentication
+- **WHEN** a recovery of `u-1` is held, and a session of `u-1` re-authenticates with the password while the recovery store fails
+- **THEN** the re-authentication is refused and the session is unchanged
 
 ### Requirement: An opt-in cool-down refuses sensitive routes after a recovery
 A consumer SHALL be able to enable a cool-down: for a duration they state after the user's latest completed recovery, requests the consumer marks as sensitive SHALL be refused with a cool-down error. The latest completed recovery SHALL be read from the user's recovery record, not from the session, so a new login does not end the cool-down. A failed lookup SHALL refuse the request. Unmarked requests SHALL be unaffected. The cool-down SHALL be off by default, and a duration of zero or less or an empty set of marked routes SHALL fail construction.
