@@ -41,7 +41,7 @@ The manager SHALL rotate a session with a grace window: it SHALL create a succes
 - **THEN** loading the old identifier returns the not-found error
 
 ### Requirement: A superseded identifier presented after its window revokes its family
-Loading a superseded identifier at or after the end of its window SHALL be treated as reuse: the manager SHALL revoke the identifier's whole family and SHALL fail with a reused-session error that also matches the expired-session error. Superseded sessions SHALL be kept until their family's absolute deadline, so a late presentation is detected rather than reported as not found, whether or not the superseded session's own deadlines have passed. A session rotated without grace SHALL be excluded: it is kept only until its in-flight window ends, and loading it is the not-found error.
+Loading a superseded identifier at or after the end of its window SHALL be treated as reuse: the manager SHALL revoke the identifier's whole family and SHALL fail with a reused-session error that also matches the expired-session error. Superseded sessions SHALL be kept until their family's absolute deadline, so a late presentation is detected rather than reported as not found, whether or not the superseded session's own deadlines have passed. A session rotated without grace SHALL be excluded: it is kept only until its in-flight window ends, and loading it is the not-found or the expired error, never reuse.
 
 #### Scenario: Reuse after the window
 - **WHEN** session O is rotated at 09:00 with a 30-second grace into S1, and O is loaded at 09:05
@@ -58,7 +58,7 @@ Loading a superseded identifier at or after the end of its window SHALL be treat
 
 #### Scenario: A strictly rotated identifier after its window
 - **WHEN** session O is rotated without grace at 09:00 into S1, and O is presented at 09:00:40 before the sweep has run
-- **THEN** the load fails with the not-found error, and S1 still loads
+- **THEN** the load fails with the expired error, not the reused-session error, and S1 still loads and its family is not revoked
 
 ## ADDED Requirements
 
@@ -86,7 +86,7 @@ The library SHALL offer one check of whether a session authenticated within a wi
 - **THEN** it is not within the window
 
 ### Requirement: Rotation at second-factor verification keeps the old session only until its in-flight window ends
-Rotating without a grace window SHALL supersede the old session in one write, marked as rotated without grace, with a short in-flight window that is also its retention deadline, and SHALL NOT delete it. Loading the old identifier after that write SHALL fail with the not-found error, at any time, and SHALL NOT be judged as reuse. The old session SHALL keep its own deadlines while it is stored.
+Rotating without a grace window SHALL supersede the old session in one write, marked as rotated without grace, with a short in-flight window that is also its retention deadline, and SHALL NOT delete it. Loading the old identifier SHALL fail with the not-found error inside that window, then with the expired error until the sweep removes it, then not-found; never as reuse. Its own deadlines SHALL stay unchanged.
 
 #### Scenario: The old identifier stops loading
 - **WHEN** a session is rotated without grace and its old identifier is loaded at once
@@ -105,7 +105,7 @@ Rotating without a grace window SHALL supersede the old session in one write, ma
 - **THEN** the old session is no longer stored
 
 ### Requirement: A strict rotation that lost a race is a renewal conflict, decided by the store
-A rotation without grace or with a grace window of an identifier marked as rotated without grace SHALL fail with the renewal-conflict error inside its in-flight window, storing and revoking nothing, whichever manager sharing the store runs it; after the window it SHALL fail with the not-found error. Otherwise a missing session SHALL be the not-found error and an expired one the expired error.
+A rotation without grace or with a grace window of an identifier marked as rotated without grace SHALL fail with the renewal-conflict error inside its in-flight window, storing and revoking nothing, whichever manager sharing the store runs it; after the window it SHALL fail with the expired error until the sweep removes the old session, and with the not-found error after. Otherwise a missing session SHALL be the not-found error and an expired one the expired error.
 
 #### Scenario: Two rotations at once
 - **WHEN** two rotations without grace of one session run at once through one manager
@@ -121,7 +121,11 @@ A rotation without grace or with a grace window of an identifier marked as rotat
 - **THEN** the renewal fails with the renewal-conflict error and nothing is stored
 
 #### Scenario: A rotation after the in-flight window
-- **WHEN** a session is rotated without grace at 09:00:00 and its old identifier is rotated again at 09:00:31
+- **WHEN** a session is rotated without grace at 09:00:00 and its old identifier is rotated again at 09:00:31, before the sweep has run
+- **THEN** it fails with the expired error, and nothing is stored or revoked
+
+#### Scenario: A rotation after the sweep
+- **WHEN** the same second rotation runs after the sweep has removed the old session
 - **THEN** it fails with the not-found error
 
 #### Scenario: A revoked session

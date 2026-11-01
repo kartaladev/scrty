@@ -47,7 +47,7 @@
 - Two valid re-proofs, or two valid MFA verifications, from one session at once on one server: one wins and the other gets 409, never 401 (D10). Added to Task 13 (7.1), and across two chains sharing a session store in Task 22 (10.4).
 - A re-proof prefix with a trailing slash (`/passkey/register/`) collides as its slash-free form does. Added to Task 16 (9.1).
 - A post-authentication policy that allows but raises nothing leaves the password re-proof's outcome unchanged (the phase is not a silent refusal). Added to Task 18 (9.4).
-- A strictly rotated identifier presented long after its window, after the sweep, is `ErrNotFound` and never `ErrReused`; before the sweep, the same. Added to Task 21 (10.3).
+- A strictly rotated identifier presented after its window is `ErrExpired` before the sweep and `ErrNotFound` after it, never `ErrReused`, and revokes nothing. Added to Task 21 (10.3).
 - A re-proof racing a renewal of the same session: one wins, and the other is refused with the renewal-conflict error (409), leaving the winner's session in place. A GET to `/reauth/verify/totp` passes through untouched. Added to Task 8 (6.5) and Task 6 (6.1).
 
 ## Execution lanes and dispatches
@@ -571,9 +571,9 @@ Two parallel dispatches. Behaviour is unchanged, so existing tests are the safet
 - Consumes: Task 19's fields.
 - Produces: no new name. `Rotate` supersedes with `Strict: true`, `AcceptUntil = min(now+DefaultRenewalGrace, stored.AbsoluteExpiresAt)`, `RetainUntil = AcceptUntil`, and no `store.Delete`.
 
-- [ ] **Step 1: Write the failing rows:** strict `Rotate` at 09:00:00 then `RotateWithGrace(old, 10s)` at 09:00:05 → `ErrRenewalConflict`, nothing stored (`TestRepro_RotateWithGraceAfterStrictRotationIsRenewalConflict`); `Load(old)` at once → `ErrNotFound`, successor loads; `Load(old)` at 09:00:40 before the sweep and after it → `ErrNotFound`, never `ErrReused` (Review Focus); strict `Rotate(old)` at 09:00:31 → `ErrNotFound`; a strict row's `RetainUntil == AcceptUntil`. Remove the failed-delete test; change "load between the writes" rows to "load after the write".
+- [ ] **Step 1: Write the failing rows:** strict `Rotate` at 09:00:00 then `RotateWithGrace(old, 10s)` at 09:00:05 → `ErrRenewalConflict`, nothing stored (`TestRepro_RotateWithGraceAfterStrictRotationIsRenewalConflict`); `Load(old)` at once → `ErrNotFound`, successor loads; `Load(old)` at 09:00:40 before the sweep → `ErrExpired`, after it → `ErrNotFound`, never `ErrReused` (Review Focus); strict `Rotate(old)` at 09:00:31 → `ErrExpired` before the sweep, `ErrNotFound` after; a strict row's `RetainUntil == AcceptUntil`. Remove the failed-delete test; change "load between the writes" rows to "load after the write".
 - [ ] **Step 2: Run** `go test -run 'TestManager|TestRotate' -count=1 ./session/` and see `session not found` where `the session was renewed concurrently` is expected.
-- [ ] **Step 3: Implement:** read `RotatedStrictly` right after `loadStored` in `Load`, `Rotate` and `RotateWithGrace`, before `judge`: `Load` → `ErrNotFound`; the rotations → `ErrRenewalConflict` inside the window, `ErrNotFound` after. Delete `rotatedHandles`; keep `rotating`. Godoc on `Rotate` and `RotateWithGrace` states the store-decided guarantee.
+- [ ] **Step 3: Implement:** read `RotatedStrictly` right after `loadStored` in `Load`, `Rotate` and `RotateWithGrace`, before `judge`: `Load` → `ErrNotFound` inside the window; the rotations → `ErrRenewalConflict` inside the window; after it, the store's own `ErrExpired` (before the sweep) or `ErrNotFound` passes through. Delete `rotatedHandles`; keep `rotating`. Godoc on `Rotate` and `RotateWithGrace` states the store-decided guarantee.
 - [ ] **Step 4: Run** `go test -race -count=1 ./session/ ./httpsec/`: PASS.
 - [ ] **Step 5: Commit** `feat(session)!: a strict rotation's lost race is decided by the store`.
 
