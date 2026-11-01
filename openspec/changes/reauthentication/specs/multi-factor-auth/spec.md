@@ -55,3 +55,18 @@ Second-factor verification SHALL obtain the rotated session's credential before 
 #### Scenario: Token generator fails at verification
 - **WHEN** a pending session posts a valid code to `/mfa/verify/totp` and the token generator fails
 - **THEN** verification is refused with the generator's failure, and the session the caller arrived with still loads and is still pending
+
+### Requirement: Verification judges what the second-factor challenge hid
+After a valid code and before the session is rotated, verification SHALL judge the post-authentication phase again with the login's input, marked as having satisfied a second factor. A deny SHALL refuse verification and leave the session pending under the caller's credential. Any other challenge than a second factor SHALL be completed as at login: the session satisfied, rotated and marked, and the challenge error carrying the rotated session and its credential.
+
+#### Scenario: A password change behind the second factor
+- **WHEN** the MFA policy is registered before a policy that challenges for a password change, `u-1` signs in with the password and posts a valid code to `/mfa/verify/totp`
+- **THEN** verification answers with a challenge error for a password change carrying the rotated session, which has met its second factor and owes the password change
+
+#### Scenario: A deny behind the second factor
+- **WHEN** a consumer policy registered after the MFA policy denies `u-1` in the post-authentication phase only once a second factor is satisfied, and `u-1` posts a valid code to `/mfa/verify/totp`
+- **THEN** verification is refused with the policy's reason, and the session the caller arrived with still loads and is still pending
+
+#### Scenario: Nothing behind the second factor
+- **WHEN** no other policy objects and `u-1` posts a valid code to `/mfa/verify/totp`
+- **THEN** verification succeeds as before

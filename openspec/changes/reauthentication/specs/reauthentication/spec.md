@@ -521,6 +521,10 @@ When the post-authentication phase of a second-factor re-proof challenges, a sec
 - **WHEN** the post-authentication phase challenges for a second factor and `u-1` posts a valid code to `/reauth/verify/totp`
 - **THEN** `u-1`'s session is re-authenticated
 
+#### Scenario: A challenge behind the second-factor challenge
+- **WHEN** the MFA policy is registered before a policy that challenges for a password change, and `u-1`, who owes a password change and holds TOTP, posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with a challenge error for a password change carrying no session, and the session is unchanged
+
 #### Scenario: Another challenge refuses
 - **WHEN** the post-authentication phase challenges for a password change and `u-1` posts a valid code to `/reauth/verify/totp`
 - **THEN** it is refused with a challenge error of that kind carrying no session, and the session is unchanged

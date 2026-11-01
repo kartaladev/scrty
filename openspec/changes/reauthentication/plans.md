@@ -92,6 +92,9 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 12 | M4 | 12.5 | `httpsec/reauth.go`, `httpsec/passkey_manage.go`, `httpsec/recovery_codes.go`, `httpsec/mfa_verify.go` (listing writer only), `session/session.go`, `internal/guardauth/recency.go`, their tests | Opus: behaviour-preserving extraction across packages | Opus |
 | 12 | M5 | 12.6 | godoc in `httpsec/mfa_verify.go`, `httpsec/reauth_resolve.go`, `httpsec/recovery_codes.go`, `httpsec/recovery_options.go`; `README.md` | Sonnet: docs | Sonnet |
 | 12 | main | 12.7 | runs the gate; edits nothing | — | whole-branch review: Opus |
+| 13 | N1 | 13.1 → 13.2 → 13.3 | `httpsec/reauth_verify.go`, `httpsec/reauth_verify_test.go`, `httpsec/mfa_verify.go`, `httpsec/mfa_verify_test.go`, `httpsec/login.go` (the shared function only), `policy/policy.go` (godoc); also 13.4's `deferredLookup`/`inputRecorder` mocks and its end-to-end 403 row for "No MFA challenge pending at verify", since they sit in these files | Opus: policy refusal logic in two hot paths, an ordering under the engine's reduction | Opus |
+| 13 | N2 | 13.4 | `httpsec/reauth_password_test.go`, `httpsec/reauth_test.go`, `session/sessions_test.go`, `internal/guardauth/recency_test.go`, `test/httpsecconformance/*`, `test/storetest/*`, `policy/concurrent_test.go`, `httpsec/passkey_reauth_rule_test.go`, `httpsec/mfa_begin_test.go`, `httpsec/recovery_test.go`, generated mocks, `README.md` (one row) | Sonnet: stated test conversions and coverage rows | Sonnet |
+| 13 | main | 13.5 | runs the gate; edits nothing | — | whole-branch review: Opus |
 
 | 11b | M1b | 12.1 review follow-ups | M1's files plus `httpsec/mfa_enrol_test.go` | Sonnet: the fixes are stated | Sonnet |
 | 11b | M2b | 12.2 revised (D6 "Every deny binds") | M2's files; `httpsec/reauth_options.go` godoc of the verify bullet | Opus: security refusal logic, a reproduced fail-open | Opus |
@@ -776,6 +779,50 @@ Runs on H1's branch after Task 18.
 - [ ] **Step 2: Run** `go doc` on each changed symbol and `golangci-lint run ./httpsec/`. Commit `docs(httpsec): re-proof and rotation docs follow the second review`.
 
 ### Task 35: The gate and the whole-branch review (tasks.md 12.7)
+
+- [ ] As Task 12, then the whole-branch Opus review against every requirement in the change's spec files.
+
+### Task 36: One re-judgement behind a second-factor challenge, and the re-proof uses it (tasks.md 13.1)
+
+**Files:**
+- Modify: `httpsec/reauth_verify.go` (`secondFactorPhase`); a new unexported function beside the phase helpers in `httpsec/login.go` or `httpsec/reauth_verify.go`
+- Test: `httpsec/reauth_verify_test.go`
+
+**Interfaces:**
+- Produces: `func judgeBehindSecondFactor(ctx context.Context, engine *policy.Engine, in *policy.Input, d policy.Decision) policy.Decision` — returns `d` unless it is a `ChallengeMFA`, in which case it returns the phase judged again on a copy of `in` with `MFASatisfied = true`, with a second `ChallengeMFA` reduced to Allow. 13.2 consumes it.
+
+- [ ] **Step 1: Write the failing rows** in `TestReauthVerify` from `TestReviewReproofIgnoringMFAChallengeHidesPasswordChange`: real `policy.NewMFA` (TOTP lookup enrolled) and `policy.NewPasswordAge(policy.WithUnknownPasswordAge(policy.UnknownAgeChallenge))` on a password session; "MFA policy first" → `*ChallengeError{Kind: ChallengePasswordChange}`, no session, unchanged; "password age first" → the same (already green).
+- [ ] **Step 2: Run** `go test -run TestReauthVerify -count=1 ./httpsec/` and see "MFA policy first" re-authenticate.
+- [ ] **Step 3: Implement** the function and call it in `secondFactorPhase` before the outcome switch.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/`: PASS.
+
+### Task 37: MFA verification judges what the second-factor challenge hid (tasks.md 13.2)
+
+**Files:**
+- Modify: `httpsec/mfa_verify.go` (`verify`, `resolve`), `policy/policy.go` (godoc)
+- Test: `httpsec/mfa_verify_test.go`
+
+**Interfaces:**
+- Consumes: `judgeBehindSecondFactor` (Task 36); `postAuthenticationInput`; `refuseUnenforced`; `challengeMarker.mark`; `Sessions.RotateIssuing`.
+
+- [ ] **Step 1: Write the failing rows** in `TestMFAVerify`: password login with `policy.NewMFA` registered before the password-age challenge → a valid code answers `*ChallengeError{Kind: ChallengePasswordChange}` carrying the rotated session (MFA satisfied, `PasswordChangePending`) and its credential (fails today: 200, no password change owed); a consumer deny after the second factor → refused with its reason, the original session still loads and is pending; nothing behind → 200 as before; a cap of one whose pending session is counted → 200.
+- [ ] **Step 2: Run** `go test -run TestMFAVerify -count=1 ./httpsec/` and see the challenge and deny rows succeed.
+- [ ] **Step 3: Implement** the re-judgement after the verified code with the login input, `MFASatisfied` and `Reauthenticating` set; mark a surfaced challenge on the successor inside `RotateIssuing`'s step, before the credential is issued.
+- [ ] **Step 4: Run** `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in `test`: PASS.
+
+### Task 38: The username the login named (tasks.md 13.3)
+
+- [ ] **Step 1:** Rewrite the magic-link input row in `TestReauthVerify` to expect an empty username; run and see it fail.
+- [ ] **Step 2:** `func loginUsername(first factor.Kind, p *identity.Principal) string` (principal's username for password and passkey, empty for magic link and federated), used by the re-proof and Task 37; run `go test -race -count=1 ./httpsec/`: PASS.
+
+### Task 39: Review follow-ups, behaviour unchanged (tasks.md 13.4)
+
+- [ ] **Step 1:** Generate `mockgen` mocks (`use-mockgen`, `--typed`, placed by consumer) for the interfaces behind `countingMethod`, `mutationCountingStore`, `staleReadStore`, `reauthDenyPolicy`; replace each double, delegating with `DoAndReturn` where it wraps a real implementation; the tests that used them stay green, and each is seen failing by a temporary divergence in the code it pins.
+- [ ] **Step 2:** Fold `TestRecency_JudgePassesTheRequestContext` into `TestRecency_Judge` as a `ctx` row.
+- [ ] **Step 3:** The coverage rows named in tasks.md 13.4, each seen failing by a divergence; the README row.
+- [ ] **Step 4: Run** `go test -race -count=1 ./...` in the root and `test` modules and `golangci-lint run`: PASS.
+
+### Task 40: The gate and the whole-branch review (tasks.md 13.5)
 
 - [ ] As Task 12, then the whole-branch Opus review against every requirement in the change's spec files.
 
