@@ -433,4 +433,24 @@ The 9.7 review found no defect; the behaviour below is correct today (probed in 
 
 ### Task 9.7: Review (main session)
 
-- [ ] Run each lane's verification commands. Then a fresh Opus reviewer checks the group-9 diff against D7, D8 and the five deltas (`one-time-tokens` added by 9.8). Findings go back to a fresh dispatch of the lane. Then run `openspec validate key-port-context --strict`, re-run 7.1 (`make check`, and CI green on the final head), and tick.
+- [ ] Run each lane's verification commands. Then a fresh Opus reviewer checks the group-9 diff against D7, D8 and the five deltas (`one-time-tokens` added by 9.8). Findings go back to a fresh dispatch of the lane. Then run `openspec validate key-port-context --strict`, re-run 7.1 (`make check`, and CI green on the final head), and tick. Task 9.9, added after this review at the user's decision, has its own review (its Step 5), and 7.1 runs again after it.
+
+### Task 9.9: Every rotation refuses a family that has already ended (dispatch S2, Sonnet; added 2026-11-02)
+
+The user chose on 2026-11-02 to fix this in the change (design D7, "Every rotation refuses a family that has already ended"; `sessions` requirement of the same name). `Rotate` calls `RotateIssuing(ctx, s, nil)`, so one check in `RotateIssuing` covers both. The grace rotation already has this check (`session/reuse.go`, `if !now.Before(familyEnd)` after `judge`), and the new one mirrors it.
+
+**Files:** Modify `session/sessions.go` (`RotateIssuing` and its godoc; `Rotate`'s godoc if it lists refusals). Test `session/sessions_test.go`, beside `TestRotateIssuing_StepOutlivingTheFamilyStoresNothing`, reusing its helpers (`createdAt` = 09:00:00, `managerFor`, `testUser`, `supersedeSpyStore`, `must.Must`).
+
+**Interfaces:** no signature changes. Produces: `RotateIssuing` and `Rotate` return `session.ErrExpired` for a family already over.
+
+- [ ] **Step 1: Write the failing test** `TestRotate_RefusesFamilyAlreadyEnded`, a table test (assert-closure form). Shared setup: a fake clock at `createdAt`, a memory store wrapped in `supersedeSpyStore`, and a creator from `managerFor(t, WithStore(spy), WithClock(clk), WithIdleTimeout(12*time.Hour))` whose `Create` gives the session (absolute deadline 21:00). The rotator is a second manager over the same store with `WithIdleTimeout(6h), WithAbsoluteTimeout(6h), WithMaxAbsoluteLifetime(6h), WithMaxFamilyLifetime(6h)`, so the family ends at 15:00. Rows: `rotate` (nil step, through `Rotate`) and `step` (`RotateIssuing` with a step that counts its calls), each at 15:01 (`advance: 6h+1m`) and at exactly 15:00 (`advance: 6h`), which makes four rows. Each asserts:
+  - `require.ErrorIs(t, err, session.ErrExpired)`, `assert.NotErrorIs(t, err, session.ErrReused)`, nil session, empty credential;
+  - the step's call count is 0;
+  - `spy.supersedes.Load()` is 0;
+  - `creator.Load(ctx, old.ID)` still succeeds, and the loaded record is not superseded (`SupersededAt` zero, `RotatedStrictly` false).
+
+  Add one control row: the rotator rotates at 14:59 (`advance: 6h-1m`) with the step. It succeeds, and the step runs once, so the boundary is not over-refused.
+- [ ] **Step 2: Run** `go test -run 'TestRotate_RefusesFamilyAlreadyEnded' -count=1 ./session/`. Expected FAIL on the four refusal rows, for the claimed reason: `An error is expected but got nil` / no `ErrExpired`, and the step called. The control row passes.
+- [ ] **Step 3: Implement.** In `RotateIssuing`, right after the `m.judge(ctx, stored, now, forRequest)` check and before `m.newIdentifier()`, add `if !now.Before(m.familyEnd(stored)) { return nil, "", ErrExpired }`, with a one-line comment in the style of the grace rotation's. The godoc paragraph on refusals decided before the successor is built names a family already ended, and the paragraph on the family's end says the end is checked before the step as well as after it.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/... ./httpsec/...`, `go vet ./session/...`, `gofmt -l session` and `golangci-lint run ./...`. Expected PASS, no files listed, 0 issues. An existing test that rotated a family past its end without grace and expected success would now fail. Report it, and do not change it without the main session.
+- [ ] **Step 5 (main session):** verify, then a fresh Sonnet reviewer checks the diff against the new `sessions` requirement and the design bullet. Commit `fix(session): every rotation refuses a family that has already ended`, then re-run 7.1 below and tick 9.9 and 7.1.

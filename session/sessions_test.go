@@ -1870,6 +1870,122 @@ func TestRotateIssuing_StepOutlivingTheFamilyStoresNothing(t *testing.T) {
 	}
 }
 
+// TestRotate_RefusesFamilyAlreadyEnded pins "Every rotation refuses a family
+// that has already ended" for the rotation without grace, with and without a
+// caller's step: a session created at 09:00:00 still carries an absolute
+// deadline of 21:00:00, but the manager that rotates it has a family maximum
+// of six hours, so its family ended at 15:00:00. A rotation at or after that
+// instant fails as expired before the successor is built: no step runs and
+// nothing is stored or superseded. One minute before it, the rotation goes
+// through.
+func TestRotate_RefusesFamilyAlreadyEnded(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// advance is how far the clock moves from 09:00:00 before the
+		// rotation starts.
+		advance time.Duration
+		// withStep rotates through RotateIssuing with a step that counts its
+		// calls, instead of through Rotate.
+		withStep bool
+		// assert receives the rotation's results, the number of times the step
+		// ran, the session that was rotated, and the manager that created it.
+		assert func(t *testing.T, spy *supersedeSpyStore, creator *session.Sessions, old, got *session.Session, tok string, steps int32, err error)
+	}
+
+	refused := func(t *testing.T, spy *supersedeSpyStore, creator *session.Sessions, old, got *session.Session, tok string, steps int32, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrExpired)
+		assert.NotErrorIs(t, err, session.ErrReused)
+		assert.Nil(t, got, "a successor was returned for a family that had ended")
+		assert.Empty(t, tok)
+		assert.Zero(t, steps, "the step ran for a family that had ended")
+		assert.Zero(t, spy.supersedes.Load(), "a supersession was written")
+
+		loaded, loadErr := creator.Load(t.Context(), old.ID)
+		require.NoError(t, loadErr, "the old identifier no longer loads")
+		assert.True(t, loaded.SupersededAt.IsZero(), "the old record was superseded")
+		assert.False(t, loaded.RotatedStrictly, "the old record was marked as rotated")
+	}
+
+	cases := []testCase{
+		{
+			name:    "Rotate one minute after the family ended",
+			advance: 6*time.Hour + time.Minute,
+			assert:  refused,
+		},
+		{
+			// The instant the family ends is already past it.
+			name:    "Rotate exactly when the family ends",
+			advance: 6 * time.Hour,
+			assert:  refused,
+		},
+		{
+			name:     "RotateIssuing one minute after the family ended",
+			advance:  6*time.Hour + time.Minute,
+			withStep: true,
+			assert:   refused,
+		},
+		{
+			name:     "RotateIssuing exactly when the family ends",
+			advance:  6 * time.Hour,
+			withStep: true,
+			assert:   refused,
+		},
+		{
+			name:     "RotateIssuing one minute before the family ends",
+			advance:  6*time.Hour - time.Minute,
+			withStep: true,
+			assert: func(t *testing.T, spy *supersedeSpyStore, _ *session.Sessions, _, got *session.Session, tok string, steps int32, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, "credential-for:"+got.ID, tok)
+				assert.EqualValues(t, 1, steps, "the step did not run exactly once")
+				assert.EqualValues(t, 1, spy.supersedes.Load())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			spy := &supersedeSpyStore{Store: inner}
+			creator := managerFor(t, session.WithStore(spy), session.WithClock(clk), session.WithIdleTimeout(12*time.Hour))
+			old, err := creator.Create(t.Context(), testUser)
+			require.NoError(t, err)
+
+			rotator := managerFor(t, session.WithStore(spy), session.WithClock(clk),
+				session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
+				session.WithMaxAbsoluteLifetime(6*time.Hour), session.WithMaxFamilyLifetime(6*time.Hour))
+
+			clk.Advance(tc.advance)
+
+			var steps atomic.Int32
+			var (
+				got *session.Session
+				tok string
+			)
+			if tc.withStep {
+				got, tok, err = rotator.RotateIssuing(t.Context(), old,
+					func(successor *session.Session) (string, error) {
+						steps.Add(1)
+
+						return "credential-for:" + successor.ID, nil
+					})
+			} else {
+				got, err = rotator.Rotate(t.Context(), old)
+			}
+
+			tc.assert(t, spy, creator, old, got, tok, steps.Load(), err)
+		})
+	}
+}
+
 // rotationFixture is one manager on a fake clock, a session created through
 // it at 09:00:00, and the counts that show whether a later call wrote to the
 // store or revoked anything.

@@ -57,7 +57,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 7. Integration
 
-- [x] 7.1 Run the full gate, after groups 8 and 9. Verified by `make check` passing locally, and by CI green on both PostgreSQL and Redis matrix jobs.
+- [ ] 7.1 Run the full gate, after groups 8 and 9. Verified by `make check` passing locally, and by CI green on both PostgreSQL and Redis matrix jobs.
 - [x] 7.2 Run one whole-branch review against every requirement of the eleven deltas and decisions D1 to D8. Verified by a review report with no open finding, and by `openspec validate key-port-context --strict` passing. The first review, and `/code-review` and `/security-review`, ran on 2026-11-01; their reproduced findings are group 8, and this task is ticked once group 8 is reviewed clean.
 
 ## 8. Review findings (2026-11-01)
@@ -90,6 +90,7 @@ Each defect below was reproduced in a disposable copy before it was recorded; it
 - [x] 9.6 Move the three copies identical to `hangup.ByCaller` onto it (`authenticate/password.go`, `recovery/codes.go`, `httpsec/apikey.go`), call it directly where `httpsec.endedByRequest` and `recovery.loadEndedByCaller` only pass through, and define the generator's signer-unavailable text once (design D8). Behaviour-preserving: verified by the existing suites passing unchanged, with `go test -race -count=1 ./...` and `golangci-lint run ./...`.
 - [x] 9.8 Close the group-9 review's gaps (design D7; `magic-link` scenario "A link that expires while its credential is issued"; `oidc-login` scenario "A code that expires while its credential is issued"; `one-time-tokens` scenario "A token that expires between its check and its consume"). Through the HTTP issuing path, a link and a handoff code whose expiry passes while the credential is issued are refused as invalid, store no session, stay unspent, and are charged to the source as a refusal. The `hangup` package doc names every path that asks it after 9.6, and the `Redeem` godoc of `onetime` and `magiclink` says the expiry is judged again at the spend. Verified with `go test -race -count=1 ./httpsec/... ./token/... ./authenticate/... ./internal/...` and `golangci-lint run ./...`.
 - [x] 9.7 Review the group-9 diff against D7, D8 and the deltas it touches, with no open finding, and `openspec validate key-port-context --strict` passing.
+- [x] 9.9 Every rotation refuses a family that has already ended (design D7, "Every rotation refuses a family that has already ended"; `sessions` requirement of the same name). Added 2026-11-02 at the user's decision. `RotateIssuing`, and through it `Rotate`, fails with `session.ErrExpired` before the successor is built when the manager's clock is not before the family's end under its family maximum: no step runs, nothing is stored or superseded. Reproduced as `TestRepro_RotateIssuingFamilyAlreadyEnded`. Verified with `go test -race -count=1 ./session/... ./httpsec/...` and `golangci-lint run ./...`, and by a fresh review of the diff with no open finding.
 
 ## Workflow follow-up
 

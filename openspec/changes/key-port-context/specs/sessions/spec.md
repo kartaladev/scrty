@@ -89,3 +89,14 @@ A rotation that runs the caller's step, with or without a grace window, SHALL st
 #### Scenario: A step that outlives the family stores nothing
 - **WHEN** a session whose family ends at 21:00:00 is rotated at 20:59:50, and the caller's step succeeds at 21:00:05
 - **THEN** the rotation fails with the expired-session error, and nothing is stored or superseded
+
+### Requirement: Every rotation refuses a family that has already ended
+A rotation, with or without a grace window and with or without a caller's step, SHALL fail as expired when the session's family has already ended under the rotating manager's family maximum. It SHALL run no caller step, and SHALL store and supersede nothing.
+
+#### Scenario: A rotation without grace refuses a family ended under a lowered maximum
+- **WHEN** a session created at 09:00 still carries an absolute deadline of 21:00, and a manager whose family maximum is 6 hours rotates it without grace at 15:01, with or without a step
+- **THEN** the rotation fails with the expired-session error, the step is never called, and the old identifier still loads, unsuperseded
+
+#### Scenario: A family is over at its end instant
+- **WHEN** that manager rotates the same session at exactly 15:00
+- **THEN** the rotation fails with the expired-session error

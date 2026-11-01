@@ -659,7 +659,11 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // A session the store no longer holds, or that is past either deadline, is
 // refused with the store's sentinel, as itself, and nothing is written:
 // rotation is a move, not a way to bring a revoked session back under a fresh
-// handle.
+// handle. A session whose family has ended under this manager's family
+// maximum is refused with ErrExpired as well, even when the record's own
+// deadlines are later, as they are when this manager's family maximum is lower
+// than the one the session was created under: another manager sharing the
+// store, or this one before a deploy lowered it.
 //
 // Which of two racing rotations of one session wins — two Rotates, or a Rotate
 // and a RotateWithGrace, through one manager or through managers sharing one
@@ -727,8 +731,9 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 // the supersession after it, a lost race or a store failure, is refused as
 // Rotate refuses it; the credential issue returned names a successor that was
 // never stored, so it authenticates nothing and the caller discards it with
-// the error. A refusal decided before the successor is built, a gone session
-// or a lost race already visible in the stored record, never calls issue.
+// the error. A refusal decided before the successor is built, a gone session,
+// a family already ended under this manager's family maximum or a lost race
+// already visible in the stored record, never calls issue.
 //
 // issue is handed the successor as it will be stored, which is also the
 // session returned, and must not modify it. It runs while this manager holds
@@ -741,10 +746,15 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 // manager sharing the store, the deadlines and family carried over. s is not
 // modified.
 //
-// A step that succeeds only once the session's family has ended, that is,
-// when the manager's clock read after the step is not before the family's end
-// under its family maximum, stores nothing and supersedes nothing: the
-// rotation fails with ErrExpired and returns no credential.
+// The family's end is checked twice. A family that has already ended when the
+// rotation starts, that is, when the manager's clock is not before the family's
+// end under its family maximum, is refused with ErrExpired before the step
+// runs, even if the session's own deadlines are later, as they are when this
+// manager's family maximum is lower than the one the session was created
+// under. A step that
+// succeeds only once the family has ended, by the clock read after the step,
+// stores nothing and supersedes nothing: the rotation fails with ErrExpired
+// and returns no credential.
 //
 // The in-flight window (AcceptUntil and RetainUntil) is counted from the
 // instant the manager read its clock before the step ran, not from the moment
@@ -777,6 +787,13 @@ func (m *Sessions) RotateIssuing(
 	}
 	if err := m.judge(ctx, stored, now, forRequest); err != nil {
 		return nil, "", err
+	}
+
+	// The family maximum bounds every rotation, so a family already past its
+	// end under this manager's maximum is refused before any step runs,
+	// whatever deadline the record itself still carries.
+	if !now.Before(m.familyEnd(stored)) {
+		return nil, "", ErrExpired
 	}
 
 	id, err := m.newIdentifier()
