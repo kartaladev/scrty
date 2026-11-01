@@ -170,6 +170,10 @@ func TestPasskeyRegistration(t *testing.T) {
 			name:  "a re-authentication with the password makes a stale session fresh for begin",
 			state: session.MFANone,
 			setup: func(t *testing.T, h *passkeyHarness) {
+				// A full MFANone session exists only where no policy asks for
+				// enrolment at sign-in, so the post-authentication phase a
+				// password re-proof runs allows it.
+				h.withoutEnrolment = true
 				signedIn := time.Now()
 				h.pkOpts = append(h.pkOpts, passkey.WithClock(clockwork.NewFakeClockAt(signedIn.Add(40*time.Minute))))
 

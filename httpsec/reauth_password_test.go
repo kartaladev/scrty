@@ -45,6 +45,9 @@ var (
 // errReauthDenied is a pre-authentication policy's refusal.
 var errReauthDenied = errors.New("reauthpassword_test: pre-authentication denies")
 
+// errReauthPostDenied is a post-authentication policy's refusal.
+var errReauthPostDenied = errors.New("reauthpassword_test: post-authentication denies")
+
 // errReauthUserStore is the user store's outage, whose text no refusal carries.
 var errReauthUserStore = errors.New("reauthpassword_test: user store down, dsn=secret")
 
@@ -479,6 +482,84 @@ func TestReauthPassword(t *testing.T) {
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				unchecked(errReauthDenied)(t, f, s, out)
 				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "a policy refusal spent the source's allowance")
+			},
+		},
+		{
+			// "Post-authentication deny": refused as ada's login is refused,
+			// with nothing reset, rotated or refreshed.
+			name: "a post-authentication deny refuses with the policy's reason and resets nothing",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(denyingIn(t, policy.PostAuthentication, errReauthPostDenied)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errReauthPostDenied)(t, f, s, out)
+				assert.Equal(t, int32(1), f.adaMatches.Load(), "the password was proved first")
+			},
+		},
+		{
+			// Form login charges the source nothing for a policy's refusal
+			// after the password, so neither does a re-proof.
+			name: "a post-authentication deny is not charged to the source",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.loginOpts = append(f.loginOpts, httpsec.WithLoginLimiter(memLimiter(t, 1, time.Hour)))
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(denyingIn(t, policy.PostAuthentication, errReauthPostDenied)))
+			},
+			before: func(t *testing.T, _ *pwFixture, c *httpsec.Chain, tok string) {
+				out := serve(t, c, passwordOf(reauthAdaPassword)(t.Context(), t, tok))
+				require.ErrorIs(t, out.err, errReauthPostDenied)
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errReauthPostDenied)(t, f, s, out)
+				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "a policy refusal spent the source's allowance")
+			},
+		},
+		{
+			// "Post-authentication challenge": refused with the challenge,
+			// carrying no session, and nothing marked pending.
+			name: "a post-authentication password-change challenge refuses with no session and marks nothing",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts,
+					httpsec.EnableGateForTest(policy.ChallengePasswordChange),
+					httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengePasswordChange)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				var ce *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ce)
+				assert.Equal(t, policy.ChallengePasswordChange, ce.Kind)
+				assert.Nil(t, ce.Session, "a re-proof establishes no pending session")
+				assert.Empty(t, ce.Token, "a re-proof issues no credential for a challenge")
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, out.rec.Body.Len(), "nothing was written")
+				unchanged(t, f.reauthHarness, s)
+				assert.False(t, f.stored(t, s.ID).PasswordChangePending, "no pending mark was stored")
+			},
+		},
+		{
+			// A challenge nothing on the chain enforces is the wiring
+			// mistake a login refuses it as, before anything is marked.
+			name: "an unenforced post-authentication challenge is a configuration error",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengeMFAEnrolment)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert:  refusedWith(httpsec.ErrConfig),
+		},
+		{
+			// An allowing policy leaves the re-proof as it was.
+			name: "an allowing post-authentication policy re-proves",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.chainOpts = append(f.chainOpts, httpsec.WithPolicyEngine(allowingEngine(t)))
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
 			},
 		},
 		{
