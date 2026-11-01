@@ -303,19 +303,19 @@ Each defect task's red step is the reproduction named in its design decision, wr
 
 Sequenced: 13.1, then 13.2, then 13.3, in one lane, because they share one re-judgement and its input; 13.4 runs beside them on other files.
 
-- [ ] 13.1 A second-factor re-proof judges what its second-factor challenge hid (D6 "What a second-factor challenge hid is judged too"):
+- [x] 13.1 A second-factor re-proof judges what its second-factor challenge hid (D6 "What a second-factor challenge hid is judged too"):
   - one function, used by the re-proof now and by MFA verification in 13.2: when the phase returns `ChallengeMFA`, judge it once more with `MFASatisfied` set; a deny or a non-MFA challenge then refuses as the first judgement would; a second `ChallengeMFA` is dropped;
   - red: `TestReviewReproofIgnoringMFAChallengeHidesPasswordChange` (real `policy.NewMFA` with an enrolled TOTP lookup and `policy.NewPasswordAge` with `UnknownAgeChallenge`, in both registration orders), rewritten into `TestReauthVerify`.
 
   (Reauthentication scenario "A challenge behind the second-factor challenge".) Verify with `go test -race -count=1 -run 'TestReauthVerify' ./httpsec/`
-- [ ] 13.2 MFA verification judges what the second-factor challenge hid (D6 "MFA verification judges it too"):
+- [x] 13.2 MFA verification judges what the second-factor challenge hid (D6 "MFA verification judges it too"):
   - after a valid code and before resolve, the phase is judged again with the login's input for the session, `MFASatisfied` and `Reauthenticating` set, through 13.1's function; a deny refuses and leaves the session pending and unrotated; a non-MFA challenge is refused when nothing enforces it, otherwise the session is satisfied, rotated and marked before its credential is issued, and verification answers with a `*ChallengeError` carrying the rotated session and its credential, as `completeLogin` does; a `ChallengeMFA` is dropped;
   - `policy.Input.MFASatisfied` and `Reauthenticating` godoc name verification's re-judgement;
   - red: a password login with the MFA policy registered before a password-age challenge, a valid code at `/mfa/verify/totp` → succeeds today with no password change owed; a deny-after-second-factor row; a nothing-behind row stays green; a cap-of-one user whose pending session is counted is not refused; a caller other than the session's user is refused as authentication required before the re-judgement, counting nothing.
 
   (ADDED multi-factor-auth "Verification judges what the second-factor challenge hid", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in `test`
-- [ ] 13.3 The phase input names the username the session's login named (D6 "The username is the login's"): the principal's for password and passkey, none for magic link and federated logins; one helper used by the re-proof and by 13.2. Red: the row at `httpsec/reauth_verify_test.go` that pins the principal's username for a magic-link session, rewritten to expect none. Verify with `go test -race -count=1 ./httpsec/`
-- [ ] 13.4 Review follow-ups, behaviour unchanged:
+- [x] 13.3 The phase input names the username the session's login named (D6 "The username is the login's"): the principal's for password and passkey, none for magic link and federated logins; one helper used by the re-proof and by 13.2. Red: the row at `httpsec/reauth_verify_test.go` that pins the principal's username for a magic-link session, rewritten to expect none. Verify with `go test -race -count=1 ./httpsec/`
+- [x] 13.4 Review follow-ups, behaviour unchanged:
   - hand-rolled doubles of interfaces the project owns become `mockgen` mocks (`use-mockgen`), delegating to a real implementation through `DoAndReturn` where they wrap one: `countingMethod` (`httpsec/reauth_password_test.go`), `mutationCountingStore` (`session/sessions_test.go`), `staleReadStore` and `reauthDenyPolicy` (`test/httpsecconformance/reauth_scenarios.go`); `deferredLookup` and `inputRecorder` (`httpsec/reauth_verify_test.go`) in 13.1–13.3's lane;
   - `TestRecency_JudgePassesTheRequestContext` folds into `TestRecency_Judge` as a `ctx` row;
   - coverage: "nothing is verified" and "the password is not checked" asserted in `TestReauthAdmission`'s pending rows; the held-recovery row drives the recovery finish endpoint to its refusal; a broken session-store variant that drops the mark fails "Managers sharing a store"; "Enrolment-only sessions count until they expire" judged through `policy.ConcurrentSessions`; an MFA chain without passkeys builds without re-authentication; "No MFA challenge pending at verify" asserted as 403 end to end;
