@@ -186,7 +186,7 @@ Each defect task's red step is the reproducing test named in its design decision
   - red: `TestReproReauthTOTPIgnoresUnrelatedMethodEnrolmentFailure`; the row "a lookup failure refuses and verifies nothing" in `reauth_verify_test.go` moves to a failure of the named method's own lookup, and the password and listing lookup-failure rows stay.
 
   (ADDED reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", every scenario; "A user re-proves with the strongest factor they hold, by default" scenario "Lookup failure does not downgrade".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
-- [ ] 9.6 One second-factor response check, one challenge issue and one challenge-manager builder, shared by the MFA slot and re-proof, behaviour unchanged (D6 "The second-factor response check and challenge issue, too"):
+- [x] 9.6 One second-factor response check, one challenge issue and one challenge-manager builder, shared by the MFA slot and re-proof, behaviour unchanged (D6 "The second-factor response check and challenge issue, too"):
   - the throttle check, response reader, challenge spend, failure classification, sweep, `IssueWithin` with its limit mapping and `BeginChallenge` run in one place, taking the throttle, the manager and the method; the managers come from one builder taking a purpose function;
   - admission and resolve stay each path's own.
 
