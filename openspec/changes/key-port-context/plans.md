@@ -50,6 +50,7 @@
 | A | 2.1 | `session/store_encrypted.go` and its test | Sonnet: an `errors.Is` classification the design fixes exactly | Sonnet |
 | R1 | 2.2, 2.3, 2.5 | `httpsec/resolve.go`, `httpsec/session_renewal.go` (its user reload only), `httpsec/bearer_test.go`, `httpsec/session_bearer_test.go`, `httpsec/session_renewal_test.go`, a new `httpsec/resolve_test.go` | Opus: refusal logic on a security path, written for the first time | Opus |
 | R2 | 2.6, 2.4, 2.7 | `httpsec/session_bearer.go`, `httpsec/session_renewal.go` (its throttle only), `httpsec/bearer.go`, `authenticate/jwt.go`, their tests | Opus: refusal and charging logic on a security path | Opus |
+| R3 | 2.8 | `httpsec/bearer.go` (`notVerified`), `authenticate/jwt.go`, `httpsec/bearer_test.go`, `authenticate/jwt_test.go`, `httpsec/session_bearer_test.go` (guard charging rows only) | Opus: refusal and logging classification on a security path | Opus |
 | B | 3.1–3.3 | `store/seal` (all files), the passkey credential files in `store/sqlstore`, `store/gormstore`, `store/pgxstore`, `test/internal/storefix`, `test/storetest` sealed-column suite and `broken_sealed_test.go` | Opus: an interface other packages and modules compile against | Opus |
 | C | 4.1–4.4 | `session/store_encrypted.go`, `session` errors, `store/seal/cipher.go` (`SessionCipher` only), `store/seal/errors.go`, `session/helpers_test.go`, `test/storetest/memory_test.go`, `NewSessionStore` godoc in the three SQL stores | Opus: an interface two packages compile against, and outage classification | Opus |
 | D | 5.1–5.5 | `token/signingkey` (all files), `token/generator.go`, `token/verifier.go`, their tests and doubles, `httpsec/jwks.go` and its test, every other `KeySource` or `KeySetProvider` caller `gopls` finds | Opus: interfaces several packages compile against | Opus |
@@ -63,8 +64,9 @@
 1. **A and R1 in parallel.** `httpsec` imports `session`, but A changes no signature.
 2. **R2 and B in parallel.** No shared file; B builds only `store/*` and `test` while R2 builds `httpsec` and `authenticate`.
 3. **C (after A and B) and D (after R2) in parallel.** C changes `session` and `store/seal/cipher.go`; D changes `token`, `token/signingkey` and `httpsec/jwks.go`. The `test` module is built only after both have landed.
-4. **S1 after C**, since both are in `session`. **S2 after S1 and D. S3 after S2**, which owns `complete.go`. **S4 after S3.**
-5. **7.1 and 7.2 last.**
+4. **R3 after D**, since D changes the `KeySource` doubles in `httpsec/bearer_test.go` and `authenticate/jwt_test.go`; R3 runs beside S1, which touches neither package.
+5. **S1 after C**, since both are in `session`. **S2 after S1 and D. S3 after S2**, which owns `complete.go`. **S4 after S3.**
+6. **7.1 and 7.2 last.**
 
 After each dispatch the main session runs its verification commands, then a fresh reviewer of the stated model checks the diff against the scenarios the dispatch covers.
 
@@ -113,6 +115,22 @@ After each dispatch the main session runs its verification commands, then a fres
 - [ ] **Step 4: Implement** charging on refusals only, and the `token.ErrInvalid` split in both places. Rewrite `TestBearerToken`'s tampered-token case to mock `Verify` with an error wrapping `token.ErrInvalid`.
 - [ ] **Step 5: Run** `go test -race -count=1 ./httpsec/... ./authenticate/...` and `go test ./...` in `test` (2.7: the refusal scenarios pass unchanged). Expected PASS.
 - [ ] **Step 6: Commit** `fix(httpsec): charge refusals only; a key source outage at verification is a dependency failure`.
+
+### Task 2.8: A hang-up during verification is not a key outage (dispatch R3)
+
+**Files:** Modify `httpsec/bearer.go` (`notVerified`), `authenticate/jwt.go` (the bearer provider's verify error). Test `httpsec/bearer_test.go`, `authenticate/jwt_test.go`, `httpsec/session_bearer_test.go`.
+
+**Interfaces:** Consumes `endedByRequest(ctx, err) bool` from `httpsec/resolve.go` (R1) and D's `KeySource` signatures. Produces, in both places, a third outcome beside the `token.ErrInvalid` refusal and the outage: a hang-up returns `diag.Wrap(err, text, ctx.Err())` with fixed text `httpsec: the request ended while its token was verified` and `authenticate: the caller left while the token was verified`, and writes no ERROR record (a debug record at most, carrying no error text). The order is: `token.ErrInvalid` first, then hang-up, then outage.
+
+- [ ] **Step 1: Write the failing table** `TestBearer_HangUpDuringVerificationIsNotAnOutage`, with the real `signingkey.Keys`, generator and verifier, rows:
+  - a correctly signed token on an already-cancelled request context → `errors.Is(err, context.Canceled)`; matches neither `authenticate.ErrAuthenticationFailed` nor `ErrAuthenticationRequired`; text is the hang-up text, not `httpsec: verification keys unavailable`; no record with `reason=verification-keys` at ERROR;
+  - a key source whose `VerificationKeys` returns `context.DeadlineExceeded` of its own while the request context is live → still the outage: verification-keys text, ERROR record, 500.
+- [ ] **Step 2: Write the failing table** `TestJWTProvider_CallerLeavesDuringVerification`, with the same two rows against the provider: the hang-up text, and the outage text `authenticate: verification keys unavailable`.
+- [ ] **Step 3: Add pinning rows** to `TestSessionReferenceGuard_ChargesRefusalsOnly`: the store answers `session.ErrExpired`, and `session.ErrReused` → each charged once. These pin today's behaviour, so they pass at once. Show they bite by disabling the guard's charge in a scratch copy.
+- [ ] **Step 4: Run** `go test -run 'TestBearer_HangUpDuringVerification|TestSessionReferenceGuard_ChargesRefusalsOnly' -count=1 ./httpsec/` and `go test -run TestJWTProvider_CallerLeaves -count=1 ./authenticate/`. Expected FAIL on the hang-up rows: `expected: "httpsec: the request ended while its token was verified", actual: "httpsec: verification keys unavailable"`, and a `verification-keys` ERROR record.
+- [ ] **Step 5: Implement** the hang-up branch in both places, classified on the request's own context, never by a bare `errors.Is(err, context.Canceled)`. Update the godoc of `EnableBearerToken` and the provider.
+- [ ] **Step 6: Run** `go test -race -count=1 ./httpsec/... ./authenticate/...` and `golangci-lint run ./httpsec/... ./authenticate/...`. Expected PASS, 0 issues.
+- [ ] **Step 7: Commit** `fix(httpsec): a client that leaves during verification is not reported as a key outage`.
 
 ### Task 3.1–3.3: Context on `seal.Keyring` and `seal.Cipher` (dispatch B)
 

@@ -12,7 +12,7 @@ For each handled request it SHALL:
 4. add the principal, authentication result and session to the context;
 5. evaluate the per-request policy phase, telling it whether the session has satisfied its second factor.
 
-When the request's own context ends while the session is loading or the user is reloading, the request SHALL fail with an error that matches that context's error. It SHALL NOT be answered with the authentication-required error, and SHALL NOT be logged as a dependency failure or as an undecryptable session.
+When the request's own context ends while the token is being verified, the session is loading or the user is reloading, the request SHALL fail with an error that matches that context's error. It SHALL NOT be answered with the authentication failure error or the authentication-required error, and SHALL NOT be logged as a dependency failure, as a verification-key failure or as an undecryptable session.
 
 An undecryptable session SHALL also be logged at ERROR. A dependency failure while loading the session SHALL NOT be logged as an undecryptable session. A deny from the per-request phase SHALL refuse. A challenge from it SHALL mark the challenge pending on the session and continue, so the gate for that challenge enforces it. When the challenge is for enrolment and the session is not already enrolment-pending, the bearer SHALL save the marked session itself before continuing, because the enrolment gate refuses the request before the session-touch step runs; a failed save SHALL refuse the request. A challenge of a consumer kind declared with an enforcer SHALL be recorded on the exchange for that enforcer, and the request SHALL continue.
 
@@ -82,6 +82,12 @@ An undecryptable session SHALL also be logged at ERROR. A dependency failure whi
 - **THEN** the request fails with an error matching the context's cancellation
 - **AND** the error does not match the authentication-required error
 - **AND** no undecryptable-session or dependency-failure record is written at ERROR
+
+#### Scenario: Client leaves while the token is verified
+- **WHEN** a request carries a correctly signed bearer token, its context is cancelled, and verification fails with that cancellation
+- **THEN** the request fails with an error matching the context's cancellation
+- **AND** the error matches neither the authentication failure error nor the authentication-required error, and its text does not report the verification keys as unavailable
+- **AND** no verification-key or dependency-failure record is written at ERROR
 
 ### Requirement: Form login authenticates, applies policy and opens a session
 When enabled, form login SHALL answer POST requests on its login path, by default `/login`. Every other request SHALL pass through untouched. It SHALL:

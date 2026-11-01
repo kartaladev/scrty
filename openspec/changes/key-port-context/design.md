@@ -174,7 +174,7 @@ The comparison task 1.1 called for was made on 2026-11-01.
 - **D2 departs.** It reports a missing signing key as a boolean that the generator turns into an unclassified error, and has no notion of a key source failing, because its key manager is in-process. D2 adds `ErrNoKey` and the outage.
 - **D3 narrows it.** It maps every failure to open a sealed session field to unreadable, a missing key and a failed key lookup alike, answers 401 and logs at ERROR. That was a deliberate choice to let a session sealed under a retired key heal by logging in again, instead of failing every request until it expired. D3 keeps that default and the ERROR record, and narrows it only for cancellation, deadlines and marked outages.
 - **D4 does not depart.** The established design answers a session error that is not a refusal, and a user-loader error other than "not found", with the error itself, which its error mapping answers with 500. scrty's current answer of 401 is the departure; D4 restores the established behaviour.
-- **D6, D7 and D8 are new.** It has no remote key fetch, so its bearer answers every verification error with 401 and nothing pins an outage. It issues after creating the session and after spending a one-time link or handoff code, with no restore, and its tests assert only that the error is returned. It has no special handling of a cancelled request at session or user load. What it does have, and D7 keeps, is the order in which the pending challenge is recorded before the credential is handed out, and the check-before-spend order of its redemptions.
+- **D6, D7 and D8 are new.** It has no remote key fetch, so its bearer answers every verification error with 401 and nothing pins an outage. It issues after creating the session and after spending a one-time link or handoff code, with no restore, and its tests assert only that the error is returned. It has no special handling of a cancelled request at verification, or at session or user load. What it does have, and D7 keeps, is the order in which the pending challenge is recorded before the credential is handed out, and the check-before-spend order of its redemptions.
 
 ### D6. A key source outage during verification is a dependency failure
 
@@ -252,15 +252,19 @@ The names are indicative; the implementer may choose others that read better bes
 
 ### D8. A request whose own context ended is not refused
 
-When the request's own context ends while resolution loads the session or reloads the user, at the bearer, the session-reference bearer or the renewal endpoint:
+When the request's own context ends while the bearer verifies the token, or while resolution loads the session or reloads the user, at the bearer, the session-reference bearer or the renewal endpoint:
 
-- the request fails with an error that matches the context's error, not the authentication-required error;
-- it is not logged at ERROR as a dependency failure or an undecryptable session;
+- the request fails with an error that matches the context's error, not the authentication failure or the authentication-required error, with fixed library text of its own;
+- it is not logged at ERROR as a dependency failure, a verification-key failure or an undecryptable session;
 - it is not charged to the session-reference or late-renewal throttle.
+
+The `authentication` bearer provider makes the same split for its caller's context. A hang-up is told by the request's own context: it has ended, and the error is that context's error. A dependency that times out on a context of its own while the request still waits is an outage.
+
+**Verification was added on 2026-11-01, during implementation.** The first draft covered only the session load and the user reload. The review of task 2.4 reproduced, on the code of that task, that a bearer whose request is cancelled during verification was answered "verification keys unavailable" and logged at ERROR as a key outage: the JOSE library checks the context's state itself, before any key is fetched. That is the case this decision exists to prevent, and a remote key source (D1) makes it routine, so the decision now covers verification too.
 
 Nobody receives the answer: Go's `net/http` cancels a request's context when the client's connection closes. The point is what the library records. A hang-up is neither a refusal (no verdict was reached) nor an outage (nothing failed), which is how nginx's 499 and gRPC's `CANCELLED` treat it. Not charging it opens nothing: a client that leaves before the store answers learns nothing about the reference it presented.
 
-This applies only to resolution. A client that leaves during a password login's or a recovery proof's user load is still charged to its source (`authentication`, `account-recovery`), because those are guesses at a secret, and charging them is what stops a client from hanging up to escape the count.
+This applies only to verification and resolution. A client that leaves during a password login's or a recovery proof's user load is still charged to its source (`authentication`, `account-recovery`), because those are guesses at a secret, and charging them is what stops a client from hanging up to escape the count.
 
 **Default and override:** no option. A consumer's error handler sees the context's error and may log it as it chooses.
 
