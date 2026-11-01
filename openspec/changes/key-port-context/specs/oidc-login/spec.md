@@ -10,7 +10,7 @@ The handoff redemption endpoint SHALL accept the code only in the body of a POST
 4. build the session and issue its credential, through the login completion step of the `http-security-chain` capability;
 5. consume the code in one atomic operation, last, and only then store the session and hand out its credential.
 
-An already-consumed record MAY be rejected before step 2, but that rejection SHALL NOT be what guarantees single use; only the atomic consume SHALL decide. A refusal or failure at step 2, 3 or 4 SHALL leave the code redeemable until it expires. A losing redemption of a race SHALL discard its credential, and its session SHALL never be stored. Issuing the credential writes no state, so the refusal checks' documentation SHALL state that the library may issue a credential, which it discards on a lost race, between the checks and the consume. Refusal checks SHALL be documented as required to be side-effect free, because racing redemptions of one code can each run them. The login completion step SHALL reuse the post-authentication decision made at step 3, rather than evaluating the post-authentication policies again after the code is consumed, so a policy lookup failure never spends the code.
+An already-consumed record MAY be rejected before step 2, but that rejection SHALL NOT be what guarantees single use; only the atomic consume SHALL decide. A refusal or failure at step 2, 3 or 4 SHALL leave the code redeemable until it expires. Step 5 SHALL refuse a code whose expiry has passed by then, even if it was valid at step 1, and SHALL leave it unspent. A losing redemption of a race SHALL discard its credential, and its session SHALL never be stored. Issuing the credential writes no state, so the refusal checks' documentation SHALL state that the library may issue a credential, which it discards on a lost race, between the checks and the consume. Refusal checks SHALL be documented as required to be side-effect free, because racing redemptions of one code can each run them. The login completion step SHALL reuse the post-authentication decision made at step 3, rather than evaluating the post-authentication policies again after the code is consumed, so a policy lookup failure never spends the code.
 
 #### Scenario: Racing redemptions
 - **WHEN** 8 requests redeem the same valid code at the same time
@@ -30,6 +30,10 @@ An already-consumed record MAY be rejected before step 2, but that rejection SHA
 - **WHEN** a valid code passes every check, the key source fails when the credential is issued, and the code is redeemed again after the key source recovers and before it expires
 - **THEN** the first redemption fails as a dependency failure, not with the invalid-handoff outcome, and creates no session
 - **AND** the second redemption succeeds
+
+#### Scenario: A code that expires while its credential is issued
+- **WHEN** a handoff code valid for 60 seconds passes every check at 59 seconds, and issuing its credential takes 2 seconds
+- **THEN** the redemption fails with the invalid-handoff outcome, creates no session, and the code is not spent
 
 ### Requirement: Handoff redemption failures reveal nothing about the cause
 Redemption SHALL fail with the same invalid-handoff outcome for:

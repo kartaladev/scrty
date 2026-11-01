@@ -57,7 +57,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 
 ## 7. Integration
 
-- [ ] 7.1 Run the full gate, after group 8. Verified by `make check` passing locally, and by CI green on both PostgreSQL and Redis matrix jobs.
+- [ ] 7.1 Run the full gate, after groups 8 and 9. Verified by `make check` passing locally, and by CI green on both PostgreSQL and Redis matrix jobs.
 - [x] 7.2 Run one whole-branch review against every requirement of the eleven deltas and decisions D1 to D8. Verified by a review report with no open finding, and by `openspec validate key-port-context --strict` passing. The first review, and `/code-review` and `/security-review`, ran on 2026-11-01; their reproduced findings are group 8, and this task is ticked once group 8 is reviewed clean.
 
 ## 8. Review findings (2026-11-01)
@@ -77,6 +77,18 @@ Each defect below was reproduced in a disposable copy before it was recorded; it
   - `magic-link` and `oidc-login`: an issuing failure records nothing with the source limiter.
 
   Verified with `go test -race -count=1 ./httpsec/... ./authenticate/... ./recovery/...`.
+
+## 9. Second review findings (2026-11-01)
+
+`/code-review` and `/security-review` ran again on the final diff. The security review found nothing. Each defect below was reproduced in a disposable copy before it was recorded; its red test is written again in the tree as the task's red step. Findings weighed and kept are in `design.md`.
+
+- [ ] 9.1 A verdict wins over a hang-up at the renewal endpoint (design D8; `http-security-chain` scenario "A refusal wins over a client that leaves"). The endpoint classifies a refusal before it asks whether the request ended. Reproduced as `TestRepro_RenewalVerdictWinsOverHangUp`: the joined reused-and-cancelled load answered "the request ended while its session loaded", and nothing was charged. Verified with `go test -race -count=1 ./httpsec/...`.
+- [ ] 9.2 An issuing failure is never a refusal, whatever its cause wraps (design D7; `http-security-chain` scenario "An issuer error that wraps a refusal is still a dependency failure"). Mark every failure of the chain's issuer, recovery's included, and have the default status mapping answer the mark 500 before the refusal table. Reproduced as `TestRepro_RenewalIssuerErrorIsNeverARefusal` and `TestRepro_LoginPrepareIssuerErrorIsNeverARefusal`, answered 401. Rows cover renewal, form login, a redemption, MFA verification and recovery. Verified with `go test -race -count=1 ./httpsec/...`.
+- [ ] 9.3 A link or code is spent only before it expires, judged at the spend (design D7; `magic-link` scenario "A link that expires while its credential is issued"; `oidc-login` scenario "A code that expires while its credential is issued"). `onetime.Consume` refuses a token whose expiry has passed by the clock it reads; the OIDC handoff reads the clock again before its consume. Reproduced as `TestRepro_RedeemRefusesTokenThatExpiredDuringChecks`, `TestRepro_HandoffRefusesCodeThatExpiredDuringChecks` and `TestRepro_MagicLinkRefusesLinkThatExpiredDuringChecks`. Verified with `go test -race -count=1 ./token/onetime/... ./authenticate/oidc/... ./authenticate/magiclink/... ./httpsec/...`.
+- [ ] 9.4 A rotation whose step outlives the family stores nothing (design D7; `sessions` requirement "A rotation whose step outlives the family stores nothing"). Check the family's end again after the step, in `RotateWithGraceIssuing` and, if it has the same gap, `RotateIssuing`, failing with `session.ErrExpired`. Reproduced as `TestRepro_StepCrossesFamilyEnd_NoGrace` and `TestRepro_StepCrossesFamilyEnd_LoweredMaximum`. Verified with `go test -race -count=1 ./session/... ./httpsec/...`.
+- [ ] 9.5 A redemption forgets an issuing failure once a later issue succeeds (design D7). Reproduced as `TestRepro_ConsumeFailureAfterRetriedIssueIsCharged`. Also state in `recovery.WithCredentialIssuer`'s godoc that a recovery slower than its session's lifetime stores an expired session, and the user keeps the new saved codes (design, Risks). Verified with `go test -race -count=1 ./httpsec/... ./recovery/...`.
+- [ ] 9.6 Move the three copies identical to `hangup.ByCaller` onto it (`authenticate/password.go`, `recovery/codes.go`, `httpsec/apikey.go`), call it directly where `httpsec.endedByRequest` and `recovery.loadEndedByCaller` only pass through, and define the generator's signer-unavailable text once (design D8). Behaviour-preserving: verified by the existing suites passing unchanged, with `go test -race -count=1 ./...` and `golangci-lint run ./...`.
+- [ ] 9.7 Review the group-9 diff against D7, D8 and the deltas it touches, with no open finding, and `openspec validate key-port-context --strict` passing.
 
 ## Workflow follow-up
 

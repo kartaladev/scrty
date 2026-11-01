@@ -82,3 +82,10 @@ A rotation with a grace window SHALL let the caller act on the successor, such a
 - **WHEN** a session is rotated at 10:00:00 with a 30-second grace, and the caller's step takes 31 seconds before it succeeds
 - **THEN** the rotation fails with an error matching the context deadline error, and nothing is stored, superseded or revoked
 - **AND** the old identifier still loads, no reuse is reported, and the session can be rotated again
+
+### Requirement: A rotation whose step outlives the family stores nothing
+A rotation that runs the caller's step, with or without a grace window, SHALL store nothing when the step succeeds only after the session's family has ended, and SHALL fail as expired.
+
+#### Scenario: A step that outlives the family stores nothing
+- **WHEN** a session whose family ends at 21:00:00 is rotated at 20:59:50, and the caller's step succeeds at 21:00:05
+- **THEN** the rotation fails with the expired-session error, and nothing is stored or superseded

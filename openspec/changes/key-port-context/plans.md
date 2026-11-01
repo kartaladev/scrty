@@ -324,3 +324,87 @@ This task runs in the same lane as 8.2, after it, because both are in `session`.
 ### After group 8 (main session)
 
 Verify and review each dispatch. Then re-run 7.1 (`make check`, and CI after marking PR #39 ready), and close 7.2 with a review of the group-8 diff against D2, D7 and D8.
+
+## Group 9: Second review findings (added 2026-11-01)
+
+Each defect was reproduced in a disposable copy (`tasks.md` group 9 names the tests). Each task writes that test again in the tree as its red step and watches it fail for the claimed reason before fixing.
+
+**Lanes, by file ownership:**
+
+| Lane | Tasks | Owns | Runs |
+|---|---|---|---|
+| H, httpsec refusal logic | 9.1, 9.2, 9.5 | `httpsec/session_renewal.go`, `httpsec/errors.go`, `httpsec/complete.go`, `httpsec/recovery.go`, `httpsec/redemption.go`, their tests, and the `recovery/recover_complete.go` godoc | main tree; Opus, because it is refusal versus outage classification |
+| O, expiry at the spend | 9.3 | `token/onetime/*.go`, `authenticate/oidc/handoff.go`, their tests, and the magic-link HTTP row in `httpsec/magiclink_test.go`, added only after H lands | own worktree; Sonnet |
+| S, family end | 9.4 | `session/reuse.go`, `session/reuse_test.go` | own worktree; Sonnet |
+| R, refactor | 9.6 | `authenticate/password.go`, `recovery/codes.go`, `httpsec/apikey.go`, `httpsec/resolve.go`, `httpsec/bearer.go`, `httpsec/basic.go`, `httpsec/login.go`, `recovery/recover.go`, `token/generator.go`, and `httpsec/session_renewal.go`'s calls | after H, O and S have landed, because it edits files H owns; Sonnet, since it is identical code moved, pinned by existing tests |
+
+9.7 is the main session's: a fresh Opus review of the group-9 diff.
+
+**Review Focus (group 9):**
+1. A link or code checked at its last valid instant and spent at expiry: refused at the spend, since "at and after its expiry" includes the instant itself (9.3).
+2. A consumer generator whose error wraps `authenticate.ErrAuthenticationFailed`, not only `ErrUnavailable`: still 500 (9.2).
+3. A recovery whose issuer fails with a wrapped refusal sentinel: still answered as the recovery endpoint's dependency failure, and not charged (9.2).
+4. `RotateIssuing` (no grace, MFA and re-proof) with a step crossing the family's end: the same refusal as the grace rotation, or a row proving it is already refused (9.4).
+5. A hang-up during the late-renewal load that reached no verdict: still a hang-up, not charged. The existing row must stay green under 9.1's reorder.
+
+### Task 9.1: A verdict wins over a hang-up at renewal (lane H)
+
+**Files:** Modify `httpsec/session_renewal.go` (`renewing`). Test `httpsec/session_bearer_test.go`.
+
+- [ ] **Step 1: Write the failing test.** Add a `TestSessionBearerLateRenewals` row in which the store's load returns `errors.Join(session.ErrReused, ctx.Err())` on a cancelled request. Assert that the error matches `ErrAuthenticationRequired` and `session.ErrReused`, and that exactly one failure is recorded.
+- [ ] **Step 2: Run** `go test -run TestSessionBearerLateRenewals -count=1 ./httpsec/`. Expected FAIL: `"httpsec: the request ended while its session loaded"`, `has 0`.
+- [ ] **Step 3: Implement.** In `renewing`, classify with `refusedRenewal` (or `renewalRefusal`) first, and ask `endedByRequest` only when no refusal was found.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/...`. Expected PASS, Review Focus 5 included.
+
+### Task 9.2: An issuing failure is never a refusal (lane H)
+
+**Files:** Modify `httpsec/complete.go` (`signedTokens`), `httpsec/errors.go` (`StatusForError`), `httpsec/recovery.go` (the recovery issuer), and the `rotationFailure` godoc. Test `httpsec/errors_test.go`, and an issuing-failure table in `httpsec/issuing_keysource_test.go`.
+
+**Interfaces:** Produces an unexported `type issueFailure struct{ err error }` with `Error() string` (fixed library text) and `Unwrap() error`. `signedTokens` and the recovery issuer return `&issueFailure{err}` on failure. `StatusForError` returns 500 when `errors.As(err, new(*issueFailure))`, before it checks the challenge and the table.
+
+- [ ] **Step 1: Write the failing test.** `TestIssuingFailureIsNeverARefusal` is a table over renewal, form login, a magic-link redemption, MFA verification and recovery completion, each with a generator that fails with `fmt.Errorf("kms: %w", authenticate.ErrUnavailable)`, plus one row with `authenticate.ErrAuthenticationFailed` (Review Focus 2 and 3). Assert status 500 through the default mapping, that the cause is reachable with `errors.Is`, and that nothing is charged.
+- [ ] **Step 2: Run** `go test -run TestIssuingFailureIsNeverARefusal -count=1 ./httpsec/`. Expected FAIL: `status=401`.
+- [ ] **Step 3: Implement** the mark and the mapping. The text stays the issuer's existing fixed text.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/...`. Expected PASS.
+
+### Task 9.5: A redemption forgets an issuing failure once a later issue succeeds; the recovery limit is stated (lane H)
+
+**Files:** Modify `httpsec/redemption.go` (`redemptionLogin.issue`) and the `recovery/recover_complete.go` godoc of `WithCredentialIssuer`. Test `httpsec/magiclink_test.go` (`TestRedeemerGuard`).
+
+- [ ] **Step 1: Write the failing test.** Add a `TestRedeemerGuard` row in which a redeemer's first issue fails, a retried issue succeeds, and it then fails with `errors.Join(firstErr, ErrInvalidLink)`. Assert one failure charged.
+- [ ] **Step 2: Run.** Expected FAIL: `expected: 1 actual: 0`.
+- [ ] **Step 3: Implement** `r.out.issueErr = nil` once the issue succeeds. Godoc: a recovery slower than its session's lifetime stores an expired session; the response still carries the new saved codes.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./recovery/...`. Expected PASS. Commit lane H as one commit per task.
+
+### Task 9.3: Expiry judged at the spend (lane O)
+
+**Files:** Modify `token/onetime/tokens.go` (`Tokens.Consume`) and `authenticate/oidc/handoff.go` (`Handoff.Redeem`, before `store.Consume`). Test `token/onetime/*_test.go` and `authenticate/oidc/*_test.go`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestTokens_ConsumeRefusesExpiredToken`: a 60 s token, checked at +59 s, with the clock at +61 s at consume → `ErrInvalidToken`, and still unspent, so a re-check at +61 s is refused as expired, not as consumed. A row consumed at exactly +60 s is refused too (Review Focus 1).
+  - `TestHandoff_RedeemRefusesCodeExpiredDuringChecks`: a check advances the clock past expiry → the invalid-handoff outcome, and the record is not consumed.
+  - Magic link: an `authenticate/magiclink` row through `Redeem` with an advancing check.
+- [ ] **Step 2: Run** `go test -run 'Expired' -count=1 ./token/onetime/ ./authenticate/oidc/ ./authenticate/magiclink/`. Expected FAIL: `got nil`.
+- [ ] **Step 3: Implement.** `Tokens.Consume` compares `!now.Before(c.token.ExpiresAt)` with the clock it reads. `Redeem` re-reads `h.clock.Now()` and refuses as `"expired"` before `store.Consume`. Update the godoc of both.
+- [ ] **Step 4: Run** `go test -race -count=1 ./token/... ./authenticate/...`. Expected PASS. Commit.
+
+### Task 9.4: A step that outlives the family stores nothing (lane S)
+
+**Files:** Modify `session/reuse.go` (`RotateWithGraceIssuing`, and `RotateIssuing` if it has the same gap). Test `session/reuse_test.go`.
+
+- [ ] **Step 1: Write the failing tests.** In `TestRotateWithGraceIssuing`, one row with no grace and one with a family maximum lowered by a second manager over the same store: the family ends at 21:00:00, the rotation starts at 20:59:50, and the step ends at 21:00:05. Expect `session.ErrExpired`, nothing stored, and no `Supersede`. Add the same row for `RotateIssuing` (Review Focus 4); if it already passes, keep it as a pin and say so.
+- [ ] **Step 2: Run** `go test -run 'TestRotate' -count=1 ./session/`. Expected FAIL: `An error is expected but got nil`.
+- [ ] **Step 3: Implement.** After the step, `if !m.clock.Now().Before(familyEnd) { return ..., ErrExpired }`, ahead of the grace-window check.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/... ./httpsec/...`. Expected PASS. Commit.
+
+### Task 9.6: One copy of the hang-up predicate and of the signer text (lane R, after H, O and S)
+
+**Files:** listed in the lane table. No new tests: the existing hang-up and outage suites pin the behaviour.
+
+- [ ] **Step 1:** Replace `authenticate.causedByCaller`, `recovery.causedByCaller` and `httpsec.ownerLoadEndedByCaller` with `hangup.ByCaller`. Replace calls to `httpsec.endedByRequest` and `recovery.loadEndedByCaller` with direct calls. `httpsec.loadEndedByCaller` keeps its precondition. In `token/generator.go`, define `const textSignerUnavailable = "token: signing key unavailable"`, used by `diag.Wrap` and by `errSignerUnavailable`.
+- [ ] **Step 2: Run** `go test -race -count=1 ./...`, `golangci-lint run ./...` and `go vet ./...`. Expected PASS with no test edited.
+- [ ] **Step 3: Commit** `refactor: one hang-up predicate and one signer-unavailable text`.
+
+### Task 9.7: Review (main session)
+
+- [ ] Run each lane's verification commands. Then a fresh Opus reviewer checks the group-9 diff against D7, D8 and the four deltas. Findings go back to a fresh dispatch of the lane. Then run `openspec validate key-port-context --strict`, re-run 7.1 (`make check`, and CI green on the final head), and tick.

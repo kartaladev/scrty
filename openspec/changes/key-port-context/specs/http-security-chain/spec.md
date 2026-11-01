@@ -206,7 +206,7 @@ The source throttle step SHALL expose the check before guarded work and the fail
 ### Requirement: The renewal endpoint rotates the presented session with a grace window
 When enabled, the renewal endpoint SHALL answer `POST` on its path, `/session/renewal` by default, for an authenticated request with a session, by rotating that session with the grace window, 30 seconds by default. It SHALL answer through a responder, replaceable by the consumer, given the successor, the user and the renewal kind. The default SHALL be 200 with the credential and `Cache-Control: no-store`. Other requests SHALL pass through.
 
-The successor's credential SHALL be issued before the rotation is stored. When it cannot be issued, the renewal SHALL fail as a dependency failure, not as a refusal, and SHALL store, supersede and revoke nothing, so the presented credential keeps the standing it had.
+The successor's credential SHALL be issued before the rotation is stored. When it cannot be issued, the renewal SHALL fail as a dependency failure, not as a refusal, whatever the issuer's error wraps, and SHALL store, supersede and revoke nothing, so the presented credential keeps the standing it had. Every path that issues a credential SHALL answer an issuing failure so.
 
 The endpoint's reload of the session's user SHALL refuse a user who no longer exists with the authentication-required error. Any other reload failure is a dependency failure: it SHALL fail the request with fixed library text that keeps the loader's error reachable, and SHALL NOT be answered with the authentication-required error. A reload the request's own context ended SHALL fail with an error that matches that context's error, and SHALL NOT be answered with the authentication-required error.
 
@@ -235,6 +235,10 @@ The endpoint's reload of the session's user SHALL refuse a user who no longer ex
 - **WHEN** a live session posts to the renewal path in signed-token mode, and the key source fails when the successor's token is issued
 - **THEN** the renewal fails as a dependency failure, not as a refusal, and nothing is superseded
 - **AND** 31 seconds later the same credential still authenticates and renews, and no reuse is reported
+
+#### Scenario: An issuer error that wraps a refusal is still a dependency failure
+- **WHEN** the consumer's token generator fails with an error that wraps an error the default status mapping answers with 401, at renewal or at login
+- **THEN** the default mapping answers 500, and the issuer's error stays reachable from the returned error
 
 #### Scenario: User store outage at renewal
 - **WHEN** a live session posts to the renewal path, and the user loader fails with an error that is not identifiable as "user not found"
@@ -265,7 +269,7 @@ The session-reference bearer SHALL, by default, refuse a request before any stor
 - **THEN** each request fails as a dependency failure, and none is refused by the guard
 
 ### Requirement: Refused late renewals count against the source
-In the session-reference mode, a late credential let through to the renewal endpoint under unused-successor recovery, which the endpoint then refuses as expired, not found or reused, SHALL be recorded against its source as a refused reference is. One the endpoint renews SHALL NOT be recorded. One that fails as a dependency failure, or whose request's own context ended, SHALL NOT be recorded.
+In the session-reference mode, a late credential let through to the renewal endpoint under unused-successor recovery, which the endpoint then refuses as expired, not found or reused, SHALL be recorded against its source as a refused reference is. One the endpoint renews SHALL NOT be recorded. One that fails as a dependency failure, or whose request's own context ended before the load reached a verdict, SHALL NOT be recorded. A load that reached a refusal SHALL be refused and recorded even when the request's own context has ended by then.
 
 #### Scenario: Refused late renewals count against the source
 - **WHEN** unused-successor recovery is on, and one source posts 100 late renewals within a minute that the endpoint refuses, and then another late renewal
@@ -278,6 +282,11 @@ In the session-reference mode, a late credential let through to the renewal endp
 #### Scenario: A late renewal during an outage spends nothing
 - **WHEN** unused-successor recovery is on, and a late renewal fails because the session store fails with an error that is not a refusal
 - **THEN** nothing is recorded against its source
+
+#### Scenario: A refusal wins over a client that leaves
+- **WHEN** unused-successor recovery is on, and the endpoint's load of a late renewal reports the session reused while the request's context has been cancelled
+- **THEN** the renewal is refused with the authentication-required error, matching the reused-session error
+- **AND** one failure is recorded against its source
 
 ### Requirement: A resolved session authenticates only its own, active user
 Signed bearer tokens, session references and the renewal endpoint, including a late renewal, SHALL refuse with the authentication-required error when the reloaded user's identifier differs from the user reference the session records, or when the reloaded user is not active. A refused session SHALL NOT be revoked by the refusal; it authenticates again if its user is re-enabled before it expires. A reload that fails for any reason other than the user not being found is not this refusal: each of these paths answers it as a dependency failure, or, when the request's own context ended, with that context's error.
