@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -24,8 +25,11 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // errMagicLinkDenied is what a consumer's policy refuses these redemptions
@@ -1885,4 +1889,111 @@ func TestMagicLink_ChallengeStoresMarkedSessionOnceAfterConsume(t *testing.T) {
 	assert.Equal(t, session.MFAPending, created[0].MFA, "the creating write carries the mark")
 	assert.Zero(t, saves, "no later save was needed to record the mark")
 	require.ErrorIs(t, probe, magiclink.ErrInvalidLink, "the link was spent before the session was stored")
+}
+
+// lastReadStore is a one-time token store that remembers the identifier of the
+// record it was last asked for, so a test can read back the record a
+// redemption touched and see whether it was spent.
+type lastReadStore struct {
+	*onetime.MemoryStore
+
+	mu   sync.Mutex
+	last id.ID
+}
+
+func (s *lastReadStore) FindByID(ctx context.Context, tokenID id.ID) (*onetime.Token, error) {
+	s.mu.Lock()
+	s.last = tokenID
+	s.mu.Unlock()
+
+	return s.MemoryStore.FindByID(ctx, tokenID)
+}
+
+// spent reports whether the record the store was last asked for is consumed.
+func (s *lastReadStore) spent(t *testing.T) bool {
+	t.Helper()
+
+	s.mu.Lock()
+	tokenID := s.last
+	s.mu.Unlock()
+
+	rec, err := s.MemoryStore.FindByID(t.Context(), tokenID)
+	require.NoError(t, err)
+
+	return !rec.ConsumedAt.IsZero()
+}
+
+// TestMagicLink_LinkExpiringWhileCredentialIssuedIsRefusedUnspent pins that a
+// link is spent only before it expires, judged at the spend: the credential is
+// issued between the check and the consume, and a link whose expiry passes
+// while it is signed is refused as an invalid link, stores no session, stays
+// unspent and costs its source one recorded failure, as any other refusal does.
+func TestMagicLink_LinkExpiringWhileCredentialIssuedIsRefusedUnspent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ttl      = time.Minute
+		tookTime = 2 * time.Second
+	)
+
+	tests := map[string]struct {
+		// waited is how long the link sits before it is redeemed, and
+		// failures the number the source limiter is expected to record.
+		waited   time.Duration
+		failures int
+		assert   func(t *testing.T, h *magicLinkHarness, store *lastReadStore, out served)
+	}{
+		"expires while the credential is issued": {
+			waited:   59 * time.Second,
+			failures: 1,
+			assert: func(t *testing.T, h *magicLinkHarness, store *lastReadStore, out served) {
+				require.ErrorIs(t, out.err, magiclink.ErrInvalidLink)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan, "the application never sees the redemption")
+				assert.Zero(t, h.activeSessions(t), "no session is stored")
+				assert.False(t, store.spent(t), "the link stays unspent")
+			},
+		},
+		"still live when the credential is issued": {
+			waited:   10 * time.Second,
+			failures: 0,
+			assert: func(t *testing.T, h *magicLinkHarness, store *lastReadStore, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, 1, h.activeSessions(t))
+				assert.True(t, store.spent(t), "the redemption spent it")
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+			store := &lastReadStore{MemoryStore: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))}
+
+			h := newMagicLinkHarness(t)
+			onetimes := must.Must(onetime.New("magic-link",
+				onetime.WithClock(clk), onetime.WithStore(store), onetime.WithTokenTTL(ttl)))
+			h.manager = must.Must(magiclink.New(onetimes, h.users, h.sender, "https://app.example.com"))
+
+			// The generator is the step between the check and the consume: it
+			// takes tookTime of the link's clock to sign.
+			h.tokens = NewMockGenerator(gomock.NewController(t))
+			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
+					clk.Advance(tookTime)
+
+					return "issued-token", nil
+				})
+
+			h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, tc.failures)))
+			c := h.chain(t)
+
+			token, nonce := h.link(t, c)
+			clk.Advance(tc.waited)
+
+			tc.assert(t, h, store, h.redeem(t, c, token, nonce))
+		})
+	}
 }

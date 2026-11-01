@@ -525,6 +525,10 @@ func defaultRenderer(link, _ string) notify.Message {
 // asked for the link. It is ignored when WithSameDeviceBinding(false) was
 // given.
 //
+// Expiry is judged again at the spend: a link whose expiry passes while the
+// checks run, a slow check or the step that issues the caller's credential
+// included, is refused as ErrInvalidLink and stays unspent.
+//
 // Every failure except a consumer check's is ErrInvalidLink: a caller cannot
 // tell a wrong token from a disabled user from a store outage. A consumer
 // check's error is returned unchanged.

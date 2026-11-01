@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -1907,4 +1908,110 @@ func TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode(t *testing.T) {
 
 	again := serve(t, c, handoffRequest(t.Context(), oidcAnotherSource, code))
 	require.ErrorIs(t, again.err, oidc.ErrInvalidHandoff, "the redemption that succeeded spent it")
+}
+
+// lastReadHandoffStore is a handoff store that remembers the identifier of the
+// record it was last asked for, so a test can read back the record a
+// redemption touched and see whether it was consumed.
+type lastReadHandoffStore struct {
+	*oidc.MemoryHandoffStore
+
+	mu   sync.Mutex
+	last string
+}
+
+func (s *lastReadHandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc.HandoffRecord, error) {
+	s.mu.Lock()
+	s.last = tokenID
+	s.mu.Unlock()
+
+	return s.MemoryHandoffStore.FindByTokenID(ctx, tokenID)
+}
+
+// consumed reports whether the record the store was last asked for is consumed.
+func (s *lastReadHandoffStore) consumed(t *testing.T) bool {
+	t.Helper()
+
+	s.mu.Lock()
+	tokenID := s.last
+	s.mu.Unlock()
+
+	rec, err := s.MemoryHandoffStore.FindByTokenID(t.Context(), tokenID)
+	require.NoError(t, err)
+
+	return rec.ConsumedAt != nil
+}
+
+// TestOIDCHandoff_CodeExpiringWhileCredentialIssuedIsRefusedUnconsumed pins
+// that a code is spent only before it expires, judged at the spend: the
+// credential is issued between the code's check and its consume, and a code
+// whose expiry passes while it is signed is refused as an invalid handoff,
+// creates no session, stays unconsumed and costs its source one recorded
+// failure, as any other refusal does.
+func TestOIDCHandoff_CodeExpiringWhileCredentialIssuedIsRefusedUnconsumed(t *testing.T) {
+	t.Parallel()
+
+	const signTook = 2 * time.Second
+
+	tests := map[string]struct {
+		// waited is how long the code sits before it is redeemed, and
+		// failures the number the source limiter is expected to record.
+		waited   time.Duration
+		failures int
+		assert   func(t *testing.T, h *oidcHarness, store *lastReadHandoffStore, out served)
+	}{
+		"expires while the credential is issued": {
+			waited:   oidc.HandoffTTL - time.Second,
+			failures: 1,
+			assert: func(t *testing.T, h *oidcHarness, store *lastReadHandoffStore, out served) {
+				require.ErrorIs(t, out.err, oidc.ErrInvalidHandoff)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan, "the application never sees the redemption")
+				assert.Zero(t, h.activeSessions(t), "no session is created")
+				assert.False(t, store.consumed(t), "the code stays unconsumed")
+			},
+		},
+		"still live when the credential is issued": {
+			waited:   10 * time.Second,
+			failures: 0,
+			assert: func(t *testing.T, h *oidcHarness, store *lastReadHandoffStore, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, 1, h.activeSessions(t))
+				assert.True(t, store.consumed(t), "the redemption consumed it")
+			},
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+			store := &lastReadHandoffStore{MemoryHandoffStore: oidc.NewMemoryHandoffStore()}
+
+			users := NewMockUserLoader(gomock.NewController(t))
+			users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
+				Return(&identity.Details{ID: oidcTestUserID, Username: "ada@example.com", Active: true}, nil)
+
+			h := newOIDCHarness(t)
+			h.handoffs = must.Must(oidc.NewHandoff(store, users, oidc.WithHandoffClock(clk)))
+
+			// The generator is the step between the check and the consume: it
+			// takes signTook of the handoff's clock to sign.
+			h.tokens = NewMockGenerator(gomock.NewController(t))
+			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
+					clk.Advance(signTook)
+
+					return "issued-token", nil
+				})
+
+			code := h.issueHandoff(t, "")
+			clk.Advance(tc.waited)
+
+			c := h.chain(t, httpsec.WithOIDCHandoffLimiter(countingLimiter(t, tc.failures)))
+
+			tc.assert(t, h, store, serve(t, c, handoffRequest(t.Context(), oidcTestSource, code)))
+		})
+	}
 }

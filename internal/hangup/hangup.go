@@ -2,10 +2,18 @@
 //
 // A request or call whose own context ended before a dependency answered is a
 // hang-up: no verdict was reached, so it is not a refusal, and nothing failed,
-// so it is not an outage. The paths that tell a hang-up apart for verification,
-// resolution, renewal, the authentication provider, and the password and
-// recovery loads ask ByCaller, so they agree on what one is. Other checks
-// keep their own copies of the decision.
+// so it is not an outage. Every path that tells a hang-up apart asks ByCaller,
+// so they agree on what one is:
+//
+//   - the password provider's user load and the JWT provider's key
+//     verification;
+//   - the HTTP chain's identity resolution, bearer verification, API key owner
+//     load, session renewal's load and the login password load;
+//   - the recovery flows' password load, user lookups and credential issuing,
+//     and the saved codes' failure logging, which write a hang-up at debug
+//     level instead of error.
+//
+// Other checks keep their own copies of the decision.
 package hangup
 
 import (
