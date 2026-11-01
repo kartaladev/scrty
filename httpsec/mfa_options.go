@@ -30,6 +30,12 @@ type MFAOption func(*mfaInterceptor) error
 // errors.As but not repeated in the text. None of these is counted against the
 // verification limiter.
 //
+// The caller must be the pending session's user. A consumer interceptor past
+// the first factor that published another principal is refused with
+// ErrAuthenticationRequired (401) before the throttle, the code check and the
+// post-authentication re-judgement, so nothing is counted, verified or judged
+// for the substituted principal and the session stays pending.
+//
 // A method that is an mfa.ChallengeMethod also has a begin step: a POST to
 // the begin prefix, "/" and its name ("/mfa/begin/<name>" by default) makes
 // the same refusals, is refused while the user's verification is throttled,
@@ -45,7 +51,10 @@ type MFAOption func(*mfaInterceptor) error
 //
 // The policies that raise the challenge must be built from the same methods,
 // through mfa.LookupsFor(methods...), so the endpoint never refuses a method a
-// policy offered or accepts one it did not.
+// policy offered or accepts one it did not. Verification judges the
+// post-authentication phase again once the code is valid, so a requirement
+// policy whose lookups do not read the enrolment just bound sends an
+// enrolment-upgraded session back to enrolment there.
 //
 // Defaults: the verify prefix is DefaultMFAVerifyPrefix
 // (WithMFAVerifyPrefix); failed verifications are counted per user reference,
@@ -83,6 +92,24 @@ type MFAOption func(*mfaInterceptor) error
 // verification of the same session, through this server or any other manager
 // sharing the session store, is refused with ErrSessionRenewalConflict (409)
 // inside the winner's in-flight window.
+//
+// After a valid code and before the rotation, verification judges the chain's
+// post-authentication phase again, with the input a login of the session's
+// user on its first factor builds, saying the second factor is satisfied
+// (policy.Input.MFASatisfied) and that the session already exists
+// (policy.Input.Reauthenticating), since it is counted and verification adds
+// none. The phase returns its first challenge only, so at login a challenge
+// registered after the second-factor policy was hidden behind it; this is
+// where it surfaces. A deny refuses verification with the policy's reason and
+// leaves the session pending under the caller's credential, counting nothing.
+// A challenge of another kind is completed as a login completes one: the
+// session is satisfied, rotated and marked with it before its credential is
+// issued, and verification is refused with a *ChallengeError of that kind
+// carrying the rotated session and its credential (a kind nothing on the
+// chain enforces refuses first, writing nothing). A second-factor challenge is
+// dropped, the factor being the one just presented. The default is on, with
+// no option: a consumer policy that should judge verification differently
+// reads MFASatisfied and Reauthenticating.
 //
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.

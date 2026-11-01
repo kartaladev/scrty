@@ -67,3 +67,20 @@ func raisedChallengeRefusal(ex *Exchange, s *session.Session) error {
 
 	return nil
 }
+
+// requireSessionUser refuses with ErrAuthenticationRequired a request whose
+// resolved caller is not s's user: a consumer interceptor past the first factor
+// published another principal. The second-factor verification and the
+// second-factor re-proof both make it before anything is counted, verified or
+// judged, so neither throttles, checks a code, or judges the post-authentication
+// phase for a principal that is not the one the session belongs to.
+//
+// It reads the caller the endpoint's admission has already required, so it
+// is called after that admission and never on its own.
+func requireSessionUser(ex *Exchange, s *session.Session) error {
+	if ex.Authentication.Principal.ID != s.UserID {
+		return ErrAuthenticationRequired
+	}
+
+	return nil
+}
