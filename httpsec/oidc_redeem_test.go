@@ -676,6 +676,8 @@ func TestOIDCRedeemRacing(t *testing.T) {
 			continue
 		}
 
+		// The loser branch only runs under a regression, such as issuing
+		// after the spend; with the spend first, only the winner names one.
 		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired,
 			"a loser's credential names a session that was never stored")
 		assert.False(t, out.handlerRan)

@@ -30,13 +30,14 @@ func (s signerDown) Signer(context.Context, signingkey.Alg) (string, crypto.Sign
 	return "", nil, s.err
 }
 
-// TestFormLogin_KeySourceFailureWritesNoKeySourceText pins that a login whose
+// TestFormLogin_KeySourceFailureAnswerCarriesNoKeySourceText pins that a login whose
 // token cannot be issued because the key source behind the real generator
 // fails, writes no log record carrying the key source's text, and is answered
 // as a dependency failure with the key source's error still reachable. The
 // generator is real, because the text the key source's error reaches the chain
-// with is the generator's to wrap.
-func TestFormLogin_KeySourceFailureWritesNoKeySourceText(t *testing.T) {
+// with is the generator's to wrap. What it pins is the text of the answer:
+// form login writes no record at all for this failure.
+func TestFormLogin_KeySourceFailureAnswerCarriesNoKeySourceText(t *testing.T) {
 	t.Parallel()
 
 	errKMS := errors.New("kms: arn:aws:kms:eu-west-1:111122223333:key/abcd is unavailable")

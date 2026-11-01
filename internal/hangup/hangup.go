@@ -2,8 +2,10 @@
 //
 // A request or call whose own context ended before a dependency answered is a
 // hang-up: no verdict was reached, so it is not a refusal, and nothing failed,
-// so it is not an outage. Every path in scrty that tells a hang-up apart asks
-// ByCaller, so they agree on what one is.
+// so it is not an outage. The paths that tell a hang-up apart for verification,
+// resolution, renewal, the authentication provider, and the password and
+// recovery loads ask ByCaller, so they agree on what one is. Other checks
+// keep their own copies of the decision.
 package hangup
 
 import (

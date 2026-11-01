@@ -1435,6 +1435,39 @@ func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
 			},
 		},
 		{
+			// ctx ending, with a cause, beside a failure that is neither the
+			// context's error nor its cause is the verifier failing on its own.
+			name: "the client left with a cause, but the verifier failed on its own",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errClientGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("kms down"))
+
+				return v
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				assert.NotErrorIs(t, out.err, errClientGone)
+				assert.NotEqual(t, "httpsec: the request ended while its token was verified", out.err.Error(),
+					"an unrelated failure was answered as the client leaving")
+				assert.Equal(t, "httpsec: verification keys unavailable", out.err.Error())
+				assert.False(t, out.handlerRan)
+
+				var errored bool
+				for _, r := range h.logs.records() {
+					errored = errored || r.Level >= slog.LevelError
+				}
+				assert.True(t, errored, "an outage that landed beside a hang-up wrote no ERROR record")
+			},
+		},
+		{
 			// The verifier reached a verdict, and the context ending beside it
 			// does not take the verdict back: a rejection is classified before
 			// a hang-up.

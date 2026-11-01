@@ -525,6 +525,34 @@ func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 			},
 		},
 		{
+			// ctx ending, with a cause, beside a failure that is neither the
+			// context's error nor its cause is the verifier failing on its own.
+			name: "the caller left with a cause, but the verifier failed on its own",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("kms down"))
+
+				return v
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, errCallerGone)
+				assert.NotEqual(t, "authenticate: the caller left while the token was verified", err.Error(),
+					"an unrelated failure was answered as the caller leaving")
+				assert.Equal(t, "authenticate: verification keys unavailable", err.Error())
+			},
+		},
+		{
 			// The verifier reached a verdict, and the context ending beside it
 			// does not take the verdict back: a rejection is classified before
 			// a hang-up.

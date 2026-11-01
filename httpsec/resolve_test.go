@@ -554,6 +554,22 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 		}
 	}
 
+	// failedBesideHangUp asserts an unrelated dependency failure that lands
+	// while the client leaves: it is an outage, answered with the library's
+	// outage text, never taken for the hang-up. Resolution writes no record
+	// for either case: it returns the failure for the error handler to log.
+	failedBesideHangUp := func(text string) func(t *testing.T, h *authHarness, out served, cause error) {
+		return func(t *testing.T, _ *authHarness, out served, _ error) {
+			t.Helper()
+
+			require.Error(t, out.err)
+			assert.Equal(t, text, out.err.Error(),
+				"a dependency failing on its own was answered as the client leaving")
+			assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+			assert.False(t, out.handlerRan)
+		}
+	}
+
 	var cases []testCase
 
 	for _, a := range resolvingAuthenticators() {
@@ -578,6 +594,20 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 					loadHangsUp(h, a.sessionID, hangUp)
 				},
 				assert: hungUp(textSessionLoadEnded),
+			},
+			testCase{
+				name:    a.name + "/the session store fails on its own as the client leaves",
+				options: options,
+				request: get,
+				wire: func(h *authHarness, hangUp context.CancelFunc) {
+					h.store.EXPECT().Load(gomock.Any(), a.sessionID).
+						DoAndReturn(func(context.Context, string) (*session.Session, error) {
+							hangUp()
+
+							return nil, errors.New("kms down")
+						})
+				},
+				assert: failedBesideHangUp(textSessionNotResolved),
 			},
 			testCase{
 				name:    a.name + "/the client leaves while the user reloads",
