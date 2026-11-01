@@ -102,6 +102,14 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // token failed. Joining rather than wrapping keeps both matchable without
 // deciding which of the two is the "real" error.
 //
+// A caller whose own context ended while the token was verified, the
+// verifier failing with that context's error, is neither refused nor an
+// outage: no verdict was reached, and nothing failed. It is returned behind
+// fixed library text of its own, matching the context's error, and it does not
+// match ErrAuthenticationFailed. It is told by ctx itself, never by the error
+// alone: a key source that times out on a deadline of its own while ctx is
+// still live is an outage.
+//
 // Any other verification error, a key source that could not supply the
 // verification keys above all, is not a refusal: the check never happened. It
 // is returned behind fixed library text, with the verifier's error, and through
@@ -122,6 +130,9 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 	if err != nil {
 		if errors.Is(err, token.ErrInvalid) {
 			return nil, errors.Join(ErrAuthenticationFailed, err)
+		}
+		if callerLeft(ctx, err) {
+			return nil, diag.Wrap(err, textCallerLeftDuringVerification, ctx.Err())
 		}
 
 		return nil, diag.Wrap(err, textVerificationKeysUnavailable)
@@ -173,10 +184,23 @@ func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 	return generated, nil
 }
 
-// textVerificationKeysUnavailable is the text a verification that could not
-// happen is returned with: a key source's own text may name the key it could
-// not reach.
-const textVerificationKeysUnavailable = "authenticate: verification keys unavailable"
+// callerLeft reports whether the caller's own context ended and err is that
+// context's error: a hang-up, rather than a dependency that failed or timed
+// out on a deadline of its own while the caller still waited.
+func callerLeft(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil && errors.Is(err, ctxErr)
+}
+
+// The texts a verification that did not happen is returned with: a key
+// source's own text may name the key it could not reach. A caller that left
+// has text of its own, so a consumer that logs by text does not report it as
+// a key outage.
+const (
+	textVerificationKeysUnavailable  = "authenticate: verification keys unavailable"
+	textCallerLeftDuringVerification = "authenticate: the caller left while the token was verified"
+)
 
 var _ Authenticator = (*JWTAuthenticator)(nil)
 

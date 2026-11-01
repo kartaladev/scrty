@@ -143,11 +143,19 @@ type KeySource interface {
 	//
 	// A source that holds no key for alg returns an error matching ErrNoKey,
 	// rather than substituting another algorithm; issuing then fails as "no
-	// current key for the algorithm". Any other error means the source could
-	// not answer — an outage — and issuing fails with it behind fixed library
-	// text, never reported as a missing key. So does a nil signer returned
-	// with a nil error. Whichever it is, the endpoint that was issuing answers
-	// a dependency failure, not a refusal.
+	// current key for the algorithm". An error matching ErrNoKey is reported
+	// as a missing key whatever else it wraps, so a source that cannot tell
+	// whether it holds the key must not wrap ErrNoKey into its outage. Any
+	// other error means the source could not answer — an outage — and issuing
+	// fails with it behind fixed library text, never reported as a missing
+	// key. So does a nil signer returned with a nil error. Whichever it is,
+	// the endpoint that was issuing answers a dependency failure, not a
+	// refusal.
+	//
+	// The library guards only against a nil signer. A non-nil signer whose
+	// own methods panic, a wrapper around a nil key for example, is the
+	// implementation's to fix: the library neither recovers nor translates
+	// the panic.
 	//
 	// The signer serves the one issuance ctx belongs to. The generator asks
 	// for a signer once for each token and never keeps or reuses it, so an

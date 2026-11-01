@@ -437,3 +437,102 @@ func TestJWTProvider_KeySourceOutage(t *testing.T) {
 		})
 	}
 }
+
+// TestJWTProvider_CallerLeavesDuringVerification pins that a caller whose
+// own context ended while the token was verified is neither refused nor
+// reported as a key outage: the error matches the context's error, behind
+// fixed text of its own. A key source that times out on a deadline of its own
+// while the caller still waits is an outage all the same. Real keys, a real
+// generator and a real verifier are used, because the JOSE stack checks the
+// context itself.
+func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://issuer.example"
+		audience = "orders-api"
+	)
+
+	type testCase struct {
+		name string
+
+		// ctx modifies the caller's context; nil leaves it live.
+		ctx func(ctx context.Context) context.Context
+
+		// verifyingWith is the key source the provider's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(signedBy *signingkey.Keys) signingkey.KeySource
+
+		assert func(t *testing.T, got *authenticate.Authentication, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "the caller left before the token was verified",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource { return signedBy },
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a caller that left was answered as a refused token")
+				assert.Equal(t, "authenticate: the caller left while the token was verified", err.Error(),
+					"a caller that left is not reported as a key outage")
+			},
+		},
+		{
+			name: "a key source that times out of its own while the caller waits is an outage",
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource {
+				return verificationKeysDown{KeySource: signedBy, err: context.DeadlineExceeded}
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.DeadlineExceeded, "the key source's error stays reachable")
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, "authenticate: verification keys unavailable", err.Error())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys, token.WithIssuer(issuer), token.WithAudience(audience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), tokenID.String(), &identity.Principal{ID: "u-1", Username: "ada"})
+			require.NoError(t, err)
+
+			verifier, err := token.NewVerifier(
+				token.WithVerifyKeySource(tc.verifyingWith(keys)),
+				token.WithVerifyIssuer(issuer),
+				token.WithVerifyAudience(audience),
+			)
+			require.NoError(t, err)
+
+			auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(verifier))
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			got, err := auth.Authenticate(ctx, authenticate.NewBearerToken(tok))
+			tc.assert(t, got, err)
+		})
+	}
+}

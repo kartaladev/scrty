@@ -1326,3 +1326,122 @@ func TestBearer_KeySourceOutageIsNotARefusal(t *testing.T) {
 		})
 	}
 }
+
+// TestBearer_HangUpDuringVerificationIsNotAnOutage pins that a request whose
+// own context ended while its token was verified is neither refused nor
+// reported as a key outage: it fails with an error matching the context's
+// error, behind fixed text of its own, and writes no ERROR record. A key
+// source that times out on a deadline of its own while the request is still
+// live is an outage all the same. Real keys, a real generator and a real
+// verifier are used, because the JOSE stack checks the context itself.
+func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// ctx modifies the request's own context; nil leaves it live.
+		ctx func(ctx context.Context) context.Context
+
+		// verifyingWith is the key source the bearer's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(signedBy *signingkey.Keys) signingkey.KeySource
+
+		assert func(t *testing.T, h *authHarness, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "the client left before the token was verified",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource { return signedBy },
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, context.Canceled)
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"a client that left was answered as a refused token")
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its token was verified", out.err.Error(),
+					"a client that left is not reported as a key outage")
+				assert.False(t, out.handlerRan)
+
+				for i, r := range h.logs.records() {
+					reason, _ := attrValue(r, "reason")
+					assert.NotEqual(t, "verification-keys", reason.String(),
+						"record %d reports a key outage", i)
+					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
+						i, r.Level, r.Message)
+					assert.NotContains(t, recordText(r), context.Canceled.Error(),
+						"record %d carries the error's text", i)
+				}
+			},
+		},
+		{
+			name: "a key source that times out of its own while the request waits is an outage",
+			verifyingWith: func(signedBy *signingkey.Keys) signingkey.KeySource {
+				return verificationKeysDown{KeySource: signedBy, err: context.DeadlineExceeded}
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, context.DeadlineExceeded, "the key source's error stays reachable")
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: verification keys unavailable", out.err.Error())
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+
+				r := assertFailureRecord(t, h.logs.records(), "verification-keys")
+				assert.Equal(t, slog.LevelError, r.Level, "an outage is visible to an operator")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys,
+				token.WithIssuer(keySourceTestIssuer), token.WithAudience(keySourceTestAudience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testSubject})
+			require.NoError(t, err)
+
+			verifier, err := token.NewVerifier(
+				token.WithVerifyKeySource(tc.verifyingWith(keys)),
+				token.WithVerifyIssuer(keySourceTestIssuer),
+				token.WithVerifyAudience(keySourceTestAudience),
+			)
+			require.NoError(t, err)
+
+			// No expectation on the store or the loader: a token that was not
+			// verified names nothing worth looking up.
+			h := newAuthHarness(t)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+					Verifier: verifier, Sessions: h.sessions, Users: h.users,
+				}),
+			)
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			tc.assert(t, h, serveIn(ctx, t, chain, bearerRequest(ctx, "Bearer "+tok)))
+		})
+	}
+}

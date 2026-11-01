@@ -75,7 +75,8 @@ func (b *bearerToken) wire(c *Chain) {
 // signature, wrong audience), which is what an operator chasing a rejected
 // client needs, and it is the library's protocol-failure text rather than a
 // store's. A token that could not be checked because the verification keys
-// were unavailable is a dependency failure (notVerified). Every dependency
+// were unavailable is a dependency failure, and one whose request ended while
+// it was verified is a hang-up, neither refused nor an outage (notVerified). Every dependency
 // failure that is recorded is recorded by a fixed reason and its error's Go
 // type, never its text, and every one returned comes back behind fixed text,
 // its error still matching through errors.Is and errors.As. A consumer who
@@ -111,6 +112,14 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 // matches the one uniform failure. The cause reaches the record, never the
 // client.
 //
+// A request whose own context ended while its token was verified, and whose
+// err is that context's error (endedByRequest), is a hang-up: neither a
+// refusal, since no verdict was reached, nor an outage, since nothing failed.
+// It is returned behind fixed text of its own, matching the context's error,
+// and recorded at debug with no error text. It is told by the request's own
+// context, never by err alone: a key source that times out on a deadline of
+// its own while the request still waits is an outage.
+//
 // Anything else, a key source that could not supply the keys above all, is a
 // dependency failure: the check never happened, and answering it as a refused
 // token would send every client back to authenticate during an outage. It is
@@ -127,6 +136,12 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
 
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
+	}
+
+	if endedByRequest(ctx, err) {
+		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerVerificationEnded)
+
+		return diag.Wrap(err, textVerificationEnded, ctx.Err())
 	}
 
 	logSampled(ctx, b.sampler, b.log, slog.LevelError, b.now(),
@@ -195,6 +210,14 @@ const (
 	textVerificationKeysUnavailable = "httpsec: verification keys unavailable"
 )
 
+// What a bearer token whose request ended while it was verified is recorded
+// and returned with. The text is its own, so an error handler that logs by
+// text does not report a client that left as a key outage.
+const (
+	msgBearerVerificationEnded = "httpsec: the request ended while its bearer token was verified" //nolint:gosec // G101: a log message naming what happened, not a credential
+	textVerificationEnded      = "httpsec: the request ended while its token was verified"
+)
+
 // BearerTokenDeps are the collaborators bearer authentication is wired to.
 //
 // All three are required. The session manager and the user loader are what make
@@ -237,7 +260,10 @@ type BearerTokenOption func(*bearerToken) error
 // another answer, 503 with Retry-After for example, matches the cause in the
 // handler given to WithErrorHandler. A request whose own context ended while
 // its session loaded or its user reloaded fails with an error matching that
-// context's error, and is neither refused nor reported as an outage.
+// context's error, and is neither refused nor reported as an outage; so does
+// one whose context ended while its token was verified, with fixed text of
+// its own and no ERROR record. A verification key source that times out on a
+// deadline of its own while the request is still live is an outage.
 //
 // A token the verifier rejects is recorded at debug with the verifier's own
 // text, kept on purpose: it is the library's own protocol-failure text, not a

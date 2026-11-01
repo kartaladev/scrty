@@ -1722,6 +1722,27 @@ func TestSessionReferenceGuard_ChargesRefusalsOnly(t *testing.T) {
 			assert: chargedOnce,
 		},
 		{
+			name:          "an expired session is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, nil, session.ErrExpired)
+			},
+			assert: chargedOnce,
+		},
+		{
+			name:          "a reused session is charged",
+			presentations: 1,
+			wire: func(h *authHarness, loads *atomic.Int64) {
+				loading(h, loads, nil, session.ErrReused)
+			},
+			assert: func(t *testing.T, out []served, charged []string, loads int64) {
+				t.Helper()
+
+				chargedOnce(t, out, charged, loads)
+				assert.ErrorIs(t, out[0].err, session.ErrReused, "the reuse stays matchable")
+			},
+		},
+		{
 			name:          "a user who is gone is charged",
 			presentations: 1,
 			wire: func(h *authHarness, loads *atomic.Int64) {
