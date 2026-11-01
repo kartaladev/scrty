@@ -700,6 +700,26 @@ func TestMFABeginIssuance(t *testing.T) {
 				assert.Empty(t, stub.issuedAll(), "nothing is issued")
 			},
 		},
+		{
+			name: "a consumer store keeps login challenges under the login purpose",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
+			},
+			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
+			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, _ *capturingHandler, outs []served) {
+				require.Len(t, outs, 1)
+				require.NoError(t, outs[0].err)
+
+				counts := store.(*onetime.MemoryStore)
+				n, err := counts.CountRecentBySubject(t.Context(), "mfa-challenge:passkey", string(testMFAUser), time.Time{})
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the challenge is in the consumer's store under the login purpose")
+
+				n, err = counts.CountRecentBySubject(t.Context(), "reauth-challenge:passkey", string(testMFAUser), time.Time{})
+				require.NoError(t, err)
+				assert.Zero(t, n, "nothing was issued under the re-proof purpose")
+			},
+		},
 	}
 
 	for _, tc := range cases {

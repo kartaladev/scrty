@@ -2,14 +2,12 @@ package httpsec
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -109,36 +107,19 @@ func (i *mfaInterceptor) begin(ex *Exchange) error {
 		return err
 	}
 
-	ctx := ex.Context()
-
-	if err := i.throttle.Check(ctx, s.UserID); err != nil {
-		return err
-	}
-
-	cm := method.(mfa.ChallengeMethod) // admit checked it
-	mgr := i.challenges[method.Name()]
-
-	sweepExpired(ctx, mgr, i.sweeps[method.Name()], i.now, challengeSweepFlow, msgChallengesNotPurged,
-		method.Name(), i.sampler, i.log)
-
-	// One bounded issue, not a count and then an issue: of begins racing for
-	// one user, on this process or on another replica, no more than the limit
-	// are issued a challenge.
-	challenge, _, err := mgr.IssueWithin(ctx, string(s.UserID), i.challengeCap, onetime.WithBinding(s.ID))
-
-	switch {
-	case errors.Is(err, onetime.ErrIssueLimitReached):
-		return mfa.ErrVerifyThrottled
-	case err != nil:
-		return diag.Wrap(err, msgChallengeNotIssued)
-	}
-
-	data, err := cm.BeginChallenge(ctx, s.UserID, challenge)
-	if err != nil {
-		return diag.Wrap(err, msgChallengeNotIssued)
-	}
-
-	return i.beginRespond(ex, data)
+	return issueChallenge(ex, s, method.(mfa.ChallengeMethod), challengeIssue{ // admit checked it
+		throttle:  i.throttle,
+		mgr:       i.challenges[method.Name()],
+		sweep:     i.sweeps[method.Name()],
+		limit:     i.challengeCap,
+		respond:   i.beginRespond,
+		notIssued: msgChallengeNotIssued,
+		sweepFlow: challengeSweepFlow,
+		notPurged: msgChallengesNotPurged,
+		now:       i.now,
+		sampler:   i.sampler,
+		log:       i.log,
+	})
 }
 
 // msgChallengesNotPurged is what a sweep of a method's expired challenges
@@ -214,26 +195,15 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 		store = def
 	}
 
-	i.challenges = make(map[string]*onetime.Tokens)
-	i.sweeps = make(map[string]*sweepClock)
-
-	for _, m := range i.methods {
-		if !isChallengeMethod(m) {
-			continue
-		}
-
-		mgr, err := onetime.New(mfaChallengePurpose(m.Name()),
-			onetime.WithTokenTTL(i.challengeTTL),
-			onetime.WithStore(store),
-			onetime.WithClock(c.clock),
-			onetime.WithLogger(c.logger))
-		if err != nil {
-			return newConfigError("EnableMFA could not build the pending challenges of %q: %s", m.Name(), err)
-		}
-
-		i.challenges[m.Name()] = mgr
-		i.sweeps[m.Name()] = &sweepClock{}
+	challenges, sweeps, err := challengeManagers(c, i.methods, store, i.challengeTTL, mfaChallengePurpose,
+		func(method string, err error) error {
+			return newConfigError("EnableMFA could not build the pending challenges of %q: %s", method, err)
+		})
+	if err != nil {
+		return err
 	}
+
+	i.challenges, i.sweeps = challenges, sweeps
 
 	return nil
 }

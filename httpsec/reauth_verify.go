@@ -1,8 +1,6 @@
 package httpsec
 
 import (
-	"errors"
-
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -62,32 +60,8 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	ctx := ex.Context()
-	user := s.UserID
-	throttle := i.mfa.throttle
-
-	if err := throttle.Check(ctx, user); err != nil {
-		return err
-	}
-
-	response, err := readResponse(ex.Request, method.Response())
-	if err != nil {
-		return err
-	}
-
-	if cm, ok := method.(mfa.ChallengeMethod); ok {
-		if err := spendChallenge(ctx, i.challenges[cm.Name()], cm, s, response); err != nil {
-			throttle.RecordFailure(ctx, user)
-
-			return err
-		}
-	}
-
-	if err := method.Verify(ctx, user, response); err != nil {
-		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
-			throttle.RecordFailure(ctx, user)
-		}
-
+	// Steps 4 to 8.
+	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s); err != nil {
 		return err
 	}
 
@@ -112,33 +86,19 @@ func (i *reauthInterceptor) begin(ex *Exchange) error {
 		return err
 	}
 
-	ctx := ex.Context()
-
-	if err := i.mfa.throttle.Check(ctx, s.UserID); err != nil {
-		return err
-	}
-
-	cm := method.(mfa.ChallengeMethod) // admitMethod checked it
-	mgr := i.challenges[method.Name()]
-
-	sweepExpired(ctx, mgr, i.sweeps[method.Name()], i.now, reauthChallengeSweepFlow, msgReauthChallengesNotPurged,
-		method.Name(), i.sampler, i.log)
-
-	challenge, _, err := mgr.IssueWithin(ctx, string(s.UserID), i.challengeCap, onetime.WithBinding(s.ID))
-
-	switch {
-	case errors.Is(err, onetime.ErrIssueLimitReached):
-		return mfa.ErrVerifyThrottled
-	case err != nil:
-		return diag.Wrap(err, msgReauthChallengeNotIssued)
-	}
-
-	data, err := cm.BeginChallenge(ctx, s.UserID, challenge)
-	if err != nil {
-		return diag.Wrap(err, msgReauthChallengeNotIssued)
-	}
-
-	return i.beginRespond(ex, data)
+	return issueChallenge(ex, s, method.(mfa.ChallengeMethod), challengeIssue{ // admitMethod checked it
+		throttle:  i.mfa.throttle,
+		mgr:       i.challenges[method.Name()],
+		sweep:     i.sweeps[method.Name()],
+		limit:     i.challengeCap,
+		respond:   i.beginRespond,
+		notIssued: msgReauthChallengeNotIssued,
+		sweepFlow: reauthChallengeSweepFlow,
+		notPurged: msgReauthChallengesNotPurged,
+		now:       i.now,
+		sampler:   i.sampler,
+		log:       i.log,
+	})
 }
 
 // admitMethod makes the refusals begin and verify share, all decided before

@@ -282,34 +282,8 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	ctx := ex.Context()
-	user := s.UserID
-
-	if err := i.throttle.Check(ctx, user); err != nil {
-		return err
-	}
-
-	response, err := readResponse(ex.Request, method.Response())
-	if err != nil {
-		return err
-	}
-
-	if cm, ok := method.(mfa.ChallengeMethod); ok {
-		if err := spendChallenge(ctx, i.challenges[cm.Name()], cm, s, response); err != nil {
-			i.throttle.RecordFailure(ctx, user)
-
-			return err
-		}
-	}
-
-	if err := method.Verify(ctx, user, response); err != nil {
-		// A refusal of the authenticator itself, such as a suspected clone,
-		// is not a wrong guess at the response, and a refused attempt charge
-		// compared nothing: neither costs an attempt.
-		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
-			i.throttle.RecordFailure(ctx, user)
-		}
-
+	// Steps 5 to 8.
+	if err := checkResponse(ex, i.throttle, i.challenges, method, s); err != nil {
 		return err
 	}
 
