@@ -149,11 +149,20 @@ func assertCallsMarked(t *testing.T, calls []ctxCall, methods ...string) {
 }
 
 // faultyCipher delegates to the embedded cipher, except that ActiveKeyID
-// fails with activeErr and Seal with sealErr when they are set.
+// fails with activeErr, Seal with sealErr and Open with openErr when they are
+// set.
 type faultyCipher struct {
 	seal.Cipher
 
-	activeErr, sealErr error
+	activeErr, sealErr, openErr error
+}
+
+func (c faultyCipher) Open(ctx context.Context, sealed, aad []byte) ([]byte, string, error) {
+	if c.openErr != nil {
+		return nil, "", c.openErr
+	}
+
+	return c.Cipher.Open(ctx, sealed, aad)
 }
 
 func (c faultyCipher) Seal(ctx context.Context, plaintext, aad []byte) ([]byte, error) {

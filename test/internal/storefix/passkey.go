@@ -340,10 +340,18 @@ func passkeySealedCredential(owner string, code []byte) *passkey.Credential {
 // cipher. The code is sealed and opened by five store methods, and the view
 // drives all five under the suite's context: Put inserts owner's credential,
 // of user owner, awaiting the suite's secret as its emailed code, with Insert,
-// and a second credential of user owner+"-within" with InsertWithin; Get reads
-// the code back with FindByCredentialID, then with List and with
-// ChargeEmailAttempt, and fails unless the three agree. The column is
-// email_code. The code is never re-sealed on read.
+// and a second credential of user owner+"-within", awaiting the same code,
+// with InsertWithin; Get reads owner's code back with FindByCredentialID, then
+// with List and with ChargeEmailAttempt, and fails unless the three agree, and
+// then reads the second credential's code the same three ways and fails
+// unless it is the same code. The column is owner's email_code; the second
+// credential's column is checked only through its read. The code is never
+// re-sealed on read.
+//
+// Every Get charges one attempt against each of the two codes, and a store
+// refuses a charge once passkey.MaxEmailCodeAttempts are charged, so Get
+// fails, saying so, from the sixth read of one owner: the suite reads each
+// owner far fewer times.
 func SealedPasskeyCodes[H any](
 	handle H, newWith func(t *testing.T, handle H, c seal.Cipher) passkey.CredentialStore,
 ) storetest.Sealed[passkey.CredentialStore] {
@@ -377,6 +385,9 @@ func SealedPasskeyCodes[H any](
 				return nil, true, nil
 			}
 			if err := passkeyCodeAgrees(ctx, s, c); err != nil {
+				return nil, true, err
+			}
+			if err := passkeyWithinAgrees(ctx, s, owner+"-within", c.EmailCode.Code); err != nil {
 				return nil, true, err
 			}
 			return []byte(c.EmailCode.Code), true, nil
@@ -419,11 +430,34 @@ func passkeyCodeAgrees(ctx context.Context, s passkey.CredentialStore, c *passke
 	if err != nil {
 		return err
 	}
-	if !ok || charged.Code != c.EmailCode.Code {
+	if !ok && c.EmailCode.Attempts >= passkey.MaxEmailCodeAttempts {
+		return fmt.Errorf("storefix: ChargeEmailAttempt refused: the %d attempts passkey.MaxEmailCodeAttempts allows "+
+			"are spent, one per Get of this view", passkey.MaxEmailCodeAttempts)
+	}
+	if !ok {
+		return fmt.Errorf("storefix: ChargeEmailAttempt refused the emailed code with %d of %d attempts charged",
+			c.EmailCode.Attempts, passkey.MaxEmailCodeAttempts)
+	}
+	if charged.Code != c.EmailCode.Code {
 		return fmt.Errorf("storefix: ChargeEmailAttempt did not return the emailed code FindByCredentialID opened")
 	}
 
 	return nil
+}
+
+// passkeyWithinAgrees requires the credential SealedPasskeyCodes inserted
+// with InsertWithin for user within to open, through the three store methods
+// that open it, to want, the code it was inserted awaiting.
+func passkeyWithinAgrees(ctx context.Context, s passkey.CredentialStore, within, want string) error {
+	c, err := s.FindByCredentialID(ctx, []byte("sealed-"+within))
+	if err != nil {
+		return err
+	}
+	if c.EmailCode == nil || c.EmailCode.Code != want {
+		return fmt.Errorf("storefix: the credential InsertWithin stored does not open to the code it was given")
+	}
+
+	return passkeyCodeAgrees(ctx, s, c)
 }
 
 // passkeyCodeColumn is the email_code column of the credential with

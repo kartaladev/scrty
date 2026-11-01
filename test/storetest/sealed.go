@@ -107,12 +107,14 @@ const sealedPlaintext = "SENTINEL-SECRET"
 //     through a keyring holding every key the suite sealed under, and the
 //     error matches seal.ErrDecryptionFailed;
 //   - every seal and open the store makes carries the context of the store
-//     operation it serves, the re-seal on read included: Put and Get run
-//     under a context carrying a value and a deadline, and every key the
-//     default cipher asks the keyring for on their behalf must be asked for
-//     under that value and that deadline. The default cipher passes its
-//     context on to its keyring, so a store that seals or opens under a
-//     context of its own, or imposes a deadline of its own, is caught there.
+//     operation it serves, the re-seal on read included: the context case
+//     runs Put and Get under a context carrying a value and a deadline, and
+//     every read the other cases make, a read that fails included, runs
+//     under such a context too. Every key the default cipher asks the
+//     keyring for on their behalf must be asked for under that value and
+//     that deadline. The default cipher passes its context on to its
+//     keyring, so a store that seals or opens under a context of its own, or
+//     imposes a deadline of its own, is caught there.
 //
 // Each failure case asserts its reason, not only an error, so a store that
 // opens its whole table at once cannot pass a case by failing for another
@@ -144,26 +146,25 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 		require.NoError(t, s.Put(t.Context(), s.NewWithKeyring(t, underK1), owner, secret))
 		return secret
 	}
+	// read reads owner's secret through a store over kr, under the
+	// operation's context, and requires every key the store asked kr for
+	// while reading, the re-seal on read included and a read that fails, to
+	// have been asked for under it.
+	read := func(t *testing.T, kr seal.Keyring, owner string) ([]byte, bool, error) {
+		t.Helper()
+		rec := &contextKeyring{Keyring: kr}
+		got, present, err := s.Get(operationContext(t), s.NewWithKeyring(t, rec), owner)
+		assertOperationContext(t, rec.seen())
+		return got, present, err
+	}
 	// opens requires owner's secret to read back as want through a store over
 	// kr.
 	opens := func(t *testing.T, kr seal.Keyring, owner string, want []byte, msg string) {
 		t.Helper()
-		got, present, err := s.Get(t.Context(), s.NewWithKeyring(t, kr), owner)
+		got, present, err := read(t, kr, owner)
 		require.NoError(t, err, msg)
 		require.True(t, present, msg)
 		assert.Equal(t, want, got, msg)
-	}
-	// opensUnderContext is opens under the operation's context, and requires
-	// every key the store asked kr for while reading, the re-seal on read
-	// included, to have been asked for under it.
-	opensUnderContext := func(t *testing.T, kr seal.Keyring, owner string, want []byte, msg string) {
-		t.Helper()
-		rec := &contextKeyring{Keyring: kr}
-		got, present, err := s.Get(operationContext(t), s.NewWithKeyring(t, rec), owner)
-		require.NoError(t, err, msg)
-		require.True(t, present, msg)
-		assert.Equal(t, want, got, msg)
-		assertOperationContext(t, rec.seen())
 	}
 
 	// rotation is the case for a read under a retired key, by s.Rotation.
@@ -172,7 +173,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 		assert: func(t *testing.T) {
 			secret := put(t, "resealed")
 
-			opensUnderContext(t, rotated, "resealed", secret, "a value sealed under the retired key did not open")
+			opens(t, rotated, "resealed", secret, "a value sealed under the retired key did not open")
 			opens(t, underK2, "resealed", secret,
 				"the value does not open under the active key alone: it was not re-sealed")
 		},
@@ -207,17 +208,17 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 				assert.Equal(t, secret, got, "the store does not read back what it stored")
 
 				calls := kr.seen()[before:]
-				var seals, opens int
+				var sealed, opened int
 				for _, c := range calls {
 					if c.active {
-						seals++
+						sealed++
 					} else {
-						opens++
+						opened++
 					}
 				}
 				assertOperationContext(t, calls)
-				assert.NotZero(t, seals, "nothing was sealed through the default cipher's keyring")
-				assert.NotZero(t, opens, "nothing was opened through the default cipher's keyring")
+				assert.NotZero(t, sealed, "nothing was sealed through the default cipher's keyring")
+				assert.NotZero(t, opened, "nothing was opened through the default cipher's keyring")
 			},
 		},
 		{
@@ -242,7 +243,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 			assert: func(t *testing.T) {
 				put(t, "missing-key")
 
-				got, present, err := s.Get(t.Context(), s.NewWithKeyring(t, underK2), "missing-key")
+				got, present, err := read(t, underK2, "missing-key")
 				require.Error(t, err, "a value sealed under a key the keyring lacks was read as present=%t", present)
 				assert.ErrorIs(t, err, seal.ErrUnknownKeyID,
 					"the read failed, but not for the key the keyring lacks")
@@ -259,7 +260,7 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 				// Through a keyring holding every key, so the read can fail
 				// only for the binding: a store that loads its whole table
 				// also opens the values the re-seal case moved to k2.
-				got, present, err := s.Get(t.Context(), s.NewWithKeyring(t, rotated), "attacker")
+				got, present, err := read(t, rotated, "attacker")
 				require.Error(t, err,
 					"reading a value copied from another record did not fail (present=%t): "+
 						"the value is not bound to its record", present)

@@ -28,15 +28,32 @@ import (
 // given the same ciphertext with different additional data. That is what stops
 // a sealed value being moved from one session to another.
 //
+// Both methods take the context of the save or load the sealing store
+// serves; the store never substitutes a context of its own or imposes a
+// deadline. An implementation over a remote service, such as a key management
+// service, should honour it, so a request's deadline and cancellation reach
+// the service.
+//
+// The sealing store reads an Open failure in one of two ways. An outage —
+// an error matching context.Canceled or context.DeadlineExceeded, or one the
+// implementation marks by wrapping it with ErrCipherUnavailable, for example
+// errors.Join(ErrCipherUnavailable, err) — says nothing about the value, and
+// fails the load as a store failure wrapping it. Every other error, the
+// default for anything left unmarked, means the value does not open, and the
+// load fails with ErrUnreadable, which ends the session. An implementation
+// over a remote service marks its retryable failures (timeouts, throttling,
+// a key that is temporarily unavailable) and leaves a value it judged invalid
+// unmarked.
+//
 //go:generate mockgen -source=store_encrypted.go -package=session_test -destination=store_encrypted_mock_test.go -typed
 type Cipher interface {
 	// Seal encrypts plaintext, authenticating additionalData alongside it
 	// without storing it.
-	Seal(plaintext, additionalData []byte) ([]byte, error)
+	Seal(ctx context.Context, plaintext, additionalData []byte) ([]byte, error)
 
 	// Open decrypts ciphertext, and fails unless additionalData is exactly
 	// what Seal was given.
-	Open(ciphertext, additionalData []byte) ([]byte, error)
+	Open(ctx context.Context, ciphertext, additionalData []byte) ([]byte, error)
 }
 
 // aadPrefix prefixes the additional authenticated data every sealed provider
@@ -74,9 +91,14 @@ type encryptedStore struct {
 // A failure of inner or of the cipher is returned behind fixed text of this
 // package — never naming the session identifier, which is the bearer
 // credential — and still matches the original error through errors.Is and
-// errors.As; a cipher that will not open a value is also
-// ErrUnreadable. A sentinel of this package that inner returns bare
-// comes back as itself.
+// errors.As. A cipher that will not open a value is also ErrUnreadable,
+// unless its failure is an outage: a context error, or an error marked with
+// ErrCipherUnavailable, which comes back as a store failure and never as
+// ErrUnreadable (see Cipher). A sentinel of this package that inner returns
+// bare comes back as itself.
+//
+// Every seal and open runs under the context of the Create, Save, Supersede
+// or Load it serves.
 //
 // The sealed value is bound to the session identifier, so an envelope moved to
 // another session's row will not open. An empty token is stored unsealed,
@@ -110,12 +132,12 @@ func additionalData(id string) []byte {
 // caller's struct. A caller that handed over a session and then read its token
 // would otherwise find ciphertext there, and a retry of the same write would
 // seal the envelope a second time.
-func (s *encryptedStore) sealed(sess *Session) (*Session, error) {
+func (s *encryptedStore) sealed(ctx context.Context, sess *Session) (*Session, error) {
 	if sess.ExternalIDToken == "" {
 		return sess, nil
 	}
 
-	envelope, err := s.cipher.Seal([]byte(sess.ExternalIDToken), additionalData(sess.ID))
+	envelope, err := s.cipher.Seal(ctx, []byte(sess.ExternalIDToken), additionalData(sess.ID))
 	if err != nil {
 		return nil, diag.Wrap(err, "session: the provider ID token of the session could not be sealed")
 	}
@@ -127,7 +149,7 @@ func (s *encryptedStore) sealed(sess *Session) (*Session, error) {
 }
 
 func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
-	out, err := s.sealed(sess)
+	out, err := s.sealed(ctx, sess)
 	if err != nil {
 		return err
 	}
@@ -136,7 +158,7 @@ func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
 }
 
 func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
-	out, err := s.sealed(sess)
+	out, err := s.sealed(ctx, sess)
 	if err != nil {
 		return err
 	}
@@ -152,9 +174,9 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 // into a session that works until something reaches for the token, and by then
 // nothing points at the key.
 //
-// An open that the context abandoned, by cancellation or a deadline, is not
-// that: the value was never judged, so the load fails with a store failure
-// wrapping the context's error.
+// An open that the context abandoned, by cancellation or a deadline, or that
+// the cipher marked with ErrCipherUnavailable, is not that: the value was
+// never judged, so the load fails with a store failure wrapping the cause.
 //
 // Nothing is written here. Re-sealing what was just opened would make every
 // read a write, and a write on read is how a session another request has just
@@ -177,7 +199,7 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 			ErrUnreadable, err)
 	}
 
-	plaintext, err := s.cipher.Open(envelope, additionalData(sess.ID))
+	plaintext, err := s.cipher.Open(ctx, envelope, additionalData(sess.ID))
 	if err != nil {
 		return nil, openFailed(err)
 	}
@@ -189,14 +211,17 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 
 // openFailed classifies a cipher's failure to open a stored ID token.
 //
-// A failure that is an outage — the context ended — says nothing about the
-// value, so it comes back as a store failure wrapping the cause, never as
-// ErrUnreadable, which ends the session. Every other failure is
-// ErrUnreadable, the safe default: a value that truly does not open lets the
-// user log in again instead of failing every request until it expires.
+// A failure that is an outage — the context ended, or the cipher marked it
+// with ErrCipherUnavailable — says nothing about the value, so it comes back
+// as a store failure wrapping the cause, never as ErrUnreadable, which ends
+// the session. The marker wins over anything joined with it. Every other
+// failure is ErrUnreadable, the safe default: a value that truly does not
+// open lets the user log in again instead of failing every request until it
+// expires.
 func openFailed(err error) error {
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, ErrCipherUnavailable):
 		return diag.Wrap(err, "session: the provider ID token of the session could not be opened")
 	default:
 		return diag.Wrap(err, textSessionUnreadableIDTokenNotOpened, ErrUnreadable)
@@ -253,7 +278,7 @@ func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
 	if op.Successor == nil {
 		return errors.New("session: a supersession needs a successor")
 	}
-	successor, err := s.sealed(op.Successor)
+	successor, err := s.sealed(ctx, op.Successor)
 	if err != nil {
 		return err
 	}

@@ -1418,6 +1418,16 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 			cipher: faultyCipher{Cipher: cs.current, sealErr: errKMS},
 			assert: readUnchanged,
 		},
+		{
+			name:   "the cipher marks its active key unavailable",
+			cipher: faultyCipher{Cipher: cs.current, activeErr: errors.Join(seal.ErrUnavailable, errKMS)},
+			assert: readUnchanged,
+		},
+		{
+			name:   "the cipher marks the seal unavailable",
+			cipher: faultyCipher{Cipher: cs.current, sealErr: errors.Join(seal.ErrUnavailable, errKMS)},
+			assert: readUnchanged,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1436,4 +1446,29 @@ func TestEnrolmentStore_ResealOutageDoesNotFailRead(t *testing.T) {
 			tc.assert(t, e, found, err, before, innerSecret(t, inner, userRef))
 		})
 	}
+}
+
+// TestEnrolmentStore_OutageIsDistinguishable pins that an open the cipher
+// marks as an outage reaches the caller as one: it matches seal.ErrUnavailable
+// and neither of the errors that say the value itself does not open.
+// Standalone: one cipher failure, on the first open a read makes.
+func TestEnrolmentStore_OutageIsDistinguishable(t *testing.T) {
+	t.Parallel()
+
+	cs := newCiphers(t)
+	inner := mfa.NewMemoryEnrolmentStore()
+	putSealed(t, inner, cs.current, pendingEnrolment(t, userRef))
+
+	c := faultyCipher{Cipher: cs.current, openErr: errors.Join(seal.ErrUnavailable, errCipherDown)}
+	store, err := seal.NewEnrolmentStore(inner, NewMockEnrolmentResealer(gomock.NewController(t)), c)
+	require.NoError(t, err)
+
+	e, found, err := store.Get(t.Context(), userRef)
+
+	require.ErrorIs(t, err, seal.ErrUnavailable)
+	assert.NotErrorIs(t, err, seal.ErrDecryptionFailed, "an outage was reported as a value that does not open")
+	assert.NotErrorIs(t, err, seal.ErrUnknownKeyID, "an outage was reported as a missing key")
+	assert.False(t, found, "an enrolment that could not be opened was reported found")
+	assert.Empty(t, e.Secret)
+	assertNoLeak(t, err)
 }

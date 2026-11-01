@@ -890,6 +890,20 @@ func TestSessionCipher(t *testing.T) {
 			},
 		},
 		{
+			name:   "a marked outage reaches sessions as unavailable, not unreadable",
+			cipher: faultyCipher{Cipher: c, openErr: errors.Join(seal.ErrUnavailable, errCipherDown)},
+			assert: func(t *testing.T, sealing session.Store, _ *session.MemoryStore, err error) {
+				require.NoError(t, err)
+				require.NoError(t, sealing.Create(t.Context(), federated("sess-outage", idToken)))
+
+				got, err := sealing.Load(t.Context(), "sess-outage")
+				require.ErrorIs(t, err, session.ErrCipherUnavailable)
+				assert.NotErrorIs(t, err, session.ErrUnreadable,
+					"an outage was reported as a session that cannot be read")
+				assert.Nil(t, got)
+			},
+		},
+		{
 			name: "a nil cipher leaves the sealing store unbuilt",
 			assert: func(t *testing.T, sealing session.Store, _ *session.MemoryStore, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
@@ -913,6 +927,147 @@ func TestSessionCipher(t *testing.T) {
 			inner := must.Must(session.NewMemoryStore())
 			sealing, err := session.NewEncryptedStore(inner, seal.SessionCipher(tc.cipher))
 			tc.assert(t, sealing, inner, err)
+		})
+	}
+}
+
+// TestSessionCipher_PassesContext pins that the adapter hands the cipher it
+// wraps the context the session store gave it, for a seal and for an open.
+func TestSessionCipher_PassesContext(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		call   func(ctx context.Context, c session.Cipher) error
+		assert func(t *testing.T, calls []ctxCall, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a seal carries the caller's context",
+			call: func(ctx context.Context, c session.Cipher) error {
+				_, err := c.Seal(ctx, []byte(idToken), boundAAD)
+				return err
+			},
+			assert: func(t *testing.T, calls []ctxCall, err error) {
+				require.NoError(t, err)
+				assertCallsMarked(t, calls, "Seal")
+			},
+		},
+		{
+			name: "an open carries the caller's context",
+			call: func(ctx context.Context, c session.Cipher) error {
+				_, err := c.Open(ctx, []byte("not a sealed value"), boundAAD)
+				return err
+			},
+			assert: func(t *testing.T, calls []ctxCall, err error) {
+				require.ErrorIs(t, err, seal.ErrDecryptionFailed)
+				assertCallsMarked(t, calls, "Open")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &recordingCipher{Cipher: mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo))}
+
+			err := tc.call(marked(t.Context()), seal.SessionCipher(rec))
+			tc.assert(t, rec.Calls(), err)
+		})
+	}
+}
+
+// TestSessionCipher_TranslatesUnavailable pins how the adapter reports what
+// the cipher it wraps fails with: its outage marker as the session cipher's,
+// on an open and on a seal, and a context error or any other error
+// unchanged.
+func TestSessionCipher_TranslatesUnavailable(t *testing.T) {
+	t.Parallel()
+
+	assert.NotErrorIs(t, seal.ErrUnavailable, seal.ErrDecryptionFailed)
+	assert.NotErrorIs(t, seal.ErrUnavailable, seal.ErrUnknownKeyID)
+	assert.NotErrorIs(t, seal.ErrDecryptionFailed, seal.ErrUnavailable)
+	assert.NotErrorIs(t, seal.ErrUnknownKeyID, seal.ErrUnavailable)
+
+	errKMS := errors.New("kms: dependency timeout")
+	outage := errors.Join(seal.ErrUnavailable, errKMS)
+	hungUp := fmt.Errorf("kms: %w", context.Canceled)
+	tampered := fmt.Errorf("aead: %w", seal.ErrDecryptionFailed)
+
+	// open and sealWith run the adapter's Open or Seal over a cipher failing
+	// that method with err.
+	open := func(err error) func(t *testing.T, ctx context.Context) error {
+		return func(t *testing.T, ctx context.Context) error {
+			c := NewMockCipher(gomock.NewController(t))
+			c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, "", err).Times(1)
+			_, got := seal.SessionCipher(c).Open(ctx, []byte("sealed"), boundAAD)
+			return got
+		}
+	}
+	sealWith := func(err error) func(t *testing.T, ctx context.Context) error {
+		return func(t *testing.T, ctx context.Context) error {
+			c := NewMockCipher(gomock.NewController(t))
+			c.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, err).Times(1)
+			_, got := seal.SessionCipher(c).Seal(ctx, []byte(idToken), boundAAD)
+			return got
+		}
+	}
+	translated := func(t *testing.T, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, session.ErrCipherUnavailable)
+		require.ErrorIs(t, err, seal.ErrUnavailable, "the seal marker is no longer reachable")
+		require.ErrorIs(t, err, errKMS, "the cipher's own error is no longer reachable")
+		assert.NotErrorIs(t, err, session.ErrUnreadable)
+	}
+	unchanged := func(want error) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) {
+			t.Helper()
+			assert.Same(t, want, err) //nolint:testifylint // unchanged is the point
+			assert.NotErrorIs(t, err, session.ErrCipherUnavailable)
+		}
+	}
+
+	type testCase struct {
+		name   string
+		call   func(t *testing.T, ctx context.Context) error
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "an open marked as an outage is reported as the session cipher's, keeping the cause",
+			call:   open(outage),
+			assert: translated,
+		},
+		{
+			name:   "a seal marked as an outage is reported as the session cipher's, keeping the cause",
+			call:   sealWith(outage),
+			assert: translated,
+		},
+		{
+			name:   "a context error on an open passes through unchanged",
+			call:   open(hungUp),
+			assert: unchanged(hungUp),
+		},
+		{
+			name:   "a context error on a seal passes through unchanged",
+			call:   sealWith(hungUp),
+			assert: unchanged(hungUp),
+		},
+		{
+			name:   "a value that does not open passes through unchanged",
+			call:   open(tampered),
+			assert: unchanged(tampered),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.call(t, t.Context()))
 		})
 	}
 }

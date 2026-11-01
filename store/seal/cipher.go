@@ -36,6 +36,16 @@ import (
 // than to seal every value. AEADCipher performs no input or output of its
 // own and passes the context on to its Keyring.
 //
+// An implementation that cannot reach its keys marks the failure by wrapping
+// its error with ErrUnavailable, for example errors.Join(ErrUnavailable, err),
+// and leaves a value it judged invalid unmarked: the stores return a marked
+// failure as they return any cipher error, so a caller can tell an outage
+// from ErrDecryptionFailed and ErrUnknownKeyID, and SessionCipher reports it
+// to sessions as session.ErrCipherUnavailable, which a session load treats as
+// a store failure rather than as session.ErrUnreadable. A context error needs
+// no mark: the session store reads it as an outage too. AEADCipher returns
+// its Keyring's errors wrapped, so a Keyring marks an outage the same way.
+//
 //go:generate mockgen -source=cipher.go -package=seal_test -destination=cipher_mock_test.go -typed
 type Cipher interface {
 	// Seal encrypts plaintext under the active key, authenticating aad.
@@ -355,9 +365,17 @@ type sessionCipher struct {
 //	store, err := session.NewEncryptedStore(inner, seal.SessionCipher(c))
 //
 // The sealing rule for sessions, including the additional data each token is
-// bound to, stays in package session; this adapter only drops the key id Open
-// reports. c's errors are returned unchanged, and the session store answers a
-// token that will not open as session.ErrUnreadable.
+// bound to, stays in package session; this adapter drops the key id Open
+// reports, and passes c the context the session store gives it.
+//
+// An error of c matching ErrUnavailable, from Seal or Open, is reported as
+// session.ErrCipherUnavailable, joined with c's error so ErrUnavailable and
+// its cause still match. The session store answers such an open failure as a
+// store failure rather than as session.ErrUnreadable, so a cipher marks an
+// outage once, with ErrUnavailable, for every store. Every other error of c
+// is returned unchanged: a context error, which the session store also treats
+// as a store failure, and any other, which the session store answers, on an
+// open, as session.ErrUnreadable.
 //
 // A nil c, typed nil included, gives a nil session.Cipher, so
 // session.NewEncryptedStore refuses it with session.ErrConfig instead of the
@@ -370,14 +388,35 @@ func SessionCipher(c Cipher) session.Cipher {
 	return sessionCipher{c: c}
 }
 
-// Seal seals plaintext through the wrapped Cipher.
-func (s sessionCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
-	return s.c.Seal(context.TODO(), plaintext, additionalData)
+// Seal seals plaintext through the wrapped Cipher, under ctx, reporting an
+// outage as session.ErrCipherUnavailable.
+func (s sessionCipher) Seal(ctx context.Context, plaintext, additionalData []byte) ([]byte, error) {
+	sealed, err := s.c.Seal(ctx, plaintext, additionalData)
+	if err != nil {
+		return nil, sessionError(err)
+	}
+
+	return sealed, nil
 }
 
-// Open opens ciphertext through the wrapped Cipher, dropping the key id.
-func (s sessionCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
-	plaintext, _, err := s.c.Open(context.TODO(), ciphertext, additionalData)
+// Open opens ciphertext through the wrapped Cipher, under ctx, dropping the
+// key id and reporting an outage as session.ErrCipherUnavailable.
+func (s sessionCipher) Open(ctx context.Context, ciphertext, additionalData []byte) ([]byte, error) {
+	plaintext, _, err := s.c.Open(ctx, ciphertext, additionalData)
+	if err != nil {
+		return nil, sessionError(err)
+	}
 
-	return plaintext, err
+	return plaintext, nil
+}
+
+// sessionError reports err, an error of the wrapped Cipher, to the session
+// store: joined with session.ErrCipherUnavailable when it matches
+// ErrUnavailable, and otherwise unchanged.
+func sessionError(err error) error {
+	if errors.Is(err, ErrUnavailable) {
+		return errors.Join(session.ErrCipherUnavailable, err)
+	}
+
+	return err
 }

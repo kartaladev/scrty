@@ -2,6 +2,7 @@ package storetest_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -43,7 +44,7 @@ type xorCipher struct{}
 
 var errAdditionalData = errors.New("xor cipher: additional data does not match")
 
-func (xorCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
+func (xorCipher) Seal(_ context.Context, plaintext, additionalData []byte) ([]byte, error) {
 	out := append(bytes.Clone(additionalData), 0x00)
 	for _, b := range plaintext {
 		out = append(out, b^0x5a)
@@ -52,7 +53,7 @@ func (xorCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
 	return out, nil
 }
 
-func (xorCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
+func (xorCipher) Open(_ context.Context, ciphertext, additionalData []byte) ([]byte, error) {
 	rest, ok := bytes.CutPrefix(ciphertext, append(bytes.Clone(additionalData), 0x00))
 	if !ok {
 		return nil, errAdditionalData

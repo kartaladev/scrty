@@ -3828,7 +3828,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "encrypted create: cipher seal hides the session identifier",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
+				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
 				return encrypted(t, d).Create(ctx, returnedErrorsSession("id-token"))
 			},
 			assert: func(t *testing.T, err error) {
@@ -3847,7 +3847,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "encrypted save: cipher seal hides the session identifier",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
+				d.cipher.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
 				return encrypted(t, d).Save(ctx, returnedErrorsSession("id-token"))
 			},
 			assert: func(t *testing.T, err error) {
@@ -3869,7 +3869,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				stored := returnedErrorsSession(base64.RawURLEncoding.EncodeToString([]byte("envelope")))
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(stored, nil)
-				d.cipher.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
+				d.cipher.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errStoreQuotes)
 				_, err := encrypted(t, d).Load(ctx, returnedErrorsID)
 				return err
 			},

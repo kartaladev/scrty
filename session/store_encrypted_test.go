@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -268,6 +270,7 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 
 		sealed := federatedSession("no-rewrite")
 		envelope, err := fakeCipher{key: 0x2a}.Seal(
+			t.Context(),
 			[]byte(federatedPlaintext),
 			[]byte("scrty/session:external-id-token:no-rewrite"),
 		)
@@ -524,6 +527,8 @@ func TestEncryptedStoreCreatePassesOnTheNilFamilyRefusal(t *testing.T) {
 func TestSealingStore_OpenFailureClassification(t *testing.T) {
 	t.Parallel()
 
+	errKMSTimeout := errors.New("kms: dependency timeout")
+
 	type testCase struct {
 		name      string
 		openError error
@@ -552,6 +557,27 @@ func TestSealingStore_OpenFailureClassification(t *testing.T) {
 			},
 		},
 		{
+			name:      "an error the cipher marks as an outage is a store failure matching the marker, not an unreadable session",
+			openError: errors.Join(session.ErrCipherUnavailable, errKMSTimeout),
+			assert: func(t *testing.T, loaded *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrCipherUnavailable)
+				require.ErrorIs(t, err, errKMSTimeout, "the cipher's own error is no longer reachable")
+				assert.NotErrorIs(t, err, session.ErrUnreadable,
+					"a marked outage was reported as a session that cannot be read")
+				assert.Nil(t, loaded)
+			},
+		},
+		{
+			name:      "the marker wins over an error of the cipher's own joined with it",
+			openError: errors.Join(session.ErrCipherUnavailable, errors.New("bad tag")),
+			assert: func(t *testing.T, loaded *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrCipherUnavailable)
+				assert.NotErrorIs(t, err, session.ErrUnreadable,
+					"a marked outage was reported as a session that cannot be read")
+				assert.Nil(t, loaded)
+			},
+		},
+		{
 			name:      "an error of the cipher's own stays unreadable",
 			openError: errors.New("bad tag"),
 			assert: func(t *testing.T, loaded *session.Session, err error) {
@@ -569,7 +595,7 @@ func TestSealingStore_OpenFailureClassification(t *testing.T) {
 			require.NoError(t, sealing.Create(t.Context(), federatedSession("classified")))
 
 			cipher := NewMockCipher(gomock.NewController(t))
-			cipher.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, tc.openError).Times(1)
+			cipher.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, tc.openError).Times(1)
 
 			failing, err := session.NewEncryptedStore(inner, cipher)
 			require.NoError(t, err)
@@ -578,4 +604,146 @@ func TestSealingStore_OpenFailureClassification(t *testing.T) {
 			tc.assert(t, loaded, err)
 		})
 	}
+}
+
+// cipherContextKey keys the value TestSealingStore_CipherCarriesContext puts
+// in the context of each store operation.
+type cipherContextKey struct{}
+
+// contextCipher delegates to fakeCipher and records the value every call's
+// context carries under cipherContextKey, with the method's name.
+type contextCipher struct {
+	fakeCipher
+
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *contextCipher) record(ctx context.Context, method string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value, _ := ctx.Value(cipherContextKey{}).(string)
+	c.calls = append(c.calls, method+":"+value)
+}
+
+func (c *contextCipher) Seal(ctx context.Context, plaintext, additionalData []byte) ([]byte, error) {
+	c.record(ctx, "Seal")
+	return c.fakeCipher.Seal(ctx, plaintext, additionalData)
+}
+
+func (c *contextCipher) Open(ctx context.Context, ciphertext, additionalData []byte) ([]byte, error) {
+	c.record(ctx, "Open")
+	return c.fakeCipher.Open(ctx, ciphertext, additionalData)
+}
+
+func (c *contextCipher) seen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.calls)
+}
+
+func TestSealingStore_CipherCarriesContext(t *testing.T) {
+	t.Parallel()
+
+	family := id.MustParse("01926a4e-0000-7000-8000-000000000002")
+
+	type testCase struct {
+		name string
+		// setup stores what the call needs through the sealing store, under
+		// a context carrying no value.
+		setup  func(t *testing.T, sealing session.Store)
+		call   func(ctx context.Context, sealing session.Store) error
+		assert func(t *testing.T, calls []string, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:  "create seals under the create's context",
+			setup: func(*testing.T, session.Store) {},
+			call: func(ctx context.Context, sealing session.Store) error {
+				return sealing.Create(ctx, federatedSession("created"))
+			},
+			assert: func(t *testing.T, calls []string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"Seal:operation"}, calls)
+			},
+		},
+		{
+			name: "save seals under the save's context",
+			setup: func(t *testing.T, sealing session.Store) {
+				require.NoError(t, sealing.Create(t.Context(), federatedSession("saved")))
+			},
+			call: func(ctx context.Context, sealing session.Store) error {
+				return sealing.Save(ctx, federatedSession("saved"))
+			},
+			assert: func(t *testing.T, calls []string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"Seal:operation"}, calls)
+			},
+		},
+		{
+			name: "supersede seals the successor under the supersession's context",
+			setup: func(t *testing.T, sealing session.Store) {
+				require.NoError(t, sealing.Create(t.Context(), familyOf("old", family)))
+			},
+			call: func(ctx context.Context, sealing session.Store) error {
+				successor := federatedSession("new")
+				successor.FamilyID = family
+
+				return sealing.Supersede(ctx, firstRotation("old", successor))
+			},
+			assert: func(t *testing.T, calls []string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"Seal:operation"}, calls)
+			},
+		},
+		{
+			name: "load opens under the load's context",
+			setup: func(t *testing.T, sealing session.Store) {
+				require.NoError(t, sealing.Create(t.Context(), federatedSession("loaded")))
+			},
+			call: func(ctx context.Context, sealing session.Store) error {
+				loaded, err := sealing.Load(ctx, "loaded")
+				if err == nil && loaded.ExternalIDToken != federatedPlaintext {
+					return fmt.Errorf("the load opened %q", loaded.ExternalIDToken)
+				}
+
+				return err
+			},
+			assert: func(t *testing.T, calls []string, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"Open:operation"}, calls)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			c := &contextCipher{fakeCipher: fakeCipher{key: 0x2a}}
+			sealing, err := session.NewEncryptedStore(inner, c)
+			require.NoError(t, err)
+
+			tc.setup(t, sealing)
+			before := len(c.seen())
+
+			err = tc.call(context.WithValue(t.Context(), cipherContextKey{}, "operation"), sealing)
+			tc.assert(t, c.seen()[before:], err)
+		})
+	}
+}
+
+// TestErrCipherUnavailable_IsDistinct pins that the outage marker is a
+// sentinel of its own: a caller testing for an unreadable or a missing
+// session never mistakes an outage for either.
+func TestErrCipherUnavailable_IsDistinct(t *testing.T) {
+	t.Parallel()
+
+	assert.NotErrorIs(t, session.ErrCipherUnavailable, session.ErrUnreadable)
+	assert.NotErrorIs(t, session.ErrCipherUnavailable, session.ErrNotFound)
+	assert.NotErrorIs(t, session.ErrUnreadable, session.ErrCipherUnavailable)
+	assert.NotErrorIs(t, session.ErrNotFound, session.ErrCipherUnavailable)
 }
