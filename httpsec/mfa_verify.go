@@ -275,7 +275,16 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     not recorded: it is not a guess. So is a refusal matching
 //     mfa.ErrVerifyThrottled, such as a refused attempt charge: nothing was
 //     compared, so nothing is recorded.
-//  9. Success: resolve, rotate, publish, answer.
+//  9. The post-authentication phase is judged again with the login's input
+//     for the session, the second factor satisfied (behindSecondFactor), so a
+//     challenge or a deny the second-factor challenge hid at login is not
+//     lost. A deny refuses with the policy's reason, and a kind nothing
+//     enforces as a configuration error, leaving the session pending and
+//     counting nothing.
+//  10. Success: resolve, rotate, publish, answer. A challenge step 9 raised
+//     is marked on the rotated session before its credential is issued, and
+//     answered as a login answers one: a *ChallengeError carrying the rotated
+//     session and its credential.
 func (i *mfaInterceptor) verify(ex *Exchange) error {
 	s, method, err := i.admit(ex, i.verifyPrefix, anyMethod)
 	if err != nil {
@@ -287,7 +296,65 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	return i.resolve(ex, s)
+	// Step 9.
+	raised, err := i.behindSecondFactor(ex, s)
+	if err != nil {
+		return err
+	}
+
+	return i.resolve(ex, s, raised)
+}
+
+// behindSecondFactor judges the post-authentication phase again for s, whose
+// second factor has just been verified, and returns the challenge it then
+// raises, policy.ChallengeNone when it raises none.
+//
+// A login that left s pending judged the phase once, and the engine returned
+// its first challenge only: the second factor's, with every challenge
+// registered after it hidden behind it. So the phase is judged again with the
+// login's input for the session's user and first factor (sessionLoginInput),
+// at the chain's now, saying the request has satisfied a second factor
+// (policy.Input.MFASatisfied), which it has, and that the session already
+// exists (policy.Input.Reauthenticating): it is counted among the user's, and
+// verification adds none. A policy.ChallengeMFA is then dropped, the factor
+// being the one just presented (judgeBehindSecondFactor).
+//
+// It judges every pending session the endpoint serves alike, whatever left it
+// pending: a login's challenge, a challenge the per-request phase marked, or
+// an enrolment or a recovery binding that moved it on to verification. Each
+// is judged as a login of its user on its first factor would be judged now,
+// as a second-factor re-proof is.
+//
+// A deny refuses with the policy's reason. A challenge of a kind nothing on the
+// chain enforces refuses as at login (refuseUnenforced). Either refusal comes
+// before anything is satisfied, rotated or stored, so the session stays
+// pending under the credential the caller arrived with; the verified code is
+// not counted, being valid. With no engine on the chain the phase allows.
+func (i *mfaInterceptor) behindSecondFactor(ex *Exchange, s *session.Session) (policy.ChallengeKind, error) {
+	ph := ex.perRequest
+	if ph == nil {
+		return policy.ChallengeNone, nil
+	}
+
+	in := sessionLoginInput(ex.Authentication, s, i.now())
+	in.MFASatisfied = true
+
+	ctx := ex.Context()
+	d := judgeBehindSecondFactor(ctx, ph.engine, in, evaluatePhase(ctx, ph.engine, policy.PostAuthentication, in))
+
+	switch d.Outcome {
+	case policy.Deny:
+		return policy.ChallengeNone, policyDenyReason(d)
+	case policy.Challenge:
+		if err := refuseUnenforced(ph.enforced, d.Challenge); err != nil {
+			return policy.ChallengeNone, err
+		}
+
+		return d.Challenge, nil
+	case policy.Allow:
+	}
+
+	return policy.ChallengeNone, nil
 }
 
 // admit makes the refusals the verify and begin endpoints share, steps 1 to 4
@@ -412,7 +479,17 @@ func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *sessi
 // their error still reachable through errors.Is and errors.As; the session
 // manager words its store's failures so, and the generator's is wrapped by the
 // chain's credential issuer.
-func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
+//
+// raised is a challenge the post-authentication phase raised behind the second
+// factor (behindSecondFactor), policy.ChallengeNone for none, already checked
+// to be one the chain enforces. It is completed as a login completes one: the
+// second factor is satisfied and the session rotated as on success, the
+// challenge is marked on the copy the successor is built from, so it is
+// stored in the successor's creating write before the credential is issued,
+// and verification is refused with a *ChallengeError of that kind carrying the
+// rotated session and its credential, published on the exchange, rather than
+// answered through the responder.
+func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy.ChallengeKind) error {
 	satisfied := *s
 
 	satisfied.MFA = session.MFASatisfied
@@ -426,6 +503,20 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 		// The session has ended, which to the caller is a session they no
 		// longer hold. The manager's own error stays reachable.
 		return errors.Join(ErrAuthenticationRequired, err)
+	}
+
+	// A challenge the phase raised behind the second factor is marked before
+	// the rotation, on the copy the successor is built from, so the
+	// successor's creating write already carries it and the credential issued
+	// for the successor is never one for a session whose mark did not persist,
+	// as at login. A kind no gate reads marks nothing.
+	if raised != policy.ChallengeNone {
+		marker := challengeMarker{sessions: i.sessions}
+		if ex.perRequest != nil {
+			marker.enrolmentLifetime = ex.perRequest.enrolmentLifetime
+		}
+
+		marker.mark(&satisfied, raised)
 	}
 
 	ctx := ex.Context()
@@ -453,6 +544,13 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	// from now on rather than the one the rotation has just superseded.
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
+
+	// A challenge is answered as a login answers one: refused with it,
+	// carrying the rotated session and its credential for the consumer's
+	// prompt, and never through the success responder.
+	if raised != policy.ChallengeNone {
+		return &ChallengeError{Kind: raised, Session: rotated, Token: tok}
+	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated})
 }

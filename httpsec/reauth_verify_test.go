@@ -291,6 +291,38 @@ func TestReauthVerify(t *testing.T) {
 		})
 	}
 
+	// passwordAgeBehindMFA wires the library's second-factor policy, over a
+	// TOTP lookup the user is enrolled on, and the password-age policy, which
+	// owes a password change for a password whose age is unknown, as the
+	// harness's is. With mfaFirst the second-factor policy is registered
+	// first, so the phase's first challenge is the second factor's and the
+	// password change is behind it.
+	passwordAgeBehindMFA := func(mfaFirst bool) func(*testing.T, *reauthHarness) {
+		return func(t *testing.T, h *reauthHarness) {
+			t.Helper()
+
+			totpLookup := NewMockMFAMethodLookup(gomock.NewController(t))
+			totpLookup.EXPECT().Name().Return("totp").AnyTimes()
+			totpLookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totpLookup.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+
+			second, err := policy.NewMFA([]policy.MFAMethodLookup{totpLookup})
+			require.NoError(t, err)
+
+			age, err := policy.NewPasswordAge(policy.WithUnknownPasswordAge(policy.UnknownAgeChallenge))
+			require.NoError(t, err)
+
+			policies := []policy.Policy{age, second}
+			if mfaFirst {
+				policies = []policy.Policy{second, age}
+			}
+
+			h.chainOpts = append(h.chainOpts,
+				httpsec.EnableGateForTest(policy.ChallengePasswordChange),
+				httpsec.WithPolicyEngine(engineOf(t, policies...)))
+		}
+	}
+
 	// mfaFederated is what an OIDC login asserting multi-factor authentication
 	// records on its session.
 	mfaFederated := []session.CreateOption{
@@ -298,10 +330,43 @@ func TestReauthVerify(t *testing.T) {
 		session.WithFederatedAssurance([]string{"mfa"}, ""),
 	}
 
-	// captured is what the input-capturing row's policy was given, and
-	// substituted what the substituted-caller row's was; only that row writes
-	// each.
-	var captured, substituted []policy.Input
+	// substituted is what the substituted-caller row's policy was given; only
+	// that row writes it.
+	var substituted []policy.Input
+
+	// judgedAs is a row pinning the input the phase judges a re-proof of a
+	// session whose login used first on, which names username as that login
+	// named it. Each row captures into a slice of its own.
+	judgedAs := func(name string, first factor.Kind, username string) testCase {
+		var captured []policy.Input
+
+		return testCase{
+			name: name,
+			wire: func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup: engine(func(t *testing.T, _ *reauthHarness) *policy.Engine {
+				return capturingInputs(t, &captured)
+			}),
+			first:   first,
+			request: code(reauthVerifyTOTP),
+			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
+				reproved(t, h, s, out)
+
+				require.Len(t, captured, 1, "the post-authentication phase ran once")
+				in := captured[0]
+				assert.True(t, in.Reauthenticating, "the phase was not told it judges a re-proof")
+				assert.False(t, in.MFASatisfied, "the phase asked for no second factor, so none is claimed")
+				assert.Equal(t, testMFAUser, in.User)
+				require.NotNil(t, in.Principal)
+				assert.Equal(t, testMFAUser, in.Principal.ID)
+				assert.Equal(t, username, in.Username, "the username the session's login named")
+				assert.Equal(t, first, in.FirstFactor, "the session's first factor, not the method's")
+				assert.True(t, in.Now.Equal(h.clock.Now()), "judged at the chain's now: %s", in.Now)
+				assert.Nil(t, in.Session, "a login's input carries no session")
+				assert.False(t, in.SecondFactorAtLogin.Holds(),
+					"a session whose login did not meet its second factor at its first carries no proof")
+			},
+		}
+	}
 
 	cases := []testCase{
 		{
@@ -436,6 +501,26 @@ func TestReauthVerify(t *testing.T) {
 			assert:  challengedWith(policy.ChallengePasswordChange),
 		},
 		{
+			// "A challenge behind the second-factor challenge": the phase
+			// returns its first challenge, the second factor's, and the
+			// password change behind it is judged once the second factor
+			// presented now counts as satisfied.
+			name:    "a password change behind the second-factor challenge refuses with no session and marks nothing",
+			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup:   passwordAgeBehindMFA(true),
+			request: code(reauthVerifyTOTP),
+			assert:  challengedWith(policy.ChallengePasswordChange),
+		},
+		{
+			// Registered the other way round, the password change is the
+			// phase's first challenge and refuses as it always has.
+			name:    "a password change ahead of the second-factor challenge refuses with no session and marks nothing",
+			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup:   passwordAgeBehindMFA(false),
+			request: code(reauthVerifyTOTP),
+			assert:  challengedWith(policy.ChallengePasswordChange),
+		},
+		{
 			// A challenge nothing on the chain enforces is the wiring mistake
 			// a login and a password re-proof refuse it as.
 			name: "an unenforced post-authentication challenge is a configuration error",
@@ -472,33 +557,18 @@ func TestReauthVerify(t *testing.T) {
 				assert.Empty(t, substituted, "the phase judged a substituted caller")
 			},
 		},
-		{
-			// The phase judges what a login of the session's user on its first
-			// factor carries, marked as a re-authentication.
-			name: "the post-authentication phase judges the session's user and first factor as a re-proof",
-			wire: func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
-			setup: engine(func(t *testing.T, _ *reauthHarness) *policy.Engine {
-				return capturingInputs(t, &captured)
-			}),
-			first:   factor.MagicLink,
-			request: code(reauthVerifyTOTP),
-			assert: func(t *testing.T, h *reauthHarness, s *session.Session, out served) {
-				reproved(t, h, s, out)
-
-				require.Len(t, captured, 1, "the post-authentication phase ran once")
-				in := captured[0]
-				assert.True(t, in.Reauthenticating, "the phase was not told it judges a re-proof")
-				assert.Equal(t, testMFAUser, in.User)
-				require.NotNil(t, in.Principal)
-				assert.Equal(t, testMFAUser, in.Principal.ID)
-				assert.Equal(t, mfaUsername, in.Username)
-				assert.Equal(t, factor.MagicLink, in.FirstFactor, "the session's first factor, not the method's")
-				assert.True(t, in.Now.Equal(h.clock.Now()), "judged at the chain's now: %s", in.Now)
-				assert.Nil(t, in.Session, "a login's input carries no session")
-				assert.False(t, in.SecondFactorAtLogin.Holds(),
-					"a session whose login did not meet its second factor at its first carries no proof")
-			},
-		},
+		// The phase judges what a login of the session's user on its first
+		// factor carries, marked as a re-authentication. A magic-link and a
+		// federated login name no username; a password and a passkey login
+		// name the principal's.
+		judgedAs("a magic-link session is judged as its login, naming no username",
+			factor.MagicLink, ""),
+		judgedAs("a federated session is judged as its login, naming no username",
+			factor.OIDC, ""),
+		judgedAs("a password session is judged as its login, naming the principal's username",
+			factor.Password, mfaUsername),
+		judgedAs("a passkey session is judged as its login, naming the principal's username",
+			factor.Passkey, mfaUsername),
 		{
 			// "Unknown method".
 			name:    "an unknown method is refused before anything is counted",
@@ -1112,58 +1182,66 @@ func reauthPasskey(t *testing.T, d *pwlDeployment, tok, credID string) served {
 		assertionBody(d.verifier.lastRequest(t), credID)))
 }
 
-// deferredLookup is a second-factor lookup whose enrolment answer comes from a
-// method the deployment builds only with its chain, so a case can register the
-// MFA policies over it, in an order of its own, before the chain exists.
-type deferredLookup struct {
-	name    string
-	channel factor.Channel
-	method  func() mfa.Method
+// deferredLookup is a second-factor lookup whose enrolment answer comes from
+// the method that method returns, which the deployment builds only with its
+// chain, so a case can register the MFA policies over it, in an order of its
+// own, before the chain exists. Every enrolment question is delegated to that
+// method.
+func deferredLookup(t *testing.T, name string, channel factor.Channel, method func() mfa.Method) *MockMFAMethodLookup {
+	t.Helper()
+
+	l := NewMockMFAMethodLookup(gomock.NewController(t))
+	l.EXPECT().Name().Return(name).AnyTimes()
+	l.EXPECT().Channel().Return(channel).AnyTimes()
+	l.EXPECT().Enrolled(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, user identity.UserID) (bool, error) {
+			return method().Enrolled(ctx, user)
+		})
+
+	return l
 }
 
-func (l deferredLookup) Name() string            { return l.name }
-func (l deferredLookup) Channel() factor.Channel { return l.channel }
+// recordingInputs is a post-authentication policy that allows and records
+// every input it is given, a login's and a re-proof's alike, and the function
+// that returns what it recorded, in order.
+func recordingInputs(t *testing.T) (*MockPolicy, func() []policy.Input) {
+	t.Helper()
 
-func (l deferredLookup) Enrolled(ctx context.Context, user identity.UserID) (bool, error) {
-	return l.method().Enrolled(ctx, user)
-}
+	var (
+		mu   sync.Mutex
+		seen []policy.Input
+	)
 
-// inputRecorder is a post-authentication policy that allows and records every
-// input it is given, a login's and a re-proof's alike.
-type inputRecorder struct {
-	mu   sync.Mutex
-	seen []policy.Input
-}
+	p := NewMockPolicy(gomock.NewController(t))
+	p.EXPECT().Name().Return("test: input recorder").AnyTimes()
+	p.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
+	p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, in *policy.Input) policy.Decision {
+			mu.Lock()
+			defer mu.Unlock()
 
-func (*inputRecorder) Name() string           { return "test: input recorder" }
-func (*inputRecorder) Phases() []policy.Phase { return []policy.Phase{policy.PostAuthentication} }
+			seen = append(seen, *in)
 
-func (r *inputRecorder) Evaluate(_ context.Context, in *policy.Input) policy.Decision {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+			return policy.Decision{Outcome: policy.Allow}
+		})
 
-	r.seen = append(r.seen, *in)
+	return p, func() []policy.Input {
+		mu.Lock()
+		defer mu.Unlock()
 
-	return policy.Decision{Outcome: policy.Allow}
-}
-
-// inputs is what the recorder was given, in order.
-func (r *inputRecorder) inputs() []policy.Input {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return slices.Clone(r.seen)
+		return slices.Clone(seen)
+	}
 }
 
 // mfaPoliciesFirst wires d's chain with rec and then the real MFA policies over
 // d's TOTP and passkey methods, the requirement policy registered ahead of the
 // second-factor challenge policy when requirementFirst is set.
-func mfaPoliciesFirst(t *testing.T, d *pwlDeployment, rec *inputRecorder, requirementFirst bool) {
+func mfaPoliciesFirst(t *testing.T, d *pwlDeployment, rec policy.Policy, requirementFirst bool) {
 	t.Helper()
 
 	lookups := []policy.MFAMethodLookup{
-		deferredLookup{name: d.totp.Name(), channel: d.totp.Channel(), method: func() mfa.Method { return d.totp }},
-		deferredLookup{name: passkey.MethodName, channel: factor.PublicKey, method: func() mfa.Method { return d.manager.MFAMethod() }},
+		deferredLookup(t, d.totp.Name(), d.totp.Channel(), func() mfa.Method { return d.totp }),
+		deferredLookup(t, passkey.MethodName, factor.PublicKey, func() mfa.Method { return d.manager.MFAMethod() }),
 	}
 
 	challenge, err := policy.NewMFA(lookups)
@@ -1194,12 +1272,12 @@ func TestReauthVerifyEndToEnd(t *testing.T) {
 	}
 
 	// metAt is when the passkey-login row's session met its second factor,
-	// and reorderedMetAt the requirement-first row's; recorded is what that
+	// and reorderedMetAt the requirement-first row's; recorded reads what that
 	// row's recorder saw, and signedInAt when the same-channel row's session
 	// was authenticated. Rows run in parallel, so each writes only its own.
 	var (
 		metAt, reorderedMetAt, signedInAt time.Time
-		recorded                          inputRecorder
+		recorded                          func() []policy.Input
 	)
 
 	cases := []testCase{
@@ -1302,7 +1380,10 @@ func TestReauthVerifyEndToEnd(t *testing.T) {
 			name: "a passkey login re-proves with the passkey when the requirement policy is registered first",
 			setup: func(t *testing.T, d *pwlDeployment) {
 				d.mfaLimiter = limiterCounting(t, 0)
-				mfaPoliciesFirst(t, d, &recorded, true)
+
+				var rec policy.Policy
+				rec, recorded = recordingInputs(t)
+				mfaPoliciesFirst(t, d, rec, true)
 			},
 			act: func(t *testing.T, d *pwlDeployment) (string, served) {
 				tok := passkeyLogin(t, d, "cred-1")
@@ -1320,7 +1401,7 @@ func TestReauthVerifyEndToEnd(t *testing.T) {
 				// The re-proof judges the proof the login carried, rebuilt from
 				// the session: the same first-factor kind, at the time the
 				// session records the second factor as met.
-				seen := recorded.inputs()
+				seen := recorded()
 				require.Len(t, seen, 2, "the phase ran at the login and at the re-proof")
 				login, reproof := seen[0], seen[1]
 				require.False(t, login.Reauthenticating)

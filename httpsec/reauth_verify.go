@@ -3,8 +3,11 @@ package httpsec
 import (
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
@@ -61,7 +64,8 @@ const reauthChallengeSweepFlow = "reauth-challenge-sweep"
 //     (mfa.ErrVerifyThrottled), and is returned unchanged.
 //  9. The post-authentication policy phase (secondFactorPhase): every deny
 //     refuses with the policy's reason; a second-factor challenge does not
-//     refuse, and any other challenge refuses as at the password re-proof. A
+//     refuse, though what it hid is judged with the second factor satisfied,
+//     and any other challenge refuses as at the password re-proof. A
 //     refusal leaves the session as it was: nothing is rotated or refreshed,
 //     and the verified response is not counted.
 //  10. Success: resolve.
@@ -96,34 +100,19 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 // secondFactorPhase applies the post-authentication phase to a verified
 // second-factor re-proof of s, judged at now on the chain's engine, so a
 // consumer's post-authentication denials and the session cap bind it as they
-// bind a password re-proof.
-//
-// The input is the one a login builds for the session's user and first factor:
-// the caller the chain resolved, its username, the password-change time the
-// resolution read, and the session's own first factor rather than the method
-// re-proved with. Two fields are rebuilt from what the library recorded on the
-// session, as the session's own requests rebuild them. When the session records
-// that its login met the second factor at its first
-// (session.Session.MFAAtFirstFactor, library-owned and write-once), the input
-// carries the library's proof of it (policy.Input.SecondFactorAtLogin) for that
-// first factor, as that login's input carried it. The proof's time is the one
-// the session records for its second factor as met, which a cross-channel
-// re-proof moves; no policy reads it. And the input carries the evidence the
-// login's provider asserted (policy.Input.FederatedAssurance), minted afresh
-// from the session's provider, issuer, amr and acr, so the policies match it
-// against the provider's configuration as it is now. The phase therefore
-// answers a re-proof as it answers a login of the same user now. The input
-// is marked as the re-authentication of an existing session
-// (policy.Input.Reauthenticating), so a policy counting sessions knows none is
-// added.
+// bind a password re-proof. The input is sessionLoginInput's, so the phase
+// answers a re-proof as it answers a login of the same user now.
 //
 // Every deny refuses with the policy's reason, a same-channel refusal
 // (policy.ErrSecondFactorSameChannel) included: the phase ends at its first
 // deny, so discarding one would discard the denials it hid. A challenge for a
 // second factor (policy.ChallengeMFA) does not refuse, since one is being
-// presented now. Any other challenge refuses as the password re-proof refuses
-// it (refuseReproofChallenge), and the re-proof marks no session into a
-// pending state. With no engine on the chain, the phase allows.
+// presented now, but what it hid is judged (judgeBehindSecondFactor): the
+// phase is asked again with the second factor satisfied, so a password change
+// registered after the second-factor policy still refuses. Any other
+// challenge refuses as the password re-proof refuses it
+// (refuseReproofChallenge), and the re-proof marks no session into a pending
+// state. With no engine on the chain, the phase allows.
 func secondFactorPhase(ex *Exchange, s *session.Session, now time.Time) error {
 	var (
 		engine   *policy.Engine
@@ -135,8 +124,48 @@ func secondFactorPhase(ex *Exchange, s *session.Session, now time.Time) error {
 		enforced = ex.perRequest.enforced
 	}
 
-	auth := ex.Authentication
-	in := postAuthenticationInput(auth.Principal, s.FirstFactor, auth.Principal.Username, auth.PasswordChangedAt, now)
+	in := sessionLoginInput(ex.Authentication, s, now)
+
+	ctx := ex.Context()
+	d := judgeBehindSecondFactor(ctx, engine, in, evaluatePhase(ctx, engine, policy.PostAuthentication, in))
+
+	switch d.Outcome {
+	case policy.Deny:
+		return policyDenyReason(d)
+	case policy.Challenge:
+		return refuseReproofChallenge(enforced, d.Challenge)
+	case policy.Allow:
+	}
+
+	return nil
+}
+
+// sessionLoginInput is the post-authentication input a login of s's user on
+// s's first factor builds, at now, for a phase judging s again after the user
+// proved a factor on it: a second-factor re-proof, and MFA verification.
+//
+// It carries what that login carried: the caller the chain resolved from auth,
+// the username the login named, the password-change time the resolution read,
+// and the session's own first factor rather than the method just proved with.
+// Two fields are rebuilt from what the library recorded on the session, as the
+// session's own requests rebuild them. When the session records that its login
+// met the second factor at its first (session.Session.MFAAtFirstFactor,
+// library-owned and write-once), the input carries the library's proof of it
+// (policy.Input.SecondFactorAtLogin) for that first factor, as that login's
+// input carried it. The proof's time is the one the session records for its
+// second factor as met, which a cross-channel re-proof moves; no policy reads
+// it. And the input carries the evidence the login's provider asserted
+// (policy.Input.FederatedAssurance), minted afresh from the session's
+// provider, issuer, amr and acr, so the policies match it against the
+// provider's configuration as it is now.
+//
+// The input is marked as the evaluation of a session that already exists
+// (policy.Input.Reauthenticating): the session is already the user's and is
+// among any a policy counts, so a policy counting sessions knows none is
+// added. Whether a second factor was satisfied is the caller's to say.
+func sessionLoginInput(auth *authenticate.Authentication, s *session.Session, now time.Time) *policy.Input {
+	in := postAuthenticationInput(auth.Principal, s.FirstFactor, loginUsername(s.FirstFactor, auth.Principal),
+		auth.PasswordChangedAt, now)
 	in.Reauthenticating = true
 
 	if s.MFAAtFirstFactor {
@@ -145,21 +174,29 @@ func secondFactorPhase(ex *Exchange, s *session.Session, now time.Time) error {
 
 	in.FederatedAssurance = sessionFederatedAssurance(s)
 
-	d := evaluatePhase(ex.Context(), engine, policy.PostAuthentication, in)
+	return in
+}
 
-	switch d.Outcome {
-	case policy.Deny:
-		return policyDenyReason(d)
-	case policy.Challenge:
-		if d.Challenge == policy.ChallengeMFA {
-			return nil
-		}
-
-		return refuseReproofChallenge(enforced, d.Challenge)
-	case policy.Allow:
+// loginUsername is the username a login on first named for p, as the
+// post-authentication input of that login carried it: the principal's for a
+// password login, which names the account it checks the password of, and for
+// a passkey login, which names the account its credential resolved to; none
+// for a magic-link or a federated login, which name no username, nor for any
+// other first factor, whose session no library login built an input for.
+//
+// A password login's input names what the caller typed, which the session
+// does not record; the principal's is the account that typing resolved to.
+func loginUsername(first factor.Kind, p *identity.Principal) string {
+	if p == nil {
+		return ""
 	}
 
-	return nil
+	switch first {
+	case factor.Password, factor.Passkey:
+		return p.Username
+	default:
+		return ""
+	}
 }
 
 // begin issues a re-proof challenge for a challenge method at POST

@@ -84,6 +84,24 @@ type MFAOption func(*mfaInterceptor) error
 // sharing the session store, is refused with ErrSessionRenewalConflict (409)
 // inside the winner's in-flight window.
 //
+// After a valid code and before the rotation, verification judges the chain's
+// post-authentication phase again, with the input a login of the session's
+// user on its first factor builds, saying the second factor is satisfied
+// (policy.Input.MFASatisfied) and that the session already exists
+// (policy.Input.Reauthenticating), since it is counted and verification adds
+// none. The phase returns its first challenge only, so at login a challenge
+// registered after the second-factor policy was hidden behind it; this is
+// where it surfaces. A deny refuses verification with the policy's reason and
+// leaves the session pending under the caller's credential, counting nothing.
+// A challenge of another kind is completed as a login completes one: the
+// session is satisfied, rotated and marked with it before its credential is
+// issued, and verification is refused with a *ChallengeError of that kind
+// carrying the rotated session and its credential (a kind nothing on the
+// chain enforces refuses first, writing nothing). A second-factor challenge is
+// dropped, the factor being the one just presented. The default is on, with
+// no option: a consumer policy that should judge verification differently
+// reads MFASatisfied and Reauthenticating.
+//
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.
 //

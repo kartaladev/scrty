@@ -704,6 +704,57 @@ func evaluatePhase(
 	return e.EvaluatePhase(ctx, phase, in)
 }
 
+// judgeBehindSecondFactor is the post-authentication decision d of a request
+// that has just verified a second factor, with what a challenge for that
+// factor hid judged too. A second-factor re-proof and MFA verification both
+// take their decision through it.
+//
+// The engine returns the first challenge in registration order, so a
+// challenge registered after the policy asking for a second factor never
+// surfaces while that one is held: dropping the second-factor challenge,
+// because the factor has just been presented, would drop it too. So when d is
+// a policy.ChallengeMFA the phase is judged once more, at the same instant,
+// on a copy of in saying the request has satisfied a second factor
+// (policy.Input.MFASatisfied), which it has. That decision is returned, a
+// deny or a challenge of another kind as the caller refuses any, and a second
+// policy.ChallengeMFA reduced to an allow: the factor is the one being
+// presented. Any other d is returned unchanged, and in is never modified.
+//
+// When in already says the second factor is satisfied, d was judged with it,
+// and asking again would ask the same question: a policy.ChallengeMFA is then
+// reduced to an allow without evaluating the phase again.
+//
+// It can only add refusals to dropping the second-factor challenge outright.
+// A policy that raises policy.ChallengeMFA in this phase without honouring
+// MFASatisfied keeps raising it, and whatever it hides stays hidden; the
+// library's policy.MFA honours it, and policy.MFARequirement raises no
+// post-authentication second-factor challenge for a login off the federated
+// channel.
+func judgeBehindSecondFactor(
+	ctx context.Context,
+	e *policy.Engine,
+	in *policy.Input,
+	d policy.Decision,
+) policy.Decision {
+	if d.Outcome != policy.Challenge || d.Challenge != policy.ChallengeMFA {
+		return d
+	}
+
+	if in.MFASatisfied {
+		return policy.Decision{Outcome: policy.Allow}
+	}
+
+	satisfied := *in
+	satisfied.MFASatisfied = true
+
+	behind := evaluatePhase(ctx, e, policy.PostAuthentication, &satisfied)
+	if behind.Outcome == policy.Challenge && behind.Challenge == policy.ChallengeMFA {
+		return policy.Decision{Outcome: policy.Allow}
+	}
+
+	return behind
+}
+
 // writeLoginResult is the response a login succeeds with when the consumer
 // supplies none: a JSON document carrying the access token, an empty refresh
 // token field and the session's idle expiry.

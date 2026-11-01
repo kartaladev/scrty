@@ -351,6 +351,14 @@ type Input struct {
 	// MFASatisfied reports that this request has already satisfied a second
 	// factor. It is a claim about the request, so a policy that must not be
 	// talked out of a requirement states that it does not honour it.
+	//
+	// In the post-authentication phase the library sets it only where a
+	// second factor has just been verified on the request: MFA verification
+	// of a pending session, and a second-factor re-proof whose phase asked
+	// for one. Each judges the phase with it set to find what a second-factor
+	// challenge hid, since the engine returns only the first challenge, and
+	// drops a second-factor challenge it still raises. A login leaves it
+	// false.
 	MFASatisfied bool
 
 	// SecondFactorAtLogin is the library's proof that this login met its
@@ -391,8 +399,9 @@ type Input struct {
 	// existing session rather than signing a user in: the user proved a
 	// factor again on a session they already hold, and the phase decides
 	// whether that proof stands. The library sets it for every re-proof, by
-	// password and by second factor; every login, whatever its first factor,
-	// leaves it false.
+	// password and by second factor, and for MFA verification's judgement of
+	// the pending session it resolves, which is already counted; every login,
+	// whatever its first factor, leaves it false.
 	//
 	// A policy may conclude from it that no session is being added: the one
 	// re-authenticated is already the user's and is among any it counts, so a
