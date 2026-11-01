@@ -216,7 +216,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
   - `test/storetest` session suite cases for the mark: recorded without grace, not with a grace window, returned on load, untouched by create and save, swept with the session at its retention deadline; and broken variants that drop the mark and that save it.
 
   Red: the new suite cases fail on the memory store before it records the mark. (ADDED security-state-stores "Session stores keep whether a supersession was a rotation without grace"; ADDED store-conformance "The session suite covers the strict-rotation mark", the store-variant scenarios.) Verify with `go test -race -count=1 ./session/ ./test/storetest/`
-- [ ] 10.2 The durable stores and the migration (D10 "Schema", "Stores"):
+- [x] 10.2 The durable stores and the migration (D10 "Schema", "Stores"):
   - a new migration in `store/migrate/securitystate` adding `rotated_strictly boolean NOT NULL DEFAULT false`, with a `Down` that drops it;
   - `internal/pgschema` and `internal/storekit` write and read it in the supersession and load statements; `sqlstore`, `pgxstore` and `gormstore` (`models.go`) carry it;
   - migration tests: the column, existing rows unmarked, an older writer's insert, rollback; the gorm statement pins.
