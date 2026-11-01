@@ -33,8 +33,9 @@ type Generator interface {
 	// ctx is passed to the key source, which is asked for a signer once for
 	// this token; the signer is never kept. A source that holds no key for the
 	// configured algorithm (signingkey.ErrNoKey) fails it as "no current key
-	// for algorithm" naming the configured one; any other source error, or no signer at all, fails
-	// it as an outage behind fixed library text, never as a missing key.
+	// for algorithm", naming the configured one; any other source error, or no
+	// signer at all, fails it as an outage behind fixed library text, never as
+	// a missing key.
 	// A key source's own crypto.Signer failing to sign comes back behind
 	// fixed library text too. In each case the source's or the signer's own
 	// error stays reachable through errors.Is and errors.As, but its text

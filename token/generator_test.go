@@ -485,7 +485,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 	require.NoError(t, err)
 
 	// Two more minutes and it is past its expiry.
-	clock.Advance(2 * time.Hour)
+	clock.Advance(2 * time.Minute)
 	_, err = gen.Verify(t.Context(), raw)
 	require.ErrorIs(t, err, token.ErrInvalid)
 }
