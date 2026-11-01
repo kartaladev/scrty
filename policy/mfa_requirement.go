@@ -169,7 +169,10 @@ type MFARequirement struct {
 // evidence is not the proof. A consumer who
 // wants a separate second factor even after a user-verified passkey login
 // sets passkey.WithoutSecondFactorAtLogin on the passkey login, so no proof is
-// minted and this policy never sees one.
+// minted and this policy never sees one. The option governs logins made after
+// it is set: a session created before the consumer turned it on still carries
+// the mark that its login met the second factor, so its second-factor
+// re-proofs carry a proof rebuilt from it.
 //
 // Construction fails, wrapping ErrConfig, with ErrMFARequirementLookupMissing
 // when there is no lookup and no requirement for all — the policy could answer

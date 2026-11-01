@@ -137,15 +137,24 @@ func postAuthenticate(ctx context.Context, l *formLogin, in *policy.Input) error
 	case policy.Deny:
 		return policyDenyReason(d)
 	case policy.Challenge:
-		if err := refuseUnenforced(l.enforced, d.Challenge); err != nil {
-			return err
-		}
-
-		return &ChallengeError{Kind: d.Challenge}
+		return refuseReproofChallenge(l.enforced, d.Challenge)
 	case policy.Allow:
 	}
 
 	return nil
+}
+
+// refuseReproofChallenge is the refusal of a re-proof whose post-authentication
+// phase challenged for kind, the same at the password and second-factor
+// endpoints: a kind nothing on the chain enforces (enforced), or one only a
+// built-in gate raises, is a configuration error, and any other kind a
+// *ChallengeError of that kind carrying no session and no token.
+func refuseReproofChallenge(enforced map[policy.ChallengeKind]bool, kind policy.ChallengeKind) error {
+	if err := refuseUnenforced(enforced, kind); err != nil {
+		return err
+	}
+
+	return &ChallengeError{Kind: kind}
 }
 
 // readPassword reads only the password out of a re-proof request, the way

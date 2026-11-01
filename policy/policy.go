@@ -361,11 +361,16 @@ type Input struct {
 	// without a holding proof is judged like any other login of its kind.
 	//
 	// Only library code can mint one that holds, and only the library's own
-	// passkey verification does. Federated evidence is never this proof,
-	// whatever the provider asserted: a federated login is decided by
-	// FederatedAssurance alone. A consumer that wants a separate second
-	// factor even after a user-verified passkey login turns the proof off at
-	// the passkey login, with passkey.WithoutSecondFactorAtLogin.
+	// passkey verification does at a login; a second-factor re-proof of a
+	// session whose login carried one rebuilds it from what the library
+	// recorded on that session (session.Session.MFAAtFirstFactor), for the
+	// session's first factor at the time the session records its second factor
+	// as met. A cross-channel re-proof moves that time, and no policy reads it.
+	// Federated evidence is
+	// never this proof, whatever the provider asserted: a federated login is
+	// decided by FederatedAssurance alone. A consumer that wants a separate
+	// second factor even after a user-verified passkey login turns the proof
+	// off at the passkey login, with passkey.WithoutSecondFactorAtLogin.
 	SecondFactorAtLogin SecondFactorProof
 
 	// FederatedAssurance is the evidence of the assurance a federated
@@ -376,23 +381,29 @@ type Input struct {
 	// nothing. It is never the proof in SecondFactorAtLogin.
 	//
 	// The zero value asserts nothing. Only library code mints evidence that
-	// asserts anything: the OIDC handoff redemption and the per-request
-	// evaluation of a federated session. A plain field or claim cannot stand
-	// in for it.
+	// asserts anything: the OIDC handoff redemption, and the evaluation of a
+	// federated session's own requests and second-factor re-proofs, which
+	// rebuild it from what the session recorded. A plain field or claim cannot
+	// stand in for it.
 	FederatedAssurance FederatedAssurance
 
 	// Reauthenticating reports that this evaluation re-authenticates an
 	// existing session rather than signing a user in: the user proved a
 	// factor again on a session they already hold, and the phase decides
-	// whether that proof stands. The library sets it only for a password
-	// re-proof; every login, whatever its first factor, leaves it false.
+	// whether that proof stands. The library sets it for every re-proof, by
+	// password and by second factor; every login, whatever its first factor,
+	// leaves it false.
 	//
 	// A policy may conclude from it that no session is being added: the one
 	// re-authenticated is already the user's and is among any it counts, so a
 	// limit on how many sessions a user holds is not reached by a re-proof
 	// (ConcurrentSessions reads it that way). Everything else in the input is
-	// what a login for the same user and factor carries, so a policy that
-	// does not read this field judges a re-proof as it judges that login.
+	// what a login for the same user and first factor carries, so a policy
+	// that does not read this field judges a re-proof as it judges that login.
+	// A second-factor re-proof carries the session's first factor, not the
+	// method re-proved with; when that session's login met its second factor
+	// at its first, the login's proof in SecondFactorAtLogin; and, for a
+	// federated session, the evidence its login asserted in FederatedAssurance.
 	// What a re-proof means beyond that is the consumer's policy to decide.
 	Reauthenticating bool
 
@@ -407,10 +418,12 @@ type Input struct {
 // met at its first factor, as a user-verified passkey login does.
 //
 // The type has no public constructor and its zero value proves nothing
-// (Holds reports false). Only the library's own passkey verification produces
-// one that holds; a consumer can name the type and copy a value it was handed,
-// and nothing more. Copying a proof from one login into the input of another is
-// the consumer's own act, and the library cannot tell it happened.
+// (Holds reports false). Only the library produces one that holds: the passkey
+// verification at a login, and a second-factor re-proof, which rebuilds one
+// from a session whose login met it. A consumer can name the type and copy a
+// value it was handed, and nothing more. Copying a proof from one login into
+// the input of another is the consumer's own act, and the library cannot tell
+// it happened.
 type SecondFactorProof = assurance.Proof
 
 // unnamed renders a value that names no constant of an enumeration, as

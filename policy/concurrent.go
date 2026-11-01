@@ -128,12 +128,13 @@ func (p *ConcurrentSessions) Phases() []Phase { return []Phase{PostAuthenticatio
 // login would establish is the one that must not be created, so a user holding
 // three of a permitted three is refused a fourth.
 //
-// A re-authentication (in.Reauthenticating) is judged past the maximum, not at
-// it. It creates no session: the session it re-proves is already the user's and
-// is among those counted, so a user holding three of a permitted three may
+// A re-authentication (in.Reauthenticating), which every re-proof is, by
+// password and by second factor alike, is judged past the maximum, not at it.
+// It creates no session: the session it re-proves is already the user's and is
+// among those counted, so a user holding three of a permitted three may
 // re-prove any of them, and one a lowered cap left above the maximum may not.
 // Judging it as a login would refuse every re-proof by a user at the cap, so a
-// deployment allowing one session per user could never re-prove by password.
+// deployment allowing one session per user could never re-prove at all.
 //
 // A count that fails denies, with a reason of fixed text wrapping both
 // ErrTooManySessions and the cause, so a caller can refuse on the first and an
