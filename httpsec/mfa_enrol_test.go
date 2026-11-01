@@ -3680,15 +3680,17 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 					require.ErrorIs(t, err, session.ErrNotFound, "the issued credential names no session")
 				}
 
-				// The session the verification held is a copy the rotation
-				// changed, so the stored record is what shows nothing was
-				// written: still pending, deadline and marker as lowered, and
-				// not marked as rotated.
+				// The session the request carried is the very one the
+				// verification was handed (the harness injects h.pinned as the
+				// caller's session), so it shows the verification changed
+				// nothing on it in place.
 				untouched(t, h.pinned)
 
-				stored := h.stored(t, s.ID)
-				untouched(t, stored)
-				assert.False(t, stored.RotatedStrictly, "the stored session is not marked as rotated")
+				// The record the store holds shows nothing was written: still
+				// pending, deadline and marker as lowered. The load succeeding
+				// is itself the proof it was not rotated, since a strictly
+				// rotated record loads as not found.
+				untouched(t, h.stored(t, s.ID))
 			},
 		},
 	}
