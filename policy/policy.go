@@ -358,7 +358,16 @@ type Input struct {
 	// for one. Each judges the phase with it set to find what a second-factor
 	// challenge hid, since the engine returns only the first challenge, and
 	// drops a second-factor challenge it still raises. A login leaves it
-	// false.
+	// false. Both set Reauthenticating beside it.
+	//
+	// The library's policies honour it there: MFA allows, and MFARequirement
+	// allows an unmet federated login it would otherwise challenge for a
+	// second factor, but only with Reauthenticating also set; its refusals
+	// stand. The line: a consumer policy that raises ChallengeMFA without
+	// reading this field raises it again on that judgement, the challenge is
+	// dropped, and whatever is registered after the policy in the engine stays
+	// hidden. A policy that should not hide what follows it reads this field,
+	// or is registered after the policies it would hide.
 	MFASatisfied bool
 
 	// SecondFactorAtLogin is the library's proof that this login met its

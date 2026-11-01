@@ -55,6 +55,23 @@ func reauthBearer(t *testing.T) *reauthHarness {
 	return h
 }
 
+// substitutingCaller is a consumer interceptor, registered at at, that
+// publishes another user's principal on whatever caller the chain resolved
+// before it, leaving the session in place.
+func substitutingCaller(at httpsec.Order) httpsec.Option {
+	swap := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if ex.Authentication != nil && ex.Authentication.Principal != nil {
+			p := *ex.Authentication.Principal
+			p.ID = identity.UserID("u-9")
+			ex.Authentication = &authenticate.Authentication{Principal: &p, Time: ex.Authentication.Time}
+		}
+
+		return next(ex)
+	})
+
+	return httpsec.RegisterInterceptor(swap, at)
+}
+
 // reauthEnv is one bearer chain with re-authentication and the full session a
 // case re-proves.
 type reauthEnv struct {
@@ -323,6 +340,38 @@ func TestReauthVerify(t *testing.T) {
 		}
 	}
 
+	// passwordAgeBehindRequirement wires the requirement policy over everyone,
+	// in its challenge mode, with a source the session's evidence does not
+	// meet, registered before the password-age policy, which owes a password
+	// change for a password whose age is unknown. For a federated session the
+	// phase's first challenge is the requirement's second-factor challenge, and
+	// the password change is behind it.
+	passwordAgeBehindRequirement := func(t *testing.T, h *reauthHarness) {
+		t.Helper()
+
+		ctrl := gomock.NewController(t)
+
+		totpLookup := NewMockMFAMethodLookup(ctrl)
+		totpLookup.EXPECT().Name().Return("totp").AnyTimes()
+		totpLookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+		totpLookup.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+
+		src := NewMockFederatedAssuranceSource(ctrl)
+		src.EXPECT().MeetsAssurance(gomock.Any(), testMFAUser, gomock.Any()).Return(false, nil).AnyTimes()
+
+		requirement, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{totpLookup},
+			policy.WithMFARequiredForAll(),
+			policy.WithFederatedAssuranceSource(src))
+		require.NoError(t, err)
+
+		age, err := policy.NewPasswordAge(policy.WithUnknownPasswordAge(policy.UnknownAgeChallenge))
+		require.NoError(t, err)
+
+		h.chainOpts = append(h.chainOpts,
+			httpsec.EnableGateForTest(policy.ChallengePasswordChange),
+			httpsec.WithPolicyEngine(engineOf(t, requirement, age)))
+	}
+
 	// mfaFederated is what an OIDC login asserting multi-factor authentication
 	// records on its session.
 	mfaFederated := []session.CreateOption{
@@ -508,6 +557,19 @@ func TestReauthVerify(t *testing.T) {
 			name:    "a password change behind the second-factor challenge refuses with no session and marks nothing",
 			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
 			setup:   passwordAgeBehindMFA(true),
+			request: code(reauthVerifyTOTP),
+			assert:  challengedWith(policy.ChallengePasswordChange),
+		},
+		{
+			// "A federated re-proof behind the requirement": the requirement
+			// policy challenges the unmet federated session for a second
+			// factor, and accepts the one presented now on the re-judgement,
+			// so the password change behind it refuses.
+			name:    "a password change behind the requirement's federated challenge refuses with no session and marks nothing",
+			wire:    func(h *reauthHarness) { h.allows().accepts().recordsNoFailure() },
+			setup:   passwordAgeBehindRequirement,
+			first:   factor.OIDC,
+			create:  mfaFederated,
 			request: code(reauthVerifyTOTP),
 			assert:  challengedWith(policy.ChallengePasswordChange),
 		},
@@ -989,6 +1051,21 @@ func TestReauthBegin(t *testing.T) {
 			act:  func(t *testing.T, e *reauthEnv) served { return e.begin(t, e.token()) },
 			assert: func(t *testing.T, e *reauthEnv, out served) {
 				refusedBegin(mfa.ErrVerifyThrottled)(t, e, out)
+			},
+		},
+		{
+			// "A substituted caller at begin": a consumer interceptor past the
+			// gates publishes another user on the session. Nothing is counted
+			// and no challenge is issued for them.
+			name: "a caller who is not the session's user is refused before the throttle and issues nothing",
+			wire: func(h *reauthHarness, stub *challengeStub) {
+				untouched(h, stub)
+				h.chainOpts = append(h.chainOpts, substitutingCaller(httpsec.After(httpsec.OrderPasswordChange)))
+			},
+			act: func(t *testing.T, e *reauthEnv) served { return e.begin(t, e.token()) },
+			assert: func(t *testing.T, e *reauthEnv, out served) {
+				refusedBegin(httpsec.ErrAuthenticationRequired)(t, e, out)
+				unchanged(t, e.h, e.s)
 			},
 		},
 		{

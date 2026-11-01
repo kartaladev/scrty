@@ -80,9 +80,13 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // It makes the same refusals verify does, in the same order and before the
 // body is read — the body is never read here at all — with one difference: a
 // path naming a method that has no begin step is refused as unknown, exactly
-// as one naming no method is. None of them is counted. A user the verification
-// throttle already refuses is refused here too, so a locked-out user cannot
-// keep minting challenges.
+// as one naming no method is. None of them is counted. A resolved caller who
+// is not the session's own user (a consumer interceptor past the first factor
+// published another principal) is refused with ErrAuthenticationRequired, as
+// verify refuses one, before the throttle is consulted and before anything is
+// issued, so nobody spends the session user's challenge issuance but that
+// user. A user the verification throttle already refuses is refused here too,
+// so a locked-out user cannot keep minting challenges.
 //
 // The challenge is a one-time token of the method's own purpose, whose subject
 // is the user and which is bound to the session's handle, so it can be
@@ -104,6 +108,11 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 func (i *mfaInterceptor) begin(ex *Exchange) error {
 	s, method, err := i.admit(ex, i.beginPrefix, isChallengeMethod)
 	if err != nil {
+		return err
+	}
+
+	// admit refused a session whose first factor published no caller.
+	if err := requireSessionUser(ex, s); err != nil {
 		return err
 	}
 
@@ -270,10 +279,12 @@ func WithMFAChallengeTTL(d time.Duration) MFAOption {
 // some other way is a choice, not a surprise.
 //
 // Giving a store here and enabling re-authentication (EnableReauthentication)
-// also requires WithReauthenticationChallengeStore: a deployment that shares
-// this store across replicas would otherwise have its re-proof challenges in
-// per-process memory, and a re-proof begun on one replica would fail on
-// another. New fails with ErrConfig naming both options. Passing the same
+// on a slot with a method that has a begin step (a challenge method, such as
+// passkeys) also requires WithReauthenticationChallengeStore: a deployment
+// that shares this store across replicas would otherwise have its re-proof
+// challenges in per-process memory, and a re-proof begun on one replica would
+// fail on another. New fails with ErrConfig naming both options. A slot of
+// TOTP alone issues no challenge and builds without it. Passing the same
 // store to both is fine, as purposes keep the two kinds of challenge apart.
 //
 // A nil store, including an interface holding a nil pointer, is refused.

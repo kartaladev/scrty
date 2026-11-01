@@ -106,10 +106,26 @@ type MFAOption func(*mfaInterceptor) error
 // session is satisfied, rotated and marked with it before its credential is
 // issued, and verification is refused with a *ChallengeError of that kind
 // carrying the rotated session and its credential (a kind nothing on the
-// chain enforces refuses first, writing nothing). A second-factor challenge is
-// dropped, the factor being the one just presented. The default is on, with
-// no option: a consumer policy that should judge verification differently
-// reads MFASatisfied and Reauthenticating.
+// chain enforces refuses first, writing nothing). The consumer's error handler
+// therefore delivers that challenge's credential (ChallengeError.Token): the
+// credential the caller arrived with names the session it replaced, and no
+// longer works. A second-factor challenge is dropped, the factor being the
+// one just presented. The default is on, with no option: a consumer policy
+// that should judge verification differently reads MFASatisfied and
+// Reauthenticating.
+//
+// The line: the library's policies honour MFASatisfied here (policy.MFA, and
+// policy.MFARequirement for an unmet federated login, with Reauthenticating
+// set), so what is registered after them is judged. A consumer policy that
+// raises policy.ChallengeMFA without reading MFASatisfied still raises it
+// here, the challenge is dropped, and whatever is registered after it in the
+// engine stays hidden. Such a policy reads MFASatisfied, or is registered
+// after the policies it would hide.
+//
+// The begin endpoint makes verification's substituted-caller refusal too: a
+// resolved caller who is not the pending session's user is refused with
+// ErrAuthenticationRequired before the throttle and before any challenge is
+// issued.
 //
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.
