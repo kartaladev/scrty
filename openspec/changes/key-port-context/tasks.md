@@ -58,7 +58,7 @@ Every task is test-first: write the failing test, run it, confirm it fails for t
 ## 7. Integration
 
 - [ ] 7.1 Run the full gate, after group 8. Verified by `make check` passing locally, and by CI green on both PostgreSQL and Redis matrix jobs.
-- [ ] 7.2 Run one whole-branch review against every requirement of the eleven deltas and decisions D1 to D8. Verified by a review report with no open finding, and by `openspec validate key-port-context --strict` passing. The first review, and `/code-review` and `/security-review`, ran on 2026-11-01; their reproduced findings are group 8, and this task is ticked once group 8 is reviewed clean.
+- [x] 7.2 Run one whole-branch review against every requirement of the eleven deltas and decisions D1 to D8. Verified by a review report with no open finding, and by `openspec validate key-port-context --strict` passing. The first review, and `/code-review` and `/security-review`, ran on 2026-11-01; their reproduced findings are group 8, and this task is ticked once group 8 is reviewed clean.
 
 ## 8. Review findings (2026-11-01)
 
