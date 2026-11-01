@@ -89,6 +89,18 @@ type mfaHarness struct {
 	// which after a successful verification is the rotated one.
 	issuedFor atomic.Value
 
+	// issuedMu guards issuedAll, every session identifier a token was issued
+	// against, in order. Under a race the last one issued is not the winner's,
+	// so a case that races reads the winner's from its response and uses this
+	// to find the identifiers that were issued and never stored.
+	issuedMu  sync.Mutex
+	issuedAll []string
+
+	// generateErr, when a case sets it before the chain serves anything,
+	// makes the token generator fail every issue with it and record nothing
+	// in issuedFor.
+	generateErr error
+
 	// mfaOpts and logoutOpts are what a case wants configured differently. They
 	// are fields rather than arguments so every case assembles the chain the
 	// same way and only the configuration under test varies.
@@ -146,7 +158,15 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 	// token issued before a rotation names a session that no longer exists.
 	h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+			if h.generateErr != nil {
+				return "", h.generateErr
+			}
+
 			h.issuedFor.Store(id)
+
+			h.issuedMu.Lock()
+			h.issuedAll = append(h.issuedAll, id)
+			h.issuedMu.Unlock()
 
 			return mfaTokenFor(id), nil
 		})
@@ -187,6 +207,10 @@ func mfaTokenFor(sessionID string) string { return mfaTokenPrefix + sessionID }
 // errMFATokenUnreadable is what the verifier double refuses a token it did not
 // issue with.
 var errMFATokenUnreadable = errors.New("mfaverify_test: not a token this verifier issued")
+
+// errTokenGenerator is what the generator double fails an issue with when a
+// case sets mfaHarness.generateErr to it.
+var errTokenGenerator = errors.New("mfaverify_test: the token generator is unavailable")
 
 // mfaMethod is a method double reporting channel and nothing else, for the
 // cases that never reach a verification.
@@ -883,6 +907,37 @@ func TestMFAVerify(t *testing.T) {
 			assert: resolved,
 		},
 		{
+			// "A verification whose credential cannot be issued leaves the
+			// session pending": the credential is issued before the rotation
+			// is stored, so a generator that fails leaves the caller on the
+			// session they arrived with, still owing the factor.
+			name:    "a valid code to TOTP's path whose token cannot be issued leaves the session pending",
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+				email.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				h.generateErr = errTokenGenerator
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, errTokenGenerator, "refused with the generator's failure")
+				assert.False(t, out.handlerRan)
+				assert.Nil(t, h.issuedFor.Load(), "no credential was issued")
+
+				arrived, err := h.sessions.Load(t.Context(), s.ID)
+				require.NoError(t, err, "the session the caller arrived with still loads")
+				assert.Equal(t, session.MFAPending, arrived.MFA, "and is still pending")
+				assert.False(t, arrived.RotatedStrictly, "and was not rotated")
+
+				require.NotNil(t, h.resolved)
+				assert.Equal(t, s.ID, h.resolved.ID, "the exchange keeps the session it arrived with")
+
+				n, err := h.sessions.CountActiveByUser(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "no successor was stored")
+			},
+		},
+		{
 			name:    "a valid code to the emailed code's path",
 			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/email-code"),
 			wire: func(h *mfaHarness, email *MockMethod) {
@@ -1158,9 +1213,9 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 
 			// A refused rotation leaves the session the caller holds as it
 			// was: the second factor is not recorded on it.
-			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
-			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
-			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
+			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is unchanged")
+			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is unchanged: got %s", s.MFASatisfiedAt)
+			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is unchanged: got %s", s.AuthenticatedAt)
 
 			return c, out
 		}
@@ -2113,6 +2168,23 @@ func TestMFAVerifySatisfiedSessionPassesTheGate(t *testing.T) {
 
 	rotated := h.stored(t, h.rotatedID(t))
 	assert.Equal(t, session.MFASatisfied, rotated.MFA)
+}
+
+// issuedExcept returns every identifier a token was issued against other than
+// kept.
+func (h *mfaHarness) issuedExcept(kept string) []string {
+	h.issuedMu.Lock()
+	defer h.issuedMu.Unlock()
+
+	var others []string
+
+	for _, id := range h.issuedAll {
+		if id != kept {
+			others = append(others, id)
+		}
+	}
+
+	return others
 }
 
 // rotatedID is the identifier the last access token was issued against.
