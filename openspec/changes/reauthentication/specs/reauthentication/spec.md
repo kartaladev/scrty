@@ -488,7 +488,7 @@ Every default re-proof responder SHALL set `Cache-Control: no-store`; a consumer
 - **THEN** the records written contain neither the password nor the code
 
 ### Requirement: A second-factor re-proof applies the post-authentication policy's denials
-After a second-factor response is verified and before the session is rotated, the post-authentication policy phase SHALL be applied with the input a login builds for the session's principal and first factor, marked as a re-authentication and carrying the library's proof of a second factor met at the first when the session records one. Every deny SHALL refuse the re-proof with the policy's reason. A refusal SHALL leave the session unchanged.
+After a second-factor response is verified and before the session is rotated, the post-authentication policy phase SHALL be applied with the input a login builds for the session's principal and first factor, marked as a re-authentication and carrying the second-factor proof and the federated evidence the session records from its login. Every deny SHALL refuse the re-proof with the policy's reason. A refusal SHALL leave the session unchanged.
 
 #### Scenario: Above the session cap
 - **WHEN** the concurrent session policy has a maximum of 1, `u-1` holds two sessions, and one of them posts a valid code to `/reauth/verify/totp`
@@ -506,6 +506,10 @@ After a second-factor response is verified and before the session is rotated, th
 - **WHEN** a session whose login did not meet its second factor at its first factor belongs to a user now enrolled only on the passkey method, and it re-proves through `/reauth/verify/passkey` on a chain whose MFA policy refuses a same-channel second factor
 - **THEN** it is refused with the same-channel refusal, as that user's sign-in would be, and the session is unchanged
 
+#### Scenario: A federated session re-proves under refused assurance
+- **WHEN** an OIDC session whose provider asserted the assurance a required user needs, on a chain that refuses unmet federated assurance, posts a valid code to `/reauth/verify/totp`
+- **THEN** its session is re-authenticated, as every request of that session is admitted
+
 #### Scenario: A deny ahead of another deny
 - **WHEN** a policy that denies is registered ahead of the concurrent session policy, and a user above the cap posts a valid code to `/reauth/verify/totp`
 - **THEN** it is refused with the first policy's reason and the session is unchanged
@@ -522,7 +526,7 @@ When the post-authentication phase of a second-factor re-proof challenges, a sec
 - **THEN** it is refused with a challenge error of that kind carrying no session, and the session is unchanged
 
 ### Requirement: A second-factor re-proof judges only the session's own user
-A second-factor re-proof SHALL refuse, as authentication required and before the post-authentication phase, a caller whose user is not the session's user, as the password re-proof does.
+A second-factor re-proof SHALL refuse, as authentication required and before the post-authentication phase, a caller whose user is not the session's user, counting and verifying nothing.
 
 #### Scenario: A substituted caller
 - **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts a valid code to `/reauth/verify/totp`

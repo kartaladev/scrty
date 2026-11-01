@@ -95,6 +95,8 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 
 | 11b | M1b | 12.1 review follow-ups | M1's files plus `httpsec/mfa_enrol_test.go` | Sonnet: the fixes are stated | Sonnet |
 | 11b | M2b | 12.2 revised (D6 "Every deny binds") | M2's files; `httpsec/reauth_options.go` godoc of the verify bullet | Opus: security refusal logic, a reproduced fail-open | Opus |
+| 11c | M2c | 12.2 federated evidence and godoc (Step 7) | M2's files; `policy/mfa_requirement.go`, `session/sessions_options.go` (godoc) | Sonnet: the fix is stated and shown to work | Sonnet |
+| 11c | M1c | 12.1 test-strength follow-ups | `session/sessions_test.go`, `httpsec/mfa_enrol_test.go` | Sonnet: stated test gaps | Sonnet |
 
 - Wave 11 runs M1, M2 and M3 in parallel worktrees (disjoint files). M3 merged after review. M1 and M2 came back with review findings, so wave 11b re-dispatches both on their own branches, in parallel (disjoint files). Wave 12 runs M4 after wave 11 merges (it touches `mfa_verify.go` after M1), then M5, then the gate.
 
@@ -735,6 +737,7 @@ Runs on H1's branch after Task 18.
   - a `ChallengePasswordChange` outcome → `*ChallengeError{Kind: ChallengePasswordChange}`, no session, unchanged; an unenforced kind → configuration error;
   - a consumer interceptor publishing `u-other` on the session → `ErrAuthenticationRequired` before the phase.
   Then: drop the same-channel exemption; rebuild `SecondFactorAtLogin` from the session; refuse non-MFA challenges as `postAuthenticate` does; check `ex.Authentication.Principal.ID == s.UserID` before the phase. Godoc on `verify`, `EnableReauthentication` (verify bullet), `policy.Input.Reauthenticating`. Run Step 4: PASS.
+- [ ] **Step 7: The federated evidence too (dispatch M2c, third review).** Failing row first in `TestReauthVerify`, from `TestReproReproofDropsFederatedAssurance`: an OIDC session recording provider, issuer and `amr=["mfa"]`, `MFARequirement` with `WithMFARequiredForAll`, `FederatedAssuranceRefuse` and a source that meets the evidence → a valid TOTP re-proof re-authenticates (fails today: `policy: the provider did not assert the assurance this login requires`). Then `in.FederatedAssurance = sessionFederatedAssurance(s)` in `secondFactorPhase`. Godoc: the caller check refuses as authentication required before the throttle (not "as the password re-proof does"); `policy.SecondFactorProof` and `MFARequirement`'s `WithoutSecondFactorAtLogin` note name the re-proof rebuild, including sessions created before the option was turned on; `secondFactorPhase` and `policy.Input` name both rebuilt fields and that the proof's time is the session's satisfaction time; `session.WithSecondFactorAtLogin` says a consumer-made session so marked carries a library proof at re-proof. Run Step 4: PASS.
 
 ### Task 32: Wiring and the password short-circuit (tasks.md 12.3, 12.4)
 
