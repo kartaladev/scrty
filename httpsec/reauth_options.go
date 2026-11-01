@@ -458,7 +458,8 @@ func WithReauthenticationPrefix(prefix string) ReauthenticationOption {
 // gen.
 //
 // There is no default, and it is required in the signed-token mode: a re-proof
-// rotates the session, which deletes the handle the caller arrived with, and a
+// rotates the session, which supersedes the handle the caller arrived with,
+// marked, for its in-flight window, and a
 // token names its session through its jti. With EnableSessionBearer on it must
 // not be given: the endpoints hand back the rotated session's identifier
 // instead, and a generator is a configuration error from New. Give the

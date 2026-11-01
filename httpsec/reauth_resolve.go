@@ -57,7 +57,8 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 	ex.SetContext(withSession(ex.Context(), rotated))
 
 	// Issued after the rotation, against the new identifier: a credential
-	// issued before it would name the session the rotation deleted.
+	// issued before it would name the session the rotation superseded, marked,
+	// for its in-flight window.
 	tok, err := i.issue(ex.Context(), rotated, ex.Authentication.Principal)
 	if err != nil {
 		return err

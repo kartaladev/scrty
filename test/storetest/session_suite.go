@@ -2603,6 +2603,34 @@ func sessionStrictRotationCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			// Two managers are two replicas over one store: the mark lives in
+			// the store, so a rotation through one is seen by the other.
+			name: "a strict rotation through one manager makes a rotation of the old identifier through another a renewal conflict",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				a, err := session.New(session.WithStore(s), session.WithClock(clk))
+				require.NoError(t, err)
+				b, err := session.New(session.WithStore(s), session.WithClock(clk))
+				require.NoError(t, err)
+
+				old, err := a.Create(ctx, "u-1")
+				require.NoError(t, err)
+				successor, err := a.Rotate(ctx, old)
+				require.NoError(t, err)
+
+				got, err := b.Rotate(ctx, old)
+				require.Nil(t, got)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+
+				got, _, err = b.RotateWithGrace(ctx, old, 10*time.Second)
+				require.Nil(t, got)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+
+				loaded, err := a.Load(ctx, successor.ID)
+				require.NoError(t, err, "the winner's successor must still load")
+				assert.Equal(t, successor.ID, loaded.ID)
+			},
+		},
+		{
 			name: "a strictly superseded session is swept once its retention deadline passes",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(3006))
