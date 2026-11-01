@@ -645,6 +645,12 @@ func TestGin_RecencyGuard(t *testing.T) {
 			assert: refusedWithin(15 * time.Minute),
 		},
 		{
+			name: "a consumer time source reporting a zero time is refused",
+			opts: []ginsec.GuardOption{ginsec.WithAuthenticationTime(
+				func(context.Context) (time.Time, bool) { return time.Time{}, true })},
+			assert: refusedWithin(15 * time.Minute),
+		},
+		{
 			// The session was authenticated at the real now, and the clock is
 			// base, so only the consumer's time source can make this stale.
 			name:    "a consumer time source replaces a fresh session",
