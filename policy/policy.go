@@ -361,11 +361,14 @@ type Input struct {
 	// without a holding proof is judged like any other login of its kind.
 	//
 	// Only library code can mint one that holds, and only the library's own
-	// passkey verification does. Federated evidence is never this proof,
-	// whatever the provider asserted: a federated login is decided by
-	// FederatedAssurance alone. A consumer that wants a separate second
-	// factor even after a user-verified passkey login turns the proof off at
-	// the passkey login, with passkey.WithoutSecondFactorAtLogin.
+	// passkey verification does; a second-factor re-proof of a session whose
+	// login carried one rebuilds it from what the library recorded on that
+	// session (session.Session.MFAAtFirstFactor), for the session's first
+	// factor at the time its second factor was met. Federated evidence is
+	// never this proof, whatever the provider asserted: a federated login is
+	// decided by FederatedAssurance alone. A consumer that wants a separate
+	// second factor even after a user-verified passkey login turns the proof
+	// off at the passkey login, with passkey.WithoutSecondFactorAtLogin.
 	SecondFactorAtLogin SecondFactorProof
 
 	// FederatedAssurance is the evidence of the assurance a federated
@@ -395,7 +398,8 @@ type Input struct {
 	// what a login for the same user and first factor carries, so a policy
 	// that does not read this field judges a re-proof as it judges that login.
 	// A second-factor re-proof carries the session's first factor, not the
-	// method re-proved with.
+	// method re-proved with, and, when that session's login met its second
+	// factor at its first, the login's proof in SecondFactorAtLogin.
 	// What a re-proof means beyond that is the consumer's policy to decide.
 	Reauthenticating bool
 

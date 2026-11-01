@@ -33,7 +33,15 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     begin step, answering the method's data as JSON marked Cache-Control:
 //     no-store, or through WithReauthenticationBeginResponder;
 //   - POST <prefix>/verify/<method> re-proves with a second-factor method,
-//     under the MFA slot's per-user verification throttle;
+//     under the MFA slot's per-user verification throttle, for the session's
+//     own user only: a resolved caller naming another user is refused with
+//     ErrAuthenticationRequired. The verified response then passes the
+//     post-authentication policy phase with the input a login of the
+//     session's user and first factor builds, carrying the library's proof
+//     of a second factor met at the first when the session records one:
+//     every deny refuses with the policy's reason, a second-factor challenge
+//     does not refuse, and any other challenge refuses as at the password
+//     endpoint, leaving the session as it was;
 //   - POST <prefix>/password re-proves with the session's own user's
 //     password. It reads only the password, from the form field form login
 //     reads it from or a JSON member of that name, under form login's body
