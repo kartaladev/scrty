@@ -79,12 +79,15 @@ func WithCredentialIssuer(issue IssueFunc) Option {
 type Result struct {
 	// Session is the recovery-pending session the recovery produced, already
 	// stored, in the one write that created it. It becomes a full session only
-	// by binding a new authenticator. Nil when the recovery is held.
+	// by binding a new authenticator. Nil when the recovery is held. It is
+	// stored whether or not a credential was issued for it: without
+	// WithCredentialIssuer, Credential is empty and the caller issues one.
 	Session *session.Session
 
 	// Credential is the credential the issuer (WithCredentialIssuer) issued
 	// for Session, before anything was spent. Empty when the recovery is
-	// held, or when no issuer is configured.
+	// held, or when no issuer is configured (the default; see
+	// WithCredentialIssuer for what issuing it yourself afterwards costs).
 	Credential string
 
 	// Codes is the user's new set of saved codes, when a saved code was one of

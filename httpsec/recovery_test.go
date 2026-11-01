@@ -768,6 +768,23 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
+			name: "a credential issuer passed through the core is replaced by the chain's own",
+			arrange: func(_ *testing.T, h *recoveryHarness) {
+				h.coreOpts = append(h.coreOpts, recovery.WithCredentialIssuer(
+					func(context.Context, *session.Session, *identity.Details) (string, error) {
+						return "", errors.New("the consumer's issuer must not run")
+					}))
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				return h.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, h.saved(t),
+					httpsec.RecoveryIssuedCodeParam, h.issued(t)))
+			},
+			assert: func(t *testing.T, h *recoveryHarness, out served) {
+				recovered(t, h, out)
+			},
+		},
+		{
 			name: "the body is read and a conflicting query field ignored",
 			act: func(t *testing.T, h *recoveryHarness) served {
 				body := recoveryForm(

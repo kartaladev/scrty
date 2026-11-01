@@ -3,6 +3,7 @@ package recovery_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,28 @@ func TestRecoverer_Complete(t *testing.T) {
 				for _, old := range e.saved {
 					assert.False(t, e.savedUsable(t.Context(), t, old), "every code of the old set is refused")
 				}
+			},
+		},
+		{
+			// The issuer is optional: without one the recovery still stores its
+			// recovery-pending session, and the caller gets no credential.
+			name: "no credential issuer leaves the credential empty and the session stored",
+			req:  savedAndIssuedReq,
+			act: func(ctx context.Context, t *testing.T, e *completeEnv, _ *recovery.Recoverer) (*recovery.Result, error) {
+				r, err := recovery.NewRecoverer(e.completeDeps(),
+					e.opts(recovery.WithMessages(e.capturingMessages()))...)
+				require.NoError(t, err)
+
+				return r.Recover(ctx, savedAndIssuedReq(e))
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, res.Credential, "no issuer, no credential")
+
+				require.NotNil(t, res.Session)
+				s, lerr := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, lerr, "the session is stored")
+				assert.Equal(t, session.MFARecoveryPending, s.MFA)
 			},
 		},
 		{
@@ -558,7 +581,10 @@ func TestRecoverer_IssueFailureSpendsAndEndsNothing(t *testing.T) {
 		ctx   func(ctx context.Context) context.Context
 		// issueErr is what the issuer fails with.
 		issueErr error
-		assert   func(t *testing.T, e *completeEnv, r *recovery.Recoverer, err error)
+		// loggedAtDebug is set when the failure is the caller's own hang-up,
+		// which writes a DEBUG record instead of an ERROR one.
+		loggedAtDebug bool
+		assert        func(t *testing.T, e *completeEnv, r *recovery.Recoverer, err error)
 	}
 
 	cases := []testCase{
@@ -606,7 +632,8 @@ func TestRecoverer_IssueFailureSpendsAndEndsNothing(t *testing.T) {
 
 				return ctx
 			},
-			issueErr: context.Canceled,
+			issueErr:      context.Canceled,
+			loggedAtDebug: true,
 			assert: func(t *testing.T, _ *completeEnv, _ *recovery.Recoverer, err error) {
 				require.ErrorIs(t, err, context.Canceled)
 			},
@@ -661,6 +688,31 @@ func TestRecoverer_IssueFailureSpendsAndEndsNothing(t *testing.T) {
 			assert.False(t, ok, "no recovery record is written")
 
 			assertCleanLogs(t, e, res)
+
+			const issueFailed = "the recovery session's credential could not be issued"
+
+			var atError, atDebug int
+
+			for line := range strings.SplitSeq(e.logs.String(), "\n") {
+				if !strings.Contains(line, issueFailed) {
+					continue
+				}
+
+				switch {
+				case strings.Contains(line, "level=ERROR"):
+					atError++
+				case strings.Contains(line, "level=DEBUG"):
+					atDebug++
+				}
+			}
+
+			if tc.loggedAtDebug {
+				assert.Zero(t, atError, "a client's own hang-up is not an ERROR record")
+				assert.Equal(t, 1, atDebug, "it is one DEBUG record")
+			} else {
+				assert.Equal(t, 1, atError, "an issuing failure is one ERROR record")
+				assert.Zero(t, atDebug)
+			}
 
 			e.failIssue(nil)
 

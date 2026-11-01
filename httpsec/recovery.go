@@ -248,10 +248,10 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	// recovery.WithLogger, recovery.WithClock or limiter option the consumer
 	// passed replaces them; the password check and the credential issuer last,
 	// so the chain's own always win: a credential issued any other way would
-	// not be one the chain's bearer accepts. The factory is handed over only when the consumer configured one:
-	// without it the core builds its own in-memory default, on the core's
-	// logger and clock, which are the chain's unless the consumer replaced
-	// them.
+	// not be one the chain's bearer accepts. The factory is handed over only
+	// when the consumer configured one: without it the core builds its own
+	// in-memory default, on the core's logger and clock, which are the
+	// chain's unless the consumer replaced them.
 	opts := make([]recovery.Option, 0, len(i.coreOpts)+5)
 	opts = append(opts, recovery.WithLogger(c.logger), recovery.WithClock(c.clock))
 
