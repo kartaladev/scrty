@@ -582,6 +582,11 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 		// reaches the passkey endpoints, any other leaves the request alone.
 		phase policy.Phase
 
+		// reordered carries the session past every gate, at the passkey
+		// slot's door, as a consumer's reordered chain would; the per-request
+		// phase then runs after it, so that it sees the session.
+		reordered bool
+
 		// session builds the session the case carries; setup wires the harness.
 		session func(t *testing.T, h *passkeyHarness) *session.Session
 		setup   func(h *passkeyHarness)
@@ -600,6 +605,10 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 		require.NoError(t, h.sessions.Save(t.Context(), s))
 
 		return s
+	}
+
+	owingSecondFactor := func(t *testing.T, h *passkeyHarness) *session.Session {
+		return h.sessionIn(t, factor.Password, session.MFAPending)
 	}
 
 	recoveryPending := func(t *testing.T, h *passkeyHarness) *session.Session { return h.recoveryPending(t) }
@@ -779,6 +788,29 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 			},
 		},
 		{
+			// Registration names the session's own challenge first, as
+			// management does, though the raised kind is outstanding too.
+			name:    "a session owing a password change beginning a registration is refused with that challenge before the raised one",
+			phase:   policy.PerRequest,
+			session: owingPasswordChange,
+			act:     begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, policy.ChallengePasswordChange)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
+			name:      "reordered: a session owing a second factor beginning a registration is refused with that challenge before the raised one",
+			phase:     policy.PerRequest,
+			reordered: true,
+			session:   owingSecondFactor,
+			act:       begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, policy.ChallengeMFA)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
 			name:    "a recovery-pending session beginning a registration is refused with the raised challenge",
 			phase:   policy.PerRequest,
 			session: recoveryPending,
@@ -894,7 +926,7 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 			setup:   resolving(consumerChallenge),
 			act:     begin,
 			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
-				require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+				challenged(t, out, policy.ChallengePasswordChange)
 				assert.Empty(t, h.verifier.creations, "no challenge is issued")
 			},
 		},
@@ -933,6 +965,11 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 				h.withoutEnrolment = true
 			}
 
+			evaluateAt := httpsec.After(httpsec.OrderBearerToken)
+			if tc.reordered {
+				evaluateAt = httpsec.After(httpsec.After(httpsec.OrderPasswordChange))
+			}
+
 			h.extra = append(h.extra,
 				httpsec.WithPolicyEngine(engine),
 				httpsec.WithChallengeEnforcer(consumerChallenge),
@@ -944,11 +981,17 @@ func TestPasskeyRaisedChallenge(t *testing.T) {
 					}
 
 					return next(ex)
-				}), httpsec.After(httpsec.OrderBearerToken)))
+				}), evaluateAt))
 
 			s := tc.session(t, h)
 
-			tc.assert(t, h, s, tc.act(t, h, s, h.build(t, s)))
+			carried := s
+			if tc.reordered {
+				carried = nil
+				h.extra = append(h.extra, pastTheGates(s, false))
+			}
+
+			tc.assert(t, h, s, tc.act(t, h, s, h.build(t, carried)))
 		})
 	}
 }

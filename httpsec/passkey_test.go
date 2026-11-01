@@ -485,15 +485,43 @@ func TestPasskeyRegistrationResolvingWiring(t *testing.T) {
 		assert.Contains(t, err.Error(), "WithPasskeyRegistrationResolving")
 	}
 
+	// refusedFor is refused with a message that says why: the fragment tells
+	// this refusal from the others, which all name the option.
+	refusedFor := func(fragment string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) {
+			t.Helper()
+
+			refused(t, err)
+			assert.Contains(t, err.Error(), fragment)
+		}
+	}
+
 	cases := []testCase{
-		{name: "no kinds", declareBefore: true, assert: refused},
-		{name: "ChallengeNone", kinds: []policy.ChallengeKind{policy.ChallengeNone}, declareBefore: true, assert: refused},
-		{name: "a built-in kind", kinds: []policy.ChallengeKind{policy.ChallengeMFA}, declareBefore: true, assert: refused},
+		{name: "no kinds", declareBefore: true, assert: refusedFor("was given no kinds")},
+		{
+			name: "ChallengeNone", kinds: []policy.ChallengeKind{policy.ChallengeNone},
+			declareBefore: true, assert: refusedFor("which is not a challenge"),
+		},
+		{
+			name: "a built-in kind", kinds: []policy.ChallengeKind{policy.ChallengeMFA},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
+		{
+			name: "the password-change kind", kinds: []policy.ChallengeKind{policy.ChallengePasswordChange},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
+		{
+			name: "the MFA enrolment kind", kinds: []policy.ChallengeKind{policy.ChallengeMFAEnrolment},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
 		{
 			name: "the account-recovery kind", kinds: []policy.ChallengeKind{policy.ChallengeAccountRecovery},
-			declareBefore: true, assert: refused,
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
 		},
-		{name: "a kind the chain does not declare", kinds: []policy.ChallengeKind{declared}, assert: refused},
+		{
+			name: "a kind the chain does not declare", kinds: []policy.ChallengeKind{declared},
+			assert: refusedFor("which the chain does not declare"),
+		},
 		{
 			name: "one declared kind and one that is not", kinds: []policy.ChallengeKind{declared, undeclared},
 			declareBefore: true, assert: refused,

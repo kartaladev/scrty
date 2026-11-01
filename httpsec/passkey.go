@@ -583,6 +583,13 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 		return &ChallengeError{Kind: policy.ChallengeAccountRecovery, Session: s}
 	}
 
+	// A second factor or a password change the session owes is named in
+	// preference to a challenge raised on the request, as management names
+	// it, whether or not registration resolves the raised kind.
+	if err := owedBeforeRaised(ex, s); err != nil {
+		return err
+	}
+
 	// A challenge the per-request policy raised on this request is enforced
 	// by a gate of the consumer's. One registered after this slot cannot
 	// refuse a registration that is already begun or finished, so every
@@ -596,6 +603,25 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	}
 
 	return serve(ex, s)
+}
+
+// owedBeforeRaised refuses a session that owes a second factor or a password
+// change with that challenge, when a consumer kind was raised on the request,
+// and reports nil otherwise. The gates ahead of the endpoints refuse such a
+// session first on a chain that enables them; this holds the line past a
+// reordered chain. It does nothing when no kind was raised, so the request is
+// judged as it always was, by the manager.
+func owedBeforeRaised(ex *Exchange, s *session.Session) error {
+	if ex.RaisedChallenge() == policy.ChallengeNone {
+		return nil
+	}
+
+	switch kind := owedChallenge(s); kind {
+	case policy.ChallengeMFA, policy.ChallengePasswordChange:
+		return &ChallengeError{Kind: kind, Session: s}
+	default:
+		return nil
+	}
 }
 
 // registrationContext is what the manager is told about s's registration or
@@ -720,7 +746,8 @@ func WithPasskeyRegistrationResponder(fn PasskeyRegistrationResponder) PasskeyOp
 //
 // Default: without it, a request on which a consumer kind was raised
 // (Exchange.RaisedChallenge, declared with WithChallengeEnforcer) is refused
-// with a ChallengeError of that kind on every passkey endpoint. That is the
+// with a ChallengeError of that kind on every passkey registration and
+// management endpoint. That is the
 // safe default, because the gate enforcing the kind is the consumer's and may
 // sit after the passkey slot, which would otherwise serve the request first.
 //
@@ -731,7 +758,7 @@ func WithPasskeyRegistrationResponder(fn PasskeyRegistrationResponder) PasskeyOp
 // consumer whose gate lets registration through so that the binding resolves
 // its kind, as the library's enrolment gate does for its own. The listing,
 // the rename and the removal never serve it, since none of them binds an
-// authenticator, and a raised kind not in kinds is refused on every endpoint.
+// authenticator, and a raised kind not in kinds is refused on every one of them.
 //
 // The library marks nothing: whether the binding resolved the challenge is
 // for the consumer's policy to judge on the request that follows. Naming a
