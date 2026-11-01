@@ -223,7 +223,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
   - the strict-rotation cases 10.1 gated to the memory store and its broken variants move into `RunSessionStoreSuite`, so every store that runs the suite, third-party ones included, must pass them; the gate (`runSessionStrictRotationSuite` and `test/storetest/export_test.go`) is removed.
 
   Red: the 10.1 suite cases fail on each durable backend, and the new migration-test rows fail before the migration exists. (ADDED schema-migrations "The security-state set adds the session strict-rotation mark", every scenario; the 10.1 requirements on every backend.) Verify with `go test -race -count=1 ./...` in the root, `store/pgxstore`, `store/gormstore` and `test` modules (needs Docker)
-- [ ] 10.3 The manager reads the mark (D10 "Decision"):
+- [x] 10.3 The manager reads the mark (D10 "Decision"):
   - a strict `Rotate` supersedes with `Strict: true`, `AcceptUntil` the in-flight window and `RetainUntil` the same end, and no longer deletes the old row;
   - `Load` of a marked record is `ErrNotFound` inside its window, never judged; `Rotate` and `RotateWithGrace` of one are `ErrRenewalConflict` inside the window, writing nothing; after the window the store's `ErrExpired` (before the sweep) or `ErrNotFound` (after) passes through, never reuse;
   - `rotatedHandles` and its heap are removed; `Rotate`'s and `RotateWithGrace`'s godoc state the store-decided guarantee;
