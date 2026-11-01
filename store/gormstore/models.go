@@ -79,6 +79,10 @@ type sessionRow struct {
 	// AuthenticatedAt is when the user last proved who they are, written by
 	// the insert only; the update omits it.
 	AuthenticatedAt time.Time `gorm:"column:authenticated_at;type:timestamptz"`
+	// RotatedStrictly is the strict-rotation mark of the row's latest
+	// supersession. It is read-only here ("->"): the supersession statement
+	// alone writes it, and the insert leaves the column to its default, false.
+	RotatedStrictly bool `gorm:"column:rotated_strictly;type:boolean;->"`
 }
 
 // TableName is the table the migration creates for sessions.

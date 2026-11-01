@@ -323,6 +323,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		FirstPresentedAt:        fromNull(row.FirstPresentedAt),
 		RetainUntil:             fromNull(row.RetainUntil),
 		AuthenticatedAt:         row.AuthenticatedAt.UTC(),
+		RotatedStrictly:         row.RotatedStrictly,
 	}
 	if row.EnrolmentGeneration != nil {
 		sess.EnrolmentGeneration = *row.EnrolmentGeneration

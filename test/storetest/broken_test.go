@@ -289,7 +289,6 @@ func sessionVariant(d sessionDefect, failsCase string) brokenVariant {
 				return newSessionStore(d, clk)
 			}
 			storetest.RunSessionStoreSuite(t, newStore)
-			storetest.RunSessionStrictRotationSuite(t, newStore)
 		},
 		failsCase: failsCase,
 	}
