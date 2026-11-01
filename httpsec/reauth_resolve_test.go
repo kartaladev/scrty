@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -132,6 +133,15 @@ func TestReauthResolve(t *testing.T) {
 	}
 
 	responded := &atomic.Pointer[httpsec.ReauthenticationResult]{}
+
+	// secondServer is the manager the cross-server row's second chain runs
+	// on, over the store the first chain's manager uses, and bearerAt is where
+	// the first chain's bearer option sits in the fixture's options. The row
+	// sets both.
+	var (
+		secondServer *session.Sessions
+		bearerAt     int
+	)
 
 	cases := []testCase{
 		{
@@ -380,6 +390,150 @@ func TestReauthResolve(t *testing.T) {
 				winner, _ := f.issuedFor.Load().(string)
 				renewed := f.stored(t, winner)
 				assert.True(t, renewed.AuthenticatedAt.Equal(s.AuthenticatedAt), "the renewal is not an authentication")
+			},
+		},
+		{
+			// The other direction of the race above: the re-proof rotates the
+			// session after the renewal has loaded it and before the renewal
+			// rotates it, so the renewal finds its handle already moved
+			// inside the re-proof's in-flight window.
+			name: "a renewal racing a re-proof of its session is a renewal conflict and the re-proof's credential authenticates",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.totpUnenrolled = false
+				f.allows().recordsNoFailure()
+				f.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil)
+				f.chainOpts = append(f.chainOpts, httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{
+					Users: f.users, Tokens: f.tokens,
+				}))
+			},
+			state: session.MFASatisfied,
+			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
+				f.clock.Advance(time.Minute)
+
+				// The renewal reloads the user before it rotates; the
+				// re-proof runs there, once, and wins.
+				var (
+					once    sync.Once
+					reprove served
+				)
+				f.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().
+					DoAndReturn(func(context.Context, identity.UserID) (*identity.Details, error) {
+						once.Do(func() { reprove = serve(t, c, totpPost(t.Context(), mfaTokenFor(s.ID))) })
+
+						return &identity.Details{ID: testMFAUser, Username: mfaUsername, Active: true}, nil
+					})
+
+				out := serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
+					httpsec.DefaultSessionRenewalPath, mfaTokenFor(s.ID), ""))
+
+				require.NoError(t, reprove.err, "the re-proof wins")
+
+				return out
+			},
+			assert: func(t *testing.T, f *pwFixture, c *httpsec.Chain, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the loser is not signed out")
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+
+				winner, ok := f.issuedFor.Load().(string)
+				require.True(t, ok, "the re-proof issued a credential")
+				next := serve(t, c, bearerRequestTo(t.Context(), http.MethodGet, "/app", mfaTokenFor(winner), ""))
+				require.NoError(t, next.err)
+				require.True(t, next.handlerRan, "the winner's credential authenticates the next request")
+			},
+		},
+		{
+			// "Concurrent re-proofs" across two servers: two chains, each
+			// with its own session manager, over one session store. Neither
+			// manager's lock sees the other, so the store alone decides.
+			name: "two concurrent re-proofs through two chains sharing a session store: one succeeds, the other is a renewal conflict",
+			fixture: func(t *testing.T) *pwFixture {
+				// The bearer chain reads the harness's manager when the
+				// harness is built, so the shared store is wired in first.
+				h := newReauthHarness(t)
+
+				store, err := session.NewMemoryStore(session.WithMemoryStoreClock(h.clock))
+				require.NoError(t, err)
+
+				h.sessions, err = session.New(session.WithClock(h.clock), session.WithStore(store))
+				require.NoError(t, err)
+
+				secondServer, err = session.New(session.WithClock(h.clock), session.WithStore(store))
+				require.NoError(t, err)
+
+				bearerAt = len(h.chainOpts)
+				h.chainOpts = append(h.chainOpts, httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+					Verifier: h.tokens, Sessions: h.sessions, Users: h.users,
+				}))
+
+				f := newPwFixtureOn(t, h)
+
+				return f
+			},
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.noCarrier = true
+				f.totpUnenrolled = false
+				f.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).Times(2)
+				f.recordsNoFailure()
+
+				var arrived sync.WaitGroup
+				arrived.Add(2)
+				f.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Times(2).
+					DoAndReturn(func(context.Context, identity.UserID, []byte) error {
+						arrived.Done()
+						arrived.Wait()
+
+						return nil
+					})
+			},
+			state: session.MFASatisfied,
+			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
+				f.clock.Advance(time.Minute)
+
+				// The second server: a manager of its own over the first's
+				// store, and a chain built on it.
+				first, firstOpts := f.sessions, f.chainOpts
+				f.sessions = secondServer
+				f.chainOpts = slices.Clone(firstOpts)
+				f.chainOpts[bearerAt] = httpsec.EnableBearerToken(
+					httpsec.BearerTokenDeps{Verifier: f.tokens, Sessions: secondServer, Users: f.users})
+				other, err := f.build(nil)
+				require.NoError(t, err)
+				f.sessions, f.chainOpts = first, firstOpts
+
+				var (
+					wg   sync.WaitGroup
+					outs [2]served
+				)
+				for i, chain := range []*httpsec.Chain{c, other} {
+					wg.Go(func() { outs[i] = serve(t, chain, totpPost(t.Context(), mfaTokenFor(s.ID))) })
+				}
+				wg.Wait()
+
+				if outs[0].err == nil {
+					require.Error(t, outs[1].err, "exactly one wins")
+
+					return outs[1]
+				}
+
+				require.NoError(t, outs[1].err, "exactly one wins")
+
+				return outs[0]
+			},
+			assert: func(t *testing.T, f *pwFixture, _ *httpsec.Chain, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the loser is not signed out")
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+
+				winner, ok := f.issuedFor.Load().(string)
+				require.True(t, ok)
+				assert.Equal(t, session.MFASatisfied, f.stored(t, winner).MFA, "the winner's session is in place")
+
+				n, err := f.sessions.CountActiveByUser(t.Context(), s.UserID)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "one session, the winner's")
 			},
 		},
 		{

@@ -432,14 +432,14 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 
 	// Published on the exchange and on the context, so a consumer's error
 	// handling and their responder read the handle the caller is to present
-	// from now on rather than the one that has just been deleted.
+	// from now on rather than the one the rotation has just superseded.
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
 
 	// Issued after the rotation, against the new identifier. A signed token
 	// names its session through its jti, and a session reference is the
 	// identifier itself, so a credential issued before the rotation would name
-	// the session that is about to be deleted — which is exactly how
+	// the session the rotation superseded — which is exactly how
 	// completing a second factor came to sign a caller out.
 	tok, err := i.issue(ex.Context(), rotated, ex.Authentication.Principal)
 	if err != nil {
