@@ -767,6 +767,7 @@ Runs on H1's branch after Task 18.
 - [ ] **Step 5: Review follow-ups (dispatch M4b, third review).**
   - A reordered `TestPasskeyManage` row: a consumer interceptor past the gates publishes an `MFAPending` session → `*ChallengeError{Kind: ChallengeMFA}`, nothing changed; seen failing when `fullSession` accepts `MFAPending`.
   - Passkey management refuses a challenge raised on the request (`Exchange.RaisedChallenge`) with a `*ChallengeError` of that kind, nothing begun (passkey-authentication scenario "A challenge raised on the request"); red first. If the three callers can share the raised-challenge check, share it.
+  - **Opt-in (dispatch M4c, the user's decision):** `func WithPasskeyRegistrationResolving(kinds ...policy.ChallengeKind) PasskeyOption` in `httpsec/passkey.go`. Rows first: a declared consumer kind named in the option is served at registration begin and finish, and refused at the listing; an undeclared kind, a built-in kind, `ChallengeNone` and no kinds each fail `New` with `ErrConfig` naming `WithPasskeyRegistrationResolving`. Godoc names the default (refused on every passkey endpoint) and the line (management never serves it); `WithChallengeEnforcer`'s godoc points to it; the README defaults table gains the row.
   - Godoc: `full_session.go` names who checks a raised challenge, and that a binding or a password change ends the confinement; `passkey.go` ~208 says a session owing nothing that is not full is refused as authentication required.
 
 ### Task 34: Docs (tasks.md 12.6)
