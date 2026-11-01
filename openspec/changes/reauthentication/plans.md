@@ -79,6 +79,7 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 8 | F1 → F2 | 9.1, then 9.3 | `httpsec/reauth_options.go`, `httpsec/reauth_test.go`; for 9.3 also the `WithMFAChallengeStore` option in `httpsec/mfa_begin.go` (a "given" flag) and README defaults rows | Sonnet: the rules and tests are stated | Sonnet |
 | 8 | G1 → G2 | 9.5, then 9.6 | `httpsec/reauth.go`, `httpsec/reauth_verify.go`, `httpsec/reauth_verify_test.go`; for 9.6 also `httpsec/mfa_verify.go`, `httpsec/mfa_begin.go` (not the store option), `httpsec/challenge_spend.go` | G1 Sonnet: a stated single-seam change; G2 Opus: behaviour-preserving extraction across two hot paths | G1 Sonnet; G2 Opus |
 | 8 | H1 | 9.4 | `httpsec/reauth_password.go`, `httpsec/reauth_password_test.go` | Opus: policy refusal logic written for the first time | Opus |
+| 8c | H2 | 9.8 | `policy/policy.go` (`Input`), `policy/concurrent.go`, their tests; `httpsec/reauth_password.go`, `httpsec/reauth_password_test.go` | Opus: policy refusal semantics and a field every policy reads | Opus |
 | 8 | I1 | 9.2 | `httpsec/passkey.go` (`wirePasskeys`), the chain's interceptor lookup in `httpsec/options.go`, every test, Example and conformance harness chain that wires MFA and passkeys without re-authentication, README snippets | Sonnet: a stated wiring rule plus its callers | Sonnet |
 | 8 | J1 | 9.7 | `internal/guardauth/*`, `httpsec/guards.go`, `httpsec/ginsec/guards.go`, `httpsec/fibersec/guards.go`, their tests | Opus: refactor extracting shared code across three packages | Opus |
 | 8 | K1 → K2 → K3 | 10.1, 10.2, 10.3 | `session/store.go`, `session/session.go`, `session/store_memory.go`, `session/store_encrypted.go`, `session/sessions.go`, `session/reuse.go`, their tests; `test/storetest/*`; `store/migrate/securitystate/` (new file); `internal/pgschema/sessions.go`, `internal/storekit/*`; `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/{session,models}.go`; `test/migrate_securitystate_test.go`, `test/gormstore/statements_test.go`, `test/*/session_test.go` | K1 Opus: an interface every store compiles against; K2 Sonnet: the known column pattern across stores; K3 Opus: ordering under races | Opus, Sonnet, Opus |
@@ -626,6 +627,26 @@ Two parallel dispatches. Behaviour is unchanged, so existing tests are the safet
 - [ ] **11.1:** add to `test/httpsecconformance/reauth_scenarios.go`, on net/http, gin and fiber: `ReauthPrefixUnderFormLogin` (builds, both endpoints answer), `RenewalLostToReproofIs409`, `ReauthPasswordRefusedByPostAuthenticationDeny`. Red: register each before its harness wiring and see it fail. Run `go vet ./...` and `go test -race ./...` in `test`. Commit `test(conformance): review findings across adapters`.
 - [ ] **11.2:** the main session reruns Task 12's gate and the whole-branch Opus review against all ten spec files, then `openspec validate reauthentication --strict`.
 
+### Task 27: The re-proof's policy input and its recovery cancel (tasks.md 9.8)
+
+Runs on H1's branch after Task 18.
+
+**Files:**
+- Modify: `policy/policy.go` (`Input`), `policy/concurrent.go` (`(*ConcurrentSessions).Evaluate`), `httpsec/reauth_password.go` (`reprove`, `postAuthenticate`)
+- Test: `policy/concurrent_test.go`, `httpsec/reauth_password_test.go`
+
+**Interfaces:**
+- Consumes: `formLogin.cancelHeld heldRecoveryCanceller` (`login.go:126`, the call `completeLogin` makes at `complete.go:322`); `passwordAgeGate(t)` (`complete_test.go:39`).
+- Produces: `policy.Input.Reauthenticating bool` — true only for the re-authentication of an existing session; every other builder leaves it false.
+
+- [ ] **Step 1: Write the failing rows.**
+  - `policy/concurrent_test.go`: max 3, re-authentication, count 3 → allowed; count 4 → `ErrTooManySessions`; login, count 3 → denied (unchanged).
+  - `httpsec/reauth_password_test.go`: `NewConcurrentSessions(f.sessions, 1)` and the user's one session re-proving → re-authenticated (`TestReproPasswordReproofRefusedByConcurrentSessionCapOfOwnSession`); a policy capturing its input sees `Reauthenticating == true`; a held recovery of the user is cancelled by a successful re-proof (`CancelPending` called with the user), and a failing cancel refuses the re-proof with the session unchanged; `passwordAgeGate` refuses the re-proof as it refuses the login.
+- [ ] **Step 2: Run** `go test -run 'TestConcurrentSessions' -count=1 ./policy/` and `go test -run TestReauthPassword -count=1 ./httpsec/`; see the cap row fail with `policy: too many concurrent sessions` and the cancel row fail with no `CancelPending` call. The `Reauthenticating` field alone is the compile step.
+- [ ] **Step 3: Implement:** `Evaluate` uses `count > max` when `in.Reauthenticating`, else `count >= max`; `reprove` calls `l.cancelHeld(ctx, s.UserID)` (when non-nil) after the proved-account check and before `postAuthenticate`, and sets `Reauthenticating` on the input. Godoc on the field, the policy and `reprove`.
+- [ ] **Step 4: Run** `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in `test`: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): a password re-proof is marked as one, and cancels a held recovery`.
+
 ### Task 11: Conformance (tasks.md 8.1)
 
 **Files:**
@@ -679,6 +700,7 @@ Run by the main session. It edits nothing.
 | 9.5 | Task 23 |
 | 9.6 | Task 24 |
 | 9.7 | Task 25 |
+| 9.8 | Task 27 |
 | 10.1 | Task 19 |
 | 10.2 | Task 20 |
 | 10.3 | Task 21 |

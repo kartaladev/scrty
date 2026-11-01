@@ -197,6 +197,15 @@ Each defect task's red step is the reproducing test named in its design decision
 
   Red: a `guardauth` table test of the judge first; then, for each adapter, a temporary divergence in the shared judge that the adapter's recency tests catch. Verify with `go test -race -count=1 ./internal/guardauth/ ./httpsec/` and `go test -race ./...` in `httpsec/ginsec` and `httpsec/fibersec`
 
+- [ ] 9.8 The password re-proof's policy input and its recovery cancel (D6 Password order, steps 6 and 7):
+  - `policy.Input.Reauthenticating bool`, documented as set only by a re-authentication of an existing session and false for every login; the password re-proof sets it;
+  - `policy.ConcurrentSessions` denies a re-authentication only when the count is above the maximum, and a login at or above it as before; its godoc says why;
+  - a successful password check cancels the user's held recoveries through the same call login makes, before the phase; a cancellation the store cannot record refuses the re-proof and leaves the session unchanged;
+  - a row pinning that the phase receives login's input (a policy keyed on the user, the username, the first factor and the password-change time, such as a password-age gate, refuses the re-proof as it refuses the login);
+  - red: `TestReproPasswordReproofRefusedByConcurrentSessionCapOfOwnSession` (refused with `policy: too many concurrent sessions`), a held-recovery row whose finish still succeeds after the re-proof, and the `ConcurrentSessions` re-authentication rows.
+
+  (Reauthentication "A password re-proof applies the post-authentication policy as a login does" scenarios "A user at the session cap re-proves", "Consumer policy sees a re-proof"; "A password re-proof checks the session's own user under the account lockout" scenario "A held recovery is cancelled"; MODIFIED account-recovery "A held recovery is cancelled by the user"; MODIFIED security-policy "Concurrent sessions are capped".) Verify with `go test -race -count=1 ./policy/... ./httpsec/...` and `go test ./...` in the `test` module
+
 ## 10. A strict rotation that lost a race is a renewal conflict, decided by the store (`sessions`, `security-state-stores`, `schema-migrations`, `store-conformance`)
 
 Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store compiles against.

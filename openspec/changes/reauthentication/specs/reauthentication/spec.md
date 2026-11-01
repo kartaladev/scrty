@@ -362,6 +362,10 @@ A passkey re-proof refused as a suspected clone, or from a suspended credential,
 ### Requirement: A password re-proof checks the session's own user under the account lockout
 The password endpoint SHALL read only the password, from the `password` form field or a JSON body, and SHALL check it for the session's own user, never a username named in the request. It SHALL apply the account lockout before checking, record a wrong password against the user's lockout failures as a login does, and clear them on success. A locked account SHALL be refused as a login refuses one.
 
+#### Scenario: A held recovery is cancelled
+- **WHEN** a recovery of `u-2` is held and `u-2`'s session re-proves with the correct password
+- **THEN** the recovery's finish is later refused as a recovery-refused error
+
 #### Scenario: Correct password
 - **WHEN** `u-2`, enrolled on no method, posts the correct password
 - **THEN** the session is re-authenticated and `u-2`'s lockout failures are cleared
@@ -395,7 +399,15 @@ The password endpoint SHALL read only the password, from the `password` form fie
 - **THEN** it is refused with the unavailable error and no failure is recorded
 
 ### Requirement: A password re-proof applies the post-authentication policy as a login does
-After the password is proved, the post-authentication policy phase SHALL be applied as a login applies it. A deny SHALL refuse with the policy's reason, and a challenge SHALL refuse with that challenge, carrying no session. Neither SHALL clear failures, rotate the session or refresh its authentication time.
+After the password is proved, the post-authentication policy phase SHALL be applied as a login applies it, with the policy input marked as the re-authentication of an existing session. A deny SHALL refuse with the policy's reason, and a challenge SHALL refuse with that challenge, carrying no session. Neither SHALL clear failures, rotate the session or refresh its authentication time.
+
+#### Scenario: A user at the session cap re-proves
+- **WHEN** the concurrent session policy has a maximum of 1, and `u-2`'s only session posts the correct password
+- **THEN** the session is re-authenticated
+
+#### Scenario: Consumer policy sees a re-proof
+- **WHEN** a consumer policy in the post-authentication phase reads the input of `u-2`'s password re-proof
+- **THEN** the input is marked as a re-authentication, and the input of `u-2`'s login is not
 
 #### Scenario: Post-authentication deny
 - **WHEN** a consumer policy denies `u-2` in the post-authentication phase, and `u-2`'s session posts the correct password
