@@ -31,3 +31,17 @@ Sessions in the enrolment-pending state SHALL count like any other unexpired ses
 #### Scenario: Zero maximum
 - **WHEN** a concurrent session policy is constructed with a maximum of 0
 - **THEN** construction fails with a configuration error
+
+## ADDED Requirements
+
+### Requirement: The second-factor requirement accepts a second factor met at a re-authentication
+In the post-authentication phase, the second-factor requirement policy SHALL allow, instead of challenging for a second factor, an unmet federated login whose input says a second factor was satisfied on a re-authentication. Every refusal it makes before that challenge SHALL be unchanged.
+
+#### Scenario: A federated re-proof behind the requirement
+- **WHEN** the requirement policy in its challenge mode is registered before a policy that challenges for a password change, and a federated session whose provider did not assert the required assurance re-proves with a valid TOTP code
+- **THEN** it is refused with the password-change challenge
+
+#### Scenario: Refuse mode is unchanged
+- **WHEN** the requirement policy refuses unmet federated assurance, and a federated session whose provider did not assert it re-proves with a valid TOTP code
+- **THEN** it is refused for the unmet assurance
+

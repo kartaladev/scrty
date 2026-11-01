@@ -322,7 +322,15 @@ Sequenced: 13.1, then 13.2, then 13.3, in one lane, because they share one re-ju
   - README row "MFA challenge store, beside re-authentication" names the challenge-method condition.
 
   Each new assertion is seen failing by a temporary divergence. Verify with `go test -race -count=1 ./...` in the root and `test` modules, and `golangci-lint run`
-- [ ] 13.5 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
+- [x] 13.5 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
+- [ ] 13.6 Final review follow-ups (D6 "The line"):
+  - `policy.MFARequirement` step 12: for a federated login in the post-authentication phase, allow when `MFASatisfied` and `Reauthenticating` are both set, otherwise challenge as before; nothing earlier changes;
+  - red: `TestReviewFederatedReproofHidesPasswordChangeBehindRequirement` and `TestReviewFederatedMFAVerifyHidesPasswordChangeBehindRequirement` (requirement registered first, password-age challenge after, OIDC session), rewritten into `TestReauthVerify` and `TestMFAVerify`; a `policy` row for the allow and for refuse mode unchanged;
+  - `/reauth/begin/{method}` and `/mfa/begin/{method}` refuse a substituted caller through `requireSessionUser`, before any challenge is issued;
+  - docs: `WithReauthenticationChallengeStore` and `WithMFAChallengeStore` name the challenge-method condition; the README re-authentication section and MFA flow and the `EnableReauthentication` godoc describe the re-judgement behind a second-factor challenge, a deny at verification, and a surfaced challenge answered with a `*ChallengeError` carrying the rotated credential that the error handler must deliver; `EnableMFA`, `EnableReauthentication` and `policy.Input.MFASatisfied` state the line for a consumer policy that ignores `MFASatisfied`.
+
+  (ADDED security-policy "The second-factor requirement accepts a second factor met at a re-authentication", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...`, `golangci-lint run`, and `go test ./...` in `test`
+- [ ] 13.7 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
 
 ## Workflow follow-up
 

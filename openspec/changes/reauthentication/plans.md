@@ -95,6 +95,8 @@ Three lanes. Two agents never own one file. Agents that run at the same time eac
 | 13 | N1 | 13.1 → 13.2 → 13.3 | `httpsec/reauth_verify.go`, `httpsec/reauth_verify_test.go`, `httpsec/mfa_verify.go`, `httpsec/mfa_verify_test.go`, `httpsec/login.go` (the shared function only), `policy/policy.go` (godoc); also 13.4's `deferredLookup`/`inputRecorder` mocks and its end-to-end 403 row for "No MFA challenge pending at verify", since they sit in these files | Opus: policy refusal logic in two hot paths, an ordering under the engine's reduction | Opus |
 | 13 | N2 | 13.4 | `httpsec/reauth_password_test.go`, `httpsec/reauth_test.go`, `session/sessions_test.go`, `internal/guardauth/recency_test.go`, `test/httpsecconformance/*`, `test/storetest/*`, `policy/concurrent_test.go`, `httpsec/passkey_reauth_rule_test.go`, `httpsec/mfa_begin_test.go`, `httpsec/recovery_test.go`, generated mocks, `README.md` (one row) | Sonnet: stated test conversions and coverage rows | Sonnet |
 | 13 | main | 13.5 | runs the gate; edits nothing | — | whole-branch review: Opus |
+| 13b | N3 | 13.6 | Task 41's files | Opus: refusal logic in a library security policy, where a misplaced line passes the tests and is wrong | Opus |
+| 13b | main | 13.7 | runs the gate; edits nothing | — | whole-branch review: Opus |
 
 | 11b | M1b | 12.1 review follow-ups | M1's files plus `httpsec/mfa_enrol_test.go` | Sonnet: the fixes are stated | Sonnet |
 | 11b | M2b | 12.2 revised (D6 "Every deny binds") | M2's files; `httpsec/reauth_options.go` godoc of the verify bullet | Opus: security refusal logic, a reproduced fail-open | Opus |
@@ -823,6 +825,21 @@ Runs on H1's branch after Task 18.
 - [ ] **Step 4: Run** `go test -race -count=1 ./...` in the root and `test` modules and `golangci-lint run`: PASS.
 
 ### Task 40: The gate and the whole-branch review (tasks.md 13.5)
+
+- [ ] As Task 12, then the whole-branch Opus review against every requirement in the change's spec files.
+
+### Task 41: The requirement policy accepts a re-authentication's second factor; begin refuses a substituted caller; docs (tasks.md 13.6)
+
+**Files:**
+- Modify: `policy/mfa_requirement.go` (step 12), `httpsec/reauth_verify.go` (`begin`), `httpsec/mfa_begin.go` (`begin`, `WithMFAChallengeStore` godoc), `httpsec/reauth_options.go` (godoc), `httpsec/mfa_options.go` (godoc), `policy/policy.go` (godoc), `README.md`
+- Test: `policy/mfa_requirement_test.go`, `httpsec/reauth_verify_test.go`, `httpsec/mfa_verify_test.go`, `httpsec/mfa_begin_test.go`
+
+- [ ] **Step 1: Write the failing rows:** in `TestReauthVerify` and `TestMFAVerify`, an OIDC session with `MFARequirement` (challenge mode, everyone required, provider not meeting the assurance) registered before `PasswordAge(UnknownAgeChallenge)` → a valid TOTP code is refused with `*ChallengeError{Kind: ChallengePasswordChange}` (fails today: 200); in the `MFARequirement` table, PostAuthentication + federated + `MFASatisfied` + `Reauthenticating` → Allow, the same without `Reauthenticating` → `ChallengeMFA`, refuse mode with both set → the assurance deny; begin rows: a substituted caller → `ErrAuthenticationRequired`, no challenge issued.
+- [ ] **Step 2: Run** `go test -run 'TestReauthVerify|TestMFAVerify|TestMFARequirement|TestReauthBegin|TestMFABegin' -count=1 ./policy/ ./httpsec/` and see them fail for the intended reasons.
+- [ ] **Step 3: Implement** the allow inside step 12's federated branch only; `requireSessionUser` in both begins before the throttle and the issue; the docs.
+- [ ] **Step 4: Run** `go test -race -count=1 ./policy/... ./httpsec/...`, `golangci-lint run`, `go test ./...` in `test`: PASS.
+
+### Task 42: The gate and the whole-branch review (tasks.md 13.7)
 
 - [ ] As Task 12, then the whole-branch Opus review against every requirement in the change's spec files.
 
