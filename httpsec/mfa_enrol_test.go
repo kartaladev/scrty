@@ -3598,11 +3598,9 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 	}
 
 	// untouched is a refusal that changed nothing: the pinned session is as
-	// verification found it, and no credential was issued.
-	untouched := func(t *testing.T, h *enrolHarness, issued *atomic.Value) {
+	// verification found it.
+	untouched := func(t *testing.T, h *enrolHarness) {
 		t.Helper()
-
-		assert.Nil(t, issued.Load(), "no credential is issued")
 
 		kept := h.pinned
 		assert.Equal(t, session.MFAPending, kept.MFA, "the challenge stays pending")
@@ -3658,7 +3656,8 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the session has ended")
 				require.ErrorIs(t, out.err, session.ErrExpired)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
-				untouched(t, h, issued)
+				assert.Nil(t, issued.Load(), "no credential is issued")
+				untouched(t, h)
 			},
 		},
 		{
@@ -3674,7 +3673,14 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 				t.Helper()
 
 				require.ErrorIs(t, out.err, errStoreLeaky)
-				untouched(t, h, issued)
+
+				// The credential is issued before the rotation is stored, so
+				// a failed store leaves it naming a session that never loads.
+				if id, ok := issued.Load().(string); ok {
+					_, err := h.sessions.Load(t.Context(), id)
+					require.ErrorIs(t, err, session.ErrNotFound, "the issued credential names no session")
+				}
+				untouched(t, h)
 			},
 		},
 	}

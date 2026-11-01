@@ -96,11 +96,37 @@ func (f *pwFixture) recordsText() string {
 	return b.String()
 }
 
+// callerStillHolds asserts that a refused re-proof of s left the caller as
+// they were: no credential was issued, the credential they arrived with still
+// authenticates the next request as s, and the stored session is s, unchanged
+// and not rotated, with no successor beside it.
+func callerStillHolds(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) {
+	t.Helper()
+
+	assert.Nil(t, f.issuedFor.Load(), "no credential was issued")
+
+	next := serve(t, c, bearerRequestTo(t.Context(), http.MethodGet, "/app", mfaTokenFor(s.ID), ""))
+	require.NoError(t, next.err, "the caller holds no credential that authenticates")
+	require.True(t, next.handlerRan, "the credential the caller arrived with is served")
+	assert.Equal(t, s.ID, next.handled.Session.ID, "as the session it arrived with")
+
+	stored := f.stored(t, s.ID)
+	assert.False(t, stored.RotatedStrictly, "the session was not rotated")
+	assert.True(t, stored.AuthenticatedAt.Equal(s.AuthenticatedAt), "authentication time unchanged: %s", stored.AuthenticatedAt)
+	assert.Equal(t, s.MFA, stored.MFA, "second-factor state unchanged")
+	assert.True(t, stored.MFASatisfiedAt.Equal(s.MFASatisfiedAt), "second-factor time unchanged")
+
+	n, err := f.sessions.CountActiveByUser(t.Context(), s.UserID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "no successor was stored")
+}
+
 // TestReauthResolve pins what a successful re-proof does: the authentication
 // time, and for a second factor the second factor, set from the chain's clock;
-// a strict rotation, rolled back in memory when it fails; the rotated
-// session's credential issued in the chain's bearer mode and answered through
-// the responder; and logs that carry no secret.
+// a strict rotation that leaves the session as it was when it fails; the
+// rotated session's credential issued in the chain's bearer mode before the
+// rotation is stored, so one that cannot be issued signs no one out, and
+// answered through the responder; and logs that carry no secret.
 //
 // The chain authenticates by bearer token unless a row says otherwise, and its
 // clock is the harness's controlled one, started at the session's sign-in.
@@ -535,6 +561,45 @@ func TestReauthResolve(t *testing.T) {
 				n, err := f.sessions.CountActiveByUser(t.Context(), s.UserID)
 				require.NoError(t, err)
 				assert.Equal(t, 1, n, "one session, the winner's")
+			},
+		},
+		{
+			// "A re-proof whose credential cannot be issued leaves the session
+			// as it was" (TestRepro2ReproofWhoseTokenCannotBeIssuedDoesNotSignTheCallerOut):
+			// the credential is issued before the rotation is stored, so a
+			// generator that fails leaves the caller's own credential working.
+			name: "a TOTP re-proof whose token cannot be issued does not sign the caller out",
+			wire: func(t *testing.T, f *pwFixture) {
+				totpHolder(t, f)
+				f.generateErr = errTokenGenerator
+			},
+			state: session.MFANone,
+			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
+				f.elapse(t, s, 30*time.Minute)
+
+				return totp(t, f, c, s)
+			},
+			assert: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, errTokenGenerator, "refused with the generator's failure")
+				callerStillHolds(t, f, c, s)
+			},
+		},
+		{
+			// The same reproduction through the password re-proof.
+			name: "a password re-proof whose token cannot be issued does not sign the caller out",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.resets()
+				f.generateErr = errTokenGenerator
+			},
+			state: session.MFANone,
+			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
+				f.elapse(t, s, 30*time.Minute)
+
+				return serve(t, c, passwordOf(reauthAdaPassword)(t.Context(), t, mfaTokenFor(s.ID)))
+			},
+			assert: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, errTokenGenerator, "refused with the generator's failure")
+				callerStillHolds(t, f, c, s)
 			},
 		},
 		{

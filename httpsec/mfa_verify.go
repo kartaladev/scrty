@@ -376,57 +376,75 @@ func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *sessi
 
 // resolve records the second factor and moves the session to a new handle.
 //
-// The state is set before the rotation, because Rotate writes the session as it
-// stands: setting the fields afterwards would persist a challenge that is still
-// pending under the new handle. For a session that came through the enrolment
-// path, its deadlines are restored before the rotation for the same reason, so
-// the new handle carries the deadline a login would have had rather than the
-// enrolment-only one.
+// The state is set before the rotation, because the rotation writes the
+// session as it stands: setting the fields afterwards would persist a
+// challenge that is still pending under the new handle. For a session that
+// came through the enrolment path, its deadlines are restored before the
+// rotation for the same reason, so the new handle carries the deadline a login
+// would have had rather than the enrolment-only one.
 //
-// Everything set here is put back if the restore or the rotation fails, so the
-// caller is left exactly as they were found — challenge pending, deadlines and
-// enrolment marker as they were, handle unchanged — rather than in memory
-// upgraded and in the store not. A session already past its lowered deadline
-// is refused as one that has ended, and is not rotated: the restore is what
-// finds that, and a rotation after it would move an expired session to a fresh
-// handle.
+// All of it is set on a copy of s, never on s itself, so a refusal at any step
+// leaves the caller exactly as they were found — challenge pending, deadlines
+// and enrolment marker as they were, handle unchanged — with nothing to put
+// back, rather than in memory upgraded and in the store not. A session already
+// past its lowered deadline is refused as one that has ended, and is not
+// rotated: the restore is what finds that, and a rotation after it would move
+// an expired session to a fresh handle.
 //
 // The rotation itself is the point. A handle obtained before the second factor
 // must not still answer requests after it, which is session fixation with extra
 // steps, and it is why this endpoint answers the request rather than passing it
 // on: the handle the caller should now be using is not the one they sent.
 //
-// A failed rotation or token issue comes back behind fixed text, never the
-// store's or the generator's own, with their error still reachable through
-// errors.Is and errors.As; the session manager words its store's failures so,
-// and the generator's is wrapped here.
+// The credential is issued against the successor's identifier inside the
+// rotation (session.Sessions.RotateIssuing), before anything is stored. A
+// signed token names its session through its jti, and a session reference is
+// the identifier itself, so it must name the successor; and issuing it before
+// the store is written means a credential that cannot be issued refuses the
+// verification with nothing stored or rotated, leaving the session pending
+// under the credential the caller arrived with, rather than signing them out.
+//
+// A failed rotation is refused as rotationRefusal words it: a lost race with a
+// concurrent verification, re-proof or renewal of the session, through this
+// server or any other sharing the session store, is ErrSessionRenewalConflict
+// (409) inside the winner's in-flight window. A failed rotation or token issue
+// comes back behind fixed text, never the store's or the generator's own, with
+// their error still reachable through errors.Is and errors.As; the session
+// manager words its store's failures so, and the generator's is wrapped by the
+// chain's credential issuer.
 func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
-	was := *s
-	rollback := func() {
-		s.MFA, s.MFASatisfiedAt, s.AuthenticatedAt = was.MFA, was.MFASatisfiedAt, was.AuthenticatedAt
-		s.AbsoluteExpiresAt, s.IdleExpiresAt = was.AbsoluteExpiresAt, was.IdleExpiresAt
-		s.EnrolmentOriginDeadline, s.EnrolmentGeneration = was.EnrolmentOriginDeadline, was.EnrolmentGeneration
-	}
+	satisfied := *s
 
-	s.MFA = session.MFASatisfied
+	satisfied.MFA = session.MFASatisfied
 	// Satisfying the second factor is an authentication, so it refreshes the
 	// time freshness checks read. The rotation below carries both into the
 	// successor's creating write.
-	s.MFASatisfiedAt = i.now()
-	s.AuthenticatedAt = s.MFASatisfiedAt
+	satisfied.MFASatisfiedAt = i.now()
+	satisfied.AuthenticatedAt = satisfied.MFASatisfiedAt
 
-	if err := i.sessions.RestoreEnrolmentDeadlines(s); err != nil {
-		rollback()
-
+	if err := i.sessions.RestoreEnrolmentDeadlines(&satisfied); err != nil {
 		// The session has ended, which to the caller is a session they no
 		// longer hold. The manager's own error stays reachable.
 		return errors.Join(ErrAuthenticationRequired, err)
 	}
 
-	rotated, err := i.sessions.Rotate(ex.Context(), s)
-	if err != nil {
-		rollback()
+	ctx := ex.Context()
+	principal := ex.Authentication.Principal
 
+	// issueErr keeps the issuer's failure apart from the rotation's, so it is
+	// returned as the issuer worded it and never read as a session sentinel.
+	var issueErr error
+
+	rotated, tok, err := i.sessions.RotateIssuing(ctx, &satisfied, func(successor *session.Session) (string, error) {
+		tok, err := i.issue(ctx, successor, principal)
+		issueErr = err
+
+		return tok, err
+	})
+	if issueErr != nil {
+		return issueErr
+	}
+	if err != nil {
 		return rotationRefusal(err)
 	}
 
@@ -435,16 +453,6 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	// from now on rather than the one the rotation has just superseded.
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
-
-	// Issued after the rotation, against the new identifier. A signed token
-	// names its session through its jti, and a session reference is the
-	// identifier itself, so a credential issued before the rotation would name
-	// the session the rotation superseded — which is exactly how
-	// completing a second factor came to sign a caller out.
-	tok, err := i.issue(ex.Context(), rotated, ex.Authentication.Principal)
-	if err != nil {
-		return err
-	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated})
 }
