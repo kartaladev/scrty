@@ -31,7 +31,10 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     WithReauthenticationMethodsResponder;
 //   - POST <prefix>/begin/<method> begins a second-factor method that has a
 //     begin step, answering the method's data as JSON marked Cache-Control:
-//     no-store, or through WithReauthenticationBeginResponder;
+//     no-store, or through WithReauthenticationBeginResponder, for the
+//     session's own user only: a resolved caller naming another user is
+//     refused with ErrAuthenticationRequired before the throttle is consulted
+//     and before any challenge is issued;
 //   - POST <prefix>/verify/<method> re-proves with a second-factor method,
 //     under the MFA slot's per-user verification throttle, for the session's
 //     own user only: a resolved caller naming another user is refused with
@@ -41,9 +44,14 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     and carrying what the login did: the library's proof of a second factor
 //     met at the first when the session records one, and the evidence the
 //     provider asserted when the session is federated. Every deny refuses
-//     with the policy's reason, a second-factor challenge does not refuse,
-//     and any other challenge refuses as at the password endpoint, leaving
-//     the session as it was;
+//     with the policy's reason, and any challenge other than a second
+//     factor's refuses as at the password endpoint, leaving the session as it
+//     was. A second-factor challenge (policy.ChallengeMFA) does not refuse,
+//     since one was just verified, but what it hid is judged: the phase is
+//     asked again with the second factor counted as met
+//     (policy.Input.MFASatisfied, beside Reauthenticating), and a deny or any
+//     other challenge that surfaces then refuses the same way, so a password
+//     change registered after the second-factor policy still refuses;
 //   - POST <prefix>/password re-proves with the session's own user's
 //     password. It reads only the password, from the form field form login
 //     reads it from or a JSON member of that name, under form login's body
@@ -57,6 +65,19 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     *ChallengeError carrying no session, leaving the session as it was.
 //
 // Every other request, including a GET to a verify path, passes on untouched.
+//
+// # What a second-factor challenge hides
+//
+// The engine answers with the first challenge in registration order, so a
+// policy registered after one that challenges for a second factor is reached
+// only on the re-judgement above. The library's policies answer it: policy.MFA
+// allows once MFASatisfied is set, and policy.MFARequirement allows an unmet
+// federated session once MFASatisfied and Reauthenticating are both set,
+// while its refusals, refuse mode's included, stand. The line: a consumer
+// policy that raises policy.ChallengeMFA without reading MFASatisfied raises
+// it again on the re-judgement, and the challenge is then dropped as before,
+// with whatever is registered after it. Such a policy reads MFASatisfied, or
+// is registered after the policies it would hide.
 //
 // A successful re-proof sets the session's authentication time to now, read
 // from the chain's clock (WithClock). A second-factor re-proof also records the
@@ -631,11 +652,14 @@ func WithReauthenticationChallengeLimit(n int) ReauthenticationOption {
 // Re-proof challenges are issued under their own purposes, so s may be the
 // store the MFA challenges use without either honouring the other's.
 //
-// A chain that gave the MFA slot a store (WithMFAChallengeStore) must give
+// A chain that gave the MFA slot a store (WithMFAChallengeStore) and has a
+// method with a begin step (a challenge method, such as passkeys) must give
 // this option too, normally the same store: New fails with ErrConfig naming
 // both options otherwise, so a shared login store never leaves re-proof
-// challenges in per-process memory. An absent store, including an interface
-// holding a nil pointer, is refused.
+// challenges in per-process memory. A slot of TOTP alone issues no challenge,
+// and builds without this option whether or not the MFA slot was given a
+// store. An absent store, including an interface holding a nil pointer, is
+// refused.
 //
 // A chain without the MFA slot (EnableMFA) refuses this option: New fails with
 // ErrConfig naming it, because nothing issues re-proof challenges there. A

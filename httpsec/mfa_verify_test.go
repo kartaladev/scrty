@@ -335,15 +335,18 @@ func (h *mfaHarness) pendingSession(t *testing.T, first factor.Kind) *session.Se
 	return h.newSession(t, first, session.MFAPending)
 }
 
-// newSession creates a live session in state, as a first factor would have.
+// newSession creates a live session in state, as a first factor would have,
+// with the further options that first factor's login would have recorded.
 func (h *mfaHarness) newSession(
 	t *testing.T,
 	first factor.Kind,
 	state session.MFAState,
+	opts ...session.CreateOption,
 ) *session.Session {
 	t.Helper()
 
-	s, err := h.sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(first))
+	s, err := h.sessions.Create(t.Context(), testMFAUser,
+		append([]session.CreateOption{session.WithFirstFactor(first)}, opts...)...)
 	require.NoError(t, err)
 
 	s.MFA = state
@@ -848,7 +851,10 @@ func TestMFAVerify(t *testing.T) {
 		first factor.Kind
 		// owesNothing starts the session with no MFA challenge pending.
 		owesNothing bool
-		mfaOpts     []httpsec.MFAOption
+		// create, when set, are further options the session is created with,
+		// as its login would have recorded them.
+		create  []session.CreateOption
+		mfaOpts []httpsec.MFAOption
 		// chainOpts, when set, are further chain options, such as the policy
 		// engine whose post-authentication phase verification judges again.
 		chainOpts func(t *testing.T, h *mfaHarness) []httpsec.Option
@@ -943,6 +949,80 @@ func TestMFAVerify(t *testing.T) {
 		return []policy.Policy{age}
 	}
 
+	// requirementFirst is a policy engine with the requirement policy
+	// registered first, over everyone, in its challenge mode, over a TOTP
+	// lookup the user is enrolled on and a source that accepts no evidence, so
+	// a federated login of the user is challenged for the second factor by it,
+	// and then behind, the policies a case registers after it. Further chain
+	// options follow the engine.
+	requirementFirst := func(
+		behind func(t *testing.T, h *mfaHarness) []policy.Policy,
+		opts ...httpsec.Option,
+	) func(*testing.T, *mfaHarness) []httpsec.Option {
+		return func(t *testing.T, h *mfaHarness) []httpsec.Option {
+			t.Helper()
+
+			ctrl := gomock.NewController(t)
+
+			totpLookup := NewMockMFAMethodLookup(ctrl)
+			totpLookup.EXPECT().Name().Return("totp").AnyTimes()
+			totpLookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totpLookup.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+
+			src := NewMockFederatedAssuranceSource(ctrl)
+			src.EXPECT().MeetsAssurance(gomock.Any(), testMFAUser, gomock.Any()).Return(false, nil).AnyTimes()
+
+			requirement, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{totpLookup},
+				policy.WithMFARequiredForAll(),
+				policy.WithFederatedAssuranceSource(src))
+			require.NoError(t, err)
+
+			policies := []policy.Policy{requirement}
+			if behind != nil {
+				policies = append(policies, behind(t, h)...)
+			}
+
+			return append([]httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, policies...))}, opts...)
+		}
+	}
+
+	// unmetFederated is what an OIDC login whose provider asserted only a
+	// password records on its session.
+	unmetFederated := []session.CreateOption{
+		session.WithExternalSession("corp", "https://idp.example.com", "", ""),
+		session.WithFederatedAssurance([]string{"pwd"}, ""),
+	}
+
+	// passwordChangeAnswered asserts verification completed the second factor
+	// and answered the password change that surfaced behind it as a login
+	// answers a challenge: the session satisfied, rotated and marked, and the
+	// challenge carrying the rotated session and its credential.
+	passwordChangeAnswered := func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+		t.Helper()
+
+		var ce *httpsec.ChallengeError
+		require.ErrorAs(t, out.err, &ce, "verification owes no password change")
+		assert.Equal(t, policy.ChallengePasswordChange, ce.Kind)
+		assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan)
+		assert.Zero(t, out.rec.Body.Len(), "the challenge is the refusal, not a success document")
+
+		require.NotNil(t, ce.Session, "the challenge carries the rotated session")
+		assert.NotEqual(t, s.ID, ce.Session.ID, "the session was rotated")
+		assert.Equal(t, mfaTokenFor(ce.Session.ID), ce.Token, "the credential names the rotated session")
+		assert.Empty(t, ce.Methods, "a password change offers no second-factor method")
+
+		require.NotNil(t, h.resolved)
+		assert.Equal(t, ce.Session.ID, h.resolved.ID, "the exchange publishes the rotated session")
+
+		rotated := h.stored(t, ce.Session.ID)
+		assert.Equal(t, session.MFASatisfied, rotated.MFA, "the rotated session met its second factor")
+		assert.True(t, rotated.PasswordChangePending, "and owes the password change")
+
+		_, err := h.sessions.Load(t.Context(), s.ID)
+		require.Error(t, err, "the previous handle no longer loads")
+	}
+
 	// keptPending asserts out refused verification and left the session the
 	// caller arrived with as it was: still stored under its handle, pending,
 	// never rotated, with no credential issued and nothing answered.
@@ -1031,29 +1111,24 @@ func TestMFAVerify(t *testing.T) {
 				enrolledOnEmail(email, false)
 				h.allows().accepts().recordsNoFailure()
 			},
-			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
-				var ce *httpsec.ChallengeError
-				require.ErrorAs(t, out.err, &ce, "verification owes no password change")
-				assert.Equal(t, policy.ChallengePasswordChange, ce.Kind)
-				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
-				assert.False(t, out.handlerRan)
-				assert.Zero(t, out.rec.Body.Len(), "the challenge is the refusal, not a success document")
-
-				require.NotNil(t, ce.Session, "the challenge carries the rotated session")
-				assert.NotEqual(t, s.ID, ce.Session.ID, "the session was rotated")
-				assert.Equal(t, mfaTokenFor(ce.Session.ID), ce.Token, "the credential names the rotated session")
-				assert.Empty(t, ce.Methods, "a password change offers no second-factor method")
-
-				require.NotNil(t, h.resolved)
-				assert.Equal(t, ce.Session.ID, h.resolved.ID, "the exchange publishes the rotated session")
-
-				rotated := h.stored(t, ce.Session.ID)
-				assert.Equal(t, session.MFASatisfied, rotated.MFA, "the rotated session met its second factor")
-				assert.True(t, rotated.PasswordChangePending, "and owes the password change")
-
-				_, err := h.sessions.Load(t.Context(), s.ID)
-				require.Error(t, err, "the previous handle no longer loads")
+			assert: passwordChangeAnswered,
+		},
+		{
+			// "A federated verification behind the requirement": the
+			// requirement policy, registered first, challenges the OIDC
+			// session whose provider's evidence its source does not accept,
+			// and accepts the second factor verified now on the re-judgement,
+			// so the password change registered after it is answered.
+			name:      "a password change behind the requirement's federated challenge answers its challenge with the rotated session",
+			first:     factor.OIDC,
+			create:    unmetFederated,
+			chainOpts: requirementFirst(passwordAge, httpsec.EnableGateForTest(policy.ChallengePasswordChange)),
+			request:   postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
 			},
+			assert: passwordChangeAnswered,
 		},
 		{
 			// "A deny behind the second factor": a consumer policy that
@@ -1400,7 +1475,7 @@ func TestMFAVerify(t *testing.T) {
 				state = session.MFANone
 			}
 
-			s := h.newSession(t, first, state)
+			s := h.newSession(t, first, state, tc.create...)
 			tc.wire(h, email)
 
 			var opts []httpsec.Option

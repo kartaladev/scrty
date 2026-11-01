@@ -182,6 +182,22 @@ func TestMFABegin(t *testing.T) {
 			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
 		},
 		{
+			// "A substituted caller at begin": a consumer interceptor past the
+			// first factor publishes another user's principal on the pending
+			// session. Nothing is counted, no challenge is issued, and the
+			// session stays pending.
+			name: "a caller who is not the session's user is refused before the throttle and issues nothing",
+			wire: func(h *mfaHarness) {
+				untouched(h)
+				h.chainOpts = append(h.chainOpts, substitutingCaller(httpsec.Before(httpsec.OrderMFAChallenge)))
+			},
+			request: begin(testMFABeginPath),
+			assert: func(t *testing.T, h *mfaHarness, c *challengeStub, s *session.Session, out served) {
+				refusedWith(httpsec.ErrAuthenticationRequired)(t, h, c, s, out)
+				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+			},
+		},
+		{
 			name:    "begin for a method without a begin step",
 			wire:    untouched,
 			request: begin(httpsec.DefaultMFABeginPrefix + "/totp"),

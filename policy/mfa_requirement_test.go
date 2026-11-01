@@ -920,7 +920,50 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 		}
 	}
 
+	// reproving is a login input marked the way the library's re-judgement
+	// behind a second-factor challenge marks it: a second factor satisfied on
+	// this request (satisfied), on a session that already exists (reauth).
+	reproving := func(base func() *policy.Input, satisfied, reauth bool) func() *policy.Input {
+		return func() *policy.Input {
+			in := base()
+			in.MFASatisfied = satisfied
+			in.Reauthenticating = reauth
+
+			return in
+		}
+	}
+	passwordLogin := func() *policy.Input { return mfaInput(factor.Password) }
+
 	cases := []testCase{
+		{
+			name:     "not met, enrolled, a second factor satisfied on a re-authentication is allowed",
+			required: requiredUser, methods: enrolledTOTP, source: notMet,
+			phase: policy.PostAuthentication, in: reproving(oidcLogin, true, true), assert: allowed,
+		},
+		{
+			// The login's own word for itself is still not honoured.
+			name:     "not met, enrolled, a second factor satisfied off a re-authentication is challenged for mfa",
+			required: requiredUser, methods: enrolledTOTP, source: notMet,
+			phase: policy.PostAuthentication, in: reproving(oidcLogin, true, false), assert: challengedForMFA,
+		},
+		{
+			name:     "not met, enrolled, a re-authentication with no second factor satisfied is challenged for mfa",
+			required: requiredUser, methods: enrolledTOTP, source: notMet,
+			phase: policy.PostAuthentication, in: reproving(oidcLogin, false, true), assert: challengedForMFA,
+		},
+		{
+			// The allow replaces only the challenge: the refusal before it stands.
+			name:     "refuse mode denies an unmet login even with a second factor satisfied on a re-authentication",
+			required: requiredUser, methods: enrolledTOTP, source: notMet,
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			phase: policy.PostAuthentication, in: reproving(oidcLogin, true, true),
+			assert: denied(policy.ErrFederatedAssuranceNotMet),
+		},
+		{
+			name:     "a non-federated login with a second factor satisfied on a re-authentication is allowed as before",
+			required: requiredUser, methods: enrolledTOTP,
+			phase: policy.PostAuthentication, in: reproving(passwordLogin, true, true), assert: allowed,
+		},
 		{
 			name:     "assurance met allows a required user enrolled on nothing",
 			required: requiredUser, methods: idleTOTP, source: met,

@@ -204,8 +204,13 @@ func loginUsername(first factor.Kind, p *identity.Principal) string {
 //
 // It makes verify's refusals before reading anything, and reads no body at
 // all; a path naming a method with no begin step is refused as unknown, as
-// one naming no method is. A user the throttle refuses is refused here too, so
-// a locked-out user cannot keep minting challenges. The challenge is a
+// one naming no method is. A resolved caller who is not the session's own
+// user (a consumer interceptor past the gates published another) is refused
+// with ErrAuthenticationRequired, as verify refuses one, before the throttle
+// and before anything is issued, so nobody spends the session user's
+// challenge issuance but that user. A user the throttle refuses is refused
+// here too, so a locked-out user cannot keep minting challenges. The
+// challenge is a
 // one-time token of the method's re-proof purpose, whose subject is the user
 // and which is bound to the session, so only the session that asked can
 // answer it. Issuance is bounded per user and method within the store's
@@ -214,6 +219,11 @@ func loginUsername(first factor.Kind, p *identity.Principal) string {
 func (i *reauthInterceptor) begin(ex *Exchange) error {
 	s, method, err := i.admitMethod(ex, i.paths().begin, isChallengeMethod)
 	if err != nil {
+		return err
+	}
+
+	// admit refused a session whose first factor published no caller.
+	if err := requireSessionUser(ex, s); err != nil {
 		return err
 	}
 
