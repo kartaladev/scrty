@@ -109,20 +109,29 @@ func (i *recoveryInterceptor) answersCodes(r Request) bool {
 // after refusing a recovery-pending session, so only a session with no pending
 // recovery ever arrives.
 //
-// A request with no session is ErrAuthenticationRequired. A session with any
-// other challenge pending (a second factor, an enrolment, a password change),
-// or one the per-request policy phase raised for the consumer
-// (Exchange.RaisedChallenge), is passed on, so the gate enforcing that
-// challenge refuses it: the endpoints answer only a full session, with
-// nothing else outstanding. A POST regenerates and a GET counts.
+// The endpoints answer only a full session, with nothing else outstanding,
+// judged by the check re-proof admission and passkey management also make
+// (fullSession). A request with no session is ErrAuthenticationRequired. A
+// session with any other challenge pending (a second factor, an enrolment, a
+// password change), or one the per-request policy phase raised for the
+// consumer (Exchange.RaisedChallenge), is passed on, so the gate enforcing
+// that challenge refuses it. A session that owes no challenge but is still
+// not full (a confinement marker left without its state, or a second-factor
+// state outside the named ones, which no library path produces) has no gate
+// to pass to, and is ErrAuthenticationRequired. A POST regenerates and a GET
+// counts.
 func (i *recoveryInterceptor) codes(ex *Exchange, next Next) error {
 	s := ex.Session
 	if s == nil {
 		return ErrAuthenticationRequired
 	}
 
-	if challengePending(s) || ex.RaisedChallenge() != policy.ChallengeNone {
+	if owedChallenge(s) != policy.ChallengeNone || ex.RaisedChallenge() != policy.ChallengeNone {
 		return next(ex)
+	}
+
+	if !fullSession(s) {
+		return ErrAuthenticationRequired
 	}
 
 	if ex.Request.Method() == http.MethodGet {
@@ -130,20 +139,6 @@ func (i *recoveryInterceptor) codes(ex *Exchange, next Next) error {
 	}
 
 	return i.regenerate(ex, s)
-}
-
-// challengePending reports whether s owes a built-in challenge that a later
-// gate enforces. It says nothing about a consumer challenge the per-request
-// policy phase raised on this request: codes checks Exchange.RaisedChallenge
-// for that separately, since such a challenge is never marked on the session.
-func challengePending(s *session.Session) bool {
-	switch s.MFA {
-	case session.MFAPending, session.MFAEnrolmentPending, session.MFARecoveryPending:
-		return true
-	case session.MFANone, session.MFASatisfied:
-	}
-
-	return s.PasswordChangePending
 }
 
 // regenerate replaces the session user's saved codes, when the session's

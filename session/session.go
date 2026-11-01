@@ -283,8 +283,9 @@ type Session struct {
 
 // AuthenticatedWithin reports whether s authenticated no longer than window
 // before now, reading AuthenticatedAt: the session's authentication time
-// (sign-in, satisfied second factor or re-authentication). It is the one
-// freshness check the library makes.
+// (sign-in, satisfied second factor or re-authentication). It is the function
+// AuthenticatedWithin applied to that time, so a session and a bare
+// authentication time are judged by the same rule.
 //
 // The window's end is inclusive: a session that authenticated exactly window
 // before now is within it. An authentication time later than now, as when
@@ -292,7 +293,21 @@ type Session struct {
 // window. A zero AuthenticatedAt, a session with no
 // recorded authentication, is never within any window.
 func (s *Session) AuthenticatedWithin(now time.Time, window time.Duration) bool {
-	return !s.AuthenticatedAt.IsZero() && now.Sub(s.AuthenticatedAt) <= window
+	return AuthenticatedWithin(s.AuthenticatedAt, now, window)
+}
+
+// AuthenticatedWithin reports whether an authentication at at happened no
+// longer than window before now. It is the one freshness check the library
+// makes: the method of the same name on Session delegates to it, and a judge
+// holding only an authentication time, such as one a consumer's own time
+// source supplies, calls it without building a session.
+//
+// The window's end is inclusive: an authentication exactly window before now
+// is within it. A time later than now, as when replicas' clocks disagree,
+// counts as no time elapsed, so it is within the window. A zero at, no
+// recorded authentication, is never within any window.
+func AuthenticatedWithin(at, now time.Time, window time.Duration) bool {
+	return !at.IsZero() && now.Sub(at) <= window
 }
 
 // clone returns a session sharing no map or slice with s, so neither side can reach the

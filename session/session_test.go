@@ -223,7 +223,9 @@ func TestConsumerDataIsReturnedUnchanged(t *testing.T) {
 
 // TestAuthenticatedWithin pins the one freshness rule: no more than the window
 // elapsed since the authentication time, inclusive of the window's end; a time
-// ahead of the clock counts as none elapsed; a zero time is never within.
+// ahead of the clock counts as none elapsed; a zero time is never within. Each
+// row is judged by the function on the time and by the method on a session
+// holding it, which must agree.
 func TestAuthenticatedWithin(t *testing.T) {
 	t.Parallel()
 
@@ -293,8 +295,14 @@ func TestAuthenticatedWithin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			s := &session.Session{AuthenticatedAt: tc.authenticatedAt}
-			tc.assert(t, s.AuthenticatedWithin(tc.now, tc.window))
+			t.Run("function", func(t *testing.T) {
+				tc.assert(t, session.AuthenticatedWithin(tc.authenticatedAt, tc.now, tc.window))
+			})
+
+			t.Run("method", func(t *testing.T) {
+				s := &session.Session{AuthenticatedAt: tc.authenticatedAt}
+				tc.assert(t, s.AuthenticatedWithin(tc.now, tc.window))
+			})
 		})
 	}
 }

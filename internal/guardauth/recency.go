@@ -57,10 +57,11 @@ func NewRecency(
 // the adapter refuses a route's window of zero or less at wiring, so a zero
 // here is never the consumer's own.
 //
-// A caller with no authentication time is not recent. Otherwise the session's
-// own rule decides (session.(*Session).AuthenticatedWithin), so a consumer's
-// time is judged exactly as a session's: the window's end inclusive, a time
-// ahead of the clock recent, a zero time never.
+// A caller with no authentication time is not recent. Otherwise the library's
+// one freshness rule decides (session.AuthenticatedWithin, which the session's
+// own method delegates to), so a consumer's time is judged exactly as a
+// session's: the window's end inclusive, a time ahead of the clock recent, a
+// zero time never.
 func (r *Recency) Judge(ctx context.Context, window time.Duration) (recent bool, judged time.Duration) {
 	if window == 0 {
 		window = r.window
@@ -71,9 +72,7 @@ func (r *Recency) Judge(ctx context.Context, window time.Duration) (recent bool,
 		return false, window
 	}
 
-	s := session.Session{AuthenticatedAt: at}
-
-	return s.AuthenticatedWithin(r.clock.Now(), window), window
+	return session.AuthenticatedWithin(at, r.clock.Now(), window), window
 }
 
 // SessionAuthenticationTime is the default time source: the authentication

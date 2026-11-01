@@ -452,6 +452,107 @@ func TestPasskeyEnrolmentSharedSettings(t *testing.T) {
 	}
 }
 
+// TestPasskeyRegistrationResolvingWiring pins that the kinds registration
+// resolves are checked at construction: each must be a consumer kind the chain
+// declares with WithChallengeEnforcer, whichever of the two options comes
+// first.
+func TestPasskeyRegistrationResolvingWiring(t *testing.T) {
+	t.Parallel()
+
+	const (
+		declared   = policy.ChallengeKind(100)
+		undeclared = policy.ChallengeKind(101)
+	)
+
+	type testCase struct {
+		name string
+
+		// kinds are what the option is given. declareBefore and declareAfter
+		// put WithChallengeEnforcer(declared) ahead of EnablePasskeys and
+		// behind it.
+		kinds         []policy.ChallengeKind
+		declareBefore bool
+		declareAfter  bool
+
+		assert func(t *testing.T, err error)
+	}
+
+	assembles := func(t *testing.T, err error) { require.NoError(t, err) }
+	refused := func(t *testing.T, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, httpsec.ErrConfig)
+		assert.Contains(t, err.Error(), "WithPasskeyRegistrationResolving")
+	}
+
+	// refusedFor is refused with a message that says why: the fragment tells
+	// this refusal from the others, which all name the option.
+	refusedFor := func(fragment string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) {
+			t.Helper()
+
+			refused(t, err)
+			assert.Contains(t, err.Error(), fragment)
+		}
+	}
+
+	cases := []testCase{
+		{name: "no kinds", declareBefore: true, assert: refusedFor("was given no kinds")},
+		{
+			name: "ChallengeNone", kinds: []policy.ChallengeKind{policy.ChallengeNone},
+			declareBefore: true, assert: refusedFor("which is not a challenge"),
+		},
+		{
+			name: "a built-in kind", kinds: []policy.ChallengeKind{policy.ChallengeMFA},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
+		{
+			name: "the password-change kind", kinds: []policy.ChallengeKind{policy.ChallengePasswordChange},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
+		{
+			name: "the MFA enrolment kind", kinds: []policy.ChallengeKind{policy.ChallengeMFAEnrolment},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
+		{
+			name: "the account-recovery kind", kinds: []policy.ChallengeKind{policy.ChallengeAccountRecovery},
+			declareBefore: true, assert: refusedFor("which the library enforces through its own gate"),
+		},
+		{
+			name: "a kind the chain does not declare", kinds: []policy.ChallengeKind{declared},
+			assert: refusedFor("which the chain does not declare"),
+		},
+		{
+			name: "one declared kind and one that is not", kinds: []policy.ChallengeKind{declared, undeclared},
+			declareBefore: true, assert: refused,
+		},
+		{name: "a declared kind, declared before", kinds: []policy.ChallengeKind{declared}, declareBefore: true, assert: assembles},
+		{name: "a declared kind, declared after", kinds: []policy.ChallengeKind{declared}, declareAfter: true, assert: assembles},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newPasskeyHarness(t)
+			h.withoutEnrolment = true
+			h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationResolving(tc.kinds...))
+
+			if tc.declareBefore {
+				h.extra = append(h.extra, httpsec.WithChallengeEnforcer(declared))
+			}
+
+			opts := h.chainOptions(t, nil)
+			if tc.declareAfter {
+				opts = append(opts, httpsec.WithChallengeEnforcer(declared))
+			}
+
+			_, err := httpsec.New(opts...)
+			tc.assert(t, err)
+		})
+	}
+}
+
 // TestPasskeyRecoveryBinding pins that passkey registration, with the
 // passkey method on the MFA slot, is a way to bind a recovered session, and
 // that either half alone is not.

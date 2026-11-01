@@ -454,6 +454,42 @@ func TestRecoveryCodes(t *testing.T) {
 			},
 		},
 		{
+			// No library path leaves a session out of confinement still
+			// holding the marker: the upgrade that ends it clears the marker.
+			name: "a session carrying the confinement marker without its state is refused, and no set is generated",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t)
+				s.EnrolmentOriginDeadline = s.AbsoluteExpiresAt
+				h.save(t, s)
+
+				return h.codesRequest(t, http.MethodPost, s)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+				assert.Empty(t, out.rec.Body.Bytes())
+				setUnchanged(t, h, first)
+			},
+		},
+		{
+			// No library path writes a state outside the named ones; a store
+			// could hand one back.
+			name: "a session in an unnamed second-factor state is refused, and no set is generated",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t)
+				s.MFA = session.MFAState(99)
+				h.save(t, s)
+
+				return h.codesRequest(t, http.MethodPost, s)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+				assert.Empty(t, out.rec.Body.Bytes())
+				setUnchanged(t, h, first)
+			},
+		},
+		{
 			name: "a consumer challenge raised per request is passed on to its own gate, not answered here, and no set is generated",
 			arrange: func(t *testing.T, h *recoveryHarness) {
 				const consumerChallenge = policy.ChallengeKind(100)

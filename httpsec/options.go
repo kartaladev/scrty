@@ -637,6 +637,11 @@ func WithPolicyEngine(e *policy.Engine) Option {
 // declaring one here could only silence the check for it, so it is refused, as
 // is ChallengeNone. There is no option to switch the
 // check off.
+//
+// A request raising a declared kind is refused on every passkey registration
+// and management endpoint. A
+// gate that lets passkey registration through to resolve its kind names the
+// kind in WithPasskeyRegistrationResolving.
 func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 	return func(c *config) error {
 		if kind == policy.ChallengeNone {

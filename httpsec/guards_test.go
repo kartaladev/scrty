@@ -193,6 +193,15 @@ func TestNewGuards(t *testing.T) {
 			},
 		},
 		{
+			// The recency options are validated before the authorizer
+			// fallback, as gin and fiber validate theirs, so one wiring
+			// mistake gives one error on every adapter.
+			name:   "a window error is reported before a missing authorizer",
+			az:     func(*testing.T) authorize.Authorizer { return nil },
+			opts:   []httpsec.GuardOption{httpsec.WithRecentAuthenticationWindow(0)},
+			assert: refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
 			name: "typed-nil authorizer",
 			az:   func(*testing.T) authorize.Authorizer { return typedNil },
 			assert: func(t *testing.T, g *httpsec.Guards, err error, _ *guardRun) {

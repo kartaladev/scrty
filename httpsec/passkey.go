@@ -104,6 +104,11 @@ type passkeyInterceptor struct {
 	// second factor the account has when the login proves one.
 	passwordlessLogin bool
 
+	// resolving holds the consumer challenge kinds the registration endpoints
+	// serve a request raising (WithPasskeyRegistrationResolving), nil by
+	// default.
+	resolving map[policy.ChallengeKind]bool
+
 	// enrolment is the chain's enrolment path, handed over at assembly when
 	// the path counts the passkey method among its enrolling methods, and nil
 	// otherwise. Its email confirmation, contact resolver and confirmation
@@ -206,13 +211,27 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //     refusal.
 //
 // They serve full sessions only: a confined session, or one owing an MFA or
-// password-change challenge, is refused with the ChallengeError it owes. An
+// password-change challenge, is refused with the ChallengeError it owes. A
+// session that owes no challenge but is not full (a confinement marker left
+// without its state, or a second-factor state outside the named ones, which no
+// library path produces) is refused as ErrAuthenticationRequired. An
 // identifier that does not parse, names another user's passkey or names
 // none is passkey.ErrNotFound (404), and nothing changes.
 //
 // Passwordless login is off by default and is enabled with
 // WithPasskeyPasswordlessLogin, which serves its own two endpoints as a first
 // factor at OrderPasskeyLogin.
+//
+// Every registration and management request on which the chain's per-request
+// policy raised a challenge of the consumer's own (Exchange.RaisedChallenge,
+// declared with WithChallengeEnforcer) is refused with a ChallengeError of
+// that kind, whatever the session's state, before anything is begun, stored
+// or changed: the gate enforcing such a challenge is the consumer's and may
+// sit after the passkey slot. A second factor or a password change the
+// session owes is named in preference to it, on management and registration
+// alike; a recovery-pending or enrolment-only session is refused with the
+// raised kind. WithPasskeyRegistrationResolving names the consumer kinds
+// the four registration endpoints serve instead; management never does.
 //
 // Any other method on these paths passes through untouched, and so does
 // every other path. A request without a session, or whose session carries no
@@ -404,6 +423,10 @@ func (c *config) wirePasskeys() error {
 			"so the prefix would move no endpoint", option)
 	}
 
+	if err := p.checkResolving(c); err != nil {
+		return err
+	}
+
 	if err := p.checkPaths(option, c); err != nil {
 		return err
 	}
@@ -562,7 +585,45 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 		return &ChallengeError{Kind: policy.ChallengeAccountRecovery, Session: s}
 	}
 
+	// A second factor or a password change the session owes is named in
+	// preference to a challenge raised on the request, whether or not
+	// registration resolves the raised kind.
+	if err := owedBeforeRaised(ex, s); err != nil {
+		return err
+	}
+
+	// A challenge the per-request policy raised on this request is enforced
+	// by a gate of the consumer's. One registered after this slot cannot
+	// refuse a registration that is already begun or finished, so every
+	// registration request, whatever the session's state, is refused here.
+	// The kinds WithPasskeyRegistrationResolving names are the exception: the
+	// consumer's gate lets registration through to resolve them.
+	if !p.resolvesRaised(ex.RaisedChallenge()) {
+		if err := raisedChallengeRefusal(ex, s); err != nil {
+			return err
+		}
+	}
+
 	return serve(ex, s)
+}
+
+// owedBeforeRaised refuses a session that owes a second factor or a password
+// change with that challenge, when a consumer kind was raised on the request,
+// and reports nil otherwise. The gates ahead of the endpoints refuse such a
+// session first on a chain that enables them; this holds the line past a
+// reordered chain. It does nothing when no kind was raised, so the request is
+// judged as it always was, by the manager.
+func owedBeforeRaised(ex *Exchange, s *session.Session) error {
+	if ex.RaisedChallenge() == policy.ChallengeNone {
+		return nil
+	}
+
+	switch kind := owedChallenge(s); kind {
+	case policy.ChallengeMFA, policy.ChallengePasswordChange:
+		return &ChallengeError{Kind: kind, Session: s}
+	default:
+		return nil
+	}
 }
 
 // registrationContext is what the manager is told about s's registration or
@@ -679,4 +740,86 @@ func WithPasskeyRegistrationResponder(fn PasskeyRegistrationResponder) PasskeyOp
 
 		return nil
 	}
+}
+
+// WithPasskeyRegistrationResolving lets the registration endpoints serve a
+// request on which the chain's per-request policy raised one of kinds, each a
+// challenge kind of the consumer's own.
+//
+// Default: without it, a request on which a consumer kind was raised
+// (Exchange.RaisedChallenge, declared with WithChallengeEnforcer) is refused
+// with a ChallengeError of that kind on every passkey registration and
+// management endpoint. That is the
+// safe default, because the gate enforcing the kind is the consumer's and may
+// sit after the passkey slot, which would otherwise serve the request first.
+//
+// With it, a request on which one of kinds was raised is served by the four
+// registration endpoints (begin, finish, confirm and email confirm), under
+// every other rule unchanged: assurance, freshness, confinement, and a
+// second factor or password change the session owes, which is still named
+// first. It is for a
+// consumer whose gate lets registration through so that the binding resolves
+// its kind, as the library's enrolment gate does for its own. The listing,
+// the rename and the removal never serve it, since none of them binds an
+// authenticator, and a raised kind not in kinds is refused on every one of them.
+//
+// The library marks nothing: whether the binding resolved the challenge is
+// for the consumer's policy to judge on the request that follows. Naming a
+// kind here only stops the passkey endpoints refusing it. The option may be
+// given more than once; the kinds are joined.
+//
+// New refuses, with an error naming this option, a call with no kinds,
+// ChallengeNone, a kind the library enforces through its own gate (the
+// built-in kinds), and a kind the chain does not declare with
+// WithChallengeEnforcer, whichever of the two options comes first.
+func WithPasskeyRegistrationResolving(kinds ...policy.ChallengeKind) PasskeyOption {
+	const option = "WithPasskeyRegistrationResolving"
+
+	return func(p *passkeyInterceptor) error {
+		if len(kinds) == 0 {
+			return newConfigError("%s was given no kinds; omit the option to keep refusing every "+
+				"raised challenge on the passkey endpoints", option)
+		}
+
+		for _, kind := range kinds {
+			if kind == policy.ChallengeNone {
+				return newConfigError("%s was given ChallengeNone, which is not a challenge", option)
+			}
+
+			if b, ok := builtInEnforcers[kind]; ok {
+				return newConfigError("%s was given %s, which the library enforces through its own "+
+					"gate (%s); only a consumer kind declared with WithChallengeEnforcer can be named",
+					option, kind, b.option)
+			}
+
+			if p.resolving == nil {
+				p.resolving = make(map[policy.ChallengeKind]bool, len(kinds))
+			}
+
+			p.resolving[kind] = true
+		}
+
+		return nil
+	}
+}
+
+// resolvesRaised reports whether the registration endpoints serve a request
+// on which kind was raised: nothing was raised, or WithPasskeyRegistrationResolving
+// named it.
+func (p *passkeyInterceptor) resolvesRaised(kind policy.ChallengeKind) bool {
+	return kind == policy.ChallengeNone || p.resolving[kind]
+}
+
+// checkResolving refuses a kind WithPasskeyRegistrationResolving named that
+// the chain does not declare with WithChallengeEnforcer. It runs once every
+// option has been applied, so the order of the two options does not matter.
+func (p *passkeyInterceptor) checkResolving(c *config) error {
+	for kind := range p.resolving {
+		if !c.consumerEnforced[kind] {
+			return newConfigError("WithPasskeyRegistrationResolving was given %s, which the chain does "+
+				"not declare: add WithChallengeEnforcer for it, or remove it from the option", kind)
+		}
+	}
+
+	return nil
 }

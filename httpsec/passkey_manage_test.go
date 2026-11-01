@@ -12,6 +12,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/passkey"
@@ -116,6 +117,15 @@ func TestPasskeyManage(t *testing.T) {
 		// mfa is the second-factor state the carried session is in; the
 		// zero value is no second factor asked for.
 		mfa session.MFAState
+
+		// marked leaves the carried session holding the confinement marker
+		// whatever its state, as no library path does.
+		marked bool
+
+		// reordered carries the session past every gate, at the passkey
+		// slot's door, as a consumer's interceptor that publishes a session
+		// after them does.
+		reordered bool
 
 		setup  func(t *testing.T, h *passkeyHarness)
 		act    func(t *testing.T, f fixture, chain *httpsec.Chain) served
@@ -407,6 +417,61 @@ func TestPasskeyManage(t *testing.T) {
 			},
 		},
 		{
+			// The second-factor gate refuses a session owing its second factor
+			// first on a chain in the default order; a consumer's interceptor
+			// publishing the session past it leaves the line to the endpoints.
+			name:      "reordered: a session owing a second factor is refused with that challenge and renames nothing",
+			mfa:       session.MFAPending,
+			reordered: true,
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRenamePath,
+					url.Values{"id": {f.own.ID.String()}, "name": {"Old phone"}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ch)
+				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+				assert.False(t, out.handlerRan)
+
+				stored, err := h.creds.Find(t.Context(), testMFAUser, f.own.ID)
+				require.NoError(t, err)
+				assert.Equal(t, f.own.Name, stored.Name, "nothing is renamed")
+			},
+		},
+		{
+			// No library path leaves a satisfied session holding the marker:
+			// the upgrade that satisfies it clears the marker.
+			name:   "a satisfied session still carrying the confinement marker is refused the list",
+			mfa:    session.MFASatisfied,
+			marked: true,
+			act: func(t *testing.T, _ fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ fixture, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, out.rec.Body.Len(), "nothing is listed")
+			},
+		},
+		{
+			// No library path writes a state outside the named ones; a store
+			// could hand one back.
+			name: "a session in an unnamed second-factor state is refused and renames nothing",
+			mfa:  session.MFAState(99),
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRenamePath,
+					url.Values{"id": {f.own.ID.String()}, "name": {"Old phone"}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+
+				stored, err := h.creds.Find(t.Context(), testMFAUser, f.own.ID)
+				require.NoError(t, err)
+				assert.Equal(t, f.own.Name, stored.Name, "nothing is renamed")
+			},
+		},
+		{
 			name: "consumer prefix and responders",
 			setup: func(_ *testing.T, h *passkeyHarness) {
 				h.passkeyOpts = append(h.passkeyOpts,
@@ -474,6 +539,10 @@ func TestPasskeyManage(t *testing.T) {
 					s.PasswordChangePending = true
 					require.NoError(t, h.sessions.Save(t.Context(), s))
 				}
+				if tc.marked {
+					s.EnrolmentOriginDeadline = s.AbsoluteExpiresAt
+					require.NoError(t, h.sessions.Save(t.Context(), s))
+				}
 			}
 
 			carried := s
@@ -481,12 +550,481 @@ func TestPasskeyManage(t *testing.T) {
 				carried = nil
 				h.extra = append(h.extra, httpsec.RegisterInterceptor(sessionWithoutCaller(s), httpsec.OrderBearerToken))
 			}
+			if tc.reordered {
+				carried = nil
+				h.extra = append(h.extra, pastTheGates(s, false))
+			}
 
 			chain := h.build(t, carried)
 
 			tc.assert(t, h, f, tc.act(t, f, chain))
 		})
 	}
+}
+
+// TestPasskeyRaisedChallenge pins that passkey management and registration
+// refuse a request on which the per-request policy raised a challenge of the
+// consumer's own that no gate before the passkey slot enforces, with a
+// challenge error of that kind and nothing begun or changed, though the
+// session itself is full, recovery-pending or enrolment-only. The same chain
+// with the challenge raised in another phase serves the request. It runs on a
+// chain whose only policy raises the challenge, and an interceptor at the
+// bearer's door that runs the per-request phase, as a bearer does.
+func TestPasskeyRaisedChallenge(t *testing.T) {
+	t.Parallel()
+
+	const consumerChallenge = policy.ChallengeKind(100)
+
+	type testCase struct {
+		name string
+
+		// phase is when the policy raises the challenge: policy.PerRequest
+		// reaches the passkey endpoints, any other leaves the request alone.
+		phase policy.Phase
+
+		// reordered carries the session past every gate, at the passkey
+		// slot's door, as a consumer's reordered chain would; the per-request
+		// phase then runs after it, so that it sees the session.
+		reordered bool
+
+		// session builds the session the case carries; setup wires the harness.
+		session func(t *testing.T, h *passkeyHarness) *session.Session
+		setup   func(h *passkeyHarness)
+
+		act    func(t *testing.T, h *passkeyHarness, s *session.Session, chain *httpsec.Chain) served
+		assert func(t *testing.T, h *passkeyHarness, s *session.Session, out served)
+	}
+
+	full := func(t *testing.T, h *passkeyHarness) *session.Session {
+		return h.sessionIn(t, factor.Password, session.MFANone)
+	}
+
+	owingPasswordChange := func(t *testing.T, h *passkeyHarness) *session.Session {
+		s := full(t, h)
+		s.PasswordChangePending = true
+		require.NoError(t, h.sessions.Save(t.Context(), s))
+
+		return s
+	}
+
+	owingSecondFactor := func(t *testing.T, h *passkeyHarness) *session.Session {
+		return h.sessionIn(t, factor.Password, session.MFAPending)
+	}
+
+	recoveryPending := func(t *testing.T, h *passkeyHarness) *session.Session { return h.recoveryPending(t) }
+
+	enrolmentOnly := func(t *testing.T, h *passkeyHarness) *session.Session {
+		return h.enrolmentOnly(t, factor.Password)
+	}
+
+	withPasskeyMethod := func(h *passkeyHarness) { h.passkeyMethod = true }
+
+	withPasskeyEnrolment := func(h *passkeyHarness) {
+		h.passkeyMethod = true
+		h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentMethods("passkey"))
+	}
+
+	begin := func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+		return serve(t, chain, post(t.Context(), passkeyBeginPath, ""))
+	}
+
+	challenged := func(t *testing.T, out served, kind policy.ChallengeKind) {
+		t.Helper()
+
+		var ch *httpsec.ChallengeError
+		require.ErrorAs(t, out.err, &ch)
+		assert.Equal(t, kind, ch.Kind)
+		assert.False(t, out.handlerRan)
+		assert.Zero(t, out.rec.Body.Len(), "nothing was written")
+	}
+
+	refusedAndNothingBegun := func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+		t.Helper()
+
+		challenged(t, out, consumerChallenge)
+		assert.Empty(t, h.verifier.creations, "no challenge is issued")
+	}
+
+	// otherChallenge is a second consumer kind the chain declares, which no
+	// policy raises.
+	const otherChallenge = policy.ChallengeKind(101)
+
+	// resolving names kinds registration resolves, and declares the second
+	// kind so that naming it is a valid wiring.
+	resolving := func(kinds ...policy.ChallengeKind) func(h *passkeyHarness) {
+		return func(h *passkeyHarness) {
+			h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationResolving(kinds...))
+			h.extra = append(h.extra, httpsec.WithChallengeEnforcer(otherChallenge))
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:    "a full session beginning a registration is refused with the raised challenge and none is issued",
+			phase:   policy.PerRequest,
+			session: full,
+			act:     begin,
+			assert:  refusedAndNothingBegun,
+		},
+		{
+			name:    "the same session beginning a registration with nothing raised is served",
+			phase:   policy.PreAuthentication,
+			session: full,
+			act:     begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Len(t, h.verifier.creations, 1, "a challenge is issued")
+			},
+		},
+		{
+			name:    "a registration finish is refused with the raised challenge and stores nothing",
+			phase:   policy.PerRequest,
+			session: full,
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, jsonPost(t.Context(), passkeyFinishPath, registrationBody("unissued", "cred-1")))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+
+				n, err := h.creds.Count(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.Zero(t, n, "no passkey is stored")
+			},
+		},
+		{
+			name:    "a registration confirm is refused with the raised challenge",
+			phase:   policy.PerRequest,
+			session: full,
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, post(t.Context(), passkeyConfirmPath, "code=x"))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+			},
+		},
+		{
+			name:    "an email confirm is refused with the raised challenge",
+			phase:   policy.PerRequest,
+			session: full,
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, post(t.Context(), passkeyConfirmEmailPath, "code=x"))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+			},
+		},
+		{
+			name:    "the listing is refused with the raised challenge",
+			phase:   policy.PerRequest,
+			session: full,
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+			},
+		},
+		{
+			name:    "the listing with nothing raised is served",
+			phase:   policy.PreAuthentication,
+			session: full,
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name:    "a rename is refused with the raised challenge and renames nothing",
+			phase:   policy.PerRequest,
+			session: full,
+			act: func(t *testing.T, h *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive)
+
+				return serve(t, chain, managePost(t, passkeyRenamePath,
+					url.Values{"id": {own.ID.String()}, "name": {"Old phone"}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+
+				list, err := h.creds.List(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				require.Len(t, list, 1)
+				assert.NotEqual(t, "Old phone", list[0].Name, "nothing is renamed")
+			},
+		},
+		{
+			name:    "a removal is refused with the raised challenge and removes nothing",
+			phase:   policy.PerRequest,
+			session: full,
+			act: func(t *testing.T, h *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive)
+
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+
+				n, err := h.creds.Count(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "nothing is removed")
+				assert.Zero(t, h.notices.count(), "no removal notice is queued")
+			},
+		},
+		{
+			// The session's own challenge is the one its gate enforces, so it
+			// is the one named when both are outstanding.
+			name:    "a session owing a password change is refused with that challenge before the raised one",
+			phase:   policy.PerRequest,
+			session: owingPasswordChange,
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, policy.ChallengePasswordChange)
+			},
+		},
+		{
+			// Registration names the session's own challenge first, as
+			// management does, though the raised kind is outstanding too.
+			name:    "a session owing a password change beginning a registration is refused with that challenge before the raised one",
+			phase:   policy.PerRequest,
+			session: owingPasswordChange,
+			act:     begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, policy.ChallengePasswordChange)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
+			name:      "reordered: a session owing a second factor beginning a registration is refused with that challenge before the raised one",
+			phase:     policy.PerRequest,
+			reordered: true,
+			session:   owingSecondFactor,
+			act:       begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, policy.ChallengeMFA)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
+			// With nothing raised the owed challenge is not named here: the
+			// manager refuses the session as it did before any kind was raised.
+			name:      "reordered: a session owing a second factor beginning a registration with nothing raised is refused by the manager",
+			phase:     policy.PreAuthentication,
+			reordered: true,
+			session:   owingSecondFactor,
+			act:       begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
+			name:    "a recovery-pending session beginning a registration is refused with the raised challenge",
+			phase:   policy.PerRequest,
+			session: recoveryPending,
+			setup:   withPasskeyMethod,
+			act:     begin,
+			assert:  refusedAndNothingBegun,
+		},
+		{
+			name:    "an enrolment-only session beginning a registration is refused with the raised challenge",
+			phase:   policy.PerRequest,
+			session: enrolmentOnly,
+			setup:   withPasskeyEnrolment,
+			act:     begin,
+			assert:  refusedAndNothingBegun,
+		},
+		{
+			name:    "an enrolment-only session beginning a registration with nothing raised is served",
+			phase:   policy.PreAuthentication,
+			session: enrolmentOnly,
+			setup:   withPasskeyEnrolment,
+			act:     begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Len(t, h.verifier.creations, 1, "a challenge is issued")
+			},
+		},
+		{
+			name:    "a registration begin is served when the raised kind is one registration resolves",
+			phase:   policy.PerRequest,
+			session: full,
+			setup:   resolving(consumerChallenge),
+			act:     begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Len(t, h.verifier.creations, 1, "a challenge is issued")
+			},
+		},
+		{
+			name:    "a registration finish stores the passkey when the raised kind is one registration resolves",
+			phase:   policy.PerRequest,
+			session: full,
+			setup:   resolving(consumerChallenge),
+			act: func(t *testing.T, h *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return h.register(t, chain, "cred-1")
+			},
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.NotNil(t, h.credential(t), "the passkey is stored")
+			},
+		},
+		{
+			name:    "the listing is still refused when the raised kind is one registration resolves",
+			phase:   policy.PerRequest,
+			session: full,
+			setup:   resolving(consumerChallenge),
+			act: func(t *testing.T, _ *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				return serve(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+			},
+		},
+		{
+			name:    "a rename is still refused when the raised kind is one registration resolves",
+			phase:   policy.PerRequest,
+			session: full,
+			setup:   resolving(consumerChallenge),
+			act: func(t *testing.T, h *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive)
+
+				return serve(t, chain, managePost(t, passkeyRenamePath,
+					url.Values{"id": {own.ID.String()}, "name": {"Old phone"}}))
+			},
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+			},
+		},
+		{
+			name:    "a removal is still refused when the raised kind is one registration resolves",
+			phase:   policy.PerRequest,
+			session: full,
+			setup:   resolving(consumerChallenge),
+			act: func(t *testing.T, h *passkeyHarness, _ *session.Session, chain *httpsec.Chain) served {
+				own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive)
+
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, consumerChallenge)
+
+				n, err := h.creds.Count(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "nothing is removed")
+			},
+		},
+		{
+			name:    "a registration begin is still refused when only another declared kind is one registration resolves",
+			phase:   policy.PerRequest,
+			session: full,
+			setup:   resolving(otherChallenge),
+			act:     begin,
+			assert:  refusedAndNothingBegun,
+		},
+		{
+			// Resolving a kind changes no other rule: a session owing a
+			// password change is not admitted by the manager, and the
+			// raised kind does not make it so.
+			name:    "a session owing a password change is not admitted though registration resolves the raised kind",
+			phase:   policy.PerRequest,
+			session: owingPasswordChange,
+			setup:   resolving(consumerChallenge),
+			act:     begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				challenged(t, out, policy.ChallengePasswordChange)
+				assert.Empty(t, h.verifier.creations, "no challenge is issued")
+			},
+		},
+		{
+			name:    "an enrolment-only session beginning a registration is served when registration resolves the raised kind",
+			phase:   policy.PerRequest,
+			session: enrolmentOnly,
+			setup: func(h *passkeyHarness) {
+				withPasskeyEnrolment(h)
+				resolving(consumerChallenge)(h)
+			},
+			act: begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Len(t, h.verifier.creations, 1, "a challenge is issued")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newPasskeyHarness(t)
+			if tc.setup != nil {
+				tc.setup(h)
+			}
+
+			// The enrolment path brings its own policy engine, whose policy
+			// the enrolment-only session needs; the others run on the raising
+			// policy alone.
+			engine := engineOf(t, raisingDeclared{kind: consumerChallenge, phase: tc.phase})
+			if h.enrolOpts != nil {
+				engine = enrolmentEngineWith(t, raisingDeclared{kind: consumerChallenge, phase: tc.phase})
+			} else {
+				h.withoutEnrolment = true
+			}
+
+			evaluateAt := httpsec.After(httpsec.OrderBearerToken)
+			if tc.reordered {
+				evaluateAt = httpsec.After(httpsec.After(httpsec.OrderPasswordChange))
+			}
+
+			h.extra = append(h.extra,
+				httpsec.WithPolicyEngine(engine),
+				httpsec.WithChallengeEnforcer(consumerChallenge),
+				httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if ex.Session != nil && ex.Authentication != nil {
+						if err := ex.EvaluatePerRequest(ex.Session, ex.Authentication.Principal); err != nil {
+							return err
+						}
+					}
+
+					return next(ex)
+				}), evaluateAt))
+
+			s := tc.session(t, h)
+
+			carried := s
+			if tc.reordered {
+				carried = nil
+				h.extra = append(h.extra, pastTheGates(s, false))
+			}
+
+			tc.assert(t, h, s, tc.act(t, h, s, h.build(t, carried)))
+		})
+	}
+}
+
+// enrolmentEngineWith is the enrolment path's engine with further policies
+// ahead of its requirement policy, so that what they raise is judged first.
+func enrolmentEngineWith(t *testing.T, extra ...policy.Policy) *policy.Engine {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+
+	lookup := NewMockMFAMethodLookup(ctrl)
+	lookup.EXPECT().Name().Return("totp").AnyTimes()
+	lookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+	lookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+
+	p, err := policy.NewMFARequirement(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}}, policy.WithMFAEnrolmentPath())
+	require.NoError(t, err)
+
+	return engineOf(t, append(extra, p)...)
 }
 
 // TestPasskeyManageResponderOptions pins that a nil responder is a wiring

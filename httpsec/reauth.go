@@ -2,7 +2,6 @@ package httpsec
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -209,8 +208,9 @@ func (i *reauthInterceptor) Intercept(ex *Exchange, next Next) error {
 //
 // Only a full session is served: one with a resolved caller, whose second
 // factor is satisfied or was never asked for, that owes no password change and
-// carries no confinement marker. Everything else is refused with
-// ErrAuthenticationRequired. On a chain in the default order a session owing a
+// carries no confinement marker, judged by the check passkey management and
+// saved-code regeneration also make (fullSession). Everything else is refused
+// with ErrAuthenticationRequired. On a chain in the default order a session owing a
 // challenge, or confined to enrolment or recovery, never gets here, because
 // its gate (598 to 650) refuses it first; this refusal covers a consumer who
 // registered an interceptor that publishes a session past those gates. A
@@ -231,42 +231,28 @@ func (i *reauthInterceptor) admit(ex *Exchange) (*session.Session, error) {
 		return nil, ErrAuthenticationRequired
 	}
 
-	if !isFullSession(s) || ex.RaisedChallenge() != policy.ChallengeNone {
+	if !fullSession(s) || ex.RaisedChallenge() != policy.ChallengeNone {
 		return nil, ErrAuthenticationRequired
 	}
 
 	return s, nil
 }
 
-// isFullSession reports whether s owes nothing and is confined to nothing.
-func isFullSession(s *session.Session) bool {
-	switch s.MFA {
-	case session.MFANone, session.MFASatisfied:
-	default:
-		return false
-	}
-
-	// The enrolment origin deadline is the confinement marker the enrolment
-	// path and an account recovery set, cleared only by the upgrade that ends
-	// the confinement.
-	return !s.PasswordChangePending && s.EnrolmentOriginDeadline.IsZero()
-}
-
-// offered is the factor policy: how the user of s may re-prove. Every endpoint
-// decides through it, so the listing never offers what an endpoint refuses,
-// and no endpoint accepts what the listing did not offer. Strictly, offered
-// serves the listing, which asks every method; the password endpoint reaches
-// the same answer through passwordOffered, which stops at the first enrolled
-// method. Begin and verify look up only the method the request names, and
-// refuse it when the user is not enrolled.
+// offered is the factor policy as the listing applies it: how the user of s
+// may re-prove, asking every method. The endpoints reach the same answer
+// without it: the password endpoint through passwordOffered, which stops at
+// the first enrolled method and judges the password by the same rule
+// (passwordPermitted); begin and verify by looking up only the method the
+// request names, refusing it when the user is not enrolled. So the listing
+// never offers what an endpoint refuses, and no endpoint accepts what the
+// listing did not offer.
 //
 // methods are the MFA slot's configured methods the user is enrolled on, in
 // configuration order, whatever their channel: the same-channel rule of a
 // login's second factor does not apply to a re-proof, which is one factor
 // presented alongside the live session secret, so a passkey login re-proves
-// with the passkey. password is true only when there are none, form login is
-// enabled and second-factor-only re-proof is off: a user who holds a second
-// factor never re-proves with the weaker password.
+// with the passkey. password is passwordPermitted's answer for a user holding
+// those methods.
 //
 // The first lookup that fails refuses the request, behind fixed text with the
 // store's error reachable through errors.Is and errors.As. It never falls back
@@ -288,16 +274,15 @@ func (i *reauthInterceptor) offered(ctx context.Context, s *session.Session) ([]
 		}
 	}
 
-	password := len(methods) == 0 && i.login != nil && !i.secondFactorOnly
-
-	return methods, password, nil
+	return methods, i.passwordPermitted(len(methods) > 0), nil
 }
 
 // passwordOffered is the factor policy as the password endpoint applies it:
 // whether the user of s may re-prove with the password. It reaches the same
 // answer as offered, but looks the methods up in configuration order and stops
 // at the first one the user is enrolled on, since that alone refuses the
-// password; offered, which the listing needs, asks every method.
+// password; offered, which the listing needs, asks every method. Both judge
+// the password by passwordPermitted.
 //
 // A lookup that fails before an enrolled method is found refuses the request
 // as offered does, behind fixed text with the store's error reachable, and
@@ -311,12 +296,22 @@ func (i *reauthInterceptor) passwordOffered(ctx context.Context, s *session.Sess
 			}
 
 			if enrolled {
-				return false, nil
+				return i.passwordPermitted(true), nil
 			}
 		}
 	}
 
-	return i.login != nil && !i.secondFactorOnly, nil
+	return i.passwordPermitted(false), nil
+}
+
+// passwordPermitted is the factor policy's password rule, the one the listing
+// (offered) and the password endpoint (passwordOffered) both apply, so the two
+// cannot drift: the password is accepted only from a user who holds no second
+// factor, while form login is enabled and second-factor-only re-proof
+// (RequireSecondFactorForReauthentication) is off. A user who holds a second
+// factor never re-proves with the weaker password.
+func (i *reauthInterceptor) passwordPermitted(holdsSecondFactor bool) bool {
+	return !holdsSecondFactor && i.login != nil && !i.secondFactorOnly
 }
 
 // list answers the method listing for the session's user, from the factor
@@ -344,42 +339,14 @@ func (i *reauthInterceptor) list(ex *Exchange) error {
 	return i.methodsRespond(ex, listed)
 }
 
-// reauthMethodsDocument is the default listing's body. Its member names are
-// the documented contract of the endpoint.
-type reauthMethodsDocument struct {
-	Methods  []methodListingEntry `json:"methods"`
-	Password bool                 `json:"password"`
-}
-
 // writeReauthMethods is the listing's response when the consumer supplies no
 // responder: 200 and a JSON document, {"methods":[{"name":…,"channel":…,
 // "begins":…}],"password":…}, an empty list as [] rather than null, marked
-// Cache-Control: no-store because it describes the user's factors.
+// Cache-Control: no-store because it describes the user's factors. It is
+// written by writeMethodsDocument, the writer the MFA listing uses, with the
+// password member this listing adds.
 func writeReauthMethods(ex *Exchange, m ReauthenticationMethods) error {
-	doc := reauthMethodsDocument{
-		Methods:  make([]methodListingEntry, 0, len(m.Methods)),
-		Password: m.Password,
-	}
-
-	for _, method := range m.Methods {
-		doc.Methods = append(doc.Methods, methodListingEntry{
-			Name:    method.Name,
-			Channel: string(method.Channel),
-			Begins:  method.Begins,
-		})
-	}
-
-	body, err := json.Marshal(doc)
-	if err != nil {
-		return err
-	}
-
-	ex.Writer.SetHeader("Content-Type", "application/json")
-	ex.Writer.SetHeader("Cache-Control", "no-store")
-	ex.Writer.WriteHeader(http.StatusOK)
-	_, err = ex.Writer.Write(body)
-
-	return err
+	return writeMethodsDocument(ex, m.Methods, &m.Password)
 }
 
 // writeReauthResult is the response a re-proof succeeds with when the
