@@ -353,9 +353,11 @@ type Input struct {
 	// talked out of a requirement states that it does not honour it.
 	//
 	// In the post-authentication phase the library sets it only where a
-	// second factor has just been verified on the request: MFA verification
-	// of a pending session, and a second-factor re-proof whose phase asked
-	// for one. Each judges the phase with it set to find what a second-factor
+	// second-factor method has just been verified on the request: MFA
+	// verification of a pending session, and a second-factor re-proof whose
+	// phase asked for one. For a re-proof on the session's own first-factor
+	// channel it is set for that judgement only; the session records no second
+	// factor met. Each judges the phase with it set to find what a second-factor
 	// challenge hid, since the engine returns only the first challenge, and
 	// drops a second-factor challenge it still raises. A login leaves it
 	// false. Both set Reauthenticating beside it.

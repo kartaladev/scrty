@@ -536,6 +536,10 @@ A second-factor re-proof SHALL refuse, as authentication required and before the
 - **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts a valid code to `/reauth/verify/totp`
 - **THEN** it is refused as authentication required before the phase, and the session is unchanged
 
+#### Scenario: A substituted caller at begin
+- **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts to `/reauth/begin/passkey`
+- **THEN** it is refused as authentication required, no challenge is issued and nothing is counted
+
 ### Requirement: A re-proof whose credential cannot be issued leaves the session as it was
 A re-proof SHALL obtain the rotated session's credential before the rotation is stored. When the credential cannot be issued, the re-proof SHALL be refused with that failure, nothing SHALL be stored or rotated, and the credential the caller arrived with SHALL keep authenticating.
 

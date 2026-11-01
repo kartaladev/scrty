@@ -303,6 +303,8 @@ Each defect task's red step is the reproduction named in its design decision, wr
 
 Sequenced: 13.1, then 13.2, then 13.3, in one lane, because they share one re-judgement and its input; 13.4 runs beside them on other files.
 
+As in sections 9 and 12, each reproduction named here or in `design.md` (`TestReview…`, `TestRepro…`) was rewritten as rows of the package's own table tests, named for the behaviour they pin; the reproductions themselves were disposable and are gone.
+
 - [x] 13.1 A second-factor re-proof judges what its second-factor challenge hid (D6 "What a second-factor challenge hid is judged too"):
   - one function, used by the re-proof now and by MFA verification in 13.2: when the phase returns `ChallengeMFA`, judge it once more with `MFASatisfied` set; a deny or a non-MFA challenge then refuses as the first judgement would; a second `ChallengeMFA` is dropped;
   - red: `TestReviewReproofIgnoringMFAChallengeHidesPasswordChange` (real `policy.NewMFA` with an enrolled TOTP lookup and `policy.NewPasswordAge` with `UnknownAgeChallenge`, in both registration orders), rewritten into `TestReauthVerify`.
@@ -330,7 +332,7 @@ Sequenced: 13.1, then 13.2, then 13.3, in one lane, because they share one re-ju
   - docs: `WithReauthenticationChallengeStore` and `WithMFAChallengeStore` name the challenge-method condition; the README re-authentication section and MFA flow and the `EnableReauthentication` godoc describe the re-judgement behind a second-factor challenge, a deny at verification, and a surfaced challenge answered with a `*ChallengeError` carrying the rotated credential that the error handler must deliver; `EnableMFA`, `EnableReauthentication` and `policy.Input.MFASatisfied` state the line for a consumer policy that ignores `MFASatisfied`.
 
   (ADDED security-policy "The second-factor requirement accepts a second factor met at a re-authentication", every scenario.) Verify with `go test -race -count=1 ./policy/... ./httpsec/...`, `golangci-lint run`, and `go test ./...` in `test`
-- [ ] 13.7 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
+- [x] 13.7 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
 
 ## Workflow follow-up
 

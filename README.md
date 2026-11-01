@@ -841,7 +841,7 @@ phase is asked again with the second factor counted as met (`policy.Input.MFASat
 `Reauthenticating`), and a deny or another challenge that surfaces then refuses the same way. A
 password change owed behind the second-factor policy therefore still refuses the re-proof. The
 library's policies answer that second judgement: `policy.NewMFA` allows, and `policy.NewMFARequirement`
-allows a federated session whose provider did not meet its requirement, while its refusals, the refuse
+allows, in its challenge mode, an enrolled user's federated session whose provider did not meet its requirement, while its refusals, the refuse
 mode's included, stand. The line: a consumer policy that raises `policy.ChallengeMFA` without reading
 `MFASatisfied` raises it again, the challenge is dropped, and whatever is registered after it stays
 hidden. A caller other than the session's own user, which only a consumer's interceptor can publish,

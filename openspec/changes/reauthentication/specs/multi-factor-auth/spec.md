@@ -71,6 +71,14 @@ After a valid code and before the session is rotated, verification SHALL judge t
 - **WHEN** a consumer interceptor publishes a principal other than the pending session's user and that session posts a valid code to `/mfa/verify/totp`
 - **THEN** verification is refused as authentication required before the phase is judged, and the session is still pending
 
+#### Scenario: A substituted caller at begin
+- **WHEN** a consumer interceptor publishes a principal other than the pending session's user and that session posts to `/mfa/begin/passkey`
+- **THEN** it is refused as authentication required, no challenge is issued and nothing is counted
+
+#### Scenario: A federated verification behind the requirement
+- **WHEN** the second-factor requirement policy in its challenge mode is registered before a policy that challenges for a password change, and a pending federated session whose provider did not meet the requirement posts a valid code to `/mfa/verify/totp`
+- **THEN** verification answers with a challenge error for a password change carrying the rotated session
+
 #### Scenario: Nothing behind the second factor
 - **WHEN** no other policy objects and `u-1` posts a valid code to `/mfa/verify/totp`
 - **THEN** verification succeeds as before
