@@ -96,10 +96,18 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // Authenticate verifies the presented token and resolves the caller from its
 // claims.
 //
-// A verification failure is returned as errors.Join(ErrAuthenticationFailed,
-// err), so a caller matches the uniform failure while an operator's log still
-// records which check the token failed. Joining rather than wrapping keeps both
-// matchable without deciding which of the two is the "real" error.
+// A token the verifier rejects, an error matching token.ErrInvalid, is
+// returned as errors.Join(ErrAuthenticationFailed, err), so a caller matches
+// the uniform failure while an operator's log still records which check the
+// token failed. Joining rather than wrapping keeps both matchable without
+// deciding which of the two is the "real" error.
+//
+// Any other verification error, a key source that could not supply the
+// verification keys above all, is not a refusal: the check never happened. It
+// is returned behind fixed library text, with the verifier's error, and through
+// it the key source's, still reachable through errors.Is and errors.As, and it
+// does not match ErrAuthenticationFailed. A caller that answers it as a
+// refused token sends every client back to authenticate during an outage.
 //
 // A verified token with no subject is refused. A principal with no username
 // satisfies every check that asks only whether someone is authenticated, while
@@ -112,7 +120,11 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 
 	claims, err := a.verifier.Verify(ctx, creds.Token())
 	if err != nil {
-		return nil, errors.Join(ErrAuthenticationFailed, err)
+		if errors.Is(err, token.ErrInvalid) {
+			return nil, errors.Join(ErrAuthenticationFailed, err)
+		}
+
+		return nil, diag.Wrap(err, textVerificationKeysUnavailable)
 	}
 	if claims == nil || claims.Subject() == "" {
 		return nil, ErrAuthenticationFailed
@@ -160,6 +172,11 @@ func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 
 	return generated, nil
 }
+
+// textVerificationKeysUnavailable is the text a verification that could not
+// happen is returned with: a key source's own text may name the key it could
+// not reach.
+const textVerificationKeysUnavailable = "authenticate: verification keys unavailable"
 
 var _ Authenticator = (*JWTAuthenticator)(nil)
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -228,6 +229,10 @@ func (r *sessionRenewal) rotateOptions(ex *Exchange, s *session.Session) []sessi
 // renewing is the session this request renews: the one the chain resolved
 // and published, or, under unused-successor recovery, the late one the
 // resolution core let through for this endpoint alone, loaded for renewal.
+//
+// A late load the request's own context ended fails with fixed text that
+// matches the context's error, as a hang-up at resolution does, and not with
+// the manager's outage text: no verdict was reached, and nothing failed.
 func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 	if ex.Session != nil && ex.Authentication != nil && ex.Authentication.Principal != nil {
 		return ex.Session, nil
@@ -237,15 +242,23 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 		return nil, ErrAuthenticationRequired
 	}
 
-	s, err := r.sessions.LoadForRenewal(ex.Context(), ex.renewal)
+	ctx := ex.Context()
+
+	s, err := r.sessions.LoadForRenewal(ctx, ex.renewal)
 	if err != nil {
+		if endedByRequest(ctx, err) {
+			return nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
+		}
+
 		refusal := renewalRefusal(err)
 
-		// A late credential the load refuses as expired, not found or reused is
-		// a failed guess like a refused reference at the bearer, and is counted
-		// against its source. A lost race or a store fault is not.
+		// Only a refusal is charged: a late credential the load refuses as
+		// expired, not found or reused is a failed guess like a refused
+		// reference at the bearer, and is counted against its source. A lost
+		// race, a store fault and a client that left reached no verdict on
+		// the credential, and are not.
 		if ex.chargeRenewal != nil && errors.Is(refusal, ErrAuthenticationRequired) {
-			ex.chargeRenewal(ex.Context())
+			ex.chargeRenewal(ctx)
 		}
 
 		return nil, refusal
@@ -377,8 +390,16 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //
 //  1. refuses a request with no authentication result or no session with
 //     ErrAuthenticationRequired;
-//  2. reloads the session's user with LoadByUserID, refusing a missing one
-//     with ErrAuthenticationRequired;
+//  2. reloads the session's user with LoadByUserID, refusing with
+//     ErrAuthenticationRequired a user who no longer exists
+//     (identity.ErrUserNotFound), is not the user the session records, or is
+//     not active. Any other reload failure, a user store outage, is a
+//     dependency failure, not a refusal: it fails the request with fixed
+//     library text, the loader's error reachable through errors.Is and
+//     errors.As, which the default status mapping answers with 500 and a
+//     consumer may answer otherwise through WithErrorHandler. A reload the
+//     request's own context ended fails with an error matching that context's
+//     error. Neither rotates anything;
 //  3. rotates the session with session.Sessions.RotateWithGrace. A
 //     credential renewed again inside its window is re-rotated
 //     (session.RenewalReRotation), so a client that lost a renewal response
@@ -411,6 +432,14 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // per-request policy phase does not allow, and rotates it: while its successor
 // was never presented it is recovered (session.RenewalRecovery); otherwise it
 // is reuse, refused as above with the family revoked.
+//
+// With EnableSessionBearer, a late renewal whose load the endpoint refuses as
+// expired, not found or reused is counted against its source, as a refused
+// reference is at the bearer. One the endpoint renews is not, and neither is
+// one whose load fails as a dependency failure, which is answered with the
+// manager's fixed text and 500 by default, or one whose request's own context
+// ended, which fails with an error matching that context's error: neither
+// reached a verdict on the credential.
 //
 // A renewal reaching the endpoint this way is anonymous to every interceptor
 // between the bearer and the endpoint, so a consumer gate that judges the

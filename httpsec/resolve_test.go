@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -279,6 +280,10 @@ type resolvingAuthenticator struct {
 	// options enables the authenticator on a chain over h.
 	options func(h *authHarness) []httpsec.Option
 
+	// limited is options with l as the authenticator's source limiter, and
+	// nil for an authenticator that throttles no source.
+	limited func(h *authHarness, l ratelimit.Limiter) []httpsec.Option
+
 	// reload wires the authenticator's user reload to answer with fn, called
 	// with the context the reload was made with.
 	reload func(h *authHarness, fn func(ctx context.Context) (*identity.Details, error))
@@ -310,6 +315,11 @@ func resolvingAuthenticators() []resolvingAuthenticator {
 			session:   referencedSession,
 			options: func(h *authHarness) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableSessionBearer(h.sessionBearerDeps())}
+			},
+			limited: func(h *authHarness, l ratelimit.Limiter) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableSessionBearer(h.sessionBearerDeps(), httpsec.WithSessionBearerLimiter(l)),
+				}
 			},
 			reload: func(h *authHarness, fn func(ctx context.Context) (*identity.Details, error)) {
 				h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
@@ -456,18 +466,32 @@ func TestResolve_DependencyFailureIsNotARefusal(t *testing.T) {
 	}
 }
 
+// chargesNothing is a source limiter that admits every source and fails the
+// test if a failure is recorded against any.
+func chargesNothing(t *testing.T) *MockLimiter {
+	t.Helper()
+
+	l := NewMockLimiter(gomock.NewController(t))
+	l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+	l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
+
+	return l
+}
+
 // TestResolve_HangUpIsNotARefusal pins that a request whose own context ended
 // while its session loaded or its user reloaded, at either bearer or at the
-// renewal endpoint, fails with the context's error: not refused, and not
-// recorded at ERROR as an outage or an undecryptable session.
+// renewal endpoint, fails with the context's error: not refused, not recorded
+// at ERROR as an outage or an undecryptable session, and not charged to its
+// source.
 func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name string
 
-		// options enables what the request goes through, over h.
-		options func(h *authHarness) []httpsec.Option
+		// options enables what the request goes through, over h; a source
+		// limiter it wires is one that fails the test if charged.
+		options func(t *testing.T, h *authHarness) []httpsec.Option
 
 		// request builds the request on ctx.
 		request func(ctx context.Context) *http.Request
@@ -515,10 +539,20 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 	for _, a := range resolvingAuthenticators() {
 		get := func(ctx context.Context) *http.Request { return bearerRequest(ctx, a.header) }
 
+		options := func(t *testing.T, h *authHarness) []httpsec.Option {
+			t.Helper()
+
+			if a.limited != nil {
+				return a.limited(h, chargesNothing(t))
+			}
+
+			return a.options(h)
+		}
+
 		cases = append(cases,
 			testCase{
 				name:    a.name + "/the client leaves while the session loads",
-				options: a.options,
+				options: options,
 				request: get,
 				wire: func(h *authHarness, hangUp context.CancelFunc) {
 					loadHangsUp(h, a.sessionID, hangUp)
@@ -527,7 +561,7 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 			},
 			testCase{
 				name:    a.name + "/the client leaves while the user reloads",
-				options: a.options,
+				options: options,
 				request: get,
 				wire: func(h *authHarness, hangUp context.CancelFunc) {
 					h.store.EXPECT().Load(gomock.Any(), a.sessionID).Return(a.session(), nil)
@@ -539,9 +573,11 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 		)
 	}
 
-	renewal := func(h *authHarness) []httpsec.Option {
+	renewal := func(t *testing.T, h *authHarness) []httpsec.Option {
+		t.Helper()
+
 		return []httpsec.Option{
-			httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+			httpsec.EnableSessionBearer(h.sessionBearerDeps(), httpsec.WithSessionBearerLimiter(chargesNothing(t))),
 			httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users}),
 		}
 	}
@@ -554,7 +590,7 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 
 	cases = append(cases,
 		testCase{
-			name:    "renewal endpoint/the client leaves while the session loads",
+			name:    "renewal request/the client leaves while the bearer loads the session",
 			options: renewal,
 			request: renew,
 			wire: func(h *authHarness, hangUp context.CancelFunc) {
@@ -594,7 +630,7 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 			t.Cleanup(hangUp)
 
 			h := newAuthHarness(t)
-			opts := append([]httpsec.Option{httpsec.WithLogger(h.logger())}, tc.options(h)...)
+			opts := append([]httpsec.Option{httpsec.WithLogger(h.logger())}, tc.options(t, h)...)
 			tc.wire(h, hangUp)
 
 			chain, err := httpsec.New(opts...)

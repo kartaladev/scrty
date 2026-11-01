@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 func TestNewJwtAuthenticator(t *testing.T) {
@@ -325,5 +326,111 @@ func TestBearerToken(t *testing.T) {
 }
 
 // errTokenExpired stands for a verifier's own refusal, which must stay
-// matchable alongside the uniform failure.
-var errTokenExpired = fmt.Errorf("%w: expired", errors.New("token: invalid"))
+// matchable alongside the uniform failure. It matches token.ErrInvalid, as the
+// verifier's contract requires of every rejection: any other error is an
+// outage, not a refused token.
+var errTokenExpired = fmt.Errorf("%w: expired", token.ErrInvalid)
+
+// verificationKeysDown is a consumer key source whose key service cannot be
+// reached: it signs with the keys it wraps, and cannot supply the keys to
+// verify against.
+type verificationKeysDown struct {
+	signingkey.KeySource
+
+	err error
+}
+
+func (s verificationKeysDown) VerificationKeys() ([]signingkey.PublicKey, error) { return nil, s.err }
+
+// TestJWTProvider_KeySourceOutage pins that the bearer-token provider answers
+// a verifier that could not obtain its keys as a dependency failure, not as
+// the uniform authentication failure, and still refuses a token the same real
+// verifier rejects. Real keys, a real generator and a real verifier are used,
+// because the split rests on what the verifier reports for each.
+func TestJWTProvider_KeySourceOutage(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://issuer.example"
+		audience = "orders-api"
+	)
+
+	errKMSTimeout := errors.New("kms: dependency timeout")
+
+	type testCase struct {
+		name string
+
+		// verifyingWith is the key source the provider's verifier reads, given
+		// the manager that signed the presented token.
+		verifyingWith func(t *testing.T, signedBy *signingkey.Keys) signingkey.KeySource
+
+		assert func(t *testing.T, got *authenticate.Authentication, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "the key source cannot supply the verification keys",
+			verifyingWith: func(_ *testing.T, signedBy *signingkey.Keys) signingkey.KeySource {
+				return verificationKeysDown{KeySource: signedBy, err: errKMSTimeout}
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"an outage was answered as a refused token")
+				assert.NotErrorIs(t, err, token.ErrInvalid)
+				require.ErrorIs(t, err, errKMSTimeout, "the key source's error stays reachable")
+				assert.Equal(t, "authenticate: verification keys unavailable", err.Error(),
+					"the text is the library's")
+			},
+		},
+		{
+			name: "a token signed by a key the source does not hold is still refused",
+			verifyingWith: func(t *testing.T, _ *signingkey.Keys) signingkey.KeySource {
+				t.Helper()
+
+				other, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+				require.NoError(t, err)
+
+				return other
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.ErrorIs(t, err, token.ErrInvalid, "the verifier's own cause stays matchable")
+				assert.Nil(t, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			gen, err := token.NewGenerator(keys, token.WithIssuer(issuer), token.WithAudience(audience))
+			require.NoError(t, err)
+
+			tok, err := gen.Generate(t.Context(), tokenID.String(), &identity.Principal{ID: "u-1", Username: "ada"})
+			require.NoError(t, err)
+
+			verifier, err := token.NewVerifier(
+				token.WithVerifyKeySource(tc.verifyingWith(t, keys)),
+				token.WithVerifyIssuer(issuer),
+				token.WithVerifyAudience(audience),
+			)
+			require.NoError(t, err)
+
+			auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(verifier))
+			require.NoError(t, err)
+
+			got, err := auth.Authenticate(t.Context(), authenticate.NewBearerToken(tok))
+			tc.assert(t, got, err)
+		})
+	}
+}
