@@ -112,9 +112,10 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 // login's provider asserted (policy.Input.FederatedAssurance), minted afresh
 // from the session's provider, issuer, amr and acr, so the policies match it
 // against the provider's configuration as it is now. The phase therefore
-// answers a re-proof as it answers a login of the same user now. The input is marked as the re-authentication of an existing
-// session (policy.Input.Reauthenticating), so a policy counting sessions knows
-// none is added.
+// answers a re-proof as it answers a login of the same user now. The input
+// is marked as the re-authentication of an existing session
+// (policy.Input.Reauthenticating), so a policy counting sessions knows none is
+// added.
 //
 // Every deny refuses with the policy's reason, a same-channel refusal
 // (policy.ErrSecondFactorSameChannel) included: the phase ends at its first

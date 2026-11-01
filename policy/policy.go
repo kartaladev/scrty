@@ -421,8 +421,9 @@ type Input struct {
 // (Holds reports false). Only the library produces one that holds: the passkey
 // verification at a login, and a second-factor re-proof, which rebuilds one
 // from a session whose login met it. A consumer can name the type and copy a
-// value it was handed, and nothing more. Copying a proof from one login into the input of another is
-// the consumer's own act, and the library cannot tell it happened.
+// value it was handed, and nothing more. Copying a proof from one login into
+// the input of another is the consumer's own act, and the library cannot tell
+// it happened.
 type SecondFactorProof = assurance.Proof
 
 // unnamed renders a value that names no constant of an enumeration, as

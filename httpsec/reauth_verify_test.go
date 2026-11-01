@@ -145,7 +145,8 @@ func unchanged(t *testing.T, h *reauthHarness, s *session.Session) {
 func (h *reauthHarness) fullSessionWith(t *testing.T, first factor.Kind, opts ...session.CreateOption) *session.Session {
 	t.Helper()
 
-	s, err := h.sessions.Create(t.Context(), testMFAUser, append([]session.CreateOption{session.WithFirstFactor(first)}, opts...)...)
+	opts = append([]session.CreateOption{session.WithFirstFactor(first)}, opts...)
+	s, err := h.sessions.Create(t.Context(), testMFAUser, opts...)
 	require.NoError(t, err)
 
 	s.MFA = session.MFASatisfied
@@ -272,7 +273,13 @@ func TestReauthVerify(t *testing.T) {
 			totpLookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
 			src := NewMockFederatedAssuranceSource(ctrl)
-			src.EXPECT().MeetsAssurance(gomock.Any(), testMFAUser, gomock.Any()).Return(met, nil).AnyTimes()
+			// The evidence must be the session's own, so a wrong mint fails
+			// the expectation rather than the policy.
+			sessions := gomock.Cond(func(ev policy.FederatedAssurance) bool {
+				return ev.Provider() == "corp" && ev.Issuer() == "https://idp.example.com" &&
+					slices.Equal(ev.AMR(), []string{"mfa"})
+			})
+			src.EXPECT().MeetsAssurance(gomock.Any(), testMFAUser, sessions).Return(met, nil).AnyTimes()
 
 			p, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{totpLookup},
 				policy.WithMFARequiredForAll(),
@@ -630,9 +637,11 @@ func TestReauthVerify(t *testing.T) {
 				first = factor.Password
 			}
 
-			s := h.fullSession(t, first)
+			var s *session.Session
 			if len(tc.create) > 0 {
 				s = h.fullSessionWith(t, first, tc.create...)
+			} else {
+				s = h.fullSession(t, first)
 			}
 
 			// Time has passed since the sign-in, so a refreshed
