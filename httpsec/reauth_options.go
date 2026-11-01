@@ -40,7 +40,10 @@ type ReauthenticationOption func(*reauthInterceptor) error
 //     the request is ignored. The check is form login's own, under the
 //     account lockout and the password-login source guard; a wrong password
 //     is recorded against the user, a lock is refused as a login refuses one,
-//     and a success clears the user's recorded failures.
+//     and a success clears the user's recorded failures. The proved password then
+//     passes the post-authentication policy phase as a login's does: a deny
+//     refuses with the policy's reason, and a challenge refuses with a
+//     *ChallengeError carrying no session, leaving the session as it was.
 //
 // Every other request, including a GET to a verify path, passes on untouched.
 //
@@ -120,7 +123,9 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // RequireSecondFactorForReauthentication is given without EnableMFA; when an
 // endpoint's path equals or lies under the logout path, the form login path,
 // or the MFA verify or begin prefix, or one of those lies under the begin or
-// verify path, or the listing path equals the MFA listing path; when the
+// verify path, or the listing path equals the MFA listing path; when the MFA
+// slot was given a challenge store (WithMFAChallengeStore) and
+// WithReauthenticationChallengeStore was not; when the
 // token generator is missing or refused as above; and when an option is given
 // an empty prefix, a lifetime or limit of zero or less, or an absent store,
 // generator or responder.
@@ -189,6 +194,13 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 		return newConfigError("RequireSecondFactorForReauthentication needs EnableMFA: without "+
 			"second-factor methods no user could re-prove at all, so give %s the MFA slot or drop "+
 			"the requirement", option)
+	}
+
+	if i.mfa != nil && i.mfa.challengeStoreGiven && i.challengeStore == nil {
+		return newConfigError("WithMFAChallengeStore was given a challenge store but "+
+			"WithReauthenticationChallengeStore was not: a store shared between replicas for "+
+			"login challenges would leave the re-proof challenges of %s in per-process memory, "+
+			"so give both options the same store", option)
 	}
 
 	if err := i.checkPaths(c, option); err != nil {
@@ -365,6 +377,12 @@ func claimedPaths(c *config, m *mfaInterceptor, login *formLogin) []claimedPath 
 		if o.handoffs != nil || o.handoffRedeemerSet {
 			add("the OIDC handoff path", o.handoffPath, false)
 		}
+
+		return nil
+	})
+
+	_ = eachInterceptor(c, func(j *jwksEndpoint) error {
+		add("the key set endpoint", j.path, false)
 
 		return nil
 	})
@@ -576,8 +594,13 @@ func WithReauthenticationChallengeLimit(n int) ReauthenticationOption {
 // a challenge issued by one replica cannot be answered at another. A
 // deployment running more than one replica gives a store its replicas share.
 // Re-proof challenges are issued under their own purposes, so s may be the
-// store the MFA challenges use without either honouring the other's. An absent
-// store, including an interface holding a nil pointer, is refused.
+// store the MFA challenges use without either honouring the other's.
+//
+// A chain that gave the MFA slot a store (WithMFAChallengeStore) must give
+// this option too, normally the same store: New fails with ErrConfig naming
+// both options otherwise, so a shared login store never leaves re-proof
+// challenges in per-process memory. An absent store, including an interface
+// holding a nil pointer, is refused.
 func WithReauthenticationChallengeStore(s onetime.Store) ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
 		if err := requireDep("WithReauthenticationChallengeStore", "one-time store", s); err != nil {

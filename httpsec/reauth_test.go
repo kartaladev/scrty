@@ -764,6 +764,59 @@ func TestEnableReauthentication(t *testing.T) {
 			assert: refusedConfig("WithReauthenticationChallengeStore needs a one-time store"),
 		},
 		{
+			// "A shared MFA challenge store needs a re-proof store".
+			name: "an MFA challenge store without a re-proof store",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(newReauthMemoryStore(t, h)))
+			},
+			assert: func(t *testing.T, _ served, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithReauthenticationChallengeStore")
+				assert.ErrorContains(t, err, "WithMFAChallengeStore")
+			},
+		},
+		{
+			// "One store for both".
+			name: "one store given to the MFA slot and to re-authentication",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				store := newReauthMemoryStore(t, h)
+				h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(store))
+				h.reauthOpts = append(h.reauthOpts, httpsec.WithReauthenticationChallengeStore(store))
+			},
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
+		},
+		{
+			name: "a re-proof store without an MFA store",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.reauthOpts = append(h.reauthOpts,
+					httpsec.WithReauthenticationChallengeStore(newReauthMemoryStore(t, h)))
+			},
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
+		},
+		{
+			name: "the key set endpoint path is the listing path",
+			wire: func(h *reauthHarness) {
+				h.reauthOpts = []httpsec.ReauthenticationOption{httpsec.WithReauthenticationPrefix("/keys")}
+			},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.chainOpts = append(h.chainOpts, httpsec.EnableJWKSEndpoint(
+					NewMockKeySetProvider(gomock.NewController(t)),
+					httpsec.WithJWKSEndpointPath("/keys/methods")))
+			},
+			assert: refusedConfig(`the key set endpoint "/keys/methods"`),
+		},
+		{
+			// The segment boundary: "/mfa/verifyx" is not under "/mfa/verify".
+			name:   "a prefix that only starts like the MFA verify prefix",
+			wire:   with(httpsec.WithReauthenticationPrefix(httpsec.DefaultMFAVerifyPrefix + "x")),
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
+		},
+		{
 			name:   "an absent responder",
 			wire:   with(httpsec.WithReauthenticationResponder(nil)),
 			assert: refusedConfig("WithReauthenticationResponder was given no function"),
@@ -1290,4 +1343,50 @@ func TestReauthMethods(t *testing.T) {
 			tc.assert(t, serve(t, c, get(base, reauthMethodsPath)))
 		})
 	}
+}
+
+// newReauthMemoryStore is an in-memory one-time store on the harness's clock.
+func newReauthMemoryStore(t *testing.T, h *reauthHarness) onetime.Store {
+	t.Helper()
+
+	store, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(h.clock))
+	require.NoError(t, err)
+
+	return store
+}
+
+// TestReauthChallengeStoreSharedAcrossChains pins "One store for both": two
+// chains sharing the MFA store, the re-proof store and the session store let a
+// re-proof begun through one be verified through the other.
+func TestReauthChallengeStoreSharedAcrossChains(t *testing.T) {
+	t.Parallel()
+
+	h := reauthBearer(t)
+	h.neverVerifies()
+	h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).AnyTimes()
+	h.limiter.EXPECT().RecordFailure(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(nil).AnyTimes()
+
+	h.extra = []mfa.Method{newChallengeStub()}
+
+	shared := newReauthMemoryStore(t, h)
+	h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(shared))
+	h.reauthOpts = append(h.reauthOpts, httpsec.WithReauthenticationChallengeStore(shared))
+
+	s := h.fullSession(t, factor.Password)
+	h.clock.Advance(10 * time.Minute)
+
+	first, err := h.build(nil)
+	require.NoError(t, err)
+
+	second, err := h.build(nil)
+	require.NoError(t, err)
+
+	tok := mfaTokenFor(s.ID)
+
+	begun := serve(t, first, bearerPost(t.Context(), reauthBeginPasskey, tok))
+	require.NoError(t, begun.err)
+
+	out := serve(t, second, bearerJSON(t.Context(), reauthVerifyPasskey, tok, answer(issuedChallenge(t, begun))))
+	require.NoError(t, out.err)
+	assert.Equal(t, http.StatusOK, out.rec.Code)
 }
