@@ -55,6 +55,13 @@ The manager SHALL let a caller build a session, act on it, such as marking a pen
 - **THEN** the load reports the session as not found
 - **AND** after the step succeeds and the session is stored, the identifier loads
 
+### Requirement: A built session is stored as it was built, apart from its marks
+Between building a session and storing it, the caller MAY mark the session and shorten its deadlines. Storing SHALL fail with a configuration error, and SHALL store nothing, when the session's identifier, user, family, family start, creation or authentication time changed after it was built, or when either deadline was moved later than the build set it.
+
+#### Scenario: A built session changed beyond marking is not stored
+- **WHEN** a caller builds a session, then changes its identifier, or moves its absolute deadline later than the build set it while still within the maximum lifetime, and stores it
+- **THEN** storing fails with a configuration error, and the store holds no session for either identifier
+
 ### Requirement: A rotation with grace stores nothing when the caller cannot complete it
 A rotation with a grace window SHALL let the caller act on the successor, such as issuing its credential, after it is built and before anything is stored. When that step fails, the rotation SHALL fail with its error and SHALL store, supersede and revoke nothing. A step that succeeds only after the window has closed SHALL likewise store nothing, and the rotation SHALL fail matching the context deadline error. The store SHALL still decide racing rotations.
 

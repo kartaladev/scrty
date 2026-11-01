@@ -235,3 +235,92 @@ After each dispatch the main session runs its verification commands, then a fres
 - [ ] **Step 1 (7.1):** `make check` locally, then CI green on both PostgreSQL and Redis matrix jobs. Record the output.
 - [ ] **Step 2 (7.2):** dispatch a fresh Opus reviewer over the whole branch against every requirement of the eleven deltas and D1–D8. A finding needs a failing test or an `UNREPRODUCED` label.
 - [ ] **Step 3:** `openspec validate key-port-context --strict`. Expected `Change 'key-port-context' is valid`.
+
+## Group 8: Review findings (added 2026-11-01)
+
+Every defect here was reproduced in a disposable copy (`tasks.md` group 8 names the tests). Each task writes that test again in the tree as its red step and watches it fail for the claimed reason before fixing. Tasks 8.1 to 8.5 own disjoint packages and run in parallel; 8.6 runs in its own worktree, since it compiles `httpsec` beside 8.1.
+
+**Review Focus (group 8):**
+1. A context cancelled with a cause, where the dependency returns the cause rather than `context.Canceled`: answered as a hang-up everywhere one is told (8.1).
+2. A password login or recovery proof whose load ends with a cause: still charged to its source, as today. The shared predicate must not change the guess paths (8.1).
+3. A prepared session that a library path marks before commit (enrolment, recovery-pending, an OIDC provider session): still committed. Only identity changes and later deadlines are refused (8.2).
+4. A step that ends exactly at the session's absolute deadline: refused, because the window closes at it (8.4).
+5. A key source error that names its key inside a wrapped cause: no record contains the name (8.6).
+
+### Task 8.1: One hang-up predicate, cause included (dispatch R8a, Opus)
+
+Opus, because the refactor spans `httpsec`, `authenticate` and `recovery`, and must keep the guess paths' charging.
+
+**Files:** Create `internal/hangup/hangup.go` and `hangup_test.go`. Modify `httpsec/resolve.go` (`endedByRequest`), `httpsec/login.go` (`loadEndedByCaller`, which keeps its `authenticate.ErrAuthenticationFailed` precondition), `authenticate/jwt.go` (`callerLeft`), `recovery/recover.go` (`loadEndedByCaller`). Test `httpsec/bearer_test.go`, `httpsec/resolve_test.go`, `authenticate/jwt_test.go`.
+
+**Interfaces:** Produces `func hangup.ByCaller(ctx context.Context, err error) bool`: true when `ctx.Err() != nil` and `err` matches `ctx.Err()` or `context.Cause(ctx)`.
+
+- [ ] **Step 1: Write the failing tests:** rows in the existing hang-up tables (`TestBearer_HangUpDuringVerificationIsNotAnOutage`, the resolution hang-up rows, `TestJWTProvider_CallerLeavesDuringVerification`) using `context.WithCancelCause` and a dependency returning `context.Cause(ctx)`. Each asserts the hang-up text, `errors.Is(err, cause)`, and no ERROR record. Add a table test of `hangup.ByCaller`: live context → false; cancelled, err `Canceled` → true; cancelled with cause, err cause → true; cancelled, unrelated err → false.
+- [ ] **Step 2: Run** `go test -run 'HangUp|CallerLeaves|ByCaller' -count=1 ./httpsec/ ./authenticate/ ./internal/hangup/`. Expected FAIL: `httpsec: verification keys unavailable`, `httpsec: session could not be resolved`, `authenticate: verification keys unavailable`.
+- [ ] **Step 3: Implement** `hangup.ByCaller`, and make all four helpers call it.
+- [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/... ./authenticate/... ./recovery/... ./internal/...`. Expected PASS, with the existing password-login and recovery hang-up charging rows unchanged.
+- [ ] **Step 5: Commit** `fix(httpsec,authenticate): a request cancelled with a cause is a client that left`.
+
+### Task 8.2: Commit refuses a session changed beyond marking (dispatch R8b, Sonnet)
+
+**Files:** Modify `session/prepared.go` (`Prepared`, `Prepare`, `Commit`, the `Prepared.Session` godoc). Test `session/prepared_test.go`.
+
+**Interfaces:** `Prepared` keeps a snapshot, taken in `Prepare`, of `ID`, `UserID`, `FamilyID`, the family start, `CreatedAt`, `AuthenticatedAt`, `IdleExpiresAt` and `AbsoluteExpiresAt`. `Commit` returns an error matching `ErrConfig`, and stores nothing, when an identity field differs or a deadline is after its snapshot. The field names are the `Session` struct's own.
+
+- [ ] **Step 1: Write the failing tests:** rows in a `TestPrepared_Commit` table: a changed ID; a changed user; an absolute deadline lengthened within the maximum; an idle deadline lengthened; a deadline shortened by `MarkEnrolmentPending` (stored); `MarkRecoveryPending` (stored). The refused rows assert `ErrConfig` and that neither identifier loads.
+- [ ] **Step 2: Run** `go test -run TestPrepared_Commit -count=1 ./session/`. Expected FAIL: `got nil` for the changed ID and the lengthened deadlines.
+- [ ] **Step 3: Implement** the snapshot and the check.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/... ./httpsec/... ./recovery/...`. Expected PASS. A library caller refused here is reported, not loosened.
+- [ ] **Step 5: Commit** `fix(session): a prepared session is committed only as it was built, apart from its marks`.
+
+### Task 8.3: The missing-key error names the algorithm, and the caller's deadline reaches the key source (dispatch R8c, Sonnet)
+
+**Files:** Modify `token/generator.go`. Test `token/generator_test.go`, `token/verifier_test.go`.
+
+- [ ] **Step 1: Write the failing tests:** `TestGenerator_NoKeyNamesTheAlgorithm` (EdDSA over an RS256-only `signingkey.Keys`: the error text contains `"EdDSA"` and matches `signingkey.ErrNoKey`). Rows in the context-passing tests whose context carries a deadline, asserting `Deadline()` is the same inside `Signer` and `VerificationKeys`. Deliberately rewrite the expected text in `TestGenerateRefusesRatherThanIssuingAnUnusableToken` and `TestGenerator_KeySourceOutage`.
+- [ ] **Step 2: Run** `go test -run 'NoKey|Deadline|KeySourceOutage|RefusesRather' -count=1 ./token/`. Expected FAIL: `token: no current key for the algorithm` does not contain `EdDSA`. A deadline row that passes at once is shown failing by wrapping the context with `context.WithTimeout` inside the generator, then reverted.
+- [ ] **Step 3: Implement** `diag.Wrap(err, fmt.Sprintf("token: no current key for algorithm %q", cfg.alg))`.
+- [ ] **Step 4: Run** `go test -race -count=1 ./token/...`. Expected PASS.
+- [ ] **Step 5: Commit** `fix(token): the missing-key error names the configured algorithm`.
+
+### Task 8.4: The grace step's absolute-deadline cap, and the mark-carrying limit (dispatch R8b, after 8.2)
+
+This task runs in the same lane as 8.2, after it, because both are in `session`.
+
+**Files:** Modify the `session/reuse.go` godoc of `RotateWithGraceIssuing`. Test `session/reuse_test.go`.
+
+- [ ] **Step 1: Write the test:** a `TestRotateWithGraceIssuing` row whose session's absolute deadline is 10 s away, with a 30 s grace and a step that takes 15 s. It asserts `errors.Is(err, context.DeadlineExceeded)`, nothing stored or superseded, and the old identifier loading.
+- [ ] **Step 2: Show it red by mutation:** remove the absolute-deadline cap in `reuse.go`, run `go test -run TestRotateWithGraceIssuing -count=1 ./session/` and see the row fail, then revert by editing back.
+- [ ] **Step 3: Godoc:** a mark saved on the old session during the step is not carried to the successor; confinement relies on per-request policies raising their marks again.
+- [ ] **Step 4: Run** `go test -race -count=1 ./session/`. Expected PASS.
+- [ ] **Step 5: Commit** `test(session): pin the absolute-deadline cap on a grace rotation's step`.
+
+### Task 8.5: `seal` stores tell an outage and a hang-up apart (dispatch R8d, Sonnet)
+
+**Files:** Test `store/seal/signingkey_test.go`, `store/seal/mfa_test.go`.
+
+- [ ] **Step 1: Write the tests:** for the signing-key store's `LoadAll` and the MFA store's `Get`, a cipher failing with `context.DeadlineExceeded` → the error matches it; a cipher failing with `seal.ErrUnavailable` → the error matches it and matches neither `seal.ErrDecryptionFailed` nor `seal.ErrUnknownKeyID`. For the re-seal on read, a re-seal failing with `context.Canceled` → the read still succeeds.
+- [ ] **Step 2: Show each red by mutation:** in a store, replace the cipher's error with a fixed one (`errors.New`) and see the rows fail, then revert.
+- [ ] **Step 3: Run** `go test -race -count=1 ./store/seal/...`. Expected PASS.
+- [ ] **Step 4: Commit** `test(seal): pin that the seal stores keep a hang-up and a marked outage apart`.
+
+### Task 8.6: Remaining coverage gaps (dispatch R8e, Sonnet, own worktree)
+
+**Files:** Test only: `httpsec/session_bearer_test.go`, `httpsec/bearer_test.go` (only the "Key source names its key" check), an issuing-path test file, `httpsec/oidc_redeem_test.go`, `httpsec/magiclink_test.go`, `httpsec/recovery_test.go`, `recovery/hold_test.go`. Because R8a also edits `bearer_test.go`, the "Key source names its key" assertion goes to R8a, and R8e does not touch that file.
+
+- [ ] **Step 1: Write one row per gap in `tasks.md` 8.6,** each with its assertion:
+  - a late renewal refused as not found is charged once;
+  - an issuing path behind the real generator with a failing key source leaves no record containing the source's text;
+  - the provider's verifier receives a context equal to the caller's;
+  - a finish whose issue fails leaves the saved codes unreplaced;
+  - an HTTP recovery whose issue fails leaves the authenticators unchanged;
+  - the losers' tokens in `TestOIDCRedeemRacing` load nothing;
+  - the OIDC issuing-failure answer has exactly the fixed text;
+  - the source limiter records nothing on an issuing failure (magic link and OIDC).
+- [ ] **Step 2: Show each red by a mutation** of the code it pins, then revert by editing back. Record the failing lines.
+- [ ] **Step 3: Run** `go test -race -count=1 ./httpsec/... ./authenticate/... ./recovery/...`. Expected PASS.
+- [ ] **Step 4: Commit** in the worktree: `test(httpsec,recovery): close the whole-branch review's coverage gaps`.
+
+### After group 8 (main session)
+
+Verify and review each dispatch. Then re-run 7.1 (`make check`, and CI after marking PR #39 ready), and close 7.2 with a review of the group-8 diff against D2, D7 and D8.

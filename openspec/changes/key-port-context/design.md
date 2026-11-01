@@ -102,7 +102,7 @@ type KeySetProvider interface { // httpsec; D6
 
 `Signer(ctx, alg) (kid string, signer crypto.Signer, err error)`:
 
-- **A source holding no key for `alg` returns an error matching `signingkey.ErrNoKey`.** `signingkey.Keys` does so for an algorithm it was not configured with, a key it publishes for another replica included (`signing-keys`, "A key for an unconfigured algorithm is published but never signed with"). Issuing over a source that answers `ErrNoKey` fails as "no current key for the algorithm", as it does today.
+- **A source holding no key for `alg` returns an error matching `signingkey.ErrNoKey`.** `signingkey.Keys` does so for an algorithm it was not configured with, a key it publishes for another replica included (`signing-keys`, "A key for an unconfigured algorithm is published but never signed with"). Issuing over a source that answers `ErrNoKey` fails as "no current key for algorithm" followed by the configured algorithm, as it does today. The algorithm is the consumer's configuration, not a dependency's text, so `diagnostic-redaction` does not ask for it to be dropped; the first implementation dropped it, and the review of 2026-11-01 reproduced the loss (`TestRepro_NoKeyErrorNamesTheAlgorithm`).
 - **Any other error is an outage.** Issuing fails with it, behind the generator's fixed text, as the verifier already does with `VerificationKeys`. It is never reported as a missing key.
 - **The returned signer serves the one issuance `ctx` belongs to.** The generator asks for a signer once per token, and never keeps or reuses it. A source over a remote service may therefore return a `crypto.Signer` bound to `ctx`, so the service's signing call receives the request's deadline and cancellation. That guarantee is what makes binding the context into the signer safe. It is a contract the spec states and a test pins, because the compiler cannot check it.
 - **The signer stays a standard-library `crypto.Signer`.** The `signing-keys` requirement that the contract needs only standard-library types and scrty's own algorithm names is kept.
@@ -236,6 +236,8 @@ The names are indicative; the implementer may choose others that read better bes
   - **The hook is a constructor option, `recovery.WithCredentialIssuer`,** chosen during implementation over a field on the request and a parameter of `Finish`, so `Recover` and `Finish` keep their signatures. It is handed the session and the user's details, because a recovery completing at once learns who the user is only inside the core. With no issuer, the core issues nothing and a caller that issues afterwards does so after the proofs were spent, which the option's godoc states. `httpsec` always installs its own, after a consumer's core options, as it already does with the password check.
   - **A store failure at the final write is the one residue.** The ended sessions must be revoked before the new session is stored, or the revocation would end it too, so a creating write that fails after the spends leaves the proofs spent and the codes replaced, and hands out nothing. It is a dependency failure, and the user recovers again.
   - **An issuing failure is charged to no source** at the recovery endpoints, as at every other issuing path.
+- **A prepared session is stored as it was built, apart from its marks.** `Prepared.Commit` refuses with `ErrConfig`, storing nothing, a session whose identifier, user, family, family start, creation or authentication time changed after `Prepare`, or whose idle or absolute deadline moved later than `Prepare` set it. Marking a challenge or recovery shortens deadlines, which stays allowed. The credential the caller issued names those values, so a session stored under others is not the one it was issued for. The first implementation stated this only in godoc and checked the maximum lifetime alone; the review of 2026-11-01 reproduced a commit under a changed identifier and a lengthened deadline (`TestRepro_CommitAcceptsChangedID`, `TestRepro_CommitAcceptsLengthenedDeadline`). Default and override: no option; it guards a guarantee, and a caller that wants other values prepares a session with them.
+- **A grace rotation does not carry a mark saved on the old session during the caller's step to the successor.** This predates the change (`RotateWithGrace` reads, then writes, the same way). The review of 2026-11-01 probed whether a confinement escapes through it, and it does not: the only mark saved on an existing session is the per-request enrolment mark, which the per-request policy raises again on the successor's first request. A consumer policy that marks once, rather than on every request, would be exposed; `RotateWithGraceIssuing`'s godoc states that dependency. Accepted, not a defect.
 - **Renewal's grace window** is counted from the clock reading taken before the issuing step, as `RotateIssuing` documents for its window. The store still decides racing rotations: a loser's credential names a successor that was never stored. A step that succeeds only after the window has closed stores nothing and fails as a dependency failure (Risks, "A signer slower than the whole grace window").
 - **The renewal limiter still counts every renewal attempt**, a failed one included (`http-security-chain`, "Renewals are throttled per family"). An outage longer than ten renewals in ten minutes therefore throttles the family; that is accepted, as the limiter bounds a loop and the outage is answered as one either way.
 - **An issuing failure is a dependency failure on every path,** never a refusal: it is not counted against a source or a user, and is not answered as an invalid link, an invalid handoff or a failed recovery.
@@ -261,7 +263,7 @@ When the request's own context ends while the bearer verifies the token, or whil
 - it is not logged at ERROR as a dependency failure, a verification-key failure or an undecryptable session;
 - it is not charged to the session-reference or late-renewal throttle.
 
-The `authentication` bearer provider makes the same split for its caller's context. A hang-up is told by the request's own context: it has ended, and the error is that context's error. A dependency that times out on a context of its own while the request still waits is an outage.
+The `authentication` bearer provider makes the same split for its caller's context. A hang-up is told by the request's own context: it has ended, and the error is that context's error or the cause it was cancelled with (`context.Cause`), as the password login's and recovery's load already tell it. One predicate, shared by every path that tells a hang-up, decides it; the first implementation had four copies, and the two new ones ignored the cause, which the review of 2026-11-01 reproduced at the bearer, at resolution and in the `authentication` provider (`TestRepro_BearerHangUpWithCause` and its siblings). A dependency that times out on a context of its own while the request still waits is an outage.
 
 **Verification was added on 2026-11-01, during implementation.** The first draft covered only the session load and the user reload. The review of task 2.4 reproduced, on the code of that task, that a bearer whose request is cancelled during verification was answered "verification keys unavailable" and logged at ERROR as a key outage: the JOSE library checks the context's state itself, before any key is fetched. That is the case this decision exists to prevent, and a remote key source (D1) makes it routine, so the decision now covers verification too.
 
@@ -288,6 +290,15 @@ This applies only to verification and resolution. A client that leaves during a 
 - **The change grows from the ports to every issuing path** → the issuing paths are only reachable by a failure the ports introduce, so splitting them would ship D2 with renewal's family-revocation trap open. The tasks keep the two halves in separate groups with their own verification.
 - **Every test double of the four ports, and `KeySetProvider`'s, changes** → that is mechanical. Mocks are regenerated with the `use-mockgen` skill, and the test module's cipher fixtures and the six hand-written doubles change with them.
 - **`release-readiness` modifies the same `authentication` requirement and the bearer's user reload, and edits the same files** (`token/generator.go`, the signing-key and passkey stores, their suites) → it lands after this change and rebases its deltas, plans and tests onto this change's text and signatures.
+
+## Review findings accepted without change (2026-11-01)
+
+The whole-branch review, `/code-review` and `/security-review` ran on the branch. The security review found nothing. Reproduced findings are folded into D2, D7 and D8 above and into group 8 of `tasks.md`; these were weighed and left as they are:
+
+- **A grace rotation's step that outlives the window fails matching `context.DeadlineExceeded`** although no context deadline fired. That was decided on 2026-11-01 (Risks, "A signer slower than the whole grace window"), and is kept: it is a deadline, the window's, and the endpoints answer it as a dependency failure, never as a client that left.
+- **`Sessions.CreateIssuing` has no caller inside the library.** D7 names it as the API for a consumer's own sign-in; the library's paths mark the session, so they use `Prepare` and `Commit`.
+- **The renewal endpoint's `rotationFailure` reads like `renewalRefusal`.** Cosmetic; not changed.
+- **The test module's sealed passkey view spends an emailed-code attempt per read.** Reproduced from the sixth read of one owner, which its godoc and error already state as its limit; no suite comes near it.
 
 ## Migration Plan
 
@@ -370,6 +381,9 @@ Reasoned from scrty's own settled specs and the established design, compared on 
 Also reasoned from scrty's own `Sessions.RotateIssuing` (`sessions`, "A rotation without grace stores nothing when the caller cannot complete it") and the established design's order of recording a pending challenge before handing out a credential.
 
 ### D8. A request whose own context ended
+
+**Primary documentation:**
+- [context.Cause and WithCancelCause](https://pkg.go.dev/context#Cause): a context cancelled with a cause reports it through `Cause`, while `Err` stays `Canceled`.
 
 **Researched (accessed 2026-11-01):**
 - [Go `net/http` `Request.Context`](https://pkg.go.dev/net/http#Request.Context) (go1.27.3): cancelled when the client's connection closes, the request is cancelled, or the handler returns.
