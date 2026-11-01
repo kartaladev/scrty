@@ -297,7 +297,7 @@ Each defect task's red step is the reproduction named in its design decision, wr
   - every godoc and README place touched by 12.1–12.4 states the new behaviour.
 
   Verify with `go doc` on the changed symbols and `golangci-lint run ./httpsec/`
-- [ ] 12.7 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
+- [x] 12.7 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
 
 ## 13. Whole-branch review (`reauthentication`, `multi-factor-auth`)
 
