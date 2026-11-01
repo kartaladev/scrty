@@ -1523,6 +1523,10 @@ func TestMagicLink_CredentialCannotBeIssuedKeepsLink(t *testing.T) {
 
 	issuer := &recordingIssuer{}
 	h.tokens = issuer.generator(t)
+
+	// Exactly one failure is recorded with the source limiter: the reuse of
+	// the spent link at the end. The ten issuing failures record none.
+	h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(countingLimiter(t, 1)))
 	c := h.chain(t)
 
 	for i := range 10 {

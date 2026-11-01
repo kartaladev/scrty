@@ -636,6 +636,12 @@ func TestRecoverer_FinishFailures(t *testing.T) {
 			assert.Equal(t, []recovery.AuthenticatorRef{refTOTP, refEmail}, e.held.snapshot(), "nothing is reset")
 			assert.Empty(t, e.out.recoveredNotices())
 
+			// The saved set was voided when the hold started; a finish that
+			// failed has replaced it with nothing.
+			left, cerr := e.codes.Remaining(t.Context(), anaID)
+			require.NoError(t, cerr)
+			assert.Zero(t, left.N, "a failed finish leaves the saved codes unreplaced")
+
 			for _, sid := range e.prior {
 				assert.True(t, e.loads(t, sid), "the user's sessions are not ended")
 			}

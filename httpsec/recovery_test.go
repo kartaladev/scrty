@@ -550,6 +550,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 		{
 			name: "a credential that cannot be issued is a dependency failure, charged to no one, that spends and ends nothing",
 			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.enrolTOTP(t)
 				h.recOpts = []httpsec.RecoveryOption{
 					httpsec.WithRecoveryTokens(recoveryIssuer(t, h)),
 					httpsec.WithRecoveryLimiter(countingLimiter(t, 0)),
@@ -572,6 +573,10 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				require.NoError(t, err, "the user's live session still loads")
 				assert.Equal(t, 1, h.activeSessions(t), "no recovery session was stored")
 				require.NoError(t, h.codes.Confirm(t.Context(), e2eUser, saved), "the saved code still confirms")
+
+				enrolled, err := h.totp.Enrolled(t.Context(), e2eUser)
+				require.NoError(t, err)
+				assert.True(t, enrolled, "the user's authenticators are unchanged")
 				assert.Zero(t, h.sender.sentWithSubject("Your account was recovered"), "no notice is queued")
 
 				h.allow.Store(true)
@@ -581,6 +586,10 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			assert: func(t *testing.T, h *recoveryHarness, out served) {
 				doc := recovered(t, h, out)
 				assert.Len(t, doc.RecoveryCodes, 10, "the same saved code recovers once the key source is back")
+
+				enrolled, err := h.totp.Enrolled(t.Context(), e2eUser)
+				require.NoError(t, err)
+				assert.False(t, enrolled, "the recovery that succeeds does reset the authenticators")
 				assert.Equal(t, 1, h.activeSessions(t), "only the recovery session is live")
 			},
 		},

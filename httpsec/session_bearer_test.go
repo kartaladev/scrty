@@ -1406,6 +1406,23 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			},
 		},
 		{
+			name: "a late renewal refused as not found is recorded once against its source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+				l.store.failEndpointLoad(session.ErrNotFound)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+
+				failures := l.recorded()
+				require.Len(t, failures, 1)
+				assert.Contains(t, failures[0], sessionReferenceSource)
+			},
+		},
+		{
 			name: "a reused late renewal is recorded against its source",
 			drive: func(t *testing.T, l *lateRenewals) []served {
 				old, successor := l.superseded(t)

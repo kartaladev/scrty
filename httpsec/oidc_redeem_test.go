@@ -601,7 +601,11 @@ func TestOIDCRedeemRacing(t *testing.T) {
 	t.Parallel()
 
 	h := newOIDCHarness(t)
-	h.issueTokens()
+
+	issuer := &recordingIssuer{}
+	issuer.healthy.Store(true)
+	h.tokens = issuer.generator(t)
+
 	code := h.issueHandoff(t, "")
 	c := h.chain(t)
 
@@ -643,6 +647,41 @@ func TestOIDCRedeemRacing(t *testing.T) {
 	assert.Equal(t, int64(1), succeeded.Load(), "exactly one racer redeems")
 	assert.Equal(t, int64(racers-1), refused.Load(), "every other one is refused uniformly")
 	assert.Equal(t, 1, h.activeSessions(t))
+
+	// A session reference is the credential the session-reference bearer
+	// accepts, so presenting each identifier a credential was issued for asks
+	// the store directly whether that session exists. Exactly one does: a
+	// loser's credential names a session that was never stored.
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), oidcTestUserID).AnyTimes().
+		Return(&identity.Details{ID: oidcTestUserID, Username: "ada@example.com", Active: true}, nil)
+
+	bearer, err := httpsec.New(httpsec.EnableSessionBearer(
+		httpsec.SessionBearerDeps{Sessions: h.sessions, Users: users}))
+	require.NoError(t, err)
+
+	named := issuer.names()
+	require.NotEmpty(t, named, "the winner issued a credential")
+
+	stored := 0
+
+	for _, id := range named {
+		req := getFrom(t.Context(), "/account", "203.0.113.99")
+		req.Header.Set("Authorization", "Bearer "+id)
+
+		out := serve(t, bearer, req)
+		if out.err == nil {
+			stored++
+
+			continue
+		}
+
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired,
+			"a loser's credential names a session that was never stored")
+		assert.False(t, out.handlerRan)
+	}
+
+	assert.Equal(t, 1, stored, "only the winner's credential names a stored session")
 }
 
 // The values the assurance cases sign in with.
@@ -1842,12 +1881,17 @@ func TestOIDCHandoff_CredentialCannotBeIssuedKeepsCode(t *testing.T) {
 
 	issuer := &recordingIssuer{}
 	h.tokens = issuer.generator(t)
-	c := h.chain(t)
+
+	// Exactly one failure is recorded with the source limiter: the reuse of
+	// the spent code at the end. The ten issuing failures record none.
+	c := h.chain(t, httpsec.WithOIDCHandoffLimiter(countingLimiter(t, 1)))
 
 	for i := range 10 {
 		out := serve(t, c, handoffRequest(t.Context(), magicLinkSource, code))
 
 		requireIssuingOutage(t, out.err, oidc.ErrInvalidHandoff)
+		assert.Equal(t, "httpsec: the access token could not be issued", out.err.Error(),
+			"the answer carries the library's fixed text and nothing of the key source's")
 		require.Zero(t, h.activeSessions(t), "redemption %d created a session", i+1)
 	}
 
