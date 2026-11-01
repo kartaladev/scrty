@@ -3,6 +3,8 @@ package session_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -517,4 +519,63 @@ func TestEncryptedStoreCreatePassesOnTheNilFamilyRefusal(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, session.ErrNotFound)
 	assert.Zero(t, inner.Len(), "a refused session was stored")
+}
+
+func TestSealingStore_OpenFailureClassification(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		openError error
+		assert    func(t *testing.T, loaded *session.Session, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:      "a deadline is a store failure wrapping it, not an unreadable session",
+			openError: context.DeadlineExceeded,
+			assert: func(t *testing.T, loaded *session.Session, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, session.ErrUnreadable,
+					"an abandoned open was reported as a session that cannot be read")
+				assert.Nil(t, loaded)
+			},
+		},
+		{
+			name:      "a wrapped cancellation is a store failure wrapping it, not an unreadable session",
+			openError: fmt.Errorf("kms: %w", context.Canceled),
+			assert: func(t *testing.T, loaded *session.Session, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, session.ErrUnreadable,
+					"an abandoned open was reported as a session that cannot be read")
+				assert.Nil(t, loaded)
+			},
+		},
+		{
+			name:      "an error of the cipher's own stays unreadable",
+			openError: errors.New("bad tag"),
+			assert: func(t *testing.T, loaded *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrUnreadable)
+				assert.Nil(t, loaded)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sealing, inner := sealingStore(t, 0x2a)
+			require.NoError(t, sealing.Create(t.Context(), federatedSession("classified")))
+
+			cipher := NewMockCipher(gomock.NewController(t))
+			cipher.EXPECT().Open(gomock.Any(), gomock.Any()).Return(nil, tc.openError).Times(1)
+
+			failing, err := session.NewEncryptedStore(inner, cipher)
+			require.NoError(t, err)
+
+			loaded, err := failing.Load(t.Context(), "classified")
+			tc.assert(t, loaded, err)
+		})
+	}
 }

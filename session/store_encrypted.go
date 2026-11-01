@@ -152,6 +152,10 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 // into a session that works until something reaches for the token, and by then
 // nothing points at the key.
 //
+// An open that the context abandoned, by cancellation or a deadline, is not
+// that: the value was never judged, so the load fails with a store failure
+// wrapping the context's error.
+//
 // Nothing is written here. Re-sealing what was just opened would make every
 // read a write, and a write on read is how a session another request has just
 // revoked comes back.
@@ -175,13 +179,28 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 
 	plaintext, err := s.cipher.Open(envelope, additionalData(sess.ID))
 	if err != nil {
-		return nil, diag.Wrap(err, textSessionUnreadableIDTokenNotOpened,
-			ErrUnreadable)
+		return nil, openFailed(err)
 	}
 
 	sess.ExternalIDToken = string(plaintext)
 
 	return sess, nil
+}
+
+// openFailed classifies a cipher's failure to open a stored ID token.
+//
+// A failure that is an outage — the context ended — says nothing about the
+// value, so it comes back as a store failure wrapping the cause, never as
+// ErrUnreadable, which ends the session. Every other failure is
+// ErrUnreadable, the safe default: a value that truly does not open lets the
+// user log in again instead of failing every request until it expires.
+func openFailed(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return diag.Wrap(err, "session: the provider ID token of the session could not be opened")
+	default:
+		return diag.Wrap(err, textSessionUnreadableIDTokenNotOpened, ErrUnreadable)
+	}
 }
 
 func (s *encryptedStore) Delete(ctx context.Context, id string) error {
