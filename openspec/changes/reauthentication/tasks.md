@@ -167,7 +167,7 @@ Each defect task's red step is the reproducing test named in its design decision
   - red: the six collision rows of `TestReproReauthPathCollisionRefused` and the two rows of `TestReproReauthPrefixUnderFormLoginPathIsAllowed`; the rows `the_prefix_is_the_form_login_path` and `the_prefix_is_the_logout_path` in `TestEnableReauthentication` are rewritten to the accepted outcome.
 
   (Reauthentication "Re-proof paths are checked against every endpoint the chain answers", every scenario; "Re-authentication wiring mistakes fail at construction".) Verify with `go test -race -count=1 -run 'TestEnableReauthentication|TestReauth' ./httpsec/`
-- [ ] 9.2 A chain with the MFA slot and passkeys and no `EnableReauthentication` fails `New` with `ErrConfig` naming the option (D5 "Passkey management needs re-authentication"):
+- [x] 9.2 A chain with the MFA slot and passkeys and no `EnableReauthentication` fails `New` with `ErrConfig` naming the option (D5 "Passkey management needs re-authentication"):
   - red: `TestRepro_FullSessionStepsUpAtMFAVerifyWithoutReauthentication`, rewritten to assert the construction refusal, plus the accepted rows (with re-authentication, and MFA without passkeys); the "With re-authentication" scenario drives an `MFANone` TOTP holder through `/reauth/verify/totp` to passkey `begin`;
   - the task owns every chain in the workspace that wires MFA and passkeys without re-authentication: `httpsec` tests and Examples, `test/httpsecconformance`, and README snippets.
 
@@ -210,7 +210,7 @@ Each defect task's red step is the reproducing test named in its design decision
 
 Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store compiles against.
 
-- [ ] 10.1 The mark in the store contract and the in-memory store (D10 "Stores"):
+- [x] 10.1 The mark in the store contract and the in-memory store (D10 "Stores"):
   - `session.Supersession.Strict` and `session.Session.RotatedStrictly`, documented as store-owned and never written by `Create` or `Save`; the `Store` godoc names them;
   - `MemoryStore` records the mark on `Supersede`, returns it on `Load`, and keeps it out of `Create` and `Save`; the encrypting decorator passes it through;
   - `test/storetest` session suite cases for the mark: recorded without grace, not with a grace window, returned on load, untouched by create and save, swept with the session at its retention deadline; and broken variants that drop the mark and that save it.
