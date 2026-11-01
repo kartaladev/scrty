@@ -255,8 +255,10 @@ func isFullSession(s *session.Session) bool {
 // offered is the factor policy: how the user of s may re-prove. Every endpoint
 // decides through it, so the listing never offers what an endpoint refuses,
 // and no endpoint accepts what the listing did not offer. Strictly, offered
-// serves the password endpoint and the listing; begin and verify look up only
-// the method the request names, and refuse it when the user is not enrolled.
+// serves the listing, which asks every method; the password endpoint reaches
+// the same answer through passwordOffered, which stops at the first enrolled
+// method. Begin and verify look up only the method the request names, and
+// refuse it when the user is not enrolled.
 //
 // methods are the MFA slot's configured methods the user is enrolled on, in
 // configuration order, whatever their channel: the same-channel rule of a
@@ -289,6 +291,32 @@ func (i *reauthInterceptor) offered(ctx context.Context, s *session.Session) ([]
 	password := len(methods) == 0 && i.login != nil && !i.secondFactorOnly
 
 	return methods, password, nil
+}
+
+// passwordOffered is the factor policy as the password endpoint applies it:
+// whether the user of s may re-prove with the password. It reaches the same
+// answer as offered, but looks the methods up in configuration order and stops
+// at the first one the user is enrolled on, since that alone refuses the
+// password; offered, which the listing needs, asks every method.
+//
+// A lookup that fails before an enrolled method is found refuses the request
+// as offered does, behind fixed text with the store's error reachable, and
+// never falls back to the password.
+func (i *reauthInterceptor) passwordOffered(ctx context.Context, s *session.Session) (bool, error) {
+	if i.mfa != nil {
+		for _, m := range i.mfa.methods {
+			enrolled, err := m.Enrolled(ctx, s.UserID)
+			if err != nil {
+				return false, diag.Wrap(err, msgReauthMethodsUnavailable)
+			}
+
+			if enrolled {
+				return false, nil
+			}
+		}
+	}
+
+	return i.login != nil && !i.secondFactorOnly, nil
 }
 
 // list answers the method listing for the session's user, from the factor
