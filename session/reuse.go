@@ -267,7 +267,10 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 // A save of the old session made while the step runs is not carried to the
 // successor, which is built from the record read before the step, as with
 // RotateWithGrace; the supersession is conditional only on the successor
-// the old record named.
+// the old record named. A mark saved on the old session during the step, such
+// as a pending challenge, is therefore not carried to the successor either:
+// confinement relies on the per-request policies raising their marks again on
+// the successor, not on the mark surviving the rotation.
 //
 // issue is handed the successor as it will be stored, which is also the
 // session returned, and must not modify it. Unlike RotateIssuing, it runs

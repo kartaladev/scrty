@@ -2795,6 +2795,20 @@ func (*advancedSuccessorStore) Supersede(context.Context, session.Supersession) 
 	return session.ErrSuccessorAdvanced
 }
 
+// supersedeSpyStore is a real store that counts the supersessions it is asked
+// to write, whether or not they succeed.
+type supersedeSpyStore struct {
+	session.Store
+
+	supersedes atomic.Int32
+}
+
+func (s *supersedeSpyStore) Supersede(ctx context.Context, op session.Supersession) error {
+	s.supersedes.Add(1)
+
+	return s.Store.Supersede(ctx, op)
+}
+
 // TestRotateWithGraceIssuing pins that a renewal is stored only once the
 // caller's step on the successor, such as issuing its credential, has
 // succeeded: a step that fails stores, supersedes and revokes nothing, the
@@ -2977,6 +2991,52 @@ func TestRotateWithGraceIssuing(t *testing.T) {
 				require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
 			},
 		},
+		func() testCase {
+			// spy counts the supersessions the manager asks the store for.
+			spy := &supersedeSpyStore{}
+
+			return testCase{
+				// "A step may not outlive the session": the window is capped
+				// by the session's absolute deadline, 10 s away, though the
+				// grace is 30 s, so a step of 15 s ends after it closed.
+				name: "a step that outlives the session's absolute deadline stores nothing",
+				store: func(clk *clockwork.FakeClock) session.Store {
+					spy.Store = memoryOn(clk)
+
+					return spy
+				},
+				grace: 30 * time.Second,
+				prepare: func(t *testing.T, f *graceIssuingFixture) {
+					f.old.AbsoluteExpiresAt = createdAt.Add(10 * time.Second)
+					f.old.IdleExpiresAt = createdAt.Add(10 * time.Second)
+					require.NoError(t, f.m.Save(t.Context(), f.old))
+				},
+				issue: func(clk *clockwork.FakeClock, successor *session.Session) (string, error) {
+					clk.Advance(15 * time.Second)
+
+					return "credential-for:" + successor.ID, nil
+				},
+				assert: func(t *testing.T, f *graceIssuingFixture, r rotation, err error) {
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+					assert.NotErrorIs(t, err, session.ErrReused)
+					assert.Nil(t, r.got)
+					assert.Zero(t, r.kind)
+					assert.Empty(t, r.tok, "a credential for a successor that was never stored was returned")
+					require.NotNil(t, r.given, "the step ran")
+					assert.Zero(t, f.reused.Load(), "a reuse was reported")
+
+					assert.Zero(t, spy.supersedes.Load(), "the old session was superseded")
+
+					_, loadErr := f.m.Load(t.Context(), r.given.ID)
+					require.ErrorIs(t, loadErr, session.ErrNotFound, "a successor was stored")
+
+					// The step ended past the deadline, so the old identifier
+					// reads as expired, not as reuse or as gone.
+					_, loadErr = f.m.Load(t.Context(), f.old.ID)
+					require.ErrorIs(t, loadErr, session.ErrExpired)
+				},
+			}
+		}(),
 		{
 			// Recovery counts no window from the old record: it renews
 			// because that window has already closed, so only the grace
