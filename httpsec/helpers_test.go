@@ -1907,6 +1907,27 @@ func enrolmentEngine(t *testing.T) *policy.Engine {
 	return engineOf(t, p)
 }
 
+// enrolmentEngineOver is enrolmentEngine with the requirement policy reading
+// enrolment from methods, through the lookups EnableMFA itself builds from
+// them, so a user who just bound one of them reads as enrolled, as in a
+// deployment.
+func enrolmentEngineOver(t *testing.T, methods ...mfa.Method) *policy.Engine {
+	t.Helper()
+
+	found, err := mfa.LookupsFor(methods...)
+	require.NoError(t, err)
+
+	lookups := make([]policy.MFAMethodLookup, 0, len(found))
+	for _, l := range found {
+		lookups = append(lookups, enrollableLookup{l})
+	}
+
+	p, err := policy.NewMFARequirement(everyoneRequired{}, lookups, policy.WithMFAEnrolmentPath())
+	require.NoError(t, err)
+
+	return engineOf(t, p)
+}
+
 // deps is what EnableMFAEnrolment is handed: the user loader and a
 // non-blocking sender.
 func (h *enrolHarness) deps() httpsec.EnrolmentDeps {
@@ -1923,7 +1944,7 @@ func (h *enrolHarness) options(t *testing.T, s *session.Session) []httpsec.Optio
 	}
 
 	return append([]httpsec.Option{
-		httpsec.WithPolicyEngine(enrolmentEngine(t)),
+		httpsec.WithPolicyEngine(enrolmentEngineOver(t, append([]mfa.Method{h.method}, h.extraMethods...)...)),
 		h.carries(s),
 		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extraMethods...), append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
 		enrolment,
@@ -1962,7 +1983,11 @@ func (h *enrolHarness) carries(s *session.Session) httpsec.Option {
 			}
 		}
 
-		ex.Authentication = &authenticate.Authentication{Principal: testPrincipal(), Time: time.Now()}
+		// The caller is the session's own user, as a bearer resolves it.
+		principal := testPrincipal()
+		principal.ID = loaded.UserID
+
+		ex.Authentication = &authenticate.Authentication{Principal: principal, Time: time.Now()}
 		ex.Session = loaded
 		ex.SetContext(httpsec.WithSession(httpsec.WithCaller(ex.Context(), ex.Authentication), loaded))
 
@@ -2275,6 +2300,10 @@ type passkeyHarness struct {
 	withoutEnrolment bool
 	withRecoveryGate bool
 
+	// withoutReauth leaves EnableReauthentication off the chain, for a test
+	// that wires it itself.
+	withoutReauth bool
+
 	manager *passkey.Passkeys
 }
 
@@ -2320,6 +2349,10 @@ func (h *passkeyHarness) chainOptions(t *testing.T, s *session.Session) []httpse
 	}
 
 	h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...))
+	if !h.withoutReauth {
+		// MFA and passkeys on one chain need re-authentication.
+		h.extra = append(h.extra, httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+	}
 	if h.withRecoveryGate {
 		h.extra = append(h.extra, httpsec.EnableRecoveryGateForTest())
 	}

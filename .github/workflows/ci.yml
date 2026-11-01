@@ -3,7 +3,10 @@ name: ci
 on:
   push:
     branches: [main]
+  # A draft pull request runs nothing; marking it ready for review runs the
+  # gates, and every later push to it runs them again.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -11,6 +14,7 @@ permissions:
 jobs:
   check:
     name: make check (Go ${{ matrix.go }}, ${{ matrix.postgres }}, ${{ matrix.redis }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

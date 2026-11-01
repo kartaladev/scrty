@@ -1,10 +1,12 @@
-// Package guardauth holds the one rule for where a route guard finds its
-// authorizer.
+// Package guardauth holds the decisions a route guard must make identically on
+// every framework: where it finds its authorizer, and whether its caller
+// authenticated recently enough (Recency).
 //
 // The guard adapters for net/http, gin and fiber share it, so the three cannot
-// disagree about when guards may be built without an authorizer or about which
-// authorizer judges a request. Each adapter keeps its own error text and its
-// own way of answering a refusal; only the decision lives here.
+// disagree about when guards may be built without an authorizer, about which
+// authorizer judges a request, or about when a caller is recent. Each adapter
+// keeps its own error text and its own way of answering a refusal; only the
+// decision lives here.
 package guardauth
 
 import (

@@ -109,14 +109,23 @@ func nethttpGuard(
 	// The scenario's nil authorizer means the guards rely on what the chain
 	// published, so the reliance is declared for every scenario, and a non-nil
 	// one is the fallback beside it. Declared, construction cannot fail.
-	guards, err := httpsec.NewGuards(spec.Authorizer, httpsec.WithChainAuthorizer(),
+	guardOpts := []httpsec.GuardOption{httpsec.WithChainAuthorizer(),
 		httpsec.WithGuardErrorHandler(func(w http.ResponseWriter, _ *http.Request, err error) {
 			res.Refusal = err
 
 			w.WriteHeader(httpsec.StatusForError(err))
-		}))
+		})}
+	if spec.Clock != nil {
+		guardOpts = append(guardOpts, httpsec.WithGuardClock(spec.Clock))
+	}
+
+	guards, err := httpsec.NewGuards(spec.Authorizer, guardOpts...)
 	if err != nil {
 		panic(err)
+	}
+
+	if spec.Kind == httpsecconformance.GuardRecent {
+		return guards.RequireRecentAuthentication()
 	}
 
 	if spec.Kind == httpsecconformance.GuardAuthenticated {

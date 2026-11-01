@@ -222,7 +222,9 @@ func WithFirstFactor(kind factor.Kind) CreateOption {
 // It is meant for the library's own login tail, which adds it only when the
 // login carried the library's proof (policy.Input.SecondFactorAtLogin). A
 // consumer that adds it to a session of their own creates a satisfied session
-// on their own word.
+// on their own word, and the library then treats the session's login as having
+// carried its proof: at every second-factor re-proof it builds the proof from
+// the mark, for the session's first factor.
 func WithSecondFactorAtLogin() CreateOption {
 	return func(s *Session) {
 		s.MFA = MFASatisfied

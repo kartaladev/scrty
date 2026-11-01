@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,33 @@ func TestRecoveryCodes(t *testing.T) {
 			},
 		},
 		{
+			name: "exactly at the window's end is admitted",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t) // 09:00
+				h.elapse(t, s, 15*time.Minute)
+
+				return h.codesRequest(t, http.MethodPost, s) // 09:15:00
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				regenerated(t, h, out, first)
+			},
+		},
+		{
+			name: "a zero authentication time is refused",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s, err := h.sessions.Create(t.Context(), e2eUser, session.WithFirstFactor(factor.Password),
+					func(s *session.Session) { s.AuthenticatedAt = time.Time{} })
+				require.NoError(t, err)
+
+				return h.codesRequest(t, http.MethodPost, s)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, recovery.ErrReauthenticationRequired)
+				assert.False(t, out.handlerRan)
+				setUnchanged(t, h, first)
+			},
+		},
+		{
 			name: "a second factor satisfied at 09:15 is fresh at 09:20",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
 				h.chainOpts = append(h.chainOpts,
@@ -247,6 +275,34 @@ func TestRecoveryCodes(t *testing.T) {
 				h.elapse(t, s, 5*time.Minute)
 
 				return h.codesRequest(t, http.MethodPost, s) // 09:20
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				regenerated(t, h, out, first)
+			},
+		},
+		{
+			// "Fresh after a re-authentication".
+			name: "a re-authentication at 09:30 is fresh at 09:40",
+			arrange: func(_ *testing.T, h *recoveryHarness) {
+				h.chainOpts = append(h.chainOpts,
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t) // 09:00
+				h.elapse(t, s, 30*time.Minute)
+
+				// The user holds no second factor, so they re-prove with their
+				// password, at 09:30.
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+					httpsec.DefaultReauthenticationPrefix+"/password",
+					strings.NewReader(url.Values{httpsec.DefaultLoginPasswordParam: {e2ePassword}}.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				req.Header.Set("Authorization", "Bearer "+mfaTokenFor(s.ID))
+
+				s = h.sessionIssued(t, serve(t, h.chain, req))
+				h.elapse(t, s, 10*time.Minute)
+
+				return h.codesRequest(t, http.MethodPost, s) // 09:40
 			},
 			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
 				regenerated(t, h, out, first)
@@ -394,6 +450,42 @@ func TestRecoveryCodes(t *testing.T) {
 				assert.Equal(t, policy.ChallengeAccountRecovery, ch.Kind)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 				assert.False(t, out.handlerRan)
+				setUnchanged(t, h, first)
+			},
+		},
+		{
+			// No library path leaves a session out of confinement still
+			// holding the marker: the upgrade that ends it clears the marker.
+			name: "a session carrying the confinement marker without its state is refused, and no set is generated",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t)
+				s.EnrolmentOriginDeadline = s.AbsoluteExpiresAt
+				h.save(t, s)
+
+				return h.codesRequest(t, http.MethodPost, s)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+				assert.Empty(t, out.rec.Body.Bytes())
+				setUnchanged(t, h, first)
+			},
+		},
+		{
+			// No library path writes a state outside the named ones; a store
+			// could hand one back.
+			name: "a session in an unnamed second-factor state is refused, and no set is generated",
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t)
+				s.MFA = session.MFAState(99)
+				h.save(t, s)
+
+				return h.codesRequest(t, http.MethodPost, s)
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.handlerRan)
+				assert.Empty(t, out.rec.Body.Bytes())
 				setUnchanged(t, h, first)
 			},
 		},

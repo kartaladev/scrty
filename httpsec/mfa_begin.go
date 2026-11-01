@@ -1,17 +1,13 @@
 package httpsec
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -76,12 +72,21 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // begin issues a pending challenge for a challenge method and answers with the
 // method's begin data.
 //
+// It serves only a pending session: one already satisfied, or none was ever
+// asked a second factor, is refused with ErrNoMFAChallengePending before
+// anything is issued, and re-proving a signed-in session belongs to
+// re-authentication (/reauth) instead.
+//
 // It makes the same refusals verify does, in the same order and before the
 // body is read — the body is never read here at all — with one difference: a
 // path naming a method that has no begin step is refused as unknown, exactly
-// as one naming no method is. None of them is counted. A user the verification
-// throttle already refuses is refused here too, so a locked-out user cannot
-// keep minting challenges.
+// as one naming no method is. None of them is counted. A resolved caller who
+// is not the session's own user (a consumer interceptor past the first factor
+// published another principal) is refused with ErrAuthenticationRequired, as
+// verify refuses one, before the throttle is consulted and before anything is
+// issued, so nobody spends the session user's challenge issuance but that
+// user. A user the verification throttle already refuses is refused here too,
+// so a locked-out user cannot keep minting challenges.
 //
 // The challenge is a one-time token of the method's own purpose, whose subject
 // is the user and which is bound to the session's handle, so it can be
@@ -106,35 +111,24 @@ func (i *mfaInterceptor) begin(ex *Exchange) error {
 		return err
 	}
 
-	ctx := ex.Context()
-
-	if err := i.throttle.Check(ctx, s.UserID); err != nil {
+	// admit refused a session whose first factor published no caller.
+	if err := requireSessionUser(ex, s); err != nil {
 		return err
 	}
 
-	cm := method.(mfa.ChallengeMethod) // admit checked it
-	mgr := i.challenges[method.Name()]
-
-	i.sweepExpired(ctx, method.Name(), mgr)
-
-	// One bounded issue, not a count and then an issue: of begins racing for
-	// one user, on this process or on another replica, no more than the limit
-	// are issued a challenge.
-	challenge, _, err := mgr.IssueWithin(ctx, string(s.UserID), i.challengeCap, onetime.WithBinding(s.ID))
-
-	switch {
-	case errors.Is(err, onetime.ErrIssueLimitReached):
-		return mfa.ErrVerifyThrottled
-	case err != nil:
-		return diag.Wrap(err, msgChallengeNotIssued)
-	}
-
-	data, err := cm.BeginChallenge(ctx, s.UserID, challenge)
-	if err != nil {
-		return diag.Wrap(err, msgChallengeNotIssued)
-	}
-
-	return i.beginRespond(ex, data)
+	return issueChallenge(ex, s, method.(mfa.ChallengeMethod), challengeIssue{ // admit checked it
+		throttle:  i.throttle,
+		mgr:       i.challenges[method.Name()],
+		sweep:     i.sweeps[method.Name()],
+		limit:     i.challengeCap,
+		respond:   i.beginRespond,
+		notIssued: msgChallengeNotIssued,
+		sweepFlow: challengeSweepFlow,
+		notPurged: msgChallengesNotPurged,
+		now:       i.now,
+		sampler:   i.sampler,
+		log:       i.log,
+	})
 }
 
 // msgChallengesNotPurged is what a sweep of a method's expired challenges
@@ -149,41 +143,6 @@ const (
 
 // challengeSweepFlow names the sampler keys of failed sweeps.
 const challengeSweepFlow = "mfa-challenge-sweep"
-
-// sweepExpired purges method's expired challenges from the store, when a
-// sweep is due. A sweep that fails is logged through the chain's sampler and
-// otherwise ignored.
-//
-// It runs under the request's own context, so a store that stops answering
-// holds the begin no longer than the request allows. A sweep that fails, or is
-// cut short, gives its turn back, so a later begin sweeps again rather than
-// waiting out the window; the exception is a store that cannot purge at all,
-// which no retry would change, so its turn is kept and it is logged once per
-// window.
-func (i *mfaInterceptor) sweepExpired(ctx context.Context, method string, mgr *onetime.Tokens) {
-	clock := i.sweeps[method]
-
-	claimed, due := clock.claim(i.now(), mgr.IssuanceWindow())
-	if !due {
-		return
-	}
-
-	_, err := mgr.PurgeExpired(ctx)
-	if err == nil {
-		return
-	}
-
-	reason := reasonStoreUnavailable
-	if errors.Is(err, onetime.ErrReapUnsupported) {
-		reason = reasonPurgeUnsupported
-	} else {
-		clock.release(claimed)
-	}
-
-	logSampled(ctx, i.sampler, i.log, slog.LevelWarn, i.now(),
-		challengeSweepFlow+sampleKeySeparator+method+sampleKeySeparator+reason, msgChallengesNotPurged,
-		slog.String("method", method), slog.String("reason", reason))
-}
 
 // sweepClock spaces one method's sweeps of its expired challenges. It is safe
 // for concurrent use.
@@ -245,26 +204,15 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 		store = def
 	}
 
-	i.challenges = make(map[string]*onetime.Tokens)
-	i.sweeps = make(map[string]*sweepClock)
-
-	for _, m := range i.methods {
-		if !isChallengeMethod(m) {
-			continue
-		}
-
-		mgr, err := onetime.New(mfaChallengePurpose(m.Name()),
-			onetime.WithTokenTTL(i.challengeTTL),
-			onetime.WithStore(store),
-			onetime.WithClock(c.clock),
-			onetime.WithLogger(c.logger))
-		if err != nil {
-			return newConfigError("EnableMFA could not build the pending challenges of %q: %s", m.Name(), err)
-		}
-
-		i.challenges[m.Name()] = mgr
-		i.sweeps[m.Name()] = &sweepClock{}
+	challenges, sweeps, err := challengeManagers(c, i.methods, store, i.challengeTTL, mfaChallengePurpose,
+		func(method string, err error) error {
+			return newConfigError("EnableMFA could not build the pending challenges of %q: %s", method, err)
+		})
+	if err != nil {
+		return err
 	}
+
+	i.challenges, i.sweeps = challenges, sweeps
 
 	return nil
 }
@@ -330,6 +278,15 @@ func WithMFAChallengeTTL(d time.Duration) MFAOption {
 // skipped sweep is logged, once a window, so a store whose records are removed
 // some other way is a choice, not a surprise.
 //
+// Giving a store here and enabling re-authentication (EnableReauthentication)
+// on a slot with a method that has a begin step (a challenge method, such as
+// passkeys) also requires WithReauthenticationChallengeStore: a deployment
+// that shares this store across replicas would otherwise have its re-proof
+// challenges in per-process memory, and a re-proof begun on one replica would
+// fail on another. New fails with ErrConfig naming both options. A slot of
+// TOTP alone issues no challenge and builds without it. Passing the same
+// store to both is fine, as purposes keep the two kinds of challenge apart.
+//
 // A nil store, including an interface holding a nil pointer, is refused.
 func WithMFAChallengeStore(s onetime.Store) MFAOption {
 	return func(i *mfaInterceptor) error {
@@ -338,6 +295,7 @@ func WithMFAChallengeStore(s onetime.Store) MFAOption {
 		}
 
 		i.challengeStore = s
+		i.challengeStoreGiven = true
 
 		return nil
 	}

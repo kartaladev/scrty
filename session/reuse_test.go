@@ -1032,9 +1032,6 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 	type testCase struct {
 		name string
 		opts []session.Option
-		// failDelete makes the store's Delete fail, as after a strict
-		// rotation whose delete did not land.
-		failDelete bool
 		// act runs the case's steps from 09:00 and returns what its last
 		// step returned.
 		act    func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error)
@@ -1109,33 +1106,11 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			},
 		},
 		{
-			// Spec: "By default a successor SHALL keep its predecessor's
-			// absolute deadline."
-			name:       "a re-rotation after a strict rotation whose delete failed carries the deadline over",
-			opts:       []session.Option{session.WithMaxAbsoluteLifetime(month)},
-			failDelete: true,
-			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
-				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
-				require.NoError(t, err)
-				_, err = f.m.Rotate(ctx, o)
-				require.NoError(t, err)
-
-				f.clk.Advance(10 * time.Second)
-				next, _, err := f.m.RotateWithGrace(ctx, o, 30*time.Second)
-
-				return next, err
-			},
-			assert: func(t *testing.T, got *session.Session, err error) {
-				require.NoError(t, err)
-				assert.Equal(t, createdAt.Add(time.Hour), got.AbsoluteExpiresAt)
-			},
-		},
-		{
-			// Spec: "A load of the old identifier between the two writes
-			// SHALL return the old session as it was."
-			name:       "the old identifier in flight after a strict rotation loads with its own deadlines",
-			opts:       []session.Option{session.WithMaxAbsoluteLifetime(month), session.WithIdleTimeout(idle)},
-			failDelete: true,
+			// Spec: "the old session's retention deadline is the end of its
+			// in-flight window, 09:00:30, and its own deadlines are
+			// unchanged", in a family whose maximum ends a month later.
+			name: "a strict rotation retains the old record only for its window, with its own deadlines",
+			opts: []session.Option{session.WithMaxAbsoluteLifetime(month), session.WithIdleTimeout(idle)},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
 				require.NoError(t, err)
@@ -1144,10 +1119,14 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 
 				f.clk.Advance(10 * time.Second)
 
-				return f.m.Load(ctx, o.ID)
+				return f.store.Load(ctx, o.ID)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
 				require.NoError(t, err)
+				assert.True(t, got.RotatedStrictly)
+				assert.Equal(t, createdAt.Add(session.DefaultRenewalGrace), got.RetainUntil,
+					"the retention deadline is the end of the in-flight window, not the family's")
+				assert.Equal(t, got.AcceptUntil, got.RetainUntil)
 				assert.Equal(t, createdAt.Add(time.Hour), got.AbsoluteExpiresAt)
 				assert.Equal(t, createdAt.Add(idle), got.IdleExpiresAt)
 			},
@@ -1433,7 +1412,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 
 			clk := clockwork.NewFakeClockAt(createdAt)
 			inner := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
-			f := &fixture{clk: clk, store: &inFlightStore{MemoryStore: inner, failDelete: tc.failDelete}}
+			f := &fixture{clk: clk, store: &inFlightStore{MemoryStore: inner}}
 			f.m = managerFor(t, append([]session.Option{
 				session.WithStore(f.store),
 				session.WithClock(clk),
@@ -1569,10 +1548,11 @@ func (s *supersessionLog) last(t *testing.T) session.Supersession {
 }
 
 // TestSupersession_RetainUntilIsTheFamilyDeadline pins that every
-// supersession the manager makes carries the family's start plus the family
-// maximum as its retention deadline, whichever renewal made it: a session
-// created at 09:00 with a 12-hour lifetime and a 48-hour family maximum
-// retains to 09:00 two days later.
+// supersession with a grace window the manager makes carries the family's
+// start plus the family maximum as its retention deadline, whichever renewal
+// made it: a session created at 09:00 with a 12-hour lifetime and a 48-hour
+// family maximum retains to 09:00 two days later. A strict rotation is the
+// exception: its old record is retained only until its in-flight window ends.
 func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 	t.Parallel()
 
@@ -1593,12 +1573,19 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "a strict rotation",
+			name: "a strict rotation retains only for its in-flight window",
 			renew: func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session) {
 				_, err := m.Rotate(ctx, s)
 				require.NoError(t, err)
 			},
-			assert: retainsFamilyDeadline,
+			assert: func(t *testing.T, _ *session.Session, op session.Supersession) {
+				t.Helper()
+
+				assert.True(t, op.Strict, "a rotation without grace is marked strict")
+				assert.Equal(t, createdAt.Add(10*time.Minute+session.DefaultRenewalGrace), op.AcceptUntil)
+				assert.Equal(t, op.AcceptUntil, op.RetainUntil,
+					"the retention deadline is the end of the in-flight window")
+			},
 		},
 		{
 			name: "a fresh renewal",

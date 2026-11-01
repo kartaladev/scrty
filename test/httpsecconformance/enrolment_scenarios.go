@@ -418,8 +418,11 @@ func enrolmentVerifyGrantsAccess() Scenario {
 			require.True(t, ok, "got %q", body.AccessToken)
 			require.NotEqual(t, res.Effects.SessionID, rotated, "the session was rotated")
 
-			_, err := res.Effects.Store.Load(t.Context(), res.Effects.SessionID)
-			require.Error(t, err, "the enrolment-only handle is gone")
+			_, err := res.Effects.Sessions.Load(t.Context(), res.Effects.SessionID)
+			require.ErrorIs(t, err, session.ErrNotFound, "the enrolment-only handle is gone")
+			old := res.Effects.LoadSession(t, res.Effects.SessionID)
+			assert.True(t, old.RotatedStrictly,
+				"the store keeps the old record, marked as rotated without grace, for its in-flight window")
 
 			s := res.Effects.LoadSession(t, rotated)
 			assert.Equal(t, session.MFASatisfied, s.MFA)

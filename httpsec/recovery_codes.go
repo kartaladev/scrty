@@ -34,14 +34,20 @@ type RecoveryCodesResponder func(ex *Exchange, codes []string) error
 type RecoveryCountResponder func(ex *Exchange, count recovery.RemainingCodes) error
 
 // WithRecoveryRegenerationFreshness sets how recent a session's latest authentication
-// must be for it to regenerate the user's saved codes. The latest
-// authentication is the later of the session's creation and its second
-// factor's satisfaction.
+// must be for it to regenerate the user's saved codes. Freshness reads the
+// session's authentication time (sign-in, satisfied second factor or
+// re-authentication), never a renewal, and admits a session exactly at the
+// window's end.
 //
 // Default: 15 minutes. A regeneration mints a lasting credential and is rare,
 // so the default asks for a recent login; a consumer who wants a longer window,
 // such as two hours, sets it here. A window of zero or less is refused, since
 // it would refuse every regeneration.
+//
+// A session past the window is refreshed by signing in again or, on a chain
+// that enables EnableReauthentication, by a re-proof. On a chain with the
+// second-factor slot and without re-authentication, signing in again is the
+// only way.
 func WithRecoveryRegenerationFreshness(d time.Duration) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if d <= 0 {
@@ -108,20 +114,29 @@ func (i *recoveryInterceptor) answersCodes(r Request) bool {
 // after refusing a recovery-pending session, so only a session with no pending
 // recovery ever arrives.
 //
-// A request with no session is ErrAuthenticationRequired. A session with any
-// other challenge pending (a second factor, an enrolment, a password change),
-// or one the per-request policy phase raised for the consumer
-// (Exchange.RaisedChallenge), is passed on, so the gate enforcing that
-// challenge refuses it: the endpoints answer only a full session, with
-// nothing else outstanding. A POST regenerates and a GET counts.
+// The endpoints answer only a full session, with nothing else outstanding,
+// judged by the check re-proof admission and passkey management also make
+// (fullSession). A request with no session is ErrAuthenticationRequired. A
+// session with any other challenge pending (a second factor, an enrolment, a
+// password change), or one the per-request policy phase raised for the
+// consumer (Exchange.RaisedChallenge), is passed on, so the gate enforcing
+// that challenge refuses it. A session that owes no challenge but is still
+// not full (a confinement marker left without its state, or a second-factor
+// state outside the named ones, which no library path produces) has no gate
+// to pass to, and is ErrAuthenticationRequired. A POST regenerates and a GET
+// counts.
 func (i *recoveryInterceptor) codes(ex *Exchange, next Next) error {
 	s := ex.Session
 	if s == nil {
 		return ErrAuthenticationRequired
 	}
 
-	if challengePending(s) || ex.RaisedChallenge() != policy.ChallengeNone {
+	if owedChallenge(s) != policy.ChallengeNone || ex.RaisedChallenge() != policy.ChallengeNone {
 		return next(ex)
+	}
+
+	if !fullSession(s) {
+		return ErrAuthenticationRequired
 	}
 
 	if ex.Request.Method() == http.MethodGet {
@@ -131,31 +146,25 @@ func (i *recoveryInterceptor) codes(ex *Exchange, next Next) error {
 	return i.regenerate(ex, s)
 }
 
-// challengePending reports whether s owes a built-in challenge that a later
-// gate enforces. It says nothing about a consumer challenge the per-request
-// policy phase raised on this request: codes checks Exchange.RaisedChallenge
-// for that separately, since such a challenge is never marked on the session.
-func challengePending(s *session.Session) bool {
-	switch s.MFA {
-	case session.MFAPending, session.MFAEnrolmentPending, session.MFARecoveryPending:
-		return true
-	case session.MFANone, session.MFASatisfied:
-	}
-
-	return s.PasswordChangePending
-}
-
 // regenerate replaces the session user's saved codes, when the session's
-// latest authentication (session.Session.AuthenticatedAt: the sign-in, or the
-// second factor satisfied since) is within the window, through the core, which
-// also sends the user the notice. A renewal is not an authentication and never
-// moves that time. Outside the window it is
+// authentication time (sign-in, satisfied second factor or re-authentication)
+// is within the window by session.Session.AuthenticatedWithin, through the
+// core, which also sends the user the notice. The window's end is inclusive,
+// and a session with no recorded authentication time is never within it. A
+// renewal is not an authentication and never moves that time. Outside the
+// window it is
 // recovery.ErrReauthenticationRequired, and nothing changes.
+//
+// Only a sign-in or a re-proof moves the time, and a re-proof is available
+// only when the chain enables EnableReauthentication. Without it there is no
+// way to refresh a session in place: a user whose session is stale, on an MFA
+// chain or any other, regenerates their codes only after signing in again.
+// EnableReauthentication is the remedy.
 //
 // Cache-Control: no-store is set before the responder runs, since the
 // response carries the new codes.
 func (i *recoveryInterceptor) regenerate(ex *Exchange, s *session.Session) error {
-	if i.now().Sub(s.AuthenticatedAt) > i.freshness {
+	if !s.AuthenticatedWithin(i.now(), i.freshness) {
 		return recovery.ErrReauthenticationRequired
 	}
 

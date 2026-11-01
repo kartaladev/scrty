@@ -1155,6 +1155,56 @@ func TestChain_ExpiryTasks(t *testing.T) {
 			},
 		},
 		{
+			// Re-proof challenges are kept apart from login challenges, and
+			// swept by tasks of their own, after the MFA ones.
+			name: "re-authentication adds a task per challenge method after the MFA ones",
+			chain: func(t *testing.T) *httpsec.Chain {
+				h := expiryMFAHarness(t, namedChallengeStubs("passkey", "token")...)
+				h.chainOpts = append(h.chainOpts,
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+
+				return h.bearerChain(t)
+			},
+			assert: func(t *testing.T, tasks []expiry.Task) {
+				assert.Equal(t, []string{
+					"mfa-challenges:passkey", "mfa-challenges:token",
+					"reauth-challenges:passkey", "reauth-challenges:token",
+				}, expiryTaskNames(tasks))
+				for _, task := range tasks {
+					assert.Zero(t, task.Interval, task.Name)
+				}
+			},
+		},
+		{
+			name: "the re-proof task sweeps a challenge begun through the chain",
+			chain: func(t *testing.T) *httpsec.Chain {
+				h := expiryMFAHarness(t, namedChallengeStubs("passkey")...)
+				h.chainOpts = append(h.chainOpts,
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+				c := h.bearerChain(t)
+				s := h.newSession(t, factor.Password, session.MFASatisfied)
+
+				out := serve(t, c, bearerPost(t.Context(), httpsec.DefaultReauthenticationPrefix+"/begin/passkey", mfaTokenFor(s.ID)))
+				require.NoError(t, out.err)
+				require.Equal(t, http.StatusOK, out.rec.Code, "the begin issued a challenge")
+
+				// Past the challenge's lifetime and the hour-long issuance
+				// window, with no begin since to sweep it inline.
+				h.clock.Advance(httpsec.DefaultMFAChallengeTTL + time.Hour + time.Second)
+
+				return c
+			},
+			assert: func(t *testing.T, tasks []expiry.Task) {
+				removed, err := runExpiryTask(t, tasks, "mfa-challenges:passkey")
+				require.NoError(t, err)
+				assert.Zero(t, removed, "the login challenges hold nothing")
+
+				removed, err = runExpiryTask(t, tasks, "reauth-challenges:passkey")
+				require.NoError(t, err)
+				assert.Equal(t, 1, removed)
+			},
+		},
+		{
 			name:  "recovery without holds contributes its issued-code task",
 			chain: func(t *testing.T) *httpsec.Chain { return expiryRecoveryHarness(t).build(t).chain },
 			assert: func(t *testing.T, tasks []expiry.Task) {
@@ -2051,6 +2101,7 @@ func builtInSlots() []namedSlot {
 		{"BearerToken", httpsec.OrderBearerToken},
 		{"MFAChallenge", httpsec.OrderMFAChallenge},
 		{"PasswordChange", httpsec.OrderPasswordChange},
+		{"Reauthentication", httpsec.OrderReauthentication},
 		{"Passkeys", httpsec.OrderPasskeys},
 		{"SessionRenewal", httpsec.OrderSessionRenewal},
 		{"Logout", httpsec.OrderLogout},
@@ -2119,6 +2170,15 @@ func TestOrder(t *testing.T) {
 		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderPasswordChange)
 		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderMFAChallenge)
 		assert.Less(t, httpsec.OrderPasskeys, httpsec.OrderLogout)
+
+		// The re-authentication endpoints run inside every gate, the
+		// password-change gate included, and outside the passkey endpoints
+		// and renewal.
+		assert.Equal(t, httpsec.Order(655), httpsec.OrderReauthentication)
+		assert.Greater(t, httpsec.OrderReauthentication, httpsec.OrderPasswordChange)
+		assert.Greater(t, httpsec.OrderReauthentication, httpsec.OrderMFAChallenge)
+		assert.Less(t, httpsec.OrderReauthentication, httpsec.OrderPasskeys)
+		assert.Less(t, httpsec.OrderReauthentication, httpsec.OrderSessionRenewal)
 
 		// The renewal endpoint sits between the passkey endpoints and logout:
 		// inside every gate and bearer authentication, outside logout.

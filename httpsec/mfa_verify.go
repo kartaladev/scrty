@@ -95,6 +95,11 @@ type mfaInterceptor struct {
 	challengeStore onetime.Store
 	challenges     map[string]*onetime.Tokens
 
+	// challengeStoreGiven records that WithMFAChallengeStore was given, because
+	// the slot may default its store later and re-authentication has to know
+	// whether the consumer chose one.
+	challengeStoreGiven bool
+
 	// challengeCap is how many challenges begin issues a user for one method
 	// within the store's issuance window (WithMFAChallengeLimit), and sweeps
 	// spaces each challenge method's sweeps of its expired challenges, keyed
@@ -238,7 +243,17 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 // user:
 //
 //  1. No session, or one carrying no resolved caller: there is nothing to add
-//     a second factor to, and nobody to issue the rotated credential to.
+//     a second factor to, and nobody to issue the rotated credential to. A
+//     session that is not pending, whether it already satisfied its second
+//     factor or none was ever asked of it, is refused with
+//     ErrNoMFAChallengePending: the endpoint serves only a pending session,
+//     and re-proving a signed-in one belongs to re-authentication (/reauth),
+//     not here. Nothing is counted or changed. A caller who is not the
+//     session's user, because a consumer interceptor past the first factor
+//     published another principal, is refused with ErrAuthenticationRequired
+//     once steps 2 to 4 have passed and before the throttle
+//     (requireSessionUser): nothing is counted, verified or judged for the
+//     substituted principal, and the session stays pending.
 //  2. The path names no configured method: ErrUnknownMFAMethod. The method is
 //     read from the path and nowhere else.
 //  3. The method is on the first factor's channel: mfa.ErrSameChannel. A
@@ -265,88 +280,92 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     not recorded: it is not a guess. So is a refusal matching
 //     mfa.ErrVerifyThrottled, such as a refused attempt charge: nothing was
 //     compared, so nothing is recorded.
-//  9. Success: resolve, rotate, publish, answer.
+//  9. The post-authentication phase is judged again with the login's input
+//     for the session, the second factor satisfied (behindSecondFactor), so a
+//     challenge or a deny the second-factor challenge hid at login is not
+//     lost. A deny refuses with the policy's reason, and a kind nothing
+//     enforces as a configuration error, leaving the session pending and
+//     counting nothing.
+//  10. Success: resolve, rotate, publish, answer. A challenge step 9 raised
+//     is marked on the rotated session before its credential is issued, and
+//     answered as a login answers one: a *ChallengeError carrying the rotated
+//     session and its credential.
 func (i *mfaInterceptor) verify(ex *Exchange) error {
 	s, method, err := i.admit(ex, i.verifyPrefix, anyMethod)
 	if err != nil {
 		return err
 	}
 
-	ctx := ex.Context()
-	user := s.UserID
-
-	if err := i.throttle.Check(ctx, user); err != nil {
+	// Step 1's last refusal: admit refused a session whose first factor
+	// published no caller, and this one a caller who is not its user.
+	if err := requireSessionUser(ex, s); err != nil {
 		return err
 	}
 
-	response, err := readResponse(ex.Request, method.Response())
+	// Steps 5 to 8.
+	if err := checkResponse(ex, i.throttle, i.challenges, method, s); err != nil {
+		return err
+	}
+
+	// Step 9.
+	raised, err := i.behindSecondFactor(ex, s)
 	if err != nil {
 		return err
 	}
 
-	if cm, ok := method.(mfa.ChallengeMethod); ok {
-		if err := i.spendChallenge(ctx, cm, s, response); err != nil {
-			i.throttle.RecordFailure(ctx, user)
-
-			return err
-		}
-	}
-
-	if err := method.Verify(ctx, user, response); err != nil {
-		// A refusal of the authenticator itself, such as a suspected clone,
-		// is not a wrong guess at the response, and a refused attempt charge
-		// compared nothing: neither costs an attempt.
-		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
-			i.throttle.RecordFailure(ctx, user)
-		}
-
-		return err
-	}
-
-	return i.resolve(ex, s)
+	return i.resolve(ex, s, raised)
 }
 
-// spendChallenge checks the challenge a challenge method's response presents
-// against those issued to session s, and spends it. Only a nil return lets the
-// method verify the response.
+// behindSecondFactor judges the post-authentication phase again for s, whose
+// second factor has just been verified, and returns the challenge it then
+// raises, policy.ChallengeNone when it raises none.
 //
-// Every attempt that presents a live challenge spends it, whether the method
-// then accepts the response or not. That departs from check-then-consume as
-// the one-time package frames it — where a refusal between the two leaves the
-// token redeemable — on purpose: a pending challenge is not a credential the
-// user holds and would lose, only the server's nonce for one attempt, and one
-// try per challenge is the simpler guarantee to state and to keep. It also
-// settles a race: of several attempts presenting one challenge, the store's
-// compare-and-set lets exactly one through to Verify.
+// A login that left s pending judged the phase once, and the engine returned
+// its first challenge only: the second factor's, with every challenge
+// registered after it hidden behind it. So the phase is judged again with the
+// login's input for the session's user and first factor (sessionLoginInput),
+// at the chain's now, saying the request has satisfied a second factor
+// (policy.Input.MFASatisfied), which it has, and that the session already
+// exists (policy.Input.Reauthenticating): it is counted among the user's, and
+// verification adds none. A policy.ChallengeMFA is then dropped, the factor
+// being the one just presented (judgeBehindSecondFactor).
 //
-// Every failure is mfa.ErrInvalidCode, the refusal the method itself gives a
-// wrong response, so a caller learns only that the answer was not good. That
-// includes a store that could not answer: the one-time manager reports its
-// store's failures as an invalid token too, and logs them, so this fails
-// closed rather than letting an attempt reach the method unspent.
-func (i *mfaInterceptor) spendChallenge(
-	ctx context.Context,
-	cm mfa.ChallengeMethod,
-	s *session.Session,
-	response []byte,
-) error {
-	presented, err := cm.PresentedChallenge(response)
-	if err != nil || presented == "" {
-		return mfa.ErrInvalidCode
+// It judges every pending session the endpoint serves alike, whatever left it
+// pending: a login's challenge, a challenge the per-request phase marked, or
+// an enrolment or a recovery binding that moved it on to verification. Each
+// is judged as a login of its user on its first factor would be judged now,
+// as a second-factor re-proof is.
+//
+// A deny refuses with the policy's reason. A challenge of a kind nothing on the
+// chain enforces refuses as at login (refuseUnenforced). Either refusal comes
+// before anything is satisfied, rotated or stored, so the session stays
+// pending under the credential the caller arrived with; the verified code is
+// not counted, being valid. With no engine on the chain the phase allows.
+func (i *mfaInterceptor) behindSecondFactor(ex *Exchange, s *session.Session) (policy.ChallengeKind, error) {
+	ph := ex.perRequest
+	if ph == nil {
+		return policy.ChallengeNone, nil
 	}
 
-	mgr := i.challenges[cm.Name()]
+	in := sessionLoginInput(ex.Authentication, s, i.now())
+	in.MFASatisfied = true
 
-	checked, err := mgr.Check(ctx, presented, s.ID)
-	if err != nil {
-		return mfa.ErrInvalidCode
+	ctx := ex.Context()
+	d := judgeBehindSecondFactor(ctx, ph.engine, in, evaluatePhase(ctx, ph.engine, policy.PostAuthentication, in))
+
+	switch d.Outcome {
+	case policy.Deny:
+		return policy.ChallengeNone, policyDenyReason(d)
+	case policy.Challenge:
+		if err := refuseUnenforced(ph.enforced, d.Challenge); err != nil {
+			return policy.ChallengeNone, err
+		}
+
+		return d.Challenge, nil
+	case policy.Allow:
 	}
 
-	if err := mgr.Consume(ctx, checked); err != nil {
-		return mfa.ErrInvalidCode
-	}
-
-	return nil
+	return policy.ChallengeNone, nil
 }
 
 // admit makes the refusals the verify and begin endpoints share, steps 1 to 4
@@ -372,6 +391,10 @@ func (i *mfaInterceptor) admit(
 		return nil, nil, ErrAuthenticationRequired
 	}
 
+	if err := requirePending(s); err != nil {
+		return nil, nil, err
+	}
+
 	name, ok := methodSegment(ex.Request.Path(), prefix)
 	method, known := i.byName[name]
 	if !ok || !known || !serves(method) {
@@ -383,6 +406,22 @@ func (i *mfaInterceptor) admit(
 	}
 
 	return s, method, nil
+}
+
+// requirePending refuses a session that owes no second factor with
+// ErrNoMFAChallengePending: one already satisfied, or one no challenge was ever
+// raised on, such as the session of a user enrolled after signing in. Both
+// endpoints serve only a pending session, so neither can move a signed-in
+// session through the second factor again, and a session's authentication time
+// is never refreshed by a code. Proving a signed-in session afresh is
+// re-authentication's business. The refusal reads nothing, counts nothing and
+// issues nothing.
+func requirePending(s *session.Session) error {
+	if s.MFA != session.MFAPending {
+		return ErrNoMFAChallengePending
+	}
+
+	return nil
 }
 
 // anyMethod is what the verify endpoint serves: every configured method.
@@ -415,74 +454,113 @@ func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *sessi
 
 // resolve records the second factor and moves the session to a new handle.
 //
-// The state is set before the rotation, because Rotate writes the session as it
-// stands: setting the fields afterwards would persist a challenge that is still
-// pending under the new handle. For a session that came through the enrolment
-// path, its deadlines are restored before the rotation for the same reason, so
-// the new handle carries the deadline a login would have had rather than the
-// enrolment-only one.
+// The state is set before the rotation, because the rotation writes the
+// session as it stands: setting the fields afterwards would persist a
+// challenge that is still pending under the new handle. For a session that
+// came through the enrolment path, its deadlines are restored before the
+// rotation for the same reason, so the new handle carries the deadline a login
+// would have had rather than the enrolment-only one.
 //
-// Everything set here is put back if the restore or the rotation fails, so the
-// caller is left exactly as they were found — challenge pending, deadlines and
-// enrolment marker as they were, handle unchanged — rather than in memory
-// upgraded and in the store not. A session already past its lowered deadline
-// is refused as one that has ended, and is not rotated: the restore is what
-// finds that, and a rotation after it would move an expired session to a fresh
-// handle.
+// All of it is set on a copy of s, never on s itself, so a refusal at any step
+// leaves the caller exactly as they were found — challenge pending, deadlines
+// and enrolment marker as they were, handle unchanged — with nothing to put
+// back, rather than in memory upgraded and in the store not. A session already
+// past its lowered deadline is refused as one that has ended, and is not
+// rotated: the restore is what finds that, and a rotation after it would move
+// an expired session to a fresh handle.
 //
 // The rotation itself is the point. A handle obtained before the second factor
 // must not still answer requests after it, which is session fixation with extra
 // steps, and it is why this endpoint answers the request rather than passing it
 // on: the handle the caller should now be using is not the one they sent.
 //
-// A failed rotation or token issue comes back behind fixed text, never the
-// store's or the generator's own, with their error still reachable through
-// errors.Is and errors.As; the session manager words its store's failures so,
-// and the generator's is wrapped here.
-func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
-	was := *s
-	rollback := func() {
-		s.MFA, s.MFASatisfiedAt, s.AuthenticatedAt = was.MFA, was.MFASatisfiedAt, was.AuthenticatedAt
-		s.AbsoluteExpiresAt, s.IdleExpiresAt = was.AbsoluteExpiresAt, was.IdleExpiresAt
-		s.EnrolmentOriginDeadline, s.EnrolmentGeneration = was.EnrolmentOriginDeadline, was.EnrolmentGeneration
-	}
+// The credential is issued against the successor's identifier inside the
+// rotation (session.Sessions.RotateIssuing), before anything is stored. A
+// signed token names its session through its jti, and a session reference is
+// the identifier itself, so it must name the successor; and issuing it before
+// the store is written means a credential that cannot be issued refuses the
+// verification with nothing stored or rotated, leaving the session pending
+// under the credential the caller arrived with, rather than signing them out.
+//
+// A failed rotation is refused as rotationRefusal words it: a lost race with a
+// concurrent verification, re-proof or renewal of the session, through this
+// server or any other sharing the session store, is ErrSessionRenewalConflict
+// (409) inside the winner's in-flight window. A failed rotation or token issue
+// comes back behind fixed text, never the store's or the generator's own, with
+// their error still reachable through errors.Is and errors.As; the session
+// manager words its store's failures so, and the generator's is wrapped by the
+// chain's credential issuer.
+//
+// raised is a challenge the post-authentication phase raised behind the second
+// factor (behindSecondFactor), policy.ChallengeNone for none, already checked
+// to be one the chain enforces. It is completed as a login completes one: the
+// second factor is satisfied and the session rotated as on success, the
+// challenge is marked on the copy the successor is built from, so it is
+// stored in the successor's creating write before the credential is issued,
+// and verification is refused with a *ChallengeError of that kind carrying the
+// rotated session and its credential, published on the exchange, rather than
+// answered through the responder.
+func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy.ChallengeKind) error {
+	satisfied := *s
 
-	s.MFA = session.MFASatisfied
+	satisfied.MFA = session.MFASatisfied
 	// Satisfying the second factor is an authentication, so it refreshes the
 	// time freshness checks read. The rotation below carries both into the
 	// successor's creating write.
-	s.MFASatisfiedAt = i.now()
-	s.AuthenticatedAt = s.MFASatisfiedAt
+	satisfied.MFASatisfiedAt = i.now()
+	satisfied.AuthenticatedAt = satisfied.MFASatisfiedAt
 
-	if err := i.sessions.RestoreEnrolmentDeadlines(s); err != nil {
-		rollback()
-
+	if err := i.sessions.RestoreEnrolmentDeadlines(&satisfied); err != nil {
 		// The session has ended, which to the caller is a session they no
 		// longer hold. The manager's own error stays reachable.
 		return errors.Join(ErrAuthenticationRequired, err)
 	}
 
-	rotated, err := i.sessions.Rotate(ex.Context(), s)
-	if err != nil {
-		rollback()
+	// A challenge the phase raised behind the second factor is marked before
+	// the rotation, on the copy the successor is built from, so the
+	// successor's creating write already carries it and the credential issued
+	// for the successor is never one for a session whose mark did not persist,
+	// as at login. A kind no gate reads marks nothing.
+	if raised != policy.ChallengeNone {
+		marker := challengeMarker{sessions: i.sessions}
+		if ex.perRequest != nil {
+			marker.enrolmentLifetime = ex.perRequest.enrolmentLifetime
+		}
 
+		marker.mark(&satisfied, raised)
+	}
+
+	ctx := ex.Context()
+	principal := ex.Authentication.Principal
+
+	// issueErr keeps the issuer's failure apart from the rotation's, so it is
+	// returned as the issuer worded it and never read as a session sentinel.
+	var issueErr error
+
+	rotated, tok, err := i.sessions.RotateIssuing(ctx, &satisfied, func(successor *session.Session) (string, error) {
+		tok, err := i.issue(ctx, successor, principal)
+		issueErr = err
+
+		return tok, err
+	})
+	if issueErr != nil {
+		return issueErr
+	}
+	if err != nil {
 		return rotationRefusal(err)
 	}
 
 	// Published on the exchange and on the context, so a consumer's error
 	// handling and their responder read the handle the caller is to present
-	// from now on rather than the one that has just been deleted.
+	// from now on rather than the one the rotation has just superseded.
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
 
-	// Issued after the rotation, against the new identifier. A signed token
-	// names its session through its jti, and a session reference is the
-	// identifier itself, so a credential issued before the rotation would name
-	// the session that is about to be deleted — which is exactly how
-	// completing a second factor came to sign a caller out.
-	tok, err := i.issue(ex.Context(), rotated, ex.Authentication.Principal)
-	if err != nil {
-		return err
+	// A challenge is answered as a login answers one: refused with it,
+	// carrying the rotated session and its credential for the consumer's
+	// prompt, and never through the success responder.
+	if raised != policy.ChallengeNone {
+		return &ChallengeError{Kind: raised, Session: rotated, Token: tok}
 	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated})
@@ -490,13 +568,19 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 
 // rotationRefusal is what a failed strict rotation is refused with at the
 // endpoint. A session a concurrent renewal superseded inside its window is a
-// lost race, refused with ErrSessionRenewalConflict (409) so the client
-// retries with the credential it now holds. One presented after the window
-// has ended, as reuse or as needing renewal, and one that has vanished from
-// the store since the endpoint loaded it (its family revoked meanwhile), are
-// sessions the caller no longer holds, refused with ErrAuthenticationRequired
-// (401); the manager's error stays reachable, so reuse remains identifiable.
-// Anything else, a store failure, comes back as the manager worded it.
+// lost race, and so is one a concurrent strict rotation rotated away first
+// (two valid codes, or two re-proofs, from one session at once), through this
+// server or any other manager sharing the session store: the store keeps the
+// rotated row, marked, for the winner's in-flight window, so the loser finds
+// the evidence wherever it runs. Both are refused with
+// ErrSessionRenewalConflict (409) so the client carries on with the credential
+// the winner was handed. One presented after the window has ended, as reuse or
+// as needing renewal, and one that has vanished from the store since the
+// endpoint loaded it (its family revoked meanwhile, or its rotated row swept
+// after the window), are sessions the caller no longer holds, refused with
+// ErrAuthenticationRequired (401); the manager's error stays reachable, so
+// reuse remains identifiable. Anything else, a store failure, comes back as
+// the manager worded it.
 func rotationRefusal(err error) error {
 	switch {
 	case errors.Is(err, session.ErrRenewalConflict):
@@ -805,10 +889,13 @@ func (i *mfaInterceptor) list(ex *Exchange) error {
 	return i.listing.respond(ex, methods)
 }
 
-// methodListingDocument is the default listing's body. Its member names are
-// the documented contract of the endpoint.
+// methodListingDocument is the default body of both method listings, the MFA
+// slot's and re-authentication's. Its member names are the documented
+// contract of the endpoints. Password is re-authentication's own member: nil,
+// and so absent, in the MFA listing.
 type methodListingDocument struct {
-	Methods []methodListingEntry `json:"methods"`
+	Methods  []methodListingEntry `json:"methods"`
+	Password *bool                `json:"password,omitempty"`
 }
 
 type methodListingEntry struct {
@@ -818,9 +905,20 @@ type methodListingEntry struct {
 }
 
 // writeMethodListing is the listing's response when the consumer supplies no
-// responder: 200, the methods as JSON, an empty list as [] rather than null.
+// responder: 200, the methods as JSON, {"methods":[{"name":…,"channel":…,
+// "begins":…}]}, written by writeMethodsDocument.
 func writeMethodListing(ex *Exchange, methods []MFAMethod) error {
-	doc := methodListingDocument{Methods: make([]methodListingEntry, 0, len(methods))}
+	return writeMethodsDocument(ex, methods, nil)
+}
+
+// writeMethodsDocument is the one writer of a default method listing, shared
+// by the MFA listing and the re-authentication listing so the two cannot
+// drift: 200 and a JSON document of methods, an empty list as [] rather than
+// null, marked Cache-Control: no-store because it describes the user's
+// factors. password is the re-authentication listing's extra member, written
+// when it is non-nil and left out when it is nil.
+func writeMethodsDocument(ex *Exchange, methods []MFAMethod, password *bool) error {
+	doc := methodListingDocument{Methods: make([]methodListingEntry, 0, len(methods)), Password: password}
 	for _, m := range methods {
 		doc.Methods = append(doc.Methods, methodListingEntry{
 			Name:    m.Name,

@@ -2542,6 +2542,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: d.tokens, Sessions: d.sessions, Users: d.users}),
 		httpsec.EnableMFA([]mfa.Method{d.totp, method}, httpsec.WithMFATokens(d.tokens)),
 		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: d.sessions}),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 		httpsec.EnableRecoveryGateForTest(),
 	)

@@ -448,7 +448,7 @@ func TestSupersede(t *testing.T) {
 	supersedeOld := func(m *MockSessionTx[handle], q handle, op session.Supersession) *MockSessionTxExecCall[handle] {
 		return m.EXPECT().Exec(gomock.Any(), q, pgschema.SessionSupersedeOld,
 			old, storekit.OptionalDigestArg(op.ObservedSuccessor), storekit.Time(op.Now),
-			storekit.Time(op.AcceptUntil), next, retain)
+			storekit.Time(op.AcceptUntil), next, retain, op.Strict)
 	}
 	supersedePrevious := func(m *MockSessionTx[handle], q handle, op session.Supersession) *MockSessionTxExecCall[handle] {
 		return m.EXPECT().Exec(gomock.Any(), q, pgschema.SessionSupersedePrevious,
@@ -491,7 +491,7 @@ func TestSupersede(t *testing.T) {
 					owned(m),
 					m.EXPECT().Exec(gomock.Any(), q, pgschema.SessionLockSupersession, old, nil).Return(1, nil),
 					m.EXPECT().Exec(gomock.Any(), q, pgschema.SessionSupersedeOld, old, nil,
-						storekit.Time(op.Now), storekit.Time(op.AcceptUntil), next, retain).Return(1, nil),
+						storekit.Time(op.Now), storekit.Time(op.AcceptUntil), next, retain, op.Strict).Return(1, nil),
 					m.EXPECT().InsertSuccessor(gomock.Any(), q).Return(true, nil),
 					m.EXPECT().Commit(gomock.Any()).Return(nil),
 					m.EXPECT().Rollback(gomock.Any()),

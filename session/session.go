@@ -116,20 +116,23 @@ type Session struct {
 	// recorded and not something a consumer key can claim.
 	MFASatisfiedAt time.Time
 
-	// AuthenticatedAt is when the user last proved who they are, read from
-	// the manager's clock: the time the authentication occurred, as the
-	// OpenID Connect auth_time claim means it. Sessions.Create sets it to
-	// CreatedAt, before the create options run, so a CreateOption may still
-	// set another time; it is refreshed when a second factor is satisfied.
-	// No renewal moves it: RotateWithGrace carries the stored value over,
-	// and Rotate writes the value from the session it is given, which is how
-	// second-factor verification records its refresh. Either way a
-	// successor's CreatedAt is its renewal time while its AuthenticatedAt
-	// stays the sign-in's, unless the caller refreshed it. Every freshness check that asks
-	// how recently the user authenticated reads this field alone, never
-	// CreatedAt. Library-owned: Save keeps the stored value, so changing it
-	// here and saving changes nothing, and a consumer cannot set it through
-	// Data.
+	// AuthenticatedAt is when the user last proved who they are: the time the
+	// authentication occurred, as the OpenID Connect auth_time claim means
+	// it. Sessions.Create sets it to CreatedAt, read from the manager's clock,
+	// before the create options run, so a CreateOption may still
+	// set another time. It is refreshed when a second factor is satisfied,
+	// and when a signed-in session re-authenticates (a re-proof of a second
+	// factor or of the password), each time from the clock of the endpoint
+	// that records it. No renewal moves it: RotateWithGrace carries the
+	// stored value over, and Rotate writes the value from the session it is
+	// given, which is how second-factor verification and re-authentication
+	// record their refresh. Either way a successor's CreatedAt is its
+	// renewal time while its AuthenticatedAt stays the last authentication's,
+	// unless the caller refreshed it. Every freshness check that asks how
+	// recently the user authenticated reads this field alone, never
+	// CreatedAt, through AuthenticatedWithin. Library-owned: Save keeps the
+	// stored value, so changing it here and saving changes nothing, and a
+	// consumer cannot set it through Data.
 	AuthenticatedAt time.Time
 
 	// MFAAtFirstFactor marks that the second factor was met at the first
@@ -226,6 +229,15 @@ type Session struct {
 	// its RetainUntil as given. Library-owned.
 	RetainUntil time.Time
 
+	// RotatedStrictly reports that this session was superseded by a rotation
+	// without grace (Supersession.Strict), and is false for a session never
+	// superseded and for one superseded with a grace window. A store returns
+	// it with the rest of the supersession state until RetainUntil passes.
+	// Only Store.Supersede sets it: Create stores a session unmarked, a
+	// successor inside Supersede included, and Save keeps the stored value
+	// whatever the session handed to it says. Library-owned.
+	RotatedStrictly bool
+
 	// FirstPresentedAt is when the session was first loaded successfully,
 	// and is zero until then. Only Store.MarkPresented sets it, and only
 	// once. Library-owned.
@@ -267,6 +279,35 @@ type Session struct {
 	// "returned unchanged" has to survive a durable store, where a number
 	// comes back a float and "0042" comes back 42.
 	Data map[string]string
+}
+
+// AuthenticatedWithin reports whether s authenticated no longer than window
+// before now, reading AuthenticatedAt: the session's authentication time
+// (sign-in, satisfied second factor or re-authentication). It is the function
+// AuthenticatedWithin applied to that time, so a session and a bare
+// authentication time are judged by the same rule.
+//
+// The window's end is inclusive: a session that authenticated exactly window
+// before now is within it. An authentication time later than now, as when
+// replicas' clocks disagree, counts as no time elapsed, so it is within the
+// window. A zero AuthenticatedAt, a session with no
+// recorded authentication, is never within any window.
+func (s *Session) AuthenticatedWithin(now time.Time, window time.Duration) bool {
+	return AuthenticatedWithin(s.AuthenticatedAt, now, window)
+}
+
+// AuthenticatedWithin reports whether an authentication at at happened no
+// longer than window before now. It is the one freshness check the library
+// makes: the method of the same name on Session delegates to it, and a judge
+// holding only an authentication time, such as one a consumer's own time
+// source supplies, calls it without building a session.
+//
+// The window's end is inclusive: an authentication exactly window before now
+// is within it. A time later than now, as when replicas' clocks disagree,
+// counts as no time elapsed, so it is within the window. A zero at, no
+// recorded authentication, is never within any window.
+func AuthenticatedWithin(at, now time.Time, window time.Duration) bool {
+	return !at.IsZero() && now.Sub(at) <= window
 }
 
 // clone returns a session sharing no map or slice with s, so neither side can reach the

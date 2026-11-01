@@ -184,6 +184,7 @@ var securityStateColumns = map[string][]column{
 		optional("first_presented_at", colTimestamptz),
 		optional("retain_until", colTimestamptz),
 		defaulted("authenticated_at", colTimestamptz, "now()"),
+		defaulted("rotated_strictly", colBoolean, "false"),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -674,7 +675,7 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 
 // securityStateMigrationCount is how many migration files the security-state
 // set holds.
-const securityStateMigrationCount = 2
+const securityStateMigrationCount = 3
 
 // Versions of the security-state migrations the family tests address.
 const (
@@ -718,7 +719,7 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 		{
 			name: "adds the family columns and index",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.Up(t.Context())
+				_, err := p.UpTo(t.Context(), versionSessionFamilies)
 				require.NoError(t, err)
 
 				got := sessionColumnsAndIndexes(t, db)
@@ -755,7 +756,7 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 					require.NoError(t, err)
 				}
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionFamilies)
 				require.NoError(t, err)
 
 				rows, err := db.QueryContext(t.Context(),
@@ -786,7 +787,7 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 		{
 			name: "an older writer's insert succeeds",
 			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
-				_, err := p.Up(t.Context())
+				_, err := p.UpTo(t.Context(), versionSessionFamilies)
 				require.NoError(t, err)
 
 				// Names neither family column nor authenticated_at.
@@ -817,7 +818,7 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 					signedIn, signedIn.Add(time.Hour), second)
 				require.NoError(t, err)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionFamilies)
 				require.NoError(t, err)
 
 				for id, want := range map[string]time.Time{
@@ -845,7 +846,7 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 					VALUES ('0192f000-0000-7000-8000-0000000000f1', '\x01', 'u', now(), now(), now(), now())`)
 				require.NoError(t, err)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionFamilies)
 				require.NoError(t, err)
 
 				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col retain_until timestamp with time zone NULL",
@@ -871,7 +872,7 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 				require.NoError(t, err)
 				before := sessionColumnsAndIndexes(t, db)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionFamilies)
 				require.NoError(t, err)
 				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db),
 					"the family migration changed the sessions table")
@@ -881,6 +882,101 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 
 				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
 				assert.Equal(t, 1, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, p := freshSecurityState(t, set)
+			tc.run(t, db, p)
+		})
+	}
+}
+
+// TestSecurityStateMigrations_SessionStrictRotation pins the strict-rotation
+// migration: a boolean mark that defaults to false, rows from before it read
+// back unmarked, a writer from before it still inserts, and a rollback
+// restores the previous columns and indexes.
+func TestSecurityStateMigrations_SessionStrictRotation(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	type testCase struct {
+		name string
+		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
+	}
+
+	const oldInsert = `INSERT INTO sessions
+		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+		VALUES ($1, $2, 'u', now(), now(), now(), now())`
+
+	cases := []testCase{
+		{
+			name: "adds the mark as a not-null boolean defaulting to false",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col rotated_strictly boolean NOT NULL DEFAULT false")
+			},
+		},
+		{
+			name: "a superseded row from before the migration reads unmarked",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSessionFamilies)
+				require.NoError(t, err)
+
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
+					 superseded_at, accept_until, retain_until)
+					VALUES ('0192f000-0000-7000-8000-0000000000b1', '\x01', 'u', now(), now(), now(), now(),
+					        now(), now(), now())`)
+				require.NoError(t, err)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				var marked bool
+				require.NoError(t, db.QueryRowContext(t.Context(),
+					`SELECT rotated_strictly FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000b1'`).Scan(&marked))
+				assert.False(t, marked, "a rotation from before the mark was not strict")
+			},
+		},
+		{
+			name: "an older writer's insert succeeds and is unmarked",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				_, err = db.ExecContext(t.Context(), oldInsert, "0192f000-0000-7000-8000-0000000000b2", []byte{0x02})
+				require.NoError(t, err)
+
+				var marked bool
+				require.NoError(t, db.QueryRowContext(t.Context(),
+					`SELECT rotated_strictly FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000b2'`).Scan(&marked))
+				assert.False(t, marked)
+			},
+		},
+		{
+			name: "rollback restores the previous columns and indexes",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSessionFamilies)
+				require.NoError(t, err)
+				before := sessionColumnsAndIndexes(t, db)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db), "the migration changed the sessions table")
+
+				_, err = p.Down(t.Context())
+				require.NoError(t, err)
+
+				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
+				assert.Equal(t, 2, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
 			},
 		},
 	}
@@ -1265,22 +1361,15 @@ func TestGooseDirect(t *testing.T) {
 	assert.Equal(t, 0, appliedVersionCount(t, db, versionTable))
 }
 
-// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
-// written before the session-families migration looks like through each
-// durable store once the migration has run: a family of its own, created when
-// it was, and no retention deadline. The schema cases above read the columns;
-// this one reads the rows as a consumer's code does, through the stores.
-func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
-	t.Parallel()
+// sessionStoreOpener is one durable session store, opened over the
+// connection a test migrated; sessionStoreOpeners lists them.
+type sessionStoreOpener struct {
+	name string
+	open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
+}
 
-	set := migrate.SecurityState()
-
-	type testCase struct {
-		name string
-		open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
-	}
-
-	cases := []testCase{
+func sessionStoreOpeners() []sessionStoreOpener {
+	return []sessionStoreOpener{
 		{
 			name: "sqlstore",
 			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
@@ -1316,6 +1405,74 @@ func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
 			},
 		},
 	}
+}
+
+// A row written before the strict-rotation mark existed, superseded or not,
+// reads back through each store as not marked: a rotation from before the
+// mark was not strict.
+func TestSecurityStateMigrations_StrictMarkReadsBackUnmarked(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	for _, tc := range sessionStoreOpeners() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := RunTestPostgres(t)
+			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
+			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
+
+			_, err := p.UpTo(t.Context(), versionSessionFamilies)
+			require.NoError(t, err)
+
+			const (
+				supersededID   = "a-superseded-session-from-before-the-mark"
+				unsupersededID = "a-live-session-from-before-the-mark"
+			)
+			supersededDigest := sha256.Sum256([]byte(supersededID))
+			unsupersededDigest := sha256.Sum256([]byte(unsupersededID))
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
+				 superseded_at, accept_until, retain_until)
+				VALUES ('0192f000-0000-7000-8000-0000000000c1', $1, 'u', '2026-09-01', '2026-09-01',
+				        '2099-01-01', '2099-01-01', '2026-09-01', '2026-09-01', '2099-01-01')`,
+				supersededDigest[:])
+			require.NoError(t, err)
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+				VALUES ('0192f000-0000-7000-8000-0000000000c2', $1, 'u', '2026-09-01', '2026-09-01',
+				        '2099-01-01', '2099-01-01')`, unsupersededDigest[:])
+			require.NoError(t, err)
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+
+			store := tc.open(t, conn, storefix.TestCipher(t))
+
+			superseded, err := store.Load(t.Context(), supersededID)
+			require.NoError(t, err)
+			assert.False(t, superseded.SupersededAt.IsZero(), "the row is superseded")
+			assert.False(t, superseded.RotatedStrictly, "a rotation from before the mark was not strict")
+
+			live, err := store.Load(t.Context(), unsupersededID)
+			require.NoError(t, err)
+			assert.False(t, live.RotatedStrictly)
+		})
+	}
+}
+
+// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
+// written before the session-families migration looks like through each
+// durable store once the migration has run: a family of its own, created when
+// it was, and no retention deadline. The schema cases above read the columns;
+// this one reads the rows as a consumer's code does, through the stores.
+func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	cases := sessionStoreOpeners()
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

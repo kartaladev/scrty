@@ -210,16 +210,20 @@ type RecoveryOption func(*recoveryInterceptor) error
 //     recoveries as soon as its first factor has authenticated, before the
 //     policy phase and before its session is created, so a login the policy
 //     then denies has still cancelled them; a cancellation the record store
-//     cannot record refuses the login;
+//     cannot record refuses the login. A password re-authentication
+//     (EnableReauthentication) cancels them the same way, after the password
+//     verifies;
 //   - the saved-code endpoints answer on DefaultRecoveryCodesPath
 //     (WithRecoveryCodesPath), served by the recovery gate for a full session
 //     only, and exist only when the core enables recovery.ProofSaved;
 //     otherwise their path reaches the application like any other. A POST
 //     regenerates the set through recovery.Recoverer.Regenerate, which
-//     notifies the user, when the session's latest authentication — the
-//     later of its creation and its second factor's satisfaction — is within
+//     notifies the user, when the session's authentication time (sign-in,
+//     satisfied second factor or re-authentication) is within
 //     15 minutes (WithRecoveryRegenerationFreshness), and is refused with
-//     recovery.ErrReauthenticationRequired (403) otherwise; it answers 200
+//     recovery.ErrReauthenticationRequired (403) otherwise, and a stale
+//     session is refreshed by a re-proof (EnableReauthentication) or, on a
+//     chain without it, only by signing in again; it answers 200
 //     with {"recovery_codes":[…]} and Cache-Control: no-store
 //     (WithRecoveryCodesResponder). A GET answers 200 with
 //     {"remaining":n,"low":bool} and never a code

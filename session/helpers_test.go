@@ -81,14 +81,12 @@ func liveUnpresented(id string) *session.Session { return familyOf(id, graceFami
 // errStoreWrite stands in for a store that cannot take the new entry.
 var errStoreWrite = errors.New("store refused the write")
 
-// inFlightStore stands between a strict rotation's two writes: once armed,
-// the first Supersede signals and waits on afterSupersede after it has
-// written, and failDelete refuses every Delete, the rotation's last write.
+// inFlightStore holds a strict rotation after its one write: once armed, the
+// first Supersede signals and waits on afterSupersede after it has written.
 type inFlightStore struct {
 	*session.MemoryStore
 
 	afterSupersede *gate
-	failDelete     bool
 }
 
 func (s *inFlightStore) Supersede(ctx context.Context, op session.Supersession) error {
@@ -98,14 +96,6 @@ func (s *inFlightStore) Supersede(ctx context.Context, op session.Supersession) 
 	}
 
 	return err
-}
-
-func (s *inFlightStore) Delete(ctx context.Context, id string) error {
-	if s.failDelete {
-		return errStoreWrite
-	}
-
-	return s.MemoryStore.Delete(ctx, id)
 }
 
 // failFirstMarkStore fails the first MarkPresented of one identifier, as a

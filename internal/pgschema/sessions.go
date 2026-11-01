@@ -40,7 +40,8 @@ ON CONFLICT (id_digest) DO NOTHING`
 	// the supersession and the first presentation write them, so no later save
 	// can undo them. On a superseded row (superseded_at set) it also leaves
 	// both of the row's own deadlines as they were when it was superseded, so a
-	// copy loaded before the supersession can change neither. Zero rows
+	// copy loaded before the supersession can change neither. A row marked
+	// rotated_strictly is not updated at all: Load reports it gone. Zero rows
 	// affected means there is no longer a session to update.
 	SessionUpdate = `UPDATE sessions SET user_id = $2, created_at = $3, last_accessed_at = $4,
   idle_expires_at = CASE WHEN superseded_at IS NULL THEN $5 ELSE idle_expires_at END,
@@ -50,9 +51,10 @@ ON CONFLICT (id_digest) DO NOTHING`
   external_issuer = $12, external_session_id = $13, external_id_token = $14, data = $15,
   enrolment_origin_deadline = $16, enrolment_generation = $17, recovered_at = $18,
   federated_amr = $19, federated_acr = $20
-WHERE id_digest = $1`
+WHERE id_digest = $1 AND NOT rotated_strictly`
 
-	// SessionSelect reads the session with digest $1. Expiry is judged by the
+	// SessionSelect reads the session with digest $1, rotated_strictly (the
+	// strict-rotation mark) last. Expiry is judged by the
 	// caller, with its clock, by the condition sessionLoadable states: a
 	// stored row that is not loadable is an expired session, not a missing
 	// one.
@@ -62,7 +64,7 @@ WHERE id_digest = $1`
   enrolment_origin_deadline, enrolment_generation, recovered_at,
   mfa_at_first_factor, federated_amr, federated_acr, family_id, family_created_at,
   superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at,
-  retain_until
+  retain_until, rotated_strictly
 FROM sessions WHERE id_digest = $1`
 
 	// SessionSuccessorPresented reads, in one row, whether the current
@@ -106,7 +108,9 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// SessionSupersedeOld marks the session with digest $1 superseded at $3,
 	// with its window ending at $4 and $5 as its successor's digest, and keeps
 	// it for reuse detection until the later of its stored retention deadline
-	// and $6 (NULL for none), never lowering it. It leaves both of the row's
+	// and $6 (NULL for none), never lowering it. It records $7 as the
+	// strict-rotation mark, replacing any earlier one: the mark describes the
+	// latest supersession of the row. It leaves both of the row's
 	// own deadlines alone. It does so provided it is in a family, its stored
 	// successor digest is still $2 (NULL for none), and, when $2 is NULL, it
 	// is not superseded already: a superseded session is superseded again
@@ -118,7 +122,7 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// supersessions: a second one waits on the row locks the first took, in
 	// SessionLockSupersession, and then finds the successor changed.
 	SessionSupersedeOld = `UPDATE sessions SET superseded_at = $3, accept_until = $4, successor_digest = $5,
-  retain_until = GREATEST(COALESCE(retain_until, $6), $6)
+  retain_until = GREATEST(COALESCE(retain_until, $6), $6), rotated_strictly = $7
 WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
   AND ($2::bytea IS NOT NULL OR superseded_at IS NULL)
   AND family_id <> '00000000-0000-0000-0000-000000000000'`

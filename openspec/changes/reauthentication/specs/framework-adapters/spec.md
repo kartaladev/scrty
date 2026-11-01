@@ -28,3 +28,7 @@ The gin and fiber guards SHALL offer the recency guard with the same default win
 #### Scenario: gin per-route window of zero
 - **WHEN** a gin route's recency guard is built with a window of zero
 - **THEN** building it fails at wiring with a message naming the window
+
+#### Scenario: One wiring mistake, one error on every adapter
+- **WHEN** guards are built on net/http, gin and fiber with a recency window of zero and no authorizer
+- **THEN** each adapter refuses construction naming the recency window, not the missing authorizer

@@ -299,7 +299,20 @@ chain, err := httpsec.New(
 4. **Verify** (`POST /mfa/verify/<name>`, e.g. `/mfa/verify/totp`, `httpsec.EnableMFA`'s own
    endpoint) resolves the session's pending second-factor challenge with a fresh code, exactly as
    it would for an enrolment made out of band. Only this step marks the session satisfied and
-   rotates its handle.
+   rotates its handle. After a valid code, verification judges the post-authentication phase again
+   with the second factor counted as met, because a challenge registered after the second-factor
+   policy was hidden behind it at login. A deny refuses verification with the policy's reason and
+   leaves the session pending, under the credential the caller arrived with. A challenge that
+   surfaces (a password change, say) is completed as a login completes one: the session is satisfied,
+   rotated and marked with it, and verification answers with a `*httpsec.ChallengeError` of that kind
+   carrying the rotated session and its credential, instead of calling the responder. The caller's
+   old credential is superseded, so the consumer's error handler must deliver `ce.Token`; the default
+   handler writes only the status, so a chain without `WithErrorHandler` leaves the caller without a
+   working credential, as at a login challenge. The same
+   line as at re-authentication holds: a consumer policy that raises `policy.ChallengeMFA` without
+   reading `policy.Input.MFASatisfied` hides whatever is registered after it. The begin endpoint
+   (`POST /mfa/begin/<name>`) and verification both refuse a caller other than the session's own
+   user, which only a consumer's interceptor can publish, before anything is counted or issued.
 
 Every other request a confined session makes — the password-change endpoint, a consumer route,
 the authorizer, the handler — is refused with the enrolment challenge until verification succeeds;
@@ -442,16 +455,20 @@ proved they kept it.
 - **No waiting period by default.** A recovery that presents its two proofs completes at once.
   `recovery.WithHoldDelay` holds every recovery for a fixed time before it can complete, and
   `recovery.WithCancelLink` is required with any hold — a delay or `recovery.WithRisk`'s hook: the
-  held-recovery notice links to it, so a normal login, or the link itself, cancels a recovery the
-  real user did not make.
+  held-recovery notice links to it, so a normal login, a password re-authentication, or the link
+  itself, cancels a recovery the real user did not make.
 - **A cool-down after recovery.** `httpsec.EnableRecoveryCooldown(records, d, routes...)` refuses
   the routes a consumer marks as sensitive — changing the account's email address, say — for `d`
   after the user's latest completed recovery. It is per user, not per session, so logging out and
   back in does not end it, and it is independent of `EnableAccountRecovery`: it only reads the
   record store.
 - **Regeneration.** `GET`/`POST /recovery/codes` count and regenerate a user's saved codes for a
-  full session. A `POST` needs a session whose latest authentication is within the freshness window
-  and is refused with `recovery.ErrReauthenticationRequired` (403) otherwise.
+  full session. A `POST` needs a session whose authentication time (sign-in, satisfied second
+  factor or re-authentication) is within the freshness window, its end included, and is refused
+  with `recovery.ErrReauthenticationRequired` (403) otherwise. A stale session becomes fresh by a
+  re-proof (`httpsec.EnableReauthentication`) or by signing in again; on a chain with the MFA slot
+  and without re-authentication, signing in again is the only way, so a stale session regenerates
+  its codes only after signing in again.
 
 ### Defaults
 
@@ -539,12 +556,13 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
 | Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
-| Freshness to register or remove a passkey | latest authentication within 15 minutes | `passkey.WithManagementFreshness` |
-| Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session steps up through the passkey method; a passkey-first session cannot (same channel) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
+| Freshness to register or remove a passkey | the session's authentication time (sign-in, satisfied second factor or re-authentication) within 15 minutes, the end included | `passkey.WithManagementFreshness` |
+| Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session that owes a challenge steps up through the passkey method at `/mfa/verify`; a passkey-first session cannot meet the second factor through it (same channel; a re-proof at `/reauth` with the passkey refreshes freshness only) and signs in again with user verification, by password then the passkey step-up, or by a re-proof at `/reauth` with a second factor on another channel. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys until it meets the second factor on another channel; a user whose only second factor is the passkey cannot. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
 | User verification | required | `passkey.WithUserVerification` |
 | Resident (discoverable) key | required; a non-resident passkey serves only as a second factor | `passkey.WithResidentKey` |
 | Emailed confirmation code | 6 digits, valid 10 minutes, 5 attempts | not configurable: the store contract fixes the attempts (`passkey.MaxEmailCodeAttempts`) |
 | Request body caps | 64 KiB registration (`passkey.RegistrationBodyLimit`), 16 KiB assertion (`passkey.AssertionBodyLimit`) | not configurable |
+| A consumer challenge kind raised on a passkey request (`WithChallengeEnforcer`) | refused with a `ChallengeError` of that kind on every passkey registration and management endpoint | `httpsec.WithPasskeyRegistrationResolving(kinds...)`: the four registration endpoints serve the named kinds under every other rule, nothing is marked, and listing, rename and removal still refuse them; no kinds, `ChallengeNone`, a built-in kind or an undeclared kind is `ErrConfig` at `New` |
 | Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
 | Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
 | Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
@@ -655,6 +673,9 @@ chain, err := httpsec.New(
 		httpsec.PasskeyDeps{Passkeys: manager, Sessions: sessions, Users: users},
 		httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(tokens)),
 	),
+	// Required beside EnableMFA and EnablePasskeys: the step-up a session uses
+	// before it manages passkeys.
+	httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(tokens)),
 )
 ```
 
@@ -665,6 +686,12 @@ chain, err := httpsec.New(
   tied together by an `HttpOnly`, `Secure`, `SameSite=Strict` ceremony cookie, and signs a user in
   with a discoverable passkey alone. `PasswordlessTokens` names the token generator, and may be
   left out when the chain has form login to take one from.
+- A consumer challenge kind raised on the request (declared with `httpsec.WithChallengeEnforcer`)
+  is refused with a `ChallengeError` of that kind on every registration and management endpoint,
+  because the gate enforcing it is yours and may sit after the passkey slot. A gate that lets
+  registration through so that the binding resolves its kind names the kind in
+  `httpsec.WithPasskeyRegistrationResolving(kinds...)`; the four registration endpoints then serve it,
+  and listing, rename and removal still refuse it. See the defaults table below.
 - The passkey is a second-factor method named `passkey`, beside TOTP: `EnableMFA` serves it at
   `/mfa/begin/passkey` and `/mfa/verify/passkey`. A user-verified passkey login already meets the
   second factor, so it is not asked again.
@@ -708,6 +735,187 @@ passkeys, which carry no attestation. `webauthn.MetadataBlob` takes a BLOB you f
   only while it is active.
 - **Counters are judged by the store's write.** Authenticators that always report zero, as synced
   passkeys do, are never treated as clones.
+
+## Per-route guards
+
+`httpsec.NewGuards` builds the guards a consumer puts in front of one net/http route, on top of
+the chain's rules. Every guard fails closed: a request with no caller is refused 401, one with no
+authorizer 403, and only then is the guard's own question asked.
+
+### Recent authentication
+
+`RequireRecentAuthentication()` lets a route run only when the caller proved their identity
+recently: the session's authentication time (sign-in, satisfied second factor or
+re-authentication) is within the window, its end included. `RequireAuthenticationWithin(d)` sets
+the window for one route. A stale session, a session with no recorded authentication time, and a
+caller with no session at all (an API key, Basic) are refused with a
+`*httpsec.ReauthenticationRequiredError` (403, `httpsec.ErrReauthenticationRequired`) that carries
+the window, so an error handler can tell the client how recent a proof it needs.
+
+- **The window is fixed.** Calling the route does not extend it, nor does a session renewal; only
+  an authentication moves the time.
+- **Stack it inside the privilege guards**, `privileged(recent(route))`, so a caller who may not
+  act at all is told access denied rather than sent to re-authenticate.
+- **Use the chain's clock.** A consumer who sets `httpsec.WithClock` passes the same clock to
+  `httpsec.WithGuardClock`.
+- **A window longer than the session's absolute lifetime is never reached**: the session ends
+  first.
+
+```go
+guards, err := httpsec.NewGuards(nil, httpsec.WithChainAuthorizer())
+if err != nil {
+	return err
+}
+
+privileged := guards.ResourcePrivileges("projects", "project").RequireAny("delete")
+mux.Handle("DELETE /projects/{id}", privileged(guards.RequireRecentAuthentication()(deleteProject)))
+```
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Recency window | 15 minutes (`httpsec.DefaultRecentAuthenticationWindow`) | `httpsec.WithRecentAuthenticationWindow`, per route `RequireAuthenticationWithin` |
+| Guard clock | system clock | `httpsec.WithGuardClock` |
+| Authentication time | the request's session | `httpsec.WithAuthenticationTime` |
+| Refusal response | the refusal's status, no body | `httpsec.WithGuardErrorHandler` |
+
+## Re-authentication
+
+`httpsec.EnableReauthentication()` lets a signed-in session prove its user again, so a stale session
+becomes fresh for the recency guard without signing in again. It is off by default; without it a
+stale user signs in again. It has no factor of its own: second factors are the MFA slot's
+(`httpsec.EnableMFA`), under its per-user verification throttle, and the password is form login's
+(`httpsec.EnableFormLogin`), under the account lockout and the password-login source guard. At
+least one of the two must be enabled. A re-proof challenge store (`httpsec.WithReauthenticationChallengeStore`)
+on a chain without the MFA slot is a configuration error from `httpsec.New`, since nothing there issues
+re-proof challenges; a slot of TOTP alone accepts one.
+
+```go
+chain, err := httpsec.New(
+	httpsec.EnableBearerToken(bearerDeps),
+	httpsec.EnableFormLogin(loginDeps),
+	httpsec.EnableMFA([]mfa.Method{totp}, httpsec.WithMFATokens(tokens)),
+	httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(tokens)),
+)
+```
+
+### Endpoints
+
+Only a full session is served: a resolved caller, no pending challenge of any kind, and not confined
+to enrolment or recovery. Anything else is refused: a session owing a challenge is refused by that
+challenge's gate with its challenge error, not by these endpoints, and a request with no resolved
+caller is refused as authentication required.
+
+| Request | What it does | Default response |
+|---|---|---|
+| `GET /reauth/methods` | how the session's user may re-prove | `{"methods":[{"name":…,"channel":…,"begins":…}],"password":…}` |
+| `POST /reauth/begin/{method}` | begins a second factor that has a begin step (a passkey) | the method's begin data as JSON |
+| `POST /reauth/verify/{method}` | re-proves with a second factor | the login document: `access_token`, `refresh_token`, `valid_until` |
+| `POST /reauth/password` | re-proves with the password, read from the `password` form field or JSON member | the login document |
+
+Every default response is marked `Cache-Control: no-store`, and each has a replaceable responder;
+a consumer's responder owns its headers. The password endpoint checks the password of the session's
+own user: a `username` in the request is ignored. A successful re-proof sets the session's
+authentication time to now on the chain's clock (a second factor on a different channel from the
+session's first factor also records the second factor as satisfied; a same-channel re-proof, such as a
+passkey session re-proved with the passkey, refreshes freshness only), rotates the session, and answers with the rotated session's credential; the credential
+the caller arrived with stops working. The credential is issued inside the rotation, before anything
+is stored, so a re-proof or an MFA verification whose credential cannot be issued (a token generator
+that fails) stores nothing and leaves the credential the caller arrived with working. A re-proof that
+loses a race with a renewal of the same session, or with a concurrent re-proof or MFA verification
+of it (through this server or any other manager sharing the session store), is refused 409
+(`httpsec.ErrSessionRenewalConflict`) inside the winner's in-flight window, and a failed re-proof
+changes nothing. A password re-proof runs the chain's post-authentication phase like a login, with
+the input marked as a re-authentication, so a session cap admits it rather than counting it as a new
+session.
+
+A second-factor re-proof runs the same phase after the response verifies, with the input a login of the
+session's user and first factor builds, also marked as a re-authentication: it carries the login's own
+second-factor proof when the session met its second factor at sign-in (a user-verified passkey login),
+and the evidence the provider asserted when the session is federated. Every deny refuses with the policy's
+reason, the same-channel refusal included, and any challenge other than a second factor's refuses as it
+does at the password re-proof. A second-factor challenge does not refuse, since one was just verified,
+but what it hid is judged: the engine answers with the first challenge in registration order, so the
+phase is asked again with the second factor counted as met (`policy.Input.MFASatisfied`, beside
+`Reauthenticating`), and a deny or another challenge that surfaces then refuses the same way. A
+password change owed behind the second-factor policy therefore still refuses the re-proof. The
+library's policies answer that second judgement: `policy.NewMFA` allows, and `policy.NewMFARequirement`
+allows, in its challenge mode, an enrolled user's federated session whose provider did not meet its requirement, while its refusals, the refuse
+mode's included, stand. The line: a consumer policy that raises `policy.ChallengeMFA` without reading
+`MFASatisfied` raises it again, the challenge is dropped, and whatever is registered after it stays
+hidden. A caller other than the session's own user, which only a consumer's interceptor can publish,
+is refused as authentication required before anything is counted or judged, at the begin endpoint as
+at verification, so no challenge is issued for them. A refusal leaves the session as it was.
+
+### The factor policy
+
+A user re-proves with the strongest factor they hold. A user enrolled on any of the MFA slot's
+methods re-proves with one of them, whatever its channel (a passkey sign-in re-proves with the
+passkey), and is refused the password with `httpsec.ErrReauthenticationMethodNotUsable` (403)
+before the body is read. A user with no second factor re-proves with the password. The password
+endpoint looks the methods up in configuration order and stops at the first one the user is enrolled
+on, which alone refuses the password; the listing asks every method. An enrolment lookup that fails
+refuses the request; it never falls back to the password.
+`httpsec.RequireSecondFactorForReauthentication()` refuses the password to everyone.
+
+**There is no "any factor" option.** A password re-proof by a user who holds a second factor would
+make the session fresh at single-factor strength, and freshness is what admits registering a
+passkey and regenerating recovery codes. A phisher who holds the password and the session cookie
+could then plant an authenticator that later meets both factors. The option would weaken a
+guarantee the library makes, so it does not exist.
+
+**Users without a password.** Whether a user has a password is not known without loading them, so
+the listing offers the password to every user with no second factor. A user who signed in only
+through an OIDC provider then fails a password re-proof as a wrong password would. A deployment
+with such users filters the password out in `httpsec.WithReauthenticationMethodsResponder`, which
+receives the decision and runs on the request carrying the session.
+
+### Stated limits
+
+- **The default re-proof challenge store serves one process.** A challenge begun on one replica
+  cannot be answered on another. A deployment running more than one replica passes a shared
+  `onetime.Store` to `httpsec.WithReauthenticationChallengeStore`, as it does for the MFA
+  challenges.
+- **Re-proof has no budget of its own.** Second-factor failures share the MFA slot's per-user
+  throttle with login, and password failures the account lockout, so a stolen session can spend the
+  user's allowance there, as anyone who knows the username already can at login.
+
+### "Re-authentication required", from three places
+
+Three refusals mean the caller must re-authenticate: `httpsec.ErrReauthenticationRequired` (the
+recency guard, carried by `*httpsec.ReauthenticationRequiredError`),
+`recovery.ErrReauthenticationRequired` (recovery-code regeneration) and
+`passkey.ErrReauthenticationRequired` (passkey registration and management). Each names its own
+condition, and all three map to 403. A consumer who wants to send the client to re-authenticate
+matches them together:
+
+```go
+if errors.Is(err, httpsec.ErrReauthenticationRequired) ||
+	errors.Is(err, recovery.ErrReauthenticationRequired) ||
+	errors.Is(err, passkey.ErrReauthenticationRequired) {
+	// send the client to GET /reauth/methods
+}
+```
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Endpoints | off | `httpsec.EnableReauthentication` |
+| Prefix | `/reauth` (`httpsec.DefaultReauthenticationPrefix`) | `httpsec.WithReauthenticationPrefix` |
+| Chain slot | 655 (`httpsec.OrderReauthentication`) | — |
+| Factor policy | strongest held: a second factor if enrolled, else the password | `httpsec.RequireSecondFactorForReauthentication` (stricter only) |
+| Re-proof challenge lifetime | 5 minutes | `httpsec.WithReauthenticationChallengeTTL` |
+| Re-proof challenges issued | 10 per user, per method, per hour | `httpsec.WithReauthenticationChallengeLimit` |
+| Re-proof challenge store | in-memory, one process only; required whenever the MFA slot was given a store and has a method with a begin step (give both the same one); giving one on a chain without the MFA slot fails `New` with `ErrConfig` | `httpsec.WithReauthenticationChallengeStore` |
+| MFA challenge store, beside re-authentication | in-memory, one process only; giving one without `httpsec.WithReauthenticationChallengeStore`, while the MFA slot has a method with a begin step, fails `New` with `ErrConfig` naming both (a slot of TOTP alone builds without a re-proof store) | `httpsec.WithMFAChallengeStore` |
+| Re-proof of a second factor | runs the post-authentication phase with the login's own input; every deny refuses; a second-factor challenge does not refuse, but the phase is judged again with the second factor counted as met, and what surfaces then refuses; the session's own user only, at begin and verify | a consumer policy reads `policy.Input.Reauthenticating` and `MFASatisfied` and decides what a re-proof means; no switch turns the phase off |
+| Re-proof whose credential cannot be issued | stores nothing; the caller's credential keeps working | — |
+| Lost rotation race, through any manager sharing the store | 409 `httpsec.ErrSessionRenewalConflict` inside the winner's in-flight window: 30 seconds for a strict rotation (`session.DefaultRenewalGrace`), the renewal's grace for a renewal; after it, 401 (`ErrExpired` until the store's sweep, `ErrNotFound` after) | `httpsec.WithRenewalGrace` (a renewal winner only) |
+| Re-proof response | the login document, `Cache-Control: no-store` | `httpsec.WithReauthenticationResponder` |
+| Begin response | the method's data, `Cache-Control: no-store` | `httpsec.WithReauthenticationBeginResponder` |
+| Method listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithReauthenticationMethodsResponder` |
 
 ## Development
 

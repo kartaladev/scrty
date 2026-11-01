@@ -82,6 +82,8 @@ func TestMFABegin(t *testing.T) {
 		// first is the factor the session was established by: password
 		// unless a case needs another.
 		first factor.Kind
+		// state is the second-factor state of the session, nil for pending.
+		state *session.MFAState
 		// anonymous sends no credential at all.
 		anonymous bool
 		stub      func(c *challengeStub)
@@ -143,6 +145,57 @@ func TestMFABegin(t *testing.T) {
 			wire:    func(h *mfaHarness) { h.allows().recordsNoFailure() },
 			request: begin(testMFABeginPath),
 			assert:  issued,
+		},
+		{
+			// Re-proving a signed-in session is re-authentication's business.
+			name:    "a session that already satisfied its second factor",
+			state:   new(session.MFASatisfied),
+			wire:    untouched,
+			request: begin(testMFABeginPath),
+			assert: func(t *testing.T, h *mfaHarness, c *challengeStub, s *session.Session, out served) {
+				assert.Equal(t, session.MFASatisfied, h.stored(t, s.ID).MFA, "the session is unchanged")
+				refusedWith(httpsec.ErrNoMFAChallengePending)(t, h, c, s, out)
+			},
+		},
+		{
+			name:    "a session no second factor was asked of",
+			state:   new(session.MFANone),
+			wire:    untouched,
+			request: begin(testMFABeginPath),
+			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
+		},
+		{
+			// The pending check comes before the path is read: a signed-in
+			// session is told it has no challenge, not that the method is
+			// unknown.
+			name:    "a satisfied session begins an unknown method",
+			state:   new(session.MFASatisfied),
+			wire:    untouched,
+			request: begin(httpsec.DefaultMFABeginPrefix + "/nosuch"),
+			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
+		},
+		{
+			name:    "a satisfied session begins a method without a begin step",
+			state:   new(session.MFASatisfied),
+			wire:    untouched,
+			request: begin(httpsec.DefaultMFABeginPrefix + "/totp"),
+			assert:  refusedWith(httpsec.ErrNoMFAChallengePending),
+		},
+		{
+			// "A substituted caller at begin": a consumer interceptor past the
+			// first factor publishes another user's principal on the pending
+			// session. Nothing is counted, no challenge is issued, and the
+			// session stays pending.
+			name: "a caller who is not the session's user is refused before the throttle and issues nothing",
+			wire: func(h *mfaHarness) {
+				untouched(h)
+				h.chainOpts = append(h.chainOpts, substitutingCaller(httpsec.Before(httpsec.OrderMFAChallenge)))
+			},
+			request: begin(testMFABeginPath),
+			assert: func(t *testing.T, h *mfaHarness, c *challengeStub, s *session.Session, out served) {
+				refusedWith(httpsec.ErrAuthenticationRequired)(t, h, c, s, out)
+				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+			},
 		},
 		{
 			name:    "begin for a method without a begin step",
@@ -305,7 +358,12 @@ func TestMFABegin(t *testing.T) {
 				first = factor.Password
 			}
 
-			s := h.pendingSession(t, first)
+			state := session.MFAPending
+			if tc.state != nil {
+				state = *tc.state
+			}
+
+			s := h.newSession(t, first, state)
 
 			token := mfaTokenFor(s.ID)
 			if tc.anonymous {
@@ -656,6 +714,26 @@ func TestMFABeginIssuance(t *testing.T) {
 				assert.NotContains(t, outs[0].err.Error(), "alice@example.com")
 				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(outs[0].err))
 				assert.Empty(t, stub.issuedAll(), "nothing is issued")
+			},
+		},
+		{
+			name: "a consumer store keeps login challenges under the login purpose",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)))
+			},
+			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
+			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, _ *capturingHandler, outs []served) {
+				require.Len(t, outs, 1)
+				require.NoError(t, outs[0].err)
+
+				counts := store.(*onetime.MemoryStore)
+				n, err := counts.CountRecentBySubject(t.Context(), "mfa-challenge:passkey", string(testMFAUser), time.Time{})
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the challenge is in the consumer's store under the login purpose")
+
+				n, err = counts.CountRecentBySubject(t.Context(), "reauth-challenge:passkey", string(testMFAUser), time.Time{})
+				require.NoError(t, err)
+				assert.Zero(t, n, "nothing was issued under the re-proof purpose")
 			},
 		},
 	}

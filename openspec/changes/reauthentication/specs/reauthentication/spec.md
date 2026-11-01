@@ -143,9 +143,10 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 - neither the MFA slot nor form login is enabled;
 - second-factor-only re-proof is required without the MFA slot;
 - the prefix is empty;
-- a re-proof path equals or lies under the logout path, the form login path, the MFA verify or begin prefix, or equals the MFA listing path;
+- a re-proof path collides with a path another enabled endpoint answers;
 - it is enabled twice;
-- no credential can be issued for the rotated session.
+- no credential can be issued for the rotated session;
+- the challenge stores are wired inconsistently, as the challenge-store requirement states.
 
 #### Scenario: Nothing to re-prove with
 - **WHEN** re-authentication is enabled on a chain without the MFA slot and without form login
@@ -170,6 +171,40 @@ Enabling re-authentication SHALL fail chain construction with a configuration er
 #### Scenario: No credential to issue
 - **WHEN** re-authentication is enabled on a token-bearer chain without a token generator for it
 - **THEN** construction fails with a configuration error
+
+### Requirement: Re-proof challenge stores are wired consistently
+Construction SHALL fail with a configuration error when the MFA slot was given a challenge store, re-authentication was not, and a configured MFA method issues challenges; and when re-authentication was given a challenge store on a chain without the MFA slot. A TOTP-only slot SHALL accept a re-proof store, and one store MAY be given to both.
+
+#### Scenario: A shared MFA challenge store needs a re-proof store
+- **WHEN** the MFA slot is given a challenge store and re-authentication is enabled without one
+- **THEN** construction fails with a configuration error naming both options
+
+#### Scenario: A re-proof store without the MFA slot
+- **WHEN** re-authentication is given a challenge store on a chain with form login and no MFA slot
+- **THEN** construction fails with a configuration error
+
+#### Scenario: No challenge method, no store needed
+- **WHEN** the MFA slot holds only TOTP and is given a challenge store, and re-authentication is enabled without one
+- **THEN** construction succeeds
+
+#### Scenario: One store for both
+- **WHEN** the MFA slot and re-authentication are given the same challenge store
+- **THEN** construction succeeds, and a re-proof begun through one server is verified through another server sharing that store
+
+### Requirement: Re-proof paths are checked against every endpoint the chain answers
+Construction SHALL fail with a configuration error when a re-proof path collides with a path any enabled endpoint answers. Two paths collide when they are equal, or when one lies under the other and the other is matched by prefix. Each path is judged as its endpoint matches requests: re-proof begin and verify by prefix, the listing and password exactly, every other endpoint as it matches its own.
+
+#### Scenario: Prefix collides with passkey registration
+- **WHEN** passkeys are enabled and the re-authentication prefix is set to `/passkey/register`
+- **THEN** construction fails with a configuration error naming the passkey registration prefix
+
+#### Scenario: Another endpoint's exact path collides
+- **WHEN** the session renewal path is set to `/reauth/password`
+- **THEN** construction fails with a configuration error
+
+#### Scenario: A prefix under an exact path is accepted
+- **WHEN** form login answers `/login` and the re-authentication prefix is set to `/login/reauth`
+- **THEN** construction succeeds, `/login` is answered by form login and `/login/reauth/methods` by re-authentication
 
 ### Requirement: Only a full session may re-prove
 Every re-proof endpoint SHALL serve only a full session: one with a resolved caller, no pending challenge of any kind, and not confined. A request with no session or no resolved caller SHALL be refused as authentication required. A session owing a challenge SHALL be refused by that challenge's gate before the endpoint. A session that is still fresh SHALL be served.
@@ -220,6 +255,21 @@ By default a user who holds a usable re-proof second factor SHALL re-prove with 
 #### Scenario: A passkey login re-proves with the passkey
 - **WHEN** `u-3` signed in with a passkey, the passkey MFA method is configured, and `u-3` re-proves through `/reauth/begin/passkey` and `/reauth/verify/passkey`
 - **THEN** `u-3`'s session is re-authenticated, although the passkey shares the first factor's channel
+
+### Requirement: Each re-proof endpoint looks up only the enrolments its decision needs
+The method listing SHALL look up every configured method. The password endpoint SHALL look methods up in order and refuse at the first one the user is enrolled on; a failed lookup before one is found SHALL refuse as a failed lookup. Second-factor begin and verify SHALL look up only the method they name, so a failed lookup of another method SHALL NOT refuse them, and a failed lookup of the named method SHALL.
+
+#### Scenario: The password endpoint settles at the first enrolled method
+- **WHEN** three methods are configured, `u-1` is enrolled on the first, and `u-1` posts a password to `/reauth/password`
+- **THEN** it is refused with the re-proof-method-not-usable error after one enrolment lookup
+
+#### Scenario: Another method's lookup failure does not refuse a second-factor re-proof
+- **WHEN** `u-1` is enrolled on TOTP, the passkey enrolment lookup fails, and `u-1` posts a valid code to `/reauth/verify/totp`
+- **THEN** `u-1`'s session is re-authenticated
+
+#### Scenario: The named method's lookup failure refuses
+- **WHEN** the TOTP enrolment lookup fails for `u-1` and `u-1` posts a code to `/reauth/verify/totp`
+- **THEN** the request is refused with the lookup failure, the code is not checked and nothing is counted
 
 ### Requirement: A consumer can require a second factor for every re-proof
 A consumer SHALL be able to require a second factor for every re-proof. A user with no usable second factor SHALL then be refused at the password endpoint with the re-proof-method-not-usable error, and SHALL be offered no re-proof method; they become fresh only by signing in again. No option SHALL let a user who holds a usable second factor re-prove with the password.
@@ -327,6 +377,10 @@ A passkey re-proof refused as a suspected clone, or from a suspended credential,
 ### Requirement: A password re-proof checks the session's own user under the account lockout
 The password endpoint SHALL read only the password, from the `password` form field or a JSON body, and SHALL check it for the session's own user, never a username named in the request. It SHALL apply the account lockout before checking, record a wrong password against the user's lockout failures as a login does, and clear them on success. A locked account SHALL be refused as a login refuses one.
 
+#### Scenario: A held recovery is cancelled
+- **WHEN** a recovery of `u-2` is held and `u-2`'s session re-proves with the correct password
+- **THEN** the recovery's finish is later refused as a recovery-refused error
+
 #### Scenario: Correct password
 - **WHEN** `u-2`, enrolled on no method, posts the correct password
 - **THEN** the session is re-authenticated and `u-2`'s lockout failures are cleared
@@ -359,8 +413,27 @@ The password endpoint SHALL read only the password, from the `password` form fie
 - **WHEN** the user store cannot answer during a password re-proof
 - **THEN** it is refused with the unavailable error and no failure is recorded
 
+### Requirement: A password re-proof applies the post-authentication policy as a login does
+After the password is proved, the post-authentication policy phase SHALL be applied as a login applies it, with the policy input marked as the re-authentication of an existing session. A deny SHALL refuse with the policy's reason, and a challenge SHALL refuse with that challenge, carrying no session. Neither SHALL clear failures, rotate the session or refresh its authentication time.
+
+#### Scenario: A user at the session cap re-proves
+- **WHEN** the concurrent session policy has a maximum of 1, and `u-2`'s only session posts the correct password
+- **THEN** the session is re-authenticated
+
+#### Scenario: Consumer policy sees a re-proof
+- **WHEN** a consumer policy in the post-authentication phase reads the input of `u-2`'s password re-proof
+- **THEN** the input is marked as a re-authentication, and the input of `u-2`'s login is not
+
+#### Scenario: Post-authentication deny
+- **WHEN** a consumer policy denies `u-2` in the post-authentication phase, and `u-2`'s session posts the correct password
+- **THEN** it is refused with the policy's reason, as `u-2`'s login is refused, and the session and its authentication time are unchanged
+
+#### Scenario: Post-authentication challenge
+- **WHEN** a consumer policy raises a password-change challenge for `u-2` in the post-authentication phase, and `u-2`'s session posts the correct password
+- **THEN** it is refused with the password-change challenge, no session is marked pending, and the session is unchanged
+
 ### Requirement: A successful re-proof refreshes the authentication time and rotates the session
-A successful re-proof SHALL set the authentication time to now from the chain's time source; a second-factor re-proof SHALL also record the second factor as satisfied then. It SHALL rotate the session, so the previous handle stops working, and answer with the rotated session's credential through a replaceable responder, without passing the request on. A failure SHALL change neither the session nor its handle.
+A successful re-proof SHALL set the authentication time to now from the chain's time source; a second-factor re-proof SHALL also record the second factor as satisfied then, except as the same-channel requirement below states. It SHALL rotate the session, so the previous handle stops working, and answer with the rotated session's credential through a replaceable responder, without passing the request on. A failure SHALL change neither the session nor its handle.
 
 #### Scenario: Second-factor re-proof
 - **WHEN** a session authenticated at 09:00 re-proves with TOTP at 09:30
@@ -381,7 +454,7 @@ A successful re-proof SHALL set the authentication time to now from the chain's 
 - **THEN** the route is called
 
 #### Scenario: Concurrent re-proofs
-- **WHEN** one session sends two valid re-proofs at once
+- **WHEN** one session sends two valid re-proofs at once to one server
 - **THEN** one succeeds and the other is refused with the renewal-conflict error, leaving the winner's session in place
 
 #### Scenario: Controlled chain time source
@@ -391,6 +464,17 @@ A successful re-proof SHALL set the authentication time to now from the chain's 
 #### Scenario: Consumer responder
 - **WHEN** re-authentication is enabled with a responder of the consumer's that sets a cookie
 - **THEN** the consumer's responder receives the rotated session and the library writes no response of its own
+
+### Requirement: A same-channel re-proof refreshes freshness only
+A second-factor re-proof whose method shares the session's first-factor channel SHALL set the authentication time and SHALL leave the second-factor state unchanged, since it proves the same authenticator again. A re-proof on another channel SHALL record the second factor as satisfied.
+
+#### Scenario: A same-channel re-proof refreshes freshness only
+- **WHEN** a passkey sign-in counts as one factor only, and a passkey-only session that met no second factor re-proves with that passkey
+- **THEN** the rotated session reports the new authentication time and still reports no satisfied second factor
+
+#### Scenario: A different channel meets the second factor
+- **WHEN** a password session re-proves with TOTP
+- **THEN** the rotated session reports a satisfied second factor
 
 ### Requirement: Re-proof responses are not cached and re-proof logs carry no secret
 Every default re-proof responder SHALL set `Cache-Control: no-store`; a consumer responder SHALL own its headers. Records the re-proof endpoints write SHALL contain no password, code, challenge or authenticator response.
@@ -402,3 +486,63 @@ Every default re-proof responder SHALL set `Cache-Control: no-store`; a consumer
 #### Scenario: Refusal logs
 - **WHEN** a password re-proof and a TOTP re-proof are refused for a wrong secret
 - **THEN** the records written contain neither the password nor the code
+
+### Requirement: A second-factor re-proof applies the post-authentication policy's denials
+After a second-factor response is verified and before the session is rotated, the post-authentication policy phase SHALL be applied with the input a login builds for the session's principal and first factor, marked as a re-authentication and carrying the second-factor proof and the federated evidence the session records from its login. Every deny SHALL refuse the re-proof with the policy's reason. A refusal SHALL leave the session unchanged.
+
+#### Scenario: Above the session cap
+- **WHEN** the concurrent session policy has a maximum of 1, `u-1` holds two sessions, and one of them posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with the too-many-sessions error and the session is unchanged
+
+#### Scenario: A consumer policy denies
+- **WHEN** a consumer policy denies `u-1` in the post-authentication phase and `u-1`'s session posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with the policy's reason, as `u-1`'s password re-proof would be
+
+#### Scenario: A passkey login that met its second factor re-proves with the passkey
+- **WHEN** `u-3` signed in with a user-verified passkey that met the second factor at login, and re-proves through `/reauth/verify/passkey` on a chain whose MFA policies refuse a same-channel second factor, whichever of them is registered first
+- **THEN** `u-3`'s session is re-authenticated
+
+#### Scenario: A re-proof a login would now refuse as same-channel
+- **WHEN** a session whose login did not meet its second factor at its first factor belongs to a user now enrolled only on the passkey method, and it re-proves through `/reauth/verify/passkey` on a chain whose MFA policy refuses a same-channel second factor
+- **THEN** it is refused with the same-channel refusal, as that user's sign-in would be, and the session is unchanged
+
+#### Scenario: A federated session re-proves under refused assurance
+- **WHEN** an OIDC session whose provider asserted the assurance a required user needs, on a chain that refuses unmet federated assurance, posts a valid code to `/reauth/verify/totp`
+- **THEN** its session is re-authenticated, as every request of that session is admitted
+
+#### Scenario: A deny ahead of another deny
+- **WHEN** a policy that denies is registered ahead of the concurrent session policy, and a user above the cap posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with the first policy's reason and the session is unchanged
+
+### Requirement: A second-factor re-proof ignores only a second-factor challenge
+When the post-authentication phase of a second-factor re-proof challenges, a second-factor challenge SHALL NOT refuse the re-proof, because a second factor is being presented. Any other challenge SHALL refuse it as at the password re-proof, with a challenge error of that kind carrying no session, and the session unchanged.
+
+#### Scenario: A second-factor challenge does not refuse
+- **WHEN** the post-authentication phase challenges for a second factor and `u-1` posts a valid code to `/reauth/verify/totp`
+- **THEN** `u-1`'s session is re-authenticated
+
+#### Scenario: A challenge behind the second-factor challenge
+- **WHEN** the MFA policy is registered before a policy that challenges for a password change, and `u-1`, who owes a password change and holds TOTP, posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with a challenge error for a password change carrying no session, and the session is unchanged
+
+#### Scenario: Another challenge refuses
+- **WHEN** the post-authentication phase challenges for a password change and `u-1` posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused with a challenge error of that kind carrying no session, and the session is unchanged
+
+### Requirement: A second-factor re-proof judges only the session's own user
+A second-factor re-proof SHALL refuse, as authentication required and before the post-authentication phase, a caller whose user is not the session's user, counting and verifying nothing.
+
+#### Scenario: A substituted caller
+- **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts a valid code to `/reauth/verify/totp`
+- **THEN** it is refused as authentication required before the phase, and the session is unchanged
+
+#### Scenario: A substituted caller at begin
+- **WHEN** a consumer interceptor publishes a principal other than the session's user and that session posts to `/reauth/begin/passkey`
+- **THEN** it is refused as authentication required, no challenge is issued and nothing is counted
+
+### Requirement: A re-proof whose credential cannot be issued leaves the session as it was
+A re-proof SHALL obtain the rotated session's credential before the rotation is stored. When the credential cannot be issued, the re-proof SHALL be refused with that failure, nothing SHALL be stored or rotated, and the credential the caller arrived with SHALL keep authenticating.
+
+#### Scenario: Token generator fails
+- **WHEN** `u-1` posts a valid code to `/reauth/verify/totp` and the token generator fails
+- **THEN** the re-proof is refused with the generator's failure, and `u-1`'s next request with the credential it arrived with is served

@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base32"
 	"encoding/json"
@@ -88,6 +89,18 @@ type mfaHarness struct {
 	// which after a successful verification is the rotated one.
 	issuedFor atomic.Value
 
+	// issuedMu guards issuedAll, every session identifier a token was issued
+	// against, in order. Under a race the last one issued is not the winner's,
+	// so a case that races reads the winner's from its response and uses this
+	// to find the identifiers that were issued and never stored.
+	issuedMu  sync.Mutex
+	issuedAll []string
+
+	// generateErr, when a case sets it before the chain serves anything,
+	// makes the token generator fail every issue with it and record nothing
+	// in issuedFor.
+	generateErr error
+
 	// mfaOpts and logoutOpts are what a case wants configured differently. They
 	// are fields rather than arguments so every case assembles the chain the
 	// same way and only the configuration under test varies.
@@ -145,7 +158,15 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 	// token issued before a rotation names a session that no longer exists.
 	h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+			if h.generateErr != nil {
+				return "", h.generateErr
+			}
+
 			h.issuedFor.Store(id)
+
+			h.issuedMu.Lock()
+			h.issuedAll = append(h.issuedAll, id)
+			h.issuedMu.Unlock()
 
 			return mfaTokenFor(id), nil
 		})
@@ -186,6 +207,14 @@ func mfaTokenFor(sessionID string) string { return mfaTokenPrefix + sessionID }
 // errMFATokenUnreadable is what the verifier double refuses a token it did not
 // issue with.
 var errMFATokenUnreadable = errors.New("mfaverify_test: not a token this verifier issued")
+
+// errMFAVerifyDenied is a consumer's post-authentication refusal of a user
+// once their second factor is satisfied.
+var errMFAVerifyDenied = errors.New("mfaverify_test: post-authentication denies once the second factor is met")
+
+// errTokenGenerator is what the generator double fails an issue with when a
+// case sets mfaHarness.generateErr to it.
+var errTokenGenerator = errors.New("mfaverify_test: the token generator is unavailable")
 
 // mfaMethod is a method double reporting channel and nothing else, for the
 // cases that never reach a verification.
@@ -306,15 +335,18 @@ func (h *mfaHarness) pendingSession(t *testing.T, first factor.Kind) *session.Se
 	return h.newSession(t, first, session.MFAPending)
 }
 
-// newSession creates a live session in state, as a first factor would have.
+// newSession creates a live session in state, as a first factor would have,
+// with the further options that first factor's login would have recorded.
 func (h *mfaHarness) newSession(
 	t *testing.T,
 	first factor.Kind,
 	state session.MFAState,
+	opts ...session.CreateOption,
 ) *session.Session {
 	t.Helper()
 
-	s, err := h.sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(first))
+	s, err := h.sessions.Create(t.Context(), testMFAUser,
+		append([]session.CreateOption{session.WithFirstFactor(first)}, opts...)...)
 	require.NoError(t, err)
 
 	s.MFA = state
@@ -335,9 +367,10 @@ func (h *mfaHarness) stored(t *testing.T, handle string) *session.Session {
 }
 
 // chain assembles the chain under test: the second factor, a logout to be
-// exempt from it, and the session s carried as a first factor would have
-// carried it.
-func (h *mfaHarness) chain(t *testing.T, s *session.Session) *httpsec.Chain {
+// exempt from it, the session s carried as a first factor would have carried
+// it, and opts, the further chain options a case needs, such as its policy
+// engine.
+func (h *mfaHarness) chain(t *testing.T, s *session.Session, opts ...httpsec.Option) *httpsec.Chain {
 	t.Helper()
 
 	mfaOpts := append([]httpsec.MFAOption{
@@ -345,11 +378,11 @@ func (h *mfaHarness) chain(t *testing.T, s *session.Session) *httpsec.Chain {
 		httpsec.WithMFATokens(h.tokens),
 	}, h.mfaOpts...)
 
-	c, err := httpsec.New(
+	c, err := httpsec.New(append([]httpsec.Option{
 		h.carries(s),
 		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
-	)
+	}, opts...)...)
 	require.NoError(t, err)
 
 	return c
@@ -399,6 +432,9 @@ func TestMFAVerifyOrdering(t *testing.T) {
 	type testCase struct {
 		name    string
 		channel factor.Channel
+		// path is the path the code is posted to, the harness's method unless
+		// a case needs another.
+		path    string
 		session func(t *testing.T, h *mfaHarness) *session.Session
 		wire    func(t *testing.T, h *mfaHarness)
 		// unread posts a body that fails the test if it is read, for the
@@ -417,6 +453,14 @@ func TestMFAVerifyOrdering(t *testing.T) {
 		}
 	}
 
+	stateAfter := func(state session.MFAState) func(*testing.T, *mfaHarness) *session.Session {
+		return func(t *testing.T, h *mfaHarness) *session.Session {
+			t.Helper()
+
+			return h.newSession(t, factor.Password, state)
+		}
+	}
+
 	cases := []testCase{
 		{
 			name:    "no session",
@@ -431,6 +475,91 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			// A signed-in session cannot be moved through the second factor
+			// again: proving it afresh is re-authentication's business.
+			name:    "a session that already satisfied its second factor",
+			channel: factor.AuthenticatorApp,
+			session: stateAfter(session.MFASatisfied),
+			wire: func(_ *testing.T, h *mfaHarness) {
+				// Nothing is throttled, read, verified or counted.
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				assert.Equal(t, session.MFASatisfied, h.stored(t, s.ID).MFA,
+					"the handle is unchanged and still stored")
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, out.rec.Body.Len(), "nothing is written")
+			},
+		},
+		{
+			// A user enrolled after signing in has a session no challenge
+			// was ever raised on; posting a code does not start one.
+			name:    "a session no second factor was asked of",
+			channel: factor.AuthenticatorApp,
+			session: stateAfter(session.MFANone),
+			unread:  true,
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				got := h.stored(t, s.ID)
+				assert.Equal(t, session.MFANone, got.MFA)
+				assert.True(t, s.AuthenticatedAt.Equal(got.AuthenticatedAt),
+					"the authentication time is untouched")
+				assert.True(t, got.MFASatisfiedAt.IsZero())
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+			},
+		},
+		{
+			// The pending check is decided before the path is read: a
+			// signed-in session posting to a method that does not exist is
+			// told it has no challenge, not that the method is unknown.
+			name:    "a satisfied session posting to an unknown method",
+			channel: factor.AuthenticatorApp,
+			path:    httpsec.DefaultMFAVerifyPrefix + "/nosuch",
+			session: stateAfter(session.MFASatisfied),
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+				require.NotErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+			},
+		},
+		{
+			// Nor is the method's usability looked at first: this one is on
+			// the first factor's own channel.
+			name:    "a satisfied session posting to a method it cannot use",
+			channel: factor.Email,
+			session: func(t *testing.T, h *mfaHarness) *session.Session {
+				t.Helper()
+
+				return h.newSession(t, factor.MagicLink, session.MFASatisfied)
+			},
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
+				require.NotErrorIs(t, out.err, mfa.ErrSameChannel)
+				require.NotErrorIs(t, out.err, httpsec.ErrMFAMethodNotUsable)
+			},
+		},
+		{
+			name:    "no session still comes first",
+			channel: factor.AuthenticatorApp,
+			session: noSession,
+			unread:  true,
+			wire: func(_ *testing.T, h *mfaHarness) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.NotErrorIs(t, out.err, httpsec.ErrNoMFAChallengePending)
 			},
 		},
 		{
@@ -484,11 +613,13 @@ func TestMFAVerifyOrdering(t *testing.T) {
 				// A user who gets it right has not guessed, so nothing is spent.
 				h.allows().accepts().recordsNoFailure()
 			},
-			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
+			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
 				require.NoError(t, out.err)
 				assert.Equal(t, http.StatusOK, out.rec.Code)
 				assert.False(t, out.handlerRan,
 					"the endpoint is this library's own, so the application never sees it")
+				assert.Equal(t, session.MFASatisfied, h.stored(t, h.rotatedID(t)).MFA,
+					"a pending session is still resolved and rotated")
 			},
 		},
 	}
@@ -503,9 +634,10 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			s := tc.session(t, h)
 			tc.wire(t, h)
 
-			req := postCode(t.Context(), testMFAVerifyPath)
+			path := cmp.Or(tc.path, testMFAVerifyPath)
+			req := postCode(t.Context(), path)
 			if tc.unread {
-				req = postUnread(t.Context(), t, testMFAVerifyPath)
+				req = postUnread(t.Context(), t, path)
 			}
 
 			out := serve(t, h.chain(t, s), req)
@@ -719,10 +851,16 @@ func TestMFAVerify(t *testing.T) {
 		first factor.Kind
 		// owesNothing starts the session with no MFA challenge pending.
 		owesNothing bool
-		mfaOpts     []httpsec.MFAOption
-		request     func(ctx context.Context, t *testing.T) *http.Request
-		wire        func(h *mfaHarness, email *MockMethod)
-		assert      func(t *testing.T, h *mfaHarness, s *session.Session, out served)
+		// create, when set, are further options the session is created with,
+		// as its login would have recorded them.
+		create  []session.CreateOption
+		mfaOpts []httpsec.MFAOption
+		// chainOpts, when set, are further chain options, such as the policy
+		// engine whose post-authentication phase verification judges again.
+		chainOpts func(t *testing.T, h *mfaHarness) []httpsec.Option
+		request   func(ctx context.Context, t *testing.T) *http.Request
+		wire      func(h *mfaHarness, email *MockMethod)
+		assert    func(t *testing.T, h *mfaHarness, s *session.Session, out served)
 	}
 
 	postTo := func(target string) func(ctx context.Context, t *testing.T) *http.Request {
@@ -771,6 +909,152 @@ func TestMFAVerify(t *testing.T) {
 
 	unknown := refusedAs(httpsec.ErrUnknownMFAMethod, http.StatusNotFound)
 
+	// secondFactorFirst is a policy engine with the library's second-factor
+	// policy registered first, over a TOTP lookup the user is enrolled on, so
+	// a login of the user is challenged for the second factor, and then
+	// behind, the policies a case registers after it. Further chain options
+	// follow the engine.
+	secondFactorFirst := func(
+		behind func(t *testing.T, h *mfaHarness) []policy.Policy,
+		opts ...httpsec.Option,
+	) func(*testing.T, *mfaHarness) []httpsec.Option {
+		return func(t *testing.T, h *mfaHarness) []httpsec.Option {
+			t.Helper()
+
+			totpLookup := NewMockMFAMethodLookup(gomock.NewController(t))
+			totpLookup.EXPECT().Name().Return("totp").AnyTimes()
+			totpLookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totpLookup.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+
+			second, err := policy.NewMFA([]policy.MFAMethodLookup{totpLookup})
+			require.NoError(t, err)
+
+			policies := []policy.Policy{second}
+			if behind != nil {
+				policies = append(policies, behind(t, h)...)
+			}
+
+			return append([]httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, policies...))}, opts...)
+		}
+	}
+
+	// passwordAge owes a password change for a password whose age is
+	// unknown, as the harness's caller's is.
+	passwordAge := func(t *testing.T, _ *mfaHarness) []policy.Policy {
+		t.Helper()
+
+		age, err := policy.NewPasswordAge(policy.WithUnknownPasswordAge(policy.UnknownAgeChallenge))
+		require.NoError(t, err)
+
+		return []policy.Policy{age}
+	}
+
+	// requirementFirst is a policy engine with the requirement policy
+	// registered first, over everyone, in its challenge mode, over a TOTP
+	// lookup the user is enrolled on and a source that accepts no evidence, so
+	// a federated login of the user is challenged for the second factor by it,
+	// and then behind, the policies a case registers after it. Further chain
+	// options follow the engine.
+	requirementFirst := func(
+		behind func(t *testing.T, h *mfaHarness) []policy.Policy,
+		opts ...httpsec.Option,
+	) func(*testing.T, *mfaHarness) []httpsec.Option {
+		return func(t *testing.T, h *mfaHarness) []httpsec.Option {
+			t.Helper()
+
+			ctrl := gomock.NewController(t)
+
+			totpLookup := NewMockMFAMethodLookup(ctrl)
+			totpLookup.EXPECT().Name().Return("totp").AnyTimes()
+			totpLookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totpLookup.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+
+			src := NewMockFederatedAssuranceSource(ctrl)
+			src.EXPECT().MeetsAssurance(gomock.Any(), testMFAUser, gomock.Any()).Return(false, nil).AnyTimes()
+
+			requirement, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{totpLookup},
+				policy.WithMFARequiredForAll(),
+				policy.WithFederatedAssuranceSource(src))
+			require.NoError(t, err)
+
+			policies := []policy.Policy{requirement}
+			if behind != nil {
+				policies = append(policies, behind(t, h)...)
+			}
+
+			return append([]httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, policies...))}, opts...)
+		}
+	}
+
+	// unmetFederated is what an OIDC login whose provider asserted only a
+	// password records on its session.
+	unmetFederated := []session.CreateOption{
+		session.WithExternalSession("corp", "https://idp.example.com", "", ""),
+		session.WithFederatedAssurance([]string{"pwd"}, ""),
+	}
+
+	// passwordChangeAnswered asserts verification completed the second factor
+	// and answered the password change that surfaced behind it as a login
+	// answers a challenge: the session satisfied, rotated and marked, and the
+	// challenge carrying the rotated session and its credential.
+	passwordChangeAnswered := func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+		t.Helper()
+
+		var ce *httpsec.ChallengeError
+		require.ErrorAs(t, out.err, &ce, "verification owes no password change")
+		assert.Equal(t, policy.ChallengePasswordChange, ce.Kind)
+		assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan)
+		assert.Zero(t, out.rec.Body.Len(), "the challenge is the refusal, not a success document")
+
+		require.NotNil(t, ce.Session, "the challenge carries the rotated session")
+		assert.NotEqual(t, s.ID, ce.Session.ID, "the session was rotated")
+		assert.Equal(t, mfaTokenFor(ce.Session.ID), ce.Token, "the credential names the rotated session")
+		assert.Empty(t, ce.Methods, "a password change offers no second-factor method")
+
+		require.NotNil(t, h.resolved)
+		assert.Equal(t, ce.Session.ID, h.resolved.ID, "the exchange publishes the rotated session")
+
+		rotated := h.stored(t, ce.Session.ID)
+		assert.Equal(t, session.MFASatisfied, rotated.MFA, "the rotated session met its second factor")
+		assert.True(t, rotated.PasswordChangePending, "and owes the password change")
+
+		_, err := h.sessions.Load(t.Context(), s.ID)
+		require.Error(t, err, "the previous handle no longer loads")
+	}
+
+	// keptPending asserts out refused verification and left the session the
+	// caller arrived with as it was: still stored under its handle, pending,
+	// never rotated, with no credential issued and nothing answered.
+	keptPending := func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+		t.Helper()
+
+		assert.False(t, out.handlerRan)
+		assert.Zero(t, out.rec.Body.Len(), "nothing was written")
+		assert.Nil(t, h.issuedFor.Load(), "no credential was issued")
+
+		arrived, err := h.sessions.Load(t.Context(), s.ID)
+		require.NoError(t, err, "the session the caller arrived with still loads")
+		assert.Equal(t, session.MFAPending, arrived.MFA, "and is still pending")
+		assert.False(t, arrived.RotatedStrictly, "and was not rotated")
+		assert.False(t, arrived.PasswordChangePending, "and is marked with nothing")
+
+		require.NotNil(t, h.resolved)
+		assert.Equal(t, s.ID, h.resolved.ID, "the exchange keeps the session it arrived with")
+
+		n, err := h.sessions.CountActiveByUser(t.Context(), testMFAUser)
+		require.NoError(t, err)
+		assert.Equal(t, 1, n, "no successor was stored")
+	}
+
+	// verifyJudged is what the input-capturing row's policy was given; only
+	// that row writes it.
+	var verifyJudged []policy.Input
+
+	// substitutedJudged is what the substituted-caller row's policy was given;
+	// only that row writes it, and it must stay empty.
+	var substitutedJudged []policy.Input
+
 	cases := []testCase{
 		{
 			name:    "a valid code to TOTP's path",
@@ -779,6 +1063,203 @@ func TestMFAVerify(t *testing.T) {
 				enrolledOnEmail(email, false)
 				h.allows().accepts().recordsNoFailure()
 				email.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+			},
+			assert: resolved,
+		},
+		{
+			// "A verification whose credential cannot be issued leaves the
+			// session pending": the credential is issued before the rotation
+			// is stored, so a generator that fails leaves the caller on the
+			// session they arrived with, still owing the factor.
+			name:    "a valid code to TOTP's path whose token cannot be issued leaves the session pending",
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+				email.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				h.generateErr = errTokenGenerator
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, errTokenGenerator, "refused with the generator's failure")
+				assert.False(t, out.handlerRan)
+				assert.Nil(t, h.issuedFor.Load(), "no credential was issued")
+
+				arrived, err := h.sessions.Load(t.Context(), s.ID)
+				require.NoError(t, err, "the session the caller arrived with still loads")
+				assert.Equal(t, session.MFAPending, arrived.MFA, "and is still pending")
+				assert.False(t, arrived.RotatedStrictly, "and was not rotated")
+
+				require.NotNil(t, h.resolved)
+				assert.Equal(t, s.ID, h.resolved.ID, "the exchange keeps the session it arrived with")
+
+				n, err := h.sessions.CountActiveByUser(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "no successor was stored")
+			},
+		},
+		{
+			// "A password change behind the second factor": the phase's first
+			// challenge was the second factor's, and the password change
+			// registered after it surfaces once the second factor is
+			// satisfied. Verification completes it as a login completes a
+			// challenge: the session is satisfied, rotated and marked, and
+			// the challenge carries the rotated session and its credential.
+			name:      "a password change behind the second factor answers its challenge with the rotated session",
+			chainOpts: secondFactorFirst(passwordAge, httpsec.EnableGateForTest(policy.ChallengePasswordChange)),
+			request:   postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: passwordChangeAnswered,
+		},
+		{
+			// "A federated verification behind the requirement": the
+			// requirement policy, registered first, challenges the OIDC
+			// session whose provider's evidence its source does not accept,
+			// and accepts the second factor verified now on the re-judgement,
+			// so the password change registered after it is answered.
+			name:      "a password change behind the requirement's federated challenge answers its challenge with the rotated session",
+			first:     factor.OIDC,
+			create:    unmetFederated,
+			chainOpts: requirementFirst(passwordAge, httpsec.EnableGateForTest(policy.ChallengePasswordChange)),
+			request:   postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: passwordChangeAnswered,
+		},
+		{
+			// "A deny behind the second factor": a consumer policy that
+			// denies once a second factor is satisfied is reached only by
+			// judging the phase again with the factor satisfied.
+			name: "a deny behind the second factor refuses and leaves the session pending",
+			chainOpts: secondFactorFirst(func(t *testing.T, _ *mfaHarness) []policy.Policy {
+				t.Helper()
+
+				p := NewMockPolicy(gomock.NewController(t))
+				p.EXPECT().Name().Return("test: denies after the second factor").AnyTimes()
+				p.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
+				p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(_ context.Context, in *policy.Input) policy.Decision {
+						if in.MFASatisfied {
+							return policy.Decision{Outcome: policy.Deny, Reason: errMFAVerifyDenied}
+						}
+
+						return policy.Decision{Outcome: policy.Allow}
+					})
+
+				return []policy.Policy{p}
+			}),
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				// The code was valid, so the refusal counts nothing.
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, errMFAVerifyDenied, "refused with the policy's reason")
+				keptPending(t, h, s, out)
+			},
+		},
+		{
+			// A challenge nothing on the chain enforces surfaces behind the
+			// second factor: the wiring mistake a login refuses it as,
+			// before anything is satisfied, rotated or marked.
+			name: "an unenforced challenge behind the second factor is a configuration error and writes nothing",
+			chainOpts: secondFactorFirst(func(t *testing.T, _ *mfaHarness) []policy.Policy {
+				t.Helper()
+
+				return []policy.Policy{phasePolicy(t,
+					policy.Decision{Outcome: policy.Challenge, Challenge: policy.ChallengePasswordChange},
+					policy.PostAuthentication)}
+			}),
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrConfig)
+				keptPending(t, h, s, out)
+			},
+		},
+		{
+			// "Nothing behind the second factor".
+			name:      "nothing behind the second factor resolves as before",
+			chainOpts: secondFactorFirst(nil),
+			request:   postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: resolved,
+		},
+		{
+			// The phase judges the login's input for the session's user and
+			// first factor, with the second factor satisfied and the session
+			// counted as one that already exists.
+			name: "the phase judges the login's input with the second factor satisfied",
+			chainOpts: func(t *testing.T, _ *mfaHarness) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{httpsec.WithPolicyEngine(capturingInputs(t, &verifyJudged))}
+			},
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				resolved(t, h, s, out)
+
+				require.Len(t, verifyJudged, 1, "the post-authentication phase ran once")
+				in := verifyJudged[0]
+				assert.True(t, in.MFASatisfied, "the second factor was just verified")
+				assert.True(t, in.Reauthenticating, "the pending session is already counted")
+				assert.Equal(t, testMFAUser, in.User)
+				assert.Equal(t, mfaUsername, in.Username, "a password login names the principal's username")
+				assert.Equal(t, factor.Password, in.FirstFactor, "the session's first factor, not the method's")
+				assert.False(t, in.Now.IsZero(), "judged at the chain's now")
+				assert.Nil(t, in.Session, "a login's input carries no session")
+			},
+		},
+		{
+			// A policy that asks for a second factor whatever the request
+			// says: the factor is the one just presented, so its challenge is
+			// dropped and verification resolves.
+			name: "a second-factor challenge raised again is dropped and resolves",
+			chainOpts: func(t *testing.T, _ *mfaHarness) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{httpsec.WithPolicyEngine(
+					challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA))}
+			},
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: resolved,
+		},
+		{
+			// The pending session is already counted, and verification adds
+			// none, so a user whose one session it is resolves under a cap
+			// of one.
+			name: "the user's one pending session resolves under a cap of one",
+			chainOpts: secondFactorFirst(func(t *testing.T, h *mfaHarness) []policy.Policy {
+				t.Helper()
+
+				limit, err := policy.NewConcurrentSessions(h.sessions, 1)
+				require.NoError(t, err)
+
+				return []policy.Policy{limit}
+			}),
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
 			},
 			assert: resolved,
 		},
@@ -917,6 +1398,43 @@ func TestMFAVerify(t *testing.T) {
 			assert: resolved,
 		},
 		{
+			// "A substituted caller at verification": a consumer interceptor
+			// past the first factor publishes another user's principal on the
+			// pending session. Nothing is counted, verified or judged, and
+			// the session stays pending.
+			name:    "a caller who is not the session's user is refused before the throttle and the phase",
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			chainOpts: func(t *testing.T, _ *mfaHarness) []httpsec.Option {
+				t.Helper()
+
+				// Registered after the harness's carrier, in the same slot,
+				// so it runs once the carrier has published the session's user.
+				swap := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if ex.Authentication != nil && ex.Authentication.Principal != nil {
+						p := *ex.Authentication.Principal
+						p.ID = identity.UserID("u-9")
+						ex.Authentication = &authenticate.Authentication{Principal: &p, Time: ex.Authentication.Time}
+					}
+
+					return next(ex)
+				})
+
+				return []httpsec.Option{
+					httpsec.RegisterInterceptor(swap, httpsec.Before(httpsec.OrderMFAChallenge)),
+					httpsec.WithPolicyEngine(capturingInputs(t, &substitutedJudged)),
+				}
+			},
+			wire: func(h *mfaHarness, email *MockMethod) {
+				untouched(h, email)
+				enrolledOnEmail(email, false)
+			},
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				refusedAs(httpsec.ErrAuthenticationRequired, http.StatusUnauthorized)(t, h, s, out)
+				keptPending(t, h, s, out)
+				assert.Empty(t, substitutedJudged, "the phase judged a substituted caller")
+			},
+		},
+		{
 			// The endpoint moves rather than being copied: the default path
 			// is then an ordinary route, held by the gate like any other.
 			name:    "the default prefix once the consumer has moved it",
@@ -957,10 +1475,15 @@ func TestMFAVerify(t *testing.T) {
 				state = session.MFANone
 			}
 
-			s := h.newSession(t, first, state)
+			s := h.newSession(t, first, state, tc.create...)
 			tc.wire(h, email)
 
-			out := serve(t, h.chain(t, s), tc.request(t.Context(), t))
+			var opts []httpsec.Option
+			if tc.chainOpts != nil {
+				opts = tc.chainOpts(t, h)
+			}
+
+			out := serve(t, h.chain(t, s, opts...), tc.request(t.Context(), t))
 			tc.assert(t, h, s, out)
 		})
 	}
@@ -1012,49 +1535,151 @@ func TestMFAVerifyThrottleAcrossMethods(t *testing.T) {
 // 409 the client retries with the credential it now holds; after the window
 // it is reuse, a 401. A session that vanished from the store between the
 // endpoint's load and the rotation, its family revoked in between, is a
-// session the caller no longer holds: a 401 too. None is a server fault.
+// session the caller no longer holds: a 401 too. Two valid codes posted at
+// once by one pending session are one success and one lost race, a 409 that
+// leaves the winner's credential working. None is a server fault.
 //
-// Its own table: each row races a renewal against the verification before the
-// request, which no other verify table sets up.
+// Its own table: each row races a rotation against the verification, which no
+// other verify table sets up.
 func TestMFAVerifyRotationRefusals(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name  string
-		after time.Duration
+		name string
+		// wire sets up the harness's method and limiter before the chain is
+		// built.
+		wire func(h *mfaHarness)
+		// act races the rotation and returns the chain it served through with
+		// the refused request's outcome.
+		act    func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served)
+		assert func(t *testing.T, h *mfaHarness, c *httpsec.Chain, out served)
+	}
 
-		// vanishes deletes the session from the store once the endpoint holds
-		// it, before the rotation.
-		vanishes bool
-		assert   func(t *testing.T, out served)
+	verifiesOnce := func(h *mfaHarness) {
+		h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+	}
+
+	// supersededBefore races a renewal (or, with vanishes, a deletion) of the
+	// session ahead of a verification that still holds it as it was, after
+	// moving the clock on by after. It also pins that a refused rotation
+	// leaves the session the caller holds as it was.
+	supersededBefore := func(after time.Duration, vanishes bool) func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served) {
+		return func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served) {
+			if vanishes {
+				require.NoError(t, h.sessions.Delete(t.Context(), s.ID))
+			} else {
+				racing := *s
+				_, _, err := h.sessions.RotateWithGrace(t.Context(), &racing, 30*time.Second)
+				require.NoError(t, err)
+			}
+
+			h.clock.Advance(after)
+
+			was := *s
+			c := h.chain(t, s)
+			out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
+
+			// A refused rotation leaves the session the caller holds as it
+			// was: the second factor is not recorded on it.
+			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is unchanged")
+			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is unchanged: got %s", s.MFASatisfiedAt)
+			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is unchanged: got %s", s.AuthenticatedAt)
+
+			return c, out
+		}
 	}
 
 	cases := []testCase{
 		{
-			name:     "the session vanished before the rotation",
-			vanishes: true,
-			assert: func(t *testing.T, out served) {
+			name: "the session vanished before the rotation",
+			wire: verifiesOnce,
+			act:  supersededBefore(0, true),
+			assert: func(t *testing.T, _ *mfaHarness, _ *httpsec.Chain, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				require.ErrorIs(t, out.err, session.ErrNotFound)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 			},
 		},
 		{
-			name:  "inside the renewal's window",
-			after: 10 * time.Second,
-			assert: func(t *testing.T, out served) {
+			name: "inside the renewal's window",
+			wire: verifiesOnce,
+			act:  supersededBefore(10*time.Second, false),
+			assert: func(t *testing.T, _ *mfaHarness, _ *httpsec.Chain, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
 				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
 				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
 			},
 		},
 		{
-			name:  "after the renewal's window",
-			after: 31 * time.Second,
-			assert: func(t *testing.T, out served) {
+			name: "after the renewal's window",
+			wire: verifiesOnce,
+			act:  supersededBefore(31*time.Second, false),
+			assert: func(t *testing.T, _ *mfaHarness, _ *httpsec.Chain, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				require.ErrorIs(t, out.err, session.ErrReused)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			// "Two valid codes at once": both requests hold the pending
+			// session before either rotates it. The loser's strict rotation
+			// finds the handle the winner just rotated away and is a lost
+			// race, not a sign-out.
+			name: "two valid codes at once: one succeeds, the other is a renewal conflict",
+			wire: func(h *mfaHarness) {
+				h.channel(factor.AuthenticatorApp).recordsNoFailure()
+				h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).Times(2)
+
+				// Both verifications are held until both have arrived, so
+				// both requests loaded the session before either rotates it.
+				var arrived sync.WaitGroup
+				arrived.Add(2)
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Times(2).
+					DoAndReturn(func(context.Context, identity.UserID, []byte) error {
+						arrived.Done()
+						arrived.Wait()
+
+						return nil
+					})
+			},
+			act: func(t *testing.T, h *mfaHarness, s *session.Session) (*httpsec.Chain, served) {
+				c := h.bearerChain(t)
+
+				var (
+					wg   sync.WaitGroup
+					outs [2]served
+				)
+				for i := range outs {
+					wg.Go(func() {
+						outs[i] = serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
+							testMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
+					})
+				}
+				wg.Wait()
+
+				// The one that lost is the one returned.
+				if outs[0].err == nil {
+					require.Error(t, outs[1].err, "exactly one wins")
+
+					return c, outs[1]
+				}
+
+				require.NoError(t, outs[1].err, "exactly one wins")
+
+				return c, outs[0]
+			},
+			assert: func(t *testing.T, h *mfaHarness, c *httpsec.Chain, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the loser is not signed out")
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+
+				// The winner's credential authenticates the next request.
+				next := serve(t, c, bearerRequestTo(t.Context(), http.MethodGet, "/invoices",
+					mfaTokenFor(h.rotatedID(t)), ""))
+				require.NoError(t, next.err, "the winner's credential still works")
+				assert.True(t, next.handlerRan)
+				assert.Equal(t, session.MFASatisfied, h.stored(t, h.rotatedID(t)).MFA)
 			},
 		},
 	}
@@ -1064,30 +1689,12 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 			t.Parallel()
 
 			h := newMFAHarness(t)
-			h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+			tc.wire(h)
 
 			s := h.pendingSession(t, factor.Password)
 
-			// A renewal of the same session, racing the verification: the
-			// verification still holds the session as it was before.
-			if tc.vanishes {
-				require.NoError(t, h.sessions.Delete(t.Context(), s.ID))
-			} else {
-				racing := *s
-				_, _, err := h.sessions.RotateWithGrace(t.Context(), &racing, 30*time.Second)
-				require.NoError(t, err)
-			}
-
-			h.clock.Advance(tc.after)
-
-			was := *s
-			tc.assert(t, serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath)))
-
-			// A refused rotation leaves the session the caller holds as it
-			// was: the second factor is not recorded on it.
-			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
-			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
-			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
+			c, out := tc.act(t, h, s)
+			tc.assert(t, h, c, out)
 		})
 	}
 }
@@ -1844,6 +2451,51 @@ type verifyBody struct {
 	ValidUntil   time.Time `json:"valid_until"`
 }
 
+// TestMFAVerifyNoChallengePendingServes403 pins "No MFA challenge pending at
+// verify" end to end: a session owing no second factor that posts a code
+// reaches the verify endpoint through a bearer chain mounted on net/http, and
+// the response served is 403, with the code never checked and the session
+// left where it was.
+//
+// Not rows of TestMFAVerify: those run the chain's interceptors and read the
+// refusal they return, where these read the status the mounted chain served.
+func TestMFAVerifyNoChallengePendingServes403(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name  string
+		state session.MFAState
+	}
+
+	cases := []testCase{
+		{name: "a session that already satisfied its second factor", state: session.MFASatisfied},
+		{name: "a session no second factor was asked of", state: session.MFANone},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp).neverVerifies().neverChecked().recordsNoFailure()
+
+			s := h.newSession(t, factor.Password, tc.state)
+
+			rec := httptest.NewRecorder()
+			reached := false
+			h.bearerChain(t).Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				reached = true
+			})).ServeHTTP(rec, bearerRequestTo(t.Context(), http.MethodPost, testMFAVerifyPath,
+				mfaTokenFor(s.ID), "code="+testMFACode))
+
+			assert.Equal(t, http.StatusForbidden, rec.Code, "the served status")
+			assert.False(t, reached, "the application never sees the verify endpoint")
+			assert.Equal(t, tc.state, h.stored(t, s.ID).MFA, "the session is left where it was")
+			assert.Nil(t, h.issuedFor.Load(), "no credential was issued")
+		})
+	}
+}
+
 // TestMFAVerifyDoesNotStrandCaller pins the defect that made the responder
 // necessary.
 //
@@ -1929,6 +2581,23 @@ func TestMFAVerifySatisfiedSessionPassesTheGate(t *testing.T) {
 
 	rotated := h.stored(t, h.rotatedID(t))
 	assert.Equal(t, session.MFASatisfied, rotated.MFA)
+}
+
+// issuedExcept returns every identifier a token was issued against other than
+// kept.
+func (h *mfaHarness) issuedExcept(kept string) []string {
+	h.issuedMu.Lock()
+	defer h.issuedMu.Unlock()
+
+	var others []string
+
+	for _, id := range h.issuedAll {
+		if id != kept {
+			others = append(others, id)
+		}
+	}
+
+	return others
 }
 
 // rotatedID is the identifier the last access token was issued against.

@@ -93,7 +93,11 @@ func WithPasskeyRemoveResponder(fn PasskeyChangeResponder) PasskeyOption {
 
 // manage serves the management endpoints: GET on the credentials prefix
 // lists, POST on its rename and remove paths changes. It reports false for
-// any other request, which the caller passes on.
+// any other request, which the caller passes on. A request on which the
+// per-request policy raised a consumer challenge kind is refused with a
+// ChallengeError of that kind, with no way to opt a kind in: the management
+// endpoints never serve one (WithPasskeyRegistrationResolving is for
+// registration only).
 func (p *passkeyInterceptor) manage(ex *Exchange) (bool, error) {
 	r := ex.Request
 
@@ -121,30 +125,32 @@ func (p *passkeyInterceptor) manage(ex *Exchange) (bool, error) {
 		return true, err
 	}
 
+	if err := raisedChallengeRefusal(ex, s); err != nil {
+		return true, err
+	}
+
 	return true, serve(ex, s)
 }
 
-// fullSessionOnly refuses a session that is confined or owes a challenge,
-// with the challenge it owes. The gates ahead of the endpoints refuse them
-// first on a chain that enables them; this holds the line for an
-// interceptor a consumer placed between, and for a chain without the gate.
+// fullSessionOnly refuses a session that is not a full session (fullSession,
+// the check re-proof admission and saved-code regeneration also make): one
+// owing a challenge is refused with the challenge it owes, and one owing none
+// but still not full (a confinement marker left without its state, or a
+// second-factor state outside the named ones, which no library path produces)
+// with ErrAuthenticationRequired. The gates ahead of the endpoints refuse a
+// session owing a challenge first on a chain that enables them; this holds
+// the line for an interceptor a consumer placed between, and for a chain
+// without the gate.
 func fullSessionOnly(s *session.Session) error {
-	var kind policy.ChallengeKind
-
-	switch {
-	case s.MFA == session.MFARecoveryPending:
-		kind = policy.ChallengeAccountRecovery
-	case s.MFA == session.MFAEnrolmentPending:
-		kind = policy.ChallengeMFAEnrolment
-	case s.MFA == session.MFAPending:
-		kind = policy.ChallengeMFA
-	case s.PasswordChangePending:
-		kind = policy.ChallengePasswordChange
-	default:
+	if fullSession(s) {
 		return nil
 	}
 
-	return &ChallengeError{Kind: kind, Session: s}
+	if kind := owedChallenge(s); kind != policy.ChallengeNone {
+		return &ChallengeError{Kind: kind, Session: s}
+	}
+
+	return ErrAuthenticationRequired
 }
 
 // list answers the session user's passkeys.

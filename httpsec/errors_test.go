@@ -200,6 +200,13 @@ func TestStatusForError(t *testing.T) {
 		{name: "passkey attestation refused", err: passkey.ErrAttestationRefused, want: 403},
 		{name: "passkey limit reached", err: passkey.ErrPerUserLimitReached, want: 403},
 		{name: "passkey reauthentication required", err: passkey.ErrReauthenticationRequired, want: 403},
+		{name: "recency reauthentication required", err: httpsec.ErrReauthenticationRequired, want: 403},
+		{name: "reauthentication method not usable", err: httpsec.ErrReauthenticationMethodNotUsable, want: 403},
+		{
+			name: "recency refusal carrying its window",
+			err:  fmt.Errorf("guard: %w", &httpsec.ReauthenticationRequiredError{Window: 5 * time.Minute}),
+			want: 403,
+		},
 		{name: "passkey not found", err: passkey.ErrNotFound, want: 404},
 		{name: "wrapped passkey not found", err: fmt.Errorf("removing: %w", passkey.ErrNotFound), want: 404},
 		{name: "throttled passkey registration begin", err: passkey.ErrRegistrationThrottled, want: 401},
@@ -419,16 +426,18 @@ var sentinelRegistry = map[string]map[string]error{
 		"recovery.ErrRefused":                  recovery.ErrRefused,
 	},
 	"github.com/kartaladev/scrty/httpsec": {
-		"httpsec.ErrAuthenticationRequired": httpsec.ErrAuthenticationRequired,
-		"httpsec.ErrConfig":                 httpsec.ErrConfig,
-		"httpsec.ErrCredentialsMissing":     httpsec.ErrCredentialsMissing,
-		"httpsec.ErrMalformedRequest":       httpsec.ErrMalformedRequest,
-		"httpsec.ErrMFAMethodNotUsable":     httpsec.ErrMFAMethodNotUsable,
-		"httpsec.ErrNoMFAChallengePending":  httpsec.ErrNoMFAChallengePending,
-		"httpsec.ErrRenewalThrottled":       httpsec.ErrRenewalThrottled,
-		"httpsec.ErrRequestTooLarge":        httpsec.ErrRequestTooLarge,
-		"httpsec.ErrSessionRenewalConflict": httpsec.ErrSessionRenewalConflict,
-		"httpsec.ErrUnknownMFAMethod":       httpsec.ErrUnknownMFAMethod,
+		"httpsec.ErrAuthenticationRequired":          httpsec.ErrAuthenticationRequired,
+		"httpsec.ErrConfig":                          httpsec.ErrConfig,
+		"httpsec.ErrCredentialsMissing":              httpsec.ErrCredentialsMissing,
+		"httpsec.ErrMalformedRequest":                httpsec.ErrMalformedRequest,
+		"httpsec.ErrMFAMethodNotUsable":              httpsec.ErrMFAMethodNotUsable,
+		"httpsec.ErrNoMFAChallengePending":           httpsec.ErrNoMFAChallengePending,
+		"httpsec.ErrRenewalThrottled":                httpsec.ErrRenewalThrottled,
+		"httpsec.ErrReauthenticationRequired":        httpsec.ErrReauthenticationRequired,
+		"httpsec.ErrReauthenticationMethodNotUsable": httpsec.ErrReauthenticationMethodNotUsable,
+		"httpsec.ErrRequestTooLarge":                 httpsec.ErrRequestTooLarge,
+		"httpsec.ErrSessionRenewalConflict":          httpsec.ErrSessionRenewalConflict,
+		"httpsec.ErrUnknownMFAMethod":                httpsec.ErrUnknownMFAMethod,
 	},
 	"github.com/kartaladev/scrty/session": {
 		"session.ErrConfig":             session.ErrConfig,
@@ -644,6 +653,58 @@ func declaredErrVars(t *testing.T, pkg string) []string {
 
 	require.NotEmpty(t, names, "no exported Err* variables found in %s", dir)
 	return names
+}
+
+func TestReauthenticationRequiredError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sessionHandle = "sess-handle-0123456789"
+		userID        = "user-42-fixture"
+	)
+	// The fixtures are values the text must never carry; the error has no
+	// field for them, so the check pins that no future field leaks them.
+	err := fmt.Errorf("guard: %w", &httpsec.ReauthenticationRequiredError{Window: 5 * time.Minute})
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "matches the sentinel through a wrap",
+			assert: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, httpsec.ErrReauthenticationRequired)
+				assert.NotErrorIs(t, err, httpsec.ErrReauthenticationMethodNotUsable)
+			},
+		},
+		{
+			name: "exposes the window",
+			assert: func(t *testing.T, err error) {
+				var re *httpsec.ReauthenticationRequiredError
+				require.ErrorAs(t, err, &re)
+				assert.Equal(t, 5*time.Minute, re.Window)
+			},
+		},
+		{
+			name: "text names the window and no session or user",
+			assert: func(t *testing.T, err error) {
+				var re *httpsec.ReauthenticationRequiredError
+				require.ErrorAs(t, err, &re)
+				assert.Equal(t, "httpsec: reauthentication required within 5m0s", re.Error())
+				assert.NotContains(t, err.Error(), sessionHandle)
+				assert.NotContains(t, err.Error(), userID)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, err)
+		})
+	}
 }
 
 func TestChallengeError(t *testing.T) {

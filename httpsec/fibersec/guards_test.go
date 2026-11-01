@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	recoverer "github.com/gofiber/fiber/v3/middleware/recover"
@@ -17,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/fibersec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/session"
 )
 
 // The errors a guard's collaborators fail with, each distinct so a row can say
@@ -557,6 +559,330 @@ func TestFiber_OwnershipGuardFailsAtWiring(t *testing.T) {
 	}
 }
 
+// TestFiber_NewGuards_Recency pins that the recency options are refused at
+// construction when all they could do is make every recency guard refuse, with
+// a message that names the option the consumer got wrong.
+func TestFiber_NewGuards_Recency(t *testing.T) {
+	t.Parallel()
+
+	var typedNilClock *sessionClock
+
+	refusedNaming := func(option string) func(*testing.T, *fibersec.Guards, error) {
+		return func(t *testing.T, g *fibersec.Guards, err error) {
+			t.Helper()
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.ErrorContains(t, err, option)
+			assert.Nil(t, g)
+		}
+	}
+
+	type testCase struct {
+		name string
+		// noAuthorizer builds the guards with no authorizer at all, so a
+		// second wiring mistake is judged against the missing one.
+		noAuthorizer bool
+		opts         []fibersec.GuardOption
+		assert       func(t *testing.T, g *fibersec.Guards, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "defaults",
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, g)
+			},
+		},
+		{
+			name: "a consumer window, clock and time source",
+			opts: []fibersec.GuardOption{
+				fibersec.WithRecentAuthenticationWindow(time.Minute),
+				fibersec.WithGuardClock(&sessionClock{}),
+				fibersec.WithAuthenticationTime(func(context.Context) (time.Time, bool) { return time.Time{}, false }),
+			},
+			assert: func(t *testing.T, g *fibersec.Guards, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, g)
+			},
+		},
+		{
+			name:   "zero window",
+			opts:   []fibersec.GuardOption{fibersec.WithRecentAuthenticationWindow(0)},
+			assert: refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
+			name:   "negative window",
+			opts:   []fibersec.GuardOption{fibersec.WithRecentAuthenticationWindow(-time.Second)},
+			assert: refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
+			// "One wiring mistake, one error on every adapter": the recency
+			// options are judged before the missing authorizer, as the
+			// net/http and gin guards judge them.
+			name:         "a zero window and no authorizer reports the window",
+			noAuthorizer: true,
+			opts:         []fibersec.GuardOption{fibersec.WithRecentAuthenticationWindow(0)},
+			assert:       refusedNaming("WithRecentAuthenticationWindow"),
+		},
+		{
+			name:   "nil clock",
+			opts:   []fibersec.GuardOption{fibersec.WithGuardClock(nil)},
+			assert: refusedNaming("WithGuardClock"),
+		},
+		{
+			name:   "typed-nil clock",
+			opts:   []fibersec.GuardOption{fibersec.WithGuardClock(typedNilClock)},
+			assert: refusedNaming("WithGuardClock"),
+		},
+		{
+			name:   "nil authentication-time source",
+			opts:   []fibersec.GuardOption{fibersec.WithAuthenticationTime(nil)},
+			assert: refusedNaming("WithAuthenticationTime"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var az authorize.Authorizer
+			if !tc.noAuthorizer {
+				az = permittingAuthorizer(t)
+			}
+
+			g, err := fibersec.NewGuards(az, tc.opts...)
+			tc.assert(t, g, err)
+		})
+	}
+}
+
+// TestFiberRecencyGuards pins the recency guards on fiber against the core
+// guards' judgement: refuse unless the authentication time is within the
+// window of the guards' clock, return the refusal for fiber's error handler,
+// and fail closed in the same order as every other guard.
+func TestFiberRecencyGuards(t *testing.T) {
+	t.Parallel()
+
+	type guarded struct {
+		routeRan bool
+		refusal  error
+	}
+
+	// base is the authentication time a consumer time source reports.
+	base := time.Date(2026, 1, 2, 9, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name string
+
+		// viaSession authenticates by a bearer over a live session, whose
+		// authentication time is the one the guards judge. Otherwise the
+		// chain publishes the test principal alone, and nobody when noCaller.
+		viaSession bool
+		noCaller   bool
+
+		// ahead is how far the guards' clock is past the authentication time.
+		ahead time.Duration
+
+		// systemClock builds the guards without WithGuardClock.
+		systemClock bool
+
+		// nilAuthorizer builds guards that rely on a chain that published none.
+		nilAuthorizer bool
+
+		// opts are the guards' options beyond the clock.
+		opts []fibersec.GuardOption
+
+		build  func(g *fibersec.Guards) fiber.Handler
+		assert func(t *testing.T, res response, out guarded)
+	}
+
+	recent := func(g *fibersec.Guards) fiber.Handler { return g.RequireRecentAuthentication() }
+	within := func(d time.Duration) func(*fibersec.Guards) fiber.Handler {
+		return func(g *fibersec.Guards) fiber.Handler { return g.RequireAuthenticationWithin(d) }
+	}
+	consumerTime := fibersec.WithAuthenticationTime(func(context.Context) (time.Time, bool) { return base, true })
+
+	reached := func(t *testing.T, res response, out guarded) {
+		t.Helper()
+		require.NoError(t, out.refusal)
+		assert.True(t, out.routeRan)
+		assert.Equal(t, http.StatusNoContent, res.status)
+	}
+
+	reauthenticate := func(window time.Duration) func(*testing.T, response, guarded) {
+		return func(t *testing.T, res response, out guarded) {
+			t.Helper()
+
+			var refusal *httpsec.ReauthenticationRequiredError
+
+			require.ErrorIs(t, out.refusal, httpsec.ErrReauthenticationRequired)
+			require.ErrorAs(t, out.refusal, &refusal)
+			assert.Equal(t, window, refusal.Window)
+			assert.False(t, out.routeRan, "the route must not run for a stale authentication")
+			assert.Equal(t, http.StatusForbidden, res.status)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:       "a session authenticated 5 minutes ago reaches the route",
+			viaSession: true,
+			ahead:      5 * time.Minute,
+			build:      recent,
+			assert:     reached,
+		},
+		{
+			name:       "a session authenticated 16 minutes ago is told to reauthenticate",
+			viaSession: true,
+			ahead:      16 * time.Minute,
+			build:      recent,
+			assert:     reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:       "the default window is 15 minutes, inclusive",
+			viaSession: true,
+			ahead:      15 * time.Minute,
+			build:      recent,
+			assert:     reached,
+		},
+		{
+			name:        "the guards read the system clock unless told otherwise",
+			viaSession:  true,
+			systemClock: true,
+			build:       recent,
+			assert:      reached,
+		},
+		{
+			name:       "a route's own window takes precedence over the guards'",
+			viaSession: true,
+			ahead:      6 * time.Minute,
+			opts:       []fibersec.GuardOption{fibersec.WithRecentAuthenticationWindow(time.Hour)},
+			build:      within(5 * time.Minute),
+			assert:     reauthenticate(5 * time.Minute),
+		},
+		{
+			name:       "the guards' window applies to a route that names none",
+			viaSession: true,
+			ahead:      6 * time.Minute,
+			opts:       []fibersec.GuardOption{fibersec.WithRecentAuthenticationWindow(5 * time.Minute)},
+			build:      recent,
+			assert:     reauthenticate(5 * time.Minute),
+		},
+		{
+			name:   "a consumer time source replaces the session",
+			ahead:  time.Minute,
+			opts:   []fibersec.GuardOption{consumerTime},
+			build:  recent,
+			assert: reached,
+		},
+		{
+			name:   "a stale consumer time is refused",
+			ahead:  16 * time.Minute,
+			opts:   []fibersec.GuardOption{consumerTime},
+			build:  recent,
+			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:  "a consumer time source with no time refuses",
+			ahead: time.Minute,
+			opts: []fibersec.GuardOption{fibersec.WithAuthenticationTime(
+				func(context.Context) (time.Time, bool) { return time.Time{}, false })},
+			build:  recent,
+			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:  "a consumer time source reporting a zero time refuses",
+			ahead: time.Minute,
+			opts: []fibersec.GuardOption{fibersec.WithAuthenticationTime(
+				func(context.Context) (time.Time, bool) { return time.Time{}, true })},
+			build:  recent,
+			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:   "a caller with no session is told to reauthenticate",
+			build:  recent,
+			assert: reauthenticate(httpsec.DefaultRecentAuthenticationWindow),
+		},
+		{
+			name:     "a request nothing authenticated is told to authenticate",
+			noCaller: true,
+			build:    recent,
+			assert: func(t *testing.T, res response, out guarded) {
+				require.ErrorIs(t, out.refusal, httpsec.ErrAuthenticationRequired)
+				assert.False(t, out.routeRan)
+				assert.Equal(t, http.StatusUnauthorized, res.status)
+			},
+		},
+		{
+			name:          "a guard that found no judge refuses before judging recency",
+			viaSession:    true,
+			nilAuthorizer: true,
+			build:         recent,
+			assert: func(t *testing.T, res response, out guarded) {
+				require.ErrorIs(t, out.refusal, authorize.ErrAccessDenied)
+				assert.False(t, out.routeRan)
+				assert.Equal(t, http.StatusForbidden, res.status)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				out       guarded
+				chainOpts []httpsec.Option
+				authedAt  = base
+				req       *http.Request
+			)
+
+			if tc.viaSession {
+				var live *session.Session
+
+				chainOpts, live = authenticated(t)
+				authedAt = live.AuthenticatedAt
+				req = bearerRequest(t.Context(), http.MethodGet, "/records/r-1")
+			} else {
+				chainOpts = []httpsec.Option{
+					httpsec.RegisterInterceptor(publishing(testPrincipal()), httpsec.OrderBearerToken),
+				}
+				if tc.noCaller {
+					chainOpts = nil
+				}
+				req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/records/r-1", nil)
+			}
+
+			opts := tc.opts
+			if !tc.systemClock {
+				opts = append(opts, fibersec.WithGuardClock(&sessionClock{now: authedAt.Add(tc.ahead)}))
+			}
+
+			var az authorize.Authorizer = permittingAuthorizer(t)
+			if tc.nilAuthorizer {
+				az = nil
+				opts = append(opts, fibersec.WithChainAuthorizer())
+			}
+
+			g := mustGuards(t, az, opts...)
+
+			app := fiber.New(fiber.Config{ErrorHandler: func(fc fiber.Ctx, err error) error {
+				out.refusal = err
+
+				return fibersec.ErrorHandler(fc, err)
+			}})
+			app.Use(fibersec.Middleware(newChain(t, chainOpts...)))
+			app.Get("/records/:id", tc.build(g), func(fc fiber.Ctx) error {
+				out.routeRan = true
+
+				return fc.SendStatus(http.StatusNoContent)
+			})
+
+			tc.assert(t, serve(t, app, req), out)
+		})
+	}
+}
+
 // TestFiber_GuardsBuildersWithNilGuardsFailAtWiring stands apart from
 // TestFiber_OwnershipGuardFailsAtWiring: its cases are named after the builder
 // called on nil Guards, and folding them would need a nested group.
@@ -579,6 +905,30 @@ func TestFiber_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
 			name:   "ResourcePrivileges",
 			build:  func() { (*fibersec.Guards)(nil).ResourcePrivileges("orders", "order") },
 			panics: "fibersec: ResourcePrivileges needs non-nil Guards",
+		},
+		{
+			name:   "RequireRecentAuthentication",
+			build:  func() { (*fibersec.Guards)(nil).RequireRecentAuthentication() },
+			panics: "fibersec: RequireRecentAuthentication needs non-nil Guards",
+		},
+		{
+			name:   "RequireAuthenticationWithin",
+			build:  func() { (*fibersec.Guards)(nil).RequireAuthenticationWithin(time.Minute) },
+			panics: "fibersec: RequireAuthenticationWithin needs non-nil Guards",
+		},
+		{
+			name: "RequireAuthenticationWithin with a zero window",
+			build: func() {
+				mustGuards(t, nil, fibersec.WithChainAuthorizer()).RequireAuthenticationWithin(0)
+			},
+			panics: "fibersec: RequireAuthenticationWithin needs a window above zero, got 0s",
+		},
+		{
+			name: "RequireAuthenticationWithin with a negative window",
+			build: func() {
+				mustGuards(t, nil, fibersec.WithChainAuthorizer()).RequireAuthenticationWithin(-time.Second)
+			},
+			panics: "fibersec: RequireAuthenticationWithin needs a window above zero, got -1s",
 		},
 		{
 			name: "ResourceOwnerships",

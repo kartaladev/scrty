@@ -1,21 +1,26 @@
 package httpsec_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
@@ -151,6 +156,59 @@ func TestPasskeyRegistration(t *testing.T) {
 			state: session.MFASatisfied,
 			setup: func(t *testing.T, h *passkeyHarness) { h.withEnrolledMethod(t) },
 			act:   begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				t.Helper()
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.NotEmpty(t, h.verifier.lastCreation(t))
+			},
+		},
+		{
+			// "Freshness from a re-authentication": signed in by password at
+			// 09:00 (now), re-authenticated with the password at 09:30 on the
+			// chain's clock, and beginning at 09:40 on the manager's.
+			name:  "a re-authentication with the password makes a stale session fresh for begin",
+			state: session.MFANone,
+			setup: func(t *testing.T, h *passkeyHarness) {
+				// A full MFANone session exists only where no policy asks for
+				// enrolment at sign-in, so the post-authentication phase a
+				// password re-proof runs allows it.
+				h.withoutEnrolment = true
+				signedIn := time.Now()
+				h.pkOpts = append(h.pkOpts, passkey.WithClock(clockwork.NewFakeClockAt(signedIn.Add(40*time.Minute))))
+
+				authn := NewMockAuthenticator(gomock.NewController(t))
+				authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Return(&authenticate.Authentication{
+					Principal: testPrincipal(),
+				}, nil)
+
+				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+						return mfaTokenFor(id), nil
+					})
+
+				h.extra = append(h.extra,
+					httpsec.WithClock(clockwork.NewFakeClockAt(signedIn.Add(30*time.Minute))),
+					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+						Authenticator: authn, Sessions: h.sessions, Tokens: h.tokens,
+						Attempts: must.Must(lockout.NewMemoryAttemptStore()),
+					}))
+			},
+			act: func(t *testing.T, h *passkeyHarness, chain *httpsec.Chain) served {
+				stale := begin(t, h, chain)
+				require.ErrorIs(t, stale.err, passkey.ErrReauthenticationRequired, "stale before the re-authentication")
+
+				reauth := serve(t, chain, post(t.Context(), httpsec.DefaultReauthenticationPrefix+"/password",
+					url.Values{httpsec.DefaultLoginPasswordParam: {"correct horse"}}.Encode()))
+				require.NoError(t, reauth.err)
+
+				// The rotated session is what the caller now presents.
+				rotated, err := h.sessions.Load(t.Context(), sessionIDOf(t, accessTokenFrom(t, reauth)))
+				require.NoError(t, err)
+				h.pinned = rotated
+
+				return begin(t, h, chain)
+			},
 			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
 				t.Helper()
 				require.NoError(t, out.err)
@@ -682,7 +740,8 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 					passkey.WithRepudiationContact("help@example.com"))
 				require.NoError(t, err)
 
-				h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}))
+				h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 			},
 			assert: refused,
 		},

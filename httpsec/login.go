@@ -324,36 +324,8 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 	now := l.now()
 
-	// The source is checked once the credentials are read, so a malformed
-	// login spends nothing, and before the pre-authentication phase, so a
-	// throttled source costs neither a policy evaluation nor a password check.
-	src, err := sourceThrottled(ctx, l.guard, ex.Request.ClientIP(), l.flow,
-		l.sampler, l.log, now)
+	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, now)
 	if err != nil {
-		return err
-	}
-
-	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if !errors.Is(err, lockout.ErrAccountLocked) {
-			return err
-		}
-
-		// A source hammering a locked account spends its own allowance.
-		recordSourceFailure(ctx, l.guard, src)
-
-		return refuseLocked(ctx, l.authn, l.discloseLocks,
-			identity.NewUsernamePassword(username, password), err)
-	}
-
-	auth, err := l.verifyPassword(ctx, username, password, now)
-	if err != nil {
-		// Every refusal is charged to the source, an unavailable user store
-		// and a load the client's own hang-up ended included: verifyPassword
-		// recorded nothing for the username then, and the source still pays
-		// for the password work it spent, so an outage or a client timing its
-		// hang-ups cannot spend work no throttle bounds.
-		recordSourceFailure(ctx, l.guard, src)
-
 		return err
 	}
 
@@ -390,10 +362,47 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session})
 }
 
+// attemptPassword is the password order a login and a password re-proof both
+// run, so neither can drift from the other: the password-login source guard,
+// the pre-authentication phase, then the password check (see
+// authenticatePassword), with the source charged for what it spent. It does
+// not clear the user's recorded failures: what counts as a success is the
+// caller's to decide, and a re-proof first confirms the proved account is the
+// session's own.
+//
+// The source is checked once the caller has read the credentials, so a
+// malformed request spends nothing, and before the pre-authentication phase,
+// so a throttled source costs neither a policy evaluation nor a password
+// check.
+//
+// A source hammering a locked account spends its own allowance, so a lock is
+// charged to it. Any other pre-authentication refusal, a policy deny or an
+// unenforced challenge, is not. Every refused password check is charged, an
+// unavailable user store and a load the client's own hang-up ended included:
+// verifyPassword recorded nothing for the username then, and the source still
+// pays for the password work it spent, so an outage or a client timing its
+// hang-ups cannot spend work no throttle bounds.
+func (l *formLogin) attemptPassword(
+	ctx context.Context,
+	clientIP, username string,
+	password []byte,
+	now time.Time,
+) (*authenticate.Authentication, error) {
+	src, err := sourceThrottled(ctx, l.guard, clientIP, l.flow, l.sampler, l.log, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return l.judgePassword(ctx, username, password, now, func() {
+		recordSourceFailure(ctx, l.guard, src)
+	})
+}
+
 // authenticatePassword judges a password the way a login does: the
 // pre-authentication phase (preAuthenticate), then the password check
-// (verifyPassword). Login runs the same two steps, and account recovery's
-// password proof runs them through here, so neither can drift from them.
+// (verifyPassword). Account recovery's password proof runs them through here,
+// and login and re-proof through attemptPassword, which shares the same
+// judgement (judgePassword), so none can drift from the others.
 //
 // The pre-authentication phase runs before the credential is checked, so a
 // locked account is refused without its password ever being tested. Testing
@@ -404,29 +413,50 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // authenticator refuses is recorded as a failed attempt; a user store that
 // could not answer (authenticate.ErrUnavailable), and a load the request's own
 // context ended, are returned as they are and recorded as nothing for the
-// username, for the caller to charge to its source. Clearing the failures a
-// success supersedes is left to the caller, because only a login is a success
-// in that sense.
+// username. Clearing the failures a success supersedes is left to the caller,
+// because only a login is a success in that sense.
 //
-// There is no source check here. The login endpoint checks the
-// password-login guard before calling the two steps itself, and account
-// recovery guards its own endpoint by source.
+// There is no source check or source charge here. The login endpoint and
+// re-proof check the password-login guard through attemptPassword, and
+// account recovery guards its own endpoint by source.
 func (l *formLogin) authenticatePassword(
 	ctx context.Context,
 	username string,
 	password []byte,
 	now time.Time,
 ) (*authenticate.Authentication, error) {
+	return l.judgePassword(ctx, username, password, now, func() {})
+}
+
+// judgePassword is the pre-authentication phase, a lock refused as a login
+// refuses it, then the password check, calling charge for a lock and for
+// every refused password check, and for nothing else.
+func (l *formLogin) judgePassword(
+	ctx context.Context,
+	username string,
+	password []byte,
+	now time.Time,
+	charge func(),
+) (*authenticate.Authentication, error) {
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if errors.Is(err, lockout.ErrAccountLocked) {
-			return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
-				identity.NewUsernamePassword(username, password), err)
+		if !errors.Is(err, lockout.ErrAccountLocked) {
+			return nil, err
 		}
+
+		charge()
+
+		return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
+			identity.NewUsernamePassword(username, password), err)
+	}
+
+	auth, err := l.verifyPassword(ctx, username, password, now)
+	if err != nil {
+		charge()
 
 		return nil, err
 	}
 
-	return l.verifyPassword(ctx, username, password, now)
+	return auth, nil
 }
 
 // preAuthenticate is the pre-authentication phase's refusal of username, or
@@ -672,6 +702,58 @@ func evaluatePhase(
 	}
 
 	return e.EvaluatePhase(ctx, phase, in)
+}
+
+// judgeBehindSecondFactor is the post-authentication decision d of a request
+// that has just verified a second factor, with what a challenge for that
+// factor hid judged too. A second-factor re-proof and MFA verification both
+// take their decision through it.
+//
+// The engine returns the first challenge in registration order, so a
+// challenge registered after the policy asking for a second factor never
+// surfaces while that one is held: dropping the second-factor challenge,
+// because the factor has just been presented, would drop it too. So when d is
+// a policy.ChallengeMFA the phase is judged once more, at the same instant,
+// on a copy of in saying the request has satisfied a second factor
+// (policy.Input.MFASatisfied), which it has. That decision is returned, a
+// deny or a challenge of another kind as the caller refuses any, and a second
+// policy.ChallengeMFA reduced to an allow: the factor is the one being
+// presented. Any other d is returned unchanged, and in is never modified.
+//
+// When in already says the second factor is satisfied, d was judged with it,
+// and asking again would ask the same question: a policy.ChallengeMFA is then
+// reduced to an allow without evaluating the phase again.
+//
+// It can only add refusals to dropping the second-factor challenge outright.
+// A policy that raises policy.ChallengeMFA in this phase without honouring
+// MFASatisfied keeps raising it, and whatever it hides stays hidden; the
+// library's policy.MFA honours it, and policy.MFARequirement raises no
+// post-authentication second-factor challenge for a login off the federated
+// channel, and allows an unmet federated one once MFASatisfied and
+// Reauthenticating are both set.
+func judgeBehindSecondFactor(
+	ctx context.Context,
+	e *policy.Engine,
+	in *policy.Input,
+	d policy.Decision,
+) policy.Decision {
+	if d.Outcome != policy.Challenge || d.Challenge != policy.ChallengeMFA {
+		return d
+	}
+
+	if in.MFASatisfied {
+		return policy.Decision{Outcome: policy.Allow}
+	}
+
+	satisfied := *in
+	satisfied.MFASatisfied = true
+
+	behind := evaluatePhase(ctx, e, policy.PostAuthentication, &satisfied)
+	if behind.Outcome == policy.Challenge && behind.Challenge == policy.ChallengeMFA {
+		return policy.Decision{Outcome: policy.Allow}
+	}
+
+	return behind
 }
 
 // writeLoginResult is the response a login succeeds with when the consumer

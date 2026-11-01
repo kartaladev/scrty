@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/guardauth"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // Guards builds the per-endpoint authorization a consumer puts in front of one
@@ -35,7 +37,35 @@ type Guards struct {
 
 	// onError answers a refusal, and nil means the library's own default.
 	onError func(w http.ResponseWriter, r *http.Request, err error)
+
+	// window is how recently a recency guard built without a window of its
+	// own requires the identity to have been proved.
+	window time.Duration
+
+	// clock is where a recency guard reads the current time.
+	clock clock.Clock
+
+	// authTime replaces the session as where a recency guard finds when the
+	// caller last proved their identity. It is used only when authTimeSet,
+	// which tells an absent source the consumer passed from no option at all.
+	authTime    func(ctx context.Context) (time.Time, bool)
+	authTimeSet bool
+
+	// recency judges every recency guard, built by NewGuards from the
+	// options above.
+	recency *guardauth.Recency
 }
+
+// DefaultRecentAuthenticationWindow is how recently a recency guard requires
+// the caller to have proved their identity when neither
+// WithRecentAuthenticationWindow nor RequireAuthenticationWithin says
+// otherwise.
+//
+// It is the window scrty applies to managing credentials, and it is short
+// because the library cannot see what a consumer guards: a stolen session
+// must not reach a sensitive operation hours after the user last proved who
+// they are.
+const DefaultRecentAuthenticationWindow = 15 * time.Minute
 
 // GuardOption configures the guards a consumer builds. A nil option is skipped,
 // so a consumer assembling the slice conditionally need not filter it.
@@ -54,8 +84,21 @@ type GuardOption func(*Guards)
 // before traffic arrives. With WithChainAuthorizer, a nil az — typed or not —
 // means no fallback, and a request the chain published no authorizer on is
 // refused with authorize.ErrAccessDenied.
+//
+// It also fails with an error wrapping ErrConfig when a recency option was
+// given something no recency guard could judge with: a window of zero or less
+// (WithRecentAuthenticationWindow), a nil or typed-nil clock (WithGuardClock),
+// or a nil authentication-time source (WithAuthenticationTime). The message
+// names the option.
+//
+// A wiring that is wrong in both ways reports the recency option first, on
+// every adapter, so one mistake is one error whichever adapter builds the
+// guards.
 func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
-	g := &Guards{}
+	g := &Guards{
+		window: DefaultRecentAuthenticationWindow,
+		clock:  clock.System(),
+	}
 
 	for _, opt := range opts {
 		if opt == nil {
@@ -63,6 +106,10 @@ func NewGuards(az authorize.Authorizer, opts ...GuardOption) (*Guards, error) {
 		}
 
 		opt(g)
+	}
+
+	if err := g.buildRecency(); err != nil {
+		return nil, err
 	}
 
 	// A nil az, typed or not, comes back as no fallback at all, so the guard
@@ -332,5 +379,140 @@ func (o *OwnershipGuard[ID]) ForResource(
 				return o.checker(ctx, subject, id)
 			},
 		})
+	})
+}
+
+// WithRecentAuthenticationWindow sets how recently every recency guard built
+// from these Guards requires the caller to have proved their identity, unless
+// the route names its own window with RequireAuthenticationWithin.
+//
+// Default: DefaultRecentAuthenticationWindow, 15 minutes. The window is fixed,
+// counted from the caller's authentication time (the session's, or the one
+// WithAuthenticationTime reports), and nothing but an authentication moves it:
+// calling a guarded route does not extend it, nor does a session renewal. A
+// window of zero or less fails NewGuards with ErrConfig, since no caller could
+// ever meet it. For a session, a window longer than its absolute lifetime
+// (session.WithAbsoluteTimeout) is never reached: the session ends first, so
+// the guard refuses only a caller with no recorded authentication time.
+func WithRecentAuthenticationWindow(d time.Duration) GuardOption {
+	return func(g *Guards) { g.window = d }
+}
+
+// WithGuardClock replaces where recency guards read the current time.
+//
+// Default: the system clock (clock.System). Guards are built outside the
+// chain and see none of its configuration, so a consumer who gives the chain
+// a clock with WithClock passes the same one here; otherwise the guards judge
+// a session's authentication time, which the chain recorded on its clock,
+// against another. A nil clock, or an interface holding a nil value, fails
+// NewGuards with ErrConfig rather than falling back to the system clock.
+func WithGuardClock(c clock.Clock) GuardOption {
+	return func(g *Guards) { g.clock = c }
+}
+
+// WithAuthenticationTime replaces where recency guards find when the caller
+// last proved their identity.
+//
+// Default: the authentication time of the request's session
+// (SessionFromContext), and a request with no session — a caller authenticated
+// by an API key, HTTP Basic or a consumer's own first factor — is refused
+// with ErrReauthenticationRequired. fn receives the request's context, with
+// the caller on it (identity.PrincipalFromContext), and reports the time and
+// whether there is one; reporting none refuses the request. When given, fn
+// replaces the session lookup entirely: a consumer who wants both reads the
+// session inside fn. A nil fn fails NewGuards with ErrConfig.
+func WithAuthenticationTime(fn func(ctx context.Context) (time.Time, bool)) GuardOption {
+	return func(g *Guards) {
+		g.authTime = fn
+		g.authTimeSet = true
+	}
+}
+
+// buildRecency builds the recency judge from the options, refusing those no
+// guard could judge with. The request's session is the time source unless
+// WithAuthenticationTime was given.
+func (g *Guards) buildRecency() error {
+	authTime := g.authTime
+	if !g.authTimeSet {
+		authTime = guardauth.SessionAuthenticationTime(SessionFromContext)
+	}
+
+	recency, reason := guardauth.NewRecency(g.window, g.clock, authTime)
+	if reason != "" {
+		return newConfigError("%s", reason)
+	}
+
+	g.recency = recency
+
+	return nil
+}
+
+// RequireRecentAuthentication guards a route that the caller may reach only
+// if they proved their identity recently: within the window
+// WithRecentAuthenticationWindow sets, DefaultRecentAuthenticationWindow
+// (15 minutes) by default.
+//
+// It is RequireAuthenticationWithin with the guards' window, and judges
+// exactly as that does: the authentication time from the request's session
+// unless WithAuthenticationTime replaces it, now from the system clock unless
+// WithGuardClock replaces it — pass the chain's clock (WithClock) there. Stack
+// it inside the privilege and ownership guards, privileged(recent(route)), so
+// a caller who may not act is told access denied rather than to
+// re-authenticate. A guards' window longer than the session's absolute
+// lifetime is never reached. It panics at wiring when g is nil.
+func (g *Guards) RequireRecentAuthentication() func(http.Handler) http.Handler {
+	if g == nil {
+		panic("httpsec: RequireRecentAuthentication needs non-nil Guards")
+	}
+
+	return g.recent(0)
+}
+
+// RequireAuthenticationWithin guards a route that the caller may reach only
+// if they proved their identity no longer than window ago. The route's window
+// takes precedence over the guards' (WithRecentAuthenticationWindow).
+//
+// Like every guard, it first refuses a request with no caller
+// (ErrAuthenticationRequired, 401) and one with no authorizer
+// (authorize.ErrAccessDenied). It then finds the caller's authentication
+// time — the request's session's, by default, or what WithAuthenticationTime
+// reports — and refuses with a *ReauthenticationRequiredError carrying window
+// (ErrReauthenticationRequired, 403) when there is none, or when it is longer
+// than window before the guards' clock (WithGuardClock) reads now. The window
+// is inclusive, an authentication time ahead of the clock counts as just now,
+// and the window is fixed: calling the route does not extend it, and only a
+// sign-in, a second factor at sign-in or a re-authentication moves the time.
+//
+// Stack it inside the privilege and ownership guards, so that it runs after
+// them:
+//
+//	privileged(recent(route))
+//
+// A caller who may not act at all is then told access denied, rather than
+// being sent to re-authenticate only to be refused anyway.
+//
+// A window longer than the session's absolute lifetime is never reached. It
+// panics at wiring, with a message naming the window, when window is zero or
+// less, and when g is nil, as the other builders do.
+func (g *Guards) RequireAuthenticationWithin(window time.Duration) func(http.Handler) http.Handler {
+	if g == nil {
+		panic("httpsec: RequireAuthenticationWithin needs non-nil Guards")
+	}
+
+	if window <= 0 {
+		panic(fmt.Sprintf("httpsec: RequireAuthenticationWithin needs a window above zero, got %s", window))
+	}
+
+	return g.recent(window)
+}
+
+// recent builds the recency guard over window, zero meaning the guards'.
+func (g *Guards) recent(window time.Duration) func(http.Handler) http.Handler {
+	return g.guard(func(ctx context.Context, _ Request, _ authorize.Authorizer) error {
+		if recent, judged := g.recency.Judge(ctx, window); !recent {
+			return &ReauthenticationRequiredError{Window: judged}
+		}
+
+		return nil
 	})
 }

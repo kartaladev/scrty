@@ -85,16 +85,16 @@ type Sessions struct {
 	// per-process warning below is written only where it is true.
 	storeSupplied bool
 
-	// rotating serialises Rotate, one identifier at a time. The store's
-	// conditional Supersede is what keeps a family to one successor, across
-	// replicas too; the lock settles two strict rotations of one session in
-	// this process more gently. Without it the second could read the old
-	// record between the first's supersession and its delete, find a window
-	// that has already ended, and revoke the family as reuse; with it, the
-	// second finds the record deleted and is refused with
-	// ErrNotFound. The lock follows the session rather than the
-	// manager, so two users completing a second factor at the same moment do
-	// not take turns.
+	// rotating serialises Rotate, one identifier at a time, as an in-process
+	// shortcut: a second strict rotation of one session in this process
+	// waits for the first and then reads the record it marked, rather than
+	// racing it to the store. It is not the guarantee. The store's
+	// conditional Supersede keeps a family to one successor, and the
+	// strict-rotation mark it keeps on the old record (Session.RotatedStrictly)
+	// tells a loser that read after the winner wrote that it lost, across
+	// managers sharing the store too. The lock follows the session rather
+	// than the manager, so two users completing a second factor at the same
+	// moment do not take turns.
 	rotating keyedMutex
 }
 
@@ -342,6 +342,12 @@ func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...Cre
 // consumer's transaction must do with it). Every endpoint that reaches a
 // session through Load — logout included — therefore gives the same verdict.
 //
+// A session superseded by Rotate (Session.RotatedStrictly) is never judged:
+// it is ErrNotFound from the moment the rotation wrote, and once its
+// in-flight window has ended the store's own retention answers, ErrExpired
+// until the expiry sweep and ErrNotFound after it. It is never reuse and
+// revokes nothing.
+//
 // With WithUnusedSuccessorRecovery on, a superseded session past its window
 // that names a successor is refused with ErrRenewalRequired instead,
 // and nothing is revoked: only a renewal (LoadForRenewal, then
@@ -375,6 +381,12 @@ func (m *Sessions) load(ctx context.Context, id string, p purpose) (*Session, er
 	s, err := m.loadStored(ctx, id, "session: the session could not be loaded")
 	if err != nil {
 		return nil, err
+	}
+	// A strictly rotated record stopped answering when the rotation wrote;
+	// it is kept only so a losing rotation can be told it lost, and is never
+	// judged, so its window can never be read as reuse.
+	if s.RotatedStrictly {
+		return nil, ErrNotFound
 	}
 
 	now := m.clock.Now()
@@ -442,6 +454,11 @@ func (m *Sessions) reloadSuperseded(ctx context.Context, id string, p purpose, e
 	again, err := m.loadStored(ctx, id, "session: the session could not be loaded")
 	if err != nil {
 		return nil, err
+	}
+	// A strict rotation committed between the read and the mark: the old
+	// identifier stopped answering then, as Load answers it.
+	if again.RotatedStrictly {
+		return nil, ErrNotFound
 	}
 	if err := m.judge(ctx, again, m.clock.Now(), p); err != nil {
 		return nil, err
@@ -519,7 +536,9 @@ func (m *Sessions) Touch(ctx context.Context, s *Session) error {
 }
 
 // Save persists changes made to s, and never re-creates a session that has
-// been deleted: a session that is no longer stored is ErrNotFound.
+// been deleted: a session that is no longer stored is ErrNotFound, and so is
+// one that was rotated without grace since it was loaded, which is written
+// to no more than a deleted one.
 func (m *Sessions) Save(ctx context.Context, s *Session) error {
 	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }
@@ -663,36 +682,40 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // FamilyCreatedAt), the federated assurance and
 // the consumer's own data.
 //
-// The old entry is superseded by the new one, through the store's
-// conditional Store.Supersede with a short in-flight window
-// (DefaultRenewalGrace, never past the absolute deadline), and then deleted,
-// so the old identifier is not found afterwards. A request that loads the old
-// identifier between the two writes gets the old session as it was — still
-// owing the second factor, which every gate confines — and is not judged as
-// reuse. A failure of the supersession writes nothing and leaves the old
-// handle working, so a caller that refuses on the error has lost nothing. A
-// failure of the delete does not fail the rotation: the successor is stored,
-// so it is returned, and the failure is logged at error with the family and
-// never an identifier. The old entry is then left superseded; it loads until
-// its in-flight window ends, and presenting it after that is reuse (see
-// ErrReused).
+// The old entry is superseded by the new one in one write, through the
+// store's conditional Store.Supersede, marked as rotated without grace
+// (Supersession.Strict, read back as Session.RotatedStrictly) and kept only
+// for a short in-flight window: DefaultRenewalGrace, never past the absolute
+// deadline, which is also its retention deadline. Its own deadlines are left
+// as they were. It is not deleted; the expiry sweep removes it once the window
+// ends. The old identifier stops loading the moment that write lands: Load of
+// it is ErrNotFound inside the window, and after the window the store's own
+// retention answers, ErrExpired until the sweep and ErrNotFound after it. It
+// is never judged, so presenting it is never reuse and never revokes the
+// family. A failure of the supersession writes nothing and leaves the old
+// handle working, so a caller that refuses on the error has lost nothing.
 //
 // A session the store no longer holds, or that is past either deadline, is
 // refused with the store's sentinel, as itself, and nothing is written:
 // rotation is a move, not a way to bring a revoked session back under a fresh
-// handle. Two rotations of one handle through one manager are serialised on
-// that identifier, so the second finds the old entry already gone and is
-// refused with ErrNotFound. Rotations of different sessions do not
-// wait for each other.
+// handle.
 //
-// Racing rotations that the lock does not see — a RotateWithGrace of the
-// same session, or a Rotate on another manager over the same store — are
-// settled by the store's condition: exactly one produces a successor, and the
-// one that supersedes second is refused with ErrRenewalConflict and
-// stores nothing. A grace rotation that reads the old entry only after this
-// rotation superseded it finds it inside the in-flight window, and is a
-// re-rotation (see RotateWithGrace): this rotation's successor is knocked out,
-// so the family still has one live head.
+// Which of two racing rotations of one session wins — two Rotates, or a Rotate
+// and a RotateWithGrace, through one manager or through managers sharing one
+// store — is decided by the store, not by this manager: exactly one produces a
+// successor. A loser that read the session before the winner wrote is refused
+// by the store's condition with ErrRenewalConflict and stores nothing. A loser
+// that reads it after the winner wrote finds the strict-rotation mark and,
+// inside the winner's in-flight window, is refused with ErrRenewalConflict
+// too: it lost a concurrent rotation, and its caller should carry on with the
+// credential the winner was handed. Nothing is written on that path and
+// nothing is judged, so no reuse is detected and the winner's family is left
+// as it is. Past the window it is refused as a gone session: ErrExpired until
+// the sweep, ErrNotFound after it. The guarantee holds as long as the store
+// keeps the mark, which the store-conformance suite checks. Two rotations of
+// one handle through one manager are also serialised on that identifier, so
+// the second reads the mark the first wrote rather than racing it; rotations
+// of different sessions do not wait for each other.
 //
 // Rotate never extends the session: the absolute deadline is carried over
 // whatever WithMaxFamilyLifetime allows, because a privilege change must not
@@ -714,10 +737,62 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // a recovery has no window left, whatever this manager's clock says, and is
 // reuse.
 //
+// Rotate runs no step of the caller's between building the successor and
+// storing it; RotateIssuing is the same rotation with one.
+//
 // s is not modified. The returned session is the one to use.
 func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
+	rotated, _, err := m.RotateIssuing(ctx, s, nil)
+
+	return rotated, err
+}
+
+// RotateIssuing is Rotate with a step of the caller's run on the successor
+// before anything is stored, and returns the successor and what that step
+// issued.
+//
+// It exists for the caller whose rotation is only complete once the holder
+// has a credential for the successor, such as a signed token naming it. With
+// Rotate, a credential that cannot be issued after the rotation leaves the
+// holder with an old handle that no longer loads and no new one: signed out
+// by the very step meant to raise their privilege. Here issue is called once
+// the successor is built, with its identifier, and before the supersession is
+// written, so a credential that cannot be issued aborts the rotation instead.
+//
+// When issue fails, RotateIssuing returns its error as it is, so errors.Is
+// and errors.As reach it, and has stored, superseded and revoked nothing: the
+// old identifier still loads, unsuperseded, and can be rotated again. When
+// issue succeeds, the rotation goes on exactly as Rotate's, and a failure of
+// the supersession after it, a lost race or a store failure, is refused as
+// Rotate refuses it; the credential issue returned names a successor that was
+// never stored, so it authenticates nothing and the caller discards it with
+// the error. A refusal decided before the successor is built, a gone session
+// or a lost race already visible in the stored record, never calls issue.
+//
+// issue is handed the successor as it will be stored, which is also the
+// session returned, and must not modify it. It runs while this manager holds
+// the rotation's per-session lock, so a concurrent rotation of the same handle
+// through this manager waits for it. A nil issue runs no step and returns an
+// empty credential, which is Rotate.
+//
+// Every guarantee Rotate documents holds here unchanged: the strict mark and
+// the in-flight window, the renewal conflict for a lost race through any
+// manager sharing the store, the deadlines and family carried over. s is not
+// modified.
+//
+// The in-flight window (AcceptUntil and RetainUntil) is counted from the
+// instant the manager read its clock before the step ran, not from the moment
+// the supersession is written. A step slower than the window therefore leaves
+// the old record with a window that has already ended when it is stored, and a
+// concurrent rotation that reads it then is refused as a gone session rather
+// than as a renewal conflict.
+func (m *Sessions) RotateIssuing(
+	ctx context.Context,
+	s *Session,
+	issue func(successor *Session) (string, error),
+) (*Session, string, error) {
 	if s == nil {
-		return nil, fmt.Errorf("session: rotate was given no session")
+		return nil, "", fmt.Errorf("session: rotate was given no session")
 	}
 
 	unlock := m.rotating.lock(s.ID)
@@ -725,19 +800,22 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 
 	stored, err := m.loadStored(ctx, s.ID, "session: the session to rotate could not be loaded")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	now := m.clock.Now()
+	if stored.RotatedStrictly {
+		return nil, "", lostToStrictRotation(stored, now)
+	}
 	if stored.superseded() && stored.insideWindow(now) {
-		return nil, ErrRenewalConflict
+		return nil, "", ErrRenewalConflict
 	}
 	if err := m.judge(ctx, stored, now, forRequest); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	id, err := m.newIdentifier()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	rotated := successorOf(s, id)
@@ -750,45 +828,58 @@ func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	// refresh second-factor verification wrote onto s before rotating.
 	rotated.CreatedAt = now
 	// The successor goes straight back to the caller that is using it, so it
-	// is recorded as presented now. That is also what keeps a recovery
-	// (WithUnusedSuccessorRecovery) from renewing the old identifier into a
-	// second successor if the delete below fails and leaves it superseded.
+	// is recorded as presented now, which keeps a recovery
+	// (WithUnusedSuccessorRecovery) from ever renewing the old identifier
+	// into a second successor.
 	rotated.FirstPresentedAt = now
 
+	// The caller's step runs before the only write, so a step that fails
+	// leaves the old record exactly as it is: nothing superseded, nothing
+	// marked, no successor stored.
+	var tok string
+	if issue != nil {
+		if tok, err = issue(rotated); err != nil {
+			return nil, "", err
+		}
+	}
+
 	// The store's conditional supersession, not the lock above, is what
-	// stops a grace rotation of the same session — through this manager or
-	// another sharing the store — from producing a second successor beside
-	// this one. The short in-flight window lets a request already sent with
-	// the old identifier land as the session it was, still owing whatever
-	// the rotation changed, rather than as reuse.
+	// stops another rotation of the same session — strict or with grace,
+	// through this manager or another sharing the store — from producing a
+	// second successor beside this one. It is the rotation's only write: the
+	// old record is kept, marked as rotated without grace, until the
+	// in-flight window ends, so a rotation that reads it after this one
+	// wrote is told it lost, and the expiry sweep removes it then.
 	acceptUntil := minTime(now.Add(DefaultRenewalGrace), stored.AbsoluteExpiresAt)
 	err = m.store.Supersede(ctx, Supersession{
 		Old:               stored.ID,
 		ObservedSuccessor: stored.SuccessorDigest,
 		AcceptUntil:       acceptUntil,
-		RetainUntil:       m.retainUntil(stored, acceptUntil),
+		RetainUntil:       acceptUntil,
 		Successor:         rotated,
 		Now:               now,
+		Strict:            true,
 	})
 	if err != nil {
-		return nil, storeFailed(err, "session: the rotated session could not be created")
+		return nil, "", storeFailed(err, "session: the rotated session could not be created")
 	}
 
-	// The successor is stored, so the rotation has happened: failing it now
-	// would leave the caller holding the old identifier, whose next request
-	// after the window would be reuse. The old record stays superseded and
-	// stops answering when its window ends.
-	if err := m.store.Delete(ctx, s.ID); err != nil {
-		m.logger.LogAttrs(ctx, slog.LevelError, rotateDeleteLogReason,
-			append(diag.Failure("delete", err), slog.String("family", stored.FamilyID.String()))...)
-	}
-
-	return rotated, nil
+	return rotated, tok, nil
 }
 
-// rotateDeleteLogReason is the fixed text logged when the delete after a
-// strict rotation fails. It carries no identifier.
-const rotateDeleteLogReason = "session: the session rotated from could not be deleted; it stops answering when its in-flight window ends"
+// lostToStrictRotation is the refusal of a rotation, strict or with grace, of
+// s, which a strict rotation already superseded (Session.RotatedStrictly):
+// ErrRenewalConflict inside that rotation's in-flight window, because the
+// caller lost a race and the winner holds the credential, and ErrNotFound
+// after it. Nothing is written and nothing judged, so no reuse is detected
+// and the winner's family is left as it is.
+func lostToStrictRotation(s *Session, now time.Time) error {
+	if s.insideWindow(now) {
+		return ErrRenewalConflict
+	}
+
+	return ErrNotFound
+}
 
 // timedClock adapts the manager's clock to the clock.Timed that
 // NewMemoryStore takes, so the default store's time checks follow the

@@ -30,6 +30,12 @@ type MFAOption func(*mfaInterceptor) error
 // errors.As but not repeated in the text. None of these is counted against the
 // verification limiter.
 //
+// The caller must be the pending session's user. A consumer interceptor past
+// the first factor that published another principal is refused with
+// ErrAuthenticationRequired (401) before the throttle, the code check and the
+// post-authentication re-judgement, so nothing is counted, verified or judged
+// for the substituted principal and the session stays pending.
+//
 // A method that is an mfa.ChallengeMethod also has a begin step: a POST to
 // the begin prefix, "/" and its name ("/mfa/begin/<name>" by default) makes
 // the same refusals, is refused while the user's verification is throttled,
@@ -45,7 +51,10 @@ type MFAOption func(*mfaInterceptor) error
 //
 // The policies that raise the challenge must be built from the same methods,
 // through mfa.LookupsFor(methods...), so the endpoint never refuses a method a
-// policy offered or accepts one it did not.
+// policy offered or accepts one it did not. Verification judges the
+// post-authentication phase again once the code is valid, so a requirement
+// policy whose lookups do not read the enrolment just bound sends an
+// enrolment-upgraded session back to enrolment there.
 //
 // Defaults: the verify prefix is DefaultMFAVerifyPrefix
 // (WithMFAVerifyPrefix); failed verifications are counted per user reference,
@@ -66,6 +75,57 @@ type MFAOption func(*mfaInterceptor) error
 // that cannot purge at all (onetime.ErrReapUnsupported) is not retried, since
 // a retry would not change that: it is tried and logged once per issuance
 // window. The verify and begin prefixes must not overlap.
+//
+// The verify and begin endpoints serve only a pending session. A session that
+// already satisfied its second factor, or was never asked one (a user enrolled
+// after signing in), is refused with ErrNoMFAChallengePending (403) before the
+// method, the limiter or the body is consulted, and nothing is counted or
+// changed. Re-proving a signed-in session belongs to re-authentication
+// (EnableReauthentication, at /reauth by default), not to these endpoints.
+//
+// A verification that succeeds rotates the session to a new handle and answers
+// with the credential issued for it. The credential is issued inside the
+// rotation, before anything is stored, so one that cannot be issued refuses the
+// verification with nothing rotated or stored: the session stays pending under
+// the credential the caller arrived with, rather than being signed out. A
+// verification that loses a race with a concurrent renewal, re-proof or
+// verification of the same session, through this server or any other manager
+// sharing the session store, is refused with ErrSessionRenewalConflict (409)
+// inside the winner's in-flight window.
+//
+// After a valid code and before the rotation, verification judges the chain's
+// post-authentication phase again, with the input a login of the session's
+// user on its first factor builds, saying the second factor is satisfied
+// (policy.Input.MFASatisfied) and that the session already exists
+// (policy.Input.Reauthenticating), since it is counted and verification adds
+// none. The phase returns its first challenge only, so at login a challenge
+// registered after the second-factor policy was hidden behind it; this is
+// where it surfaces. A deny refuses verification with the policy's reason and
+// leaves the session pending under the caller's credential, counting nothing.
+// A challenge of another kind is completed as a login completes one: the
+// session is satisfied, rotated and marked with it before its credential is
+// issued, and verification is refused with a *ChallengeError of that kind
+// carrying the rotated session and its credential (a kind nothing on the
+// chain enforces refuses first, writing nothing). The consumer's error handler
+// therefore delivers that challenge's credential (ChallengeError.Token): the
+// credential the caller arrived with names the session it replaced, and no
+// longer works. A second-factor challenge is dropped, the factor being the
+// one just presented. The default is on, with no option: a consumer policy
+// that should judge verification differently reads MFASatisfied and
+// Reauthenticating.
+//
+// The line: the library's policies honour MFASatisfied here (policy.MFA, and
+// policy.MFARequirement for an unmet federated login, with Reauthenticating
+// set), so what is registered after them is judged. A consumer policy that
+// raises policy.ChallengeMFA without reading MFASatisfied still raises it
+// here, the challenge is dropped, and whatever is registered after it in the
+// engine stays hidden. Such a policy reads MFASatisfied, or is registered
+// after the policies it would hide.
+//
+// The begin endpoint makes verification's substituted-caller refusal too: a
+// resolved caller who is not the pending session's user is refused with
+// ErrAuthenticationRequired before the throttle and before any challenge is
+// issued.
 //
 // The method-listing endpoint, a GET a pending session sends to learn which
 // methods its user can use, is off unless WithMFAMethodListing turns it on.
@@ -252,12 +312,15 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 // WithMFATokens issues the rotated session's access token through g.
 //
 // There is no default, and it is required in the signed-token mode: rotation
-// deletes the handle the caller arrived with, and the session identifier is
-// the token's jti, so without a generator a caller who passed their second
+// supersedes the handle the caller arrived with, marking it so that it stops
+// working at once (the marked row is kept only for its in-flight window),
+// and the session identifier is the token's jti, so without a generator a caller who passed their second
 // factor would hold a credential naming a session that no longer exists. With
 // EnableSessionBearer on, it must not be given: the endpoint hands back the
 // rotated session's identifier instead, and a generator is a configuration
-// error from New. It is the same generator
+// error from New. The token is issued inside the rotation, before anything is
+// stored, so a generator that fails refuses the verification with nothing
+// rotated and the caller's credential still working. It is the same generator
 // the first factors issue through, so a token from a login and one from a
 // second factor are indistinguishable to whatever verifies them.
 func WithMFATokens(g token.Generator) MFAOption {

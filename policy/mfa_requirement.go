@@ -146,9 +146,12 @@ type MFARequirement struct {
 //     either way, even when another method is usable, with fixed text
 //     wrapping its error;
 //  11. the per-request phase: challenge for MFA;
-//  12. the post-authentication phase: challenge for MFA for a federated first
-//     factor, whose login the challenge policy lets through by default;
-//     otherwise allow, leaving the login challenge to the challenge policy;
+//  12. the post-authentication phase: for a federated first factor, whose
+//     login the challenge policy lets through by default, allow when
+//     Input.MFASatisfied and Input.Reauthenticating are both set (a second
+//     factor verified on a re-authentication of the session), and otherwise
+//     challenge for MFA; for any other first factor allow, leaving the login
+//     challenge to the challenge policy;
 //  13. any other phase: deny ErrMFARequired.
 //
 // # Federated logins
@@ -161,15 +164,27 @@ type MFARequirement struct {
 // default) or refused. WithMFAFederatedChallengeWhenUnmet, the second-factor
 // challenge policy's option, has no say here.
 //
-// In the post-authentication phase Input.MFASatisfied is not honoured. It is a
-// claim the login makes about itself, and a policy that can be talked out of a
-// requirement does not enforce one.
+// In the post-authentication phase Input.MFASatisfied is not honoured on its
+// own. It is a claim the login makes about itself, and a policy that can be
+// talked out of a requirement does not enforce one.
 // Only the library's proof in Input.SecondFactorAtLogin is, and the
 // library-minted Input.FederatedAssurance as matched by the source; the
-// evidence is not the proof. A consumer who
+// evidence is not the proof. The one exception is step 12: an unmet federated
+// login with Input.MFASatisfied and Input.Reauthenticating both set is
+// allowed rather than challenged. The library sets both only where it has just
+// verified a second factor on a session that already exists (MFA verification
+// and a second-factor re-proof), and judges the phase again with them so that
+// what this policy's challenge would hide behind it is seen. Every refusal
+// before step 12 is unchanged, so refuse mode still denies a provider that did
+// not vouch, and the per-request phase honours MFASatisfied at step 5 as
+// before. A consumer evaluating the policy directly who sets both fields is
+// making that claim for their own caller. A consumer who
 // wants a separate second factor even after a user-verified passkey login
 // sets passkey.WithoutSecondFactorAtLogin on the passkey login, so no proof is
-// minted and this policy never sees one.
+// minted and this policy never sees one. The option governs logins made after
+// it is set: a session created before the consumer turned it on still carries
+// the mark that its login met the second factor, so its second-factor
+// re-proofs carry a proof rebuilt from it.
 //
 // Construction fails, wrapping ErrConfig, with ErrMFARequirementLookupMissing
 // when there is no lookup and no requirement for all — the policy could answer
@@ -352,8 +367,9 @@ func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 	}
 
 	// 5. A session that has already satisfied its second factor is done. The
-	// claim is honoured here and nowhere else: in the post-authentication phase
-	// it is the login's own word for itself.
+	// claim is honoured here on its own: in the post-authentication phase it is
+	// the login's own word for itself, which step 12 honours only beside
+	// Reauthenticating.
 	if phase == PerRequest && in.MFASatisfied {
 		return Decision{Outcome: Allow}
 	}
@@ -431,9 +447,16 @@ func (p *MFARequirement) Evaluate(ctx context.Context, in *Input) Decision {
 	// 12. At login the challenge belongs to the policy NewMFA returns,
 	// which is why the two are registered together. A federated login is the
 	// exception: that policy lets it through by default, so a required user's
-	// unmet federated login is challenged here.
+	// unmet federated login is challenged here, unless a second factor was
+	// satisfied on a re-authentication of its session. Only the library's
+	// re-judgement behind a second-factor challenge sets both, after verifying
+	// one, and judges again so that what this challenge would hide is seen.
 	case PostAuthentication:
 		if federated {
+			if in.MFASatisfied && in.Reauthenticating {
+				return Decision{Outcome: Allow}
+			}
+
 			return Decision{Outcome: Challenge, Challenge: ChallengeMFA}
 		}
 

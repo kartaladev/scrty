@@ -405,6 +405,7 @@ func Example_chain() {
 			httpsec.PasskeyDeps{Passkeys: passkeys, Sessions: sessions, Users: users},
 			httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(exampleTokens{})),
 		),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(exampleTokens{})),
 	)
 	if err != nil {
 		panic(err)
