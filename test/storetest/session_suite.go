@@ -2549,16 +2549,37 @@ func sessionStrictRotationCases() []suiteCase[session.Store] {
 			},
 		},
 		{
-			name: "saving a strictly superseded session keeps its mark",
+			name: "saving a strictly superseded session is refused",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(3005))
 				require.NoError(t, s.Create(ctx, old))
 				successor := supersede(ctx, t, s, old, "sess-b", true)
 
-				// A copy loaded before the supersession, saved after it.
-				require.NoError(t, s.Save(ctx, old))
+				// A copy loaded before the supersession, saved after it, with
+				// activity and data of its own.
+				stale := *old
+				stale.Data = map[string]string{"written": "by the stale copy"}
+				stale.LastAccessedAt = stale.LastAccessedAt.Add(time.Minute)
+
+				require.ErrorIs(t, s.Save(ctx, &stale), session.ErrNotFound)
 
 				assertSessionsLoad(ctx, t, s, strictlySuperseded(old, successor.ID))
+			},
+		},
+		{
+			name: "a grace supersession leaves the mark unset",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(3010))
+				require.NoError(t, s.Create(ctx, old))
+				supersede(ctx, t, s, old, "sess-b", false)
+
+				got, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.False(t, got.SupersededAt.IsZero(), "the session is superseded")
+				assert.False(t, got.RotatedStrictly, "a rotation with a grace window is not strict")
+
+				// A save of the grace-superseded row is not refused.
+				require.NoError(t, s.Save(ctx, old))
 			},
 		},
 		{

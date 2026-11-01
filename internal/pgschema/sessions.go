@@ -40,7 +40,8 @@ ON CONFLICT (id_digest) DO NOTHING`
 	// the supersession and the first presentation write them, so no later save
 	// can undo them. On a superseded row (superseded_at set) it also leaves
 	// both of the row's own deadlines as they were when it was superseded, so a
-	// copy loaded before the supersession can change neither. Zero rows
+	// copy loaded before the supersession can change neither. A row marked
+	// rotated_strictly is not updated at all: Load reports it gone. Zero rows
 	// affected means there is no longer a session to update.
 	SessionUpdate = `UPDATE sessions SET user_id = $2, created_at = $3, last_accessed_at = $4,
   idle_expires_at = CASE WHEN superseded_at IS NULL THEN $5 ELSE idle_expires_at END,
@@ -50,7 +51,7 @@ ON CONFLICT (id_digest) DO NOTHING`
   external_issuer = $12, external_session_id = $13, external_id_token = $14, data = $15,
   enrolment_origin_deadline = $16, enrolment_generation = $17, recovered_at = $18,
   federated_amr = $19, federated_acr = $20
-WHERE id_digest = $1`
+WHERE id_digest = $1 AND NOT rotated_strictly`
 
 	// SessionSelect reads the session with digest $1, rotated_strictly (the
 	// strict-rotation mark) last. Expiry is judged by the

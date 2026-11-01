@@ -1452,6 +1452,30 @@ func TestSaveNeverRecreatesADeletedSession(t *testing.T) {
 		"a revoked session came back to life through Touch")
 }
 
+func TestSaveOfAStrictlyRotatedSessionIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	m, _ := managerOnClock(t, clk)
+	ctx := t.Context()
+
+	old, err := m.Create(ctx, testUser)
+	require.NoError(t, err)
+
+	// A request that loaded the session before it was rotated without grace.
+	stale := *old
+	stale.Data = map[string]string{"k": "v"}
+
+	_, err = m.Rotate(ctx, old)
+	require.NoError(t, err)
+
+	_, err = m.Load(ctx, stale.ID)
+	require.ErrorIs(t, err, session.ErrNotFound, "Load reports the strictly rotated session as gone")
+
+	require.ErrorIs(t, m.Save(ctx, &stale), session.ErrNotFound,
+		"Save succeeded on a session Load reports as gone")
+}
+
 // failingWriteStore is a real store that takes the first insert — the case's
 // own fixture — and refuses every later one, along with every supersession,
 // which is the write a rotation makes before it deletes anything.

@@ -536,7 +536,9 @@ func (m *Sessions) Touch(ctx context.Context, s *Session) error {
 }
 
 // Save persists changes made to s, and never re-creates a session that has
-// been deleted: a session that is no longer stored is ErrNotFound.
+// been deleted: a session that is no longer stored is ErrNotFound, and so is
+// one that was rotated without grace since it was loaded, which is written
+// to no more than a deleted one.
 func (m *Sessions) Save(ctx context.Context, s *Session) error {
 	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }

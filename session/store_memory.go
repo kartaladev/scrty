@@ -285,6 +285,9 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 // saved session says. A superseded record also keeps both of its own
 // deadlines, so a stale copy can change neither them nor its retention.
 //
+// A record superseded without grace (RotatedStrictly) is ErrNotFound too and
+// is left as it was: Load reports it gone, so a save must not write to it.
+//
 // A session that is no longer stored is ErrNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
 // recorded activity would otherwise write the revoked session back, and the
@@ -295,6 +298,9 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 
 	stored, exists := s.records[sess.ID]
 	if !exists {
+		return ErrNotFound
+	}
+	if stored.RotatedStrictly {
 		return ErrNotFound
 	}
 	rec := sess.clone()
