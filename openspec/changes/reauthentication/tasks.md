@@ -161,7 +161,7 @@ Each task names how it is verified. A signature change owns every caller of the 
 
 Each defect task's red step is the reproducing test named in its design decision, rewritten into the package's own test file and the `table-test` form; the reproductions themselves live in disposable worktrees under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/5335ea06-576b-4616-b14e-50643ee94c82/scratchpad/repro/` and are not copied as they are.
 
-- [ ] 9.1 Re-proof paths are checked by how each endpoint matches (D6 "Path collisions"):
+- [x] 9.1 Re-proof paths are checked by how each endpoint matches (D6 "Path collisions"):
   - two paths collide when equal, or when one lies under the other and the other is prefix-matched; re-proof begin and verify are prefix-matched, its listing and password exact;
   - checked against every enabled endpoint: the MFA verify, begin and enrolment prefixes and the passkey registration and credentials prefixes (prefix); logout, form login, the MFA listing, session renewal, password change and every account recovery path (exact); magic-link, OIDC and passwordless passkey login, each as its own `Intercept` matches;
   - red: the six collision rows of `TestReproReauthPathCollisionRefused` and the two rows of `TestReproReauthPrefixUnderFormLoginPathIsAllowed`; the rows `the_prefix_is_the_form_login_path` and `the_prefix_is_the_logout_path` in `TestEnableReauthentication` are rewritten to the accepted outcome.
@@ -172,7 +172,7 @@ Each defect task's red step is the reproducing test named in its design decision
   - the task owns every chain in the workspace that wires MFA and passkeys without re-authentication: `httpsec` tests and Examples, `test/httpsecconformance`, and README snippets.
 
   (ADDED multi-factor-auth "Passkey management on an MFA chain needs re-authentication", every scenario.) Verify with `go test -race -count=1 ./httpsec/... ./authenticate/passkey/...` and `go test ./...` in the `test` module
-- [ ] 9.3 An MFA challenge store without a re-proof challenge store fails `New` with `ErrConfig` naming both options; the same store given to both is accepted (D6 "A shared MFA store without a re-proof store"):
+- [x] 9.3 An MFA challenge store without a re-proof challenge store fails `New` with `ErrConfig` naming both options; the same store given to both is accepted (D6 "A shared MFA store without a re-proof store"):
   - red: `TestReproReauthChallengeStoreFollowsSharedMFAStore`, rewritten to assert the refusal; the "One store for both" row keeps its two-chain begin-on-one, verify-on-the-other proof;
   - godoc on `WithReauthenticationChallengeStore` and `WithMFAChallengeStore`, and the README defaults table, name the rule.
 
@@ -182,7 +182,7 @@ Each defect task's red step is the reproducing test named in its design decision
   - red: `TestReproPasswordReproofAppliesPostAuthenticationPolicy` (the deny row) and a challenge row.
 
   (ADDED reauthentication "A password re-proof applies the post-authentication policy as a login does", every scenario.) Verify with `go test -race -count=1 -run 'TestReauthPassword' ./httpsec/`
-- [ ] 9.5 Second-factor begin and verify look up only the named method's enrolment; the password endpoint and the listing keep the full lookup (D3 "Which lookups each endpoint needs"):
+- [x] 9.5 Second-factor begin and verify look up only the named method's enrolment; the password endpoint and the listing keep the full lookup (D3 "Which lookups each endpoint needs"):
   - red: `TestReproReauthTOTPIgnoresUnrelatedMethodEnrolmentFailure`; the row "a lookup failure refuses and verifies nothing" in `reauth_verify_test.go` moves to a failure of the named method's own lookup, and the password and listing lookup-failure rows stay.
 
   (ADDED reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", every scenario; "A user re-proves with the strongest factor they hold, by default" scenario "Lookup failure does not downgrade".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
@@ -191,7 +191,7 @@ Each defect task's red step is the reproducing test named in its design decision
   - admission and resolve stay each path's own.
 
   Existing tests are the safety net; the red step for each extraction is a temporary divergence in the shared code that both an MFA test and a re-proof test catch, as in 6.8. Verify with `go test -race -count=1 ./httpsec/...`, `go vet ./httpsec/` and `golangci-lint run ./httpsec/`
-- [ ] 9.7 One recency judge in `internal/guardauth`, used by `httpsec`, `ginsec` and `fibersec`, behaviour unchanged (D8, revised):
+- [x] 9.7 One recency judge in `internal/guardauth`, used by `httpsec`, `ginsec` and `fibersec`, behaviour unchanged (D8, revised):
   - it holds the window, clock and time source, validates them, and judges a context against an optional per-route window, returning the verdict and the window; each adapter hands it the session-based default time source, builds `*httpsec.ReauthenticationRequiredError` and refuses on its own path;
   - each adapter's options, configuration-error wording and refusal path are unchanged.
 
@@ -220,6 +220,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
   - a new migration in `store/migrate/securitystate` adding `rotated_strictly boolean NOT NULL DEFAULT false`, with a `Down` that drops it;
   - `internal/pgschema` and `internal/storekit` write and read it in the supersession and load statements; `sqlstore`, `pgxstore` and `gormstore` (`models.go`) carry it;
   - migration tests: the column, existing rows unmarked, an older writer's insert, rollback; the gorm statement pins.
+  - the strict-rotation cases 10.1 gated to the memory store and its broken variants move into `RunSessionStoreSuite`, so every store that runs the suite, third-party ones included, must pass them; the gate (`runSessionStrictRotationSuite` and `test/storetest/export_test.go`) is removed.
 
   Red: the 10.1 suite cases fail on each durable backend, and the new migration-test rows fail before the migration exists. (ADDED schema-migrations "The security-state set adds the session strict-rotation mark", every scenario; the 10.1 requirements on every backend.) Verify with `go test -race -count=1 ./...` in the root, `store/pgxstore`, `store/gormstore` and `test` modules (needs Docker)
 - [ ] 10.3 The manager reads the mark (D10 "Decision"):

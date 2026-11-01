@@ -557,6 +557,7 @@ Two parallel dispatches. Behaviour is unchanged, so existing tests are the safet
 - [ ] **Step 1: Write the failing migration rows:** column present, non-null, default false; a pre-migration superseded row reads back unmarked; an insert naming no such column succeeds; rollback leaves the pre-migration columns.
 - [ ] **Step 2: Run** `go test -run 'TestMigrate|Session' -count=1 ./...` in `test` (Docker) and see the 10.1 mark cases fail on each durable backend and the migration rows fail with the column missing.
 - [ ] **Step 3: Implement** the migration and the column in each statement and row model.
+- [ ] **Step 3b: Lift the 10.1 gate:** append `sessionStrictRotationCases()` to the cases `RunSessionStoreSuite` runs; delete `runSessionStrictRotationSuite`, `test/storetest/export_test.go` and the extra calls in `memory_test.go` and `sessionVariant`.
 - [ ] **Step 4: Run** `go test -race -count=1 ./...` in the root, `store/pgxstore`, `store/gormstore` and `test` modules: PASS. If Docker is unavailable, report it and stop.
 - [ ] **Step 5: Commit** `feat(store): persist the strict-rotation mark`.
 
