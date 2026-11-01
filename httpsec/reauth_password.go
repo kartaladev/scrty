@@ -35,15 +35,24 @@ import (
 //     store included. Any other pre-authentication refusal, a policy deny or
 //     an unenforced challenge, is not. The account the password proved must
 //     be the session's own user.
-//  6. The post-authentication policy phase, with the input a login builds
+//  6. The user's held account recoveries are cancelled, as a login cancels
+//     them once its first factor is proved: the password shows the user
+//     still holds the account. A cancellation the recovery store cannot
+//     record refuses the re-proof with its error, as it refuses a login,
+//     and leaves the session as it was. A re-proof the phase then refuses
+//     has still cancelled, as a refused login has.
+//  7. The post-authentication policy phase, with the input a login builds
 //     for the same principal, first factor, username and password-change
-//     time, read at the chain's time (postAuthenticate). A deny refuses with
-//     the policy's reason; a challenge refuses with a *ChallengeError of its
-//     kind carrying no session, or as a configuration error when nothing on
-//     the chain enforces it. Neither clears failures, charges the source,
-//     rotates or refreshes anything.
-//  7. Success clears the user's recorded failures, as a login does, and
-//     resolves the re-proof.
+//     time, read at the chain's time, and marked as the re-authentication
+//     of an existing session (policy.Input.Reauthenticating), so a policy
+//     counting sessions knows none is added (postAuthenticate). A deny
+//     refuses with the policy's reason; a challenge refuses with a
+//     *ChallengeError of its kind carrying no session, or as a configuration
+//     error when nothing on the chain enforces it. Neither clears failures,
+//     charges the source, rotates or refreshes anything.
+//  8. Success clears the user's recorded failures, as a login does, and
+//     resolves the re-proof. A login clears them before its phase, so one a
+//     policy denies has still cleared them; a re-proof clears them only here.
 func (i *reauthInterceptor) reprove(ex *Exchange) error {
 	s, err := i.admit(ex)
 	if err != nil {
@@ -88,8 +97,18 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return authenticate.ErrAuthenticationFailed
 	}
 
-	if err := postAuthenticate(ctx, l, postAuthenticationInput(
-		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now)); err != nil {
+	// The proved password shows the user still holds the account, so their
+	// held recoveries are cancelled as a login cancels them, before the phase.
+	if l.cancelHeld != nil {
+		if err := l.cancelHeld(ctx, s.UserID); err != nil {
+			return err
+		}
+	}
+
+	in := postAuthenticationInput(auth.Principal, factor.Password, username, auth.PasswordChangedAt, now)
+	in.Reauthenticating = true
+
+	if err := postAuthenticate(ctx, l, in); err != nil {
 		return err
 	}
 
