@@ -7,7 +7,7 @@ Keeps the text of a failing consumer-supplied dependency, and the personal data 
 ## Requirements
 
 ### Requirement: Log records carry no dependency error text
-When a library log record reports the failure of a consumer-supplied dependency — a store, user loader, address or contact resolver, sender, rate limiter or cipher — it SHALL carry a fixed reason naming what failed and the Go type of the error, and SHALL NOT carry the error's text. This SHALL hold for every component of the library, at every level, sampled or not. The documentation of each component that logs such failures SHALL state that the consumer keeps the full detail by logging inside their own implementation of the dependency.
+When a library log record reports the failure of a consumer-supplied dependency — a store, user loader, address or contact resolver, sender, rate limiter, cipher, keyring or key source — it SHALL carry a fixed reason naming what failed and the Go type of the error, and SHALL NOT carry the error's text. A key source's failure while a token is verified or issued is such a failure, not one of the library's own token-verification failures whose text a record keeps. This SHALL hold for every component of the library, at every level, sampled or not. The documentation of each component that logs such failures SHALL state that the consumer keeps the full detail by logging inside their own implementation of the dependency.
 
 #### Scenario: Attempt store quotes the username
 - **WHEN** form login's attempt store fails recording a failure with an error whose text is `duplicate key: Key (username)=(alice@example.com)`
@@ -20,6 +20,10 @@ When a library log record reports the failure of a consumer-supplied dependency 
 #### Scenario: Limiter names its key
 - **WHEN** a source guard's limiter fails with an error whose text names the key `magic-link|203.0.113.7`
 - **THEN** the limiter-failure record carries the fixed reason and the error's type, not that text
+
+#### Scenario: Key source names its key
+- **WHEN** a consumer key source fails with an error whose text names the key `arn:aws:kms:eu-west-1:111122223333:key/abcd`
+- **THEN** no written record contains that text
 
 ### Requirement: Returned errors caused by a dependency carry fixed library text
 Where a library interceptor, guard or manager returns an error caused by a consumer-supplied dependency, the returned error's text SHALL be fixed library text. The library error it stands for, and the dependency's original error, SHALL stay reachable by error identity and type, so the status it maps to and any consumer match are unchanged. Errors the consumer's own refusal checks, guards, authorizers and rule sets return SHALL be returned unchanged, as their own capabilities require.

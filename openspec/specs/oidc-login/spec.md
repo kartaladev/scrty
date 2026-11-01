@@ -308,9 +308,10 @@ The handoff redemption endpoint SHALL accept the code only in the body of a POST
 1. validate the code: it is well formed, its record exists, its secret matches in constant time, and it has not expired;
 2. resolve the account by the recorded user reference through the user loader, and refuse it unless the loaded details carry exactly that reference and the user is enabled;
 3. run the refusal checks, including the post-authentication policy evaluation from the `security-policy` capability, with the assurance the record carries;
-4. consume the code in one atomic operation, last.
+4. build the session and issue its credential, through the login completion step of the `http-security-chain` capability;
+5. consume the code in one atomic operation, last, and only then store the session and hand out its credential.
 
-An already-consumed record MAY be rejected before step 2, but that rejection SHALL NOT be what guarantees single use; only the atomic consume SHALL decide. A refusal or failure at step 2 or 3 SHALL leave the code redeemable until it expires. Refusal checks SHALL be documented as required to be side-effect free, because racing redemptions of one code can each run them. The login completion step SHALL reuse the post-authentication decision made at step 3, rather than evaluating the post-authentication policies again after the code is consumed, so a policy lookup failure never spends the code.
+An already-consumed record MAY be rejected before step 2, but that rejection SHALL NOT be what guarantees single use; only the atomic consume SHALL decide. A refusal or failure at step 2, 3 or 4 SHALL leave the code redeemable until it expires. Step 5 SHALL refuse a code whose expiry has passed by then, even if it was valid at step 1, and SHALL leave it unspent. A losing redemption of a race SHALL discard its credential, and its session SHALL never be stored. Issuing the credential writes no state, so the refusal checks' documentation SHALL state that the library may issue a credential, which it discards on a lost race, between the checks and the consume. Refusal checks SHALL be documented as required to be side-effect free, because racing redemptions of one code can each run them. The login completion step SHALL reuse the post-authentication decision made at step 3, rather than evaluating the post-authentication policies again after the code is consumed, so a policy lookup failure never spends the code.
 
 #### Scenario: Racing redemptions
 - **WHEN** 8 requests redeem the same valid code at the same time
@@ -326,13 +327,22 @@ An already-consumed record MAY be rejected before step 2, but that rejection SHA
 - **THEN** the first redemption is refused and creates no session
 - **AND** the second redemption completes
 
+#### Scenario: Credential cannot be issued
+- **WHEN** a valid code passes every check, the key source fails when the credential is issued, and the code is redeemed again after the key source recovers and before it expires
+- **THEN** the first redemption fails as a dependency failure, not with the invalid-handoff outcome, and creates no session
+- **AND** the second redemption succeeds
+
+#### Scenario: A code that expires while its credential is issued
+- **WHEN** a handoff code valid for 60 seconds passes every check at 59 seconds, and issuing its credential takes 2 seconds
+- **THEN** the redemption fails with the invalid-handoff outcome, creates no session, and the code is not spent
+
 ### Requirement: Handoff redemption failures reveal nothing about the cause
 Redemption SHALL fail with the same invalid-handoff outcome for:
 - an unknown, malformed, wrong-secret, expired or already-consumed code;
 - an account that is missing, disabled, or whose loaded reference differs from the recorded one;
 - a failure of the handoff store or the user loader, including a failure of the consume.
 
-Policy denials and consumer check errors SHALL be the only redemption errors that are not the invalid-handoff outcome. The cause SHALL be available only to logs, at error level for a store or loader failure. No error or log record SHALL contain the code.
+Policy denials, consumer check errors and a failure to issue the credential SHALL be the only redemption errors that are not the invalid-handoff outcome. A failure to issue the credential is a dependency failure: it SHALL be returned with fixed library text that keeps its cause reachable, and SHALL leave the code redeemable. The cause SHALL be available only to logs, at error level for a store or loader failure. No error or log record SHALL contain the code.
 
 #### Scenario: Disabled user and wrong secret look alike
 - **WHEN** a code for a disabled user and a code with a wrong secret are redeemed
@@ -351,7 +361,7 @@ Policy denials and consumer check errors SHALL be the only redemption errors tha
 #### Scenario: Consume fails
 - **WHEN** a valid code passes every check but the store fails while consuming it
 - **THEN** redemption fails with the invalid-handoff outcome
-- **AND** no session is created and no access token is issued
+- **AND** no session is created and no access token is handed out
 
 ### Requirement: Policy decisions at redemption cannot be lost
 When the post-authentication policy evaluation denies a redemption, redemption SHALL refuse without consuming the code. It SHALL return the policy's reason, or a policy-denied error when the policy gave no reason. A deny SHALL never result in a session. When the evaluation challenges, the code SHALL be consumed and a session SHALL be created pending that challenge, as the `sessions` and `security-policy` capabilities define. When the redemption operation is replaced by a consumer implementation, the endpoint SHALL refuse with the policy-denied error, and create no session, whenever the implementation reports success but:
@@ -412,7 +422,7 @@ The default limit SHALL be 10 failures per source in 5 minutes, replaceable by o
 - **THEN** an 11th redemption from that source is refused with the invalid-handoff outcome without redeeming
 
 ### Requirement: A successful redemption establishes a federated session
-A redemption that consumes the code SHALL complete the login through the login completion step of the `http-security-chain` capability, as every other first factor does. The session SHALL record the OIDC first-factor kind, together with the provider name, verified issuer, provider session id, ID token, and asserted `amr` and `acr` carried by the code, all in the write that creates the session. The session SHALL be created for the principal built from the resolved account's stored details, so that it holds only the user's stored roles. An access token SHALL then be issued through the `token-issuance` capability. The response SHALL be the JSON body form login answers with, plus the destination re-validated against the redirect allowlist as `next`, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A consumer who needs a different response replaces the conveyance with a callback success handler.
+A redemption that consumes the code SHALL complete the login through the login completion step of the `http-security-chain` capability, as every other first factor does. The session SHALL record the OIDC first-factor kind, together with the provider name, verified issuer, provider session id, ID token, and asserted `amr` and `acr` carried by the code, all in the write that creates the session. The session SHALL be created for the principal built from the resolved account's stored details, so that it holds only the user's stored roles. An access token SHALL be issued for it through the `token-issuance` capability before the code is consumed, and the session SHALL be stored only after the code is consumed. The response SHALL be the JSON body form login answers with, plus the destination re-validated against the redirect allowlist as `next`, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A consumer who needs a different response replaces the conveyance with a callback success handler.
 
 #### Scenario: Session carries the federation fields
 - **WHEN** a code issued for user `u-1`, issuer `https://idp.example` and provider session `sid-9` is redeemed

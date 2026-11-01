@@ -250,6 +250,8 @@ The library SHALL provide a store wrapper that seals a session's provider ID tok
 - A value that cannot be opened SHALL fail the load with a session-unreadable error, distinct from not-found. The session SHALL NOT be returned with the token blanked.
 - Loading SHALL NOT rewrite the record.
 - A caller's session SHALL keep its plaintext token after saving.
+- The cipher SHALL be given the context of the save or load it serves.
+- An open that fails because of an outage SHALL fail the load as a store failure that wraps the cipher's error, and SHALL NOT match the session-unreadable error. An outage is an error that matches the context's cancellation or deadline, or one that matches the cipher-unavailable error, which a cipher uses to mark a failure to reach its keys. Every other open failure SHALL be the session-unreadable error.
 
 #### Scenario: Sealed round trip
 - **WHEN** a session with an ID token is saved through the sealing store and loaded
@@ -263,6 +265,20 @@ The library SHALL provide a store wrapper that seals a session's provider ID tok
 #### Scenario: No rewrite on read
 - **WHEN** a session sealed under a retired key is loaded successfully
 - **THEN** the inner store receives no write
+
+#### Scenario: Open abandoned when the context ends
+- **WHEN** a session with an ID token is loaded and the cipher's open fails with the context's deadline error
+- **THEN** the load fails with an error that wraps the deadline error
+- **AND** the error does not match the session-unreadable error
+
+#### Scenario: Consumer cipher marks an outage
+- **WHEN** a session with an ID token is loaded through a consumer cipher whose open fails with an error that wraps the cipher-unavailable error
+- **THEN** the load fails with an error that matches the cipher-unavailable error
+- **AND** the error does not match the session-unreadable error
+
+#### Scenario: An unmarked cipher failure stays unreadable
+- **WHEN** a session with an ID token is loaded through a consumer cipher whose open fails with an error of its own that is neither a context error nor marked as an outage
+- **THEN** the session-unreadable error is returned
 
 ### Requirement: The enrolment-only state lowers the absolute deadline, and the upgrade restores it
 Marking a session enrolment-pending SHALL, in the same persisted change:
@@ -737,3 +753,62 @@ A rotation without grace SHALL let the caller act on the successor, such as issu
 #### Scenario: The caller's step fails
 - **WHEN** a session is rotated without grace and the caller's step on the successor fails
 - **THEN** the rotation fails with that error, no successor is stored, and the old identifier still loads unsuperseded
+
+### Requirement: Creating a session can be completed by the caller before it is stored
+The manager SHALL let a caller build a session, act on it, such as marking a pending challenge or issuing its credential, and only then store it, in the one write that creates it. A built session that has not been stored SHALL load nothing. When the caller's step fails, the creation SHALL fail with its error and SHALL store nothing. A creation with no caller's step SHALL behave as a creation does today.
+
+#### Scenario: The caller's step fails at creation
+- **WHEN** a caller builds a session for `u-1` and its step fails
+- **THEN** the creation fails with the step's error
+- **AND** the store holds no session for `u-1`
+
+#### Scenario: A built session loads nothing until stored
+- **WHEN** a caller builds a session and, inside its step, the session's identifier is loaded
+- **THEN** the load reports the session as not found
+- **AND** after the step succeeds and the session is stored, the identifier loads
+
+### Requirement: A built session is stored as it was built, apart from its marks
+Between building a session and storing it, the caller MAY mark the session and shorten its deadlines. Storing SHALL fail with a configuration error, and SHALL store nothing, when the session's identifier, user, family, family start, creation or authentication time changed after it was built, or when either deadline was moved later than the build set it.
+
+#### Scenario: A built session changed beyond marking is not stored
+- **WHEN** a caller builds a session, then changes its identifier, or moves its absolute deadline later than the build set it while still within the maximum lifetime, and stores it
+- **THEN** storing fails with a configuration error, and the store holds no session for either identifier
+
+### Requirement: A rotation with grace stores nothing when the caller cannot complete it
+A rotation with a grace window SHALL let the caller act on the successor, such as issuing its credential, after it is built and before anything is stored. When that step fails, the rotation SHALL fail with its error and SHALL store, supersede and revoke nothing. A step that succeeds only after the window has closed SHALL likewise store nothing, and the rotation SHALL fail matching the context deadline error. The store SHALL still decide racing rotations.
+
+#### Scenario: The caller's step fails
+- **WHEN** a live session is rotated with a 30-second grace and the caller's step fails
+- **THEN** the rotation fails with the step's error, and nothing is stored or superseded
+- **AND** 31 seconds later the old identifier still loads, and no reuse is reported
+
+#### Scenario: A losing rotation's step is discarded
+- **WHEN** two rotations with grace of one session run concurrently and both callers' steps succeed
+- **THEN** one rotation stores its successor, and the other's successor is never stored and loads nothing
+
+#### Scenario: The window counts from before the caller's step
+- **WHEN** a session is rotated at 10:00:00 with a 30-second grace, and the caller's step takes 5 seconds before it succeeds
+- **THEN** the old identifier loads until 10:00:30 and is superseded after it
+
+#### Scenario: A step that outlives the grace stores nothing
+- **WHEN** a session is rotated at 10:00:00 with a 30-second grace, and the caller's step takes 31 seconds before it succeeds
+- **THEN** the rotation fails with an error matching the context deadline error, and nothing is stored, superseded or revoked
+- **AND** the old identifier still loads, no reuse is reported, and the session can be rotated again
+
+### Requirement: A rotation whose step outlives the family stores nothing
+A rotation that runs the caller's step, with or without a grace window, SHALL store nothing when the step succeeds only after the session's family has ended, and SHALL fail as expired.
+
+#### Scenario: A step that outlives the family stores nothing
+- **WHEN** a session whose family ends at 21:00:00 is rotated at 20:59:50, and the caller's step succeeds at 21:00:05
+- **THEN** the rotation fails with the expired-session error, and nothing is stored or superseded
+
+### Requirement: Every rotation refuses a family that has already ended
+A rotation, with or without a grace window and with or without a caller's step, SHALL fail as expired when the session's family has already ended under the rotating manager's family maximum. It SHALL run no caller step, and SHALL store and supersede nothing.
+
+#### Scenario: A rotation without grace refuses a family ended under a lowered maximum
+- **WHEN** a session created at 09:00 still carries an absolute deadline of 21:00, and a manager whose family maximum is 6 hours rotates it without grace at 15:01, with or without a step
+- **THEN** the rotation fails with the expired-session error, the step is never called, and the old identifier still loads, unsuperseded
+
+#### Scenario: A family is over at its end instant
+- **WHEN** that manager rotates the same session at exactly 15:00
+- **THEN** the rotation fails with the expired-session error
