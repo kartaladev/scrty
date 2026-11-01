@@ -51,7 +51,10 @@ type MFAOption func(*mfaInterceptor) error
 //
 // The policies that raise the challenge must be built from the same methods,
 // through mfa.LookupsFor(methods...), so the endpoint never refuses a method a
-// policy offered or accepts one it did not.
+// policy offered or accepts one it did not. Verification judges the
+// post-authentication phase again once the code is valid, so a requirement
+// policy whose lookups do not read the enrolment just bound sends an
+// enrolment-upgraded session back to enrolment there.
 //
 // Defaults: the verify prefix is DefaultMFAVerifyPrefix
 // (WithMFAVerifyPrefix); failed verifications are counted per user reference,

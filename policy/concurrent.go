@@ -129,8 +129,9 @@ func (p *ConcurrentSessions) Phases() []Phase { return []Phase{PostAuthenticatio
 // three of a permitted three is refused a fourth.
 //
 // A re-authentication (in.Reauthenticating), which every re-proof is, by
-// password and by second factor alike, is judged past the maximum, not at it.
-// It creates no session: the session it re-proves is already the user's and is
+// password and by second factor alike, and which second-factor verification's
+// re-judgement of its pending session is too, is judged past the maximum, not
+// at it. It creates no session: the session it re-proves is already the user's and is
 // among those counted, so a user holding three of a permitted three may
 // re-prove any of them, and one a lowered cap left above the maximum may not.
 // Judging it as a login would refuse every re-proof by a user at the cap, so a

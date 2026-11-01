@@ -250,10 +250,10 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     and re-proving a signed-in one belongs to re-authentication (/reauth),
 //     not here. Nothing is counted or changed. A caller who is not the
 //     session's user, because a consumer interceptor past the first factor
-//     published another principal, is refused the same way once steps 2 to 4
-//     have passed and before the throttle (requireSessionUser): nothing is
-//     counted, verified or judged for the substituted principal, and the
-//     session stays pending.
+//     published another principal, is refused with ErrAuthenticationRequired
+//     once steps 2 to 4 have passed and before the throttle
+//     (requireSessionUser): nothing is counted, verified or judged for the
+//     substituted principal, and the session stays pending.
 //  2. The path names no configured method: ErrUnknownMFAMethod. The method is
 //     read from the path and nowhere else.
 //  3. The method is on the first factor's channel: mfa.ErrSameChannel. A
@@ -296,8 +296,8 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	// Step 4's last refusal: admit refused a session whose first factor
-	// published no caller.
+	// Step 1's last refusal: admit refused a session whose first factor
+	// published no caller, and this one a caller who is not its user.
 	if err := requireSessionUser(ex, s); err != nil {
 		return err
 	}
