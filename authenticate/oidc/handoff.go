@@ -277,8 +277,11 @@ type HandoffResult struct {
 // apart; the cause is logged, at DEBUG for traffic that is simply wrong and at
 // ERROR for an outage, as a fixed reason (handoff-store or user-loader) and
 // the error's Go type, never the store's or loader's own text. Any failure
-// before the consume leaves the code redeemable until it expires. No error and no log record carries the code or
-// the ID token.
+// before the consume leaves the code redeemable until it expires. Expiry is
+// judged twice, on the first read of the clock and again, at and after the
+// expiry instant, immediately before the consume, so a check that outlasts the
+// code cannot spend it. No error and no log record carries the code or the ID
+// token.
 func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck) (HandoffResult, error) {
 	tokenID, secret, ok := parseHandoffCode(code)
 	if !ok {
@@ -343,6 +346,11 @@ func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck
 	// A request nobody will read the answer to must not spend the code.
 	if ctx.Err() != nil {
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "request_cancelled")
+	}
+	// Expiry is judged again at the spend: a check may have outlasted the code.
+	now = h.clock.Now()
+	if !now.Before(rec.ExpiresAt) {
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired")
 	}
 	err = h.store.Consume(ctx, rec.TokenID, now)
 	switch {
