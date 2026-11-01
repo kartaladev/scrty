@@ -265,7 +265,7 @@ Sequenced: 10.1, then 10.2, then 10.3, then 10.4. 10.1 changes types every store
 
 Each defect task's red step is the reproduction named in its design decision, written into the package's own tests: the design states what each reproduction set up and how it failed. The reproductions themselves were disposable and are gone.
 
-- [ ] 12.1 A rotation without grace runs the caller's step before anything is stored (D6 Resolve step 3):
+- [x] 12.1 A rotation without grace runs the caller's step before anything is stored (D6 Resolve step 3):
   - `Sessions.RotateIssuing(ctx, s, issue func(*Session) (string, error)) (*Session, string, error)` builds the successor, calls `issue`, and stores the supersession only when it succeeds; `Rotate` is it with no step;
   - re-proof `resolve` and MFA verify `resolve` issue through it, and roll back nothing they no longer change;
   - red: `TestRepro2ReproofWhoseTokenCannotBeIssuedDoesNotSignTheCallerOut` (both rows), an MFA verify row with a failing generator, and a session row whose step fails leaving the old identifier unsuperseded.
