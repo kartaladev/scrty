@@ -323,7 +323,7 @@ Sequenced: 13.1, then 13.2, then 13.3, in one lane, because they share one re-ju
 
   Each new assertion is seen failing by a temporary divergence. Verify with `go test -race -count=1 ./...` in the root and `test` modules, and `golangci-lint run`
 - [x] 13.5 The whole-workspace gate, as 11.2, and the whole-branch review against every requirement this change covers.
-- [ ] 13.6 Final review follow-ups (D6 "The line"):
+- [x] 13.6 Final review follow-ups (D6 "The line"):
   - `policy.MFARequirement` step 12: for a federated login in the post-authentication phase, allow when `MFASatisfied` and `Reauthenticating` are both set, otherwise challenge as before; nothing earlier changes;
   - red: `TestReviewFederatedReproofHidesPasswordChangeBehindRequirement` and `TestReviewFederatedMFAVerifyHidesPasswordChangeBehindRequirement` (requirement registered first, password-age challenge after, OIDC session), rewritten into `TestReauthVerify` and `TestMFAVerify`; a `policy` row for the allow and for refuse mode unchanged;
   - `/reauth/begin/{method}` and `/mfa/begin/{method}` refuse a substituted caller through `requireSessionUser`, before any challenge is issued;
