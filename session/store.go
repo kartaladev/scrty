@@ -41,10 +41,10 @@ var ErrUnreadable = errors.New("session: session cannot be read")
 // written. The caller that sees it did not produce a successor, and another
 // caller did.
 //
-// Sessions.Rotate returns it too for a strict rotation that lost to a
-// concurrent rotation of the same session through the same manager: within
-// the winner's in-flight window, the handle it finds gone was rotated away,
-// not revoked.
+// Sessions.Rotate and Sessions.RotateWithGrace return it too for a rotation
+// that lost to a strict rotation of the same session, through any manager
+// sharing the store: within the winner's in-flight window, the handle it
+// finds marked as rotated without grace was rotated away, not revoked.
 var ErrRenewalConflict = errors.New("session: the session was renewed concurrently")
 
 // ErrSuccessorAdvanced is what a store reports when a supersession names a

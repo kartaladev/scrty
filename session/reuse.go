@@ -194,6 +194,17 @@ func WithSuccessorLifetime(d time.Duration) RotateOption {
 // one successor: the store supersedes conditionally on the successor this
 // call observed (Store.Supersede), and the loser gets
 // ErrRenewalConflict with nothing stored.
+//
+// A renewal that loses to a strict rotation (Rotate) is decided by the store
+// the same way, through any manager sharing it. One that read the session
+// before the rotation wrote is refused by the store's condition. One that
+// reads it after finds the strict-rotation mark (Session.RotatedStrictly) and
+// is refused with ErrRenewalConflict inside that rotation's in-flight window,
+// writing and revoking nothing; the client carries on with the credential the
+// rotation handed out. Past the window it is refused as a gone session,
+// ErrExpired until the expiry sweep and ErrNotFound after it, and is never
+// judged as reuse. The guarantee holds as long as the store keeps the mark,
+// which the store-conformance suite checks.
 func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error) {
 	if s == nil {
 		return nil, 0, errors.New("session: rotate with grace was given no session")
@@ -218,6 +229,9 @@ func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.D
 	}
 
 	now := m.clock.Now()
+	if old.RotatedStrictly {
+		return nil, 0, lostToStrictRotation(old, now)
+	}
 	if err := m.judge(ctx, old, now, forRenewal); err != nil {
 		return nil, 0, err
 	}
