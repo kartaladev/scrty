@@ -204,6 +204,21 @@ const (
 	// Save writes the caller's retention deadline rather than keeping the
 	// one Supersede stored, as a column left in the UPDATE would.
 	sessionSaveMovesRetention sessionDefect = "save-moves-retention"
+	// Supersede records no strict-rotation mark, as a store with no column
+	// for it would.
+	sessionSupersedeDropsStrictMark sessionDefect = "supersede-drops-strict-mark"
+	// Save writes the caller's strict-rotation mark rather than keeping the
+	// stored one, as a column left in the UPDATE would.
+	sessionSaveWritesStrictMark sessionDefect = "save-writes-strict-mark"
+	// Create, and Supersede inserting its successor, write the caller's
+	// strict-rotation mark, as a column left in the INSERT would.
+	sessionCreateWritesStrictMark sessionDefect = "create-writes-strict-mark"
+	// Supersede marks the previous successor it knocks out, not only the
+	// record being superseded.
+	sessionSupersedeMarksPreviousSuccessor sessionDefect = "supersede-marks-previous-successor"
+	// Supersede never clears a strict-rotation mark, so a later supersession
+	// with a grace window leaves an earlier strict mark in place.
+	sessionSupersedeMarkSticky sessionDefect = "supersede-mark-sticky"
 	// Supersede accepts a retention deadline before the window's end.
 	sessionSupersedeAcceptsEarlyRetention sessionDefect = "supersede-accepts-early-retention"
 	// Supersede inserts a successor in no family.
@@ -310,7 +325,8 @@ func cloneSession(sess *session.Session) *session.Session {
 }
 
 // keepLibraryState copies onto sess the authentication time and the family,
-// supersession (retention included) and presentation fields stored holds,
+// supersession (retention and the strict mark included) and presentation
+// fields stored holds,
 // which only Create, Supersede and MarkPresented write, and both deadlines of
 // a superseded record.
 func keepLibraryState(sess, stored *session.Session) {
@@ -318,6 +334,7 @@ func keepLibraryState(sess, stored *session.Session) {
 	sess.FamilyID, sess.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
 	sess.SupersededAt, sess.AcceptUntil = stored.SupersededAt, stored.AcceptUntil
 	sess.RetainUntil = stored.RetainUntil
+	sess.RotatedStrictly = stored.RotatedStrictly
 	sess.SuccessorDigest = slices.Clone(stored.SuccessorDigest)
 	sess.FirstPresentedAt = stored.FirstPresentedAt
 	if !stored.SupersededAt.IsZero() {
@@ -359,6 +376,7 @@ func (s *sessionStore) Create(_ context.Context, sess *session.Session) error {
 		}
 	}
 	stored := cloneSession(sess)
+	stored.RotatedStrictly = stored.RotatedStrictly && s.defect == sessionCreateWritesStrictMark
 	if s.defect == sessionCreateDropsMarker {
 		stored.MFAAtFirstFactor = false
 	}
@@ -396,6 +414,9 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	}
 	if s.defect == sessionSaveMovesRetention {
 		kept.RetainUntil = sess.RetainUntil
+	}
+	if s.defect == sessionSaveWritesStrictMark {
+		kept.RotatedStrictly = sess.RotatedStrictly
 	}
 	sess = kept
 	if s.defect == sessionSaveRefusesTextAfterPartialWrite {
@@ -733,11 +754,19 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 		default:
 			s.retain(previous, op)
 		}
+		previous.RotatedStrictly = op.Strict && s.defect == sessionSupersedeMarksPreviousSuccessor
 	}
 	old.SupersededAt, old.AcceptUntil = op.Now, op.AcceptUntil
 	old.SuccessorDigest = digestOf(op.Successor.ID)
+	if s.defect == sessionSupersedeMarkSticky {
+		old.RotatedStrictly = old.RotatedStrictly || op.Strict
+	} else {
+		old.RotatedStrictly = op.Strict && s.defect != sessionSupersedeDropsStrictMark
+	}
 	s.retain(old, op)
-	s.records[op.Successor.ID] = cloneSession(op.Successor)
+	successor := cloneSession(op.Successor)
+	successor.RotatedStrictly = successor.RotatedStrictly && s.defect == sessionCreateWritesStrictMark
+	s.records[op.Successor.ID] = successor
 	return nil
 }
 

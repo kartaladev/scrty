@@ -24,13 +24,17 @@ import (
 // The in-memory defaults each run the portable suite for their contract. The
 // test names carry the backend, so a failure reads as the case and "Memory".
 
+// The session stores also run the strict-rotation cases, which only the
+// stores of this module that persist the mark run until every one does.
 func TestMemorySessionStore(t *testing.T) {
 	t.Parallel()
 
-	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+	newStore := func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
 		return must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
-	})
+	}
+	storetest.RunSessionStoreSuite(t, newStore)
+	storetest.RunSessionStrictRotationSuite(t, newStore)
 }
 
 // xorCipher seals reversibly and binds the additional data, which is all the
@@ -70,7 +74,7 @@ func (xorCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
 func TestEncryptedSessionStore(t *testing.T) {
 	t.Parallel()
 
-	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+	newStore := func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
 
 		s, err := session.NewEncryptedStore(
@@ -78,7 +82,9 @@ func TestEncryptedSessionStore(t *testing.T) {
 		require.NoError(t, err)
 
 		return s
-	})
+	}
+	storetest.RunSessionStoreSuite(t, newStore)
+	storetest.RunSessionStrictRotationSuite(t, newStore)
 }
 
 // The in-memory one-time store carries a reaper, so its run requires one.
