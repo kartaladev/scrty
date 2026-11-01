@@ -105,9 +105,10 @@ before it stores a session or spends anything: the session is built and marked, 
 issued, the session is stored in one write, and only then is the credential handed out. A credential
 that cannot be issued (a key source that is down, a generator that fails) is a dependency failure,
 never a refusal, and is not counted as a failed guess. It stores nothing, supersedes nothing and
-spends nothing: a login leaves no session nobody holds, a renewal leaves the presented credential
-working (and presenting it after the grace window is not reuse), and a one-time code or link stays
-usable. Your own code follows the same order through `session.Sessions.Prepare` and
+spends nothing: a login stores no session that nobody holds, a renewal leaves the presented
+credential with the standing it had (it is not later read as reuse), and a one-time code or link
+stays usable. The one exception is a passkey login's challenge, which any attempt spends. Your own
+code follows the same order through `session.Sessions.Prepare` and
 `session.Prepared.Commit` (`CreateIssuing` and `RotateWithGraceIssuing` wrap it).
 
 ### Logout
