@@ -656,6 +656,9 @@ chain, err := httpsec.New(
 		httpsec.PasskeyDeps{Passkeys: manager, Sessions: sessions, Users: users},
 		httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(tokens)),
 	),
+	// Required beside EnableMFA and EnablePasskeys: the step-up a session uses
+	// before it manages passkeys.
+	httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(tokens)),
 )
 ```
 

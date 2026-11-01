@@ -274,6 +274,7 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: d.tokens, Sessions: d.sessions, Users: d.users}),
 		httpsec.EnableMFA(methods, mfaOpts...),
 		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: d.sessions, Users: d.users}, passkeyOpts...),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 	}
 
@@ -1299,7 +1300,8 @@ func TestPasswordlessConstruction(t *testing.T) {
 
 				return append(opts[:4:4], httpsec.EnablePasskeys(
 					httpsec.PasskeyDeps{Passkeys: m, Sessions: d.sessions, Users: d.users},
-					httpsec.WithPasskeyPasswordlessLogin()))
+					httpsec.WithPasskeyPasswordlessLogin()),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)))
 			},
 			assert: refused,
 		},
@@ -1310,7 +1312,8 @@ func TestPasswordlessConstruction(t *testing.T) {
 
 				return append(opts[:4:4], httpsec.EnablePasskeys(
 					httpsec.PasskeyDeps{Passkeys: d.manager, Sessions: d.sessions},
-					httpsec.WithPasskeyPasswordlessLogin()))
+					httpsec.WithPasskeyPasswordlessLogin()),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)))
 			},
 			assert: refused,
 		},
@@ -1320,7 +1323,8 @@ func TestPasswordlessConstruction(t *testing.T) {
 				opts := d.options(t)
 
 				return append(opts[:4:4], httpsec.EnablePasskeys(
-					httpsec.PasskeyDeps{Passkeys: d.manager, Sessions: d.sessions}))
+					httpsec.PasskeyDeps{Passkeys: d.manager, Sessions: d.sessions}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)))
 			},
 			assert: accepted,
 		},
@@ -1497,7 +1501,8 @@ func TestPasswordless_CancelsHeldRecovery(t *testing.T) {
 
 	h.chainOpts = append(h.chainOpts, httpsec.EnablePasskeys(
 		httpsec.PasskeyDeps{Passkeys: pm, Sessions: h.sessions, Users: h.users},
-		httpsec.WithPasskeyPasswordlessLogin()))
+		httpsec.WithPasskeyPasswordlessLogin()),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 	h.build(t)
 
 	offered := make([]byte, passkey.HandleSize)

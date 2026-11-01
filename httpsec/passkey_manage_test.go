@@ -723,7 +723,8 @@ func chainWithoutSessionPort(t *testing.T, h *passkeyHarness, s *session.Session
 	require.NoError(t, err)
 
 	h.extra = append(h.extra,
-		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...))
+		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 
 	c, err := httpsec.New(h.options(t, s)...)
 	require.NoError(t, err)

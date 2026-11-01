@@ -200,6 +200,7 @@ func (pf *PasskeyFixture) options(
 		httpsec.EnablePasskeys(
 			httpsec.PasskeyDeps{Passkeys: pf.Passkeys, Sessions: sessions, Users: fixtureUsers{}},
 			httpsec.WithPasskeyPasswordlessLogin()),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(fixtureTokens{})),
 	)
 }
 
@@ -979,6 +980,7 @@ func passkeyEnrolmentOnlyUserRegistersWithEmailedCode() Scenario {
 						httpsec.WithMFAChallengeStore(pf.Base.OneTime)),
 					httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: fixtureUsers{}, Sender: pf.Base.Outbox}),
 					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pf.Passkeys, Sessions: sessions}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(fixtureTokens{})),
 				),
 				Effects: effects,
 				Routes:  passkeyRoutes(),

@@ -188,8 +188,7 @@ func TestPasskeyRegistration(t *testing.T) {
 					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 						Authenticator: authn, Sessions: h.sessions, Tokens: h.tokens,
 						Attempts: must.Must(lockout.NewMemoryAttemptStore()),
-					}),
-					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+					}))
 			},
 			act: func(t *testing.T, h *passkeyHarness, chain *httpsec.Chain) served {
 				stale := begin(t, h, chain)
@@ -737,7 +736,8 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 					passkey.WithRepudiationContact("help@example.com"))
 				require.NoError(t, err)
 
-				h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}))
+				h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 			},
 			assert: refused,
 		},

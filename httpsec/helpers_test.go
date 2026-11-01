@@ -2275,6 +2275,10 @@ type passkeyHarness struct {
 	withoutEnrolment bool
 	withRecoveryGate bool
 
+	// withoutReauth leaves EnableReauthentication off the chain, for a test
+	// that wires it itself.
+	withoutReauth bool
+
 	manager *passkey.Passkeys
 }
 
@@ -2320,6 +2324,10 @@ func (h *passkeyHarness) chainOptions(t *testing.T, s *session.Session) []httpse
 	}
 
 	h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...))
+	if !h.withoutReauth {
+		// MFA and passkeys on one chain need re-authentication.
+		h.extra = append(h.extra, httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
+	}
 	if h.withRecoveryGate {
 		h.extra = append(h.extra, httpsec.EnableRecoveryGateForTest())
 	}

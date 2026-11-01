@@ -705,10 +705,9 @@ func TestReauthBegin(t *testing.T) {
 func reauthDeployment(t *testing.T) *pwlDeployment {
 	t.Helper()
 
-	d := newPwlDeployment(t)
-	d.extra = append(d.extra, httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)))
-
-	return d
+	// The deployment's chain enables re-authentication already: MFA and
+	// passkeys on one chain need it.
+	return newPwlDeployment(t)
 }
 
 // enrolledTOTP enrols the user on the deployment's TOTP method and returns the

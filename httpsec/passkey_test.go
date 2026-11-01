@@ -328,7 +328,8 @@ func TestPasskeyEnrolmentAssembly(t *testing.T) {
 			h.enrolOpts = tc.enrolOpts
 
 			if tc.passkeys {
-				h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}))
+				h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 			}
 
 			_, err = httpsec.New(h.options(t, nil)...)
@@ -521,7 +522,8 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 
 			if tc.passkeys {
 				h.chainOpts = append(h.chainOpts,
-					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}))
+					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}),
+					httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(h.tokens)))
 			}
 
 			h.recOpts = append(h.recOpts, tc.recOpts...)
@@ -570,6 +572,7 @@ func TestPasskeyEnrolmentEndToEnd(t *testing.T) {
 		httpsec.EnableMFA([]mfa.Method{d.totp, method}, httpsec.WithMFATokens(d.tokens)),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: d.users, Sender: d.sender}),
 		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: d.sessions}),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 	)
 	require.NoError(t, err)
