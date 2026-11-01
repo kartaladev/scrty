@@ -281,7 +281,7 @@ Each defect task's red step is the reproduction named in its design decision, wr
   - red: the no-MFA-slot row of `TestRepro2_ReauthChallengeStoreWithNoChallengeMethodIsRefused`; `TestRepro2_NewGuardsReportsWindowErrorBeforeMissingAuthorizer` on fiber, with the net/http and gin rows as its contrast.
 
   (Reauthentication "Re-proof challenge stores are wired consistently", scenario "A re-proof store without the MFA slot"; framework-adapters scenario "One wiring mistake, one error on every adapter".) Verify with `go test -race -count=1 ./httpsec/` and `go test -race ./...` in `httpsec/fibersec` and `httpsec/ginsec`
-- [ ] 12.4 The password endpoint settles at the first enrolled method (D3):
+- [x] 12.4 The password endpoint settles at the first enrolled method (D3):
   - red: `TestRepro2PasswordEndpointStopsLookingAtTheFirstEnrolledMethod`; the listing's every-method row stays.
 
   (Reauthentication "Each re-proof endpoint looks up only the enrolments its decision needs", scenario "The password endpoint settles at the first enrolled method".) Verify with `go test -race -count=1 -run 'TestReauth' ./httpsec/`
