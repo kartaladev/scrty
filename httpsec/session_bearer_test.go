@@ -1197,8 +1197,8 @@ type loadCountingStore struct {
 	failEach bool
 
 	// hangUp, when set, ends the request's context during the failing load,
-	// which then fails with that context's error, as a store does when the
-	// client leaves.
+	// which then fails with that context's cause, which is its error when it
+	// has no other, as a store does when the client leaves.
 	hangUp context.CancelFunc
 }
 
@@ -1209,7 +1209,7 @@ func (s *loadCountingStore) Load(ctx context.Context, id string) (*session.Sessi
 		if s.hangUp != nil {
 			s.hangUp()
 
-			return nil, fmt.Errorf("db: %w", ctx.Err())
+			return nil, fmt.Errorf("db: %w", context.Cause(ctx))
 		}
 
 		return nil, s.failErr
@@ -1346,6 +1346,9 @@ func (l *lateRenewals) recorded() []string {
 
 	return append([]string(nil), l.failures...)
 }
+
+// errClientLeftWithCause is the cause a test's request is cancelled with.
+var errClientLeftWithCause = errors.New("the client closed the connection")
 
 // TestSessionBearerLateRenewals pins that, under unused-successor recovery, a
 // late renewal the endpoint refuses is counted against its source like any
@@ -1492,6 +1495,27 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 				assert.Equal(t, "httpsec: the request ended while its session loaded", out[0].err.Error(),
 					"a client that left is not reported as the manager's outage")
 				assert.Empty(t, l.recorded(), "a client that left is not a failed guess")
+			},
+		},
+		{
+			name: "the client leaves with a cause during the endpoint's load",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				ctx, hangUp := context.WithCancelCause(t.Context())
+				t.Cleanup(func() { hangUp(nil) })
+				l.store.hangUpAtEndpointLoad(func() { hangUp(errClientLeftWithCause) })
+
+				return []served{l.renewIn(ctx, t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, context.Canceled)
+				require.ErrorIs(t, out[0].err, errClientLeftWithCause, "the cause stays reachable")
+				assert.NotErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its session loaded", out[0].err.Error(),
+					"a client that left with a cause is not reported as the manager's outage")
+				assert.Empty(t, l.recorded(), "a client that left with a cause is not a failed guess")
 			},
 		},
 		{
