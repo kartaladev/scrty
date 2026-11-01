@@ -345,6 +345,17 @@ const (
 	textUserNotReloaded    = "httpsec: user could not be reloaded"
 )
 
+// The fixed texts a request whose own context ended at resolution is returned
+// with.
+const (
+	textSessionLoadEnded = "httpsec: the request ended while its session loaded"
+	textUserReloadEnded  = "httpsec: the request ended while its user reloaded"
+)
+
+// errClientGone is the cause a test cancels a request's context with, as a
+// server or a consumer's middleware may when the client goes away.
+var errClientGone = errors.New("test: the client closed its connection")
+
 // TestResolve_DependencyFailureIsNotARefusal pins that session resolution,
 // through either authenticator that shares it, answers a session-store or
 // user-store failure as a dependency failure, behind fixed text with the
@@ -482,7 +493,8 @@ func chargesNothing(t *testing.T) *MockLimiter {
 // while its session loaded or its user reloaded, at either bearer or at the
 // renewal endpoint, fails with the context's error: not refused, not recorded
 // at ERROR as an outage or an undecryptable session, and not charged to its
-// source.
+// source. Every row runs twice: once cancelled plainly, and once cancelled
+// with a cause the dependency returns through context.Cause.
 func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 	t.Parallel()
 
@@ -499,38 +511,46 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 		// wire wires the store and loader; hangUp ends the request's context.
 		wire func(h *authHarness, hangUp context.CancelFunc)
 
-		assert func(t *testing.T, h *authHarness, out served)
+		// assert is given the cause the request was cancelled with, nil when
+		// it was cancelled plainly.
+		assert func(t *testing.T, h *authHarness, out served, cause error)
 	}
 
-	hungUp := func(t *testing.T, h *authHarness, out served) {
-		t.Helper()
+	// hungUp asserts a hang-up answered with text.
+	hungUp := func(text string) func(t *testing.T, h *authHarness, out served, cause error) {
+		return func(t *testing.T, h *authHarness, out served, cause error) {
+			t.Helper()
 
-		require.ErrorIs(t, out.err, context.Canceled)
-		assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
-		assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-		assert.NotContains(t, []string{textSessionNotResolved, textUserNotReloaded}, out.err.Error(),
-			"a client that left is not reported as an outage")
-		assert.NotContains(t, out.err.Error(), "db:", "the text is the library's")
-		assert.False(t, out.handlerRan)
-		noErrorRecord(t, h)
+			require.ErrorIs(t, out.err, context.Canceled)
+			if cause != nil {
+				require.ErrorIs(t, out.err, cause, "the cause stays reachable")
+			}
+			assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+			assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+			assert.Equal(t, text, out.err.Error(), "a client that left is not reported as an outage")
+			assert.False(t, out.handlerRan)
+			noErrorRecord(t, h)
+		}
 	}
 
-	// loadHangsUp is a store Load during which the client leaves.
+	// loadHangsUp is a store Load during which the client leaves; it returns
+	// the context's cause, which is its error when it has no other.
 	loadHangsUp := func(h *authHarness, id string, hangUp context.CancelFunc) {
 		h.store.EXPECT().Load(gomock.Any(), id).
 			DoAndReturn(func(ctx context.Context, _ string) (*session.Session, error) {
 				hangUp()
 
-				return nil, fmt.Errorf("db: %w", ctx.Err())
+				return nil, fmt.Errorf("db: %w", context.Cause(ctx))
 			})
 	}
 
-	// reloadHangsUp is a user reload during which the client leaves.
+	// reloadHangsUp is a user reload during which the client leaves; it
+	// returns the context's cause, which is its error when it has no other.
 	reloadHangsUp := func(hangUp context.CancelFunc) func(ctx context.Context) (*identity.Details, error) {
 		return func(ctx context.Context) (*identity.Details, error) {
 			hangUp()
 
-			return nil, fmt.Errorf("db: %w", ctx.Err())
+			return nil, fmt.Errorf("db: %w", context.Cause(ctx))
 		}
 	}
 
@@ -557,7 +577,7 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 				wire: func(h *authHarness, hangUp context.CancelFunc) {
 					loadHangsUp(h, a.sessionID, hangUp)
 				},
-				assert: hungUp,
+				assert: hungUp(textSessionLoadEnded),
 			},
 			testCase{
 				name:    a.name + "/the client leaves while the user reloads",
@@ -568,7 +588,7 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 					h.acceptsFirstPresentation()
 					a.reload(h, reloadHangsUp(hangUp))
 				},
-				assert: hungUp,
+				assert: hungUp(textUserReloadEnded),
 			},
 		)
 	}
@@ -596,7 +616,7 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 			wire: func(h *authHarness, hangUp context.CancelFunc) {
 				loadHangsUp(h, testReference, hangUp)
 			},
-			assert: hungUp,
+			assert: hungUp(textSessionLoadEnded),
 		},
 		testCase{
 			name:    "renewal endpoint/the client leaves while the endpoint reloads the user",
@@ -613,30 +633,38 @@ func TestResolve_HangUpIsNotARefusal(t *testing.T) {
 						}),
 				)
 			},
-			assert: func(t *testing.T, h *authHarness, out served) {
+			assert: func(t *testing.T, h *authHarness, out served, cause error) {
 				t.Helper()
 
-				hungUp(t, h, out)
+				hungUp(textUserReloadEnded)(t, h, out, cause)
 				assert.NotErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
 			},
 		},
 	)
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+		for _, cause := range []error{nil, errClientGone} {
+			name := tc.name
+			if cause != nil {
+				name += "/cancelled with a cause"
+			}
 
-			ctx, hangUp := context.WithCancel(t.Context())
-			t.Cleanup(hangUp)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 
-			h := newAuthHarness(t)
-			opts := append([]httpsec.Option{httpsec.WithLogger(h.logger())}, tc.options(t, h)...)
-			tc.wire(h, hangUp)
+				ctx, cancel := context.WithCancelCause(t.Context())
+				hangUp := func() { cancel(cause) }
+				t.Cleanup(hangUp)
 
-			chain, err := httpsec.New(opts...)
-			require.NoError(t, err)
+				h := newAuthHarness(t)
+				opts := append([]httpsec.Option{httpsec.WithLogger(h.logger())}, tc.options(t, h)...)
+				tc.wire(h, hangUp)
 
-			tc.assert(t, h, serveIn(ctx, t, chain, tc.request(ctx)))
-		})
+				chain, err := httpsec.New(opts...)
+				require.NoError(t, err)
+
+				tc.assert(t, h, serveIn(ctx, t, chain, tc.request(ctx)), cause)
+			})
+		}
 	}
 }

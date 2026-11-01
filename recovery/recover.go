@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -260,11 +261,9 @@ func passwordLoadEndedByCaller(ctx context.Context, err error) bool {
 
 // loadEndedByCaller reports whether err is the caller's own context ending a
 // load, rather than a dependency failing on its own: ctx has ended, and err
-// matches ctx's error or its cause.
+// matches ctx's error or its cause (hangup.ByCaller).
 func loadEndedByCaller(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil && (errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
+	return hangup.ByCaller(ctx, err)
 }
 
 // refusedByCheck turns a password check's authentication failure into

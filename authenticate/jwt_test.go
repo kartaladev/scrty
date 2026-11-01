@@ -448,6 +448,8 @@ func TestJWTProvider_KeySourceOutage(t *testing.T) {
 func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 	t.Parallel()
 
+	errCallerGone := errors.New("test: the caller went away")
+
 	const (
 		issuer   = "https://issuer.example"
 		audience = "orders-api"
@@ -483,6 +485,38 @@ func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 				t.Helper()
 
 				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, got)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"a caller that left was answered as a refused token")
+				assert.Equal(t, "authenticate: the caller left while the token was verified", err.Error(),
+					"a caller that left is not reported as a key outage")
+			},
+		},
+		{
+			// A caller cancelled with a cause reports that cause through
+			// context.Cause, and a verifier that returns it has returned the
+			// caller's own ending, not a failure of its own.
+			name: "the caller left with a cause, which the verifier returns",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, fmt.Errorf("kms: %w", context.Cause(ctx))
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, errCallerGone, "the cause stays reachable")
+				assert.ErrorIs(t, err, context.Canceled)
 				assert.Nil(t, got)
 				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
 					"a caller that left was answered as a refused token")

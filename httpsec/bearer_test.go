@@ -1231,7 +1231,9 @@ func TestBearer_KeySourceOutageIsNotARefusal(t *testing.T) {
 		}
 	}
 
-	unavailable := func(cause error) func(t *testing.T, h *authHarness, out served) {
+	// unavailable asserts the outage answer to cause; no record may contain
+	// cause's text, nor any of leaks, the parts of it that name the key.
+	unavailable := func(cause error, leaks ...string) func(t *testing.T, h *authHarness, out served) {
 		return func(t *testing.T, h *authHarness, out served) {
 			t.Helper()
 
@@ -1250,6 +1252,10 @@ func TestBearer_KeySourceOutageIsNotARefusal(t *testing.T) {
 
 			for i, rec := range h.logs.records() {
 				assert.NotContains(t, recordText(rec), cause.Error(), "record %d carries the key source's text", i)
+
+				for _, leak := range leaks {
+					assert.NotContains(t, recordText(rec), leak, "record %d names the key", i)
+				}
 			}
 		}
 	}
@@ -1263,7 +1269,7 @@ func TestBearer_KeySourceOutageIsNotARefusal(t *testing.T) {
 		{
 			name:          "a key source whose error names its key",
 			verifyingWith: down(errKMSNamesKey),
-			assert:        unavailable(errKMSNamesKey),
+			assert:        unavailable(errKMSNamesKey, "arn:aws:kms:", "111122223333", "key/abcd"),
 		},
 		{
 			name: "a token signed by a key the source does not hold is still refused",
@@ -1381,6 +1387,49 @@ func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
 					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
 						i, r.Level, r.Message)
 					assert.NotContains(t, recordText(r), context.Canceled.Error(),
+						"record %d carries the error's text", i)
+				}
+			},
+		},
+		{
+			// A request cancelled with a cause reports that cause through
+			// context.Cause, and a dependency that returns it has returned the
+			// request's own ending, not a failure of its own.
+			name: "the client left with a cause, which the verifier returns",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errClientGone)
+
+				return cctx
+			},
+			verifier: func(ctrl *gomock.Controller) token.Verifier {
+				v := NewMockVerifier(ctrl)
+				v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) {
+						return nil, fmt.Errorf("kms: %w", context.Cause(ctx))
+					})
+
+				return v
+			},
+			assert: func(t *testing.T, h *authHarness, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, errClientGone, "the cause stays reachable")
+				assert.ErrorIs(t, out.err, context.Canceled)
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"a client that left was answered as a refused token")
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, "httpsec: the request ended while its token was verified", out.err.Error(),
+					"a client that left is not reported as a key outage")
+				assert.False(t, out.handlerRan)
+
+				for i, r := range h.logs.records() {
+					reason, _ := attrValue(r, "reason")
+					assert.NotEqual(t, "verification-keys", reason.String(),
+						"record %d reports a key outage", i)
+					assert.Less(t, r.Level, slog.LevelError, "record %d: unexpected record at %s: %q",
+						i, r.Level, r.Message)
+					assert.NotContains(t, recordText(r), errClientGone.Error(),
 						"record %d carries the error's text", i)
 				}
 			},

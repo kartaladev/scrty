@@ -114,8 +114,9 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 // client.
 //
 // A request whose own context ended while its token was verified, and whose
-// err is that context's error (endedByRequest), is a hang-up: neither a
-// refusal, since no verdict was reached, nor an outage, since nothing failed.
+// err is that context's error or the cause it was cancelled with
+// (endedByRequest), is a hang-up: neither a refusal, since no verdict was
+// reached, nor an outage, since nothing failed.
 // It is returned behind fixed text of its own, or as the context's error
 // itself when the verifier returns it bare, matching the context's error
 // either way, and recorded at debug with no error text. It is told by the

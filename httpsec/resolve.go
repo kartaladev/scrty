@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -173,9 +174,10 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 //     its request transaction back on a refusal can tell this is the one
 //     refusal it must commit, or it would roll the family's revocation back
 //     too. The manager's error names no identifier.
-//   - a hang-up, when ctx ended and err is that ending (endedByRequest): it
-//     matches ctx's error, and neither ErrAuthenticationRequired nor anything
-//     an outage is told by. No verdict was reached, and nothing failed.
+//   - a hang-up, when ctx ended and err is that ending, ctx's error or the
+//     cause it was cancelled with (endedByRequest): it matches ctx's error,
+//     and neither ErrAuthenticationRequired nor anything an outage is told
+//     by. No verdict was reached, and nothing failed.
 //   - a dependency failure otherwise, a store or cipher outage or the store's
 //     own deadline: fixed library text, with err reachable through errors.Is
 //     and errors.As, which the default status mapping answers with 500. A
@@ -223,14 +225,12 @@ func classifyReload(ctx context.Context, err error) error {
 }
 
 // endedByRequest reports whether err is the request's own context ending
-// rather than a dependency failing on its own: ctx has ended, and err is or
-// wraps ctx's error. A deadline a dependency met on a context of its own, while
-// the request was still waiting, is an outage, which is why a bare
-// errors.Is(err, context.DeadlineExceeded) or context.Canceled is never asked.
+// rather than a dependency failing on its own: ctx has ended, and err matches
+// ctx's error or the cause it was cancelled with (hangup.ByCaller). A deadline
+// a dependency met on a context of its own, while the request was still
+// waiting, is an outage.
 func endedByRequest(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil && errors.Is(err, ctxErr)
+	return hangup.ByCaller(ctx, err)
 }
 
 // The fixed texts resolution answers a failure that is not a refusal with.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -103,8 +104,9 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // deciding which of the two is the "real" error.
 //
 // A caller whose own context ended while the token was verified, the
-// verifier failing with that context's error, is neither refused nor an
-// outage: no verdict was reached, and nothing failed. It is returned behind
+// verifier failing with that context's error or the cause it was cancelled
+// with (context.Cause), is neither refused nor an outage: no verdict was
+// reached, and nothing failed. It is returned behind
 // fixed library text of its own, or as the context's error itself when the
 // verifier returns it bare, matching the context's error either way, and it
 // does not match ErrAuthenticationFailed. It is told by ctx itself, never by
@@ -132,7 +134,7 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 		if errors.Is(err, token.ErrInvalid) {
 			return nil, errors.Join(ErrAuthenticationFailed, err)
 		}
-		if callerLeft(ctx, err) {
+		if hangup.ByCaller(ctx, err) {
 			return nil, diag.Wrap(err, textCallerLeftDuringVerification, ctx.Err())
 		}
 
@@ -183,15 +185,6 @@ func (a *JWTAuthenticator) eventID(claims *token.Claims) (id.ID, error) {
 	}
 
 	return generated, nil
-}
-
-// callerLeft reports whether the caller's own context ended and err is that
-// context's error: a hang-up, rather than a dependency that failed or timed
-// out on a deadline of its own while the caller still waited.
-func callerLeft(ctx context.Context, err error) bool {
-	ctxErr := ctx.Err()
-
-	return ctxErr != nil && errors.Is(err, ctxErr)
 }
 
 // The texts a verification that did not happen is returned with: a key
