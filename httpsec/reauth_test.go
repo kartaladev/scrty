@@ -768,6 +768,7 @@ func TestEnableReauthentication(t *testing.T) {
 			name: "an MFA challenge store without a re-proof store",
 			wire: func(*reauthHarness) {},
 			setup: func(t *testing.T, h *reauthHarness) {
+				h.extra = []mfa.Method{newChallengeStub()}
 				h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(newReauthMemoryStore(t, h)))
 			},
 			assert: func(t *testing.T, _ served, err error) {
@@ -777,6 +778,15 @@ func TestEnableReauthentication(t *testing.T) {
 				assert.ErrorContains(t, err, "WithReauthenticationChallengeStore")
 				assert.ErrorContains(t, err, "WithMFAChallengeStore")
 			},
+		},
+		{
+			// "No challenge method, no store needed".
+			name: "a TOTP-only slot with an MFA store builds without a re-proof store",
+			wire: func(*reauthHarness) {},
+			setup: func(t *testing.T, h *reauthHarness) {
+				h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(newReauthMemoryStore(t, h)))
+			},
+			assert: func(t *testing.T, _ served, err error) { require.NoError(t, err) },
 		},
 		{
 			// "One store for both".

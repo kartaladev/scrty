@@ -251,10 +251,11 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //
 // New refuses the chain when the manager or the session manager is missing,
 // when EnablePasskeys is given twice, when the chain has the MFA slot
-// (EnableMFA) and does not enable EnableReauthentication (the step-up that
-// lets a session owing a second factor manage passkeys; a chain without the
-// MFA slot is not bound by it, whatever the order of the options), and when any passkey path is empty,
-// does not start with "/", equals another passkey path, the login path, the
+// (EnableMFA) and does not enable EnableReauthentication (how a full session
+// that has not met its second factor meets it before managing passkeys, since
+// /mfa/verify serves only a pending session; a chain without the MFA slot is
+// not bound by it, whatever the order of the options), and when any passkey
+// path is empty, does not start with "/", equals another passkey path, the login path, the
 // logout path, the password-change resolve path or an account-recovery
 // endpoint path, or lies under the MFA verify or begin prefix or an enrolment
 // prefix.
@@ -394,8 +395,8 @@ func (c *config) wirePasskeys() error {
 
 	if c.mfaOf() != nil && !c.hasReauthentication() {
 		return newConfigError("%s on a chain with the MFA slot needs EnableReauthentication: "+
-			"the slot's verify endpoint would otherwise be the only way to step a session up before "+
-			"managing passkeys, and re-authentication is the step-up built for it", option)
+			"re-authentication is how a full session that has not met its second factor meets it "+
+			"before managing passkeys, since /mfa/verify serves only a pending session", option)
 	}
 
 	if p.loginPrefixSet && p.passwordless == nil {

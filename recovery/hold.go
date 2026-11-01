@@ -486,8 +486,8 @@ func (r *Recoverer) Cancel(ctx context.Context, cancelToken string) {
 	r.notify(ctx, details, subject, body)
 }
 
-// CancelPending cancels every pending recovery of user. The login path calls
-// it, when Holds reports true, after a first factor is authenticated and
+// CancelPending cancels every pending recovery of user. The login path, and a
+// password re-authentication, call it, when Holds reports true, after a first factor is authenticated and
 // before the session is created: a user who can still log in did not lose
 // their account, so a recovery held for it is cancelled. An error is the
 // record store's, behind fixed text; the caller refuses the login on it,

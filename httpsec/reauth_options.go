@@ -60,8 +60,9 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // carries the rotated session's credential: by default the JSON document a
 // login answers with, marked Cache-Control: no-store
 // (WithReauthenticationResponder replaces it). A rotation a concurrent renewal
-// won, or that lost to a concurrent re-proof of the same session on the same
-// server, is refused with ErrSessionRenewalConflict (409), and a failed
+// won, or that lost to a concurrent re-proof of the same session (on this
+// server or on any server sharing the session store), is refused with
+// ErrSessionRenewalConflict (409), and a failed
 // re-proof changes neither the session nor its handle.
 //
 // # Who may re-prove
@@ -122,12 +123,24 @@ type ReauthenticationOption func(*reauthInterceptor) error
 // New fails with ErrConfig, naming the cause, when re-authentication is
 // enabled twice; when neither EnableMFA nor EnableFormLogin is enabled; when
 // RequireSecondFactorForReauthentication is given without EnableMFA; when an
-// endpoint's path equals or lies under the logout path, the form login path,
-// or the MFA verify or begin prefix, or one of those lies under the begin or
-// verify path, or the listing path equals the MFA listing path; when the MFA
-// slot was given a challenge store (WithMFAChallengeStore) and
-// WithReauthenticationChallengeStore was not; when the
-// token generator is missing or refused as above; and when an option is given
+// endpoint's path collides with the path of another endpoint the chain
+// enabled, judged by how each matches: the begin and verify paths are
+// matched by prefix, the listing and password paths exactly. A path collides
+// when it equals another's, or lies under another that is matched by prefix
+// (the MFA verify, begin and enrolment prefixes, the passkey registration and
+// credentials prefixes, the OIDC authorize, callback and back-channel logout
+// prefixes), or has another under it when it is itself matched by prefix; the
+// exact paths (logout, form login, the MFA listing, session renewal, password
+// change, every account recovery path, the magic-link and passwordless passkey
+// login paths, the OIDC handoff path and the key set endpoint) collide only on
+// equality or under the begin or verify path, so "/login/reauth" is accepted
+// beside form login at "/login"; when the MFA slot was given a challenge store
+// (WithMFAChallengeStore), has a method with a begin step, and
+// WithReauthenticationChallengeStore was not, because the re-proof challenges
+// would sit in per-process memory while the login challenges are shared (a
+// TOTP-only slot has no challenge to store and needs no re-proof store); when
+// EnablePasskeys is on a chain with the MFA slot and re-authentication is not
+// enabled; when the token generator is missing or refused as above; and when an option is given
 // an empty prefix, a lifetime or limit of zero or less, or an absent store,
 // generator or responder.
 func EnableReauthentication(opts ...ReauthenticationOption) Option {
@@ -197,11 +210,13 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 			"the requirement", option)
 	}
 
-	if i.mfa != nil && i.mfa.challengeStoreGiven && i.challengeStore == nil {
+	if i.mfa != nil && i.mfa.challengeStoreGiven && i.challengeStore == nil &&
+		slices.ContainsFunc(i.mfa.methods, isChallengeMethod) {
 		return newConfigError("WithMFAChallengeStore was given a challenge store but "+
 			"WithReauthenticationChallengeStore was not: a store shared between replicas for "+
 			"login challenges would leave the re-proof challenges of %s in per-process memory, "+
-			"so give both options the same store", option)
+			"so a challenge begun on one replica could not be verified on another; give both "+
+			"options the same store", option)
 	}
 
 	if err := i.checkPaths(c, option); err != nil {
