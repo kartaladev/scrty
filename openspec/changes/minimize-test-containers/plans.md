@@ -33,7 +33,7 @@
 ## Review Focus
 
 1. **A proxy closed while a copy is blocked**, in hang or mid-transfer: no goroutine may outlive `Close`. Pinned in task 2.1's leak test.
-2. **Stop during a large transfer:** the client's read ends with an error, never a hang or truncated success. Pinned in task 2.1.
+2. **Stop during a large transfer, or with a stop step:** the client's read ends with an error, never a hang or truncated success. Bytes the server sent before it closed, such as PostgreSQL's `FATAL 57P01`, reach the client before that error, and are never cut off by the proxy's own close. Pinned in task 2.1, and on a real server in task 3.1.
 3. **Mode changes in every order, from several goroutines:** hang then start without stop, stop while hung, start twice. No race and no deadlock under `-race`. Pinned in tasks 2.2 and 2.3.
 4. **A late answer after hang:** a request that timed out while hung must not have its answer delivered to the next request on the same client or pool once started. Pinned in task 3.1 (pgx) and task 4.2 (go-redis).
 5. **A test that fails mid-outage** (`t.Fatal` while hung): teardown still restores the proxy and removes the database. Pinned in task 3.2.
@@ -87,7 +87,9 @@ B and C both write `test/testutils.go`, so they run in order and never at once. 
   - `type outageProxy struct` (unexported)
   - `func newOutageProxy(upstream string) (*outageProxy, error)`: listens on `127.0.0.1:0` and forwards each accepted connection to `upstream`
   - `func (p *outageProxy) Addr() string`: `host:port`, the same for the proxy's whole life
-  - `func (p *outageProxy) Stop() error`
+  - `func (p *outageProxy) Stop() error`: `StopWith(nil)`
+  - `func (p *outageProxy) StopWith(step func() error) error`: closes the listener, runs `step` when it is not nil, and waits up to `outageStopBound` for every pair to end from the upstream side before it closes the rest. It returns `step`'s error after the pairs are closed. With a nil step, it closes the pairs at once.
+  - `const outageStopBound = time.Second`
   - `func (p *outageProxy) Start() error`
   - `func (p *outageProxy) Close() error`: stops for good and waits for every goroutine it started
 
@@ -97,9 +99,14 @@ B and C both write `test/testutils.go`, so they run in order and never at once. 
   - **"start reopens the same address":** after `Stop` then `Start`, a new dial to the same `Addr()` echoes `"ping"`.
   - **"stop and start are idempotent":** `Stop` twice and `Start` twice each return nil, and echo works at the end.
   - **"stop mid-transfer ends the read":** the echo server streams 1 MiB slowly. `Stop` after the first 64 KiB makes the client's `io.ReadAll` return an error within 1 s (Review Focus 2).
+- [ ] **Step 1a:** Write `TestOutageProxy_StopWith`, a table over a loopback server the test controls. Each case opens one client connection through the proxy, and checks it echoes, before `StopWith`:
+  - **"the listener closes before the step":** the step dials `p.Addr()` with a 1 s timeout and records the result. Assert that the recorded dial failed.
+  - **"bytes the upstream writes before closing reach the client":** the step tells the server to write `"bye"` on every open connection and then close it. The client's `io.ReadAll`, with a 2 s deadline, returns exactly `"bye"` and no error other than EOF, or a closed-connection error after `"bye"` (Review Focus 2).
+  - **"connections left open are closed after the bound":** the step does nothing, and the server never closes. The client's read returns an error within `outageStopBound + 500*time.Millisecond`.
+  - **"the step's error is returned, and connections are still closed":** the step returns `errors.New("step failed")`. `StopWith` returns an error that `errors.Is` matches against it, and the client's read returns an error within `outageStopBound + 500*time.Millisecond`.
 - [ ] **Step 2:** Write `TestOutageProxy_CloseLeavesNoGoroutine`. Start with `defer goleak.VerifyNone(t, goleak.IgnoreCurrent())`, open two connections, `Stop`, `Start`, open one more, then `Close` (Review Focus 1).
-- [ ] **Step 3:** Land the stub: `Stop`, `Start` and `Close` return nil and do nothing. Run `go test -race -count=1 -run 'TestOutageProxy' .`. Expected: FAIL in "stop closes open connections" (the read succeeds) and in the leak test, not a compile error.
-- [ ] **Step 4:** Implement. Track every live client/upstream pair. `Stop` closes the listener and every pair. `Start` calls `net.Listen("tcp", p.addr)` on the remembered address and returns its error unchanged.
+- [ ] **Step 3:** Land the stub: `Stop`, `StopWith`, `Start` and `Close` return nil and do nothing. Run `go test -race -count=1 -run 'TestOutageProxy' .`. Expected: FAIL in "stop closes open connections" (the read succeeds), in every `TestOutageProxy_StopWith` case, and in the leak test, not a compile error.
+- [ ] **Step 4:** Implement. Track every live client/upstream pair. `StopWith` closes the listener, runs the step, then waits for the pairs to end or for the bound, then closes the pairs left. A pump that reads EOF or an error from the upstream writes what it has read, then closes the client side, which is how a pair "ends from the upstream side". `Start` calls `net.Listen("tcp", p.addr)` on the remembered address and returns its error unchanged.
 - [ ] **Step 5:** Run the same command. Expected: PASS.
 
 ### Task 2.2: Proxy hang (dispatch A)
@@ -135,23 +142,29 @@ B and C both write `test/testutils.go`, so they run in order and never at once. 
 - Test: `test/testutils_postgres_test.go`
 
 **Interfaces:**
-- Consumes: `newOutageProxy`, `Addr`, `Stop`, `Hang`, `Start` and `Close` from task 2.1.
+- Consumes: `newOutageProxy`, `Addr`, `StopWith`, `Hang`, `Start` and `Close` from tasks 2.1 and 2.2, and `postgresServer.admin` (the server's admin pool, in `testutils_pgserver.go`).
 - Produces:
   - `func WithTestPostgresOutageProxy() TestOption`, which sets `testConfig.outageProxy bool`
   - `PostgresConn.proxy *outageProxy`
+  - `PostgresConn.server *postgresServer` and `PostgresConn.database string`, the call's clone name, set on a proxied call
+  - `func (c PostgresConn) endSessions() error`: on `c.server.admin`, with a 5 s context, runs `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()` with `c.database`
   - `func (c PostgresConn) Hang(t *testing.T)`
-  - `Stop` and `Start` act on `c.proxy` when it is set, else on the own server as today
+  - `Stop` calls `c.proxy.StopWith(c.endSessions)` when `c.proxy` is set, else acts on the own server as today
+  - `Start` acts on `c.proxy` when it is set, and returns once `DB` answers a ping, as an own server's `Start` does
 
 - [ ] **Step 1:** Write `TestRunTestPostgresOutageProxy`, a table. Each case calls `RunTestPostgres(t, WithTestPostgresOutageProxy())`:
   - **"many outage-capable calls, one server":** ten parallel calls, plus one direct call, all report the same `pg_postmaster_start_time()` and `system_identifier` from `pg_control_system()`, and ten distinct `current_database()`.
   - **"stopped":** after `conn.Stop(t)`, `conn.DB.PingContext` fails, while a direct call's `DB` pings.
+  - **"stopped while connected":** take `c, _ := conn.DB.Conn(t.Context())` and run `SELECT 1` on it. Take a second proxied call's open `*sql.Conn` the same way. Then `conn.Stop(t)`. `SELECT 1` on `c` fails, and `errors.As` finds a `*pgconn.PgError` with `Code == "57P01"`. `SELECT 1` on the second call's open connection, and on a direct call's `DB`, both succeed.
   - **"started again":** insert a row, `Stop`, `Start`, open `sql.Open("pgx", conn.DSN)` and read the row.
   - **"a request while hung":** after `Hang`, a `SELECT 1` with a 250 ms context fails with `context.DeadlineExceeded`, and a direct call's `SELECT 1` succeeds.
   - **"answers resume":** `Hang`, run `SELECT 42` in a goroutine with no deadline, `Start`; it returns 42 within 2 s.
   - **"no late answer after hang":** `Hang`, a `SELECT 1` with a 250 ms deadline fails, `Start`; the next `SELECT 2` on `conn.DB` returns 2 (Review Focus 4).
 - [ ] **Step 2:** Land `WithTestPostgresOutageProxy` as a no-op and `Hang` as a no-op. Run `go test -race -count=1 -run 'TestRunTestPostgresOutageProxy' .`. Expected: FAIL in "stopped", which says Stop needs `WithTestPostgresRestartable`.
-- [ ] **Step 3:** Implement. On the option, `postgresProvision` builds the call's clone on the shared server as usual, starts a proxy in front of the server's mapped address, and points `DSN` and `DB` at `proxy.Addr()`.
-- [ ] **Step 4:** Run the same command. Expected: PASS.
+- [ ] **Step 3:** Implement the proxy without the stop step first. On the option, `postgresProvision` builds the call's clone on the shared server as usual, starts a proxy in front of the server's mapped address, and points `DSN` and `DB` at `proxy.Addr()`. `Stop` calls `c.proxy.Stop()`.
+- [ ] **Step 4:** Run the same command. Expected: FAIL only in "stopped while connected", with an error that is not a `*pgconn.PgError` with `57P01`. This is the stop step's red step.
+- [ ] **Step 5:** Add `endSessions`, and make `Stop` call `c.proxy.StopWith(c.endSessions)`.
+- [ ] **Step 6:** Run the same command. Expected: PASS.
 
 ### Task 3.2: Teardown after an outage (dispatch B)
 
@@ -261,7 +274,7 @@ B and C both write `test/testutils.go`, so they run in order and never at once. 
 
 ### Task 5.1: Driver spike (dispatch D, then the main session)
 
-- [ ] **Step 1 (agent):** In a scratch copy of `test/` (`cp -R`) outside the tree, switch each outage case to the proxy one at a time, leaving its assertions unchanged:
+- [ ] **Step 1 (agent):** In a scratch copy of `test/` (`cp -R`) outside the tree, switch each outage case to the proxy one at a time, with PostgreSQL's `Stop` running its stop step (`StopWith(endSessions)`), leaving its assertions unchanged:
   - `TestPGLimiter_Unavailable`, both backends;
   - "unreachable server" in `TestSQLStoreLimiter_Verify` and `TestPgxLimiter_Verify`;
   - every case of `TestRedisLimiter_Fault`.
@@ -269,7 +282,7 @@ B and C both write `test/testutils.go`, so they run in order and never at once. 
   Run each both ways, 5 times, with `-race`.
 - [ ] **Step 2 (agent):** For each case, report a table row:
   - the driver error text and its type, with `%T` of the unwrapped error, real and proxied;
-  - the `57P01` SQLSTATE where present;
+  - the `57P01` or `57P03` SQLSTATE where present, and `pgconn.SafeToRetry` of the error, real and proxied;
   - the limiter's outcome, real and proxied;
   - pass or fail counts in each mode.
 - [ ] **Step 3 (main session):** Record the table in design.md D4, with the list of cases that stay real. Commit: `docs(openspec): record how the drivers see a proxied outage`.

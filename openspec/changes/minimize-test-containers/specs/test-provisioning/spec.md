@@ -18,11 +18,15 @@ A PostgreSQL or Redis helper call that asks for an outage-capable connection SHA
 - **THEN** stopping it stops that server's container, as before
 
 ### Requirement: Stopping an outage-capable connection cuts off only that call
-Stopping an outage-capable connection SHALL close every connection the call has open to its server and refuse new ones, until the call starts it again. Starting it SHALL make the server reachable again at the same address, with the call's data intact. Other calls on the same server SHALL be unaffected throughout.
+Stopping an outage-capable connection SHALL close every connection the call has open to its server and refuse new ones, until the call starts it again. On PostgreSQL, a connection the call holds open when it stops SHALL receive the error a server shutdown sends its sessions, SQLSTATE 57P01 admin_shutdown. Starting it SHALL make the server reachable again at the same address, with the call's data intact. Other calls on the same server SHALL be unaffected throughout.
 
 #### Scenario: Stopped
 - **WHEN** a test stops its outage-capable connection and then runs a query through it
 - **THEN** the query fails with a connection error, and a query by another test on the same server succeeds
+
+#### Scenario: Stopped while connected (PostgreSQL)
+- **WHEN** a test holds an open connection through its outage-capable PostgreSQL connection, stops it, and runs a query on the open connection
+- **THEN** the query fails with SQLSTATE 57P01, and a query by another test on the same server succeeds
 
 #### Scenario: Started again
 - **WHEN** the test inserts a row, stops the connection, starts it again and reads the row through a new connection to the same address

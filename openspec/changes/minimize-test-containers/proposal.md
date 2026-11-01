@@ -7,16 +7,17 @@ A full `go test -race -count=1 ./...` of the `test` module on 2026-10-23 started
 ## What Changes
 
 - **Outages through a proxy, not a server of one's own.** The PostgreSQL and Redis helpers can hand a test a connection that runs through a proxy in the test process, in front of the shared server. The test drives the proxy:
-  - **stop**: close every open connection and refuse new ones;
+  - **stop**: refuse new connections and close every open one. On PostgreSQL, the server first ends the call's own sessions, so open connections get the server's own `57P01 admin_shutdown`;
   - **hang**: keep connections open and forward nothing;
   - **start**: accept and forward again.
 
   The shared server never stops, so other tests on it are unaffected.
+- **No server-side mechanism replaces the proxy.** Researched on 2026-11-01: no server can hang one call's connections alone, and per-user or per-database refusals answer new connections with a server error where a stopped server refuses the dial. Toxiproxy embedded as a library drops what it holds while hung.
 - **The outage tables move onto the proxy.** The cases that stop, restart or hang a server use the proxy instead of a server of their own:
   - the PostgreSQL limiter's unavailable cases, on both backends and in their broken-variant child;
   - the limiter's "unreachable server" verify case;
   - the Redis limiter's fault cases.
-- **One real outage per backend stays.** For each backend, one case keeps stopping and restarting a real server of its own, so a difference between a proxy cut and a real shutdown cannot pass unseen. PostgreSQL, for one, tells its clients `57P01 admin_shutdown` before it closes their connections, where a proxy just closes them.
+- **One real outage per backend stays.** For each backend, one case keeps stopping and restarting a real server of its own, so a difference between a staged outage and a real shutdown cannot pass unseen. Stop already gives PostgreSQL's open connections the real `57P01`. What only a real outage shows is the shutdown itself: new connections refused with `57P03 cannot_connect_now`, then at the closed port, and a restarted server that has lost every session.
 - **Own Redis servers are shared by configuration.**
   - Calls that ask for a server of their own with identical start-up flags, and that do not stop or change it, share one such server per process.
   - ACL cases run on the shared server, each under an ACL user named for its test.

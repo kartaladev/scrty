@@ -21,7 +21,8 @@ This change starts after `stabilize-intermittent-tests` has classified the inter
 - [ ] 2.1 Stop and start (D2), tested against a loopback TCP server in the test process, with no container:
   - stop closes every open connection through the proxy and refuses new ones;
   - start listens again on the same address, and data then flows;
-  - a second stop or start is harmless.
+  - a second stop or start is harmless;
+  - a stop with a stop step closes the listener first, then runs the step. Bytes the upstream writes before it closes a connection reach the client, and connections still open after the bound are closed.
 
   Verify with `go test -race -count=1 -run 'TestOutageProxy' .` in `test`.
 - [ ] 2.2 Hang (D2), tested the same way:
@@ -39,9 +40,10 @@ This change starts after `stabilize-intermittent-tests` has classified the inter
 - [ ] 3.1 The option on `RunTestPostgres` (D3):
   - `DSN` and `DB` go through a proxy in front of the shared server;
   - the call's database is cloned from the template as usual;
-  - `Stop`, `Start` and the new `Hang` act on the proxy.
+  - `Stop`, `Start` and the new `Hang` act on the proxy;
+  - `Stop`'s stop step ends the call's sessions at the server (D2), so an open connection fails with `57P01`, and another call's sessions are untouched.
 
-  Covers "A call can stage an outage without a server of its own" ("Many outage-capable calls, one server"), "Stopping an outage-capable connection cuts off only that call" (both scenarios) and "Hanging an outage-capable connection stops answers without closing connections" (both scenarios). Verify with `go test -race -count=1 -run 'TestRunTestPostgres' .` in `test`, and by a container count of one for the many-calls test.
+  Covers "A call can stage an outage without a server of its own" ("Many outage-capable calls, one server"), "Stopping an outage-capable connection cuts off only that call" (all three scenarios) and "Hanging an outage-capable connection stops answers without closing connections" (both scenarios). Verify with `go test -race -count=1 -run 'TestRunTestPostgres' .` in `test`, and by a container count of one for the many-calls test.
 - [ ] 3.2 Teardown after an outage (D2). The proxy is started again before the call's teardown, and closed last. Covers "An outage-capable call cleans up whatever state its test left it in" ("Test ends with the connection stopped"), for a test left stopped and one left hung. Verify with `go test -race -count=1 -run 'TestRunTestPostgres' .` in `test`.
 - [ ] 3.3 Refused combinations (D3), each failing before anything starts:
   - the option together with `WithTestPostgresOwnServer()` or `WithTestPostgresRestartable()`;
@@ -77,7 +79,7 @@ This change starts after `stabilize-intermittent-tests` has classified the inter
 
 ## 5. Move the outage and configuration tests
 
-- [ ] 5.1 The driver spike (D4). Run each outage case of `TestPGLimiter_Unavailable` (both backends), the verify "unreachable server" case and `TestRedisLimiter_Fault`, both through the proxy and against a real server of their own. Record each driver's error and the limiter's observable outcome. A case whose outcome differs stays real. Verify by the table in design.md D4 and the list of cases that stay real.
+- [ ] 5.1 The driver spike (D4). Run each outage case of `TestPGLimiter_Unavailable` (both backends), the verify "unreachable server" case and `TestRedisLimiter_Fault`, both through the proxy, with PostgreSQL's stop step, and against a real server of their own. Record each driver's error and the limiter's observable outcome. A case whose outcome differs stays real. Verify by the table in design.md D4 and the list of cases that stay real.
 - [ ] 5.2 `TestPGLimiter_Unavailable` and its broken-variant child move to the proxy, except one real stop-then-start case per backend (D4). The red step: with the proxy's stop made a no-op, each moved case fails. Verify by:
   - `go test -race -count=1 -run 'TestPGLimiter_Unavailable' .` in `test`;
   - the broken-variant guard still catching `no-breaker`;
