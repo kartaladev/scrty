@@ -632,7 +632,8 @@ func TestPolicy_Change(t *testing.T) {
 				require.ErrorIs(t, err, password.ErrContainsNUL)
 				assert.Same(t, password.ErrContainsNUL, err, "returned as is")
 				assert.Zero(t, w.calls)
-				assert.Equal(t, [][]byte{hP1}, h.entries(user), "the retired entry holds the hash that is still current")
+				assert.Zero(t, h.retires, "an encoder's refusal retires nothing")
+				assert.Empty(t, h.entries(user))
 			},
 		},
 		{
@@ -646,6 +647,23 @@ func TestPolicy_Change(t *testing.T) {
 				rejectedBy(password.RuleTooLong)(t, err)
 				assert.Zero(t, w.calls)
 				assert.Zero(t, h.retires)
+			},
+		},
+		{
+			// The encoder states no limit, so the policy's check cannot refuse
+			// the candidate; the encoder does, after every rule has passed.
+			name:  "an encoder's too-long refusal is a rejection that leaves the history untouched",
+			enc:   forwardingEncoder{inner: bcrypt10},
+			depth: 3,
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return &identity.Details{ID: user, Password: hP1}, strings.Repeat("a", 90), &recordingWrite{}
+			},
+			assert: func(t *testing.T, err error, h *memHistory, u *identity.Details, w *recordingWrite) {
+				rejectedBy(password.RuleTooLong)(t, err)
+				assert.Zero(t, w.calls)
+				assert.Zero(t, h.retires, "a rejection retires nothing")
+				assert.Empty(t, h.entries(user))
+				assert.Equal(t, hP1, u.Password)
 			},
 		},
 		{

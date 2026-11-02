@@ -10,9 +10,10 @@
 //     lowercase hexadecimal commit SHA;
 //   - a pinned reference must carry a trailing "# <tag>" comment naming the
 //     release the pin corresponds to;
-//   - the value must be written in place: a YAML alias (uses: *anchor) is
-//     refused, because the reference it stands for is not the text a reviewer
-//     sees at the use.
+//   - the key and the value must be written in place: a YAML alias standing
+//     for the value (uses: *anchor) or for the key (*anchor : value) is
+//     refused, because what it stands for is not the text a reviewer sees at
+//     the use.
 //
 // Usage: pincheck [dir...]
 package main
@@ -91,7 +92,12 @@ func checkFile(path string) ([]Finding, error) {
 			}
 			return findings, fmt.Errorf("parse %s: %w", path, err)
 		}
-		walk(&doc, func(v *yaml.Node) {
+		walk(&doc, func(k, v *yaml.Node) {
+			if k.Kind == yaml.AliasNode {
+				findings = append(findings, Finding{File: path, Line: k.Line, Uses: "*" + k.Value,
+					Why: "the uses key is a YAML alias; write the key where it is used"})
+				return
+			}
 			if v.Kind == yaml.AliasNode {
 				findings = append(findings, Finding{File: path, Line: v.Line, Uses: "*" + v.Value,
 					Why: "uses is a YAML alias; write the pinned reference where it is used"})
@@ -106,24 +112,32 @@ func checkFile(path string) ([]Finding, error) {
 	}
 }
 
-// walk calls fn with the value node of every "uses" key found in any mapping,
-// block or flow, at any depth, when that value is a scalar or an alias. An
-// alias is passed through unresolved so the caller can refuse it: its anchor
-// may sit anywhere in the file, away from the pin and tag comment a reader
-// checks.
-func walk(n *yaml.Node, fn func(value *yaml.Node)) {
+// walk calls fn with the key and value nodes of every "uses" key found in any
+// mapping, block or flow, at any depth, when that value is a scalar or an
+// alias. A key that is an alias of "uses" counts as one. Aliases are passed
+// through unresolved so the caller can refuse them: their anchors may sit
+// anywhere in the file, away from the pin and tag comment a reader checks.
+func walk(n *yaml.Node, fn func(key, value *yaml.Node)) {
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if k.Kind == yaml.ScalarNode && k.Value == "uses" &&
-				(v.Kind == yaml.ScalarNode || v.Kind == yaml.AliasNode) {
-				fn(v)
+			if isUsesKey(k) && (v.Kind == yaml.ScalarNode || v.Kind == yaml.AliasNode) {
+				fn(k, v)
 			}
 		}
 	}
 	for _, c := range n.Content {
 		walk(c, fn)
 	}
+}
+
+// isUsesKey reports whether k is the scalar "uses", or an alias of it.
+func isUsesKey(k *yaml.Node) bool {
+	if k.Kind == yaml.AliasNode && k.Alias != nil {
+		k = k.Alias
+	}
+
+	return k.Kind == yaml.ScalarNode && k.Value == "uses"
 }
 
 func violation(ref, comment string) string {

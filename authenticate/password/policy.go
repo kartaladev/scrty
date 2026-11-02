@@ -378,24 +378,26 @@ func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate st
 // stops at the first failure:
 //
 //  1. every rule's check, as [Policy.Check];
-//  2. with the [NoReuse] rule, retire user.Password, keeping only the newest
+//  2. encode candidate with the policy's encoder; an encoder error, such as
+//     [ErrContainsNUL], is returned as is, except [ErrTooLong], which is
+//     refused as too long ([RuleTooLong]);
+//  3. with the [NoReuse] rule, retire user.Password, keeping only the newest
 //     depth−1 retired hashes; a failure refuses with [ErrHistoryUnavailable]
 //     and the password is unchanged. A user with no current hash retires
 //     nothing;
-//  3. encode candidate with the policy's encoder; an encoder error, such as
-//     [ErrContainsNUL], is returned as is, except [ErrTooLong], which is
-//     refused as too long ([RuleTooLong]);
 //  4. call write with user, the new hash and the time from the policy's
 //     clock, and return its error unchanged.
 //
-// Retiring comes before writing, so every failure before step 4 leaves the
-// password untouched. If write fails, the retired entry stays; it holds the
-// hash that is still current, and retiring the same bytes again adds nothing,
-// so a retry is not refused and does not count the password twice. With the
-// default identity store backing both the user and the history, run Change
-// with [ProvisionerWrite](store) inside one transaction attached to ctx with
-// the store's WithTx (or a configured WithTxResolver), so the retire, the
-// prune it carries and the write commit or roll back together.
+// Encoding comes before retiring, so a refusal of any kind, an encoder's
+// included, leaves the history as it was; and retiring comes before writing,
+// so every failure before step 4 leaves the password untouched. If write
+// fails, the retired entry stays; it holds the hash that is still current, and
+// retiring the same bytes again adds nothing, so a retry is not refused and
+// does not count the password twice. With the default identity store backing
+// both the user and the history, run Change with [ProvisionerWrite](store)
+// inside one transaction attached to ctx with the store's WithTx (or a
+// configured WithTxResolver), so the retire, the prune it carries and the
+// write commit or roll back together.
 //
 // The one record keys everything: user.ID keys the history, user.Password is
 // the current hash, and write receives the same pointer. A nil user or a nil
@@ -414,12 +416,8 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 		return err
 	}
 
-	if p.reuse != nil {
-		if err := p.reuse.retire(ctx, user); err != nil {
-			return err
-		}
-	}
-
+	// Encode before retiring: a refusal, an encoder's too-long one included,
+	// must leave the history untouched.
 	hash, err := p.enc.Encode(candidate)
 	if errors.Is(err, ErrTooLong) {
 		// An encoder that states no limit through InputLimiter reaches here: the
@@ -429,6 +427,12 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 
 	if err != nil {
 		return err
+	}
+
+	if p.reuse != nil {
+		if err := p.reuse.retire(ctx, user); err != nil {
+			return err
+		}
 	}
 
 	return write(ctx, user, hash, p.clock.Now())

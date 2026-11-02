@@ -74,7 +74,11 @@ var ErrInvalidParameters = errors.New("password: parameters the algorithm will r
 var ErrNoRandomSource = errors.New("password: salt source is nil")
 
 // ErrTooLong is returned when a password exceeds what its algorithm can
-// hash. Only bcrypt has such a limit: 72 bytes.
+// hash. Of the encoders in this package only bcrypt has such a limit: 72
+// bytes. A consumer's encoder may return it too, and should state its limit
+// through [InputLimiter] so the policy refuses an over-long candidate at its
+// check; [Policy.Change] answers the error as a too-long rejection
+// ([RuleTooLong]) and retires nothing.
 //
 // It is an error rather than a silent truncation because truncating is a
 // authentication bypass in disguise — two passwords sharing a 72-byte prefix
