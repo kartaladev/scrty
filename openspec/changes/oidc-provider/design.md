@@ -1,10 +1,11 @@
 ## Context
 
-See `proposal.md` for the motivation. This design was captured from an exploration on 2026-11-02, before any spec was written. It separates three things, and says which each item is:
+See `proposal.md` for the motivation. This design was captured from an exploration on 2026-11-02, before any spec was written. It is meant to be the complete record of what was decided and why, as known on that date, so a later reader can check a decision without the conversation it came from.
 
-- **Decided:** the user's choices of 2026-11-02, stated as such.
-- **Proposed defaults:** recommendations from the research that the user has not yet confirmed. Each says what it would default to and how a consumer overrides it.
-- **Open questions:** the decisions still to make. None blocks the specs; the proposed defaults P1 to P9 must be confirmed first.
+- **Decided:** decisions 1 to 5 and P1 to P9, all chosen by the user on 2026-11-02. Each states its default, how a consumer overrides it, and what was rejected.
+- **The user's standing condition:** the provider must comply with the standards it implements and follow established security practice. "Standards compliance and security practice" maps each requirement to the decision that meets it.
+- **Open questions:** only the package name remains, settled with the specs. A few values the specs fix are listed at the end of the compliance section.
+- **Not yet reproduced:** risks found by reading code are labelled `UNREPRODUCED`. Each becomes a failing test first when its task starts (`defect-claims`).
 
 ### What exists
 
@@ -72,7 +73,7 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts.
   - the shape of the login handoff (decision 4);
   - small storage ports;
   - where their advisories cluster: redirect matching, code and refresh-token reuse, and token binding.
-- **What it costs.** No certified library sits underneath. Conformance is therefore proved by running the OpenID Foundation suite (decision 9).
+- **What it costs.** No certified library sits underneath. Conformance is therefore proved by running the OpenID Foundation suite, which gates the tag (P9).
 - **Default and override:** not a consumer-facing behaviour. A consumer who prefers a library-backed provider can still run one beside scrty, with scrty as its user store.
 
 ### 2. The provider is a thin protocol layer over existing features (decided 2026-11-02)
@@ -89,10 +90,10 @@ The user asked that the provider make the most of the features that exist or are
   login        (one-time)  grant     minting                    + JWKS
        |          |          |         |                          |
   form, passkey, token/      session   signingkey KeySource,      EnableJWKSEndpoint
-  magic link,    onetime     families? token.Generator (+ new
-  MFA, recovery, check-then- (open     claims), cnf from
-  upstream OIDC  consume     question  close-security-gaps
-  -> completeLogin           1)
+  magic link,    onetime     families  token.Generator (+ new
+  MFA, recovery, check-then- + grant   claims), cnf from
+  upstream OIDC  consume     row (D+,  close-security-gaps
+  -> resume (P1)             dec. 5)
 ```
 
 | Provider need | Reuses | Status |
@@ -412,116 +413,452 @@ Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
 | 5 | reuse revokes the whole grant | none: weakening it would break OAuth 2.1 §4.3.1 and ASVS 10.4.5, so no option exists (`library-design` rule 4) |
 | 6 | JWT access tokens of 5 minutes, typed `at+jwt`, with `typ` enforced | the lifetime per client; opaque tokens with introspection. `typ` enforcement has no override, because it is the C10 guarantee |
 
+### P1 to P9: the provider's defaults (decided 2026-11-02)
 
+The research proposed these as defaults P1 to P9. On 2026-11-02 the user confirmed all nine as recommended, including the refinements found while elaborating them. The user's standing condition applies: the provider must comply with the standards it implements and follow established security practice. Where a standard says MUST, the default meets it and no option relaxes it (`library-design` rule 4). Where a standard leaves a choice, the default takes the safer side and the override is documented.
 
-### Proposed defaults (awaiting the user's confirmation)
-
-Each of these is a recommendation from the research, not a decision. The user confirms or changes them before the specs.
+Each decision keeps its P number, because decision 5 and the risks already cite them. Each one records:
+- what it decides and why;
+- the default and the consumer's override;
+- what was rejected;
+- how it interacts with decision 5 and its sub-decisions;
+- what is still unverified.
 
 #### P1. Login and consent are handed off through a pending request and resumed through the provider
 
-Every established provider uses this shape: Hydra, node-oidc-provider, Duende IdentityServer, Spring Authorization Server, and `zitadel/oidc`'s `op` package. It fits scrty's rule that the library renders nothing.
+**The decision.**
+- The authorization endpoint renders nothing. It validates the request, parks it under an opaque handle, and sends the browser to the consumer's login page.
+- The consumer's page signs the user in with scrty's existing endpoints, then resumes the request through the provider.
+- Consent is a second stage with the same handle.
+
+Every established provider surveyed uses this shape: Hydra, node-oidc-provider, Duende IdentityServer, Spring Authorization Server, and `zitadel/oidc`'s `op` package. It fits scrty's rule that the library renders nothing.
 
 ```
- RP --(1) GET /authorize?client_id,redirect_uri,code_challenge,nonce,state
-        |
-        v
- provider: validate client, exact redirect_uri, PKCE S256, prompt/max_age
-           persist PENDING REQUEST under an opaque handle (stage: login)
-        |  (2) 303 -> consumer login URL ?req=<handle>
-        v
- consumer's login page: scrty's existing endpoints -> completeLogin -> session
-        |  (3) resume: POST <resume> {handle} + the session credential
-        v
- provider: re-check prompt/max_age against Session.AuthenticatedAt
-           consent needed? -> stage: consent, 303 -> consumer consent URL ?req=<handle>
-                              consumer reads the request by handle (client, scopes, claims)
-                              resume with {granted scopes} or {deny}
-        |  (4) 303 -> redirect_uri?code&state&iss
-        v
- RP --(5) POST /token (client auth, code, code_verifier) -> tokens
+ RP --(1) GET /authorize?client_id,redirect_uri,response_type=code,scope,state,nonce,
+ |                        code_challenge(S256),prompt,max_age[,dpop_jkt][,resource]
+ v
+ provider: [a] client known?  redirect_uri equal to a registered one?   no -> NO redirect (P3)
+           [b] everything else valid?                                   no -> 303 redirect_uri?error&state&iss
+           [c] park PENDING REQUEST {client, redirect_uri, scopes, state, nonce, challenge,
+               prompt, max_age, dpop_jkt, resource} under <handle>, stage = login
+           Set-Cookie: <flow cookie bound to handle>; HttpOnly; Secure; SameSite=Lax
+ |  (2) 303 -> consumer login URL ?req=<handle>
+ v
+ consumer login page --> existing scrty endpoints (form, passkey, magic link, upstream OIDC,
+ |                       MFA, recovery) --> sign-in credential, held in page memory only
+ |  (3) POST <resume> {req:<handle>}  + Authorization: <sign-in credential>  (+ flow cookie)
+ v
+ provider: handle unspent, unexpired, and matches this browser's flow cookie?
+           sign-in passes the chain's policy phase?          (MFA pending -> refused; page continues MFA)
+           prompt=login / max_age satisfied by AuthenticatedAt?   no -> page re-authenticates
+           consent needed (P2)?  yes -> stage = consent: {"redirect_to": consent URL ?req=<handle>}
+                                        consent page reads the request: op.PendingRequest(ctx, handle)
+                                        POST <resume> {req, granted scopes} or {req, deny}
+ |  (4) {"redirect_to": "https://rp/cb?code=..&state=..&iss=.."}   page sets window.location
+ v
+ RP --(5) POST /token  (client authentication, code, code_verifier[, DPoP proof]) -> tokens
 ```
 
-- **The handle and its binding.**
-  - The handle is unguessable and single-use for each stage, and expires after 10 minutes by default (`WithPendingRequestLifetime`).
-  - It is bound to the browser that started it, by a `Lax` cookie, as `oidc-login`'s flow cookie already is.
-  - A resume that presents a session must be the browser that started the request and must carry that session's credential.
-- **Default and override:**
-  - **Default:** the consumer configures a login URL and a consent URL.
-  - **Override:** the resume endpoint's path and the handle parameter name are replaceable. A consumer who wants no redirect can render both stages on one page by calling the provider's request-lookup function directly.
-- **Why resume with the session credential.** v1 needs no cookie session. The cost is that the browser holds no session at the provider's origin between relying parties, which is why SSO is a Non-Goal.
+What the consumer writes, as a sketch (names are settled with the specs):
 
-#### P2. Consent is required unless a client is registered as first-party
+```go
+op, err := oidcprovider.New(issuer, clients,
+    oidcprovider.WithLoginURL("https://id.example.com/login"),     // required
+    oidcprovider.WithConsentURL("https://id.example.com/consent"), // required (decision 4)
+)
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),    // existing first factors, MFA, recovery ...
+    httpsec.EnableMFA(methods),
+    httpsec.EnableSessionBearer(sessDeps), // how the login page proves its sign-in to resume
+    httpsec.EnableOIDCProvider(op),        // authorize, resume, token, userinfo, revoke, introspect, metadata, logout
+)
+// The login and consent pages may read the parked request for display.
+// It never exposes the PKCE challenge, the nonce or the state.
+req, err := op.PendingRequest(ctx, handle)
+```
 
-- **Default:** every client requires consent. `library-design` asks for the safe default, and a client someone forgot to configure should ask the user, not skip the question silently.
-- **Override:** a client registered with the first-party flag skips the consent stage, except when `prompt=consent` or `offline_access` asks for it.
+**The handle and its binding.**
+- **What it is:** unguessable (at least 128 bits, as RFC 6749 §10.10 asks of any guessable credential), stored only as a digest, and single-use per stage.
+- **Lifetime:** 10 minutes by default. This is a proposed value, not a researched one.
+- **Binding to the browser:** it is bound to the browser that started the request by a `HttpOnly`, `Secure`, `SameSite=Lax` flow cookie, as `oidc-login`'s flow cookie already is.
+  - The attack it stops: an attacker starts a request with their own PKCE verifier and sends the victim the login link. The victim signs in, but the victim's browser lacks the attacker's flow cookie, so the resume is refused. Without the binding, the code would be issued to the attacker's verifier with the victim's identity.
+- **Why the resume resists forgery.** It requires the sign-in credential in the `Authorization` header, which a browser never attaches on its own. A cross-site page therefore cannot forge a resume or a consent grant (RFC 6749 §10.12, RFC 9700 §4.7).
+- **Why the resume answers JSON, not a redirect.** The resume returns `{"redirect_to": ...}` rather than a 303, as Hydra does:
+  - the login page calls it with `fetch`, which cannot usefully follow a cross-origin redirect;
+  - the page then navigates at the top level, so the authorization response reaches the relying party as a normal navigation.
+- **Redirect status:** every redirect the provider sends is 303, never 307 (RFC 9700 §4.12).
+- **Where the pages must live.** The login and consent pages are served from the provider's site, because the `Lax` flow cookie is not sent on cross-site requests. Pages on another site are not supported in v1, and the specs state it.
+
+**Default and override:**
+
+| | Default | Override |
+|---|---|---|
+| Login and consent pages | the consumer's URLs, required at construction | none needed: the consumer owns the pages |
+| Handle lifetime | 10 minutes | `WithPendingRequestLifetime`, bounded by a maximum the specs fix |
+| Resume path, handle parameter name | documented constants | replaceable |
+| Two pages or one | two stages | one page may handle both, by reading the request with `PendingRequest` and resuming twice |
+
+**Rejected:**
+- **The provider renders its own login page.** It breaks the library's rule that it renders nothing.
+- **Resuming automatically inside `completeLogin`.** It would change every login endpoint's response contract from JSON to a redirect. It would also miss MFA verify and recovery completion, which issue credentials outside `completeLogin`.
+- **A 303 from the resume endpoint.** `fetch` cannot use it across origins, and it hides the target from the page.
+
+**Interactions.**
+- **H3, `auth_time`.** The grant copies `AuthenticatedAt`, `amr` and `acr` from the sign-in the resume presented, never the exchange time (decision 5, H3).
+- **Sub-decision 2, logout.** The grant row records the sign-in's family, which is the source of the ID token's `sid`. When that sign-in ends, the provider ends the grants without `offline_access` that came from it:
+  - local logout;
+  - revocation of the session family;
+  - a back-channel logout from an upstream provider.
+
+  Back-Channel Logout §2.7 asks exactly this of logout.
+- **A refinement recommended in the elaboration and not adopted.** The elaboration also recommended that refreshing a grant without `offline_access` should check the sign-in is still live and record activity on it, as Keycloak's online sessions do. On checking the port, `session.Store` has no lookup by family (it has `DeleteFamily` only), and decision 5 keeps the port unchanged.
+  - **What is recorded instead:** a grant without `offline_access` keeps its own idle timeout (P5). Its absolute lifetime is capped at the sign-in's absolute deadline, as known when the grant is created.
+  - **What this misses:** a sign-in that merely goes idle does not end the grant by itself. No standard asks for that: Back-Channel Logout §2.7 concerns logout, and NIST SP 800-63B-4 treats the provider's and the relying party's sessions as independent.
+  - **The remaining option:** tying grants to sign-in activity needs a family lookup in `session.Store`, which is a later, additive change.
+- **The sign-in credential in JavaScript.** The login page holds a sign-in credential in page memory, which is the XSS exposure `bff-resource-server` records. The provider does not widen it, because the credential is the one the page already holds to sign in. The cookie session of `bff-resource-server` removes it in the SSO follow-up.
+
+**Unverified:** the 10-minute handle lifetime is a proposal, not a researched figure.
+
+#### P2. Consent is required unless a client is registered as first-party, and `offline_access` always asks
+
+**The decision.**
+- Every client goes through the consent stage the first time.
+- Remembered consent that already covers the requested scopes skips the stage.
+- A client registered as first-party skips it for ordinary scopes.
+- `offline_access` is the exception: even a first-party client asks once, then the answer is remembered.
+
+**Why.**
+- **The safe default.** `library-design` asks for the safe default, and a client someone forgot to configure must ask the user rather than skip the question silently.
+- **What OIDC Core §11 says** (verified 2026-11-02):
+  - "The OP MUST always obtain consent to returning a Refresh Token that enables offline access to the requested resources."
+  - "A previously saved user consent is not always sufficient to grant offline access."
+  - `prompt=consent` "MUST be used unless other conditions for processing the request permitting offline access to the requested resources are in place".
+  - Consent "MUST" be explicitly received, or already held, for `application_type` `web`, and "SHOULD" be for `native`.
+
+  So the first-party flag cannot silently cover `offline_access`.
+
+```go
+oidcprovider.Client{
+    ID:              "billing-web",
+    ApplicationType: oidcprovider.Web,
+    FirstParty:      true,                         // skips consent for ordinary scopes
+    OfflineAccess:   oidcprovider.OfflineAskOnce,  // default: ask, then remember (Core s11)
+}
+oidcprovider.Client{
+    ID:              "billing-ios",
+    ApplicationType: oidcprovider.Native,
+    FirstParty:      true,
+    OfflineAccess:   oidcprovider.OfflinePreAuthorized, // the consumer asserts Core s11's "other
+                                                        // conditions"; refused for a web client
+}
+```
+
+**Default and override:**
+
+| | Default | Override |
+|---|---|---|
+| Consent | required for every client; remembered per user and client | `FirstParty` skips it for ordinary scopes |
+| `offline_access` | asked once even for a first-party client, then remembered | `OfflinePreAuthorized` for a first-party **native** client only. Construction refuses it for a web client, because Core says MUST there |
+| `prompt=consent` | always shows the consent stage, whatever is remembered | none: it is the relying party's explicit request |
+
+**Rejected:**
+- **First-party skipping consent by default.** A forgotten flag would then silently skip consent, which is the unsafe direction.
+- **Treating remembered consent as covering `offline_access` for ever.** Core says a saved consent "is not always sufficient". v1 remembers it per user and client, and ends that memory with the consent's revocation (decision 4).
+
+**Interactions.**
+- **Revoking consent** revokes the grant rows of that user and client (decision 4, decision 5).
+- **Partial grants.** The code is bound to the scopes granted, not those requested (decision 4).
 
 #### P3. The provider's endpoints render the error bodies the protocol requires
 
-- **The departure.** scrty's default answers errors with a bare status and no body. But the protocol fixes how each provider endpoint reports an error:
-  - the token, revocation and introspection endpoints answer with a JSON `{"error": ...}` body (RFC 6749 §5.2);
-  - the authorization endpoint reports errors as redirect parameters to a validated `redirect_uri`, and never redirects to an unvalidated one;
-  - UserInfo answers with a `WWW-Authenticate` challenge.
+**The decision.** scrty's default answers errors with a bare status and no body. The protocol fixes how each provider endpoint reports an error, so these endpoints use the protocol's format. It is a recorded departure from `http-error-propagation`, limited to them.
 
-  These endpoints are the first built-ins whose error format a standard fixes. That is a recorded departure, limited to them.
-- **Default and override:**
-  - **Default:** the protocol's format.
-  - **Override:** a consumer may add fields or headers through a responder.
-  - **What cannot be overridden:** the `error` code and the status. They are protocol, and changing them would break every client.
+| Endpoint | Error form |
+|---|---|
+| authorize, before `client_id` and `redirect_uri` are validated | **no redirect.** OIDC Core §3.1.2.6: "If the Redirection URI is invalid, the Authorization Server MUST NOT redirect the User Agent to the invalid Redirection URI." It returns the chain's error, a bare 400 by default, which the consumer may render as an error page |
+| authorize, after validation | 303 to `redirect_uri?error=…&state=…&iss=…` (RFC 6749 §4.1.2.1, RFC 9207) |
+| token, revocation, introspection | JSON `{"error": "…"}` with `Cache-Control: no-store` (RFC 6749 §5.1, §5.2). Status 400, or 401 with `WWW-Authenticate` for `invalid_client` |
+| UserInfo | `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750 §3), or the `DPoP` scheme for a bound token (RFC 9449) |
 
-#### P4. Access tokens are JWTs per RFC 9068 by default; opaque by option
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Cache-Control: no-store
 
-- **Default:** a JWT with `typ` `at+jwt` and `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, `client_id` and `scope`, signed over the same key source. APIs verify it offline through the JWKS endpoint, which pairs with `bff-resource-server`'s resource-server mode.
-- **Lifetime (amended 2026-11-02, from the grant-storage audit):** 5 minutes by default, replaceable per client. A JWT access token cannot be revoked before it expires, and RFC 7009 §2.1 asks that revoking a grant also end its access tokens (decision 5, C7). A short lifetime is how a JWT meets that.
-- **Typing (amended 2026-11-02):** `token`'s verifier gains `typ` checks, so an access token, a first-party token and an ID token each validate only as themselves (RFC 8725 §3.12, RFC 9068). Today it checks no `typ`, and an access token's `jti` matching a sign-in identifier would resolve as a sign-in through `EnableBearerToken` (decision 5, C10).
-- **Override:** opaque access tokens, verified by introspection. Revocation is then immediate, at one store read per request.
-- **Where it lands:** `token` must issue these claims and enforce `typ`; that is a `token-issuance` change.
+{"error":"invalid_grant"}
+```
 
-#### P5. Refresh tokens rotate, and reuse revokes the grant
+**Default and override:**
 
-- **Default:** every refresh rotates. A rotated token presented after its grace window revokes the whole grant (RFC 9700 §4.14.2).
-- **Override, per client:** rotation off for a confidential, sender-constrained client. FAPI 2.0 asks for that, and permits rotation only with a time-limited retry using the old token. That retry is what the existing grace window already gives.
-- **Bounds (amended 2026-11-02):** the grace window is at most 5 minutes, and `session`'s unused-successor recovery is refused for refresh tokens, because it would keep a superseded token renewable for days rather than for a time-limited retry. Reuse revokes the whole grant (decision 5, sub-decision 5).
+| | Default | Override |
+|---|---|---|
+| `error` code and status | the protocol's | none: they are protocol, and changing them would break every client (`library-design` rule 4) |
+| `error_description`, `error_uri` | **not sent** | a responder may add them |
+| Error page for an unredirectable authorize error | the chain's bare 400 | the consumer's error responder, as for any chain error |
+
+- **Why no description by default.** It follows scrty's fixed-text rule. A description is where internal detail (which check failed, a store error) leaks to a caller, and RFC 6749 makes it optional.
+
+**Rejected:**
+- **A bare status, as everywhere else in scrty.** It breaks every OAuth client library.
+- **A fully replaceable renderer.** A consumer could then break the protocol, which `library-design` rule 4 says to refuse rather than allow quietly.
+
+#### P4. Access tokens are JWTs per RFC 9068 by default, opaque by option, audience-restricted
+
+**The decision.** The lifetime and the typing were decided with decision 5 (sub-decision 6). Recorded here in full:
+
+```
+header  {"typ":"at+jwt","alg":"RS256","kid":"..."}
+claims  {"iss":"https://id.example.com","sub":"u-1","aud":"https://api.example.com",
+         "client_id":"billing-web","scope":"openid profile","iat":..,"exp":iat+300,
+         "jti":"...","auth_time":..,"acr":"..","amr":["pwd","otp"],"cnf":{"jkt":".."}}
+```
+
+- **Claims:** the RFC 9068 set, plus `auth_time`, `acr` and `amr` copied from the grant (H3). `cnf` is present when the token is sender-constrained (P6).
+- **Lifetime:** 5 minutes. A JWT cannot be revoked before it expires, and RFC 7009 §2.1 asks that revoking a grant also end its access tokens (C7).
+- **Typing:** `typ` is `at+jwt`. `token`'s verifier enforces `typ`, so an access token, a first-party token and an ID token each validate only as themselves (RFC 8725 §3.11 and §3.12, RFC 9068; C10).
+- **Audience**, refined while elaborating. RFC 9068 requires `aud`, and RFC 9700 §2.3 says access tokens "SHOULD be audience-restricted to a specific resource server":
+  - a client allowed to call APIs declares a default audience and the resources it may ask for;
+  - a `resource` parameter (RFC 8707) is checked against that list, and a resource outside it is refused with `invalid_target`;
+  - a client with neither gets the issuer as audience, so its token is good only at the provider's own UserInfo.
+
+**Default and override:**
+
+| | Default | Override |
+|---|---|---|
+| Format | JWT, `at+jwt` | opaque per client, verified by introspection; revocation is then immediate, at one store read per request |
+| Lifetime | 5 minutes | per client |
+| `typ` enforcement | always | none: it is the C10 guarantee |
+| Audience | the client's declared default, or `resource` from its allowlist, else the issuer | per client and per request, within the allowlist; no "any audience" option |
+
+**Rejected:**
+- **Opaque by default.** Every API call would need a round trip to the provider, and `bff-resource-server`'s planned resource-server mode could not verify offline.
+- **One global audience.** One API's token would then work at every other API, which is the counterfeit-resource-server attack RFC 9700 §4.9 describes.
+- **Long-lived JWTs with a deny list.** It rebuilds introspection with worse failure modes.
+
+**Where it lands:** `token` issues these claims and enforces `typ`, which is a `token-issuance` change.
+
+#### P5. Refresh tokens rotate, reuse revokes the grant, and grants expire
+
+**The decision.** Rotation and reuse were decided with decision 5:
+- a rotated token presented after its grace window revokes the whole grant;
+- the grace window is at most 5 minutes;
+- `session`'s unused-successor recovery is refused for refresh tokens.
+
+These values were set while elaborating:
+
+| Setting | Default | Override | Basis |
+|---|---|---|---|
+| Grace window | 30 s, matching `EnableSessionRenewal`'s default | per client, at most `session.MaxRenewalGrace` (5 min) | a time-limited retry for a lost response (FAPI 2.0); Okta's default is also 30 s |
+| Grant idle timeout | 30 days | per client | a proposed value; no standard fixes it |
+| Grant absolute lifetime | 90 days | per client; must be at least the idle timeout | ASVS 10.4.8 requires an absolute expiry but names no value; 90 days is a proposed value |
+| Grant without `offline_access` | also capped at the sign-in's absolute deadline, and ended with the sign-in (P1, sub-decision 2) | per client, tie every grant to the sign-in (sub-decision 2) | Back-Channel Logout §2.7 |
+| Rotation | on | off per client, only for a confidential client whose tokens are sender-constrained; refused at construction for a public client | RFC 9700 §2.2.2: public clients need rotation or sender-constraining; FAPI 2.0 discourages rotation for confidential clients |
+
+**Why the lifetimes are bounded.**
+- A refresh token is the longest-lived credential the provider issues, and ASVS 10.4.8 requires an absolute expiry.
+- The idle timeout ends grants for applications no longer in use.
+- A rotating refresh token extends neither limit.
+
+**Rejected:**
+- **Rotation off by default.** Public clients would then need DPoP to meet RFC 9700 §2.2.2, and DPoP is optional by default (P6).
+- **No absolute lifetime.** It fails ASVS 10.4.8.
+- **Recovery of an unused successor**, as `session` allows for sign-ins. It would keep a superseded token renewable for days, not for a time-limited retry.
+
+**Unverified:** the 30-day and 90-day figures are proposals. No standard fixes them.
 
 #### P6. DPoP and mTLS binding in v1, through `close-security-gaps`
 
-- **What is reused.** DPoP is a chain-wide feature there. Its D8 binds at every endpoint that issues a credential, so the token endpoint joins that list and reuses proof verification, the replay store, nonces and `cnf.jkt`. mTLS binding reuses D9 the same way.
-- **What is new for the provider:**
-  - refresh tokens of public clients bound to the DPoP key (RFC 9449 §5);
-  - the `dpop_jkt` authorization parameter, which binds the code (§10);
-  - `dpop_signing_alg_values_supported` in the metadata;
-  - a per-client "binding required" setting.
-- **Default and override:**
-  - **Default:** a proof is accepted and binds the token when the client sends one, as D8's chain default does.
-  - **Override:** a client registered as requiring binding is refused without a proof.
-- **Constraint inherited from D8.** Enabling DPoP needs a bearer mode on the chain. The provider's own access-token verification at UserInfo counts as one, which the specs must state.
+**The decision.** DPoP (RFC 9449) and certificate binding (RFC 8705) are in v1. They reuse `close-security-gaps` D8 and D9: proof verification, the `jti` replay store, server nonces, and `cnf`.
+
+```
+ authorize ?dpop_jkt=<thumbprint>             -> code bound to that key (RFC 9449 s10)
+ token     DPoP: <proof, no ath>              -> access token cnf.jkt, token_type "DPoP"
+                                                 public client: grant row key binding = jkt (s5)
+                                                 confidential client: refresh token not key-bound
+                                                 (RFC 9449 s5: bound to client authentication instead)
+ refresh   DPoP: <proof>                      -> grant row key binding checked (decision 5, refresh step 3)
+ userinfo  Authorization: DPoP <at> + proof   -> D8 verification, unchanged; refused as Bearer once bound
+ mTLS      client certificate at token        -> cnf.x5t#S256 (D9); binding only, not client authentication
+```
+
+**What is new for the provider:**
+- refresh tokens of public clients bound to the DPoP key (RFC 9449 §5);
+- the `dpop_jkt` authorization parameter, which binds the code (§10);
+- `dpop_signing_alg_values_supported` in the metadata;
+- a per-client "binding required" setting.
+
+**Default and override:**
+
+| | Default | Override |
+|---|---|---|
+| DPoP | a proof is accepted, and binds the tokens when sent, as D8's chain default does | per client, binding required: a token request without a proof is refused |
+| mTLS | a presented certificate binds the access token (D9) | per client, binding required |
+| `tls_client_auth` as client authentication | not in v1 | a later additive method |
+
+**A conflict with `close-security-gaps` D8, to resolve there.**
+- **The conflict:** D8 makes enabling DPoP with neither bearer mode a configuration error, so a chain that runs only the provider, with no first-party bearer, would be refused.
+- **The fix:** D8's rule must count the provider as a DPoP user. That is a delta to `sender-constrained-tokens`, a capability `close-security-gaps` owns.
+- **When:** it is cheap while that change is still open, so the amendment belongs in `close-security-gaps` before it is archived, not patched afterwards.
+
+**Rejected:** DPoP as a later follow-up. RFC 9700 §2.2.2 gives public clients two ways to protect refresh tokens, and the D8 machinery is already being built.
 
 #### P7. Client authentication
 
-- **Supported:** `client_secret_basic`, `client_secret_post` (the Basic OP plan needs both), `private_key_jwt` (RFC 7523, preferred by RFC 9700 §2.5), and `none` for public clients with PKCE.
-- **Secrets:**
-  - generated by the library: 256 bits, shown once, kept as a SHA-256 digest, as `apikey` does;
-  - a consumer-supplied secret shorter than 32 bytes is refused at construction (OIDC Core §16.19).
-- **`private_key_jwt` assertions:** the assertion's `jti` goes into a replay store with the same insert-if-absent contract as DPoP's.
-- **Default and override:**
-  - **Default:** each client declares exactly one method.
-  - **Override:** none beyond choosing the method. A client allowed several methods is a downgrade path.
+| Method | v1 | Why |
+|---|---|---|
+| `client_secret_basic` | yes | Core's default; the Basic OP plan's manual clients use it |
+| `client_secret_post` | yes | the Basic OP plan's manual clients use it |
+| `private_key_jwt` (RFC 7523) | yes | RFC 9700 §2.5: "It is RECOMMENDED to use asymmetric cryptography for client authentication" |
+| `none` | yes | public clients; PKCE is required for every client anyway |
+| `client_secret_jwt` | **no** | a symmetric secret both sides can sign with; it adds nothing over `private_key_jwt` and makes the secret usable for forgery |
+| `tls_client_auth`, `self_signed_tls_client_auth` | later | they need D9's certificate plumbing for authentication, not just binding |
 
-#### P8. Signing algorithms for ID tokens
+**Secrets:**
+- **Generated by the library:** 256 bits, shown once, kept as a SHA-256 digest, compared in constant time, as `apikey` does.
+- **Supplied by the consumer:** at least 32 bytes, or refused at construction (OIDC Core §16.19).
 
-- **Default:** RS256, which OIDC Core §15.1 makes mandatory to support. It is already `signingkey`'s default.
-- **Override:** ES256 and EdDSA per client, from the algorithms the key manager is configured with. A client asking for an algorithm the manager does not hold is a configuration error at construction.
-- **FAPI tension:** FAPI 2.0 forbids RS256, so its profile, a Non-Goal here, would change this default.
+**One method per client.** Each client declares exactly one method. A client allowed several is a downgrade path, where a stolen weaker credential works although a stronger one is registered.
 
-#### P9. Conformance runs in CI
+**The `private_key_jwt` audience** (CVE-2025-27370 and CVE-2025-27371):
+- **What happened:** on 2025-02-25 the OpenID Foundation disclosed that ambiguous audience values let a malicious authorization server reuse a client's signed assertion at another server. The Foundation says it updated its specifications and certification tests. What those tests now check was not verified.
+- **What OIDC Core says:** Core §9 still says the audience "SHOULD be the URL of the Authorization Server's Token Endpoint" (verified 2026-11-02).
+- **What the IETF fix says:** `draft-ietf-oauth-rfc7523bis` (still a draft) requires the issuer identifier as the sole audience, and requires the server to reject any other.
+- **What scrty does:** it takes the stricter rule by default.
 
-- **What runs:** the OpenID Foundation conformance suite, its Basic OP and Config OP plans, against a test server built from the provider's defaults. It runs as its own CI job, from the suite's Docker image (Java and MongoDB).
-- **Where it runs:** outside `make check`, and outside the release gate's workspace-off builds.
-- **What stays open:** whether a green run is a hard precondition for the tag is open question 1.
+```go
+oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOnly)            // default (rfc7523bis)
+oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint) // override for clients
+// built to Core's older SHOULD; godoc states it accepts the ambiguity CVE-2025-27370 describes
+```
+
+- **Why the strict default costs nothing at conformance:** the Basic OP plan does not use `private_key_jwt`.
+
+**Assertion checks:**
+- `iss` and `sub` equal the `client_id`;
+- the audience follows the rule above;
+- `exp` is present and in the future;
+- the `jti` is new: it is inserted into a replay store with DPoP's insert-if-absent contract, kept until the assertion's `exp`;
+- the signature verifies against the client's registered `jwks`, or its `jwks_uri` fetched through the confined outbound client and the relying party's key-set cache.
+
+The maximum assertion lifetime is fixed in the specs.
+
+**Default and override:** the method is the client's choice. Nothing else about authentication is overridable beyond the audience compatibility option above.
+
+#### P8. RS256 for ID tokens, other algorithms per client
+
+**The decision.**
+- **Default:** ID tokens are signed RS256. OIDC Core §15.1 makes it mandatory to support, and `signingkey` already defaults to it.
+- **Per client:** `id_token_signed_response_alg` may name ES256 or EdDSA, when the key manager holds that algorithm. A client naming one it does not hold is a configuration error at construction.
+- **Access tokens** use the key manager's default algorithm.
+- **Never `none`,** which `token` already refuses.
+- **Not in v1:** ID token encryption.
+
+**Rejected:** ES256 by default. Relying parties that support only RS256, which Core allows, would fail, and so would the Basic OP plan.
+
+**Tension recorded:** FAPI 2.0 forbids RS256. Its profile, a Non-Goal here, would change this default when it is added.
+
+#### P9. Conformance runs in CI and gates the tag
+
+**The decision.**
+- The OpenID Foundation conformance suite runs its Basic OP and Config OP plans in CI.
+- The test server is built only from the provider's defaults.
+- A green run of both plans is a precondition for `v0.1.0`. This settles former open question 1 as recommended.
+
+```
+ test module: a conformance OP command (scrty defaults + the suite's test clients)
+      |
+ CI job "conformance" (separate from make check and from the release gate's workspace-off builds):
+      docker compose up  conformance-suite (Java + MongoDB)  +  the conformance OP
+      run the Basic OP and Config OP plans
+      fail on any FAILED or INTERRUPTED result; keep the logs as a CI artifact
+      |
+ release-readiness's gate names this job; v0.1.0 waits for it to be green
+```
+
+**Why it gates the tag.** No certified library sits underneath (decision 1), so the suite is the only external proof that the provider follows the protocol. A failing plan at the tag would mean shipping a provider that standard relying parties may not interoperate with.
+
+**Default and override:** not consumer-facing.
+
+**Unverified.** The first conformance task records each of these before the job is relied on:
+- the exact plan names and test lists, which are in a profile PDF that could not be read;
+- whether the locally run suite accepts an `http://` issuer or needs TLS with a trusted certificate;
+- whether the headless runner (`scripts/run-test-plan.py`) is part of the upstream repository. A third-party guide is the only source found.
+
+**Cross-change:** `release-readiness`'s gate must name the conformance job, which is a change to that change's tasks when this one is planned.
+
+### Standards compliance and security practice
+
+The user asked that the provider comply with the standards it implements and with security practice generally. This section maps each requirement to where the design meets it, so a reviewer can check the specs against it.
+
+- **Labels:** "MUST" and "SHOULD" are the source's own words.
+- **Section numbers:** they are given where they were read. Those for RFC 9700 were verified on 2026-11-02.
+- **Scope:** an item the provider does not support (implicit flow, ROPC, PAR) is listed under Non-Goals, not here.
+
+#### The authorization request and response
+
+| Source | Requirement | Met by |
+|---|---|---|
+| RFC 9700 §2.1, §4.1.3; OIDC Core §3.1.2.1 | redirect URIs compared by exact string matching ("MUST utilize exact string matching") | P1 step [a]; no patterns, no localhost port wildcards in v1 |
+| OIDC Core §3.1.2.6; RFC 6749 §4.1.2.1 | never redirect to an invalid redirect URI | P3 |
+| RFC 9700 §4.11.2 | the authorization server must not be an open redirector | P3: errors before validation are not redirected; `post_logout_redirect_uri` is matched exactly too |
+| RFC 9700 §2.1.1; RFC 7636 | PKCE supported; public clients MUST use it; S256 | PKCE with S256 required for **every** client (stricter than the MUST, as OAuth 2.1 does); `plain` refused |
+| RFC 9700 §4.8.2 | PKCE downgrade: a `code_verifier` at the token endpoint for a code issued without `code_challenge` is rejected | holds by construction: no code is issued without a challenge, and the token endpoint refuses a verifier that does not match |
+| RFC 9700 §2.1, §4.4; RFC 9207 | mix-up defence REQUIRED | `iss` in every authorization response, success and error; `authorization_response_iss_parameter_supported` in the metadata |
+| RFC 6749 §10.12; RFC 9700 §4.7 | CSRF on the redirect flow | `state` returned unchanged; PKCE; the resume requires the sign-in credential (P1) |
+| OIDC Core §3.1.2.1, §3.1.3.7 | `nonce` returned in the ID token; `prompt`, `max_age`, `auth_time` honoured | P1; `auth_time` from the sign-in (H3) |
+| RFC 9700 §4.12 | "MUST NOT use the HTTP 307 status code for redirection" | every provider redirect is 303 (P1) |
+| RFC 9700 §2.6 | "CORS MUST NOT be supported at the authorization endpoint" | `close-security-gaps` D5 policy: never on authorize; allowed on token, UserInfo, metadata and JWKS |
+| RFC 9700 §4.16 | "Authorization servers MUST prevent clickjacking", by CSP `frame-ancestors` on the authorization endpoint and the pages it leads to | provider responses carry D4's security headers. The login and consent pages are the consumer's: when served through the chain, D4 covers them, and the README states the requirement for pages served otherwise |
+| RFC 9700 §4.2.4 | no credential leakage through `Referer` | `Referrer-Policy` from D4 on provider responses; codes are single-use and short-lived |
+| OIDC Core §11 | consent for `offline_access` | P2 |
+
+#### The token endpoint, codes and refresh tokens
+
+| Source | Requirement | Met by |
+|---|---|---|
+| RFC 6749 §4.1.2, §10.5; RFC 9700 §4.2.4; OAuth 2.1 draft §4.1.3 | codes short-lived, single-use, bound to client and redirect URI; replay should revoke what the code issued | `token/onetime` check-then-consume; the H2 tombstone (decision 5); lifetime at most 10 minutes (RFC 6749 §4.1.2 RECOMMENDED), default value fixed in the specs |
+| RFC 6749 §5.1 | token responses carry `Cache-Control: no-store` | P3 |
+| RFC 6749 §10.4, §10.10; RFC 6819 | refresh tokens bound to the client, stored as digests, at least 128 bits hard to guess | decision 5 (C1, C6) |
+| RFC 9700 §2.2.2, §4.14.2 | public-client refresh tokens sender-constrained or rotated; reuse detection | P5 rotation on by default; P6 binding |
+| OAuth 2.1 draft §4.3.1; ASVS 10.4.5 | reuse revokes the grant | sub-decision 5 (no override) |
+| ASVS 10.4.8 | refresh tokens have an absolute expiry | P5 (90 days) |
+| RFC 9700 §2.5; RFC 7523; CVE-2025-27370 | asymmetric client authentication recommended; assertion audience unambiguous | P7 |
+| OIDC Core §16.19 | symmetric secrets with enough entropy | P7 (256 bits generated, 32 bytes minimum supplied) |
+| RFC 9700 §4.13; RFC 8705 | a TLS-terminating proxy must not let a client forge the certificate header | `close-security-gaps` D2, D7 and D9: trusted proxies only |
+| Practice | brute force on client secrets and codes | `ratelimit` on the token endpoint (decision 2) |
+
+#### Tokens
+
+| Source | Requirement | Met by |
+|---|---|---|
+| RFC 9068; RFC 8725 §3.11, §3.12 | access tokens typed `at+jwt`; mutually exclusive validation | sub-decision 6, P4 |
+| RFC 9700 §2.3, §4.10.2; RFC 8707 | access tokens audience-restricted | P4 audience rule |
+| RFC 9700 §4.10.1; RFC 9449; RFC 8705 | sender-constrained access tokens | P6 |
+| RFC 7009 §2.1 | revoking a grant ends its access tokens | 5-minute JWTs, or opaque tokens (P4) |
+| RFC 7662 | introspection is a protected endpoint | introspection requires client authentication; a client may introspect only tokens issued to it or its declared audience (fixed in the specs) |
+| OIDC Core §15.1 | RS256 supported | P8 |
+| RFC 8725 | no `none`, algorithm allow-lists, key per algorithm | `token`'s existing jwx allow-list; P8 |
+
+#### Logout, accounts and audit
+
+| Source | Requirement | Met by |
+|---|---|---|
+| Back-Channel Logout §2.7 | refresh tokens without `offline_access` end at logout | sub-decision 2, P1 |
+| RP-Initiated Logout | `id_token_hint`, exact `post_logout_redirect_uri` | the `oidc-provider-logout` capability |
+| ASVS 7.4.2 | a disabled account's sessions and tokens end | sub-decision 4 |
+| ASVS 10.4.9 | users can revoke an application's access | consent revocation (decision 4) and D12's "revoke application access" (sub-decision 3) |
+| Practice | an audit trail of grants, reuse and revocation | security events, `close-security-gaps` D13 |
+| Practice | no codes, tokens, handles or secrets in logs | the existing redaction rules apply to every new value; specs pin it |
+
+**Values the specs still fix.** These are named here so they are not lost. Each takes the safe side and is pinned by a scenario:
+- the authorization code lifetime (at most 10 minutes);
+- the maximum pending-request lifetime;
+- the maximum `private_key_jwt` assertion lifetime;
+- the introspection audience rule.
 
 ## Risks / Trade-offs
 
-- **[The tag waits for this whole change]** → v1 stays at the scope above, and every follow-up only adds. The task breakdown, written once P1 to P9 are confirmed, sizes it.
+- **[The tag waits for this whole change, and for a green conformance run]** → v1 stays at the scope above, and every follow-up only adds. The task breakdown sizes it; P9 makes the conformance job part of the gate.
 - **[No certified library underneath]** → the conformance suite in CI (P9), plus test-first coverage of the pitfalls the advisories cluster on: exact redirect matching, code reuse revoking what it issued, refresh reuse, and token binding.
 - **[A refresh token mistaken for a sign-in]** → three built-in paths turn a stored session identifier into a sign-in. Decision 5 (D+) keeps refresh tokens out of all three by a fixed table and a token format no sign-in path accepts.
 - **[A replayed code racing the first exchange leaves a live grant]** (H2, `UNREPRODUCED`) → the grant row's revoked flag, keyed by the family the code records (decision 5).
@@ -529,6 +866,11 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 - **[Error bodies depart from the library's default]** → limited to the provider's endpoints, recorded in P3, and pinned by tests against RFC 6749's examples.
 - **[RS256 by default conflicts with FAPI 2.0]** → recorded in P8. A FAPI profile is a later, additive switch.
 - **[`prompt=none` cannot succeed in v1]** → `login_required` is the correct answer when no login is resumable. The README's *Known limitations* names it until the cookie session lands.
+- **[A sign-in credential held by the login page's JavaScript]** → it is the credential the page already holds to sign in, kept in memory only. The resume adds no new exposure, and `bff-resource-server`'s cookie session removes it in the SSO follow-up (P1).
+- **[A grant without `offline_access` outliving an idle sign-in]** → it ends at logout, family revocation and upstream back-channel logout, and is capped at the sign-in's absolute deadline. Ending it on idle expiry needs a family lookup in `session.Store`, a later additive change (P1).
+- **[Strict `private_key_jwt` audience refusing older clients]** → clients built to Core's token-endpoint audience fail until they send the issuer. The compatibility option exists and is documented as accepting the ambiguity CVE-2025-27370 describes (P7).
+- **[Clickjacking on the consumer's login and consent pages]** → RFC 9700 §4.16 puts it on the authorization server, but the pages are the consumer's. D4's headers cover pages served through the chain; the README states the requirement for any other page.
+- **[`close-security-gaps` D8 refusing a provider-only chain with DPoP]** → D8's rule is amended there before that change is archived (P6).
 - **[The conformance suite's exact test lists were not read]** (its profile PDF was unreadable) → the first conformance task records which tests run, before the gate relies on them.
 
 ## Migration Plan
@@ -538,12 +880,9 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 
 ## Open Questions
 
-### 1. Is a green conformance run a hard precondition for the tag?
+Former open question 1, whether a green conformance run is a hard precondition for the tag, was decided on 2026-11-02 as recommended: yes, for both plans (P9).
 
-- **Recommendation:** yes for the Basic OP and Config OP plans.
-- **What it changes:** whether `release-readiness`'s gate names the conformance job. It changes no spec of this change.
-
-### 2. The provider package's name and place
+### 1. The provider package's name and place
 
 - **Candidates:** a core package under its own concept, such as `oidcprovider` or `provider`, beside `authenticate/oidc` (the relying party).
 - **Why it can wait:** it is settled with the specs, and does not change the approach.
@@ -564,7 +903,8 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 **Researched (accessed 2026-11-02):**
 - [OpenID Connect Core 1.0, errata set 2](https://openid.net/specs/openid-connect-core-1_0.html):
   - ID token claims, `prompt`, `max_age`, exact `redirect_uri` matching;
-  - `offline_access` and consent (§11);
+  - §3.1.2.6: no redirect to an invalid redirection URI (quoted in P3, re-read 2026-11-02);
+  - `offline_access` and consent (§11): the consent MUSTs quoted in P2, re-read 2026-11-02;
   - the features mandatory for every OP (§15.1).
 - [ISO/IEC 26131:2024](https://www.iso.org/standard/89056.html): OpenID Connect Core 1.0, errata set 2, as an International Standard.
 - [OpenID Connect Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html): required provider metadata, and which endpoints support CORS.
@@ -577,7 +917,7 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
   - no CORS at the authorization endpoint;
   - ROPC forbidden.
 
-  Its publication date and BCP number were not visible in the fetch, so they are unverified.
+  It is BCP 240, published January 2025 (verified 2026-11-02, superseding an earlier note that these were unverified).
 - [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636.html) (PKCE) and [RFC 9207](https://www.rfc-editor.org/rfc/rfc9207.html) (`iss` in the authorization response).
 - [OAuth 2.1, draft-ietf-oauth-v2-1-17](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-17), dated 2026-10-31:
   - status: still an Internet-Draft;
@@ -594,8 +934,13 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 
 ### P3 to P5: errors, access tokens, refresh
 
-**Primary documentation:**
-- [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html), §4.1.2.1 and §5.2: authorization and token error responses. Not re-checked on this date.
+**Primary documentation** (not re-checked on 2026-11-02):
+- [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html):
+  - §4.1.2.1 and §5.2: authorization and token error responses, and 401 with `WWW-Authenticate` for `invalid_client` (P3);
+  - §5.1: `Cache-Control: no-store` on token responses (P3);
+  - §4.1.2: a maximum code lifetime of 10 minutes RECOMMENDED;
+  - §10.10 and §10.12: credential entropy and CSRF (P1).
+- [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html), §3: the `WWW-Authenticate` error at UserInfo (P3).
 
 **Researched (accessed 2026-11-02):**
 - [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html): the JWT access token profile, `typ` `at+jwt` and its required claims.
@@ -616,15 +961,36 @@ Also reasoned from `close-security-gaps` D8 and D9.
 **Researched (accessed 2026-11-02):**
 - [RFC 7523](https://www.rfc-editor.org/rfc/rfc7523.html): `private_key_jwt`.
 - [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html):
-  - §9: client authentication methods;
+  - §9: client authentication methods, and the `private_key_jwt` audience that "SHOULD be the URL of the Authorization Server's Token Endpoint" (re-read 2026-11-02);
   - §16.19: secret entropy;
   - §15.1: RS256 mandatory.
+- [OpenID Foundation: Notice of a Security Vulnerability](https://openid.net/notice-of-a-security-vulnerability/), 2025-02-25: CVE-2025-27370 and CVE-2025-27371, the `private_key_jwt` audience ambiguity, and the Foundation's updates to its specifications and certification tests. What the updated tests check was not verified (P7).
+- [draft-ietf-oauth-rfc7523bis](https://datatracker.ietf.org/doc/draft-ietf-oauth-rfc7523bis/): the issuer identifier as the sole audience, with others rejected. It is an Internet-Draft, and its details came from a search summary rather than a full read (P7 default).
+- Third-party summaries of the CVEs, weighted lower than the notice: [SentinelOne CVE-2025-27370](https://www.sentinelone.com/vulnerability-database/cve-2025-27370/), [Start with Identity CVE-2025-27371](https://startwithidentity.com/cves/cve-2025-27371/), [ICS-CSIRT CVE-2025-27370](https://cve.ics-csirt.io/cve/CVE-2025-27370), [exploit-intel CVE-2025-27370](https://exploit-intel.com/vuln/CVE-2025-27370), [cvelogic CVE-2025-27370](https://www.cvelogic.com/cve/CVE-2025-27370).
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §2.5: "It is RECOMMENDED to use asymmetric cryptography for client authentication" (re-read 2026-11-02).
 
 ### P9: conformance
 
 **Researched (accessed 2026-11-02):**
 - [OpenID Connect OP conformance profiles](https://openid.net/certification/connect_op_testing/): what Basic OP and Config OP cover and the clients they need. The exact test lists are in a profile PDF that could not be read, so they are unverified.
 - [Conformance suite repository](https://gitlab.com/openid/conformance-suite) and [its build-and-run wiki](https://gitlab.com/openid/conformance-suite/-/wikis/Developers/Build-&-Run): running the suite locally with Docker.
+
+The decision that a green run gates the tag (P9) is reasoned from decision 1: no certified library sits underneath.
+
+### Standards compliance and security practice
+
+**Researched (accessed 2026-11-02):**
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), BCP 240, January 2025. Each clause below was read and quoted in the compliance tables:
+  - §2.1 and §4.1.3: exact redirect matching, and the mix-up defence;
+  - §2.1.1: PKCE and S256;
+  - §2.3: audience-restricted access tokens;
+  - §2.6: no CORS at the authorization endpoint;
+  - §4.8.2: PKCE downgrade;
+  - §4.12: no 307;
+  - §4.16: clickjacking and CSP `frame-ancestors`.
+
+  The rows citing §4.2.4, §4.7, §4.9, §4.10, §4.11.2 and §4.13 rely on those sections' titles in its table of contents, read the same day, not on quoted text.
+- The other rows cite sources already listed under the decisions they belong to: P1 to P9, decision 5 and the logout group.
 
 ### Logout (scope)
 
@@ -660,4 +1026,4 @@ Also reasoned from `close-security-gaps` D8 and D9.
 
   Auth0's and Okta's logout and password-change behaviour, and Keycloak's default for offline sessions at a password change, were not verified.
 
-The user chose D+ and sub-decisions 2 to 6 on 2026-11-02. The code paths, the option failure modes and H2 to H4 come from an independent review of scrty's own code (`session`, `httpsec`, the SQL stores, `expiry`) and of `close-security-gaps` D8 and D12. They are reasoned from the code, not reproduced.
+The user chose D+ and sub-decisions 2 to 6 on 2026-11-02, and confirmed P1 to P9 the same day. The code paths, the option failure modes and H2 to H4 come from an independent review of scrty's own code (`session`, `httpsec`, the SQL stores, `expiry`) and of `close-security-gaps` D8 and D12. They are reasoned from the code, not reproduced.
