@@ -19,7 +19,11 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -29,6 +33,12 @@ import (
 type challengeFlow struct {
 	name string
 	flow httpsec.ChallengeFlow
+
+	// other is a second flow the chain also enables, so a selection can name
+	// one flow and leave this one out; also is the options that enable it, nil
+	// when the flow's own chain already does.
+	other httpsec.ChallengeFlow
+	also  func(t *testing.T) []httpsec.Option
 
 	// build wires the flow's chain. work says whether the case expects the
 	// flow's guarded work, its account lookup among it, to run: the doubles
@@ -46,12 +56,42 @@ type challengeRun struct {
 // challengeFlows is every flow the seam covers.
 func challengeFlows() []challengeFlow {
 	return []challengeFlow{
-		{name: "form login", flow: httpsec.ChallengeFlowFormLogin, build: formLoginChallengeRun},
-		{name: "basic", flow: httpsec.ChallengeFlowBasicAuth, build: basicChallengeRun},
-		{name: "magic-link request", flow: httpsec.ChallengeFlowMagicLinkRequest, build: magicLinkChallengeRun},
-		{name: "passwordless begin", flow: httpsec.ChallengeFlowPasswordlessBegin, build: passwordlessChallengeRun},
-		{name: "recovery start", flow: httpsec.ChallengeFlowRecoveryStart, build: recoveryStartChallengeRun},
+		{
+			name: "form login", flow: httpsec.ChallengeFlowFormLogin, build: formLoginChallengeRun,
+			other: httpsec.ChallengeFlowBasicAuth, also: alsoBasic,
+		},
+		{
+			name: "basic", flow: httpsec.ChallengeFlowBasicAuth, build: basicChallengeRun,
+			other: httpsec.ChallengeFlowFormLogin, also: alsoFormLogin,
+		},
+		{
+			name: "magic-link request", flow: httpsec.ChallengeFlowMagicLinkRequest, build: magicLinkChallengeRun,
+			other: httpsec.ChallengeFlowFormLogin, also: alsoFormLogin,
+		},
+		{
+			name: "passwordless begin", flow: httpsec.ChallengeFlowPasswordlessBegin, build: passwordlessChallengeRun,
+			other: httpsec.ChallengeFlowFormLogin,
+		},
+		{
+			name: "recovery start", flow: httpsec.ChallengeFlowRecoveryStart, build: recoveryStartChallengeRun,
+			other: httpsec.ChallengeFlowFormLogin,
+		},
 	}
+}
+
+// alsoFormLogin enables form login over doubles nothing calls, so a chain
+// whose flow is another one has a second flow to select.
+func alsoFormLogin(t *testing.T) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{httpsec.EnableFormLogin(newAuthHarness(t).formLoginDeps())}
+}
+
+// alsoBasic is alsoFormLogin for Basic authentication.
+func alsoBasic(t *testing.T) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{httpsec.EnableBasicAuth(newAuthHarness(t).basicAuthDeps())}
 }
 
 // passwordWork expects, when work is set, one refused password check: the
@@ -197,16 +237,30 @@ func TestChallenge_Flows(t *testing.T) {
 		// options are the challenge options the chain is built with, nil for a
 		// chain without the seam; decision is what the verifier answers, and
 		// zero when it must not be asked at all.
-		options  func(v httpsec.ChallengeVerifier) []httpsec.Option
+		options  func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option
 		decision httpsec.ChallengeDecision
 		work     bool
 
 		assert func(t *testing.T, run challengeRun, out served)
 	}
 
-	enabled := func(opts ...httpsec.ChallengeOption) func(v httpsec.ChallengeVerifier) []httpsec.Option {
-		return func(v httpsec.ChallengeVerifier) []httpsec.Option {
+	enabled := func(opts ...httpsec.ChallengeOption) func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+		return func(_ *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
 			return []httpsec.Option{httpsec.EnableAutomationChallenge(v, opts...)}
+		}
+	}
+
+	// selecting enables the flow's second flow as well, then selects flows.
+	selecting := func(f challengeFlow, flows ...httpsec.ChallengeFlow) func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+		return func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+			t.Helper()
+
+			var opts []httpsec.Option
+			if f.also != nil {
+				opts = f.also(t)
+			}
+
+			return append(opts, httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(flows...)))
 		}
 	}
 
@@ -220,11 +274,6 @@ func TestChallenge_Flows(t *testing.T) {
 	var cases []testCase
 
 	for _, f := range challengeFlows() {
-		other := httpsec.ChallengeFlowMagicLinkRequest
-		if f.flow == other {
-			other = httpsec.ChallengeFlowFormLogin
-		}
-
 		cases = append(cases,
 			testCase{
 				name: f.name + ": not configured, no verifier is asked and the flow runs",
@@ -249,14 +298,14 @@ func TestChallenge_Flows(t *testing.T) {
 			testCase{
 				name:    f.name + ": selected explicitly, the verifier is asked",
 				flow:    f,
-				options: enabled(httpsec.WithChallengeFlows(other, f.flow)), decision: httpsec.ChallengeRefuse,
+				options: selecting(f, f.other, f.flow), decision: httpsec.ChallengeRefuse,
 				assert: func(t *testing.T, _ challengeRun, out served) {
 					require.ErrorIs(t, out.err, httpsec.ErrChallengeRequired)
 				},
 			},
 			testCase{
 				name: f.name + ": not selected, the verifier is not asked",
-				flow: f, options: enabled(httpsec.WithChallengeFlows(other)), work: true, assert: proceeded,
+				flow: f, options: selecting(f, f.other), work: true, assert: proceeded,
 			},
 		)
 	}
@@ -272,7 +321,7 @@ func TestChallenge_Flows(t *testing.T) {
 
 			var extra []httpsec.Option
 			if tc.options != nil {
-				extra = tc.options(v)
+				extra = tc.options(t, v)
 			}
 
 			run := tc.flow.build(t, tc.work, extra...)
@@ -286,7 +335,7 @@ func TestChallenge_Construction(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		options func(v httpsec.ChallengeVerifier) []httpsec.Option
+		options func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option
 		assert  func(t *testing.T, err error)
 	}
 
@@ -302,24 +351,46 @@ func TestChallenge_Construction(t *testing.T) {
 		}
 	}
 
+	built := func(t *testing.T, err error) { require.NoError(t, err) }
+
+	formLogin := func(t *testing.T) httpsec.Option { return alsoFormLogin(t)[0] }
+	basic := func(t *testing.T) httpsec.Option { return alsoBasic(t)[0] }
+
 	cases := []testCase{
 		{
-			name: "a verifier and the default flows build",
-			options: func(v httpsec.ChallengeVerifier) []httpsec.Option {
-				return []httpsec.Option{httpsec.EnableAutomationChallenge(v)}
+			name: "a verifier and the default flows build over a chain that enables one of them",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{formLogin(t), httpsec.EnableAutomationChallenge(v)}
 			},
-			assert: func(t *testing.T, err error) { require.NoError(t, err) },
+			assert: built,
+		},
+		{
+			name: "the verifier may be given before the flow it stands in front of",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{httpsec.EnableAutomationChallenge(v), formLogin(t)}
+			},
+			assert: built,
+		},
+		{
+			name: "a selection naming only enabled flows builds",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{
+					formLogin(t), basic(t),
+					httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(httpsec.ChallengeFlowBasicAuth)),
+				}
+			},
+			assert: built,
 		},
 		{
 			name: "a nil verifier is refused, naming the verifier",
-			options: func(httpsec.ChallengeVerifier) []httpsec.Option {
+			options: func(*testing.T, httpsec.ChallengeVerifier) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableAutomationChallenge(nil)}
 			},
 			assert: refused("EnableAutomationChallenge", "verifier"),
 		},
 		{
 			name: "a typed-nil verifier is refused, naming the verifier",
-			options: func(httpsec.ChallengeVerifier) []httpsec.Option {
+			options: func(*testing.T, httpsec.ChallengeVerifier) []httpsec.Option {
 				var v *MockChallengeVerifier
 
 				return []httpsec.Option{httpsec.EnableAutomationChallenge(v)}
@@ -328,22 +399,50 @@ func TestChallenge_Construction(t *testing.T) {
 		},
 		{
 			name: "selecting no flow is refused",
-			options: func(v httpsec.ChallengeVerifier) []httpsec.Option {
+			options: func(_ *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows())}
 			},
 			assert: refused("WithChallengeFlows"),
 		},
 		{
 			name: "a flow the seam does not know is refused",
-			options: func(v httpsec.ChallengeVerifier) []httpsec.Option {
+			options: func(_ *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows("signup"))}
 			},
 			assert: refused("WithChallengeFlows", "signup"),
 		},
 		{
+			name: "a flow the chain does not enable is refused, naming the flow",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{
+					formLogin(t),
+					httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(httpsec.ChallengeFlowPasswordlessBegin)),
+				}
+			},
+			assert: refused("WithChallengeFlows", string(httpsec.ChallengeFlowPasswordlessBegin)),
+		},
+		{
+			name: "one enabled flow does not excuse another that is not, which is named",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{
+					formLogin(t),
+					httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(
+						httpsec.ChallengeFlowFormLogin, httpsec.ChallengeFlowBasicAuth)),
+				}
+			},
+			assert: refused("WithChallengeFlows", string(httpsec.ChallengeFlowBasicAuth)),
+		},
+		{
+			name: "the default selection over a chain that enables none of the flows is refused",
+			options: func(_ *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{httpsec.EnableAutomationChallenge(v)}
+			},
+			assert: refused("EnableAutomationChallenge", "no flow"),
+		},
+		{
 			name: "enabling the seam twice is refused",
-			options: func(v httpsec.ChallengeVerifier) []httpsec.Option {
-				return []httpsec.Option{httpsec.EnableAutomationChallenge(v), httpsec.EnableAutomationChallenge(v)}
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{formLogin(t), httpsec.EnableAutomationChallenge(v), httpsec.EnableAutomationChallenge(v)}
 			},
 			assert: refused("EnableAutomationChallenge", "twice"),
 		},
@@ -353,7 +452,7 @@ func TestChallenge_Construction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := httpsec.New(tc.options(NewMockChallengeVerifier(gomock.NewController(t)))...)
+			_, err := httpsec.New(tc.options(t, NewMockChallengeVerifier(gomock.NewController(t)))...)
 			tc.assert(t, err)
 		})
 	}
@@ -372,7 +471,11 @@ func TestChallenge_Outage(t *testing.T) {
 		// verify is what the verifier does; cancel ends the request's context,
 		// as a client hanging up does.
 		verify func(cancel context.CancelFunc) func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error)
-		assert func(t *testing.T, err error, logs []slog.Record)
+
+		// failures is what the attempt store answers when the identifier
+		// signal is read, and nil counts none.
+		failures func(cancel context.CancelFunc) (int, error)
+		assert   func(t *testing.T, err error, logs []slog.Record)
 	}
 
 	outage := func(t *testing.T, err error, logs []slog.Record) {
@@ -396,7 +499,61 @@ func TestChallenge_Outage(t *testing.T) {
 		assert.Equal(t, 1, errorRecords, "the outage is recorded at ERROR")
 	}
 
+	// storeText is what an attempt store's own error says: a username and a
+	// credential no record may repeat.
+	const storeText = "pq: password authentication failed for user ada (password=pg-pass-123)"
+
+	down := func(context.CancelFunc) func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+		return func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+			return 0, errVerifierDown
+		}
+	}
+
 	cases := []testCase{
+		{
+			name:     "an attempt store that cannot count is logged by type, with neither the username nor its text",
+			verify:   down,
+			failures: func(context.CancelFunc) (int, error) { return 0, errors.New(storeText) },
+			assert: func(t *testing.T, _ error, logs []slog.Record) {
+				var stored []slog.Record
+
+				for _, r := range logs {
+					r.Attrs(func(a slog.Attr) bool {
+						if a.Key == "reason" && a.Value.String() == "attempt-store" {
+							stored = append(stored, r)
+						}
+
+						return true
+					})
+				}
+
+				require.Len(t, stored, 1, "the failed read is recorded once")
+				assert.Equal(t, slog.LevelError, stored[0].Level)
+				assert.NotContains(t, recordText(stored[0]), "pg-pass-123")
+				assert.NotContains(t, recordText(stored[0]), "user ada")
+				assert.Contains(t, recordText(stored[0]), "error_type=*errors.errorString")
+			},
+		},
+		{
+			name: "an attempt store that fails because the client left is a hang-up, nothing at ERROR",
+			verify: func(context.CancelFunc) func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+				return func(ctx context.Context, _ httpsec.Request, _ httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+					return 0, fmt.Errorf("verify: %w", ctx.Err())
+				}
+			},
+			failures: func(cancel context.CancelFunc) (int, error) {
+				cancel()
+
+				return 0, fmt.Errorf("count: %w", context.Canceled)
+			},
+			assert: func(t *testing.T, err error, logs []slog.Record) {
+				require.ErrorIs(t, err, context.Canceled)
+
+				for _, r := range logs {
+					assert.Less(t, r.Level, slog.LevelError, "nothing is recorded at ERROR: %s", r.Message)
+				}
+			},
+		},
 		{
 			name: "a verifier error is a dependency failure with fixed text",
 			verify: func(context.CancelFunc) func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
@@ -452,17 +609,24 @@ func TestChallenge_Outage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
 			h := newAuthHarness(t)
-			h.attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).Return(0, nil).AnyTimes()
+			h.attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, string, time.Time) (int, error) {
+					if tc.failures == nil {
+						return 0, nil
+					}
+
+					return tc.failures(cancel)
+				}).AnyTimes()
 
 			// Strict: no account is looked up (the authenticator has no
 			// expectations), and nothing is charged to the source, which a
 			// RecordFailure on this limiter would be.
 			limiter := NewMockLimiter(gomock.NewController(t))
 			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
-
-			ctx, cancel := context.WithCancel(t.Context())
-			t.Cleanup(cancel)
 
 			v := NewMockChallengeVerifier(gomock.NewController(t))
 			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(tc.verify(cancel))
@@ -502,10 +666,13 @@ func TestChallenge_Signals(t *testing.T) {
 	type testCase struct {
 		name string
 
-		// limiter replaces form login's source limiter when set; failures is
-		// what the attempt store counts for the username.
+		// limiter replaces form login's source limiter when set; engine is
+		// the chain's policy engine, nil for none; failures is what the
+		// attempt store counts for the username, given the instant it counts
+		// strictly after.
 		limiter  func(t *testing.T) ratelimit.Limiter
-		failures func() (int, error)
+		engine   func(t *testing.T) *policy.Engine
+		failures func(since time.Time) (int, error)
 
 		// before are logins sent first, each answered not needed and refused
 		// as a wrong password.
@@ -524,7 +691,38 @@ func TestChallenge_Signals(t *testing.T) {
 		return m
 	}
 
-	none := func() (int, error) { return 0, nil }
+	none := func(time.Time) (int, error) { return 0, nil }
+
+	// failedAgo is an attempt store holding one failure, age old: counted when
+	// it is strictly after the instant the caller asks from.
+	failedAgo := func(age time.Duration) func(time.Time) (int, error) {
+		return func(since time.Time) (int, error) {
+			if time.Now().Add(-age).After(since) {
+				return 1, nil
+			}
+
+			return 0, nil
+		}
+	}
+
+	// lockoutWindows is an engine holding one lockout policy per window.
+	lockoutWindows := func(windows ...time.Duration) func(t *testing.T) *policy.Engine {
+		return func(t *testing.T) *policy.Engine {
+			t.Helper()
+
+			var policies []policy.Policy
+
+			for _, w := range windows {
+				policies = append(policies, must.Must(lockout.New(lockout.WithFailureWindow(w))))
+			}
+
+			return engineOf(t, policies...)
+		}
+	}
+
+	// lockoutDefault is the window a lockout policy counts in when it is
+	// given none.
+	lockoutDefault := must.Must(lockout.New()).FailureWindow()
 
 	cases := []testCase{
 		{
@@ -544,16 +742,54 @@ func TestChallenge_Signals(t *testing.T) {
 		},
 		{
 			name:     "a clean source posting for a username with recent failures: the identifier is reported",
-			failures: func() (int, error) { return 3, nil },
+			failures: func(time.Time) (int, error) { return 3, nil },
 			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
 				assert.Equal(t, httpsec.ChallengeSignals{IdentifierHasFailures: true}, seen)
 			},
 		},
 		{
 			name:     "an attempt store that cannot count is reported as failures",
-			failures: func() (int, error) { return 0, errors.New("db down") },
+			failures: func(time.Time) (int, error) { return 0, errors.New("db down") },
 			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
 				assert.True(t, seen.IdentifierHasFailures)
+			},
+		},
+		{
+			name:     "a failure older than the lockout policy's window is not reported",
+			engine:   lockoutWindows(time.Hour),
+			failures: failedAgo(2 * time.Hour),
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.False(t, seen.IdentifierHasFailures)
+			},
+		},
+		{
+			name:     "a failure inside the lockout policy's window is reported",
+			engine:   lockoutWindows(time.Hour),
+			failures: failedAgo(30 * time.Minute),
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.True(t, seen.IdentifierHasFailures)
+			},
+		},
+		{
+			name:     "under several lockout policies the widest window is the one used",
+			engine:   lockoutWindows(time.Hour, 3*time.Hour),
+			failures: failedAgo(2 * time.Hour),
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.True(t, seen.IdentifierHasFailures)
+			},
+		},
+		{
+			name:     "with no lockout policy the lockout's default window is used: a failure inside it is reported",
+			failures: failedAgo(lockoutDefault - time.Hour),
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.True(t, seen.IdentifierHasFailures)
+			},
+		},
+		{
+			name:     "with no lockout policy the lockout's default window is used: a failure outside it is not",
+			failures: failedAgo(lockoutDefault + time.Hour),
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.False(t, seen.IdentifierHasFailures)
 			},
 		},
 		{
@@ -596,7 +832,9 @@ func TestChallenge_Signals(t *testing.T) {
 
 			h := newAuthHarness(t)
 			h.attempts.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).
-				DoAndReturn(func(context.Context, string, time.Time) (int, error) { return tc.failures() }).AnyTimes()
+				DoAndReturn(func(_ context.Context, _ string, since time.Time) (int, error) {
+					return tc.failures(since)
+				}).AnyTimes()
 			h.attempts.EXPECT().RecordFailure(gomock.Any(), "ada", gomock.Any()).Return(nil).Times(tc.before + 1)
 			h.authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
 				Return(nil, authenticate.ErrAuthenticationFailed).Times(tc.before + 1)
@@ -616,11 +854,16 @@ func TestChallenge_Signals(t *testing.T) {
 				loginOpts = append(loginOpts, httpsec.WithLoginLimiter(tc.limiter(t)))
 			}
 
-			chain, err := httpsec.New(
+			opts := []httpsec.Option{
 				httpsec.WithLogger(h.logger()),
 				httpsec.EnableFormLogin(h.formLoginDeps(), loginOpts...),
 				httpsec.EnableAutomationChallenge(v),
-			)
+			}
+			if tc.engine != nil {
+				opts = append(opts, httpsec.WithPolicyEngine(tc.engine(t)))
+			}
+
+			chain, err := httpsec.New(opts...)
 			require.NoError(t, err)
 
 			login := func() served {
@@ -650,7 +893,7 @@ func TestChallenge_SignalsPerFlow(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "recovery start reports a username with recent login failures",
+			name: "recovery start reports no identifier, whatever login failures the username has",
 			run: func(t *testing.T, v httpsec.ChallengeVerifier) served {
 				h := newRecoveryHarness(t)
 				require.NoError(t, h.attempts.RecordFailure(t.Context(), e2eAddress, time.Now()))
@@ -662,8 +905,65 @@ func TestChallenge_SignalsPerFlow(t *testing.T) {
 				return serve(t, h.chain, formRequest(t.Context(), httpsec.DefaultRecoveryStartPath, body))
 			},
 			assert: func(t *testing.T, seen []httpsec.ChallengeSignals) {
-				require.Len(t, seen, 1)
-				assert.Equal(t, httpsec.ChallengeSignals{IdentifierHasFailures: true}, seen[0])
+				assert.Equal(t, []httpsec.ChallengeSignals{{}}, seen)
+			},
+		},
+		{
+			name: "recovery start reads its source from the completion guard: earlier starts are no failures",
+			run: func(t *testing.T, v httpsec.ChallengeVerifier) served {
+				h := newRecoveryHarness(t)
+				h.chainOpts = append(h.chainOpts, httpsec.EnableAutomationChallenge(v))
+				h.build(t)
+
+				start := func() served {
+					return serve(t, h.chain, postValues(t.Context(), httpsec.DefaultRecoveryStartPath, e2eSource,
+						url.Values{httpsec.RecoveryUsernameParam: {e2eAddress}}))
+				}
+				start()
+
+				return start()
+			},
+			assert: func(t *testing.T, seen []httpsec.ChallengeSignals) {
+				assert.Equal(t, []httpsec.ChallengeSignals{{}, {}}, seen)
+			},
+		},
+		{
+			name: "recovery start reports a source with a refused recovery, from the completion guard",
+			run: func(t *testing.T, v httpsec.ChallengeVerifier) served {
+				h := newRecoveryHarness(t)
+				h.chainOpts = append(h.chainOpts, httpsec.EnableAutomationChallenge(v))
+				h.build(t)
+
+				refused := h.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, "not-a-saved-code", httpsec.RecoveryPasswordParam, "wrong"))
+				require.Error(t, refused.err, "the recovery was refused")
+
+				return serve(t, h.chain, postValues(t.Context(), httpsec.DefaultRecoveryStartPath, e2eSource,
+					url.Values{httpsec.RecoveryUsernameParam: {e2eAddress}}))
+			},
+			assert: func(t *testing.T, seen []httpsec.ChallengeSignals) {
+				assert.Equal(t, []httpsec.ChallengeSignals{{SourceHasFailures: true}}, seen)
+			},
+		},
+		{
+			name: "Basic reports a username with recent failures, over a clean source",
+			run: func(t *testing.T, v httpsec.ChallengeVerifier) served {
+				h := newAuthHarness(t)
+				h.attempts.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).Return(3, nil)
+				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
+
+				chain, err := httpsec.New(
+					httpsec.WithLogger(h.logger()),
+					httpsec.EnableBasicAuth(h.basicAuthDeps()),
+					httpsec.EnableAutomationChallenge(v),
+				)
+				require.NoError(t, err)
+
+				return serve(t, chain, basicRequest(t.Context(), "ada", "s3cret"))
+			},
+			assert: func(t *testing.T, seen []httpsec.ChallengeSignals) {
+				assert.Equal(t, []httpsec.ChallengeSignals{{IdentifierHasFailures: true}}, seen)
 			},
 		},
 		{
@@ -716,6 +1016,173 @@ func TestChallenge_SignalsPerFlow(t *testing.T) {
 	}
 }
 
+// TestChallenge_AsksBeforeThePreAuthenticationPhase pins that the verifier is
+// asked before anything about the account is read: a locked account the
+// verifier refuses spends no decoy verification, since the encoder is strict
+// and the lock never reached, and no source charge beyond the refusal's own,
+// which the opt-out removes, so a charge here would be the lock's.
+func TestChallenge_AsksBeforeThePreAuthenticationPhase(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		send func(t *testing.T, c *httpsec.Chain) served
+	}
+
+	cases := []testCase{
+		{
+			name: "form login",
+			send: func(t *testing.T, c *httpsec.Chain) served {
+				return formLoginFrom(t, c, loginGuardSource, "ada", lockedGuess)
+			},
+		},
+		{
+			name: "Basic",
+			send: func(t *testing.T, c *httpsec.Chain) served {
+				return basicFrom(t, c, loginGuardSource, "ada", lockedGuess)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A decoy verification is a Match on this strict encoder, which
+			// has no expectation.
+			h := newLockResponseHarness(t, true)
+			ctrl := gomock.NewController(t)
+
+			sessions, err := session.New(session.WithStore(NewMockStore(ctrl)))
+			require.NoError(t, err)
+
+			attempts := must.Must(lockout.NewMemoryAttemptStore())
+
+			// Strict: a source charge, a RecordFailure, fails the case.
+			limiter := NewMockLimiter(ctrl)
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+
+			v := NewMockChallengeVerifier(ctrl)
+			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Return(httpsec.ChallengeRefuse, nil).Times(1)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(slog.New(h.logs)),
+				httpsec.WithPolicyEngine(lockingAda(t)),
+				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+					Authenticator: h.authn, Sessions: sessions, Tokens: NewMockGenerator(ctrl), Attempts: attempts,
+				}, httpsec.WithLoginLimiter(limiter)),
+				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: attempts},
+					httpsec.WithBasicAuthLimiter(limiter)),
+				httpsec.EnableAutomationChallenge(v, httpsec.WithoutChallengeRefusalCounting()),
+			)
+			require.NoError(t, err)
+
+			out := tc.send(t, chain)
+
+			require.ErrorIs(t, out.err, httpsec.ErrChallengeRequired)
+			assert.NotErrorIs(t, out.err, lockout.ErrAccountLocked, "the lock was never reached")
+		})
+	}
+}
+
+// TestChallenge_NoEnumeration pins that the identifier signal cannot tell a
+// known username from an unknown one on a flow that answers alike for both.
+// An owner's sign-in clears a known account's failures and no sign-in clears
+// an unknown name's, so a verifier that challenged on the signal at recovery
+// start would answer whether an account exists. Form login keeps the signal,
+// and the row for it pins the residual: the same reset already lifts a known
+// account's lockout and not an unknown one's.
+func TestChallenge_NoEnumeration(t *testing.T) {
+	t.Parallel()
+
+	const unknown = "nobody"
+
+	type testCase struct {
+		name string
+
+		// probe sends one request of the flow under test for username, from a
+		// source of its own.
+		probe func(t *testing.T, h *recoveryHarness, username string)
+
+		assert func(t *testing.T, known, unknown httpsec.ChallengeSignals)
+	}
+
+	cases := []testCase{
+		{
+			name: "recovery start gives the verifier identical signals for a known and an unknown username",
+			probe: func(t *testing.T, h *recoveryHarness, username string) {
+				serve(t, h.chain, postValues(t.Context(), httpsec.DefaultRecoveryStartPath, e2eSource,
+					url.Values{httpsec.RecoveryUsernameParam: {username}}))
+			},
+			assert: func(t *testing.T, known, unknown httpsec.ChallengeSignals) {
+				assert.Equal(t, known, unknown)
+				assert.False(t, known.IdentifierHasFailures)
+			},
+		},
+		{
+			name: "form login keeps the signal: a known account's failures were cleared by its owner, an unknown name's were not",
+			probe: func(t *testing.T, h *recoveryHarness, username string) {
+				serve(t, h.chain, postValues(t.Context(), httpsec.DefaultLoginPath, e2eSource, url.Values{
+					httpsec.DefaultLoginUsernameParam: {username},
+					httpsec.DefaultLoginPasswordParam: {"wrong"},
+				}))
+			},
+			assert: func(t *testing.T, known, unknown httpsec.ChallengeSignals) {
+				assert.False(t, known.IdentifierHasFailures)
+				assert.True(t, unknown.IdentifierHasFailures)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				asking bool
+				seen   httpsec.ChallengeSignals
+			)
+
+			v := NewMockChallengeVerifier(gomock.NewController(t))
+			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(_ context.Context, _ httpsec.Request, s httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+					if asking {
+						seen = s
+					}
+
+					return httpsec.ChallengeNotNeeded, nil
+				})
+
+			h := newRecoveryHarness(t)
+			h.chainOpts = append(h.chainOpts, httpsec.EnableAutomationChallenge(v))
+			h.build(t)
+
+			wrong := func(username string) {
+				serve(t, h.chain, postValues(t.Context(), httpsec.DefaultLoginPath, e2eSource, url.Values{
+					httpsec.DefaultLoginUsernameParam: {username},
+					httpsec.DefaultLoginPasswordParam: {"wrong"},
+				}))
+			}
+
+			// One failed login each for a known and an unknown username, then
+			// the known account's owner signs in.
+			wrong(e2eAddress)
+			wrong(unknown)
+			require.NoError(t, h.passwordLogin(t).err, "the owner signs in")
+
+			asking = true
+
+			tc.probe(t, h, e2eAddress)
+
+			known := seen
+
+			tc.probe(t, h, unknown)
+
+			tc.assert(t, known, seen)
+		})
+	}
+}
+
 func TestChallenge_CountsAgainstSource(t *testing.T) {
 	t.Parallel()
 
@@ -756,6 +1223,38 @@ func TestChallenge_CountsAgainstSource(t *testing.T) {
 		}
 	}
 
+	// basic's attempt store is as strict as login's.
+	basic := func(t *testing.T, limiter ratelimit.Limiter, v httpsec.ChallengeVerifier,
+		opts ...httpsec.ChallengeOption,
+	) func() served {
+		t.Helper()
+
+		h := newAuthHarness(t)
+		h.attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).Return(0, nil).AnyTimes()
+
+		chain, err := httpsec.New(
+			httpsec.WithLogger(h.logger()),
+			httpsec.EnableBasicAuth(h.basicAuthDeps(), httpsec.WithBasicAuthLimiter(limiter)),
+			httpsec.EnableAutomationChallenge(v, opts...),
+		)
+		require.NoError(t, err)
+
+		return func() served { return serve(t, chain, basicRequest(t.Context(), "ada", "wrong")) }
+	}
+
+	passwordless := func(t *testing.T, limiter ratelimit.Limiter, v httpsec.ChallengeVerifier,
+		opts ...httpsec.ChallengeOption,
+	) func() served {
+		t.Helper()
+
+		d := newPwlDeployment(t)
+		d.settings = append(d.settings, httpsec.PasswordlessLimiter(limiter))
+		d.extra = append(d.extra, httpsec.EnableAutomationChallenge(v, opts...))
+		d.build(t)
+
+		return func() served { return d.begin(t) }
+	}
+
 	start := func(t *testing.T, limiter ratelimit.Limiter, v httpsec.ChallengeVerifier,
 		opts ...httpsec.ChallengeOption,
 	) func() served {
@@ -785,6 +1284,36 @@ func TestChallenge_CountsAgainstSource(t *testing.T) {
 		{
 			name:  "form login: opted out, refusals spend nothing and the next login still reaches the verifier",
 			build: login, opts: []httpsec.ChallengeOption{httpsec.WithoutChallengeRefusalCounting()}, asked: limit + 1,
+			assert: func(t *testing.T, last served) {
+				require.ErrorIs(t, last.err, httpsec.ErrChallengeRequired)
+			},
+		},
+		{
+			name:  "basic: refusals spend the source limit, and the next request is throttled before the verifier",
+			build: basic, asked: limit,
+			assert: func(t *testing.T, last served) {
+				require.ErrorIs(t, last.err, ratelimit.ErrThrottled)
+				require.NotErrorIs(t, last.err, httpsec.ErrChallengeRequired)
+			},
+		},
+		{
+			name:  "basic: opted out, refusals spend nothing and the next request still reaches the verifier",
+			build: basic, opts: []httpsec.ChallengeOption{httpsec.WithoutChallengeRefusalCounting()}, asked: limit + 1,
+			assert: func(t *testing.T, last served) {
+				require.ErrorIs(t, last.err, httpsec.ErrChallengeRequired)
+			},
+		},
+		{
+			name:  "passwordless begin: refusals spend the source limit, and the next begin is throttled before the verifier",
+			build: passwordless, asked: limit,
+			assert: func(t *testing.T, last served) {
+				require.ErrorIs(t, last.err, ratelimit.ErrThrottled)
+				require.NotErrorIs(t, last.err, httpsec.ErrChallengeRequired)
+			},
+		},
+		{
+			name:  "passwordless begin: opted out, refusals spend nothing and the next begin still reaches the verifier",
+			build: passwordless, opts: []httpsec.ChallengeOption{httpsec.WithoutChallengeRefusalCounting()}, asked: limit + 1,
 			assert: func(t *testing.T, last served) {
 				require.ErrorIs(t, last.err, httpsec.ErrChallengeRequired)
 			},

@@ -18,7 +18,9 @@ import (
 // ErrChallengeRequired refuses a request the automation-challenge verifier
 // refused (EnableAutomationChallenge). StatusForError answers it 403: the
 // client must pass the challenge, not present other credentials. It is
-// returned before any account is looked up, so it says nothing about one.
+// returned before any account is looked up, so the flow's work has said nothing
+// about one; ChallengeSignals.IdentifierHasFailures says what a verifier at
+// form login and Basic authentication may refuse on.
 var ErrChallengeRequired = errors.New("httpsec: automation challenge required")
 
 // ErrChallengeUnavailable is matched by the error a request fails with when
@@ -72,12 +74,28 @@ type ChallengeSignals struct {
 	// reports a source that has begun a ceremony in the window.
 	SourceHasFailures bool
 
-	// IdentifierHasFailures reports at least one failed login recorded in the
-	// last 24 hours for the identifier the request names, in the chain's
-	// password-login attempt store: the username at form login and Basic,
-	// and the username at a recovery start. It is false for the flows that
-	// read no identifier before their lookup, the passwordless begin, and the
-	// magic-link request, whose address no lockout counts failures for.
+	// IdentifierHasFailures reports at least one failed login recorded for
+	// the username the request names, within the failure window of the
+	// account-lockout policy the chain uses (lockout.WithFailureWindow; 24
+	// hours, the lockout's default, when the chain's policy engine holds no
+	// lockout policy), in the chain's password-login attempt store.
+	//
+	// It is read at form login and Basic authentication only, and is false at
+	// every other flow: recovery start, magic-link requests and passwordless
+	// begin. A sign-in by an account's owner clears the account's recorded
+	// failures, and only a real account has an owner, so at a flow that
+	// answers alike for a known and an unknown username the signal would tell
+	// them apart, and a verifier that challenged on it would answer whether
+	// an account exists.
+	//
+	// Form login and Basic keep the signal, with a residual: after a failed
+	// attempt each, an unknown username reports true and a known one whose
+	// owner has since signed in reports false. That discloses nothing the
+	// lockout does not already: the same sign-in lifts a known account's
+	// lockout and not an unknown name's. A verifier that challenges on this
+	// signal alone, and refuses, makes that difference visible to a client
+	// that can try both names, so combine it with SourceHasFailures or
+	// other evidence of automation before refusing.
 	IdentifierHasFailures bool
 }
 
@@ -140,11 +158,35 @@ var challengeFlowsAll = []ChallengeFlow{
 // the defaults named there.
 type ChallengeOption func(*challengeGate) error
 
-// challengeIdentifierWindow is how far back an identifier's recorded login
-// failures count as recent for ChallengeSignals.IdentifierHasFailures: the
-// account-lockout policy's default window, so an identifier the lockout still
-// counts failures for reads as suspicious.
-const challengeIdentifierWindow = 24 * time.Hour
+// challengeDefaultWindow is how far back an identifier's recorded login
+// failures count as recent for ChallengeSignals.IdentifierHasFailures when no
+// policy in the chain's engine reports a failure window of its own
+// (policy.Engine.FailureWindows): the account-lockout policy's default window,
+// 24 hours, so an identifier a default lockout still counts failures for reads
+// as suspicious. A test pins it to lockout.New's.
+const challengeDefaultWindow = 24 * time.Hour
+
+// identifierWindow is how far back the identifier signal looks: the failure
+// window of the lockout policy in e (lockout.Policy.FailureWindow, set by
+// lockout.WithFailureWindow), so the challenge and the lockout never disagree
+// about what "recent" means. With several such policies it is the widest, so
+// the signal errs towards asking, and with none, or no engine, it is
+// challengeDefaultWindow.
+func identifierWindow(e *policy.Engine) time.Duration {
+	var widest time.Duration
+
+	if e != nil {
+		for _, w := range e.FailureWindows() {
+			widest = max(widest, w)
+		}
+	}
+
+	if widest <= 0 {
+		return challengeDefaultWindow
+	}
+
+	return widest
+}
 
 // challengeGate is the configured verifier, shared by every flow it was
 // selected for.
@@ -152,14 +194,17 @@ type challengeGate struct {
 	verifier ChallengeVerifier
 	flows    map[ChallengeFlow]bool
 
+	// selected is whether WithChallengeFlows named the flows, as opposed to
+	// the default selection of all five.
+	selected bool
+
 	// countRefusals charges a refusal to the flow's source limit
 	// (WithoutChallengeRefusalCounting turns it off).
 	countRefusals bool
 
-	// attempts is the chain's password-login attempt store, read for the
-	// identifier signal of a flow that has none of its own (recovery start),
-	// settled at assembly, and nil on a chain without password login.
-	attempts policy.AttemptStore
+	// window is how far back an identifier's failures count as recent,
+	// settled at assembly (identifierWindow).
+	window time.Duration
 
 	// log and sampler are the chain's, handed over once it exists, and now
 	// is the chain's clock.
@@ -185,7 +230,7 @@ type challengeGate struct {
 //   - Basic authentication (ChallengeFlowBasicAuth), likewise;
 //   - the magic-link request (ChallengeFlowMagicLinkRequest), before the
 //     address is looked up or anything is sent; this endpoint has no source
-//     limit of its own;
+//     limit of its own, so a refusal there is counted nowhere;
 //   - the passwordless passkey begin (ChallengeFlowPasswordlessBegin), after
 //     its source limit and before the begin is counted or a challenge issued;
 //   - the account-recovery start (ChallengeFlowRecoveryStart), after its
@@ -212,13 +257,20 @@ type challengeGate struct {
 // an outage: the request fails with an error matching that context's error,
 // recorded at debug and charged to nothing.
 //
-// v is told, through ChallengeSignals, whether the request's source and its
-// identifier have recent failures, so it can answer ChallengeNotNeeded for
-// ordinary traffic and ask only suspicious requests.
+// v is told, through ChallengeSignals, whether the request's source has recent
+// failures and, at form login and Basic authentication only, whether the
+// username has, within the failure window of the chain's lockout policy
+// (lockout.WithFailureWindow), so it can answer ChallengeNotNeeded for ordinary
+// traffic and ask only suspicious requests. The identifier signal is withheld
+// at the other flows, where it would let a verifier tell a known username from
+// an unknown one; ChallengeSignals says why, and what remains at login.
 //
-// A nil v, or an interface holding a nil pointer, fails New with a
-// configuration error naming the verifier; a second EnableAutomationChallenge
-// is refused with one too.
+// Construction fails with a configuration error, from New, for a nil v, or an
+// interface holding a nil pointer, naming the verifier; for a second
+// EnableAutomationChallenge; for a selection (WithChallengeFlows) naming a flow
+// the chain does not enable, naming the flow; and for the default selection over
+// a chain that enables none of the five flows. A verifier that would never be
+// asked reads as protection the chain does not have.
 func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option {
 	const option = "EnableAutomationChallenge"
 
@@ -259,10 +311,11 @@ func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Opt
 //
 // Default: every flow, ChallengeFlowFormLogin, ChallengeFlowBasicAuth,
 // ChallengeFlowMagicLinkRequest, ChallengeFlowPasswordlessBegin and
-// ChallengeFlowRecoveryStart. A flow selected here that the chain does not
-// enable asks nothing. Selecting no flow, or a value that names none of the
-// five, is a configuration error: a verifier no flow asks would read as
-// protection the chain does not have.
+// ChallengeFlowRecoveryStart. Selecting no flow, a value that names none of
+// the five, or a flow the chain does not enable (no EnableBasicAuth for
+// ChallengeFlowBasicAuth, say) is a configuration error from New, naming the
+// flow: a verifier no flow asks would read as protection the chain does not
+// have. So is the default selection over a chain that enables none of the five.
 func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption {
 	return func(g *challengeGate) error {
 		if len(flows) == 0 {
@@ -278,6 +331,7 @@ func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption {
 		}
 
 		g.flows = flowSet(flows)
+		g.selected = true
 
 		return nil
 	}
@@ -325,61 +379,93 @@ func (g *challengeGate) forFlow(flow ChallengeFlow) *challengeGate {
 
 // wireChallenge hands the gate to every selected flow on the chain, once every
 // option has been applied, whichever order the flows' options and
-// EnableAutomationChallenge came in. The recovery start's identifier signal
-// reads the chain's password-login attempt store: form login's, or Basic's
-// when there is no form login.
-func (c *config) wireChallenge() {
+// EnableAutomationChallenge came in. A selection that stands in front of a flow
+// the chain does not enable is a configuration error, since it would read as
+// protection the chain does not have.
+func (c *config) wireChallenge() error {
 	g := c.challenge
 	if g == nil {
-		return
+		return nil
 	}
 
-	_ = eachInterceptor(c, func(l *formLogin) error {
-		l.automation = g.forFlow(ChallengeFlowFormLogin)
+	g.window = identifierWindow(c.engine)
 
-		if g.attempts == nil {
-			g.attempts = l.attempts
-		}
+	enabled := make(map[ChallengeFlow]bool, len(challengeFlowsAll))
+
+	_ = eachInterceptor(c, func(l *formLogin) error {
+		enabled[ChallengeFlowFormLogin] = true
+		l.automation = g.forFlow(ChallengeFlowFormLogin)
 
 		return nil
 	})
 	_ = eachInterceptor(c, func(b *basicAuth) error {
+		enabled[ChallengeFlowBasicAuth] = true
 		b.automation = g.forFlow(ChallengeFlowBasicAuth)
-
-		if g.attempts == nil {
-			g.attempts = b.attempts
-		}
 
 		return nil
 	})
 	_ = eachInterceptor(c, func(i *magicLinkInterceptor) error {
+		enabled[ChallengeFlowMagicLinkRequest] = true
 		i.automation = g.forFlow(ChallengeFlowMagicLinkRequest)
 
 		return nil
 	})
 	_ = eachInterceptor(c, func(i *passwordlessInterceptor) error {
+		enabled[ChallengeFlowPasswordlessBegin] = true
 		i.automation = g.forFlow(ChallengeFlowPasswordlessBegin)
 
 		return nil
 	})
 	_ = eachInterceptor(c, func(i *recoveryInterceptor) error {
+		enabled[ChallengeFlowRecoveryStart] = true
 		i.automation = g.forFlow(ChallengeFlowRecoveryStart)
 
 		return nil
 	})
+
+	return g.refuseUnguarded(enabled)
+}
+
+// refuseUnguarded is a configuration error when the verifier would stand in
+// front of a flow the chain does not enable: any flow WithChallengeFlows named
+// that is missing, or, for the default selection, the chain enabling none of
+// the five. Flows are checked in their declared order, so the error names the
+// first.
+func (g *challengeGate) refuseUnguarded(enabled map[ChallengeFlow]bool) error {
+	if g.selected {
+		for _, f := range challengeFlowsAll {
+			if g.flows[f] && !enabled[f] {
+				return newConfigError("WithChallengeFlows selected %q, but the chain does not enable that flow, "+
+					"so the verifier would never be asked there; enable it or leave it out of the selection", f)
+			}
+		}
+
+		return nil
+	}
+
+	if len(enabled) == 0 {
+		return newConfigError("EnableAutomationChallenge stands in front of no flow: the chain enables none of " +
+			"form login, Basic authentication, magic links, passwordless login or account recovery, " +
+			"so the verifier would never be asked")
+	}
+
+	return nil
 }
 
 // What a verifier that failed is recorded and returned with. The text is
 // fixed: a consumer's verifier may word its failure with a site key, a
 // response token or the address it could not reach.
 const (
-	reasonChallengeVerifier = "challenge-verifier"
-	msgChallengeFailed      = "httpsec: an automation challenge could not be verified; the verifier failed"
-	textChallengeFailed     = "httpsec: automation challenge verifier unavailable"
-	msgChallengeEnded       = "httpsec: the request ended while its automation challenge was verified"
-	textChallengeEnded      = "httpsec: the request ended while its automation challenge was verified"
-	msgChallengeUndecided   = "httpsec: the automation challenge verifier answered with no known decision"
-	challengeSampleSuffix   = sampleKeySeparator + reasonChallengeVerifier
+	reasonChallengeVerifier      = "challenge-verifier"
+	reasonAttemptStore           = "attempt-store"
+	msgChallengeIdentifierUnread = "httpsec: an identifier's failures could not be read for the automation challenge; " +
+		"the attempt store failed, so it is reported as having failures"
+	msgChallengeFailed    = "httpsec: an automation challenge could not be verified; the verifier failed"
+	textChallengeFailed   = "httpsec: automation challenge verifier unavailable"
+	msgChallengeEnded     = "httpsec: the request ended while its automation challenge was verified"
+	textChallengeEnded    = "httpsec: the request ended while its automation challenge was verified"
+	msgChallengeUndecided = "httpsec: the automation challenge verifier answered with no known decision"
+	challengeSampleSuffix = sampleKeySeparator + reasonChallengeVerifier
 )
 
 // errChallengeUndecided is the cause of the dependency failure a verifier
@@ -396,23 +482,14 @@ type challengeQuery struct {
 	clientIP string
 
 	// identifier and attempts answer ChallengeSignals.IdentifierHasFailures;
-	// an empty identifier or a nil store reads none.
+	// an empty identifier or a nil store reads none. Only form login and
+	// Basic authentication give them.
 	identifier string
 	attempts   policy.AttemptStore
 
 	// charge counts a refusal against the flow's source limit, and is nil
 	// for a flow that has none.
 	charge func()
-}
-
-// loginAttempts is the chain's password-login attempt store, nil on a nil
-// gate or a chain without password login.
-func (g *challengeGate) loginAttempts() policy.AttemptStore {
-	if g == nil {
-		return nil
-	}
-
-	return g.attempts
 }
 
 // recentFailureReader is the part of ratelimit.SourceGuard the signals read.
@@ -437,11 +514,31 @@ func (g *challengeGate) signals(ctx context.Context, q challengeQuery) Challenge
 	}
 
 	if q.identifier != "" && q.attempts != nil {
-		n, err := q.attempts.FailureCount(ctx, q.identifier, g.now().Add(-challengeIdentifierWindow))
+		n, err := q.attempts.FailureCount(ctx, q.identifier, g.now().Add(-g.window))
+		if err != nil {
+			g.logUnread(ctx, q.flow, err)
+		}
+
 		s.IdentifierHasFailures = err != nil || n > 0
 	}
 
 	return s
+}
+
+// logUnread records that the attempt store could not say whether an identifier
+// has recent failures, as the chain records its other attempt-store failures:
+// at ERROR, by the fixed reason and the error's type, never its text, and
+// without the username. A store that failed because the request's own context
+// ended is a client that left, recorded at debug. The identifier then reads as
+// having failures either way (signals).
+func (g *challengeGate) logUnread(ctx context.Context, flow ChallengeFlow, err error) {
+	level := slog.LevelError
+	if hangup.ByCaller(ctx, err) {
+		level = slog.LevelDebug
+	}
+
+	g.log.LogAttrs(ctx, level, msgChallengeIdentifierUnread,
+		append([]slog.Attr{slog.String("flow", string(flow))}, diag.Failure(reasonAttemptStore, err)...)...)
 }
 
 // ask asks the verifier about r, for the flow q describes. A nil gate asks

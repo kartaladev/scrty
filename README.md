@@ -1763,9 +1763,11 @@ type stubVerifier struct {
 func (v stubVerifier) Verify(
     ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals,
 ) (httpsec.ChallengeDecision, error) {
-    // Ordinary traffic is not asked; a source or a username with recent
-    // failures is.
-    if !s.SourceHasFailures && !s.IdentifierHasFailures {
+    // Ordinary traffic is not asked; a source with recent failures is. The
+    // identifier signal is not a reason to challenge on its own: it can tell
+    // a known account from an unknown one (see the stated limits below), so
+    // read it only together with other evidence of automation.
+    if !s.SourceHasFailures {
         return httpsec.ChallengeNotNeeded, nil
     }
 
@@ -1796,20 +1798,27 @@ Once enabled:
 - form login, Basic, the magic-link request, the passwordless passkey begin and
   the recovery start ask the verifier, after their source limit and before
   their own work and any account lookup. `WithChallengeFlows(...)` narrows
-  them;
+  them, and may name only flows the chain enables: a flow it does not enable,
+  or the default selection over a chain that enables none of the five, fails
+  `New` with `ErrConfig` naming the flow, because the verifier would never be
+  asked and the chain would look protected when it is not;
 - `ChallengePass` and `ChallengeNotNeeded` let the request through;
   `ChallengeRefuse` refuses it with `ErrChallengeRequired` (403). The refusal
   counts against the flow's source limit like a failed attempt, never against
-  the username's lockout; `WithoutChallengeRefusalCounting()` stops the count;
+  the username's lockout; `WithoutChallengeRefusalCounting()` stops the count.
+  The magic-link request has no source limit, so a refusal there is counted
+  nowhere;
 - a verifier error is a dependency failure: `ErrChallengeUnavailable` (500)
   with fixed text, the verifier's error reachable through `errors.Is` and
   `errors.As` but never in the text or a log record, charged to nothing. A
   client that hangs up while the verifier runs fails with its context's error;
-- the verifier is told whether the source and the username have recent
-  failures (`ChallengeSignals`). Whatever cannot answer, a limiter or attempt
-  store that fails, or a limiter that does not implement
-  `ratelimit.RecentFailureReporter`, reads as having failures, so the verifier
-  asks.
+- the verifier is told whether the source has recent failures and, at form login
+  and Basic only, whether the username has (`ChallengeSignals`). The username's
+  failures count within the failure window of the chain's lockout policy
+  (`lockout.WithFailureWindow`), so the challenge and the lockout agree on what
+  "recent" means. Whatever cannot answer, a limiter or attempt store that
+  fails, or a limiter that does not implement `ratelimit.RecentFailureReporter`,
+  reads as having failures, so the verifier asks.
 
 ### Defaults
 
@@ -1818,7 +1827,7 @@ Once enabled:
 | Verifier | none: the seam is off |
 | Flows | all five (`WithChallengeFlows`) |
 | Refusal | counted against the source limit (`WithoutChallengeRefusalCounting`) |
-| Identifier signal | a failed login for the username in the last 24 hours |
+| Identifier signal | form login and Basic only: a failed login for the username within the lockout policy's failure window (24 hours when the chain's engine holds no lockout policy; `lockout.WithFailureWindow`). Always false at the other three flows |
 
 ### Stated limits
 
@@ -1827,7 +1836,16 @@ Once enabled:
   source reads as having failures, and a verifier that keys on
   `SourceHasFailures` asks every request.
 - The magic-link request has no source limit, so a refusal there is counted
-  nowhere.
+  nowhere. Adding one to that endpoint is outside this seam.
+- The identifier signal is withheld at the recovery start, the magic-link request
+  and the passwordless begin. A sign-in by an account's owner clears its recorded
+  failures and nobody clears an unknown name's, so at a flow that answers alike
+  for both, the signal would let a verifier answer whether an account exists. At
+  form login and Basic it stays, with that residual: after one failed attempt
+  each, an unknown username reports failures and a known one whose owner has since
+  signed in does not. The lockout reset already lifts a known account's lockout
+  and not an unknown name's, so the signal tells a client no more than that.
+  Do not refuse on the identifier signal alone.
 - The passwordless begin's limiter counts every begin, so there
   `SourceHasFailures` means the source has begun before in the window.
 

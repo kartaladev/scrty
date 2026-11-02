@@ -232,6 +232,32 @@ func (e *Engine) IdleTimeouts() []time.Duration {
 	return timeouts
 }
 
+// FailureWindows reports the failure window of every registered policy that
+// counts failures over one, in registration order, one entry per registration.
+//
+// It is how a component that reads recorded failures outside the policy, such
+// as an HTTP security chain telling an automation-challenge verifier whether an
+// identifier has recent failures, takes the window the policy counts them in,
+// so the two never disagree about what "recent" means. The answer is drawn from
+// an optional FailureWindow() time.Duration method, which the lockout policy's
+// FailureWindow is, and a policy without one is taken to count no failures. A
+// policy registered for no phase is never asked anything, so it is never
+// reported.
+//
+// It returns a fresh slice, nil when nothing is reported, and is meant for
+// wiring time, alongside Add, rather than for the request path.
+func (e *Engine) FailureWindows() []time.Duration {
+	var windows []time.Duration
+
+	for _, p := range e.asked {
+		if r, ok := p.(interface{ FailureWindow() time.Duration }); ok {
+			windows = append(windows, r.FailureWindow())
+		}
+	}
+
+	return windows
+}
+
 // FlushRefusalLogs asks every registered policy that keeps a refusal-log
 // sampler to report what it has suppressed. It walks the policies in
 // registration order, so a policy registered for several phases is flushed

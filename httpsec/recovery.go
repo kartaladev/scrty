@@ -673,8 +673,10 @@ type recoveryHoldDocument struct {
 // that is throttled or cannot be attributed. The core logs each cause
 // server-side; nothing here tells them apart. The one exception is an
 // automation challenge (EnableAutomationChallenge) that refuses or fails: it
-// is answered before the username is read for a lookup, so its refusal says
-// nothing about the account.
+// is answered before the username is looked up, and the verifier is told
+// nothing about the account (ChallengeSignals.IdentifierHasFailures is false
+// here whatever the username), so neither its refusal nor its decision can say
+// whether the account exists.
 //
 // Every start is counted against its source, whatever it did, because what
 // the guard bounds is how often one source asks for mail to be sent. A source
@@ -689,19 +691,19 @@ func (i *recoveryInterceptor) start(ex *Exchange) error {
 
 		// After the source limit and before the start is counted or the
 		// username is looked up. Its refusal is the one answer that differs
-		// from the uniform 202, and it says nothing about the account, which
-		// nothing has read yet.
+		// from the uniform 202, and it depends on nothing about the account:
+		// the verifier is told no identifier, because an owner's sign-in clears
+		// an account's login failures and an unknown name has none to clear,
+		// so the signal would tell the two apart where this flow answers
+		// alike.
 		//
 		// The source signal reads the completion guard, which counts refused
-		// recoveries, since the start guard counts every start; the identifier
-		// signal reads the chain's password-login attempt store.
+		// recoveries, since the start guard counts every start.
 		if err := i.automation.ask(ctx, ex.Request, challengeQuery{
-			flow:       ChallengeFlowRecoveryStart,
-			source:     i.guard,
-			clientIP:   ex.Request.ClientIP(),
-			identifier: username,
-			attempts:   i.automation.loginAttempts(),
-			charge:     func() { recordSourceFailure(ctx, i.startGuard, src) },
+			flow:     ChallengeFlowRecoveryStart,
+			source:   i.guard,
+			clientIP: ex.Request.ClientIP(),
+			charge:   func() { recordSourceFailure(ctx, i.startGuard, src) },
 		}); err != nil {
 			return err
 		}

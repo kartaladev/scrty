@@ -559,7 +559,9 @@ func (c *config) build() (*Chain, error) {
 
 	// The challenge verifier stands in front of the flows it was selected for,
 	// whichever order their options and EnableAutomationChallenge came in.
-	c.wireChallenge()
+	if err := c.wireChallenge(); err != nil {
+		return nil, err
+	}
 
 	// CSRF protection reads the CORS origins, the OIDC back-channel path and
 	// the cookie authenticators, any of which an option applied after

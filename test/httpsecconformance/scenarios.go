@@ -506,6 +506,9 @@ type Adapter interface {
 // rather than on whichever one its author had in mind. The list is the one the
 // framework adapters specification gives, plus the two this change earned — a
 // credential in the query string, and a key set body nothing appended to.
+//
+// It leaves out ChallengeScenarios, which each adapter's suite runs on its own
+// by name (TestChallenge*), so that no row runs twice.
 func Scenarios() []Scenario {
 	return append([]Scenario{
 		loginSucceeds(),
@@ -524,7 +527,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), ChallengeScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

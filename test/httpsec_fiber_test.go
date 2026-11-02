@@ -251,8 +251,9 @@ func TestConformanceFiber(t *testing.T) {
 	httpsecconformance.Run(t, fiberAdapter{})
 }
 
-// TestChallengeFiber runs the automation-challenge rows on fiber on their own,
-// so they can be run by name.
+// TestChallengeFiber runs the automation-challenge rows on fiber, which
+// TestConformanceFiber leaves out so that each runs once, and so they can be
+// run by name.
 func TestChallengeFiber(t *testing.T) {
 	t.Parallel()
 

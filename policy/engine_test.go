@@ -757,6 +757,73 @@ func TestEngineIdleTimeouts(t *testing.T) {
 	}
 }
 
+// windowStub is a policy that reports a failure window through the optional
+// FailureWindow method, as the lockout policy and a consumer's own policy may.
+type windowStub struct {
+	stubPolicy
+	window time.Duration
+}
+
+func (s windowStub) FailureWindow() time.Duration { return s.window }
+
+func TestEngineFailureWindows(t *testing.T) {
+	t.Parallel()
+
+	pre := []policy.Phase{policy.PreAuthentication}
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) []policy.Policy
+		assert func(t *testing.T, got []time.Duration)
+	}
+
+	cases := []testCase{
+		{
+			name: "a policy that counts failures reports its window",
+			build: func(*testing.T) []policy.Policy {
+				return []policy.Policy{windowStub{stubPolicy: stubPolicy{phases: pre}, window: time.Hour}}
+			},
+			assert: func(t *testing.T, got []time.Duration) { assert.Equal(t, []time.Duration{time.Hour}, got) },
+		},
+		{
+			name: "every reporter, in registration order, others left out",
+			build: func(*testing.T) []policy.Policy {
+				return []policy.Policy{
+					windowStub{stubPolicy: stubPolicy{phases: pre}, window: time.Hour},
+					stubPolicy{phases: pre},
+					windowStub{stubPolicy: stubPolicy{phases: pre}, window: 3 * time.Hour},
+				}
+			},
+			assert: func(t *testing.T, got []time.Duration) {
+				assert.Equal(t, []time.Duration{time.Hour, 3 * time.Hour}, got)
+			},
+		},
+		{
+			name: "a reporter asked in no phase is never reported",
+			build: func(*testing.T) []policy.Policy {
+				return []policy.Policy{windowStub{window: time.Hour}}
+			},
+			assert: func(t *testing.T, got []time.Duration) { assert.Nil(t, got) },
+		},
+		{
+			name:   "an engine with no policies reports nothing",
+			build:  func(*testing.T) []policy.Policy { return nil },
+			assert: func(t *testing.T, got []time.Duration) { assert.Nil(t, got) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.build(t)...)
+			require.NoError(t, err)
+
+			tc.assert(t, e.FailureWindows())
+		})
+	}
+}
+
 // TestEngine_NilInputDeniesRatherThanPanics pins that a phase evaluated with
 // no input is refused by the engine itself, before any policy can either
 // dereference it or allow it.

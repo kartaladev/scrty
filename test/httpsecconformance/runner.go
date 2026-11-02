@@ -21,8 +21,8 @@ func Run(t *testing.T, adapter Adapter) {
 }
 
 // RunScenarios puts scenarios through adapter, each row as Run puts it. It is
-// how an adapter's suite runs one group of the table on its own, such as
-// ChallengeScenarios.
+// how an adapter's suite runs one group on its own, such as ChallengeScenarios,
+// which Run does not include.
 func RunScenarios(t *testing.T, adapter Adapter, scenarios []Scenario) {
 	t.Helper()
 

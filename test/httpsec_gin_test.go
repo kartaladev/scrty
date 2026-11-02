@@ -179,8 +179,9 @@ func TestConformanceGin(t *testing.T) {
 	httpsecconformance.Run(t, ginAdapter{})
 }
 
-// TestChallengeGin runs the automation-challenge rows on gin on their own, so
-// they can be run by name.
+// TestChallengeGin runs the automation-challenge rows on gin, which
+// TestConformanceGin leaves out so that each runs once, and so they can be run
+// by name.
 func TestChallengeGin(t *testing.T) {
 	t.Parallel()
 

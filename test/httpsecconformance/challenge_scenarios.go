@@ -15,8 +15,9 @@ import (
 )
 
 // ChallengeScenarios is every automation-challenge behaviour that must be
-// identical on every adapter. Scenarios includes them; they are exported on
-// their own so an adapter's suite can run them alone, by name.
+// identical on every adapter. Scenarios leaves them out: each adapter's suite
+// runs them on their own, by name (TestChallenge*), through RunScenarios, and
+// that is the only place they run.
 func ChallengeScenarios() []Scenario {
 	return []Scenario{
 		challengeRefusesLogin(),
@@ -133,11 +134,18 @@ func challengeFlowNotSelected() Scenario {
 	var asked *atomic.Int32
 
 	return Scenario{
-		Name: "challenge: a login is not asked about when only magic-link requests are selected",
+		Name: "challenge: a login is not asked about when only Basic requests are selected",
 		Build: func(t *testing.T) ChainSpec {
 			spec, n := challengeLogin(t, httpsec.ChallengeRefuse, nil,
-				httpsec.WithChallengeFlows(httpsec.ChallengeFlowMagicLinkRequest))
+				httpsec.WithChallengeFlows(httpsec.ChallengeFlowBasicAuth))
 			asked = n
+
+			// A selection names flows the chain enables, so Basic is enabled
+			// beside form login, and only it is asked.
+			spec.Options = append(spec.Options, httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{
+				Authenticator: &fixtureAuthenticator{calls: &spec.Effects.authCalls},
+				Attempts:      spec.Effects.Attempts,
+			}))
 
 			return spec
 		},
