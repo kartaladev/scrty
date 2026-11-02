@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
 // ConditionalProvisionerRehash returns a write for a login's rehash option
@@ -40,12 +41,22 @@ import (
 // it turns this into an unconditional write.
 //
 // Default: with no rehash write configured, nothing is rehashed. This is the
-// ready-made write, not the default. A nil store is a wiring mistake and
-// panics on first use, as any nil port does.
+// ready-made write, not the default. A nil or typed-nil store is a wiring
+// mistake, reported here, before traffic, as an error wrapping [ErrConfig] with
+// no write returned, as [ProvisionerWrite] does. The returned write refuses a
+// nil user the same way and updates nothing.
 func ConditionalProvisionerRehash(
 	store identity.UserProvisioner,
-) func(ctx context.Context, user *identity.Details, replaced, upgraded []byte) error {
+) (func(ctx context.Context, user *identity.Details, replaced, upgraded []byte) error, error) {
+	if nilcheck.IsNil(store) {
+		return nil, fmt.Errorf("%w: a user provisioner is required", ErrConfig)
+	}
+
 	return func(ctx context.Context, user *identity.Details, replaced, upgraded []byte) error {
+		if user == nil {
+			return fmt.Errorf("%w: a user record is required", ErrConfig)
+		}
+
 		_, err := store.Update(ctx, user.Username,
 			identity.WithUserPasswordIf(replaced),
 			identity.WithUserPassword(upgraded),
@@ -57,5 +68,5 @@ func ConditionalProvisionerRehash(
 		default:
 			return fmt.Errorf("password: storing the upgraded hash: %w", err)
 		}
-	}
+	}, nil
 }

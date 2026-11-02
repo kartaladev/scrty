@@ -23,6 +23,16 @@ func TestCheck(t *testing.T) {
 		}
 	}
 
+	// aliased asserts exactly one finding whose reason names the alias refusal,
+	// so a row cannot pass on the pin rule alone.
+	aliased := func(t *testing.T, got []Finding, err error) {
+		t.Helper()
+		one(t, got, err)
+		if !strings.Contains(got[0].Why, "alias") {
+			t.Errorf("finding %q does not give the alias refusal as its reason", got[0])
+		}
+	}
+
 	tests := []struct {
 		name   string
 		files  map[string]string
@@ -116,6 +126,30 @@ func TestCheck(t *testing.T) {
 			name:   "accepts a tab before the tag comment",
 			files:  map[string]string{"ci.yml": "steps:\n  - uses: actions/checkout@" + sha40 + "\t# v5\n"},
 			assert: none,
+		},
+		{
+			name: "refuses an alias standing for a tag reference",
+			files: map[string]string{"ci.yml": "env: {CO: &co actions/checkout@v5}\n" +
+				"steps:\n  - uses: *co\n"},
+			assert: func(t *testing.T, got []Finding, err error) {
+				t.Helper()
+				aliased(t, got, err)
+				if got[0].Line != 3 {
+					t.Fatalf("got %v; want the finding on the aliased uses at line 3", got)
+				}
+			},
+		},
+		{
+			name: "refuses an alias even when its anchor is a pinned reference",
+			files: map[string]string{"ci.yml": "env: {CO: &co actions/checkout@" + sha40 + " # v5\n}\n" +
+				"steps:\n  - uses: *co\n"},
+			assert: aliased,
+		},
+		{
+			name: "refuses an alias standing for the uses key",
+			files: map[string]string{"ci.yml": "k: &u uses\n" +
+				"steps:\n  - *u : actions/checkout@v5\n"},
+			assert: aliased,
 		},
 		{
 			name:   "reads the yaml extension and ignores other files",

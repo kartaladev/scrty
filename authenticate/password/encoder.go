@@ -74,7 +74,11 @@ var ErrInvalidParameters = errors.New("password: parameters the algorithm will r
 var ErrNoRandomSource = errors.New("password: salt source is nil")
 
 // ErrTooLong is returned when a password exceeds what its algorithm can
-// hash. Only bcrypt has such a limit: 72 bytes.
+// hash. Of the encoders in this package only bcrypt has such a limit: 72
+// bytes. A consumer's encoder may return it too, and should state its limit
+// through [InputLimiter] so the policy refuses an over-long candidate at its
+// check; [Policy.Change] answers the error as a too-long rejection
+// ([RuleTooLong]) and retires nothing.
 //
 // It is an error rather than a silent truncation because truncating is a
 // authentication bypass in disguise — two passwords sharing a 72-byte prefix
@@ -118,6 +122,24 @@ type Recognizer interface {
 	// than refuse it unread. It derives nothing itself and never reports on any
 	// password.
 	Recognizes(encoded []byte) bool
+}
+
+// InputLimiter is implemented by an encoder that can state the longest input,
+// in bytes, its Encode accepts. The built-in bcrypt encoder implements it, with
+// bcrypt's 72 bytes.
+//
+// It is optional and checked by type assertion, once, when a [Policy] is built.
+// A policy whose encoder states a limit refuses a longer candidate as too long
+// ([RuleTooLong]) in [Policy.Check], so a check and a change agree and the
+// answer is the same before any hashing. An encoder that does not implement it,
+// or states zero or a negative number, is treated as having no limit below the
+// policy's maximum length: the check accepts such a candidate, and
+// [Policy.Change] still answers an [ErrTooLong] from that encoder's Encode as a
+// too-long rejection, not as a failure.
+type InputLimiter interface {
+	// MaxInputBytes returns the most bytes of input Encode accepts. Zero or a
+	// negative number means no limit.
+	MaxInputBytes() int
 }
 
 // isNilReader reports whether r is nil, or a non-nil interface holding a nil
