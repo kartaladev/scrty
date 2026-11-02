@@ -308,6 +308,8 @@ func ClientFromContext(ctx context.Context) (Client, bool) // IP, Secure, Host, 
 - **Adapters ignore their frameworks' proxy settings.**
   - **BREAKING:** `ginsec.WithForwardedClientIP` is removed.
   - gin trusts every proxy until configured. One resolver gives one answer everywhere.
+- **Stated limit: proxies on a Unix socket (recorded 2026-11-02, group 2 review).** A peer that is not TCP has no address, so no prefix can trust it, and its forwarded headers are never read. There is no override in this change. A consumer behind a socket-connected proxy keeps the transport answer, and can declare HTTPS with `WithHTTPSDeployment`. A socket-peer option is additive later if asked for.
+- **Seams later groups use.** A host refusal returns from the resolver inside the chain's assembly, before any interceptor, and group 3 applies the security headers there, on the exchange's writer, before a consumer's error handler sees it. The resolved-request wrapper forwards only `Request`'s methods, so any optional interface group 9 reads, such as the connection's peer certificate, must be forwarded through it.
 - **No named presets** (loopback or private ranges) in this change. They are additive later if asked for.
 - **Absorbs `trusted-proxy-client-ip`.** One trust setting answers the client, scheme and host questions. That change's proposal is marked superseded.
 - **Alternatives rejected:**
