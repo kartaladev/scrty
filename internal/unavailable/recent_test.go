@@ -27,6 +27,9 @@ type reportingBackend struct {
 type recentHarness struct {
 	*harness
 	reporter *MockRecentFailureReporter
+	// cancel ends the context the case asks with, so an arranged backend
+	// double can end it in the middle of the call.
+	cancel context.CancelFunc
 }
 
 // newRecentHarness wraps a backend that reports recent failures when
@@ -176,6 +179,64 @@ func TestUnavailable_HasRecentFailures(t *testing.T) {
 			},
 		},
 		{
+			name: "the caller's context ending during the call is an error with true, and does not open the breaker", mode: ratelimit.UnavailableRefuse, reporting: true, key: testKey,
+			arrange: func(_ *testing.T, h *recentHarness) {
+				h.reporter.EXPECT().HasRecentFailures(gomock.Any(), testKey).DoAndReturn(
+					func(ctx context.Context, _ string) (bool, error) {
+						h.cancel()
+						return false, ctx.Err()
+					})
+			},
+			assert: func(t *testing.T, h *recentHarness, has bool, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.True(t, has, "an answer the wrapper could not get must read as having failures")
+
+				// The caller's own cancellation is not the backend's failure: the
+				// next check still reaches the backend.
+				h.reporter.EXPECT().HasRecentFailures(gomock.Any(), testKey).Return(false, nil)
+				next, nextErr := h.ask(t, testKey)
+				require.NoError(t, nextErr, "the caller's cancellation was charged to the breaker")
+				assert.False(t, next)
+			},
+		},
+		{
+			name: "a probe whose caller's context ends during the call lets the next check probe at once", mode: ratelimit.UnavailableRefuse, reporting: true, key: testKey,
+			arrange: func(t *testing.T, h *recentHarness) {
+				h.openBreaker(t)
+				h.clock.Advance(defaultInterval)
+				h.reporter.EXPECT().HasRecentFailures(gomock.Any(), testKey).DoAndReturn(
+					func(ctx context.Context, _ string) (bool, error) {
+						h.cancel()
+						return false, ctx.Err()
+					})
+			},
+			assert: func(t *testing.T, h *recentHarness, has bool, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.True(t, has)
+
+				// An abandoned probe frees the next check to probe without waiting
+				// another interval.
+				h.reporter.EXPECT().HasRecentFailures(gomock.Any(), testKey).Return(false, nil)
+				next, nextErr := h.ask(t, testKey)
+				require.NoError(t, nextErr, "the abandoned probe still holds the breaker")
+				assert.False(t, next)
+			},
+		},
+		{
+			name: "fall-back mode: the context ending after the backend answered clean is an error with true", mode: ratelimit.UnavailableFallbackToLocal, reporting: true, key: testKey,
+			arrange: func(_ *testing.T, h *recentHarness) {
+				h.reporter.EXPECT().HasRecentFailures(gomock.Any(), testKey).DoAndReturn(
+					func(context.Context, string) (bool, error) {
+						h.cancel()
+						return false, nil
+					})
+			},
+			assert: func(t *testing.T, _ *recentHarness, has bool, err error) {
+				require.Error(t, err)
+				assert.True(t, has, "a local count that could not be read must not read as clean")
+			},
+		},
+		{
 			name: "refuse mode: a failure it could not record counts, whatever the backend says", mode: ratelimit.UnavailableRefuse, reporting: true, key: testKey,
 			arrange: func(t *testing.T, h *recentHarness) {
 				h.backend.EXPECT().RecordFailure(gomock.Any(), testKey).Return(errDown)
@@ -247,21 +308,19 @@ func TestUnavailable_HasRecentFailures(t *testing.T) {
 			t.Parallel()
 
 			h := newRecentHarness(t, tc.mode, tc.reporting)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			h.cancel = cancel
 			if tc.arrange != nil {
 				tc.arrange(t, h)
 			}
-
-			var (
-				has bool
-				err error
-			)
 			if tc.endedCtx {
-				r, ok := h.limiter.(ratelimit.RecentFailureReporter)
-				require.True(t, ok, "the wrapped limiter does not implement ratelimit.RecentFailureReporter")
-				has, err = r.HasRecentFailures(cancelled(t.Context()), tc.key)
-			} else {
-				has, err = h.ask(t, tc.key)
+				ctx = cancelled(ctx)
 			}
+
+			r, ok := h.limiter.(ratelimit.RecentFailureReporter)
+			require.True(t, ok, "the wrapped limiter does not implement ratelimit.RecentFailureReporter")
+			has, err := r.HasRecentFailures(ctx, tc.key)
 			tc.assert(t, h, has, err)
 		})
 	}
