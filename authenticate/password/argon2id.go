@@ -330,3 +330,47 @@ func (e *Argon2idEncoder) Recognizes(encoded []byte) bool {
 }
 
 var _ Recognizer = (*Argon2idEncoder)(nil)
+
+// NeedsUpgrade reports whether a stored hash should be replaced.
+//
+// An Argon2id record needs upgrading when any one of its parameters (memory,
+// iterations, threads, salt length or key length) is below this encoder's,
+// even if another is above. The re-encoded hash carries exactly this encoder's
+// parameters, so a hash never moves back and forth between two settings. A
+// record with every parameter at or above this encoder's is left alone.
+//
+// A record of another built-in algorithm also reports true, but a login only
+// asks once the password verified, and this encoder does not verify another
+// algorithm's hash: moving users between algorithms at login needs a consumer
+// encoder that verifies both. Anything unparseable is left alone. It derives
+// nothing.
+func (e *Argon2idEncoder) NeedsUpgrade(encoded []byte) bool {
+	memory, iterations, threads, salt, key, ok := parseArgon2id(encoded)
+	if !ok {
+		return recognisedElsewhere(encoded, "argon2id")
+	}
+
+	return memory < e.memory || iterations < e.iterations || threads < e.threads ||
+		len(salt) < e.saltLength || len(key) < int(e.keyLength)
+}
+
+var _ Upgrader = (*Argon2idEncoder)(nil)
+
+// recognisedElsewhere reports whether encoded is a well formed record of a
+// built-in algorithm other than own. Such a hash is older than, or foreign to,
+// the encoder asking, so it is worth replacing; garbage is not.
+func recognisedElsewhere(encoded []byte, own string) bool {
+	if own != "argon2id" {
+		if _, _, _, _, _, ok := parseArgon2id(encoded); ok {
+			return true
+		}
+	}
+
+	if own != "scrypt" {
+		if _, _, _, _, _, ok := parseScrypt(encoded); ok {
+			return true
+		}
+	}
+
+	return own != "bcrypt" && (&BcryptEncoder{}).Recognizes(encoded)
+}

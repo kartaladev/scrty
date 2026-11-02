@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/session"
@@ -49,6 +51,10 @@ type logout struct {
 	log *slog.Logger
 
 	path string
+
+	// clearSiteData is the Clear-Site-Data value sent on a secure, successful
+	// logout, or "" for none.
+	clearSiteData string
 }
 
 // logoutDocument is the body logout answers with when an end-session URL was
@@ -103,6 +109,7 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 			if target := l.endSessionURL(ex); target != "" {
 				// The URL carries the client's state; no cache may replay it.
 				ex.Writer.SetHeader("Cache-Control", "no-store")
+				l.clearBrowserData(ex)
 
 				return writeSuccessDocument(ex, logoutDocument{EndSessionURL: target})
 			}
@@ -115,9 +122,18 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 	// The body is empty: what a logged-out client should be shown, a redirect
 	// or a page, is the consumer's decision, and writing one here would be one
 	// they cannot take back.
+	l.clearBrowserData(ex)
 	ex.Writer.WriteHeader(http.StatusOK)
 
 	return nil
+}
+
+// clearBrowserData sets Clear-Site-Data when the consumer asked for it and the
+// request is secure, where browsers honour it.
+func (l *logout) clearBrowserData(ex *Exchange) {
+	if l.clearSiteData != "" && ex.Request.Secure() {
+		ex.Writer.SetHeader("Clear-Site-Data", l.clearSiteData)
+	}
 }
 
 // end ends the sign-in s belongs to by revoking its family, the superseded
@@ -272,3 +288,48 @@ func WithLogoutRequestPath(path string) LogoutOption {
 		return nil
 	}
 }
+
+// WithLogoutClearSiteData has a successful logout send Clear-Site-Data with
+// directives, so the browser drops what it stored for the origin: "cache",
+// "cookies" or "storage". The wildcard and "clientHints" are not accepted.
+//
+// Default: the header is not sent. When set, it is sent only on a successful
+// logout over a request the chain judges secure (Request.Secure): browsers
+// ignore the header over plain HTTP, and a refused logout ended nothing. No
+// directive, an unknown or repeated one, or one not written as the bare name
+// ("cache", not "\"cache\"") fails construction, because the header would
+// otherwise be ignored by the browser without a sign. Note that "cookies"
+// clears cookies for the whole registrable domain, sibling subdomains
+// included.
+func WithLogoutClearSiteData(directives ...string) LogoutOption {
+	return func(l *logout) error {
+		if len(directives) == 0 {
+			return newConfigError("WithLogoutClearSiteData was given no directive, so it would send nothing")
+		}
+
+		quoted := make([]string, 0, len(directives))
+
+		for i, d := range directives {
+			if !slices.Contains(clearSiteDataDirectives, d) {
+				return newConfigError("WithLogoutClearSiteData was given %q, which is not one of %s",
+					d, strings.Join(clearSiteDataDirectives, ", "))
+			}
+
+			if slices.Contains(directives[:i], d) {
+				return newConfigError("WithLogoutClearSiteData was given %q twice", d)
+			}
+
+			quoted = append(quoted, `"`+d+`"`)
+		}
+
+		l.clearSiteData = strings.Join(quoted, ", ")
+
+		return nil
+	}
+}
+
+// clearSiteDataDirectives are the directives the Clear-Site-Data header
+// a logout may send. "clientHints", "executionContexts" and the "*" wildcard
+// are left out: the wildcard would also reload every tab where supported and
+// drop more than a logout should unasked.
+var clearSiteDataDirectives = []string{"cache", "cookies", "storage"}

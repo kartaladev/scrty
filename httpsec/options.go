@@ -205,6 +205,16 @@ type config struct {
 
 	// httpsDeployment is WithHTTPSDeployment's declaration.
 	httpsDeployment bool
+
+	// dpopEnabled is set by the option that switches on DPoP-bound tokens. The
+	// CORS layer reads it when the chain is built, to allow the DPoP request
+	// header and expose DPoP-Nonce and WWW-Authenticate.
+	dpopEnabled bool
+
+	// csrfTokenHeader is the request header CSRF protection reads its token
+	// from, and "" when it reads none. The CORS layer reads it when the chain
+	// is built, to allow that header.
+	csrfTokenHeader string
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the

@@ -13,13 +13,13 @@ import (
 	identitytest "github.com/kartaladev/scrty/test/identity"
 )
 
-// TestReuseGuardChange_WriteIgnoringTimeLeavesPasswordChangedAtUnchanged pins
-// the "write that ignores the time" scenario (password-encoding spec) end to
+// TestPolicyChange_WriteIgnoringTimeLeavesPasswordChangedAtUnchanged pins
+// the "write that ignores the time" scenario (password-policy spec) end to
 // end, over identitytest.InMemoryStore and identitytest.InMemoryHistory: a
 // consumer WriteFunc that stores only the new password hash, and never names
 // the changed time, must still let the change through, and must leave the
 // stored password-changed-at time exactly as it was recorded before.
-func TestReuseGuardChange_WriteIgnoringTimeLeavesPasswordChangedAtUnchanged(t *testing.T) {
+func TestPolicyChange_WriteIgnoringTimeLeavesPasswordChangedAtUnchanged(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -36,11 +36,11 @@ func TestReuseGuardChange_WriteIgnoringTimeLeavesPasswordChangedAtUnchanged(t *t
 
 	enc := fastEncoder(t)
 
-	guard, err := password.NewReuseGuard(history, enc, 3)
+	policy, err := password.NewPolicy(password.WithEncoder(enc), password.NoReuse(history, 3))
 	require.NoError(t, err)
 
 	// The consumer's own write records only the hash, never the time. Ignoring
-	// changedAt is not a mistake the guard refuses: it is the write that a
+	// changedAt is not a mistake the policy refuses: it is the write that a
 	// consumer storing their own users, outside the default identity store,
 	// might build without thinking about password-age policy at all.
 	write := func(ctx context.Context, user *identity.Details, hash []byte, _ time.Time) error {
@@ -51,7 +51,7 @@ func TestReuseGuardChange_WriteIgnoringTimeLeavesPasswordChangedAtUnchanged(t *t
 
 	const candidate = "a completely new password"
 
-	require.NoError(t, guard.Change(ctx, created, candidate, write))
+	require.NoError(t, policy.Change(ctx, created, candidate, write))
 
 	got, err := store.LoadByUsername(ctx, username)
 	require.NoError(t, err)

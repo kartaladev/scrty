@@ -145,3 +145,20 @@ func isNilReader(r io.Reader) bool {
 // b64 encodes the salt and derived key. Unpadded, so the encoded form has no '='
 // to confuse the '$' field split.
 var b64 = base64.RawStdEncoding
+
+// Upgrader is implemented by an encoder that can tell whether a stored hash was
+// produced with weaker parameters than the encoder's own, so a login that has
+// just verified the password can replace it with a fresh hash.
+//
+// It is optional and checked by type assertion, as [Recognizer] is. The
+// Argon2id, bcrypt and scrypt encoders all implement it. An encoder that does
+// not implement it never upgrades.
+//
+// NeedsUpgrade reports true only for a hash the encoder recognises and whose
+// recorded parameters are below its own current ones, or that belongs to
+// another algorithm the caller still accepts. It reports false for a hash with
+// stronger parameters, for one it cannot parse, and for one at the current
+// parameters. It derives nothing and never reports on any password.
+type Upgrader interface {
+	NeedsUpgrade(encoded []byte) bool
+}

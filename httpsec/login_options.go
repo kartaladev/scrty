@@ -333,3 +333,27 @@ func WithLoginLifetime(fn func(*Exchange, LoginFields) time.Duration) LoginOptio
 		return nil
 	}
 }
+
+// WithLoginRehash upgrades an outdated password hash when a login verifies the
+// password.
+//
+// Default: none, and without a write nothing is encoded or stored. With fn, a
+// login whose password verified and which the chain did not refuse afterwards,
+// one challenged for a second factor included, asks the current encoder whether
+// the stored hash needs upgrading (password.Upgrader). When it does, the
+// submitted password is encoded again with that encoder, at the cost of one more
+// key derivation on that request, and fn receives the user, the hash it
+// replaces and the new hash, after the outcome is decided. fn's error is logged
+// and never changes the outcome; see [RehashFunc] for writing it safely.
+// A nil fn is refused.
+func WithLoginRehash(fn RehashFunc) LoginOption {
+	return func(l *formLogin) error {
+		if fn == nil {
+			return newConfigError("WithLoginRehash was given no write; omit the option to rehash nothing")
+		}
+
+		l.rehash = fn
+
+		return nil
+	}
+}

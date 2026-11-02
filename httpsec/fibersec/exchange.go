@@ -312,6 +312,12 @@ type responseWriter struct {
 
 func (w *responseWriter) SetHeader(name, value string) { w.c.Set(name, value) }
 
+// AddHeader appends a header line, keeping the lines already set. It does not
+// use fiber's Append, which folds the value into one comma-joined line and
+// drops a value already listed, so a list header would read differently from
+// net/http's.
+func (w *responseWriter) AddHeader(name, value string) { w.c.Response().Header.Add(name, value) }
+
 func (w *responseWriter) WriteHeader(status int) {
 	if w.wrote {
 		return

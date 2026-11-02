@@ -71,6 +71,7 @@ func TestSentinelsAreDistinct(t *testing.T) {
 	sentinels := map[string]error{
 		"ErrUserNotFound":       identity.ErrUserNotFound,
 		"ErrUserExists":         identity.ErrUserExists,
+		"ErrNotUpdated":         identity.ErrNotUpdated,
 		"ErrPrivilegesNotFound": identity.ErrPrivilegesNotFound,
 		"ErrNoPrincipal":        identity.ErrNoPrincipal,
 		"ErrMissingPort":        identity.ErrMissingPort,

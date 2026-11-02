@@ -318,7 +318,8 @@ Each lane owns its files; a file not listed is held by the main session for revi
 ## Task group 8: confirmation claim and DPoP (lane D, dispatches D1: 8.1–8.5, D2: 8.6–8.9, D3: 8.10–8.12)
 
 **Interfaces produced:**
-- `token`: issuing option `WithConfirmation(c Confirmation)`; `type Confirmation struct { JKT, X5TS256 string }`; the verifier's result exposes `Confirmation`.
+- `token`: issuing option `WithConfirmation(c Confirmation)` through the optional `ConfirmingGenerator` (`GenerateWith(ctx, id, p, opts ...IssueOption)`), refused at construction by `EnableDPoP`/`EnableCertificateBinding` when the chain's generator lacks it; `type Confirmation struct { JKT, X5TS256 string; Other []string }`; the verifier's result exposes `Confirmation`.
+- `httpsec.Request` gains `EscapedPath() string` (required; every adapter and test double implements it), task 8.6's dispatch.
 - `httpsec`: `type DPoP struct { Require bool; ProofMaxAge time.Duration; Replay ReplayStore; Algorithms []jwa.SignatureAlgorithm; Nonce bool; PublicURL string; MaxProofSize int }`, `func EnableDPoP(d DPoP) Option`
 - `type ReplayStore interface { Record(ctx context.Context, key string, until time.Time) (fresh bool, err error) }` (atomic insert-if-absent; key = digest of `jti` and thumbprint), in-memory default
 - `var ErrInvalidDPoPProof`, `var ErrDPoPNonceRequired` (matches `ErrInvalidDPoPProof`; both 401)

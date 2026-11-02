@@ -66,6 +66,9 @@ type basicAuth struct {
 	now func() time.Time
 
 	realm string
+
+	// rehash stores an upgraded password hash, and nil upgrades nothing.
+	rehash RehashFunc
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -168,7 +171,9 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 			identity.NewUsernamePassword(username, password), err)
 	}
 
-	auth, err := b.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	verifyCtx, upgrade := requestRehash(ctx, b.rehash)
+
+	auth, err := b.authn.Authenticate(verifyCtx, identity.NewUsernamePassword(username, password))
 	if err != nil {
 		// A user store that could not answer judged no credential, and a load
 		// the request's own context ended compared no password, so neither is
@@ -224,6 +229,8 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, &ChallengeError{Kind: d.Challenge}
 	case policy.Allow:
 	}
+
+	runRehash(ctx, b.log, b.rehash, upgrade)
 
 	return auth, nil
 }
@@ -439,4 +446,27 @@ func WithBasicAuthLimiter(l ratelimit.Limiter) BasicAuthOption {
 // unquotableInRealm reports a rune that must not reach a quoted header value.
 func unquotableInRealm(r rune) bool {
 	return r == '"' || r == '\\' || r < ' ' || r == 0x7f
+}
+
+// WithBasicAuthRehash upgrades an outdated password hash when Basic
+// authentication verifies the password.
+//
+// Default: none, and without a write nothing is encoded or stored. With fn, a
+// request whose password verified and which the chain did not refuse afterwards
+// asks the current encoder whether the stored hash needs upgrading
+// (password.Upgrader). When it does, the password is encoded again with that
+// encoder, at the cost of one more key derivation on that request, and fn
+// receives the user, the hash it replaces and the new hash. fn's error is
+// logged and never changes the outcome; see [RehashFunc] for writing it safely.
+// A nil fn is refused.
+func WithBasicAuthRehash(fn RehashFunc) BasicAuthOption {
+	return func(b *basicAuth) error {
+		if fn == nil {
+			return newConfigError("WithBasicAuthRehash was given no write; omit the option to rehash nothing")
+		}
+
+		b.rehash = fn
+
+		return nil
+	}
 }
