@@ -868,6 +868,8 @@ func runProvisionerSuite(t *testing.T, newFixture Factory) {
 	t.Run("ProvisionOwnership", func(t *testing.T) { runProvisionOwnershipCase(t, newFixture) })
 	t.Run("UpdateOwnership", func(t *testing.T) { runUpdateOwnershipCase(t, newFixture) })
 	t.Run("PasswordChangedAt", func(t *testing.T) { runPasswordChangedAtCases(t, newFixture) })
+	t.Run("ConditionalPassword", func(t *testing.T) { runConditionalPasswordCases(t, newFixture) })
+	t.Run("ConcurrentConditionalPassword", func(t *testing.T) { runConditionalPasswordRaceCase(t, newFixture) })
 }
 
 // runPasswordChangedAtCases checks that the password-changed time is written

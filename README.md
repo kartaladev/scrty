@@ -1021,6 +1021,73 @@ send a request with forged `X-Forwarded-Host: evil.example` and `X-Forwarded-Pro
 your deployment and check that the chain refuses the host and sees the scheme Traefik terminated.
 Until then, trust `ForwardedFor` alone.
 
+## Passwords
+
+`password.NewPolicy()` decides whether a new password may be set. With no options it requires 15 to
+128 characters (counted in code points, never trimmed or normalised) and refuses the bundled list of
+common passwords; it is safe to use as it stands. Each option adds or replaces one rule and leaves
+the others alone.
+
+| Behaviour | Default | Override |
+|-----------|---------|----------|
+| Length | 15 to 128 code points | `password.MinLength`, `password.MaxLength` (floors 8 and 64) |
+| Common passwords | the bundled list, case-insensitive | `password.CommonPasswords`, `password.WithoutCommonPasswords` |
+| Words tied to the user or the service | none | `password.ContextWords` |
+| Breached passwords | no check | `password.Breached(password.PwnedPasswords(client), password.Refuse)` |
+| Reuse | no history | `password.NoReuse(history, depth)` |
+| Encoder for a change | Argon2id at its defaults | `password.WithEncoder` |
+
+Rules run cheapest first and the first refusal ends the check, so a short or common candidate never
+causes a breach lookup or a history read. A refusal matches `password.ErrPasswordRejected` (422) and
+names its rule; its text never carries the candidate, a hash or a context word.
+
+### The breach check says what a failed lookup means
+
+The breach check is opt-in, and it has no default failure mode, because the safe answer and the
+convenient one differ and the choice is yours. Only the first five characters of the password's
+SHA-1 leave the process, through the confined outbound client.
+
+- `password.Refuse` fails the check with `password.ErrLookupUnavailable` (500) while the corpus
+  cannot be asked: no password is set during an outage.
+- `password.Accept` lets the candidate through that rule and the next rule runs: an outage never
+  stops a password change.
+
+Either way, a caller who cancelled the request gets the context's own error, not a lookup failure.
+
+### Upgrading outdated hashes at login
+
+The built-in encoders implement `password.Upgrader`, so they can say a stored hash was made with
+weaker parameters: any one parameter below the encoder's (Argon2id memory, iterations, threads,
+salt or key length; scrypt N, r, p, salt or key length; bcrypt cost) is enough, even if another is
+above, and the new hash has exactly the encoder's parameters. By default nothing is rehashed. Give
+form login (`httpsec.WithLoginRehash`), Basic (`httpsec.WithBasicAuthRehash`) or the password
+re-proof (`httpsec.WithReauthenticationRehash`) a write, and a request whose password verified asks
+the current encoder; when it says so, the password is encoded again (one more key derivation on
+that request) and the write receives the user, the hash it replaces and the new hash. A login
+challenged for a second factor still upgrades; one refused after the password verified does not.
+The write's error is logged, without any hash, and never changes the outcome.
+
+Rehashing does not move users between algorithms. The upgrade is reached only once the password
+verified, and a built-in encoder does not verify another algorithm's hash, so moving users from,
+say, bcrypt to Argon2id at login needs a consumer encoder that verifies both and encodes with the
+new one.
+
+Write the new hash only while the replaced one is still stored, or a password change that landed
+meanwhile is undone. `password.ConditionalProvisionerRehash(store)` does that for the library's
+identity stores:
+
+```go
+httpsec.EnableFormLogin(deps,
+	httpsec.WithLoginRehash(password.ConditionalProvisionerRehash(identityStore)))
+```
+
+It is one call to the store: an update conditional on the replaced hash
+(`identity.WithUserPasswordIf`), which the store decides in the `UPDATE`'s own `WHERE`. When the
+stored hash changed meanwhile, nothing is written, the store reports `identity.ErrNotUpdated`, and
+the write treats that as done: the newer password stays, and the next login upgrades it. The
+password's age is not moved, because a rehash is not a password change. A consumer store must
+honour the condition too; the identity conformance suite (`test/identity`) checks it.
+
 ## Development
 
 ```sh

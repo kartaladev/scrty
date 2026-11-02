@@ -282,3 +282,27 @@ func (e *ScryptEncoder) Recognizes(encoded []byte) bool {
 }
 
 var _ Recognizer = (*ScryptEncoder)(nil)
+
+// NeedsUpgrade reports whether a stored hash should be replaced.
+//
+// A scrypt record needs upgrading when any one of its parameters (N, r, p,
+// salt length or key length) is below this encoder's, even if another is
+// above. The re-encoded hash carries exactly this encoder's parameters, so a
+// hash never moves back and forth between two settings. A record with every
+// parameter at or above this encoder's is left alone.
+//
+// A record of another built-in algorithm also reports true, but a login only
+// asks once the password verified, and this encoder does not verify another
+// algorithm's hash: moving users between algorithms at login needs a consumer
+// encoder that verifies both. Anything unparseable is left alone. It derives
+// nothing.
+func (e *ScryptEncoder) NeedsUpgrade(encoded []byte) bool {
+	n, r, p, salt, key, ok := parseScrypt(encoded)
+	if !ok {
+		return recognisedElsewhere(encoded, "scrypt")
+	}
+
+	return n < e.n || r < e.r || p < e.p || len(salt) < e.saltLength || len(key) < e.keyLength
+}
+
+var _ Upgrader = (*ScryptEncoder)(nil)

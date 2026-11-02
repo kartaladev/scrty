@@ -184,3 +184,26 @@ func bcryptAlphabet(c byte) bool {
 }
 
 var _ Recognizer = (*BcryptEncoder)(nil)
+
+// NeedsUpgrade reports whether a stored hash should be replaced.
+//
+// A bcrypt record needs upgrading when its cost, its only parameter, is below
+// this encoder's; the re-encoded hash carries exactly this encoder's cost. A
+// record at or above it is left alone.
+//
+// A record of another built-in algorithm also reports true, but a login only
+// asks once the password verified, and this encoder does not verify another
+// algorithm's hash: moving users between algorithms at login needs a consumer
+// encoder that verifies both. Anything unparseable is left alone. It derives
+// nothing.
+func (e *BcryptEncoder) NeedsUpgrade(encoded []byte) bool {
+	if !e.Recognizes(encoded) {
+		return recognisedElsewhere(encoded, "bcrypt")
+	}
+
+	cost, err := bcrypt.Cost(encoded)
+
+	return err == nil && cost < e.cost
+}
+
+var _ Upgrader = (*BcryptEncoder)(nil)

@@ -40,6 +40,9 @@ type UserChange struct {
 	PasswordChangedAt time.Time
 
 	set [fieldCount]bool
+
+	expectedPassword []byte
+	conditional      bool
 }
 
 // IsSet reports whether the caller named f.
@@ -133,6 +136,40 @@ func WithUserPasswordChange(hash []byte, at time.Time) UserOption {
 	}
 }
 
+// WithUserPasswordIf makes an Update conditional on the stored password hash:
+// the update writes only while the stored hash equals expected, and otherwise
+// changes nothing and returns ErrNotUpdated.
+//
+// The store decides the condition in the write itself, never by a read before
+// it, so a password change that commits between the caller's read and this
+// write is never overwritten. Two conditional updates expecting the same hash
+// cannot both succeed. An empty or nil expected matches a user stored with no
+// password.
+//
+// The condition guards the whole update, but it is meant for a password write:
+// name the new hash with WithUserPassword. A shipped store refuses the
+// condition without a password named, and refuses it on Provision, which has
+// no stored hash to compare. It does not move the password-changed time;
+// name that too (WithUserPasswordChange) for a change password-age policy
+// should see. A rehash, which re-encodes the same password, names only the
+// hash.
+//
+// Unnamed, an update writes whatever the stored hash is.
+func WithUserPasswordIf(expected []byte) UserOption {
+	return func(u *UserChange) {
+		u.expectedPassword = expected
+		u.conditional = true
+	}
+}
+
+// ExpectedPassword reports the hash WithUserPasswordIf named, and whether it
+// was named at all. A store that implements Update compares it with the
+// stored hash in the same statement that writes, and reports ErrNotUpdated
+// when they differ.
+func (u *UserChange) ExpectedPassword() ([]byte, bool) {
+	return u.expectedPassword, u.conditional
+}
+
 // ApplyUserOptions collects opts into a UserChange.
 //
 // Implementations of UserProvisioner call it to learn which fields the caller
@@ -218,6 +255,11 @@ type UserProvisioner interface {
 	// returns ErrUserNotFound and creates nothing. It returns the complete stored
 	// record, not only the amended columns. Concurrent updates of one user are
 	// serialized.
+	//
+	// An update conditional on the stored hash (WithUserPasswordIf) writes only
+	// while that hash is still the stored one, decided in the write itself, and
+	// otherwise writes nothing and returns ErrNotUpdated, which is neither a
+	// storage failure nor ErrUserNotFound.
 	//
 	// PasswordChangedAt is a field like any other: it is written only when the
 	// caller names it with WithUserPasswordChangedAt, and naming the zero time

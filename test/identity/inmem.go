@@ -20,6 +20,14 @@ import (
 // identity.ErrUserNotFound.
 var ErrEmptyUsername = errors.New("identitytest: username is required")
 
+// The refusals of a password condition (identity.WithUserPasswordIf) named
+// where it means nothing: on Provision, which has no stored hash to compare,
+// and on an Update that names no new password.
+var (
+	errConditionOnProvision     = errors.New("identitytest: a password condition cannot apply to a new user")
+	errConditionWithoutPassword = errors.New("identitytest: a password condition needs a new password named")
+)
+
 // InMemoryStore implements every identity port over process memory.
 //
 // It is safe for concurrent use, and deliberately so in the way the contracts
@@ -291,6 +299,9 @@ func (s *InMemoryStore) Provision(
 	}
 
 	u := identity.ApplyUserOptions(opts...)
+	if _, conditional := u.ExpectedPassword(); conditional {
+		return nil, errConditionOnProvision
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -347,12 +358,23 @@ func (s *InMemoryStore) Update(
 
 	u := identity.ApplyUserOptions(opts...)
 
+	expected, conditional := u.ExpectedPassword()
+	if conditional && !u.IsSet(identity.FieldPassword) {
+		return nil, errConditionWithoutPassword
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	d, ok := s.byName[username]
 	if !ok {
 		return nil, identity.ErrUserNotFound
+	}
+
+	// The condition is decided under the same lock as the write, so a second
+	// update expecting the same hash finds the first one's.
+	if conditional && !bytes.Equal(d.Password, expected) {
+		return nil, identity.ErrNotUpdated
 	}
 
 	// Every field is written from IsSet, never from the value being empty, so a

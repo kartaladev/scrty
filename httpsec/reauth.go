@@ -142,6 +142,10 @@ type reauthInterceptor struct {
 	// (RequireSecondFactorForReauthentication).
 	secondFactorOnly bool
 
+	// rehash stores a password hash upgraded by a re-proof, and nil upgrades
+	// nothing.
+	rehash RehashFunc
+
 	// mfa and login are the chain's MFA slot and form login, nil when the
 	// chain has none, found once every option has been applied (settle).
 	mfa   *mfaInterceptor

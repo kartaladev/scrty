@@ -61,6 +61,38 @@ func TestApplyUserOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "no options make no password condition",
+			assert: func(t *testing.T, u *identity.UserChange) {
+				_, ok := u.ExpectedPassword()
+				assert.False(t, ok, "an update nobody made conditional writes whatever is stored")
+			},
+		},
+		{
+			name: "a password condition records the expected hash and names no field",
+			opts: []identity.UserOption{
+				identity.WithUserPasswordIf([]byte("H1")),
+				identity.WithUserPassword([]byte("H2")),
+			},
+			assert: func(t *testing.T, u *identity.UserChange) {
+				expected, ok := u.ExpectedPassword()
+				require.True(t, ok, "the store must see that the update is conditional")
+				assert.Equal(t, []byte("H1"), expected)
+				assert.Equal(t, []byte("H2"), u.Password,
+					"the condition must not replace the new hash")
+				assert.False(t, u.IsSet(identity.FieldPasswordChangedAt),
+					"a condition must not name the password-changed time")
+			},
+		},
+		{
+			name: "a condition on no stored password still counts as a condition",
+			opts: []identity.UserOption{identity.WithUserPasswordIf(nil)},
+			assert: func(t *testing.T, u *identity.UserChange) {
+				expected, ok := u.ExpectedPassword()
+				assert.True(t, ok, "a nil expected hash is a condition, not its absence")
+				assert.Empty(t, expected)
+			},
+		},
+		{
 			name: "an empty role list still counts as naming roles",
 			opts: []identity.UserOption{identity.WithUserRoles()},
 			assert: func(t *testing.T, u *identity.UserChange) {

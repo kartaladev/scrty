@@ -133,159 +133,27 @@ func mustEncode(t *testing.T, enc password.Encoder, plain string) []byte {
 	return hash
 }
 
-func TestNewReuseGuard_RefusesWiringMistakes(t *testing.T) {
-	t.Parallel()
+// The passwords a user moves through. Each is long enough, and uncommon
+// enough, that only the reuse rule can refuse it.
+const (
+	p0 = "zeroth-plum-orchard-river"
+	p1 = "first-plum-orchard-river"
+	p2 = "second-plum-orchard-river"
+	p3 = "third-plum-orchard-river"
+	p4 = "fourth-plum-orchard-river"
+	p5 = "fifth-plum-orchard-river"
+	p9 = "ninth-plum-orchard-river"
+)
 
-	enc := fastArgon2id(t)
-
-	type testCase struct {
-		name    string
-		history func(ctrl *gomock.Controller) password.History
-		enc     password.Encoder
-		depth   int
-		opts    []password.ReuseOption
-		assert  func(t *testing.T, g *password.ReuseGuard, err error)
-	}
-
-	consumerHistory := func(ctrl *gomock.Controller) password.History { return NewMockHistory(ctrl) }
-
-	// consumerClockAt is what a consumer's own read-only clock reports, for
-	// the "consumer clock" row below.
-	consumerClockAt := time.Date(2032, time.March, 3, 4, 5, 6, 0, time.UTC)
-
-	refused := func(word string) func(t *testing.T, g *password.ReuseGuard, err error) {
-		return func(t *testing.T, g *password.ReuseGuard, err error) {
-			require.ErrorIs(t, err, password.ErrConfig)
-			assert.Contains(t, err.Error(), word)
-			assert.Nil(t, g)
-		}
-	}
-
-	cases := []testCase{
-		{
-			name:   "a nil history port",
-			enc:    enc,
-			depth:  5,
-			assert: refused("history port"),
-		},
-		{
-			name:    "a typed-nil history port",
-			history: func(*gomock.Controller) password.History { return (*memHistory)(nil) },
-			enc:     enc,
-			depth:   5,
-			assert:  refused("history port"),
-		},
-		{
-			name:    "a nil encoder",
-			history: consumerHistory,
-			depth:   5,
-			assert:  refused("encoder"),
-		},
-		{
-			name:    "a typed-nil encoder",
-			history: consumerHistory,
-			enc:     (*plainEncoder)(nil),
-			depth:   5,
-			assert:  refused("encoder"),
-		},
-		{
-			name:    "depth zero",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   0,
-			assert:  refused("depth"),
-		},
-		{
-			name:    "a negative depth",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   -1,
-			assert:  refused("depth"),
-		},
-		{
-			name:    "a nil matcher",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   5,
-			opts:    []password.ReuseOption{password.WithReuseMatchers(nil)},
-			assert:  refused("matcher"),
-		},
-		{
-			name:    "a typed-nil matcher",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   5,
-			opts:    []password.ReuseOption{password.WithReuseMatchers(plainEncoder{}, (*plainEncoder)(nil))},
-			assert:  refused("matcher"),
-		},
-		{
-			name:    "a nil clock",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   5,
-			opts:    []password.ReuseOption{password.WithReuseClock(nil)},
-			assert:  refused("clock"),
-		},
-		{
-			// *clockwork.FakeClock implements Now through a pointer receiver,
-			// so a nil one is an interface holding a nil pointer: `== nil`
-			// misses it, and only the reflect-based check the constructor now
-			// uses catches it before the first Change reads from a nil
-			// receiver.
-			name:    "a typed-nil clock",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   5,
-			opts:    []password.ReuseOption{password.WithReuseClock((*clockwork.FakeClock)(nil))},
-			assert:  refused("clock"),
-		},
-		{
-			// A Now-only consumer type: `time-source` "Read-only source for a
-			// read-only component". Construction succeeds, and Change reads
-			// the change time from the consumer's clock: depth 1 over a fresh
-			// user touches no history, so the write is the only place the
-			// clock could have come from.
-			name:    "a consumer's own read-only clock is the guard's time source",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   1,
-			opts:    []password.ReuseOption{password.WithReuseClock(fixedClock{at: consumerClockAt})},
-			assert: func(t *testing.T, g *password.ReuseGuard, err error) {
-				require.NoError(t, err)
-				require.NotNil(t, g)
-
-				user := &identity.Details{ID: identity.UserID("u-consumer-clock")}
-				w := &recordingWrite{}
-				require.NoError(t, g.Change(t.Context(), user, "p1", w.write))
-				assert.True(t, consumerClockAt.Equal(w.at),
-					"the write did not get the consumer clock's time")
-			},
-		},
-		{
-			name:    "the consumer's own history port, depth 5",
-			history: consumerHistory,
-			enc:     enc,
-			depth:   5,
-			assert: func(t *testing.T, g *password.ReuseGuard, err error) {
-				require.NoError(t, err)
-				assert.NotNil(t, g)
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			var h password.History
-			if tc.history != nil {
-				h = tc.history(gomock.NewController(t))
-			}
-
-			g, err := password.NewReuseGuard(h, tc.enc, tc.depth, tc.opts...)
-			tc.assert(t, g, err)
-		})
-	}
+// reusePolicy is a policy over enc whose only optional rule is NoReuse over h
+// at depth.
+func reusePolicy(
+	enc password.Encoder, h password.History, depth int, opts []password.ReuseOption, more ...password.PolicyOption,
+) (*password.Policy, error) {
+	return password.NewPolicy(append([]password.PolicyOption{
+		password.WithEncoder(enc),
+		password.NoReuse(h, depth, opts...),
+	}, more...)...)
 }
 
 // plainEncoder is a consumer's own algorithm: it "hashes" by prefixing, which
@@ -298,11 +166,11 @@ func (plainEncoder) Match(input string, encoded []byte) bool {
 	return string(encoded) == "plain:"+input
 }
 
-func TestReuseGuard_Check(t *testing.T) {
+func TestPolicy_NoReuse_Check(t *testing.T) {
 	t.Parallel()
 
 	fast := fastArgon2id(t)
-	hP1, hP2, hP3, hP4 := mustEncode(t, fast, "p1"), mustEncode(t, fast, "p2"), mustEncode(t, fast, "p3"), mustEncode(t, fast, "p4")
+	hP1, hP2, hP3, hP4 := mustEncode(t, fast, p1), mustEncode(t, fast, p2), mustEncode(t, fast, p3), mustEncode(t, fast, p4)
 
 	argon64, err := password.NewArgon2idEncoder(password.WithArgon2idMemory(64 * 1024))
 	require.NoError(t, err)
@@ -313,10 +181,10 @@ func TestReuseGuard_Check(t *testing.T) {
 	scryptDefault, err := password.NewScryptEncoder()
 	require.NoError(t, err)
 
-	hArgon64P1 := mustEncode(t, argon64, "p1")
-	hBcrypt12P1 := mustEncode(t, bcrypt12, "p1")
-	hScryptP1 := mustEncode(t, scryptDefault, "p1")
-	hPlainP1 := mustEncode(t, plainEncoder{}, "p1")
+	hArgon64P1 := mustEncode(t, argon64, p1)
+	hBcrypt12P1 := mustEncode(t, bcrypt12, p1)
+	hScryptP1 := mustEncode(t, scryptDefault, p1)
+	hPlainP1 := mustEncode(t, plainEncoder{}, p1)
 
 	const user = identity.UserID("u-1")
 
@@ -340,6 +208,7 @@ func TestReuseGuard_Check(t *testing.T) {
 	reused := func(t *testing.T, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, password.ErrReused)
+		rejectedBy(password.RuleReused)(t, err) // a reuse refusal is also a password refusal
 	}
 
 	h3Current, h3Newest, h3Oldest, h3Free := depth3(), depth3(), depth3(), depth3()
@@ -351,7 +220,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			name:      "a nil user is a wiring mistake and reads nothing",
 			depth:     3,
 			history:   func(ctrl *gomock.Controller) password.History { return NewMockHistory(ctrl) },
-			candidate: "p1",
+			candidate: p1,
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, password.ErrConfig)
 				assert.Contains(t, err.Error(), "user")
@@ -362,7 +231,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(h3Current),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p4",
+			candidate: p4,
 			assert:    reused,
 		},
 		{
@@ -370,7 +239,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(h3Newest),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p3",
+			candidate: p3,
 			assert: func(t *testing.T, err error) {
 				reused(t, err)
 				assert.Equal(t, 2, h3Newest.lastN, "depth 3 reads the current plus depth-1 retired hashes")
@@ -381,7 +250,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(h3Oldest),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p2",
+			candidate: p2,
 			assert:    reused,
 		},
 		{
@@ -389,7 +258,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(h3Free),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert: func(t *testing.T, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 2, h3Free.lastN)
@@ -400,7 +269,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     1,
 			history:   mem(h1Current),
 			user:      &identity.Details{ID: user, Password: hP2},
-			candidate: "p2",
+			candidate: p2,
 			assert: func(t *testing.T, err error) {
 				reused(t, err)
 				assert.Zero(t, h1Current.reads, "depth 1 never reads history")
@@ -411,7 +280,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     1,
 			history:   mem(h1History),
 			user:      &identity.Details{ID: user, Password: hP2},
-			candidate: "p1",
+			candidate: p1,
 			assert: func(t *testing.T, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, h1History.reads, "depth 1 never reads history")
@@ -422,7 +291,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(newMemHistory()),
 			user:      &identity.Details{ID: user},
-			candidate: "p1",
+			candidate: p1,
 			assert:    func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
@@ -431,23 +300,23 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(newMemHistory().seed(user, hArgon64P1)),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    reused,
 		},
 		{
-			name:      "a bcrypt hash matches under an Argon2id guard by default",
+			name:      "a bcrypt hash matches under an Argon2id policy by default",
 			depth:     3,
 			history:   mem(newMemHistory().seed(user, hBcrypt12P1)),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    reused,
 		},
 		{
-			name:      "a scrypt hash matches under an Argon2id guard by default",
+			name:      "a scrypt hash matches under an Argon2id policy by default",
 			depth:     3,
 			history:   mem(newMemHistory().seed(user, hScryptP1)),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    reused,
 		},
 		{
@@ -455,7 +324,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			depth:     3,
 			history:   mem(newMemHistory().seed(user, hPlainP1)),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
@@ -464,7 +333,7 @@ func TestReuseGuard_Check(t *testing.T) {
 			opts:      []password.ReuseOption{password.WithReuseMatchers(plainEncoder{})},
 			history:   mem(newMemHistory().seed(user, hPlainP1)),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    reused,
 		},
 		{
@@ -473,16 +342,16 @@ func TestReuseGuard_Check(t *testing.T) {
 			opts:      []password.ReuseOption{password.WithReuseMatchers(plainEncoder{})},
 			history:   mem(newMemHistory().seed(user, hBcrypt12P1)),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
-			name:      "the guard's own encoder still matches when consumer matchers replace the extras",
+			name:      "the policy's own encoder still matches when consumer matchers replace the extras",
 			depth:     1,
 			opts:      []password.ReuseOption{password.WithReuseMatchers(plainEncoder{})},
 			history:   mem(newMemHistory()),
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p4",
+			candidate: p4,
 			assert:    reused,
 		},
 		{
@@ -494,7 +363,7 @@ func TestReuseGuard_Check(t *testing.T) {
 				return m
 			},
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p1",
+			candidate: p1,
 			assert:    reused,
 		},
 		{
@@ -506,7 +375,7 @@ func TestReuseGuard_Check(t *testing.T) {
 				return m
 			},
 			user:      &identity.Details{ID: user, Password: hP4},
-			candidate: "p9",
+			candidate: p9,
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, password.ErrHistoryUnavailable)
 				assert.ErrorIs(t, err, portErr)
@@ -522,7 +391,7 @@ func TestReuseGuard_Check(t *testing.T) {
 				cancel()
 				return cctx
 			},
-			candidate: "p9",
+			candidate: p9,
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, password.ErrHistoryUnavailable)
 				assert.ErrorIs(t, err, context.Canceled)
@@ -544,10 +413,10 @@ func TestReuseGuard_Check(t *testing.T) {
 				enc = fast
 			}
 
-			g, err := password.NewReuseGuard(tc.history(gomock.NewController(t)), enc, tc.depth, tc.opts...)
+			p, err := reusePolicy(enc, tc.history(gomock.NewController(t)), tc.depth, tc.opts)
 			require.NoError(t, err)
 
-			tc.assert(t, g.Check(ctx, tc.user, tc.candidate))
+			tc.assert(t, p.Check(ctx, tc.user, tc.candidate))
 		})
 	}
 }
@@ -580,19 +449,19 @@ func (w *recordingWrite) write(_ context.Context, user *identity.Details, hash [
 	return nil
 }
 
-// changeTo changes user's password to plain through g, requiring success.
-func changeTo(t *testing.T, g *password.ReuseGuard, user *identity.Details, plain string) {
+// changeTo changes user's password to plain through p, requiring success.
+func changeTo(t *testing.T, p *password.Policy, user *identity.Details, plain string) {
 	t.Helper()
 
 	w := &recordingWrite{}
-	require.NoError(t, g.Change(t.Context(), user, plain, w.write))
+	require.NoError(t, p.Change(t.Context(), user, plain, w.write))
 }
 
-func TestReuseGuard_Change(t *testing.T) {
+func TestPolicy_Change(t *testing.T) {
 	t.Parallel()
 
 	fast := fastArgon2id(t)
-	hP1, hP2 := mustEncode(t, fast, "p1"), mustEncode(t, fast, "p2")
+	hP1, hP2 := mustEncode(t, fast, p1), mustEncode(t, fast, p2)
 	bcrypt10, err := password.NewBcryptEncoder()
 	require.NoError(t, err)
 
@@ -605,8 +474,8 @@ func TestReuseGuard_Change(t *testing.T) {
 		name    string
 		enc     password.Encoder // nil means fast
 		depth   int
-		opts    []password.ReuseOption
-		arrange func(t *testing.T, g *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite)
+		opts    []password.PolicyOption
+		arrange func(t *testing.T, p *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite)
 		assert  func(t *testing.T, err error, h *memHistory, u *identity.Details, w *recordingWrite)
 	}
 
@@ -614,44 +483,44 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "the write receives the record, the new hash and the clock's time",
 			depth: 3,
-			opts:  []password.ReuseOption{password.WithReuseClock(clockwork.NewFakeClockAt(fixed))},
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
-				return &identity.Details{ID: user, Password: hP1}, "p2", &recordingWrite{}
+			opts:  []password.PolicyOption{password.WithClock(clockwork.NewFakeClockAt(fixed))},
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return &identity.Details{ID: user, Password: hP1}, p2, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, _ *memHistory, u *identity.Details, w *recordingWrite) {
 				require.NoError(t, err)
 				require.Equal(t, 1, w.calls)
 				assert.Same(t, u, w.user)
-				assert.True(t, fast.Match("p2", w.hash), "the write gets the candidate's new hash")
-				assert.True(t, fixed.Equal(w.at), "the write gets the guard clock's time")
+				assert.True(t, fast.Match(p2, w.hash), "the write gets the candidate's new hash")
+				assert.True(t, fixed.Equal(w.at), "the write gets the policy clock's time")
 			},
 		},
 		{
 			name:  "depth 3 over p1 to p5 keeps p4 and p3, newest first",
 			depth: 3,
-			arrange: func(t *testing.T, g *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(t *testing.T, g *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				u := &identity.Details{ID: user, Password: hP1}
-				for _, p := range []string{"p2", "p3", "p4"} {
+				for _, p := range []string{p2, p3, p4} {
 					changeTo(t, g, u, p)
 				}
 
-				return u, "p5", &recordingWrite{}
+				return u, p5, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.NoError(t, err)
 				got := h.entries(user)
 				require.Len(t, got, 2)
-				assert.True(t, fast.Match("p4", got[0]), "newest retired is p4")
-				assert.True(t, fast.Match("p3", got[1]), "then p3")
-				assert.True(t, fast.Match("p5", w.hash), "the write stored p5")
+				assert.True(t, fast.Match(p4, got[0]), "newest retired is p4")
+				assert.True(t, fast.Match(p3, got[1]), "then p3")
+				assert.True(t, fast.Match(p5, w.hash), "the write stored p5")
 			},
 		},
 		{
 			name:  "a failed write returns its error unchanged and leaves the retired entry",
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
-				return &identity.Details{ID: user, Password: hP2}, "p3", &recordingWrite{fail: errWrite}
+				return &identity.Details{ID: user, Password: hP2}, p3, &recordingWrite{fail: errWrite}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.ErrorIs(t, err, errWrite)
@@ -662,13 +531,13 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a retry after a failed write does not double-count",
 			depth: 3,
-			arrange: func(t *testing.T, g *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(t *testing.T, g *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
 				u := &identity.Details{ID: user, Password: hP2}
 				failing := &recordingWrite{fail: errWrite}
-				require.ErrorIs(t, g.Change(t.Context(), u, "p3", failing.write), errWrite)
+				require.ErrorIs(t, g.Change(t.Context(), u, p3, failing.write), errWrite)
 
-				return u, "p3", &recordingWrite{}
+				return u, p3, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.NoError(t, err)
@@ -679,9 +548,9 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "another user's history is not consulted",
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed("user-a", hP1)
-				return &identity.Details{ID: "user-b", Password: hP2}, "p1", &recordingWrite{}
+				return &identity.Details{ID: "user-b", Password: hP2}, p1, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.NoError(t, err)
@@ -692,31 +561,31 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "lowering the depth prunes at the user's next change",
 			depth: 2,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
-				wider, err := password.NewReuseGuard(h, fast, 3)
+			arrange: func(t *testing.T, _ *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite) {
+				wider, err := reusePolicy(fast, h, 3, nil)
 				require.NoError(t, err)
 
 				u := &identity.Details{ID: user, Password: hP1}
-				for _, p := range []string{"p2", "p3", "p4"} {
+				for _, p := range []string{p2, p3, p4} {
 					changeTo(t, wider, u, p)
 				}
 				require.Len(t, h.entries(user), 2, "depth 3 built [p3, p2]")
 
-				return u, "p5", &recordingWrite{}
+				return u, p5, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, _ *recordingWrite) {
 				require.NoError(t, err)
 				got := h.entries(user)
 				require.Len(t, got, 1)
-				assert.True(t, fast.Match("p4", got[0]))
+				assert.True(t, fast.Match(p4, got[0]))
 			},
 		},
 		{
 			name:  "depth 1 keeps no retired hashes",
 			depth: 1,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
-				return &identity.Details{ID: user, Password: hP2}, "p3", &recordingWrite{}
+				return &identity.Details{ID: user, Password: hP2}, p3, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.NoError(t, err)
@@ -727,9 +596,9 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a reused password is refused before anything is recorded or written",
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.Policy, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
-				return &identity.Details{ID: user, Password: hP2}, "p1", &recordingWrite{}
+				return &identity.Details{ID: user, Password: hP2}, p1, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, u *identity.Details, w *recordingWrite) {
 				require.ErrorIs(t, err, password.ErrReused)
@@ -741,8 +610,8 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a user with no current hash retires nothing",
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
-				return &identity.Details{ID: user}, "p1", &recordingWrite{}
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return &identity.Details{ID: user}, p1, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.NoError(t, err)
@@ -751,23 +620,39 @@ func TestReuseGuard_Change(t *testing.T) {
 			},
 		},
 		{
+			// The policy's check now refuses bcrypt's 73 bytes before the
+			// encoder sees them, so the encoder error here is its NUL refusal.
 			name:  "an encoder error is returned as is and nothing is written",
 			enc:   bcrypt10,
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
-				return &identity.Details{ID: user, Password: hP1}, strings.Repeat("a", 73), &recordingWrite{}
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return &identity.Details{ID: user, Password: hP1}, "pass\x00word-long-enough", &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
-				require.ErrorIs(t, err, password.ErrTooLong)
+				require.ErrorIs(t, err, password.ErrContainsNUL)
+				assert.Same(t, password.ErrContainsNUL, err, "returned as is")
 				assert.Zero(t, w.calls)
 				assert.Equal(t, [][]byte{hP1}, h.entries(user), "the retired entry holds the hash that is still current")
 			},
 		},
 		{
+			name:  "bcrypt's byte limit refuses at the check, before anything is retired or written",
+			enc:   bcrypt10,
+			depth: 3,
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return &identity.Details{ID: user, Password: hP1}, strings.Repeat("a", 73), &recordingWrite{}
+			},
+			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
+				rejectedBy(password.RuleTooLong)(t, err)
+				assert.Zero(t, w.calls)
+				assert.Zero(t, h.retires)
+			},
+		},
+		{
 			name:  "a nil user is a wiring mistake and touches nothing",
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
-				return nil, "p1", &recordingWrite{}
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return nil, p1, &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
 				require.ErrorIs(t, err, password.ErrConfig)
@@ -779,8 +664,8 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a nil write is a wiring mistake and touches nothing",
 			depth: 3,
-			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
-				return &identity.Details{ID: user, Password: hP1}, "p2", nil
+			arrange: func(_ *testing.T, _ *password.Policy, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+				return &identity.Details{ID: user, Password: hP1}, p2, nil
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, _ *recordingWrite) {
 				require.ErrorIs(t, err, password.ErrConfig)
@@ -801,7 +686,7 @@ func TestReuseGuard_Change(t *testing.T) {
 			}
 
 			h := newMemHistory()
-			g, err := password.NewReuseGuard(h, enc, tc.depth, tc.opts...)
+			g, err := reusePolicy(enc, h, tc.depth, nil, tc.opts...)
 			require.NoError(t, err)
 
 			u, candidate, w := tc.arrange(t, g, h)
@@ -816,12 +701,12 @@ func TestReuseGuard_Change(t *testing.T) {
 	}
 }
 
-// Standalone: it drives a mock History in a set order, where TestReuseGuard_Change uses a real one.
-func TestReuseGuard_Change_FailsClosed(t *testing.T) {
+// Standalone: it drives a mock History in a set order, where TestPolicy_Change uses a real one.
+func TestPolicy_Change_FailsClosed(t *testing.T) {
 	t.Parallel()
 
 	fast := fastArgon2id(t)
-	hP1 := mustEncode(t, fast, "p1")
+	hP1 := mustEncode(t, fast, p1)
 	portErr := errors.New("history store is down")
 
 	type testCase struct {
@@ -891,11 +776,11 @@ func TestReuseGuard_Change_FailsClosed(t *testing.T) {
 			var log []string
 			tc.history(ctx, m, u, &log)
 
-			g, err := password.NewReuseGuard(m, fast, 3)
+			g, err := reusePolicy(fast, m, 3, nil)
 			require.NoError(t, err)
 
 			w := &recordingWrite{log: &log}
-			err = g.Change(ctx, u, "p9", w.write)
+			err = g.Change(ctx, u, p9, w.write)
 			tc.assert(t, err, w, log)
 		})
 	}
@@ -927,13 +812,13 @@ func assertNoCredential(t *testing.T, text string, words []string, hashes ...[]b
 }
 
 // Standalone: each case supplies its own History, real or mocked, to make one refusal.
-func TestReuseGuard_ErrorsCarryNoCredential(t *testing.T) {
+func TestPolicy_NoReuse_ErrorsCarryNoCredential(t *testing.T) {
 	t.Parallel()
 
-	const candidate = "Tr0ub4dor&3"
+	const candidate = "Tr0ub4dor&3-correct-horse"
 
 	fast := fastArgon2id(t)
-	current := mustEncode(t, fast, "p0")
+	current := mustEncode(t, fast, p0)
 	retired := mustEncode(t, fast, candidate)
 	words := []string{candidate, "u-123", "ada"}
 
@@ -996,7 +881,7 @@ func TestReuseGuard_ErrorsCarryNoCredential(t *testing.T) {
 			ctx := t.Context()
 			u := &identity.Details{ID: "u-123", Username: "ada", Password: current}
 
-			g, err := password.NewReuseGuard(tc.history(ctx, gomock.NewController(t), u), fast, 3)
+			g, err := reusePolicy(fast, tc.history(ctx, gomock.NewController(t), u), 3, nil)
 			require.NoError(t, err)
 
 			w := &recordingWrite{}
@@ -1071,7 +956,7 @@ func TestProvisionerWrite_Write(t *testing.T) {
 	t.Parallel()
 
 	fast := fastArgon2id(t)
-	current := mustEncode(t, fast, "p1")
+	current := mustEncode(t, fast, p1)
 	newHash := []byte("new-hash")
 	at := time.Date(2031, time.June, 1, 0, 0, 0, 0, time.UTC)
 	errStore := errors.New("the store refused the update")
@@ -1136,21 +1021,21 @@ func TestProvisionerWrite_Write(t *testing.T) {
 			},
 		},
 		{
-			name: "through a guard with a fixed clock, the change records its time",
+			name: "through a policy with a fixed clock, the change records its time",
 			user: &identity.Details{ID: "u-1", Username: "ada", Password: current},
 			update: func(m *MockUserProvisioner, got **identity.UserChange) {
 				m.EXPECT().Update(gomock.Any(), "ada", gomock.Any()).Times(1).DoAndReturn(capture(got, nil))
 			},
 			invoke: func(t *testing.T, write password.WriteFunc, user *identity.Details) error {
-				g, err := password.NewReuseGuard(newMemHistory(), fast, 3,
-					password.WithReuseClock(clockwork.NewFakeClockAt(at)))
+				g, err := reusePolicy(fast, newMemHistory(), 3, nil,
+					password.WithClock(clockwork.NewFakeClockAt(at)))
 				require.NoError(t, err)
 
-				return g.Change(t.Context(), user, "p2", write)
+				return g.Change(t.Context(), user, p2, write)
 			},
 			assert: func(t *testing.T, err error, got *identity.UserChange) {
 				require.NoError(t, err)
-				namesPasswordChangeOnly(t, got, func(h []byte) bool { return fast.Match("p2", h) })
+				namesPasswordChangeOnly(t, got, func(h []byte) bool { return fast.Match(p2, h) })
 			},
 		},
 	}

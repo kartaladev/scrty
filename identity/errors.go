@@ -15,6 +15,13 @@ var (
 	// answers such a reference as "not required".
 	ErrUserNotFound = errors.New("identity: user not found")
 
+	// ErrNotUpdated is returned by a provisioner's Update made conditional on
+	// the stored password hash (WithUserPasswordIf) when the stored hash is no
+	// longer the expected one. Nothing was written. It is not a storage
+	// failure, and not ErrUserNotFound: the user is there, and its password
+	// changed meanwhile.
+	ErrNotUpdated = errors.New("identity: user not updated, the stored password changed")
+
 	// ErrUserExists is returned by Provision when the username is taken.
 	ErrUserExists = errors.New("identity: user already exists")
 
