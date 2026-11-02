@@ -94,10 +94,10 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 9. mTLS-bound tokens (D9)
 
-- [ ] 9.1 Bind tokens to a direct TLS client certificate with `EnableCertificateBinding`, test-first, over an `httptest` TLS server with client certificates: same certificate, none, another one. Verify: `go test -run 'TestCertificateBinding_Direct' -count=1 ./httpsec/`.
-- [ ] 9.2 Read a forwarded client certificate only from a trusted peer, from the raw value resolution keeps before removing the header (D9), URL-encoded PEM by default or through the consumer's decoder, with an undecodable value meaning no certificate, test-first. Verify: `go test -run 'TestCertificateBinding_Forwarded' -count=1 ./httpsec/`.
-- [ ] 9.3 Bind DPoP only when both a proof and a certificate are offered, refuse a certificate-bound token after the feature is turned off, register the refusal at 401, and run the scenarios on all three adapters, test-first. Verify: `go test -run 'TestCertificateBinding' ./...` in the core and `test` modules.
-- [ ] 9.4 Document certificate binding with its default, the decoder, that chain and validity checks belong to TLS or the proxy, and proxy examples verified against each proxy's documentation. Verify: `go doc ./httpsec EnableCertificateBinding`.
+- [x] 9.1 Bind tokens to a direct TLS client certificate with `EnableCertificateBinding`, test-first, over an `httptest` TLS server with client certificates: same certificate, none, another one. Verify: `go test -run 'TestCertificateBinding_Direct' -count=1 ./httpsec/`.
+- [x] 9.2 Read a forwarded client certificate only from a trusted peer, from the raw value resolution keeps before removing the header (D9), URL-encoded PEM by default or through the consumer's decoder, with an undecodable value meaning no certificate, test-first. Verify: `go test -run 'TestCertificateBinding_Forwarded' -count=1 ./httpsec/`.
+- [x] 9.3 Bind DPoP only when both a proof and a certificate are offered, refuse a certificate-bound token after the feature is turned off, register the refusal at 401, and run the scenarios on all three adapters, test-first. Verify: `go test -run 'TestCertificateBinding' ./...` in the core and `test` modules.
+- [x] 9.4 Document certificate binding with its default, the decoder, that chain and validity checks belong to TLS or the proxy, and proxy examples verified against each proxy's documentation. Verify: `go doc ./httpsec EnableCertificateBinding`.
 
 ## 10. Password policy and rehash (D10, D11)
 
