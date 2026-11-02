@@ -27,7 +27,7 @@ With a verifier configured, form login, Basic authentication, magic-link request
 - **THEN** the login is refused with the challenge-required error, no account is looked up, and no lockout failure is recorded
 
 #### Scenario: Flow not selected
-- **WHEN** the consumer selects only magic-link requests and a login is posted
+- **WHEN** the chain enables form login and magic-link requests, the consumer selects only magic-link requests, and a login is posted
 - **THEN** the verifier is not called for the login
 
 #### Scenario: Verifier outage
