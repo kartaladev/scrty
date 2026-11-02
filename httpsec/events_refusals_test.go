@@ -27,6 +27,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -182,6 +183,31 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 
 			s := h.enrolmentOnly(t, factor.Password)
 			out := serve(t, h.chain(t, s), post(t.Context(), enrolBeginPath, ""))
+
+			return refusalRun{events: rec.all(), err: out.err}
+		}
+	}
+
+	// bearerVerdict presents a bearer token, on a request whose context has
+	// ended, to a chain reporting to rec whose verifier answers verify.
+	bearerVerdict := func(verify func(ctx context.Context) error) func(*testing.T, *eventRecorder) refusalRun {
+		return func(t *testing.T, rec *eventRecorder) refusalRun {
+			v := NewMockVerifier(gomock.NewController(t))
+			v.EXPECT().Verify(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ string) (*token.Claims, error) { return nil, verify(ctx) })
+
+			h := newAuthHarness(t)
+			c, err := httpsec.New(
+				httpsec.WithLogger(discardLogger()),
+				httpsec.EnableSecurityEvents(rec.sink),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: v, Sessions: h.sessions, Users: h.users}),
+			)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			out := serveIn(ctx, t, c, bearerRequest(ctx, "Bearer opaque-token"))
 
 			return refusalRun{events: rec.all(), err: out.err}
 		}
@@ -843,6 +869,17 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, httpsec.ErrRenewalThrottled)
 				reported(security.ExcessRateLimitExceeded, eventsClient, "")(t, run)
+			},
+		},
+		{
+			// A verdict wins over a hang-up: the verifier refused the token, so
+			// the request is refused, and reported, though its context ended
+			// beside the verdict.
+			name: "a bearer token refused beside the request's hang-up reports authn_login_fail",
+			run:  bearerVerdict(func(ctx context.Context) error { return errors.Join(token.ErrInvalid, ctx.Err()) }),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				reported(security.AuthnLoginFail, "192.0.2.1", "")(t, run)
 			},
 		},
 		{

@@ -12,10 +12,13 @@ package secevent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -137,4 +140,38 @@ func GuardRefused(ctx context.Context, err error) {
 	}
 
 	Send(ctx, e)
+}
+
+// factorKey is the context key the first factor a request is judging is
+// stored under.
+type factorKey struct{}
+
+// WithFactor returns ctx naming kind as the first factor the request is
+// judging, so a component below the chain that reports on it, the
+// account-lockout policy recording a failed password, can say which factor
+// failed without being told by its caller's signature.
+func WithFactor(ctx context.Context, kind factor.Kind) context.Context {
+	return context.WithValue(ctx, factorKey{}, kind)
+}
+
+// FactorOf is the first factor WithFactor named on ctx, and empty when none
+// was.
+func FactorOf(ctx context.Context) factor.Kind {
+	kind, _ := ctx.Value(factorKey{}).(factor.Kind)
+
+	return kind
+}
+
+// SessionDigest is the lower-case hexadecimal SHA-256 digest of a session
+// identifier, the form security.Event.Session carries, and empty for an empty
+// identifier. A session identifier is a high-entropy random credential, so its
+// digest names the session without revealing it.
+func SessionDigest(id string) string {
+	if id == "" {
+		return ""
+	}
+
+	sum := sha256.Sum256([]byte(id))
+
+	return hex.EncodeToString(sum[:])
 }

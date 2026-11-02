@@ -193,6 +193,9 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 		},
 		{
+			// The hang-up cut verification short before any verdict. A verdict
+			// beside a hang-up is a refusal, and TestSecurityEvents_Refusals
+			// pins that it is reported.
 			name: "a bearer request whose client hung up during verification reports no failure",
 			run: func(t *testing.T, rec *eventRecorder) []served {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -203,7 +206,7 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 					func(context.Context, string) (*token.Claims, error) {
 						cancel()
 
-						return nil, errors.Join(token.ErrInvalid, context.Canceled)
+						return nil, context.Canceled
 					})
 
 				c, err := httpsec.New(httpsec.WithLogger(h.logger()),

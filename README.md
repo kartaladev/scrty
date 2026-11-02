@@ -2008,6 +2008,109 @@ documents, and test it with a certificate forwarded through your deployment.
 | `DPoP{Require: true}` beside certificate binding | refused at construction (`ErrConfig`) | none: no certificate binding could be made |
 | Forwarded certificate header sent on two lines, or a value that is not exactly one PEM certificate | no certificate | none |
 
+## Security events
+
+`httpsec.EnableSecurityEvents` reports every security outcome the chain decides
+to a sink you supply, as a `security.Event` named from the
+[OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html)
+where it names the outcome, and under a `scrty_` prefix where it does not. It
+is off until you enable it: with no sink, nothing is reported.
+
+```go
+logger := slog.Default()
+
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event) {
+        logger.LogAttrs(ctx, slog.LevelInfo, "security event",
+            slog.String("event", e.Name),
+            slog.String("outcome", e.Outcome),
+            slog.String("user", string(e.User)),
+            slog.String("client_ip", e.ClientIP),
+            slog.String("factor", string(e.Factor)),
+            slog.String("session", e.Session),
+            slog.Time("at", e.At),
+        )
+    }),
+)
+```
+
+`go doc github.com/kartaladev/scrty/security` lists every name and when it is
+reported; `security.Names()` returns them. Among them: `authn_login_success`,
+`authn_login_fail`, `authn_login_fail_max` and `authn_login_lock` (the failure
+that locks an identifier, once per lock), `authn_token_created`,
+`authn_token_reuse` (a superseded session presented again), `session_created`,
+`session_renewed`, `session_logout`, `authz_fail`, `excess_rate_limit_exceeded`,
+`malicious_csrf`, and the `scrty_` names for second factors, passkeys,
+recovery, re-authentication, session management, host, DPoP, certificate-binding
+and automation-challenge refusals, and signing-key rotation.
+
+The lockout observer (`lockout.WithObserver`) and the session-reuse observer
+(`session.WithReuseObserver`) keep working; their outcomes also reach the sink,
+as `authn_login_lock` and `authn_token_reuse`. A lock is reported by the
+lockout policy's view, so give form login and Basic `lockout.Policy.Attempts()`
+as their `Attempts`.
+
+A component you also call outside a chain takes a sink of its own, which
+defaults to none: `apikey.WithSecurityEvents`, `lockout.WithSecurityEvents`,
+`mfa.WithThrottleSecurityEvents`, `mfa.WithResetSecurityEvents`,
+`recovery.WithSecurityEvents`, `session.WithSecurityEvents` and
+`signingkey.WithSecurityEvents`. On a request a chain reports for, the
+component reports through the chain and its own sink is not called, so one
+outcome is reported once.
+
+### The sink's contract
+
+- It is called synchronously, on the request that decided the outcome, with a
+  context from which the request's cancellation has been removed, so a client
+  that hangs up does not cut the delivery short.
+- It cannot change the outcome, the status or the error. It returns nothing,
+  and a panic in it is recovered and logged without the event's contents.
+- **A sink that blocks holds the request, and that is yours to manage.** A
+  sink that does slow work, such as a network write, hands the event to its
+  own queue and returns. The library keeps no queue: bounding memory or losing
+  events is your trade-off to make.
+- It should do no work that depends on whether an account exists. A recovery
+  start is reported alike for a username that names an account and one that
+  names none, so its latency does not tell them apart; a sink that looks the
+  user up only when an event names one would tell them apart again.
+- It may be called concurrently, from every request at once.
+
+### What an event carries, and what it never does
+
+An event carries its name, its time from the deciding component's clock, its
+outcome, the user when one is known, the client address the chain resolved
+(through trusted proxies when they are configured), the first factor where one
+applies, and `Session`, the SHA-256 digest of the session's identifier, never
+the identifier. No event carries a password, token, code, link secret, key,
+DPoP proof, certificate, CSRF token or stored hash. Only what happened is
+reported: a credential issued and then discarded reports no creation, and a
+dependency that failed or a client that hung up before a verdict reports no
+failure.
+
+### Stated limits
+
+- A magic-link redemption and an OIDC handoff answer a refusal and an outage
+  with one error, by design, so their failures are not reported.
+- A second factor's refusal is reported only when the method's error wraps one
+  of `mfa`'s refusal sentinels (`ErrInvalidCode`, `ErrVerifyThrottled`,
+  `ErrAuthenticatorRefused`, `ErrSameChannel`); any other error is taken for an
+  outage and reports nothing.
+- `Session` is a digest. To correlate it with a session, digest the identifier
+  the same way; the event never names the session itself.
+- A lock is reported exactly once within one process. With an attempt store
+  several replicas share, failures on different replicas at the same moment
+  may each report it.
+
+### Defaults
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Security events | off; nothing is reported | `httpsec.EnableSecurityEvents(sink)` |
+| A component's own sink, outside a chain | none | the component's `WithSecurityEvents` option |
+| A nil sink, or an option given twice | refused at construction | none |
+| Delivery | synchronous, on the deciding request | your sink hands events to its own queue |
+
 ## Development
 
 ```sh

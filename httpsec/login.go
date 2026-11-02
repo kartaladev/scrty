@@ -573,7 +573,6 @@ func (l *formLogin) verifyPassword(
 	}
 	if err != nil {
 		l.recordFailure(ctx, username, now)
-		reportLockedBy(ctx, l.engine, l.enforced, username, now, factor.Password)
 
 		return nil, err
 	}
@@ -719,29 +718,6 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 	return fields, nil
 }
 
-// reportLockedBy reports security.AuthnLoginFailMax for a failure just
-// recorded against username that left it locked: the pre-authentication
-// phase, which let this attempt's password be checked, now refuses the
-// identifier as locked (lockout.ErrAccountLocked, a hold included). It asks
-// only on a request a sink watches, and its answer decides nothing.
-func reportLockedBy(
-	ctx context.Context,
-	engine *policy.Engine,
-	enforced map[policy.ChallengeKind]bool,
-	username string,
-	now time.Time,
-	kind factor.Kind,
-) {
-	if !secevent.Enabled(ctx) || engine == nil {
-		return
-	}
-
-	pre := evaluatePhase(ctx, engine, policy.PreAuthentication, &policy.Input{Username: username, Now: now})
-	if errors.Is(refusePreAuthentication(pre, enforced), lockout.ErrAccountLocked) {
-		emitEvent(ctx, userEvent(security.AuthnLoginFailMax, security.OutcomeFailure, "", kind))
-	}
-}
-
 // hadRecentFailures reports whether username has failed attempts within the
 // lockout's failure window (identifierWindow), so its success is reported as
 // security.AuthnLoginSuccessAfterFail. It reads the attempt store only on a
@@ -770,8 +746,10 @@ func (l *formLogin) hadRecentFailures(ctx context.Context, username string, now 
 func (l *formLogin) recordFailure(ctx context.Context, username string, now time.Time) {
 	// The client's cancellation is not passed on: a client that hangs up after
 	// sending its guess must still be charged for it, and an attempt store that
-	// honours cancellation would otherwise drop the failure.
-	if err := l.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); err != nil {
+	// honours cancellation would otherwise drop the failure. The context names
+	// the password factor, which the lockout's view reports a lock with.
+	recordCtx := secevent.WithFactor(context.WithoutCancel(ctx), factor.Password)
+	if err := l.attempts.RecordFailure(recordCtx, username, now); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 			diag.Failure("attempt-store", err)...)
 	}

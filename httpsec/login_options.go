@@ -43,8 +43,9 @@ type FormLoginDeps struct {
 	// what came before. Supply the account-lockout policy's own view,
 	// [github.com/kartaladev/scrty/policy/lockout.Policy.Attempts]: it records
 	// into the store the policy reads, and it is what reports lockout transitions
-	// to an observer the policy was given. A bare store the policy also reads
-	// locks just the same, but nothing recorded through it is reported. A failure
+	// to an observer the policy was given and a lock as the security events
+	// authn_login_fail_max and authn_login_lock. A bare store the policy also
+	// reads locks just the same, but nothing recorded through it is reported. A failure
 	// recorded in one store and counted in another locks nothing.
 	//
 	// When the policy has a consecutive-failure cap (lockout.WithFailureStreakLimit),

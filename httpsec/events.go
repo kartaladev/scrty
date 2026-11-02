@@ -2,8 +2,6 @@ package httpsec
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"time"
@@ -24,14 +22,21 @@ import (
 // Default: no sink, and nothing is reported. Once enabled, the chain hands its
 // sink to every component it builds that decides an outcome, and reaches a
 // component the consumer built and registered on it, the account-lockout
-// policy, an API-key manager, a verification throttle, a recoverer, through
-// the request's context, so one sink receives every event. A component the
-// consumer also calls outside any chain takes a sink of its own
-// (apikey.WithSecurityEvents, mfa.WithThrottleSecurityEvents,
-// mfa.WithResetSecurityEvents, recovery.WithSecurityEvents), which is not
-// called on a request this chain reports for, so one outcome is reported
-// once; signing-key rotation, which runs on no request, reports only to
-// signingkey.WithSecurityEvents.
+// policy, the session manager, an API-key manager, a verification throttle, a
+// recoverer, through the request's context, so one sink receives every event.
+// A component the consumer also calls outside any chain takes a sink of its
+// own (apikey.WithSecurityEvents, lockout.WithSecurityEvents,
+// mfa.WithThrottleSecurityEvents, mfa.WithResetSecurityEvents,
+// recovery.WithSecurityEvents, session.WithSecurityEvents), each defaulting
+// to none, which is not called on a request this chain reports for, so one
+// outcome is reported once; signing-key rotation, which runs on no request,
+// reports only to signingkey.WithSecurityEvents.
+//
+// The lockout observer's and the session-reuse observer's reports also reach
+// the sink, as authn_login_lock and authn_token_reuse, and the observers are
+// still called. A lock is reported by the account-lockout policy's view
+// (lockout.Policy.Attempts) where it decides the lock, so form login and
+// Basic report one only when they record into that view.
 //
 // The sink is called synchronously, on the request that decided the outcome,
 // with a context from which the request's cancellation has been removed. It
@@ -147,19 +152,9 @@ func userEvent(name, outcome string, user identity.UserID, kind factor.Kind) sec
 	return security.Event{Name: name, Outcome: outcome, User: user, Factor: kind}
 }
 
-// sessionDigest is the lower-case hexadecimal SHA-256 digest of a session
-// identifier, and empty for an empty one. A session identifier is a
-// high-entropy random credential, so its digest names the session without
-// revealing it.
-func sessionDigest(id string) string {
-	if id == "" {
-		return ""
-	}
-
-	sum := sha256.Sum256([]byte(id))
-
-	return hex.EncodeToString(sum[:])
-}
+// sessionDigest is the digest an event names a session by
+// (secevent.SessionDigest).
+func sessionDigest(id string) string { return secevent.SessionDigest(id) }
 
 // refusalEvents maps the refusals the chain reports wherever they arise to
 // their event, in the order they are matched. Each sentinel is only ever a

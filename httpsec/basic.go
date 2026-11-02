@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -215,12 +216,13 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		if credentialRefused(ctx, err) {
 			emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Basic))
 
-			if recErr := b.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); recErr != nil {
+			// The lockout's view reports a lock this failure decides, with the
+			// factor the context names.
+			recordCtx := secevent.WithFactor(context.WithoutCancel(ctx), factor.Basic)
+			if recErr := b.attempts.RecordFailure(recordCtx, username, now); recErr != nil {
 				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 					diag.Failure("attempt-store", recErr)...)
 			}
-
-			reportLockedBy(ctx, b.engine, b.enforced, username, now, factor.Basic)
 		}
 
 		recordSourceFailure(ctx, b.guard, src)
@@ -296,8 +298,9 @@ type BasicAuthDeps struct {
 	// Attempts is where a refused credential is recorded. Supply the
 	// account-lockout policy's own view, [lockout.Policy.Attempts]: it records
 	// into the store the policy reads, and it is what reports lockout transitions
-	// to an observer the policy was given. A bare store the policy also reads
-	// locks just the same, but nothing recorded through it is reported. A password
+	// to an observer the policy was given and a lock as the security events
+	// authn_login_fail_max and authn_login_lock. A bare store the policy also
+	// reads locks just the same, but nothing recorded through it is reported. A password
 	// guessed at over Basic counts towards the same lockout as one guessed at over
 	// the login form. A successful authentication clears the username's failures
 	// through it, as form login does.

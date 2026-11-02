@@ -519,8 +519,8 @@ func (m *Sessions) ended(ctx context.Context, s *Session, now time.Time) error {
 	return ErrExpired
 }
 
-// reuse revokes s's family, tells the observer, logs the fixed reason with
-// the family, and returns ErrReused.
+// reuse revokes s's family, tells the observer, reports the security event,
+// logs the fixed reason with the family, and returns ErrReused.
 //
 // A revocation that fails is returned joined with ErrReused, so the
 // request is still refused and the failure is not hidden; the observer is not
@@ -545,6 +545,7 @@ func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 			DetectedAt:   now,
 		})
 	}
+	m.reportReuse(ctx, s, now)
 	m.logger.WarnContext(ctx, reuseLogReason, "family", s.FamilyID.String())
 
 	return ErrReused
@@ -640,7 +641,9 @@ func WithMaxFamilyLifetime(limit time.Duration) Option {
 // WithReuseObserver sets a function told about each detected reuse (see
 // ErrReused). The default is none: reuse is still refused, the family
 // still revoked, and a warning still logged with a fixed reason and the
-// family identifier.
+// family identifier. A reuse is also reported as security.AuthnTokenReuse to
+// a security-event sink, the chain's or the manager's own
+// (WithSecurityEvents), with or without an observer.
 //
 // The observer runs synchronously, after the family has been revoked, with
 // the context of the request that presented the reused session, so it can

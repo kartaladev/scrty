@@ -95,6 +95,14 @@ type eventsWorldSpec struct {
 	// rec, when set, is the recorder the chain reports to in place of a new
 	// one.
 	rec *eventRecorder
+
+	// lockout and sessions are further options for the world's lockout policy
+	// and session manager, applied after the world's own.
+	lockout  []lockout.Option
+	sessions []session.Option
+
+	// noSink builds the chain without EnableSecurityEvents.
+	noSink bool
 }
 
 // newEventsWorldOf is newEventsWorld built to spec.
@@ -116,10 +124,10 @@ func newEventsWorldOf(t *testing.T, spec eventsWorldSpec, extra ...httpsec.Optio
 
 	var err error
 
-	w.sessions, err = session.New(session.WithClock(w.clk),
+	w.sessions, err = session.New(append([]session.Option{session.WithClock(w.clk),
 		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(w.clk)))),
-		session.WithIdleTimeout(7*24*time.Hour),
-		session.WithAbsoluteTimeout(30*24*time.Hour))
+		session.WithIdleTimeout(7 * 24 * time.Hour),
+		session.WithAbsoluteTimeout(30 * 24 * time.Hour)}, spec.sessions...)...)
 	require.NoError(t, err)
 
 	hash, err := e2eEncoder(t).Encode(e2ePassword)
@@ -140,7 +148,7 @@ func newEventsWorldOf(t *testing.T, spec eventsWorldSpec, extra ...httpsec.Optio
 		authenticate.WithPasswordEncoder(e2eEncoder(t)))
 	require.NoError(t, err)
 
-	lock, err := lockout.New(lockout.WithClock(w.clk))
+	lock, err := lockout.New(append([]lockout.Option{lockout.WithClock(w.clk)}, spec.lockout...)...)
 	require.NoError(t, err)
 
 	idle, err := policy.NewIdleTimeout(policy.WithIdleTimeout(30 * time.Minute))
@@ -166,11 +174,15 @@ func newEventsWorldOf(t *testing.T, spec eventsWorldSpec, extra ...httpsec.Optio
 		return nil
 	}
 
-	w.chain, err = httpsec.New(append([]httpsec.Option{
+	sink := []httpsec.Option{httpsec.EnableSecurityEvents(w.rec.sink)}
+	if spec.noSink {
+		sink = nil
+	}
+
+	w.chain, err = httpsec.New(append(append(sink,
 		httpsec.WithClock(w.clk),
 		httpsec.WithLogger(discardLogger()),
 		httpsec.WithPolicyEngine(engineOf(t, append([]policy.Policy{lock, idle}, spec.policies...)...)),
-		httpsec.EnableSecurityEvents(w.rec.sink),
 		httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
 			Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
 			Headers:  httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedHost("app.example.com")),
@@ -187,7 +199,7 @@ func newEventsWorldOf(t *testing.T, spec eventsWorldSpec, extra ...httpsec.Optio
 		httpsec.EnablePasswordChangeGate(w.sessions, httpsec.WithPasswordChangeEndpoint(eventsChangePath, change)),
 		httpsec.EnableCSRFProtection(),
 		httpsec.EnableAuthorization(az, append(append([]authorize.Rule[httpsec.Request]{admin}, spec.rules...), permitAll)...),
-	}, extra...)...)
+	), extra...)...)
 	require.NoError(t, err)
 
 	return w

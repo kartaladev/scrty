@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -71,6 +72,10 @@ type Sessions struct {
 	// reuseObserver is told about each detected reuse; nil tells no one.
 	reuseObserver         ReuseObserver
 	reuseObserverSupplied bool
+
+	// events is the sink WithSecurityEvents gave the manager, for the reuse
+	// it detects outside a chain.
+	events secevent.Own
 
 	// unusedSuccessorRecovery is WithUnusedSuccessorRecovery: a superseded
 	// identifier past its window may be renewed while its successor is
@@ -210,6 +215,9 @@ func New(opts ...Option) (*Sessions, error) {
 	if m.maxFamilyLifetime < m.maxLifetime {
 		return nil, fmt.Errorf("%w: maximum family lifetime %s is below the maximum absolute lifetime %s",
 			ErrConfig, m.maxFamilyLifetime, m.maxLifetime)
+	}
+	if err := m.events.Err("WithSecurityEvents"); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	if m.reuseObserverSupplied && m.reuseObserver == nil {
 		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)

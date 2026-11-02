@@ -1,42 +1,3 @@
-// Package security names the security events scrty reports, and the sink a
-// consumer receives them on.
-//
-// scrty decides security outcomes: a login that succeeded or failed, a
-// session created or ended, a request refused for a cross-site origin or an
-// invalid proof. Each decision is reported to the consumer's Sink as one
-// Event, under a standard name, so an application can record, alert on and
-// investigate them without parsing logs. Nothing is reported until a sink is
-// configured: httpsec.EnableSecurityEvents for the HTTP chain, and the
-// component's own option for a component that also decides outside a chain
-// (apikey.WithSecurityEvents, mfa.WithThrottleSecurityEvents,
-// mfa.WithResetSecurityEvents, recovery.WithSecurityEvents,
-// signingkey.WithSecurityEvents). On a request a chain reports for, a
-// component reports through the chain and its own sink is not called, so one
-// outcome is reported once.
-//
-// # Names
-//
-// An event is named from the OWASP Logging Vocabulary where the vocabulary
-// names the outcome, and under the scrty_ prefix where it does not. Names
-// lists every name the library uses, and each constant says when it is
-// reported.
-//
-// # What an event carries
-//
-// An Event carries its name, when it happened, its outcome, the user it
-// concerns when one is known, the resolved client address, the first factor
-// where one applies, and the digest of the session's identifier. It never
-// carries the identifier itself, a password, a token, a one-time code, a link
-// secret, a key, a DPoP proof, a certificate, a CSRF token or a stored hash.
-//
-// # Only what happened
-//
-// An event reports an outcome that happened, not one that was attempted. A
-// creation event is reported only once the session it names is stored and its
-// credential handed out: a credential issued and then discarded, because its
-// session could not be stored or a racing request won, reports nothing. A
-// request whose own context ended before a verdict, and a dependency that
-// failed, report no failure or refusal.
 package security
 
 import (
@@ -140,12 +101,22 @@ const (
 	// OIDC callback refused as an invalid state.
 	AuthnLoginFail = "authn_login_fail"
 
-	// AuthnLoginFailMax is a failed attempt that left its identifier locked
-	// by the account-lockout policy.
+	// AuthnLoginFailMax is the failed attempt that took its identifier to a
+	// lock in the account-lockout policy: to its threshold, to the window
+	// failure limit under the escalating wait, or to a hold under a
+	// failure-streak limit. It is reported by the policy's view
+	// (lockout.Policy.Attempts) where it records the failure, once per lock:
+	// the failures after it, which leave the identifier locked, report no
+	// further lock. It names no user, since the policy counts identifiers,
+	// and carries the first factor that failed. Within one process concurrent
+	// failures that cross together report it once; with an attempt store
+	// several processes share, failures on different processes at the same
+	// moment may each report it.
 	AuthnLoginFailMax = "authn_login_fail_max"
 
-	// AuthnLoginLock is an account locked, as the lockout policy's observer
-	// reports it.
+	// AuthnLoginLock is the lock AuthnLoginFailMax reports, reported beside
+	// it, after it, by the same failure: the identifier is now locked. The
+	// lockout policy's observer is told of the same failure as before.
 	AuthnLoginLock = "authn_login_lock"
 
 	// AuthnPasswordChange is a password changed.
@@ -162,7 +133,10 @@ const (
 	AuthnTokenRevoked = "authn_token_revoked"
 
 	// AuthnTokenReuse is a superseded session identifier presented again,
-	// and its family revoked.
+	// and its family revoked: reported by the session manager where it
+	// detects the reuse, once the revocation is stored, naming the session's
+	// user and first factor and the presented session's digest. The session
+	// manager's reuse observer is called as before.
 	AuthnTokenReuse = "authn_token_reuse"
 
 	// SessionCreated is a session stored for a sign-in.

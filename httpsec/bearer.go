@@ -148,12 +148,19 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 // authenticate.ErrAuthenticationFailed joined rather than wrapped: an
 // operator's log records which check the token failed, while a caller still
 // matches the one uniform failure. The cause reaches the record, never the
-// client.
+// client. The refusal is reported as security.AuthnLoginFail on a request a
+// sink watches.
+//
+// A verdict wins over a hang-up: a rejection is classified first, so an err
+// that matches token.ErrInvalid is a refusal, answered and reported as one,
+// even when the request's own context ended beside it and err carries that
+// context's error too.
 //
 // A request whose own context ended while its token was verified, and whose
 // err is that context's error or the cause it was cancelled with
-// (hangup.ByCaller), is a hang-up: neither a refusal, since no verdict was
-// reached, nor an outage, since nothing failed.
+// (hangup.ByCaller) with no rejection, is a hang-up: neither a refusal, since
+// no verdict was reached, nor an outage, since nothing failed, and nothing is
+// reported.
 // It is returned behind fixed text of its own, or as the context's error
 // itself when the verifier returns it bare, matching the context's error
 // either way, and recorded at debug with no error text. It is told by the
@@ -175,11 +182,10 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerNotVerified,
 			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
 
-		// The refusal stands as before, but a verdict the request's own
-		// hang-up cut short is reported as nothing.
-		if !hangup.ByCaller(ctx, err) {
-			emitEvent(ctx, security.Event{Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure})
-		}
+		// A verdict wins over a hang-up: the token was refused, so the
+		// refusal is reported even when the request's own context ended
+		// beside it.
+		emitEvent(ctx, security.Event{Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure})
 
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
 	}
