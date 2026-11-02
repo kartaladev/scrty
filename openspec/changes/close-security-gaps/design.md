@@ -197,6 +197,11 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
  GET /api/orders + Authorization + DPoP  -->     slots 75 .. 900 as usual
 ```
 
+- **Settled during tasks 4.1–4.6 (2026-11-02).**
+  - **Also refused at construction:** an empty or non-token method or header name, `*` in a method or header list, a negative `MaxAge`, an origin with no host or a malformed port, a trailing `/` (a path), and a pattern without a wildcard. A pattern alone counts as an allowed origin.
+  - **Pattern breadth.** A pattern needs at least two labels after its wildcard, so `https://*.com` is refused. Without a public-suffix list, `https://*.co.uk` cannot be told apart from `https://*.example.com`, and the godoc says so.
+  - **Preflight caching.** `MaxAge` zero means the 10-minute default. `WithoutPreflightCaching()` sends `Access-Control-Max-Age: 0`, so the default is replaceable in both directions.
+  - **Allowed headers in a preflight answer.** The answer lists the headers the preflight asked for, spelt as the policy spells them, not the whole policy list. That is the spec's wording, and the diagram above shows the request's two headers for the same reason.
 - **Follows the chain:** with DPoP on, `DPoP` is allowed and `DPoP-Nonce`/`WWW-Authenticate` are exposed. With a CSRF token header, its name is allowed. `WithoutAutomaticCORSHeaders()` turns this off.
 - **Departure from the established design.** It relied on a gin-only CORS middleware. scrty serves three adapters and must behave the same on all of them, and a preflight that reaches the fail-closed authorizer is refused. So CORS lives in the chain.
 - **Alternatives rejected:** *rs/cors or go-chi/cors.*
