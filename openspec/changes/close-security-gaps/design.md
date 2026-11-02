@@ -346,6 +346,8 @@ httpsec.EnableDPoP(httpsec.DPoP{
     Replay:      replayStore,       // default: in-memory, per process
     Algorithms:  []jwa.SignatureAlgorithm{jwa.ES256()}, // default
     Nonce:       false,             // default; true turns on server nonces
+    NonceCipher: nil,               // required when Nonce is true; e.g. seal.SessionCipher
+    NonceLifetime: 5 * time.Minute, // default
     PublicURL:   "",                // default: built from the resolved scheme and host (D2, D7)
     MaxProofSize: 8 << 10,          // default 8 KiB
 })
@@ -410,7 +412,7 @@ httpsec.EnableDPoP(httpsec.DPoP{
   - **Issuing a bound token.** `token.Generator` keeps its signature. A generator that can bind implements the optional `token.ConfirmingGenerator` (`GenerateWith(ctx, id, p, opts ...IssueOption)`), as the built-in JWT generator does. `EnableDPoP` and `EnableCertificateBinding` refuse, at construction, a chain whose token generator does not implement it, so a token is never issued unbound when binding was asked for. Changing the interface would have broken every consumer generator, DPoP or not.
   - **The path as sent.** `Request` gains `EscapedPath()` (required, before the tag, as `HeaderValues` did), so `htu` compares the path the client sent on every adapter. An optional interface with a fallback to the decoded path would let `/api/ord%65rs` match `/api/orders` on an adapter that lacks it. The comparison does not decode, so `%65` and `e` differ (stricter than RFC 9449's SHOULD on RFC 3986 §6.2.2 normalisation, which only ever refuses a valid proof), but the hex digits of a percent-encoding compare without case, so `%2f` matches `%2F`.
   - **Session-reference binding is checked before anything is published.** Resolution gains an admission step after the session loads, so a session bound to another key is refused before the caller is published or a policy runs.
-  - **What the chain refuses.** An unbound credential presented under the `DPoP` scheme is refused. In signed mode the stored session's binding must equal the token's `cnf`. A `cnf` with an unknown member, or both members, is refused as unauthenticated (401), never read as unbound. `x5t#S256` belongs to D9. `Nonce: true` is a configuration error until server nonces exist (task 8.10), so it never reads as enforced when it is not.
+  - **What the chain refuses.** An unbound credential presented under the `DPoP` scheme is refused. In signed mode the stored session's binding must equal the token's `cnf`. A `cnf` with an unknown member, or both members, is refused as unauthenticated (401), never read as unbound. `x5t#S256` belongs to D9. While tasks 8.1–8.9 were in progress, `Nonce: true` was a configuration error, so it never read as enforced when it was not. Task 8.10 lifts that (below).
 - **Settled during tasks 8.6–8.9 (2026-11-02).**
   - **Proof before spend, per endpoint.** Login checks the proof before the password, and a bad proof never counts as a failed password. Magic link and the OIDC handoff check it before redeeming, and a bad proof is charged to the source as a request without a usable link or code already is. Passkey login and recovery check it before the assertion or the recovery proofs and charge nothing, as for a malformed request. A valid proof is recorded at once, so a replay is refused before anything is spent too.
   - **Who binds.** The session is bound when it is built at first factor. MFA verify and renewal inherit the binding the bearer already checked, and never add one. Re-authentication binds an unbound session from a proof without `ath`, as an issuing endpoint does, and keeps a bound one bound. Recovery binds the session its core builds (`recovery.WithFinishKeyBinding`).
@@ -419,7 +421,16 @@ httpsec.EnableDPoP(httpsec.DPoP{
 - **Replay record outlives the proof (task 8.4 review).** A proof's record is kept until `iat + 2 × ProofMaxAge`, not `iat + ProofMaxAge`. The `iat` check and the store's expiry read the clock at different moments, and a proof accepted just before its lifetime ended would otherwise find its own record already expired on replay. The margin covers any delay between the two reads up to a whole lifetime.
 - **Proof refusals at the interceptor are not charged to the source.** An invalid proof at the bearer interceptors is answered 401 without a throttle charge. It costs one signature check after the cheap structural checks, and requests reach it only through the throttles that run first. At the issuing endpoints a bad proof is charged as a malformed request (above). A session-reference credential that loads but is refused for its binding (presented as `Bearer`, or with another key's proof) is different: it is a valid credential used by the wrong sender, so it is charged to the source as any refused reference is (the project rule for refused valid credentials), and its error also matches `ErrAuthenticationRequired`, so it cannot be told apart from a missing session.
 - **Replay store:** a port with one atomic insert-if-absent, keyed by a digest of the `jti` and the key thumbprint. It shares the multi-replica caveat of the rate limiter and accepts a shared store. A store failure is a dependency failure: 500, fixed text, not charged. A request whose context ended fails with the context's error (`key-port-context` D8).
-- **Nonces:** off by default. They cost a round trip, and the 60-second lifetime with `jti` already bounds replay. When on, they are stateless (sealed with the chain's key material), so every replica can verify them without a shared store.
+- **Nonces:** off by default. They cost a round trip, and the 60-second lifetime with `jti` already bounds replay. When on, they are stateless and sealed, so every replica that shares the key can verify them without a shared store.
+- **Nonce key (settled 2026-11-02, task 8.10, user's choice).**
+  - **The decision:** the chain holds no key of its own, so the consumer supplies one as `DPoP.NonceCipher` (`httpsec.NonceCipher`: `Seal` and `Open` with additional data, the same methods as `session.Cipher`, so `seal.SessionCipher` plugs in).
+  - **Separation:** nonces are sealed with their own additional data (`scrty/httpsec:dpop-nonce:v1`), so a nonce opens as nothing else sealed under the same keys, and nothing else opens as a nonce.
+  - **Construction rules:** `Nonce: true` without a cipher is a configuration error from `New`. So are a cipher or a lifetime set while `Nonce` is false, and a negative lifetime.
+  - **Lifetime:** `NonceLifetime` defaults to 5 minutes. A fresh nonce is sent in `DPoP-Nonce` once half the lifetime has passed. RFC 9449 §8.2 leaves the timing to the server.
+  - **Override:** the cipher is a port, so key storage and rotation are the consumer's. The lifetime is a field.
+  - **Rejected:**
+    - *A random key per process when none is given.* On more than one replica, or after a restart, nonces would be refused with no warning, which is the silent degradation `library-design` rule 4 forbids.
+    - *A stateful nonce store.* It needs shared storage and a write per nonce, with no gain over sealed nonces.
 - **Default:** accepted, not required, so existing bearer clients keep working while browser clients opt in by sending proofs.
 - **Alternatives rejected:**
   - *Required by default.* That would break every non-DPoP client on upgrade.
@@ -713,7 +724,7 @@ Settled on 2026-11-02: the CSRF token style (a synchronizer token stored on the 
 - [gorilla ProxyHeaders](https://pkg.go.dev/github.com/gorilla/handlers#ProxyHeaders) and [chi RealIP](https://pkg.go.dev/github.com/go-chi/chi/v5/middleware#RealIP): rewriting without trust checks; chi deprecated `RealIP`.
 
 **D8, D9: sender-constrained tokens** (accessed 2026-11-01)
-- [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html): proof fields and checks, `cnf.jkt`, refusing bound tokens as bearer, `DPoP-Nonce`, CORS exposure.
+- [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.html): proof fields and checks, `cnf.jkt`, refusing bound tokens as bearer, `DPoP-Nonce`, CORS exposure. Re-read 2026-11-02 for the nonce key: §8 says nonces are opaque and unpredictable and leaves how they are generated to the server; §8.2 lets the server send a new nonce whenever it chooses; §9 covers resource-server nonces with `use_dpop_nonce`.
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt) (accessed 2026-10-31): sender-constraining SHOULD; refresh rotation as the alternative.
 - [htmx events](https://htmx.org/events/): `htmx:confirm` with `issueRequest`, for the browser sample.
 
