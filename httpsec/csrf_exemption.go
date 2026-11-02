@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -98,21 +99,29 @@ func oneRealSegment(seg string) bool {
 // slash, a change of case, dot segments, or any percent-encoding the pattern
 // does not spell names another route, which is judged as an ordinary one, so
 // "/webhooks%2Fpayments" is not "/webhooks/payments", whatever a router makes
-// of it. Write a pattern as clients send it. A pattern segment "*" matches
-// exactly one path segment which, decoded, is not empty, "." or ".." and holds
-// no "/", so "/webhooks/*/events" matches "/webhooks/stripe/events" and not
-// "/webhooks/a/b/events" or "/webhooks/a%2Fb/events". Every other protection the chain applies still
+// of it. Write a pattern as clients send it: a character a request always
+// escapes is written escaped, "/webhooks/caf%C3%A9" and not "/webhooks/café".
+// A pattern segment "*" matches exactly one path segment which, decoded, is
+// not empty, "." or ".." and holds no "/", so "/webhooks/*/events" matches
+// "/webhooks/stripe/events" and not "/webhooks/a/b/events" or
+// "/webhooks/a%2Fb/events". Every other protection the chain applies still
 // applies to an exempt route. Exemptions accumulate; give the option once per
 // route.
 //
 // Default: no route is exempt, apart from the OIDC back-channel logout
 // endpoint (see WithoutBackchannelLogoutExemption). There is no option
-// exempting every route: that is WithoutCSRFProtection. Construction fails
-// with ErrConfig when method is empty, not a single method name, or GET, HEAD
-// or OPTIONS (never judged, so exempting it is meaningless), or when pattern
-// is empty, does not start with "/", is "/" alone, has an empty interior
-// segment, a "." or ".." segment, a "*" inside a segment, or no segment other
-// than "*".
+// exempting every route: that is WithoutCSRFProtection.
+//
+// Construction fails with ErrConfig when:
+//   - method is empty, not a single method name, or GET, HEAD or OPTIONS
+//     (never judged, so exempting it is meaningless);
+//   - pattern is empty, does not start with "/", is "/" alone, has an empty
+//     interior segment, a "." or ".." segment, a "*" inside a segment, or no
+//     segment other than "*";
+//   - a fixed segment is a malformed percent-encoding ("%zz"), decodes to "."
+//     or ".." ("%2e%2e") or to one holding "/" ("a%2Fb"), or holds a character
+//     a request escapes (a space, "é"): it could never match, so it must be
+//     written in its escaped form ("a%20b", "caf%C3%A9").
 func WithCSRFExemption(method, pattern string) CSRFOption {
 	const option = "WithCSRFExemption"
 
@@ -184,8 +193,10 @@ func parseCSRFExemption(method, pattern string) (csrfExemption, error) {
 }
 
 // checkExemptionSegment refuses a fixed segment that is not a well-formed
-// escape, or that decodes to a dot segment or to one holding "/": a router
-// that decodes it would hand the handler a path other than the one written.
+// escape, that decodes to a dot segment or to one holding "/" (a router that
+// decodes it would hand the handler a path other than the one written), or
+// that holds a character a request always escapes: such a segment is compared
+// with the path as sent, so it could never match.
 func checkExemptionSegment(seg string) error {
 	if seg == "" || seg == csrfWildcard {
 		return nil
@@ -200,6 +211,13 @@ func checkExemptionSegment(seg string) error {
 		return errors.New("the path has a dot segment")
 	case strings.Contains(decoded, "/"):
 		return errors.New("a segment decodes to one holding \"/\"")
+	}
+
+	// RawPath keeps the escapes and the characters a client may send as they
+	// are; what a request escapes (non-ASCII, a space) is escaped, and so
+	// differs from the segment.
+	if (&url.URL{Path: "/" + decoded, RawPath: "/" + seg}).EscapedPath() != "/"+seg {
+		return fmt.Errorf("a segment holds a character a request escapes; write the pattern in its escaped form, such as %q", "caf%C3%A9")
 	}
 
 	return nil

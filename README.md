@@ -1429,9 +1429,11 @@ webhook, from both checks. Every other protection still applies to it.
   segments, a `*` inside a segment, or no segment but wildcards. No option
   exempts every route; that is `WithoutCSRFProtection()`.
 - Construction also refuses a fixed segment that is a malformed percent-encoding
-  (`%zz`) or decodes to `.`, `..` or something holding `/` (`%2e%2e`, `%2E`,
-  `a%2Fb`); a legitimate one such as `caf%C3%A9` is kept and matches only that
-  escaped form.
+  (`%zz`), decodes to `.`, `..` or something holding `/` (`%2e%2e`, `%2E`,
+  `a%2Fb`), or holds a character a request always escapes, such as a space or
+  `é` (`/webhooks/café`): it could never match, so write it in its escaped form
+  (`/webhooks/caf%C3%A9`, `/webhooks/a%20b`). An escaped segment is kept and
+  matches only that escaped form.
 - With OIDC login, `POST` to the back-channel logout endpoint (the
   `WithOIDCBackchannelLogoutPath` prefix followed by one provider name) is
   exempt by default, because the provider calls it server to server. The

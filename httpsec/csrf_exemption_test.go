@@ -173,6 +173,35 @@ func TestCSRF_Exemptions(t *testing.T) {
 		{name: "an exemption with an encoded slash", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/a%2Fb")}, assert: misconfigured},
 		{name: "an exemption with a malformed escape", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/%zz")}, assert: misconfigured},
 		{
+			name: "an exemption with a segment a request would escape fails construction",
+			csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/café")},
+			assert: func(t *testing.T, _ served, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithCSRFExemption")
+				assert.ErrorContains(t, err, "escaped form")
+			},
+		},
+		{
+			name:   "an exemption with a space in a segment fails construction",
+			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/a b")},
+			assert: misconfigured,
+		},
+		{
+			name:   "an exemption with an escaped space matches that escaped form",
+			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/a%20b")},
+			method: http.MethodPost, path: "/webhooks/a%20b", assert: exempt,
+		},
+		{
+			name:   "an exemption with a wildcard and an escaped segment matches both",
+			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/*/caf%C3%A9")},
+			method: http.MethodPost, path: "/webhooks/stripe/caf%C3%A9", assert: exempt,
+		},
+		{
+			name:   "a wildcard exemption still refuses a segment a request would escape",
+			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/*/café")},
+			assert: misconfigured,
+		},
+		{
 			name:   "an exemption with a legitimately encoded segment matches that escaped form",
 			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/caf%C3%A9")},
 			method: http.MethodPost, path: "/webhooks/caf%C3%A9", assert: exempt,

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -582,6 +583,13 @@ func TestCSRF_TokenAtSignIn(t *testing.T) {
 func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 	t.Parallel()
 
+	// signedIn is one first-factor login: the chain it was made through and
+	// the session it created.
+	type signedIn struct {
+		chain   *httpsec.Chain
+		session *session.Session
+	}
+
 	type testCase struct {
 		name string
 
@@ -589,12 +597,15 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		// authenticator, with the default token source.
 		csrf bool
 
-		// signIn makes the login and returns the session it created.
-		signIn func(t *testing.T, csrfOpts func(sessions *session.Sessions) []httpsec.Option) *session.Session
-		assert func(t *testing.T, signedIn *session.Session)
+		// signIn makes the login and returns it.
+		signIn func(t *testing.T, csrfOpts func(sessions *session.Sessions) []httpsec.Option) signedIn
+
+		// assert receives the login, and another one of the same kind made on
+		// a chain of its own.
+		assert func(t *testing.T, first, other signedIn)
 	}
 
-	magicLinkSignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) *session.Session {
+	magicLinkSignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) signedIn {
 		h := newMagicLinkHarness(t)
 		h.chainOpts = csrfOpts(h.sessions)
 
@@ -602,10 +613,10 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		token, nonce := h.link(t, requesting)
 		require.NoError(t, h.redeem(t, requesting, token, nonce).err)
 
-		return h.openedSession(t)
+		return signedIn{chain: requesting, session: h.openedSession(t)}
 	}
 
-	passkeySignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) *session.Session {
+	passkeySignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) signedIn {
 		d := newPwlDeployment(t)
 		d.withoutPasskeyMFA = true
 		d.required.on.Store(false)
@@ -614,15 +625,51 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		d.extra = append(d.extra, csrfOpts(d.sessions)...)
 		d.build(t)
 
-		return d.finishedSession(t, d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive)))
+		return signedIn{chain: d.chain, session: d.finishedSession(t, d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive)))}
 	}
 
-	holdsToken := func(t *testing.T, signedIn *session.Session) {
-		assert.NotEmpty(t, signedIn.CSRFToken)
+	oidcSignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) signedIn {
+		h := newOIDCHarness(t)
+		h.chainOpts = csrfOpts(h.sessions)
+
+		var sid atomic.Value
+
+		h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+			DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+				sid.Store(id)
+
+				return "issued-token", nil
+			})
+
+		chain := h.chain(t)
+
+		out := serve(t, chain, handoffRequest(t.Context(), oidcTestSource, h.issueHandoff(t, "")))
+		require.NoError(t, out.err)
+
+		id, _ := sid.Load().(string)
+		require.NotEmpty(t, id, "no access token was issued, so no session was opened")
+
+		s, err := h.sessions.Load(t.Context(), id)
+		require.NoError(t, err)
+
+		return signedIn{chain: chain, session: s}
 	}
 
-	holdsNone := func(t *testing.T, signedIn *session.Session) {
-		assert.Empty(t, signedIn.CSRFToken)
+	// holdsToken asserts the login holds a token, that a request authenticated
+	// by its cookie passes the check with it and is refused without it, and
+	// that no two sign-ins share one.
+	holdsToken := func(t *testing.T, first, other signedIn) {
+		require.NotEmpty(t, first.session.CSRFToken)
+		assert.NotEqual(t, other.session.CSRFToken, first.session.CSRFToken, "a token belongs to one sign-in")
+
+		passedCSRF(t, serve(t, first.chain, cookieRequest(t.Context(), http.MethodPost, first.session.ID,
+			map[string]string{"X-CSRF-Token": first.session.CSRFToken}, "")))
+
+		refusedCrossSite(t, serve(t, first.chain, cookieRequest(t.Context(), http.MethodPost, first.session.ID, nil, "")))
+	}
+
+	holdsNone := func(t *testing.T, first, _ signedIn) {
+		assert.Empty(t, first.session.CSRFToken)
 	}
 
 	cases := []testCase{
@@ -630,13 +677,15 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		{name: "a magic-link redemption without CSRF protection holds none", signIn: magicLinkSignIn, assert: holdsNone},
 		{name: "a passwordless passkey login with CSRF protection holds a token", csrf: true, signIn: passkeySignIn, assert: holdsToken},
 		{name: "a passwordless passkey login without CSRF protection holds none", signIn: passkeySignIn, assert: holdsNone},
+		{name: "an OIDC redemption with CSRF protection holds a token", csrf: true, signIn: oidcSignIn, assert: holdsToken},
+		{name: "an OIDC redemption without CSRF protection holds none", signIn: oidcSignIn, assert: holdsNone},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			signedIn := tc.signIn(t, func(sessions *session.Sessions) []httpsec.Option {
+			csrfOpts := func(sessions *session.Sessions) []httpsec.Option {
 				if !tc.csrf {
 					return nil
 				}
@@ -645,9 +694,9 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 					httpsec.EnableCSRFProtection(),
 					httpsec.RegisterInterceptor(httpsec.NewTestCookieAuthenticator(sessions, csrfCookie), httpsec.OrderBearerToken),
 				}
-			})
+			}
 
-			tc.assert(t, signedIn)
+			tc.assert(t, tc.signIn(t, csrfOpts), tc.signIn(t, csrfOpts))
 		})
 	}
 }
