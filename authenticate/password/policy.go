@@ -294,9 +294,14 @@ func ContextWords(fn ContextWordsFunc) PolicyOption {
 }
 
 // WithEncoder replaces the encoder a change encodes the new password with,
-// which is also the first matcher of the [NoReuse] rule. When the encoder has
-// a byte limit, as bcrypt's 72 bytes, a check refuses a longer candidate as
-// too long, so a check and a change agree.
+// which is also the first matcher of the [NoReuse] rule.
+//
+// An encoder that states a byte limit through [InputLimiter], as the bcrypt
+// encoder's 72 bytes, has a longer candidate refused as too long by the check,
+// so a check and a change agree. For an encoder that states none, the check
+// cannot know its limit: a candidate it would refuse passes the check, and
+// [Policy.Change] answers the encoder's [ErrTooLong] as a too-long rejection.
+// Implement [InputLimiter] to have the check refuse it first.
 //
 // Default: the library's Argon2id encoder at its default parameters
 // ([NewArgon2idEncoder]). A nil encoder, typed nil included, fails
@@ -378,7 +383,8 @@ func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate st
 //     and the password is unchanged. A user with no current hash retires
 //     nothing;
 //  3. encode candidate with the policy's encoder; an encoder error, such as
-//     [ErrContainsNUL], is returned as is;
+//     [ErrContainsNUL], is returned as is, except [ErrTooLong], which is
+//     refused as too long ([RuleTooLong]);
 //  4. call write with user, the new hash and the time from the policy's
 //     clock, and return its error unchanged.
 //
@@ -415,6 +421,12 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 	}
 
 	hash, err := p.enc.Encode(candidate)
+	if errors.Is(err, ErrTooLong) {
+		// An encoder that states no limit through InputLimiter reaches here: the
+		// candidate is too long for it, which is the user's to fix, not a failure.
+		return RejectedError{Rule: RuleTooLong}
+	}
+
 	if err != nil {
 		return err
 	}
@@ -442,11 +454,11 @@ func containsContextWord(candidate string, words []string) bool {
 	return false
 }
 
-// encoderByteLimit returns the most bytes enc accepts, or 0 for no limit
-// below the policy's maximum.
+// encoderByteLimit returns the most bytes enc states it accepts through
+// [InputLimiter], or 0 for no limit below the policy's maximum.
 func encoderByteLimit(enc Encoder) int {
-	if _, ok := enc.(*BcryptEncoder); ok {
-		return bcryptMaxInput
+	if l, ok := enc.(InputLimiter); ok {
+		return max(l.MaxInputBytes(), 0)
 	}
 
 	return 0

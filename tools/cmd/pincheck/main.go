@@ -9,7 +9,10 @@
 //   - any other reference must end in @ followed by a full 40-character
 //     lowercase hexadecimal commit SHA;
 //   - a pinned reference must carry a trailing "# <tag>" comment naming the
-//     release the pin corresponds to.
+//     release the pin corresponds to;
+//   - the value must be written in place: a YAML alias (uses: *anchor) is
+//     refused, because the reference it stands for is not the text a reviewer
+//     sees at the use.
 //
 // Usage: pincheck [dir...]
 package main
@@ -48,7 +51,8 @@ var (
 // unpinned reference. It returns an error when dir cannot be read.
 func Check(dir string) ([]Finding, error) {
 	var findings []Finding
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	// G703: the directory is the command-line argument; scanning it is the tool's job.
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error { //nolint:gosec // G703: see above
 		if err != nil {
 			return err
 		}
@@ -71,11 +75,11 @@ func isYAML(path string) bool {
 }
 
 func checkFile(path string) ([]Finding, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path found by walking the directory the caller named
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only: a close failure loses nothing
 
 	var findings []Finding
 	dec := yaml.NewDecoder(f)
@@ -88,6 +92,11 @@ func checkFile(path string) ([]Finding, error) {
 			return findings, fmt.Errorf("parse %s: %w", path, err)
 		}
 		walk(&doc, func(v *yaml.Node) {
+			if v.Kind == yaml.AliasNode {
+				findings = append(findings, Finding{File: path, Line: v.Line, Uses: "*" + v.Value,
+					Why: "uses is a YAML alias; write the pinned reference where it is used"})
+				return
+			}
 			ref := strings.TrimSpace(v.Value)
 			comment := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v.LineComment), "#"))
 			if why := violation(ref, comment); why != "" {
@@ -97,13 +106,17 @@ func checkFile(path string) ([]Finding, error) {
 	}
 }
 
-// walk calls fn with the value node of every scalar "uses" key found in any
-// mapping, block or flow, at any depth.
+// walk calls fn with the value node of every "uses" key found in any mapping,
+// block or flow, at any depth, when that value is a scalar or an alias. An
+// alias is passed through unresolved so the caller can refuse it: its anchor
+// may sit anywhere in the file, away from the pin and tag comment a reader
+// checks.
 func walk(n *yaml.Node, fn func(value *yaml.Node)) {
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if k.Kind == yaml.ScalarNode && k.Value == "uses" && v.Kind == yaml.ScalarNode {
+			if k.Kind == yaml.ScalarNode && k.Value == "uses" &&
+				(v.Kind == yaml.ScalarNode || v.Kind == yaml.AliasNode) {
 				fn(v)
 			}
 		}

@@ -120,6 +120,24 @@ type Recognizer interface {
 	Recognizes(encoded []byte) bool
 }
 
+// InputLimiter is implemented by an encoder that can state the longest input,
+// in bytes, its Encode accepts. The built-in bcrypt encoder implements it, with
+// bcrypt's 72 bytes.
+//
+// It is optional and checked by type assertion, once, when a [Policy] is built.
+// A policy whose encoder states a limit refuses a longer candidate as too long
+// ([RuleTooLong]) in [Policy.Check], so a check and a change agree and the
+// answer is the same before any hashing. An encoder that does not implement it,
+// or states zero or a negative number, is treated as having no limit below the
+// policy's maximum length: the check accepts such a candidate, and
+// [Policy.Change] still answers an [ErrTooLong] from that encoder's Encode as a
+// too-long rejection, not as a failure.
+type InputLimiter interface {
+	// MaxInputBytes returns the most bytes of input Encode accepts. Zero or a
+	// negative number means no limit.
+	MaxInputBytes() int
+}
+
 // isNilReader reports whether r is nil, or a non-nil interface holding a nil
 // pointer, map, slice, channel or function.
 //

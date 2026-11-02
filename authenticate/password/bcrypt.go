@@ -111,6 +111,11 @@ func (e *BcryptEncoder) Encode(input string) ([]byte, error) {
 	return encoded, nil
 }
 
+// MaxInputBytes returns 72, the longest input bcrypt hashes. It implements
+// [InputLimiter], so a [Policy] built with this encoder refuses a longer
+// candidate as too long at the check.
+func (e *BcryptEncoder) MaxInputBytes() int { return bcryptMaxInput }
+
 // Match reports whether input produces encoded.
 //
 // bcrypt reads the cost and salt from the record itself, so a hash written at an

@@ -118,6 +118,29 @@ func TestCheck(t *testing.T) {
 			assert: none,
 		},
 		{
+			name: "refuses an alias standing for a tag reference",
+			files: map[string]string{"ci.yml": "env: {CO: &co actions/checkout@v5}\n" +
+				"steps:\n  - uses: *co\n"},
+			assert: func(t *testing.T, got []Finding, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, f := range got {
+					if f.Line == 3 {
+						return
+					}
+				}
+				t.Fatalf("got %v; want a finding on the aliased uses at line 3", got)
+			},
+		},
+		{
+			name: "refuses an alias even when its anchor is a pinned reference",
+			files: map[string]string{"ci.yml": "env: {CO: &co actions/checkout@" + sha40 + " # v5\n}\n" +
+				"steps:\n  - uses: *co\n"},
+			assert: one,
+		},
+		{
 			name:   "reads the yaml extension and ignores other files",
 			files:  map[string]string{"ci.yaml": "- uses: a/b@v1\n", "notes.txt": "uses: a/b@v1\n"},
 			assert: one,

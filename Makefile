@@ -12,19 +12,28 @@ BIN := $(CURDIR)/.bin
 export PATH := $(BIN):$(PATH)
 
 # Every module listed in go.work. The tools module is deliberately outside the
-# workspace, so it is never linted or tested here.
+# workspace, so the per-module loops below skip it; tools-check gates it instead.
 MODULES := $(shell go list -m -f '{{.Dir}}')
 
-.PHONY: tools check fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate
+.PHONY: tools tools-check check fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate
 
 # GOWORK=off because tools/ is deliberately outside go.work: in workspace mode the
 # tool pattern resolves against the workspace modules, which declare no tools.
 tools:
 	cd tools && GOWORK=off GOBIN=$(BIN) go install tool
 
+# The tools module holds pincheck, a gate in its own right, and sits outside
+# go.work, so no loop over MODULES reaches it. This target vets, lints and tests
+# it with the workspace off, as `pincheck` and `tools` do. gofmt is checked here
+# too, because fmt-check only names the workspace modules.
+tools-check: tools
+	@set -eu -o pipefail; out="$$(gofmt -l tools)"; \
+	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi; \
+	cd tools && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./...
+
 # test-isolated runs from the recipe, after every prerequisite has finished, so
 # that make -j never runs it beside the rest of the suite.
-check: tools pincheck fmt-check vet lint test vuln generate-check
+check: tools pincheck tools-check fmt-check vet lint test vuln generate-check
 	@$(MAKE) --no-print-directory test-isolated
 
 # gofmt -l exits 0 whether or not it names files, so the output is what fails.
@@ -50,9 +59,13 @@ test-isolated:
 
 # govulncheck exits non-zero on a reachable vulnerability, and the subshell's
 # status stops the loop under the explicit flags above, so a finding in any
-# module fails the target.
+# module fails the target. GOWORK=off scans each module against its own go.mod
+# requirements, which is what a consumer of that published module gets: in
+# workspace mode every module is scanned against the versions the whole
+# workspace selects, so a module pinned to a vulnerable release passes whenever a
+# sibling lifts it. The same reason `sbom` runs with the workspace off.
 vuln:
-	@set -eu -o pipefail; for m in $(MODULES); do echo "vuln: $$m"; (cd "$$m" && govulncheck ./...); done
+	@set -eu -o pipefail; for m in $(MODULES); do echo "vuln: $$m"; (cd "$$m" && GOWORK=off govulncheck ./...); done
 
 # Every action and reusable workflow must be pinned to a full commit SHA. The
 # checker is in the tools module, so it runs there with the workspace off.
