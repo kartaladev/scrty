@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -145,6 +146,9 @@ func (r *miniRequest) ClientIP() string { return r.ex.peer }
 func (r *miniRequest) Host() string { return r.ex.header["Host"] }
 
 func (r *miniRequest) Secure() bool { return false }
+
+// ClientCertificate is nil: this framework serves plain HTTP alone.
+func (r *miniRequest) ClientCertificate() *x509.Certificate { return nil }
 
 // miniWriter writes the consumer's framework through the library's port.
 type miniWriter struct{ ex *miniExchange }

@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"bytes"
+	"crypto/x509"
 	"io"
 	"math"
 	"mime"
@@ -333,6 +334,17 @@ func (h *httpRequest) Host() string { return h.r.Host }
 // Secure reports whether the request arrived over TLS, which net/http records
 // as a non-nil r.TLS. No forwarded header is read.
 func (h *httpRequest) Secure() bool { return h.r.TLS != nil }
+
+// ClientCertificate is the leaf of r.TLS.PeerCertificates, the first
+// certificate the client sent, and nil when the request did not arrive over
+// TLS or the client sent none. No header is read.
+func (h *httpRequest) ClientCertificate() *x509.Certificate {
+	if h.r.TLS == nil || len(h.r.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+
+	return h.r.TLS.PeerCertificates[0]
+}
 
 // NewHTTPResponseWriter adapts a net/http response writer.
 //

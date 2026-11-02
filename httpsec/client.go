@@ -2,6 +2,8 @@ package httpsec
 
 import (
 	"context"
+	"crypto/x509"
+	"sync"
 
 	"github.com/kartaladev/scrty/session"
 )
@@ -74,16 +76,14 @@ func (cr *clientResolver) rewrites() bool {
 	return cr.proxies != nil || cr.httpsDeployment
 }
 
-// resolve answers the Client of r, and ErrHostNotAllowed for a forwarded host
-// on none of the allowed hosts.
-func (cr *clientResolver) resolve(r Request) (Client, error) {
+// resolve answers the resolution of r, its Client above all, and
+// ErrHostNotAllowed for a forwarded host on none of the allowed hosts.
+func (cr *clientResolver) resolve(r Request) (resolution, error) {
 	if cr.proxies != nil {
-		res, err := cr.proxies.resolve(r)
-
-		return res.client, err
+		return cr.proxies.resolve(r)
 	}
 
-	return Client{IP: r.ClientIP(), Secure: cr.httpsDeployment || r.Secure(), Host: r.Host()}, nil
+	return resolution{client: Client{IP: r.ClientIP(), Secure: cr.httpsDeployment || r.Secure(), Host: r.Host()}}, nil
 }
 
 // begin resolves ex's request before the first interceptor runs: it removes
@@ -92,8 +92,12 @@ func (cr *clientResolver) resolve(r Request) (Client, error) {
 // records (signInMetadata), and, where the answer can differ from the adapter's, wraps the
 // request so every interceptor reads the one resolved answer. A refusal leaves
 // the exchange's request and context as they were.
+//
+// The raw forwarded client certificate a trusted proxy sent is kept by the
+// resolution before the header is removed, and the wrapped request decodes it
+// the first time its certificate is asked for.
 func (cr *clientResolver) begin(ex *Exchange) error {
-	client, err := cr.resolve(ex.Request)
+	res, err := cr.resolve(ex.Request)
 
 	cr.removeForwarded(ex.Request)
 
@@ -101,11 +105,16 @@ func (cr *clientResolver) begin(ex *Exchange) error {
 		return err
 	}
 
-	ctx := context.WithValue(ex.Context(), clientContextKey{}, client)
+	ctx := context.WithValue(ex.Context(), clientContextKey{}, res.client)
 	ex.SetContext(withSignInUserAgent(ctx, ex.Request.Header("User-Agent")))
 
 	if cr.rewrites() {
-		ex.Request = &resolvedRequest{Request: ex.Request, client: client, hide: cr.hidden()}
+		rr := &resolvedRequest{Request: ex.Request, client: res.client, hide: cr.hidden()}
+		if res.trustedPeer {
+			rr.cert = &forwardedCert{raw: res.forwardedCert, decode: cr.proxies.settings.certDecode}
+		}
+
+		ex.Request = rr
 	}
 
 	return nil
@@ -157,6 +166,54 @@ type resolvedRequest struct {
 
 	// hide names the removed forwarded headers, and is nil when none are.
 	hide func(name string) bool
+
+	// cert is the client certificate a trusted proxy forwarded, and nil when
+	// the peer is not a trusted proxy, whose request answers its own
+	// connection's certificate.
+	cert *forwardedCert
+}
+
+// forwardedCert is the client certificate header value a trusted proxy sent,
+// decoded once, the first time it is asked for.
+type forwardedCert struct {
+	raw    string
+	decode func(string) (*x509.Certificate, error)
+
+	once sync.Once
+	cert *x509.Certificate
+}
+
+// certificate is the decoded certificate, and nil when the value is empty,
+// does not decode, or decodes to none.
+func (f *forwardedCert) certificate() *x509.Certificate {
+	f.once.Do(func() {
+		if f.raw == "" {
+			return
+		}
+
+		decode := f.decode
+		if decode == nil {
+			decode = decodeEscapedPEM
+		}
+
+		if cert, err := decode(f.raw); err == nil && cert != nil {
+			f.cert = cert
+		}
+	})
+
+	return f.cert
+}
+
+// ClientCertificate is the resolved client certificate, answered to every
+// interceptor and judged by certificate binding when it is enabled: a trusted
+// proxy's forwarded certificate, or none, from a trusted proxy, and the
+// connection's own from any other peer.
+func (r *resolvedRequest) ClientCertificate() *x509.Certificate {
+	if r.cert != nil {
+		return r.cert.certificate()
+	}
+
+	return r.Request.ClientCertificate()
 }
 
 // ClientIP is the resolved client address.

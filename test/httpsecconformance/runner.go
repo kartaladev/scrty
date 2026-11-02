@@ -4,9 +4,14 @@ import (
 	"testing"
 )
 
-// Run puts every scenario through adapter.
+// Run puts every scenario in Scenarios through adapter.
 //
-// One call is a framework's whole conformance run: the scenarios are the same
+// The groups that need their own wiring run beside it, not inside it: an
+// adapter's suite also calls RunScenarios with ChallengeScenarios, and
+// RunCertificateBinding. An adapter author who calls only Run does not run
+// those rows.
+//
+// Run is otherwise a framework's whole conformance run: the scenarios are the same
 // values every other adapter is given, so a row that passes on one framework
 // and fails on another is a difference in that adapter and nowhere else.
 //

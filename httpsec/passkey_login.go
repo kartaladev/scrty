@@ -548,7 +548,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	// The proof is judged before the assertion, so a bad one leaves the
 	// ceremony's challenge unspent and is refused as a malformed response
 	// is, counted nowhere.
-	keyBinding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
+	keyBinding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request)
 	if err != nil {
 		return err
 	}

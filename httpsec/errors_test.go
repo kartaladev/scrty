@@ -103,6 +103,7 @@ func TestStatusForError(t *testing.T) {
 		{name: "host not allowed", err: fmt.Errorf("resolve: %w", httpsec.ErrHostNotAllowed), want: 400},
 		{name: "invalid DPoP proof", err: fmt.Errorf("bearer: %w", httpsec.ErrInvalidDPoPProof), want: 401},
 		{name: "DPoP nonce required", err: fmt.Errorf("bearer: %w", httpsec.ErrDPoPNonceRequired), want: 401},
+		{name: "certificate binding", err: fmt.Errorf("bearer: %w", httpsec.ErrCertificateBinding), want: 401},
 		{name: "cross-site request", err: fmt.Errorf("csrf: %w", httpsec.ErrCrossSiteRequest), want: 403},
 		{name: "automation challenge refused", err: fmt.Errorf("login: %w", httpsec.ErrChallengeRequired), want: 403},
 		{
@@ -460,6 +461,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrHostNotAllowed":                  httpsec.ErrHostNotAllowed,
 		"httpsec.ErrInvalidDPoPProof":                httpsec.ErrInvalidDPoPProof,
 		"httpsec.ErrDPoPNonceRequired":               httpsec.ErrDPoPNonceRequired,
+		"httpsec.ErrCertificateBinding":              httpsec.ErrCertificateBinding,
 		"httpsec.ErrCrossSiteRequest":                httpsec.ErrCrossSiteRequest,
 		"httpsec.ErrChallengeRequired":               httpsec.ErrChallengeRequired,
 		"httpsec.ErrChallengeUnavailable":            httpsec.ErrChallengeUnavailable,

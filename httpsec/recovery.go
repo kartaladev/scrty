@@ -420,7 +420,7 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 
 	// The proof is judged before any recovery proof is looked at, so a bad
 	// one spends none and is counted nowhere, as a malformed request is.
-	req.KeyBinding, err = issuingBinding(ctx, ex.dpop(), ex.Request)
+	req.KeyBinding, err = issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request)
 	if err != nil {
 		return err
 	}
@@ -795,7 +795,7 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 	}
 
 	// Before the held record is completed, so a bad proof completes nothing.
-	binding, err := issuingBinding(ex.Context(), ex.dpop(), ex.Request)
+	binding, err := issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request)
 	if err != nil {
 		return err
 	}

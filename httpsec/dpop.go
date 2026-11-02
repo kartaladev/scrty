@@ -228,24 +228,37 @@ func EnableDPoP(d DPoP) Option {
 	}
 }
 
-// checkBindingGenerator refuses, when DPoP is enabled, a token generator the
-// endpoint option issues through (named by field) that cannot bind a token to
-// a key: one that does not implement token.ConfirmingGenerator. Such a
-// generator would issue every token unbound while DPoP was asked for. It
-// checks nothing when DPoP is off, or when g is nil, which is the endpoint's
-// own refusal to make.
+// checkBindingGenerator refuses, when DPoP or certificate binding is enabled,
+// a token generator the endpoint option issues through (named by field) that
+// cannot bind a token to a key: one that does not implement
+// token.ConfirmingGenerator. Such a generator would issue every token unbound
+// while a binding was asked for. It checks nothing when both are off, or when
+// g is nil, which is the endpoint's own refusal to make.
 func checkBindingGenerator(c *config, option, field string, g token.Generator) error {
-	if c.dpop == nil || nilcheck.IsNil(g) {
+	if (c.dpop == nil && c.certBinding == nil) || nilcheck.IsNil(g) {
 		return nil
 	}
 
 	if _, ok := g.(token.ConfirmingGenerator); !ok {
 		return newConfigError("%s was given a token generator (%s) that does not implement "+
 			"token.ConfirmingGenerator, and %s binds the tokens the chain issues to the client's "+
-			"key; supply one that does, such as token.NewGenerator's", option, field, optionDPoP)
+			"key; supply one that does, such as token.NewGenerator's", option, field, bindingOptions(c))
 	}
 
 	return nil
+}
+
+// bindingOptions names the enabled options that bind the tokens the chain
+// issues, for a configuration error.
+func bindingOptions(c *config) string {
+	switch {
+	case c.dpop != nil && c.certBinding != nil:
+		return optionDPoP + " with " + optionCertificateBinding
+	case c.certBinding != nil:
+		return optionCertificateBinding
+	default:
+		return optionDPoP
+	}
 }
 
 // dpopVerifier verifies DPoP proofs, and records the ones the chain accepts.
@@ -715,9 +728,10 @@ func isBase64URL(s string) bool {
 }
 
 // errConfirmationNotHonoured is joined to the refusal of a credential whose
-// binding the chain cannot honour: a confirmation member it does not know,
-// both bindings at once, or a certificate binding, which this chain cannot
-// check. It is never accepted as a plain bearer credential instead.
+// binding the chain cannot honour: a confirmation member it does not know, or
+// both bindings at once. It is never accepted as a plain bearer credential
+// instead. A certificate binding while certificate binding is off is refused
+// with ErrCertificateBinding (admitCertificate).
 var errConfirmationNotHonoured = errors.New("httpsec: the credential's key binding cannot be honoured")
 
 // keyBinding is the binding a presented credential carries: a signed token's
@@ -768,16 +782,23 @@ func presentedProof(ctx context.Context, v *dpopVerifier, r Request, underDPoP b
 // verified proof for a credential presented under the DPoP scheme, and nil
 // for one presented otherwise.
 //
-// A binding the chain cannot honour is refused whatever the scheme. With DPoP
-// off a DPoP-bound credential is refused; an unbound one is accepted as
-// before. With DPoP on, a credential presented without the DPoP scheme is
-// refused when it is bound (RFC 9449 section 7.1) or when DPoP is required;
-// one presented under it is accepted only when it is bound to the proof's own
-// key.
-func admitBinding(ctx context.Context, v *dpopVerifier, proof *dpopProof, b keyBinding) error {
-	if b.other || b.x5tS256 != "" {
+// A binding the chain cannot honour is refused whatever the scheme. A
+// certificate binding is judged against the request's certificate
+// (admitCertificate). With DPoP off a DPoP-bound credential is refused; an
+// unbound one is accepted as before. With DPoP on, a credential presented
+// without the DPoP scheme is refused when it is bound (RFC 9449 section 7.1)
+// or when DPoP is required; one presented under it is accepted only when it is
+// bound to the proof's own key.
+func admitBinding(ex *Exchange, v *dpopVerifier, proof *dpopProof, b keyBinding) error {
+	if b.other || (b.jkt != "" && b.x5tS256 != "") {
 		return errors.Join(ErrAuthenticationRequired, errConfirmationNotHonoured)
 	}
+
+	if b.x5tS256 != "" {
+		return admitCertificate(ex, v, proof, b.x5tS256)
+	}
+
+	ctx := ex.Context()
 
 	if v == nil {
 		if b.jkt != "" {
@@ -830,21 +851,26 @@ func (ex *Exchange) dpop() *dpopVerifier {
 //
 // The proof carries no ath: the credential it binds does not exist yet. It is
 // recorded at once, so a replayed proof is refused before anything is spent
-// too. With DPoP off (v nil) it binds nothing and checks nothing. With DPoP
-// required a request without a proof is refused. Every refusal is
-// ErrInvalidDPoPProof; a replay store that fails is a dependency failure, and
-// one the caller's hang-up cut short fails with the context's error.
-func issuingBinding(ctx context.Context, v *dpopVerifier, r Request) (session.KeyBinding, error) {
-	if v == nil {
-		return session.KeyBinding{}, nil
-	}
-
-	if len(r.HeaderValues(dpopHeader)) == 0 {
-		if v.cfg.Require {
+// too. With DPoP off (v nil) it checks no proof. With DPoP required a request
+// without a proof is refused. Every refusal is ErrInvalidDPoPProof; a replay
+// store that fails is a dependency failure, and one the caller's hang-up cut
+// short fails with the context's error.
+//
+// A request without a proof is bound to its client certificate's thumbprint
+// when certificate binding is on (cb not nil) and it presents one
+// (EnableCertificateBinding). A request with both is bound to the proof's key
+// only: a credential carries one confirmation.
+func issuingBinding(ctx context.Context, v *dpopVerifier, cb *certBinding, r Request) (session.KeyBinding, error) {
+	if v == nil || len(r.HeaderValues(dpopHeader)) == 0 {
+		if v != nil && v.cfg.Require {
 			return session.KeyBinding{}, v.refuse(ctx, reasonProofMissing)
 		}
 
-		return session.KeyBinding{}, nil
+		if cb == nil {
+			return session.KeyBinding{}, nil
+		}
+
+		return session.KeyBinding{X5TS256: certificateThumbprint(r.ClientCertificate())}, nil
 	}
 
 	p, err := v.verify(ctx, r, "")

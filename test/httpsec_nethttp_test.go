@@ -189,3 +189,11 @@ func TestChallengeNetHTTP(t *testing.T) {
 
 	httpsecconformance.RunScenarios(t, nethttpAdapter{}, httpsecconformance.ChallengeScenarios())
 }
+
+// TestCertificateBindingNetHTTP runs the certificate-binding scenarios on
+// net/http, through a trusted proxy that forwards the client's certificate.
+func TestCertificateBindingNetHTTP(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunCertificateBinding(t, nethttpAdapter{})
+}

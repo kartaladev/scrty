@@ -92,7 +92,7 @@ func reauthBinding(ex *Exchange, s *session.Session) (session.KeyBinding, error)
 		return session.KeyBinding{}, nil
 	}
 
-	return issuingBinding(ex.Context(), ex.dpop(), ex.Request)
+	return issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request)
 }
 
 // reauthRotation is the rotation option binding asks for: none for the zero

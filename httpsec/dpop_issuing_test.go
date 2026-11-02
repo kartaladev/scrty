@@ -365,15 +365,22 @@ func mfaVerifyEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 func reauthEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 	t.Helper()
 
+	return reauthEndpointWith(t, d)
+}
+
+// reauthEndpointWith is reauthEndpoint on a chain that also takes extra.
+func reauthEndpointWith(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
+	t.Helper()
+
 	b := newIssuingBase(t)
 
-	f := b.fixture(t, d,
+	f := b.fixture(t, d, append([]httpsec.Option{
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: b.authn, Sessions: b.sessions, Tokens: b.gen,
 			Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		}),
 		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(b.gen)),
-	)
+	}, extra...)...)
 	path := httpsec.DefaultReauthenticationPrefix + "/password"
 
 	f.prepare = func(t *testing.T, bound string) func(*testing.T, prover) served {

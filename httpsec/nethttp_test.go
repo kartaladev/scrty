@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"math"
@@ -576,6 +577,62 @@ func TestHTTPRequest_HostAndSecure(t *testing.T) {
 			assert: func(t *testing.T, r httpsec.Request) {
 				assert.Equal(t, "app.example.com:8080", r.Host())
 				assert.False(t, r.Secure())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, httpsec.NewHTTPRequest(tc.build(t)))
+		})
+	}
+}
+
+func TestHTTPRequest_ClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	leaf := newClientCert(t, "leaf")
+	issuer := newClientCert(t, "issuer")
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) *http.Request
+		assert func(t *testing.T, r httpsec.Request)
+	}
+
+	cases := []testCase{
+		{
+			name: "a TLS request answers the leaf the client sent first",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+				req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf.cert, issuer.cert}}
+				return req
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Same(t, leaf.cert, r.ClientCertificate())
+			},
+		},
+		{
+			name: "a TLS request without a client certificate answers nil",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+				req.TLS = &tls.ConnectionState{}
+				return req
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Nil(t, r.ClientCertificate())
+			},
+		},
+		{
+			name: "a plain request answers nil, whatever its headers carry",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+				req.Header.Set("X-Client-Cert", leaf.escaped())
+				return req
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Nil(t, r.ClientCertificate())
 			},
 		},
 	}

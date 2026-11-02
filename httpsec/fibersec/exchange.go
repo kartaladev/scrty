@@ -2,6 +2,7 @@ package fibersec
 
 import (
 	"bytes"
+	"crypto/x509"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -301,6 +302,18 @@ func (r request) Host() string { return string(r.c.Request().Host()) }
 // It never calls fiber's Secure or Scheme, which believe a forwarded scheme
 // once fiber's proxy trust is enabled.
 func (r request) Secure() bool { return r.c.RequestCtx().IsTLS() }
+
+// ClientCertificate is the leaf certificate the client sent on the TLS connection
+// the request arrived on, read from fasthttp's connection state, and nil when the
+// connection is not TLS or the client sent none. No header is read.
+func (r request) ClientCertificate() *x509.Certificate {
+	state := r.c.RequestCtx().TLSConnectionState()
+	if state == nil || len(state.PeerCertificates) == 0 {
+		return nil
+	}
+
+	return state.PeerCertificates[0]
+}
 
 // responseWriter implements httpsec.ResponseWriter over fiber's context.
 //

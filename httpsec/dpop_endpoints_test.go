@@ -112,6 +112,14 @@ func TestDPoP_ProofCharges(t *testing.T) {
 func recoveryFinishFixture(t *testing.T) issuingFixture {
 	t.Helper()
 
+	return recoveryFinishFixtureWith(t)
+}
+
+// recoveryFinishFixtureWith is recoveryFinishFixture on a chain that also
+// takes extra.
+func recoveryFinishFixtureWith(t *testing.T, extra ...httpsec.Option) issuingFixture {
+	t.Helper()
+
 	h := newRecoveryHarness(t)
 	gen := issuingGenerator(t)
 
@@ -122,6 +130,7 @@ func recoveryFinishFixture(t *testing.T) issuingFixture {
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: h.sessions, Users: h.users}),
 		httpsec.EnableDPoP(httpsec.DPoP{}))
+	h.chainOpts = append(h.chainOpts, extra...)
 	h.build(t)
 
 	f := issuingFixture{chain: h.chain, sessions: h.sessions, gen: gen, user: e2eUser}

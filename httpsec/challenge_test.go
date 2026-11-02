@@ -780,14 +780,14 @@ func TestChallenge_Signals(t *testing.T) {
 		},
 		{
 			name:     "with no lockout policy the lockout's default window is used: a failure inside it is reported",
-			failures: failedAgo(lockoutDefault - time.Hour),
+			failures: failedAgo(lockoutDefault - time.Minute),
 			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
 				assert.True(t, seen.IdentifierHasFailures)
 			},
 		},
 		{
 			name:     "with no lockout policy the lockout's default window is used: a failure outside it is not",
-			failures: failedAgo(lockoutDefault + time.Hour),
+			failures: failedAgo(lockoutDefault + time.Minute),
 			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
 				assert.False(t, seen.IdentifierHasFailures)
 			},
@@ -1100,8 +1100,9 @@ func TestChallenge_NoEnumeration(t *testing.T) {
 	type testCase struct {
 		name string
 
-		// probe sends one request of the flow under test for username, from a
-		// source of its own.
+		// probe sends one request of the flow under test for username. Both
+		// probes come from the same source, so the source signal is equal by
+		// construction and only the identifier signal can differ.
 		probe func(t *testing.T, h *recoveryHarness, username string)
 
 		assert func(t *testing.T, known, unknown httpsec.ChallengeSignals)

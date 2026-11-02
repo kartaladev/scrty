@@ -3,6 +3,7 @@ package ginsec_test
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
@@ -705,6 +706,71 @@ func TestRequest_HostAndSecure(t *testing.T) {
 				}), httpsec.OrderJWKS))
 
 			// gin.New trusts every proxy, which is the configuration under test.
+			eng := gin.New()
+			eng.Use(ginsec.Middleware(chain))
+			eng.GET("/r", func(*gin.Context) {})
+
+			rec := serve(eng, tc.build(t))
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			tc.assert(t, got)
+		})
+	}
+}
+
+// TestRequest_ClientCertificate pins that the gin adapter answers the leaf
+// certificate of the request's own TLS connection, and never one a header
+// carries.
+func TestRequest_ClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	leaf := &x509.Certificate{Raw: []byte("leaf")}
+	issuer := &x509.Certificate{Raw: []byte("issuer")}
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) *http.Request
+		assert func(t *testing.T, got *x509.Certificate)
+	}
+
+	cases := []testCase{
+		{
+			name: "a TLS request answers the leaf the client sent first",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/r", nil)
+				req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, issuer}}
+				return req
+			},
+			assert: func(t *testing.T, got *x509.Certificate) {
+				assert.Same(t, leaf, got)
+			},
+		},
+		{
+			name: "a plain request answers nil, whatever its headers carry",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/r", nil)
+				req.Header.Set("X-Client-Cert", "-----BEGIN%20CERTIFICATE-----")
+				return req
+			},
+			assert: func(t *testing.T, got *x509.Certificate) {
+				assert.Nil(t, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got *x509.Certificate
+
+			chain := newChain(t, httpsec.RegisterInterceptor(
+				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					got = ex.Request.ClientCertificate()
+
+					return next(ex)
+				}), httpsec.OrderJWKS))
+
 			eng := gin.New()
 			eng.Use(ginsec.Middleware(chain))
 			eng.GET("/r", func(*gin.Context) {})

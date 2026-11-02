@@ -361,3 +361,11 @@ func TestSessionBearerFloodedSourceFiber(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
 	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
 }
+
+// TestCertificateBindingFiber runs the certificate-binding scenarios on
+// fiber, through a trusted proxy that forwards the client's certificate.
+func TestCertificateBindingFiber(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunCertificateBinding(t, fiberAdapter{})
+}
