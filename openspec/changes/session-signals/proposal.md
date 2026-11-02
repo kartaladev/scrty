@@ -33,7 +33,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
   - The number of streams is capped per sign-in, per user and in total, each with a default and an option.
   - A heartbeat comment keeps proxies from dropping the connection, and responses are `no-store`.
   - Write deadlines are extended for the stream only.
-- **BREAKING: `httpsec.ResponseWriter` gains a required `Flush`.** It is implemented by the net/http, gin and fiber adapters. An adapter of the consumer's own must add it, as with `AddHeader` before it.
+- **BREAKING: `httpsec.ResponseWriter` gains a required `Stream` method** (changed from `Flush` in the design, D1, because fiber writes a streamed body only after the handlers return). It is implemented by the net/http, gin and fiber adapters. An adapter of the consumer's own must add it, as with `AddHeader` before it, or report that it cannot stream.
 
 ## Capabilities
 
@@ -50,7 +50,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
 
 ### Modified Capabilities
 
-- `framework-adapters`: `ResponseWriter` gains a required `Flush`, and each adapter supports streaming. A streamed response flushes each event, holds no response buffer, and has its write deadline extended.
+- `framework-adapters`: `ResponseWriter` gains a required `Stream` method, and each adapter supports streaming. A streamed response flushes each event, holds no response buffer, and has its write deadline extended.
 - `http-security-chain`: the stream endpoint's place in the chain. It answers only authenticated requests and records no session activity. CORS governs a cross-origin read.
 - `sessions`: the manager reports when a sign-in ends, is revoked with its family or is ended with the user's other sign-ins, so signals can be raised where sessions are ended rather than inferred.
 
@@ -63,7 +63,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
   - `test/httpsecconformance`: stream scenarios on all three adapters.
 - **API:**
   - new: `EnableSessionSignals`, the signal names, a publish function for the consumer's signals, and the bus port;
-  - **breaking:** `ResponseWriter.Flush`.
+  - **breaking:** `ResponseWriter.Stream`.
 - **Dependencies:** none new. The stream uses net/http's `http.ResponseController`.
   - *Unverified:* fiber v3 streams through fasthttp's body stream writer, a different model from net/http. Its fit is the first thing the design must establish.
 - **Order:** after `close-security-gaps`, whose security-event emission points (D13) and session-management endpoints this change raises signals beside; before `release-readiness` tags `v0.1.0`. `bff-resource-server` is not required. Its cookie session will work with the stream when it lands.
