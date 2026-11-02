@@ -87,7 +87,9 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	now := i.now()
 
-	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, now)
+	verifyCtx, upgrade := requestRehash(ctx, i.rehash)
+
+	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now)
 	if err != nil {
 		return err
 	}
@@ -109,7 +111,15 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 	in := postAuthenticationInput(auth.Principal, factor.Password, username, auth.PasswordChangedAt, now)
 	in.Reauthenticating = true
 
-	if err := postAuthenticate(ctx, l, in); err != nil {
+	err = postAuthenticate(ctx, l, in)
+
+	// As at login, a re-proof that is accepted, or challenged for a second
+	// factor, upgrades an outdated hash; any other refusal does not.
+	if err == nil || isChallenge(err) {
+		runRehash(ctx, i.log, i.rehash, upgrade)
+	}
+
+	if err != nil {
 		return err
 	}
 

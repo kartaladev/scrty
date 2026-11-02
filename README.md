@@ -1021,6 +1021,230 @@ send a request with forged `X-Forwarded-Host: evil.example` and `X-Forwarded-Pro
 your deployment and check that the chain refuses the host and sees the scheme Traefik terminated.
 Until then, trust `ForwardedFor` alone.
 
+## Passwords
+
+`password.NewPolicy()` decides whether a new password may be set. With no options it requires 15 to
+128 characters (counted in code points, never trimmed or normalised) and refuses the bundled list of
+common passwords; it is safe to use as it stands. Each option adds or replaces one rule and leaves
+the others alone.
+
+| Behaviour | Default | Override |
+|-----------|---------|----------|
+| Length | 15 to 128 code points | `password.MinLength`, `password.MaxLength` (floors 8 and 64) |
+| Common passwords | the bundled list, case-insensitive | `password.CommonPasswords`, `password.WithoutCommonPasswords` |
+| Words tied to the user or the service | none | `password.ContextWords` |
+| Breached passwords | no check | `password.Breached(password.PwnedPasswords(client), password.Refuse)` |
+| Reuse | no history | `password.NoReuse(history, depth)` |
+| Encoder for a change | Argon2id at its defaults | `password.WithEncoder` |
+
+Rules run cheapest first and the first refusal ends the check, so a short or common candidate never
+causes a breach lookup or a history read. A refusal matches `password.ErrPasswordRejected` (422) and
+names its rule; its text never carries the candidate, a hash or a context word.
+
+### The breach check says what a failed lookup means
+
+The breach check is opt-in, and it has no default failure mode, because the safe answer and the
+convenient one differ and the choice is yours. Only the first five characters of the password's
+SHA-1 leave the process, through the confined outbound client.
+
+- `password.Refuse` fails the check with `password.ErrLookupUnavailable` (500) while the corpus
+  cannot be asked: no password is set during an outage.
+- `password.Accept` lets the candidate through that rule and the next rule runs: an outage never
+  stops a password change.
+
+Either way, a caller who cancelled the request gets the context's own error, not a lookup failure.
+
+### Upgrading outdated hashes at login
+
+The built-in encoders implement `password.Upgrader`, so they can say a stored hash was made with
+weaker parameters: any one parameter below the encoder's (Argon2id memory, iterations, threads,
+salt or key length; scrypt N, r, p, salt or key length; bcrypt cost) is enough, even if another is
+above, and the new hash has exactly the encoder's parameters. By default nothing is rehashed. Give
+form login (`httpsec.WithLoginRehash`), Basic (`httpsec.WithBasicAuthRehash`) or the password
+re-proof (`httpsec.WithReauthenticationRehash`) a write, and a request whose password verified asks
+the current encoder; when it says so, the password is encoded again (one more key derivation on
+that request) and the write receives the user, the hash it replaces and the new hash. A login
+challenged for a second factor still upgrades; one refused after the password verified does not.
+The write's error is logged, without any hash, and never changes the outcome.
+
+Rehashing does not move users between algorithms. The upgrade is reached only once the password
+verified, and a built-in encoder does not verify another algorithm's hash, so moving users from,
+say, bcrypt to Argon2id at login needs a consumer encoder that verifies both and encodes with the
+new one.
+
+Write the new hash only while the replaced one is still stored, or a password change that landed
+meanwhile is undone. `password.ConditionalProvisionerRehash(store)` does that for the library's
+identity stores:
+
+```go
+httpsec.EnableFormLogin(deps,
+	httpsec.WithLoginRehash(password.ConditionalProvisionerRehash(identityStore)))
+```
+
+It is one call to the store: an update conditional on the replaced hash
+(`identity.WithUserPasswordIf`), which the store decides in the `UPDATE`'s own `WHERE`. When the
+stored hash changed meanwhile, nothing is written, the store reports `identity.ErrNotUpdated`, and
+the write treats that as done: the newer password stays, and the next login upgrades it. The
+password's age is not moved, because a rehash is not a password change. A consumer store must
+honour the condition too; the identity conformance suite (`test/identity`) checks it.
+
+## Security headers
+
+`httpsec.EnableSecurityHeaders` is off until you enable it. Once enabled, with no
+options, every response the chain produces, its own refusals included, carries:
+
+- `Content-Security-Policy` with a fresh per-response nonce, `'strict-dynamic'`,
+  `object-src 'none'`, `base-uri 'none'` and `frame-ancestors 'none'`;
+- `X-Content-Type-Options: nosniff`;
+- `Referrer-Policy: strict-origin-when-cross-origin`;
+- `Cross-Origin-Opener-Policy: same-origin-allow-popups`, so a popup-based OIDC
+  login keeps working;
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`, only on a
+  request the chain judges secure (TLS, `WithHTTPSDeployment`, or a trusted
+  proxy's forwarded scheme).
+
+`X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-Policy` and
+`Origin-Agent-Cluster` are never sent unless you add them with `WithHeader`.
+The layer does not wrap the response writer, so a handler's own value for a
+header wins and flushing and hijacking work as without it.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSecurityHeaders(
+        httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("img-src", "'self'", "data:"))),
+        httpsec.WithHeaderProfile(httpsec.APIHeaders(), httpsec.PathPrefix("/api/")),
+    ),
+)
+```
+
+Every profile is editable with the same editors (`WithHeader`, `WithoutHeader`,
+`WithCSP`): `APIHeaders(opts...)` edits the API profile, and
+`NewHeaderProfile(opts...)` starts a profile of your own from nothing. The first
+profile whose matcher selects a request applies. `WithHSTS`, `WithCSPReportOnly`
+and the reporting options belong to the layer, not to a profile, and a profile
+given one fails construction.
+
+### Rolling a policy out
+
+`WithCSPReportOnly()` sends the policy as `Content-Security-Policy-Report-Only`,
+so browsers report what it would block and block nothing.
+`WithCSPReportOnlyPolicy(p)` sends a stricter candidate beside the enforced
+policy, with the same nonce. `WithReportingEndpoint("csp", "https://reports.example.com/csp")`
+adds `Reporting-Endpoints`, `report-to` and `report-uri`; the endpoint must be an
+absolute `https` URL, and receiving the reports is up to you.
+
+### A static page: hashes instead of a nonce
+
+A page that is cached cannot carry a per-response nonce. `HashCSP("sha256-...")`
+lists the script hashes you supply, which your build computes, and generates no
+nonce. `HashCSP(...).With(httpsec.CSPDirective(...))` adds directives.
+
+### Giving the nonce to a page
+
+The handler reads the nonce with `httpsec.CSPNonce(r.Context())`. It finds none
+on a route a profile without a nonce serves.
+
+**`html/template`.** Pass the nonce as data and put it on each script you own;
+do not inject it into every tag a template or a proxy can find (OWASP's advice).
+
+```go
+nonce, _ := httpsec.CSPNonce(r.Context())
+err := page.Execute(w, struct{ Nonce string }{nonce})
+```
+
+```html
+<script nonce="{{.Nonce}}" src="/app.js"></script>
+```
+
+**Vite.** Vite's `html.cspNonce` option adds a `nonce` attribute to the `<script>`
+and `<style>` tags it emits, and a placeholder
+`<meta property="csp-nonce" nonce="PLACEHOLDER" />` whose nonce Vite uses when
+it needs one, in development and in the build. Vite's documentation says the
+placeholder must be replaced with a unique value for each request. Serve the
+built `index.html` through a handler that does so (the placeholder text is
+whatever you set `html.cspNonce` to):
+
+```go
+nonce, _ := httpsec.CSPNonce(r.Context())
+w.Header().Set("Content-Type", "text/html; charset=utf-8")
+_, _ = io.WriteString(w, strings.ReplaceAll(indexHTML, "PLACEHOLDER", nonce))
+```
+
+**Next.js.** The Next.js guide has its own proxy generate the nonce, put it in
+the request's `Content-Security-Policy` header and an `x-nonce` request header,
+and has Next.js read the nonce from the `'nonce-{value}'` in that header while
+rendering. It requires dynamic rendering for nonces. So a Next.js application
+owns its own policy: where a route's pages are rendered by Next.js, give that
+route a profile that sends no `Content-Security-Policy`, so the two policies do
+not meet, and keep the other headers:
+
+```go
+httpsec.WithHeaderProfile(
+    httpsec.NewHeaderProfile(
+        httpsec.WithHeader("X-Content-Type-Options", "nosniff"),
+        httpsec.WithHeader("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ),
+    httpsec.PathPrefix("/app/"),
+)
+```
+
+Sources: the [OWASP CSP Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html),
+[web.dev: Strict CSP](https://web.dev/articles/strict-csp),
+[Vite's CSP section](https://vite.dev/guide/features#content-security-policy-csp) and
+[Next.js's CSP guide](https://nextjs.org/docs/app/guides/content-security-policy).
+
+## CORS
+
+`httpsec.EnableCORS` is off until you enable it, and then needs an explicit list
+of origins. It runs inside the chain, in `OrderCORS`, so it behaves the same on
+net/http, gin and fiber, and answers a preflight before any authentication or
+the authorizer could refuse it.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSecurityHeaders(),
+    httpsec.EnableCORS(httpsec.CORSPolicy{
+        AllowedOrigins: []string{"https://app.example.com"},
+        AllowedHeaders: []string{"Authorization", "Content-Type"},
+        ExposedHeaders: []string{"WWW-Authenticate"},
+    }, httpsec.WithOriginPattern("https://*.preview.example.com")),
+)
+```
+
+Once enabled:
+
+- an origin is allowed only when it equals one on the list, after both are
+  lower-cased and stripped of a default port, or matches a `WithOriginPattern`
+  pattern, whose `*` is one whole host label followed by at least two more;
+- `*` alone allows every origin without credentials: any request carrying an
+  `Origin`, `null` included, gets `Access-Control-Allow-Origin: *`, and no
+  origin is ever reflected;
+- every response carries `Vary: Origin`, allowed or not. `Origin` is added to
+  any `Vary` your middleware or an earlier interceptor set, never in place of
+  it;
+- an allowed origin gets `Access-Control-Allow-Origin` with its own origin and,
+  on actual responses, the exposed headers, also on the chain's own refusals,
+  so a page can read a 401's `WWW-Authenticate`;
+- a preflight gets 204: with the allow headers when its origin, method (default
+  `GET`, `HEAD`, `POST`) and every requested header are allowed, and with no
+  CORS header otherwise. `Access-Control-Max-Age` defaults to 600 seconds;
+  `WithoutPreflightCaching()` sends `0` instead;
+- with DPoP enabled, `DPoP` is allowed and `DPoP-Nonce` and `WWW-Authenticate`
+  are exposed; with CSRF protection reading a token header, that header is
+  allowed. `WithoutAutomaticCORSHeaders()` turns these additions off.
+
+Construction refuses no origins, `null`, a scheme other than http or https, an
+origin with a path, query, fragment or userinfo, `*` with `AllowCredentials` or
+beside other origins, a wildcard outside `WithOriginPattern`, a pattern with
+fewer than two labels after its wildcard (`https://*.com`), and a `MaxAge`
+below one second or set beside `WithoutPreflightCaching()`. scrty holds no
+public-suffix list, so `https://*.co.uk` is accepted like
+`https://*.example.com`; do not name a pattern under a public suffix.
+
+`ResponseWriter` requires `AddHeader(name, value)`, which keeps the values
+already set (net/http's `Header().Add`). An adapter of your own must implement
+it; the CORS layer uses it to extend `Vary`.
+
 ## Development
 
 ```sh

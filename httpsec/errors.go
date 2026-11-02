@@ -262,7 +262,13 @@ var statusTable = []statusRow{
 	// that could not be read or recorded is a dependency failure, not a
 	// refusal of the caller's input, and carries no row here: it falls through
 	// to the unrecognised-error 500 below, like any other unrecognised error.
+	//
+	// Every other refusal of a password policy ([password.ErrPasswordRejected],
+	// which [password.ErrReused] also matches) answers the same way. A breach
+	// lookup that could not answer ([password.ErrLookupUnavailable]) is a
+	// dependency failure and falls through to the 500 below.
 	{password.ErrReused, http.StatusUnprocessableEntity},
+	{password.ErrPasswordRejected, http.StatusUnprocessableEntity},
 
 	// An account lock is a client that has sent too many failed attempts in a
 	// span (RFC 6585 §4), not a locked WebDAV resource (RFC 4918 §11.3), so it

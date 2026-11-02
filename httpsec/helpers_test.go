@@ -126,6 +126,13 @@ func (w *stubWriter) SetHeader(n, v string) {
 	w.header.Set(n, v)
 }
 
+func (w *stubWriter) AddHeader(n, v string) {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	w.header.Add(n, v)
+}
+
 func (w *stubWriter) SetCookie(c *httpsec.Cookie) { w.cookie = append(w.cookie, c) }
 func (w *stubWriter) WriteHeader(s int)           { w.status = s }
 

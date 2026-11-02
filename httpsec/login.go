@@ -154,6 +154,9 @@ type formLogin struct {
 	// lifetime chooses the session's absolute lifetime, and nil keeps the
 	// manager's absolute timeout.
 	lifetime func(*Exchange, LoginFields) time.Duration
+
+	// rehash stores an upgraded password hash, and nil upgrades nothing.
+	rehash RehashFunc
 }
 
 // wire takes the settings the chain resolved. It runs once, after every option
@@ -325,7 +328,9 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 	now := l.now()
 
-	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, now)
+	verifyCtx, upgrade := requestRehash(ctx, l.rehash)
+
+	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now)
 	if err != nil {
 		return err
 	}
@@ -353,6 +358,14 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		cancelHeld:        l.cancelHeld,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
+
+	// The password verified, so a login that is answered, or is challenged for a
+	// second factor the user can still present, upgrades an outdated hash. Any
+	// other refusal does not: the request was not accepted.
+	if err == nil || isChallenge(err) {
+		runRehash(ctx, l.log, l.rehash, upgrade)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -817,3 +830,11 @@ type LoginFields struct{ values map[string]any }
 // password parameter is never carried. The result must be treated as
 // read-only.
 func (f LoginFields) Value(name string) (any, bool) { v, ok := f.values[name]; return v, ok }
+
+// isChallenge reports whether err asks the caller for a second factor rather
+// than refusing the request.
+func isChallenge(err error) bool {
+	var ch *ChallengeError
+
+	return errors.As(err, &ch)
+}

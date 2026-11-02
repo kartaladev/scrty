@@ -740,6 +740,16 @@ func TestFiberResponseWriter(t *testing.T) {
 			},
 		},
 		{
+			name: "an added header keeps the value already set",
+			act: func(w httpsec.ResponseWriter) {
+				w.SetHeader("Vary", "Accept-Encoding")
+				w.AddHeader("Vary", "Origin")
+			},
+			assert: func(t *testing.T, res response) {
+				assert.Equal(t, []string{"Accept-Encoding", "Origin"}, res.header.Values("Vary"))
+			},
+		},
+		{
 			name: "a session cookie keeps its flags and gains no expiry",
 			act: func(w httpsec.ResponseWriter) {
 				w.SetCookie(&httpsec.Cookie{

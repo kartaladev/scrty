@@ -117,6 +117,7 @@ func EnableDPoP(d DPoP) Option {
 		}
 
 		c.dpop = v
+		c.dpopEnabled = true
 
 		c.enable(optionDPoP, func() error {
 			bearers := 0

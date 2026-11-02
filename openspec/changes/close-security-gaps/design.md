@@ -131,6 +131,7 @@ func CSPNonce(ctx context.Context) (string, bool)
 - **Override:** every header's value can be set, removed or extended. Profiles are chosen by matcher, and the first match wins. `HashCSP(hashes...)` replaces the nonce for a static SPA shell.
 - **Responses written outside the slot (recorded 2026-11-02, task 3.2).** A host refusal, and a 500 when the random source fails, carry the headers with a CSP rendered without its nonce source, which admits no script. On a host refusal, HSTS follows the transport's `Secure()`, since the forwarded values were refused.
 - **Every profile is editable (task 3.5 review).** `WithHeader`, `WithoutHeader` and `WithCSP` edit the document profile. The API profile and any consumer profile are built with the same editors (`APIHeaders(opts...)`), so no profile is fixed (`library-design.md` rule 2). `Strict-Transport-Security` is set only through `WithHSTS`, which takes whole seconds. `PathPrefix` reads a prefix without a leading `/` as rooted, and `/api/` also matches `/api`.
+- **Profile building and report-only scope (recorded 2026-11-02, tasks 3.8 and the profile follow-up).** `NewHeaderProfile(opts...)` builds a consumer profile from nothing, and `CSPPolicy.With(directives...)` edits a policy, `HashCSP`'s included. Layer-wide options (`WithHSTS`, the report-only and reporting options, a nested profile) are refused inside a profile. `WithCSPReportOnly` switches the document profile only, and a route profile keeps its enforced policy. A second reporting endpoint, or one with no policy to report from, is a configuration error. `HashCSP` sends the hashes with `object-src`, `base-uri` and `frame-ancestors 'none'`, and no `'strict-dynamic'`.
 - **No writer wrapping.** Headers are set on the response before `next`, so a handler's own `Header().Set` wins and `Flush`/`Hijack` are untouched. Choosing a profile from the response's `Content-Type` would need a wrapper, which loses `http.Flusher` and `http.Hijacker`.
 - **Nonce:** 16 bytes from `crypto/rand`, base64, stored in the request context. Handing it to templates follows OWASP's advice against injecting nonces into every script tag.
 - **Why these values:**
@@ -196,6 +197,14 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
  GET /api/orders + Authorization + DPoP  -->     slots 75 .. 900 as usual
 ```
 
+- **Settled during tasks 4.1–4.6 (2026-11-02).**
+  - **Also refused at construction:** an empty or non-token method or header name, `*` in a method or header list, a negative `MaxAge`, an origin with no host or a malformed port, a trailing `/` (a path), and a pattern without a wildcard. A pattern alone counts as an allowed origin.
+  - **Pattern breadth.** A pattern needs at least two labels after its wildcard, so `https://*.com` is refused. Without a public-suffix list, `https://*.co.uk` cannot be told apart from `https://*.example.com`, and the godoc says so.
+  - **Preflight caching.** `MaxAge` zero means the 10-minute default. `WithoutPreflightCaching()` sends `Access-Control-Max-Age: 0`, so the default is replaceable in both directions. Giving a `MaxAge` as well is a configuration error.
+  - **`*` allows `null` too.** With `*` and no credentials, every origin gets `*`, including `null`, as the spec says. Nothing is reflected, and no credential is sent.
+  - **`Vary` is added to, never replaced (task 4.2 review).** `ResponseWriter` gains a required `AddHeader(name, value string)`, before the tag, so CORS adds `Origin` to a `Vary` an outer layer or an earlier interceptor set. Replacing it would let a cache serve one variant to a client that cannot read it.
+  - **`MaxAge` below one second** (other than zero) is a configuration error, since it would truncate to `0` and silently turn caching off. Turning it off is `WithoutPreflightCaching()`.
+  - **Allowed headers in a preflight answer.** The answer lists the headers the preflight asked for, spelt as the policy spells them, not the whole policy list. That is the spec's wording, and the diagram above shows the request's two headers for the same reason.
 - **Follows the chain:** with DPoP on, `DPoP` is allowed and `DPoP-Nonce`/`WWW-Authenticate` are exposed. With a CSRF token header, its name is allowed. `WithoutAutomaticCORSHeaders()` turns this off.
 - **Departure from the established design.** It relied on a gin-only CORS middleware. scrty serves three adapters and must behave the same on all of them, and a preflight that reaches the fail-closed authorizer is refused. So CORS lives in the chain.
 - **Alternatives rejected:** *rs/cors or go-chi/cors.*
@@ -376,6 +385,13 @@ httpsec.EnableDPoP(httpsec.DPoP{
   - renewal or re-authentication without the bound key;
   - a token whose `cnf` the chain cannot honour: an unknown member, both members, or a binding whose feature is off. Such a token is never accepted as a plain bearer token.
   - All answer 401 with `WWW-Authenticate: DPoP error=...`. A missing token with DPoP optional gets both the `DPoP` and the `Bearer` challenge.
+- **Settled during tasks 8.1–8.5 (2026-11-02).**
+  - **Issuing a bound token.** `token.Generator` keeps its signature. A generator that can bind implements the optional `token.ConfirmingGenerator` (`GenerateWith(ctx, id, p, opts ...IssueOption)`), as the built-in JWT generator does. `EnableDPoP` and `EnableCertificateBinding` refuse, at construction, a chain whose token generator does not implement it, so a token is never issued unbound when binding was asked for. Changing the interface would have broken every consumer generator, DPoP or not.
+  - **The path as sent.** `Request` gains `EscapedPath()` (required, before the tag, as `HeaderValues` did), so `htu` compares the path the client sent on every adapter. An optional interface with a fallback to the decoded path would let `/api/ord%65rs` match `/api/orders` on an adapter that lacks it. The comparison does not decode, so `%65` and `e` differ (stricter than RFC 9449's SHOULD on RFC 3986 §6.2.2 normalisation, which only ever refuses a valid proof), but the hex digits of a percent-encoding compare without case, so `%2f` matches `%2F`.
+  - **Session-reference binding is checked before anything is published.** Resolution gains an admission step after the session loads, so a session bound to another key is refused before the caller is published or a policy runs.
+  - **What the chain refuses.** An unbound credential presented under the `DPoP` scheme is refused. In signed mode the stored session's binding must equal the token's `cnf`. A `cnf` with an unknown member, or both members, is refused as unauthenticated (401), never read as unbound. `x5t#S256` belongs to D9. `Nonce: true` is a configuration error until server nonces exist (task 8.10), so it never reads as enforced when it is not.
+- **Replay record outlives the proof (task 8.4 review).** A proof's record is kept until `iat + 2 × ProofMaxAge`, not `iat + ProofMaxAge`. The `iat` check and the store's expiry read the clock at different moments, and a proof accepted just before its lifetime ended would otherwise find its own record already expired on replay. The margin covers any delay between the two reads up to a whole lifetime.
+- **Proof refusals at the interceptor are not charged to the source.** An invalid proof at the bearer interceptors is answered 401 without a throttle charge. It costs one signature check after the cheap structural checks, and requests reach it only through the throttles that run first. At the issuing endpoints a bad proof is charged as a malformed request (above).
 - **Replay store:** a port with one atomic insert-if-absent, keyed by a digest of the `jti` and the key thumbprint. It shares the multi-replica caveat of the rate limiter and accepts a shared store. A store failure is a dependency failure: 500, fixed text, not charged. A request whose context ended fails with the context's error (`key-port-context` D8).
 - **Nonces:** off by default. They cost a round trip, and the 60-second lifetime with `jti` already bounds replay. When on, they are stateless (sealed with the chain's key material), so every replica can verify them without a shared store.
 - **Default:** accepted, not required, so existing bearer clients keep working while browser clients opt in by sending proofs.
@@ -497,6 +513,9 @@ err = policy.Change(ctx, user, candidate, write)
   - Ending the current sign-in by its own handle acts as a logout. Refusing it would only send the client to another endpoint.
   - A sign-in still owing a second factor or a recovery step is listed and marked, because an unknown pending sign-in is exactly what the user needs to see.
   - A malformed, unknown or foreign handle is 404 and revokes nothing. Every response is `no-store`.
+  - **Settled during task 7.1 (2026-11-02).** The slot is `OrderSessionManagement` (674), after re-authentication. Only a full session reaches it. The recency window is `reauthentication`'s 15-minute default, replaceable with `WithSessionManagementRecency`. Ending the current sign-in revokes its family. It does not run the logout endpoint's other steps (Clear-Site-Data, the OIDC end-session redirect), which stay with that endpoint. The default listing shows the recorded client address, as the `sessions` spec says, because metadata is opt-in.
+  - **`no-store` reaches every response under the prefix (task 7.1 review).** The feature also sets `Cache-Control: no-store` at an outer position, right after the security headers, for every request under its prefix. A refusal from an earlier interceptor, such as a revoked session reference, therefore carries it too.
+  - **Where metadata comes from.** The chain records the resolved client address and the request's user agent at login completion, for every first factor. The user agent is put on the context when the chain resolves the client, not by individual flows.
 
 ### D13. Security events
 
@@ -528,6 +547,12 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 - **An unseen-device sign-in notice** is opt-in. It requires session metadata and a sender.
   - **Matching against live sign-ins (changed 2026-11-02).** The draft matched the user's sessions of the last 90 days. Expired sessions are swept, so that history does not exist. The notice therefore matches the user's other live sign-ins, by user agent by default, through a replaceable matcher. A consumer who keeps device history supplies a seen-devices port, which is consulted beside them.
   - A user's first sign-in, with nothing to compare, is not notified. A sign-in whose session was never stored is not notified.
+  - **Settled during task 7.4 (2026-11-02).** The seen-devices port can only suppress a notice, and with no other live sign-in nothing is sent whatever the port says. A failing port, listing or recipient lookup sends nothing and is logged without its text. A sign-in still owing a second factor is notified, because an unfamiliar pending sign-in is what the user needs to see. 
+  - **Off the request path (task 7.4 review).** All of the notice's work (the listing, the seen-devices port, the recipient lookup and the send) runs after the sign-in, on a context the request's cancellation does not end, with a timeout (`WithSignInNoticeTimeout`, default 30 seconds) and a recovered panic. It never delays the response, as the spec requires. Sign-ins are throttled, so one short-lived goroutine per notice stays bounded.
+  - **Coarse device text.** The notice names the device by browser and platform family ("Firefox on Linux"), by the browser alone when the platform is not recognised, or "an unrecognised device", and never copies any part of the user agent. The message builder stays replaceable.
+  - **Names (task 7.4 follow-up).** `WithSignInNoticeTimeout` (default `DefaultSignInNoticeTimeout`, 30 seconds; zero or negative is a configuration error). The background work ends at the timeout only if the consumer's ports honour their context, and the godoc says so. `OrderSessionManagementNoStore` (`OrderSecurityHeaders + 2`) leaves `After(OrderSecurityHeaders)` free for consumers. `passkey.WithoutRemovalNotice()` is a per-removal option, and `httpsec.WithoutPasskeyRemovalNotification()` passes it on every removal through the endpoint.
+  - **What the background work receives.** Only the values it needs: the user's ID, the sign-in's family and time, and a fresh principal holding ID, name, username and kind. Roles, organisation and scopes are left out rather than shared with the request. A recipient function that needs more looks it up by the user's ID.
+  - **No synchronous-sender rule.** Once the notice runs off the request path, a sender that waits for delivery holds only the background work, up to its timeout, never the response. The refusal of such a sender and `WithSynchronousSignInNotice` are therefore dropped.
 
 ### D15. Automation challenge
 
@@ -602,7 +627,7 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
 - **Breaking before the tag:**
   - `Request.Host()`/`Secure()` (D2);
   - `ginsec.WithForwardedClientIP` removed, and with it `ginsec.Option`, so `ginsec.Middleware(chain)` takes no options (D7);
-  - `Request.HeaderValues` required (D2);
+  - `Request.HeaderValues` and `Request.EscapedPath` required (D2, D8), and `ResponseWriter.AddHeader` required (D5);
   - `identity.UserProvisioner.Update` honours `WithUserPasswordIf` in every store (D11);
   - `NewReuseGuard` removed (D10);
   - `session.Store.ListByUser` (D12).

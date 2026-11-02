@@ -313,3 +313,45 @@ func SecurityHeadersRandom(r io.Reader) HeaderOption {
 		return nil
 	}
 }
+
+// DeclareDPoPForTest records on the configuration that DPoP is enabled, as the
+// DPoP option does, so the CORS layer's additions can be pinned before that
+// option exists.
+func DeclareDPoPForTest() Option {
+	return func(c *config) error {
+		c.dpopEnabled = true
+		return nil
+	}
+}
+
+// DeclareCSRFTokenHeaderForTest records on the configuration the request
+// header CSRF protection reads its token from, as the CSRF option does.
+func DeclareCSRFTokenHeaderForTest(name string) Option {
+	return func(c *config) error {
+		c.csrfTokenHeader = name
+		return nil
+	}
+}
+
+// CORSOrigins applies opts to a fresh configuration and reports the CORS
+// layer's exact origins, and whether origin matches one of its patterns, as
+// CSRF protection reads them.
+func CORSOrigins(origin string, opts ...Option) (exact []string, matchesPattern bool, err error) {
+	var c config
+	for _, opt := range opts {
+		if err := opt(&c); err != nil {
+			return nil, false, err
+		}
+	}
+
+	exact, patterns := c.corsOrigins()
+
+	scheme, host, port, perr := parseOrigin(origin)
+	for _, p := range patterns {
+		if perr == nil && p.matches(scheme, host, port) {
+			return exact, true, nil
+		}
+	}
+
+	return exact, false, nil
+}

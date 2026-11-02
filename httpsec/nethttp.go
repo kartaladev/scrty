@@ -348,6 +348,7 @@ type httpResponseWriter struct {
 }
 
 func (h *httpResponseWriter) SetHeader(n, v string) { h.w.Header().Set(n, v) }
+func (h *httpResponseWriter) AddHeader(n, v string) { h.w.Header().Add(n, v) }
 func (h *httpResponseWriter) SetCookie(c *Cookie)   { http.SetCookie(h.w, c) }
 
 // WriteHeader sends the status, and ignores a second call. An interceptor that

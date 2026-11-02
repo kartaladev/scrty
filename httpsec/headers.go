@@ -46,6 +46,11 @@ type profileHeader struct {
 // HeaderProfile is the set of headers a response gets.
 type HeaderProfile struct {
 	headers []profileHeader
+
+	// err is the first fault of the editors the profile was built with,
+	// reported when the profile reaches WithHeaderProfile, because APIHeaders
+	// and NewHeaderProfile have no error to return.
+	err error
 }
 
 // usesNonce reports whether serving the profile needs a nonce.
@@ -85,6 +90,59 @@ type securityHeaders struct {
 
 	// random is where nonces come from: crypto/rand, replaced only by tests.
 	random io.Reader
+
+	// scoped is set while the editors build one profile (APIHeaders,
+	// NewHeaderProfile), where an option that reaches beyond the profile is
+	// refused rather than silently ignored.
+	scoped bool
+
+	// reportOnly, candidate and endpoint are the report-only options, applied
+	// together by finish so their order does not matter.
+	reportOnly bool
+	candidate  *CSPPolicy
+	endpoint   *reportingEndpoint
+}
+
+// layerWide refuses option when the editors are building a single profile,
+// because option sets something the whole layer shares.
+func (l *securityHeaders) layerWide(option string) error {
+	if l.scoped {
+		return newConfigError("%s sets something the whole security-headers layer shares, so it "+
+			"cannot edit one header profile: give it to EnableSecurityHeaders", option)
+	}
+
+	return nil
+}
+
+// editProfile applies the profile editors in opts to p, and returns the result
+// carrying the first fault.
+func editProfile(p HeaderProfile, opts []HeaderOption) HeaderProfile {
+	scratch := &securityHeaders{document: p, scoped: true}
+
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+
+		if err := opt(scratch); err != nil {
+			scratch.document.err = err
+
+			break
+		}
+	}
+
+	return scratch.document
+}
+
+// NewHeaderProfile is a profile that sends no header, edited by opts with the
+// same editors that edit the document profile: WithHeader, WithoutHeader and
+// WithCSP. It is the base for a consumer's own profile.
+//
+// Default: no header. An option that sets something the whole layer shares,
+// such as WithHSTS, or that is not a header editor fails construction when the
+// profile reaches WithHeaderProfile.
+func NewHeaderProfile(opts ...HeaderOption) HeaderProfile {
+	return editProfile(HeaderProfile{}, opts)
 }
 
 // EnableSecurityHeaders sets security response headers on every response the
@@ -92,20 +150,29 @@ type securityHeaders struct {
 //
 // Default: off. Once enabled, with no options, a response carries a
 // Content-Security-Policy with a fresh nonce, 'strict-dynamic', object-src
-// 'none', base-uri 'none' and frame-ancestors 'none'; X-Content-Type-Options:
-// nosniff; Referrer-Policy: strict-origin-when-cross-origin; and
-// Cross-Origin-Opener-Policy: same-origin-allow-popups. X-XSS-Protection,
+// 'none', base-uri 'none' and frame-ancestors 'none' (WithCSP, HashCSP);
+// X-Content-Type-Options: nosniff; Referrer-Policy:
+// strict-origin-when-cross-origin; and Cross-Origin-Opener-Policy:
+// same-origin-allow-popups (WithHeader, WithoutHeader). X-XSS-Protection,
 // X-Frame-Options, Cross-Origin-Embedder-Policy and Origin-Agent-Cluster are
 // never sent unless a consumer adds them with WithHeader. A secure response
-// also carries Strict-Transport-Security: max-age=31536000; includeSubDomains
-// (WithHSTS). WithHeaderProfile gives routes the API profile or one of the
-// consumer's own.
+// also carries Strict-Transport-Security: max-age=31536000; includeSubDomains,
+// and a plain-HTTP one never does (WithHSTS).
+//
+// The policy is enforced by default. WithCSPReportOnly sends it as
+// Content-Security-Policy-Report-Only instead, WithCSPReportOnlyPolicy sends a
+// candidate beside the enforced one with the same nonce, and
+// WithReportingEndpoint names where reports go; by default none is named and
+// the policy carries no report-to or report-uri. WithHeaderProfile gives the
+// routes a matcher selects the API profile (APIHeaders) or one of the
+// consumer's own (NewHeaderProfile), both edited with the same editors; by
+// default every route gets the document set.
 //
 // The layer runs in OrderSecurityHeaders, outside every other interceptor, and
 // sets its headers before calling the next one, without wrapping the response
 // writer: a handler's own value for a header wins, and flushing and hijacking
 // work as without the layer. A host refusal, which no interceptor sees, carries
-// the headers too.
+// the headers too. A handler reads the response's nonce with CSPNonce.
 //
 // Enabling the layer twice fails construction.
 func EnableSecurityHeaders(opts ...HeaderOption) Option {
@@ -129,6 +196,10 @@ func EnableSecurityHeaders(opts ...HeaderOption) Option {
 			if err := opt(l); err != nil {
 				return err
 			}
+		}
+
+		if err := l.finish(); err != nil {
+			return err
 		}
 
 		c.register(l, OrderSecurityHeaders)
@@ -214,7 +285,8 @@ func (l *securityHeaders) applyHeaders(w ResponseWriter, req Request) {
 	l.apply(w, l.profileFor(req), "", req.Secure())
 }
 
-// WithCSP replaces the document profile's Content-Security-Policy with p.
+// WithCSP replaces the Content-Security-Policy of the document profile, or of
+// the profile being built by APIHeaders or NewHeaderProfile, with p.
 //
 // Default: StrictCSP() with no directives added. A policy that fails its own
 // check (see CSPDirective) fails construction here, naming the policy.
@@ -271,6 +343,10 @@ func WithoutHeader(name string) HeaderOption {
 
 		canonical := textproto.CanonicalMIMEHeaderKey(name)
 		if canonical == headerHSTS {
+			if err := l.layerWide("WithoutHeader(" + headerHSTS + ")"); err != nil {
+				return err
+			}
+
 			l.hsts = nil
 		}
 
@@ -291,6 +367,17 @@ func (p *HeaderProfile) set(h profileHeader) {
 	}
 
 	p.headers = append(p.headers, h)
+}
+
+// find returns the header named name.
+func (p HeaderProfile) find(name string) (profileHeader, bool) {
+	for _, h := range p.headers {
+		if h.name == name {
+			return h, true
+		}
+	}
+
+	return profileHeader{}, false
 }
 
 // remove drops the header named name.
@@ -336,17 +423,22 @@ func PathPrefix(prefix string) RouteMatcher {
 // Content-Security-Policy: default-src 'none'; frame-ancestors 'none',
 // X-Content-Type-Options: nosniff and Referrer-Policy: no-referrer, and no
 // nonce.
-func APIHeaders() HeaderProfile {
+//
+// opts edit it with the editors that edit the document profile (WithHeader,
+// WithoutHeader, WithCSP). Default: no edit. An option that sets something the
+// whole layer shares, such as WithHSTS, fails construction when the profile
+// reaches WithHeaderProfile.
+func APIHeaders(opts ...HeaderOption) HeaderProfile {
 	csp := CSPPolicy{directives: []CSPDirectiveValue{
 		CSPDirective("default-src", "'none'"),
 		CSPDirective("frame-ancestors", "'none'"),
 	}}
 
-	return HeaderProfile{headers: []profileHeader{
+	return editProfile(HeaderProfile{headers: []profileHeader{
 		{name: headerCSP, policy: &csp},
 		{name: headerContentType, value: "nosniff"},
 		{name: headerReferrerPolicy, value: "no-referrer"},
-	}}
+	}}, opts)
 }
 
 // WithHeaderProfile gives the requests m selects the headers of p instead of
@@ -359,6 +451,14 @@ func APIHeaders() HeaderProfile {
 // apply.
 func WithHeaderProfile(p HeaderProfile, m RouteMatcher) HeaderOption {
 	return func(l *securityHeaders) error {
+		if err := l.layerWide("WithHeaderProfile"); err != nil {
+			return err
+		}
+
+		if p.err != nil {
+			return newConfigError("WithHeaderProfile was given a profile that cannot be sent: %s", p.err)
+		}
+
 		if m == nil {
 			return newConfigError("WithHeaderProfile was given no route matcher, so its profile would never apply")
 		}
@@ -442,6 +542,10 @@ func HSTSPreload() HSTSOption { return func(h *hstsPolicy) { h.preload = true } 
 // includeSubDomains fails construction. Use WithoutHeader to stop sending it.
 func WithHSTS(maxAge time.Duration, opts ...HSTSOption) HeaderOption {
 	return func(l *securityHeaders) error {
+		if err := l.layerWide("WithHSTS"); err != nil {
+			return err
+		}
+
 		h := hstsPolicy{maxAge: maxAge, subdomains: true}
 
 		for _, opt := range opts {

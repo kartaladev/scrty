@@ -20,7 +20,7 @@ import (
 // identity.UserLoader, identity.RoleLoader, identity.UserProvisioner and
 // identity.MFARequirementLookup, and is safe for concurrent use. It also
 // implements password.History over the password_history table, for a
-// password.ReuseGuard; no identity port call reads or writes that table.
+// password.NoReuse rule; no identity port call reads or writes that table.
 //
 // # Loading
 //
@@ -133,6 +133,9 @@ func NewIdentityStore(db *sql.DB, opts ...Option) (*IdentityStore, error) {
 var (
 	errEmptyUsername = errors.New("the username is empty")
 	errOrgReference  = errors.New("the organization reference is not a UUID in canonical lowercase text")
+
+	errConditionOnProvision     = errors.New("a password condition cannot apply to a new user")
+	errConditionWithoutPassword = errors.New("a password condition needs a new password named")
 )
 
 // LoadByUsername loads the user with this exact username, or returns
@@ -260,6 +263,9 @@ func (s *IdentityStore) Provision(
 	}
 
 	u := identity.ApplyUserOptions(opts...)
+	if _, conditional := u.ExpectedPassword(); conditional {
+		return nil, failed(op, errConditionOnProvision)
+	}
 	if err := storekit.CheckUser(username, u); err != nil {
 		return nil, failed(op, err)
 	}
@@ -326,6 +332,13 @@ func (s *IdentityStore) Provision(
 
 // Update amends the fields opts name on the user with this username, or
 // returns identity.ErrUserNotFound, and returns the complete stored record.
+//
+// An update conditional on the stored hash (identity.WithUserPasswordIf) is
+// decided by the UPDATE's own WHERE, on the user's row locked for this
+// update: when the stored hash differs, nothing is written, the transaction
+// (or savepoint) is rolled back, and the update returns
+// identity.ErrNotUpdated. The condition needs a new password named, and is
+// refused on Provision.
 func (s *IdentityStore) Update(
 	ctx context.Context, username string, opts ...identity.UserOption,
 ) (*identity.Details, error) {
@@ -339,6 +352,10 @@ func (s *IdentityStore) Update(
 	}
 
 	u := identity.ApplyUserOptions(opts...)
+	expected, conditional := u.ExpectedPassword()
+	if conditional && !u.IsSet(identity.FieldPassword) {
+		return nil, failed(op, errConditionWithoutPassword)
+	}
 	if err := storekit.CheckUser(username, u); err != nil {
 		return nil, failed(op, err)
 	}
@@ -381,8 +398,21 @@ func (s *IdentityStore) Update(
 		}
 		if len(set) > 0 {
 			query, args := storekit.UpdateUserQuery(set, now, userID)
-			if _, err := q.ExecContext(ctx, query, args...); err != nil {
+			if conditional {
+				query, args = passwordCondition(query, args, expected)
+			}
+			res, err := q.ExecContext(ctx, query, args...)
+			if err != nil {
 				return dbFailed(op, err)
+			}
+			if conditional {
+				n, err := res.RowsAffected()
+				if err != nil {
+					return dbFailed(op, err)
+				}
+				if n == 0 {
+					return failed(op, identity.ErrNotUpdated)
+				}
 			}
 		}
 
@@ -401,6 +431,14 @@ func (s *IdentityStore) Update(
 	}
 
 	return out, nil
+}
+
+// passwordCondition narrows the UPDATE query to a stored password equal to
+// expected, so the condition is decided by the write itself.
+func passwordCondition(query string, args []any, expected []byte) (string, []any) {
+	args = append(args, storekit.OrEmpty(expected))
+
+	return query + " AND password = $" + strconv.Itoa(len(args)), args
 }
 
 // storedGrant is one row of assigned_roles as a rebuild reads it.

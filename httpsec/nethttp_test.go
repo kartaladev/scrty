@@ -790,6 +790,16 @@ func TestHTTPResponseWriter(t *testing.T) {
 			},
 		},
 		{
+			name: "an added header keeps the value already set",
+			act: func(w httpsec.ResponseWriter) {
+				w.SetHeader("Vary", "Accept-Encoding")
+				w.AddHeader("Vary", "Origin")
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, _ httpsec.ResponseWriter) {
+				assert.Equal(t, []string{"Accept-Encoding", "Origin"}, rec.Result().Header.Values("Vary"))
+			},
+		},
+		{
 			name: "cookie",
 			act: func(w httpsec.ResponseWriter) {
 				w.SetCookie(&httpsec.Cookie{Name: "sid", Value: "abc", HttpOnly: true})
