@@ -329,7 +329,17 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - [ ] Red `TestGenerator_Confirmation` (`jkt`, `x5t#S256`, none; both → `ErrConfig`; a 10-character thumbprint → `ErrConfig`) and `TestVerifier_Confirmation` (returned; `{"jkt": 7}`, `{}`, a string `cnf` refused). FAIL; Green in `token/`; PASS; commit.
 
 ### Task 8.2: `EnableDPoP`
-- [ ] Red `TestDPoP_Construction`: no bearer mode → `ErrConfig`; twice → `ErrConfig`; defaults filled; not enabled → `Authorization: DPoP` passes through and a protected route refuses. FAIL; Green; PASS; commit.
+**Files:** Modify `httpsec/options.go` (`New` validates the options), `httpsec/bearer.go`, `httpsec/session_bearer.go`; Test `httpsec/dpop_test.go`
+**Interfaces produced:** an unexported field on the chain's configuration, `bindingVerifiers []string`, holding the names of enabled features that verify bound credentials. `EnableBearerToken` appends `"EnableBearerToken"` and `EnableSessionBearer` appends `"EnableSessionBearer"`. Construction reads it after every option has applied. `oidc-provider` later appends its provider here. Nothing exported (D8, amended 2026-11-02).
+- [ ] Red `TestDPoP_Construction`, a table:
+  - no bearer mode, so `bindingVerifiers` is empty → `errors.Is(err, ErrConfig)`, and the message names `EnableDPoP`;
+  - only `EnableSessionBearer` → built;
+  - only `EnableBearerToken` → built;
+  - `EnableDPoP` given twice → `ErrConfig`;
+  - the order of options does not matter: `EnableDPoP` before the bearer option → built;
+  - defaults filled: `ProofMaxAge` 60 s, `ES256`, 8 KiB, in-memory replay store;
+  - not enabled → `Authorization: DPoP` passes through, and a protected route refuses it.
+- [ ] FAIL on the assertions, not on compiling: add `EnableDPoP` as a stub first. Green; PASS; commit.
 
 ### Task 8.3: Proof verification
 **Files:** Create `httpsec/dpop.go`; Test `dpop_test.go`

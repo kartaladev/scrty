@@ -351,7 +351,18 @@ httpsec.EnableDPoP(httpsec.DPoP{
 })
 ```
 
-- **Why top-level (changed 2026-11-02).** The draft put DPoP on `EnableBearerToken`. But session-reference mode is its own interceptor, and the issuing endpoints (login, magic link, OIDC handoff, passkey, MFA, recovery, re-authentication, renewal) belong to neither bearer. A feature that spans issuance and verification is `EnableX` by D19, as `EnableCertificateBinding` already is. Enabling it with neither bearer mode is a configuration error.
+- **Why top-level (changed 2026-11-02).** The draft put DPoP on `EnableBearerToken`. But session-reference mode is its own interceptor, and the issuing endpoints (login, magic link, OIDC handoff, passkey, MFA, recovery, re-authentication, renewal) belong to neither bearer. A feature that spans issuance and verification is `EnableX` by D19, as `EnableCertificateBinding` already is. Enabling it with nothing on the chain that verifies a bound credential is a configuration error (amended 2026-11-02, below).
+- **What counts as a verifier (amended 2026-11-02, for `oidc-provider`).**
+  - **The original rule:** the draft refused DPoP on a chain with neither bearer mode.
+  - **What the rule is for:** a chain that binds tokens but never checks a binding would issue `cnf.jkt` for nothing, and suggest a protection it does not give.
+  - **Why it was amended:** an OpenID Provider (`oidc-provider` P6) checks bindings itself, at its token endpoint (refresh tokens bound to a DPoP key) and at UserInfo, and may run on a chain with no first-party bearer. The old rule would refuse that chain although it verifies every binding it issues.
+  - **The amended rule:** the chain refuses DPoP unless at least one enabled feature verifies bound credentials.
+  - **Who counts in this change:** the signed-bearer and session-reference modes, and no other feature. `oidc-provider` adds its provider to that set.
+  - **No new API.** The set is internal to `httpsec`, because every feature that can be in it is a built-in `Enable…` option of the same package. A consumer's own handler that checks DPoP proofs does not count, and the godoc says so.
+  - **Default and override:** unchanged. The rule has no override, because a chain that binds without verifying is the meaningless configuration `library-design` rule 6 refuses at construction.
+  - **Rejected:**
+    - *Dropping the rule.* A chain with no verifier would accept the option silently.
+    - *An exported "DPoP consumer" registration for consumer code.* No consumer feature needs it yet, and it would add a public contract before the tag for a single built-in user.
 - **Verification, in this order:**
   1. size within the bound, exactly one `DPoP` header, then `typ`, an asymmetric `alg` from the set (never `none` or a MAC), and a public `jwk` whose key type fits `alg`;
   2. the signature;

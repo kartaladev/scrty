@@ -75,7 +75,12 @@ Every implementation task is test-first: write the failing test, run it and conf
 ## 8. Token confirmation claim and DPoP (D8)
 
 - [ ] 8.1 Add the `cnf` claim to issuance and verification, test-first: `jkt`, `x5t#S256`, none, both (refused at issue), a malformed thumbprint, and a malformed claim at verification. Verify: `go test -run 'TestGenerator_Confirmation|TestVerifier_Confirmation' -count=1 ./token/...`.
-- [ ] 8.2 Add `EnableDPoP` with its construction rules (no bearer mode, enabled twice) and its defaults, test-first, including "Not enabled" passing the `DPoP` scheme through. Verify: `go test -run 'TestDPoP_Construction' -count=1 ./httpsec/`.
+- [ ] 8.2 Add `EnableDPoP` with its construction rules and its defaults, test-first. The rules are D8's as amended on 2026-11-02:
+  - nothing on the chain verifies bound credentials → refused. The check reads an internal set of verifying features, which holds the two bearer modes in this change;
+  - one bearer mode alone → built;
+  - enabled twice → refused.
+
+  Include "Not enabled" passing the `DPoP` scheme through. Verify: `go test -run 'TestDPoP_Construction' -count=1 ./httpsec/`.
 - [ ] 8.3 Implement proof verification in the order D8 gives, as a table of valid and broken proofs signed with jwx v4, test-first: size bound, two headers, `typ`, `none` and `HS256`, a private `jwk`, a key type that does not fit, signature, `htm`, `htu` with case, default port and query, a future and a stale `iat`, `ath` present, absent and for another token. Verify: `go test -run 'TestDPoP_Proof' -count=1 ./httpsec/`.
 - [ ] 8.4 Add the replay port (atomic insert-if-absent, keyed by `jti` and thumbprint, `jti` at most 256 bytes) with the in-memory default, recording only after every other check, a store failure as a dependency failure and a hang-up as the context's error, test-first, including the concurrent replay. Verify: `go test -run 'TestDPoP_Replay' -count=1 -race ./httpsec/`.
 - [ ] 8.5 Accept the `DPoP` scheme in the signed-bearer and session-reference interceptors, refuse bound tokens as `Bearer`, refuse a proof from another key, refuse a `cnf` the chain cannot honour, and add `Require`, test-first. Verify: `go test -run 'TestDPoP_Bearer' -count=1 ./httpsec/`.

@@ -5,15 +5,19 @@ Binds the tokens scrty issues to a key the legitimate client holds, a DPoP key o
 ## ADDED Requirements
 
 ### Requirement: DPoP is one chain-wide feature, off until enabled
-DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bearer modes, signed tokens and session references, and to every issuing endpoint. Without it, the `DPoP` authorization scheme SHALL be passed through as any unknown scheme, and no endpoint SHALL bind a token. Enabling DPoP without either bearer mode, or more than once, SHALL fail construction.
+DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bearer modes, signed tokens and session references, and to every issuing endpoint. Without it, the `DPoP` authorization scheme SHALL be passed through as any unknown scheme, and no endpoint SHALL bind a token. Enabling DPoP SHALL fail construction unless the chain has at least one enabled feature that verifies bound credentials. The signed-bearer and session-reference modes are such features. A consumer's own handler SHALL NOT count as one. Enabling DPoP more than once SHALL fail construction.
 
 #### Scenario: Not enabled
 - **WHEN** DPoP is not enabled and a request carries `Authorization: DPoP <token>` with a proof
 - **THEN** no bearer interceptor authenticates it, and a protected route refuses it as unauthenticated
 
-#### Scenario: Enabled without a bearer
-- **WHEN** DPoP is enabled on a chain with neither bearer mode
+#### Scenario: Enabled with nothing that verifies a binding
+- **WHEN** DPoP is enabled on a chain with neither bearer mode, and no other feature that verifies bound credentials
 - **THEN** building the chain fails with a configuration error naming DPoP
+
+#### Scenario: Enabled with one bearer mode
+- **WHEN** DPoP is enabled on a chain with only the session-reference mode
+- **THEN** the chain is built
 
 ### Requirement: DPoP is accepted beside Bearer once enabled
 With DPoP enabled, both bearer modes SHALL accept the `DPoP` authorization scheme, matched without regard to case, together with exactly one `DPoP` request header carrying a proof. Plain `Bearer` tokens SHALL still be accepted unless the consumer requires DPoP or the token is bound. A `DPoP` header longer than a bound, 8 KiB by default, SHALL be refused without being parsed.
