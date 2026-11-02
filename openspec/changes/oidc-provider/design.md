@@ -4,7 +4,7 @@ See `proposal.md` for the motivation. This design was captured from an explorati
 
 - **Decided:** decisions 1 to 5 and P1 to P9, all chosen by the user on 2026-11-02. Each states its default, how a consumer overrides it, and what was rejected.
 - **The user's standing condition:** the provider must comply with the standards it implements and follow established security practice. "Standards compliance and security practice" maps each requirement to the decision that meets it.
-- **Open questions:** only the package name remains, settled with the specs. A few values the specs fix are listed at the end of the compliance section.
+- **Open questions:** only the package name remains. The values and smaller behaviours the specs had to fix are recorded in "Decisions made while writing the specs".
 - **Not yet reproduced:** risks found by reading code are labelled `UNREPRODUCED`. Each becomes a failing test first when its task starts (`defect-claims`).
 
 ### What exists
@@ -801,7 +801,7 @@ The user asked that the provider comply with the standards it implements and wit
 
 | Source | Requirement | Met by |
 |---|---|---|
-| RFC 9700 §2.1, §4.1.3; OIDC Core §3.1.2.1 | redirect URIs compared by exact string matching ("MUST utilize exact string matching") | P1 step [a]; no patterns, no localhost port wildcards in v1 |
+| RFC 9700 §2.1, §4.1.3; RFC 8252 §7.3; OIDC Core §3.1.2.1 | redirect URIs compared by exact string matching, "except for port numbers in localhost redirection URIs of native apps", where the server "MUST allow variable port numbers" | P1 step [a]: no patterns or wildcards. A native client's loopback IP redirect URI may vary in port only (corrected 2026-11-02, while writing the specs; an earlier draft refused any port variation, which RFC 9700 does not allow for native apps) |
 | OIDC Core §3.1.2.6; RFC 6749 §4.1.2.1 | never redirect to an invalid redirect URI | P3 |
 | RFC 9700 §4.11.2 | the authorization server must not be an open redirector | P3: errors before validation are not redirected; `post_logout_redirect_uri` is matched exactly too |
 | RFC 9700 §2.1.1; RFC 7636 | PKCE supported; public clients MUST use it; S256 | PKCE with S256 required for **every** client (stricter than the MUST, as OAuth 2.1 does); `plain` refused |
@@ -819,7 +819,7 @@ The user asked that the provider comply with the standards it implements and wit
 
 | Source | Requirement | Met by |
 |---|---|---|
-| RFC 6749 §4.1.2, §10.5; RFC 9700 §4.2.4; OAuth 2.1 draft §4.1.3 | codes short-lived, single-use, bound to client and redirect URI; replay should revoke what the code issued | `token/onetime` check-then-consume; the H2 tombstone (decision 5); lifetime at most 10 minutes (RFC 6749 §4.1.2 RECOMMENDED), default value fixed in the specs |
+| RFC 6749 §4.1.2, §10.5; RFC 9700 §4.2.4; OAuth 2.1 draft §4.1.3 | codes short-lived, single-use, bound to client and redirect URI; replay should revoke what the code issued | `token/onetime` check-then-consume; the H2 tombstone (decision 5); 60 s by default, at most 10 minutes (RFC 6749 §4.1.2 RECOMMENDED) |
 | RFC 6749 §5.1 | token responses carry `Cache-Control: no-store` | P3 |
 | RFC 6749 §10.4, §10.10; RFC 6819 | refresh tokens bound to the client, stored as digests, at least 128 bits hard to guess | decision 5 (C1, C6) |
 | RFC 9700 §2.2.2, §4.14.2 | public-client refresh tokens sender-constrained or rotated; reuse detection | P5 rotation on by default; P6 binding |
@@ -838,7 +838,7 @@ The user asked that the provider comply with the standards it implements and wit
 | RFC 9700 §2.3, §4.10.2; RFC 8707 | access tokens audience-restricted | P4 audience rule |
 | RFC 9700 §4.10.1; RFC 9449; RFC 8705 | sender-constrained access tokens | P6 |
 | RFC 7009 §2.1 | revoking a grant ends its access tokens | 5-minute JWTs, or opaque tokens (P4) |
-| RFC 7662 | introspection is a protected endpoint | introspection requires client authentication; a client may introspect only tokens issued to it or its declared audience (fixed in the specs) |
+| RFC 7662 | introspection is a protected endpoint | introspection requires client authentication; a client sees only tokens issued to it, or access tokens for its registered resource identifier |
 | OIDC Core §15.1 | RS256 supported | P8 |
 | RFC 8725 | no `none`, algorithm allow-lists, key per algorithm | `token`'s existing jwx allow-list; P8 |
 
@@ -853,11 +853,34 @@ The user asked that the provider comply with the standards it implements and wit
 | Practice | an audit trail of grants, reuse and revocation | security events, `close-security-gaps` D13 |
 | Practice | no codes, tokens, handles or secrets in logs | the existing redaction rules apply to every new value; specs pin it |
 
-**Values the specs still fix.** These are named here so they are not lost. Each takes the safe side and is pinned by a scenario:
-- the authorization code lifetime (at most 10 minutes);
-- the maximum pending-request lifetime;
-- the maximum `private_key_jwt` assertion lifetime;
-- the introspection audience rule.
+### Decisions made while writing the specs (2026-11-02)
+
+The specs had to fix values and smaller behaviours that P1 to P9 left open. Each takes the safe side within the standards, and each is pinned by a scenario in the named capability. Values marked *proposed* rest on judgement, not on a researched figure.
+
+| Topic | What the specs fix | Override | Capability |
+|---|---|---|---|
+| Authorization code lifetime | 60 s (*proposed*), single use | up to 10 minutes, RFC 6749 §4.1.2's recommended maximum | `oidc-provider-authorization` |
+| Pending-request lifetime | 10 min (P1, *proposed*) | up to 30 minutes (*proposed*) | `oidc-provider-authorization` |
+| ID token lifetime | 5 min, matching access tokens (*proposed*) | per client | `oidc-provider-tokens` |
+| `private_key_jwt` assertion lifetime | `exp` at most 5 minutes ahead (*proposed*); `jti` kept until `exp` | up to 1 hour | `oidc-provider-clients` |
+| Loopback redirect URIs | a native client's loopback IP redirect URI may vary in port only (RFC 9700 §2.1, RFC 8252 §7.3) | none | `oidc-provider-clients` |
+| Token types | first-party `scrty+jwt`, access `at+jwt`, ID `JWT`, logout `logout+jwt`. Every verifier accepts only its own type, with no "any type" option | the first-party value, never one of the other three | `token-issuance` |
+| Introspection | a client sees tokens issued to it, and access tokens whose audience is its registered resource identifier; anything else is `{"active": false}` | none | `oidc-provider-tokens` |
+| Revoking another client's token | refused with `invalid_grant`, revoking nothing. RFC 7009 §2.1 says the request is refused, and RFC 6749 §5.2 defines `invalid_grant` to cover a grant "issued to another client" | none | `oidc-provider-tokens` |
+| UserInfo audience | not restricted: any valid `openid` access token from this provider is accepted, because the provider issued it for that user's OpenID grant | none | `oidc-provider-userinfo` |
+| Account disable (sub-decision 4) | realised at refresh and UserInfo. A missing or disabled user is refused, and the refresh also revokes the grant. No separate disable event is needed, since the identity store owns that state | none | `oidc-provider-tokens`, `oidc-provider-userinfo` |
+| `offline_access` | consent stage unless the user explicitly consented to `offline_access` for that client before (P2's "ask once"), or the native client is pre-authorized. Consent to other scopes never counts | pre-authorization, native first-party only | `oidc-provider-consent` |
+| Endpoint paths | prefix `/oauth2`: `/authorize`, `/authorize/resume`, `/token`, `/userinfo`, `/revoke`, `/introspect`, `/logout`, `/consents` | the prefix and each path | `http-security-chain` |
+| Chain logout | revokes the sign-in's grants **before** deleting its sessions. A grant-store failure fails the logout and keeps the session, so the logout can be retried and an online grant is never left behind | none | `http-security-chain` |
+| Other ends of a sign-in | family revocation for reuse, ending other sessions, passkey removal and session deletion through the manager also end the sign-in's online grants. A failure there is logged and reported, and never undoes the sessions' end | none | `http-security-chain` |
+| End-session endpoint | ends a sign-in only with a valid `id_token_hint` (expiry ignored). Without one it ends nothing and sends the browser to the consumer's logged-out page, required at construction. It never redirects to an unregistered post-logout URI | none | `oidc-provider-logout` |
+| Back-channel delivery | asynchronous, one attempt with a timeout, failures logged and reported | a consumer delivery, such as a retrying queue | `oidc-provider-logout` |
+| CSRF exemptions | authorization, token, revocation, introspection and end-session are exempt from `close-security-gaps` D6's cross-site check; resume and consents stay protected | none | `csrf-protection` |
+| Metadata caching | `Cache-Control` of 1 hour on both metadata documents (*proposed*); `jwks_uri` names the chain's JWKS endpoint, which must be enabled | the cache lifetime | `oidc-provider-metadata` |
+| Issuer | `https`, no query or fragment | `http` for loopback hosts only, for tests and the conformance job (P9) | `oidc-provider-metadata` |
+| Security events | grant created, consent given, denied or revoked, client authentication refused, code replayed, refresh reused, grant revoked with its cause, logout delivery failed | the sink, as D13 | `security-events` |
+
+**Capabilities added while writing the specs.** `csrf-protection` and `security-events`, both introduced by `close-security-gaps`, gain one requirement each. The proposal lists them.
 
 ## Risks / Trade-offs
 
@@ -984,7 +1007,7 @@ The decision that a green run gates the tag (P9) is reasoned from decision 1: no
 
 **Researched (accessed 2026-11-02):**
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), BCP 240, January 2025. Each clause below was read and quoted in the compliance tables:
-  - §2.1 and §4.1.3: exact redirect matching, and the mix-up defence;
+  - §2.1 and §4.1.3: exact redirect matching, its one exception for the port of a native app's loopback redirect URI (citing RFC 8252 §7.3), and the mix-up defence;
   - §2.1.1: PKCE and S256;
   - §2.3: audience-restricted access tokens;
   - §2.6: no CORS at the authorization endpoint;

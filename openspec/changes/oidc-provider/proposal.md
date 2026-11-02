@@ -37,7 +37,7 @@ The scope below is the v1 the research supports. Every item was decided on 2026-
 
 ### New Capabilities
 
-Proposed names; the boundaries are settled with the specs.
+Settled with the specs on 2026-11-02.
 
 - `oidc-provider-clients`: the client registry, client types, redirect and post-logout URIs, secrets kept as digests, and client authentication methods.
 - `oidc-provider-authorization`: the authorization endpoint, request validation, the pending request and its handle, the login and consent handoff, `prompt` and `max_age`, and authorization codes.
@@ -49,7 +49,7 @@ Proposed names; the boundaries are settled with the specs.
 
 ### Modified Capabilities
 
-Expected; the final list is settled with the specs.
+Settled with the specs on 2026-11-02.
 
 - `token-issuance`: access tokens carry `client_id`, `scope` and a per-resource audience with `typ` `at+jwt`; ID tokens are issued over the same key source; verification enforces `typ`, so each token type validates only as itself.
 - `account-recovery`, `multi-factor-auth`, `passkey-authentication`: completing recovery, resetting MFA and detecting a cloned passkey also revoke the user's grants, by default.
@@ -57,8 +57,10 @@ Expected; the final list is settled with the specs.
 - `security-state-stores`, `schema-migrations`, `store-conformance`: durable stores, a migration and conformance suites for clients, pending requests, consent and grants.
 - `http-security-chain`: the provider's endpoints and their slots; local logout and session-family revocation tell the provider which sign-in ended; the password-change endpoint gains an option to revoke grants.
 - `http-error-propagation`: protocol-mandated error bodies and statuses for the provider's endpoints.
-- `sender-constrained-tokens` (added by `close-security-gaps`): the token endpoint binds tokens, including refresh tokens of public clients and codes bound with `dpop_jkt`.
+- `sender-constrained-tokens` (added by `close-security-gaps`): the provider counts as a verifier of bound credentials; the token endpoint binds tokens, including refresh tokens of public clients and codes bound with `dpop_jkt`; a client can be required to use bound tokens.
 - `cors`: the provider's token, UserInfo, metadata and JWKS endpoints may be called cross-origin; the authorization endpoint never is.
+- `csrf-protection` (added by `close-security-gaps`): the provider's authorization, token, revocation, introspection and end-session endpoints are exempt from the cross-site check, which relying parties cross by design; the resume and consent endpoints stay protected.
+- `security-events` (added by `close-security-gaps`): grants, consent, code replay, refresh reuse, revocation and failed logout delivery are reported as events.
 
 ## Impact
 
