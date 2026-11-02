@@ -15,7 +15,7 @@ export PATH := $(BIN):$(PATH)
 # workspace, so it is never linted or tested here.
 MODULES := $(shell go list -m -f '{{.Dir}}')
 
-.PHONY: tools check fmt-check vet lint test test-isolated vuln generate-check
+.PHONY: tools check fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate
 
 # GOWORK=off because tools/ is deliberately outside go.work: in workspace mode the
 # tool pattern resolves against the workspace modules, which declare no tools.
@@ -24,7 +24,7 @@ tools:
 
 # test-isolated runs from the recipe, after every prerequisite has finished, so
 # that make -j never runs it beside the rest of the suite.
-check: tools fmt-check vet lint test vuln generate-check
+check: tools pincheck fmt-check vet lint test vuln generate-check
 	@$(MAKE) --no-print-directory test-isolated
 
 # gofmt -l exits 0 whether or not it names files, so the output is what fails.
@@ -48,8 +48,38 @@ test:
 test-isolated:
 	@set -eu -o pipefail; cd test && SCRTY_TEST_ISOLATED=1 go test -race -count=1 -p 1 -run '^TestPGLimiter_PruneUnderRecords$$' -v .
 
+# govulncheck exits non-zero on a reachable vulnerability, and the subshell's
+# status stops the loop under the explicit flags above, so a finding in any
+# module fails the target.
 vuln:
-	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && govulncheck ./...); done
+	@set -eu -o pipefail; for m in $(MODULES); do echo "vuln: $$m"; (cd "$$m" && govulncheck ./...); done
+
+# Every action and reusable workflow must be pinned to a full commit SHA. The
+# checker is in the tools module, so it runs there with the workspace off.
+pincheck:
+	@cd tools && GOWORK=off go run ./cmd/pincheck $(CURDIR)/.github
+
+# SBOM_DIR receives one CycloneDX JSON file per module in MODULES, named after
+# the module path. MODULES is the workspace module list, which is the published
+# set: tools is outside go.work and is never published. The generator is a tool
+# directive in the tools module. A module whose SBOM cannot be generated fails
+# the target, and no stale file survives: the directory is emptied first.
+SBOM_DIR ?= $(BIN)/sbom
+
+sbom: tools
+	@set -eu -o pipefail; rm -rf "$(SBOM_DIR)"; mkdir -p "$(SBOM_DIR)"; \
+	for m in $(MODULES); do \
+		echo "sbom: $$m"; \
+		path="$$(cd "$$m" && GOWORK=off go list -m)"; \
+		out="$(SBOM_DIR)/$$(echo "$$path" | tr '/' '_').cdx.json"; \
+		(cd "$$m" && GOWORK=off cyclonedx-gomod mod -json -licenses $(if $(SBOM_VERSION),-main-version $(SBOM_VERSION)) -output "$$out" .); \
+		test -s "$$out"; \
+		echo "sbom: $$out"; \
+	done
+
+# The release gate: a reachable vulnerability or a module whose SBOM cannot be
+# produced stops the release. vuln is a prerequisite, so it blocks the gate.
+release-gate: tools vuln sbom
 
 # Measures what go generate itself changed, by checksumming every .go file in the
 # workspace modules before and after the run. It used to `git diff` instead, which

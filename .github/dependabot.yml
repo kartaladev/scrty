@@ -1,0 +1,48 @@
+version: 2
+
+# One gomod entry per directory holding a go.mod that scrty publishes or builds
+# its release from: the root, the nested modules in go.work, and the tools
+# module. The nested modules are published as their own modules, so each needs
+# its own entry: Dependabot does not descend into sub-directories. The tools
+# module is not published, but it pins the security tooling (govulncheck, the
+# SBOM generator, the linter), so it is kept current too.
+#
+# Dev fixtures under testdata/ are deliberately absent: they are inputs to the
+# layout tests, not modules anyone depends on.
+#
+# Security updates are proposed as soon as they are published, independent of
+# the weekly version-update schedule.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /authenticate/passkey/webauthn
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /expiry/sweep
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /httpsec/fibersec
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /httpsec/ginsec
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /ratelimit/redisstore
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /store/gormstore
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /store/pgxstore
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /test
+    schedule: {interval: weekly}
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule: {interval: weekly}
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
