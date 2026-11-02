@@ -477,8 +477,13 @@ func prepareLogin(
 	// them can undo it, and before any challenge mark: a challenge the phase
 	// still raises, such as a password change, is marked on the satisfied
 	// session and refused as for any login.
-	create := make([]session.CreateOption, 0, len(opts)+3)
+	create := make([]session.CreateOption, 0, len(opts)+4)
 	create = append(create, opts...)
+	// A sign-in a cookie may carry gets the CSRF token its unsafe requests
+	// must present, in the same creating write.
+	if signInsCarryCSRFToken(ctx) {
+		create = append(create, session.WithCSRFToken())
+	}
 	if ev := in.FederatedAssurance; ev.Asserted() {
 		create = append(create, session.WithFederatedAssurance(ev.AMR(), ev.ACR()))
 	}

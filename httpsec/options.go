@@ -215,6 +215,9 @@ type config struct {
 	// from, and "" when it reads none. The CORS layer reads it when the chain
 	// is built, to allow that header.
 	csrfTokenHeader string
+
+	// csrfOptOut is set by WithoutCSRFProtection.
+	csrfOptOut bool
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the
@@ -345,6 +348,10 @@ func (c *config) validate() error {
 		if err := e.check(); err != nil {
 			return err
 		}
+	}
+
+	if err := c.refuseCookiesWithoutCSRF(); err != nil {
+		return err
 	}
 
 	return c.checkExplicitSessions()

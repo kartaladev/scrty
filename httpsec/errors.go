@@ -244,6 +244,7 @@ var statusTable = []statusRow{
 	{ErrCredentialsMissing, http.StatusBadRequest},
 	{ErrMalformedRequest, http.StatusBadRequest},
 	{ErrHostNotAllowed, http.StatusBadRequest},
+	{ErrCrossSiteRequest, http.StatusForbidden},
 
 	// A passkey ceremony response the verifier could not read. The chain's
 	// endpoints answer it as ErrCredentialsMissing, wrapping it; this row
