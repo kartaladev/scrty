@@ -115,11 +115,11 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 11. Security events (D13)
 
-- [ ] 11.1 Add the `security.Event` type, the sink option and the documented `scrty_` names, test-first: no sink means no events, a sink receives `authn_login_fail`, a panicking sink is recovered, and the sink's context is not cancelled when the request's is. Verify: `go test -run 'TestSecurityEvents_Sink' -count=1 ./...` in the core module.
-- [ ] 11.2 Emit events from login, lockout, MFA, passkey, recovery, re-authentication, renewal, logout, session management, CSRF, host, DPoP, certificate-binding, challenge and rate-limit refusals, test-first, one table row per event, asserting the resolved client address and that no secret appears. Verify: `go test -run 'TestSecurityEvents_Emitted' -count=1 ./httpsec/`.
-- [ ] 11.3 Emit creation events only for stored sessions and handed-out credentials, and no refusal event for a hang-up or a dependency failure, test-first: lost redemption race, failed commit, store outage at verification. Verify: `go test -run 'TestSecurityEvents_OnlyWhatHappened' -count=1 ./httpsec/`.
-- [ ] 11.4 Deliver the lockout and reuse observer reports as events while the observers keep working, test-first. Verify: `go test -run 'TestSecurityEvents_Observers' -count=1 ./...` in the core module.
-- [ ] 11.5 Document the event list and the sink's contract, including that a blocking sink is the consumer's responsibility. Verify: `go doc` of the events package lists every name.
+- [x] 11.1 Add the `security.Event` type, the sink option and the documented `scrty_` names, test-first: no sink means no events, a sink receives `authn_login_fail`, a panicking sink is recovered, and the sink's context is not cancelled when the request's is. Verify: `go test -run 'TestSecurityEvents_Sink' -count=1 ./...` in the core module.
+- [x] 11.2 Emit events from login, lockout, MFA, passkey, recovery, re-authentication, renewal, logout, session management, CSRF, host, DPoP, certificate-binding, challenge and rate-limit refusals, test-first, one table row per event, asserting the resolved client address and that no secret appears. Verify: `go test -run 'TestSecurityEvents_Emitted' -count=1 ./httpsec/`.
+- [x] 11.3 Emit creation events only for stored sessions and handed-out credentials, and no refusal event for a hang-up or a dependency failure, test-first: lost redemption race, failed commit, store outage at verification. Verify: `go test -run 'TestSecurityEvents_OnlyWhatHappened' -count=1 ./httpsec/`.
+- [x] 11.4 Deliver the lockout and reuse observer reports as events while the observers keep working, test-first. Verify: `go test -run 'TestSecurityEvents_Observers' -count=1 ./...` in the core module.
+- [x] 11.5 Document the event list and the sink's contract, including that a blocking sink is the consumer's responsibility. Verify: `go doc` of the events package lists every name.
 
 ## 12. Automation challenge (D15)
 
