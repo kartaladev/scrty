@@ -158,6 +158,10 @@ type issuingBase struct {
 	users   *MockUserLoader
 	authn   authenticate.Authenticator
 	lookups *atomic.Int64
+
+	// certThumb, when set, makes the sign-ins signedIn creates for an unbound
+	// case bound to the client certificate with this thumbprint.
+	certThumb string
 }
 
 func newIssuingBase(t *testing.T) *issuingBase {
@@ -246,13 +250,19 @@ func (b *issuingBase) fixture(t *testing.T, d httpsec.DPoP, opts ...httpsec.Opti
 
 // signedIn creates a sign-in of e2eUser's, bound to bound unless it is empty,
 // changed by change before it is stored again, and returns the token issued
-// for it, bound as the session is.
+// for it, bound as the session is. An empty bound leaves it unbound, or bound
+// to the certificate certThumb names.
 func (b *issuingBase) signedIn(t *testing.T, bound string, change func(*session.Session)) string {
 	t.Helper()
 
+	binding := session.KeyBinding{JKT: bound}
+	if bound == "" {
+		binding = session.KeyBinding{X5TS256: b.certThumb}
+	}
+
 	opts := []session.CreateOption{session.WithFirstFactor(factor.Password)}
-	if bound != "" {
-		opts = append(opts, session.WithKeyBinding(session.KeyBinding{JKT: bound}))
+	if !binding.IsZero() {
+		opts = append(opts, session.WithKeyBinding(binding))
 	}
 
 	s, err := b.creator.Create(t.Context(), e2eUser, opts...)
@@ -264,7 +274,7 @@ func (b *issuingBase) signedIn(t *testing.T, bound string, change func(*session.
 	}
 
 	tok, err := b.gen.GenerateWith(t.Context(), s.ID, &identity.Principal{ID: e2eUser, Username: e2eAddress},
-		token.WithConfirmation(token.Confirmation{JKT: bound}))
+		token.WithConfirmation(token.Confirmation{JKT: binding.JKT, X5TS256: binding.X5TS256}))
 	require.NoError(t, err)
 
 	return tok
@@ -328,7 +338,13 @@ func loginEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 func mfaVerifyEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 	t.Helper()
 
-	b := newIssuingBase(t)
+	return mfaVerifyOver(t, newIssuingBase(t), d)
+}
+
+// mfaVerifyOver is mfaVerifyEndpoint over b, on a chain that also takes extra.
+func mfaVerifyOver(t *testing.T, b *issuingBase, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
+	t.Helper()
+
 	clk := clockwork.NewFakeClockAt(time.Now().Truncate(time.Second))
 
 	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example", mfa.WithClock(clk))
@@ -338,7 +354,9 @@ func mfaVerifyEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 	require.NoError(t, err)
 	require.NoError(t, method.ConfirmEnrolment(t.Context(), e2eUser, must.Must(totp.GenerateCode(prov.Secret, clk.Now()))))
 
-	f := b.fixture(t, d, httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(b.gen)))
+	f := b.fixture(t, d, append([]httpsec.Option{
+		httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(b.gen)),
+	}, extra...)...)
 	path := httpsec.DefaultMFAVerifyPrefix + "/totp"
 
 	f.prepare = func(t *testing.T, bound string) func(*testing.T, prover) served {
@@ -372,7 +390,12 @@ func reauthEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 func reauthEndpointWith(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
-	b := newIssuingBase(t)
+	return reauthOver(t, newIssuingBase(t), d, extra...)
+}
+
+// reauthOver is reauthEndpointWith over b.
+func reauthOver(t *testing.T, b *issuingBase, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
+	t.Helper()
 
 	f := b.fixture(t, d, append([]httpsec.Option{
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
@@ -407,11 +430,13 @@ func renewalEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 	return renewalOver(t, newIssuingBase(t), d)
 }
 
-// renewalOver is renewalEndpoint over b.
-func renewalOver(t *testing.T, b *issuingBase, d httpsec.DPoP) issuingFixture {
+// renewalOver is renewalEndpoint over b, on a chain that also takes extra.
+func renewalOver(t *testing.T, b *issuingBase, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
-	f := b.fixture(t, d, httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: b.users, Tokens: b.gen}))
+	f := b.fixture(t, d, append([]httpsec.Option{
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: b.users, Tokens: b.gen}),
+	}, extra...)...)
 
 	f.prepare = func(t *testing.T, bound string) func(*testing.T, prover) served {
 		t.Helper()
@@ -822,6 +847,86 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 				}
 
 				tc.assert(t, &f, send(t, tc.proof), send, before, lookups)
+			})
+		}
+	}
+}
+
+// TestDPoP_ProofBesideCertificateBinding pins that an endpoint continuing a
+// certificate-bound sign-in verifies and records a DPoP proof it is given
+// beside the sign-in's Bearer credential, as it does for an unbound one, and
+// that the sign-in's binding stays the certificate. A DPoP-bound sign-in's own
+// proof is the bearer's, and TestDPoP_Rotation and TestDPoP_ProofBeforeSpend
+// keep it unchanged.
+func TestDPoP_ProofBesideCertificateBinding(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+	c := newClientCert(t, "service-c")
+
+	type endpoint struct {
+		name  string
+		build func(t *testing.T, b *issuingBase, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture
+	}
+
+	endpoints := []endpoint{
+		{name: "MFA verify", build: mfaVerifyOver},
+		{name: "re-authentication", build: reauthOver},
+		{name: "renewal", build: renewalOver},
+	}
+
+	type testCase struct {
+		name   string
+		proof  prover
+		assert func(t *testing.T, f *issuingFixture, send func(*testing.T, prover) served, out served, before int)
+	}
+
+	cases := []testCase{
+		{
+			name:  "a bad proof is refused with everything left unspent",
+			proof: key.brokenProver("j-bad"),
+			assert: func(t *testing.T, f *issuingFixture, send func(*testing.T, prover) served, out served, before int) {
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+				assert.Equal(t, before, f.activeSessions(t), "nothing is rotated")
+
+				retry := send(t, key.validProver("j-retry"))
+				require.NoError(t, retry.err, "the code or the password was left unspent")
+			},
+		},
+		{
+			name:  "a good proof is accepted and recorded, and the binding stays the certificate",
+			proof: key.validProver("j-once"),
+			assert: func(t *testing.T, f *issuingFixture, _ func(*testing.T, prover) served, out served, _ int) {
+				jkt, s := f.issued(t, out)
+				assert.Empty(t, jkt, "the token carries no DPoP key")
+				assert.Equal(t, session.KeyBinding{X5TS256: c.thumb}, s.KeyBinding, "the successor is still bound to the certificate")
+
+				// Another sign-in of the same user, presenting the same proof.
+				again := f.prepare(t, "")
+				before := f.activeSessions(t)
+
+				replay := again(t, key.validProver("j-once"))
+				require.ErrorIs(t, replay.err, httpsec.ErrInvalidDPoPProof, "the proof's jti was recorded")
+				assert.Equal(t, before, f.activeSessions(t), "the replay rotated nothing")
+			},
+		},
+	}
+
+	for _, ep := range endpoints {
+		for _, tc := range cases {
+			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				b := newIssuingBase(t)
+				b.certThumb = c.thumb
+
+				f := ep.build(t, b, httpsec.DPoP{}, httpsec.EnableCertificateBinding(), presentingCertificate(c))
+				send := f.prepare(t, "")
+				before := f.activeSessions(t)
+
+				tc.assert(t, &f, send, send(t, tc.proof), before)
 			})
 		}
 	}

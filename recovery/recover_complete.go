@@ -258,8 +258,9 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 // has left, and that failure spends nothing either.
 //
 // The recovery's own attributes are applied after callerOpts, so none of them
-// can replace those: the first factor, the binding, and no second factor met
-// (recoveryOwn), before the session is marked recovery-pending.
+// can replace those: the first factor, the binding, the recovered user, no
+// second factor met and no confinement marker (recoveryOwn), before the
+// session is marked recovery-pending.
 //
 // An issuing failure is logged and returned behind fixed text, a dependency
 // failure: at ERROR, or at DEBUG when ctx's own end cut it short.
@@ -272,7 +273,7 @@ func (r *Recoverer) issueSession(
 	if !binding.IsZero() {
 		opts = append(opts, session.WithKeyBinding(binding))
 	}
-	opts = append(opts, session.WithFirstFactor(factor.Recovery), recoveryOwn)
+	opts = append(opts, session.WithFirstFactor(factor.Recovery), recoveryOwn(details.ID))
 
 	p, err := r.sessions.Prepare(details.ID, opts...)
 	if err != nil {
@@ -304,11 +305,23 @@ func (r *Recoverer) issueSession(
 	return &issuedSession{prepared: p, credential: credential}, nil
 }
 
-// recoveryOwn clears a second factor a caller's create option recorded as met
-// (session.WithSecondFactorAtLogin): a recovery session has met none, and
-// becomes a full session only by binding a new authenticator.
-func recoveryOwn(s *session.Session) {
-	s.MFASatisfiedAt, s.MFAAtFirstFactor = time.Time{}, false
+// recoveryOwn is the create option the recovery applies last, for user, the
+// recovered one. A create option is a plain func a consumer may write by hand,
+// so it also sets what none of the session's own options may decide:
+//
+//   - the user, which is the recovered user whatever a caller's option set;
+//   - no second factor met, clearing one a caller's option recorded
+//     (session.WithSecondFactorAtLogin): a recovery session becomes a full
+//     session only by binding a new authenticator;
+//   - no confinement marker, so MarkRecoveryPending records the deadline the
+//     session holds now, and one a caller preset cannot be restored past the
+//     manager's maximum lifetime when the session leaves its pending state.
+func recoveryOwn(user identity.UserID) session.CreateOption {
+	return func(s *session.Session) {
+		s.UserID = user
+		s.MFASatisfiedAt, s.MFAAtFirstFactor = time.Time{}, false
+		s.EnrolmentOriginDeadline = time.Time{}
+	}
 }
 
 // complete runs the completion sequence from the reset on: reset, revoke,

@@ -270,8 +270,9 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //  5. The throttle, before the response is read, so guessing costs attempts
 //     rather than time, and a locked-out user learns nothing from a body the
 //     endpoint cannot read. It counts per user across every method. Before
-//     it, a DPoP proof the request carries beside an unbound session's
-//     credential is verified and recorded (continuingProof): a refused one
+//     it, a DPoP proof the request carries beside the Bearer credential of an
+//     unbound or certificate-bound session is verified and recorded
+//     (continuingProof): a refused one
 //     is ErrInvalidDPoPProof, counted nowhere and spending no challenge.
 //  6. The response, read the way the method's format declares and never from
 //     the URL. A response that cannot be read is ErrCredentialsMissing and one
@@ -332,21 +333,24 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 
 // continuingProof verifies the DPoP proof a request continuing the sign-in s
 // carries, at an endpoint that issues a credential for a sign-in already
-// created (second-factor verification and session renewal) and so adds no
-// binding: the sign-in keeps the one it was created with.
+// created (second-factor verification, session renewal and
+// re-authentication) and so adds no binding: the sign-in keeps the one it was
+// created with.
 //
-// A bound sign-in reaches here only under the DPoP scheme, with a proof from
-// its own key that the bearer verified and recorded, so nothing more is read.
-// An unbound one is presented under the Bearer scheme, whose credential the
-// bearer judges without a proof; a proof the request carries beside it is
-// verified here as at re-authentication, without ath, and its jti recorded,
-// before the endpoint spends anything. A refusal is ErrInvalidDPoPProof.
+// A DPoP-bound sign-in reaches here only under the DPoP scheme, with a proof
+// from its own key that the bearer verified and recorded, so nothing more is
+// read. Any other sign-in is presented under the Bearer scheme, whose
+// credential the bearer judges without a proof: an unbound one, and one bound
+// to a certificate, whose binding stays the certificate. A proof the request
+// carries beside such a credential is verified here, without ath, and its jti
+// recorded, before the endpoint spends anything. A refusal is
+// ErrInvalidDPoPProof.
 //
 // A request carrying no proof, and a chain without DPoP, check nothing: the
 // sign-in's binding rules are the bearer's, unchanged.
 func continuingProof(ex *Exchange, s *session.Session) error {
 	v := ex.dpop()
-	if v == nil || !s.KeyBinding.IsZero() || len(ex.Request.HeaderValues(dpopHeader)) == 0 {
+	if v == nil || s.KeyBinding.JKT != "" || len(ex.Request.HeaderValues(dpopHeader)) == 0 {
 		return nil
 	}
 

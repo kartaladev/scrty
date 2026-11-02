@@ -159,6 +159,42 @@ func TestRecoverer_Hold(t *testing.T) {
 			},
 		},
 		{
+			name: "a finish's raw session option cannot set the recovery session's user",
+			opts: append(holdFor(72*time.Hour), recovery.WithCredentialIssuer(userBlindIssuer)),
+			act: func(ctx context.Context, t *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {
+				h := heldRecovery(ctx, t, r, savedAndIssuedReq(e))
+				e.clock.Advance(72 * time.Hour)
+
+				return r.Finish(ctx, h.CompletionToken, recovery.WithFinishSessionOptions(rawUserOption))
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				userIsRecovered(t, s)
+			},
+		},
+		{
+			name: "a finish's raw session option cannot preset the confinement marker past the maximum lifetime",
+			opts: holdFor(72 * time.Hour),
+			act: func(ctx context.Context, t *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {
+				h := heldRecovery(ctx, t, r, savedAndIssuedReq(e))
+				e.clock.Advance(72 * time.Hour)
+
+				return r.Finish(ctx, h.CompletionToken, recovery.WithFinishSessionOptions(rawConfinementOption))
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				e.deadlineIsOwn(t, s)
+			},
+		},
+		{
 			name: "finishing too early is refused, and the same token works after the hold",
 			opts: holdFor(72 * time.Hour),
 			act: func(ctx context.Context, t *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {

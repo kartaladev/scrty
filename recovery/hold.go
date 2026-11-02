@@ -571,8 +571,9 @@ func WithFinishKeyBinding(b session.KeyBinding) FinishOption {
 //
 // The recovery's own attributes are applied after them, as for
 // Request.SessionOptions, so none of them can replace those: the first
-// factor, the binding WithFinishKeyBinding names, and the recovery-pending
-// state with no second factor met.
+// factor, the binding WithFinishKeyBinding names unless it is the zero
+// value, the recovered user, and the recovery-pending state with no second
+// factor met.
 func WithFinishSessionOptions(opts ...session.CreateOption) FinishOption {
 	return func(o *finishOptions) { o.sessionOpts = append(o.sessionOpts, opts...) }
 }

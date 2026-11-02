@@ -90,10 +90,12 @@ type Request struct {
 	// its own (WithFinishSessionOptions).
 	//
 	// The recovery's own attributes are applied after them, so none of them
-	// can replace those: the first factor, factor.Recovery; the binding
-	// KeyBinding names, unless it is the zero value; and the recovery-pending
-	// state, confined to the pending lifetime and with no second factor met,
-	// whatever an option such as session.WithSecondFactorAtLogin recorded.
+	// can replace those, however a hand-written option sets the session: the
+	// first factor, factor.Recovery; the binding KeyBinding names, unless it
+	// is the zero value; the recovered user; and the recovery-pending state,
+	// confined to the pending lifetime from the deadline the session holds
+	// and with no second factor met, whatever an option such as
+	// session.WithSecondFactorAtLogin recorded.
 	SessionOptions []session.CreateOption
 }
 
