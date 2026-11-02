@@ -1088,6 +1088,111 @@ the write treats that as done: the newer password stays, and the next login upgr
 password's age is not moved, because a rehash is not a password change. A consumer store must
 honour the condition too; the identity conformance suite (`test/identity`) checks it.
 
+## Security headers
+
+`httpsec.EnableSecurityHeaders` is off until you enable it. Once enabled, with no
+options, every response the chain produces, its own refusals included, carries:
+
+- `Content-Security-Policy` with a fresh per-response nonce, `'strict-dynamic'`,
+  `object-src 'none'`, `base-uri 'none'` and `frame-ancestors 'none'`;
+- `X-Content-Type-Options: nosniff`;
+- `Referrer-Policy: strict-origin-when-cross-origin`;
+- `Cross-Origin-Opener-Policy: same-origin-allow-popups`, so a popup-based OIDC
+  login keeps working;
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`, only on a
+  request the chain judges secure (TLS, `WithHTTPSDeployment`, or a trusted
+  proxy's forwarded scheme).
+
+`X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-Policy` and
+`Origin-Agent-Cluster` are never sent unless you add them with `WithHeader`.
+The layer does not wrap the response writer, so a handler's own value for a
+header wins and flushing and hijacking work as without it.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSecurityHeaders(
+        httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("img-src", "'self'", "data:"))),
+        httpsec.WithHeaderProfile(httpsec.APIHeaders(), httpsec.PathPrefix("/api/")),
+    ),
+)
+```
+
+Every profile is editable with the same editors (`WithHeader`, `WithoutHeader`,
+`WithCSP`): `APIHeaders(opts...)` edits the API profile, and
+`NewHeaderProfile(opts...)` starts a profile of your own from nothing. The first
+profile whose matcher selects a request applies. `WithHSTS`, `WithCSPReportOnly`
+and the reporting options belong to the layer, not to a profile, and a profile
+given one fails construction.
+
+### Rolling a policy out
+
+`WithCSPReportOnly()` sends the policy as `Content-Security-Policy-Report-Only`,
+so browsers report what it would block and block nothing.
+`WithCSPReportOnlyPolicy(p)` sends a stricter candidate beside the enforced
+policy, with the same nonce. `WithReportingEndpoint("csp", "https://reports.example.com/csp")`
+adds `Reporting-Endpoints`, `report-to` and `report-uri`; the endpoint must be an
+absolute `https` URL, and receiving the reports is up to you.
+
+### A static page: hashes instead of a nonce
+
+A page that is cached cannot carry a per-response nonce. `HashCSP("sha256-...")`
+lists the script hashes you supply, which your build computes, and generates no
+nonce. `HashCSP(...).With(httpsec.CSPDirective(...))` adds directives.
+
+### Giving the nonce to a page
+
+The handler reads the nonce with `httpsec.CSPNonce(r.Context())`. It finds none
+on a route a profile without a nonce serves.
+
+**`html/template`.** Pass the nonce as data and put it on each script you own;
+do not inject it into every tag a template or a proxy can find (OWASP's advice).
+
+```go
+nonce, _ := httpsec.CSPNonce(r.Context())
+err := page.Execute(w, struct{ Nonce string }{nonce})
+```
+
+```html
+<script nonce="{{.Nonce}}" src="/app.js"></script>
+```
+
+**Vite.** Vite's `html.cspNonce` option adds a `nonce` attribute to the `<script>`
+and `<style>` tags it emits, and a placeholder
+`<meta property="csp-nonce" nonce="PLACEHOLDER" />` whose nonce Vite uses when
+it needs one, in development and in the build. Vite's documentation says the
+placeholder must be replaced with a unique value for each request. Serve the
+built `index.html` through a handler that does so (the placeholder text is
+whatever you set `html.cspNonce` to):
+
+```go
+nonce, _ := httpsec.CSPNonce(r.Context())
+w.Header().Set("Content-Type", "text/html; charset=utf-8")
+_, _ = io.WriteString(w, strings.ReplaceAll(indexHTML, "PLACEHOLDER", nonce))
+```
+
+**Next.js.** The Next.js guide has its own proxy generate the nonce, put it in
+the request's `Content-Security-Policy` header and an `x-nonce` request header,
+and has Next.js read the nonce from the `'nonce-{value}'` in that header while
+rendering. It requires dynamic rendering for nonces. So a Next.js application
+owns its own policy: where a route's pages are rendered by Next.js, give that
+route a profile that sends no `Content-Security-Policy`, so the two policies do
+not meet, and keep the other headers:
+
+```go
+httpsec.WithHeaderProfile(
+    httpsec.NewHeaderProfile(
+        httpsec.WithHeader("X-Content-Type-Options", "nosniff"),
+        httpsec.WithHeader("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ),
+    httpsec.PathPrefix("/app/"),
+)
+```
+
+Sources: the [OWASP CSP Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html),
+[web.dev: Strict CSP](https://web.dev/articles/strict-csp),
+[Vite's CSP section](https://vite.dev/guide/features#content-security-policy-csp) and
+[Next.js's CSP guide](https://nextjs.org/docs/app/guides/content-security-policy).
+
 ## Development
 
 ```sh
