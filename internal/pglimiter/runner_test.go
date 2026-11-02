@@ -388,6 +388,96 @@ func TestBackend_Exceeded(t *testing.T) {
 	}
 }
 
+func TestBackend_HasRecentFailures(t *testing.T) {
+	t.Parallel()
+
+	longKey := strings.Repeat("k", 600)
+	errCheck := errors.New("conn reset")
+
+	has := func(want bool) func(t *testing.T, got bool, err error) {
+		return func(t *testing.T, got bool, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		}
+	}
+
+	type testCase struct {
+		name   string
+		prefix string
+		key    string
+		ctx    func(ctx context.Context) context.Context
+		script func(ctrl *gomock.Controller, r *MockRunner, key string)
+		assert func(t *testing.T, has bool, err error)
+	}
+
+	// The statement is the window count Exceeded runs, so a failure counts
+	// exactly when it counts towards the limit: inside the window.
+	expectCount := func(n int, err error) func(ctrl *gomock.Controller, r *MockRunner, key string) {
+		return func(ctrl *gomock.Controller, r *MockRunner, key string) {
+			r.EXPECT().QueryRow(gomock.Any(), pgschema.LimiterCheck,
+				backendNamespace, pgschema.LimiterKey(key), backendWindowUS, testNow).
+				Return(rowScanning(ctrl, err, n))
+		}
+	}
+
+	cases := []testCase{
+		{name: "a clean key", prefix: "pgxstore", key: "k", script: expectCount(0, nil), assert: has(false)},
+		{name: "one failure, far below the limit", prefix: "pgxstore", key: "k", script: expectCount(1, nil), assert: has(true)},
+		{name: "at the limit", prefix: "pgxstore", key: "k", script: expectCount(3, nil), assert: has(true)},
+		{name: "a long key is read in its stored form", prefix: "pgxstore", key: longKey, script: expectCount(0, nil), assert: has(false)},
+		{
+			name: "a read error answers true, wrapped with the prefix", prefix: "sqlstore", key: "k",
+			script: expectCount(0, errCheck),
+			assert: func(t *testing.T, got bool, err error) {
+				assert.True(t, got)
+				require.ErrorIs(t, err, errCheck)
+				assert.EqualError(t, err, "sqlstore: rate-limit recent failures: conn reset")
+			},
+		},
+		{
+			name: "an ended context answers true", prefix: "pgxstore", key: "k",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return cctx
+			},
+			script: func(ctrl *gomock.Controller, r *MockRunner, _ string) {
+				r.EXPECT().QueryRow(gomock.Any(), pgschema.LimiterCheck, gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ string, _ ...any) pglimiter.Row {
+						return rowScanning(ctrl, ctx.Err())
+					})
+			},
+			assert: func(t *testing.T, got bool, err error) {
+				assert.True(t, got)
+				require.ErrorIs(t, err, context.Canceled)
+				assert.EqualError(t, err, "pgxstore: rate-limit recent failures: context canceled")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+			ctrl := gomock.NewController(t)
+			r := NewMockRunner(ctrl)
+			tc.script(ctrl, r, tc.key)
+			b := pglimiter.NewBackend(r, tc.prefix, backendNamespace, backendLimit, backendWindow,
+				withClock(pglimiter.DefaultConfig()))
+			reporter, ok := b.(ratelimit.RecentFailureReporter)
+			require.True(t, ok, "the backend does not implement ratelimit.RecentFailureReporter")
+
+			got, err := reporter.HasRecentFailures(ctx, tc.key)
+			tc.assert(t, got, err)
+		})
+	}
+}
+
 func TestBackend_RecordFailure(t *testing.T) {
 	t.Parallel()
 
