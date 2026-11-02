@@ -29,11 +29,11 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [x] 3.4 Generate the per-response nonce and expose `CSPNonce`, failing the request on a randomness error, with no nonce on routes not served by the document profile, test-first. Verify: `go test -run 'TestSecurityHeaders_Nonce' -count=1 ./httpsec/`.
 - [x] 3.5 Add route profiles with the path-prefix (whole segments) and function matchers, first match wins, and the API profile, test-first. Verify: `go test -run 'TestSecurityHeaders_Profiles' -count=1 ./httpsec/`.
 - [x] 3.6 Send HSTS only when `Secure()`, including through a trusted proxy and not from an untrusted peer's forged scheme; allow `max-age=0`; refuse a negative age and `preload` below one year or without subdomains at construction, test-first. Verify: `go test -run 'TestSecurityHeaders_HSTS' -count=1 ./httpsec/`.
-- [ ] 3.7 Prove the handler's own header wins and that `Flush` and `Hijack` still work, test-first, through `http.NewResponseController`. Verify: `go test -run 'TestSecurityHeaders_HandlerWins|TestSecurityHeaders_Streaming' -count=1 ./httpsec/`.
-- [ ] 3.8 Add report-only mode (alone and beside the enforced policy, one nonce), the reporting endpoint (absolute `https` only) and the hash preset (well-formed hashes only, at least one), test-first. Verify: `go test -run 'TestSecurityHeaders_ReportOnly|TestSecurityHeaders_HashPreset' -count=1 ./httpsec/`.
-- [ ] 3.9 Add `WithLogoutClearSiteData`, sent only on a secure, successful logout, and refused with no or an unknown directive, test-first. Verify: `go test -run 'TestLogout_ClearSiteData' -count=1 ./httpsec/`.
-- [ ] 3.10 Run the security-headers scenarios on net/http, gin and fiber in `test/httpsecconformance`, test-first, including a refusal through each adapter's default error handling. Verify: `go test -run 'TestSecurityHeaders' ./...` in the `test` module.
-- [ ] 3.11 Godoc every option with its default, and add a README section with the Vite, Next.js and template nonce examples. Verify: `go doc ./httpsec EnableSecurityHeaders` names each default.
+- [x] 3.7 Prove the handler's own header wins and that `Flush` and `Hijack` still work, test-first, through `http.NewResponseController`. Verify: `go test -run 'TestSecurityHeaders_HandlerWins|TestSecurityHeaders_Streaming' -count=1 ./httpsec/`.
+- [x] 3.8 Add report-only mode (alone and beside the enforced policy, one nonce), the reporting endpoint (absolute `https` only) and the hash preset (well-formed hashes only, at least one), test-first. Verify: `go test -run 'TestSecurityHeaders_ReportOnly|TestSecurityHeaders_HashPreset' -count=1 ./httpsec/`.
+- [x] 3.9 Add `WithLogoutClearSiteData`, sent only on a secure, successful logout, and refused with no or an unknown directive, test-first. Verify: `go test -run 'TestLogout_ClearSiteData' -count=1 ./httpsec/`.
+- [x] 3.10 Run the security-headers scenarios on net/http, gin and fiber in `test/httpsecconformance`, test-first, including a refusal through each adapter's default error handling. Verify: `go test -run 'TestSecurityHeaders' ./...` in the `test` module.
+- [x] 3.11 Godoc every option with its default, and add a README section with the Vite, Next.js and template nonce examples. Verify: `go doc ./httpsec EnableSecurityHeaders` names each default.
 
 ## 4. CORS (D5)
 
