@@ -49,9 +49,18 @@ type csrfLayer struct {
 	tokens CSRFTokens
 
 	// issue is whether sign-ins are created with a stored token: an
-	// interceptor on the chain authenticates by a cookie. It is settled when
-	// the chain is built.
+	// interceptor on the chain authenticates by a cookie, and the default
+	// token source, which reads it, is in use. It is settled when the chain is
+	// built.
 	issue bool
+
+	// exemptions are the routes WithCSRFExemption names, and noBackchannel is
+	// set by WithoutBackchannelLogoutExemption. exempt is every exempt route,
+	// the back-channel logout endpoint included, settled when the chain is
+	// built.
+	exemptions    []csrfExemption
+	noBackchannel bool
+	exempt        []csrfExemption
 }
 
 // EnableCSRFProtection refuses state-changing requests another site makes the
@@ -73,7 +82,29 @@ type csrfLayer struct {
 //     default port. Origin: null never matches and is never trusted.
 //   - A request with neither header passes: it is not a browser's.
 //
-// The refusal is ErrCrossSiteRequest. The check reads no session and no body.
+// The refusal is ErrCrossSiteRequest, answered 403. The check reads no session
+// and no body.
+//
+// A request a CookieAuthenticator authenticates must also carry its sign-in's
+// token (CheckCSRFToken), which a page reads with CSRFToken. A request
+// authenticated only by an Authorization header needs none. Giving this option
+// is required once a CookieAuthenticator is registered, unless
+// WithoutCSRFProtection is given instead; giving it twice is a configuration
+// error.
+//
+// The defaults each option replaces:
+//
+//   - Trusted origins: every origin EnableCORS lists or matches by a pattern,
+//     never a CORS "*" (WithCSRFTrustedOrigins adds more;
+//     WithoutCORSOriginsTrustedForCSRF drops the CORS ones).
+//   - Token names: header X-CSRF-Token and form field csrf_token
+//     (WithCSRFTokenNames).
+//   - Token source: 32 random bytes stored on the sign-in when it is created,
+//     carried by its renewals, compared in constant time (WithCSRFTokens).
+//     Sign-ins store a token only while this source is in use.
+//   - Exempt routes: none but the OIDC back-channel logout endpoint, by POST
+//     (WithCSRFExemption adds one; WithoutBackchannelLogoutExemption removes
+//     the back-channel one).
 func EnableCSRFProtection(opts ...CSRFOption) Option {
 	const option = "EnableCSRFProtection"
 
@@ -113,12 +144,16 @@ func EnableCSRFProtection(opts ...CSRFOption) Option {
 }
 
 // settle settles what the layer reads from the rest of the chain: whether
-// sign-ins carry a token (a cookie authenticator is registered), and the
+// sign-ins carry a token (a cookie authenticator is registered and the default
+// token source is in use), the exempt routes (settleExemptions), and the
 // trusted origins: those WithCSRFTrustedOrigins added, and,
 // unless WithoutCORSOriginsTrustedForCSRF was given, every origin the CORS
 // layer lists exactly or matches by a pattern. A CORS "*" trusts nothing.
 func (l *csrfLayer) settle(c *config) {
-	l.issue = hasCookieAuthenticator(c)
+	// A consumer's own source keeps no sealed value it never reads.
+	_, stored := l.tokens.(sessionCSRFTokens)
+	l.issue = stored && hasCookieAuthenticator(c)
+	l.settleExemptions(c)
 	l.trusted = slices.Clone(l.added)
 
 	if l.noCORS {
@@ -163,7 +198,9 @@ func isSafeMethod(method string) bool {
 // Intercept judges an unsafe request by Fetch Metadata and Origin, and calls
 // next when it passes.
 func (l *csrfLayer) Intercept(ex *Exchange, next Next) error {
-	unsafe := !isSafeMethod(ex.Request.Method())
+	// An exempt route is judged by neither the Fetch Metadata check nor the
+	// token check.
+	unsafe := !isSafeMethod(ex.Request.Method()) && !l.exempts(ex.Request)
 
 	if unsafe {
 		if err := l.judge(ex.Request); err != nil {
@@ -173,7 +210,7 @@ func (l *csrfLayer) Intercept(ex *Exchange, next Next) error {
 
 	// Published on every request, safe ones too, so a page served on a GET
 	// reads its token (CSRFToken), and a cookie authenticator behind this slot
-	// checks it (checkCSRFToken).
+	// checks it (CheckCSRFToken).
 	ex.SetContext(context.WithValue(ex.Context(), csrfKey{}, &csrfRequest{layer: l, unsafe: unsafe}))
 
 	return next(ex)
@@ -402,8 +439,8 @@ func CSRFToken(ctx context.Context) (string, bool) {
 // is answerable for; every cross-site page can otherwise make the user's
 // browser send a state-changing request with the user's cookie.
 //
-// Default: a chain enabling an interceptor that authenticates by a cookie
-// fails construction with ErrConfig unless EnableCSRFProtection is given. A
+// Default: a chain registering a CookieAuthenticator fails construction with
+// ErrConfig unless EnableCSRFProtection is given. A
 // chain authenticating by no cookie needs neither. Giving this together with
 // EnableCSRFProtection is a configuration error.
 func WithoutCSRFProtection() Option {
@@ -414,17 +451,27 @@ func WithoutCSRFProtection() Option {
 	}
 }
 
-// cookieAuthenticator is implemented by an interceptor that authenticates a
-// request by a cookie. The construction check reads it, and such an
-// interceptor calls checkCSRFToken before publishing the session it resolved.
-type cookieAuthenticator interface{ authenticatesByCookie() }
+// CookieAuthenticator is implemented by an interceptor that authenticates a
+// request by a cookie, a consumer's own included. Declaring it binds the chain
+// to CSRF protection: New fails with ErrConfig unless EnableCSRFProtection or
+// WithoutCSRFProtection is given, and with EnableCSRFProtection sign-ins are
+// created holding a token (see CSRFTokens).
+//
+// Such an interceptor calls CheckCSRFToken with the session the cookie
+// resolved, and refuses the request with its error, before handing the session
+// on. An interceptor that does not authenticate by a cookie, a bearer token's
+// for example, does not implement it.
+type CookieAuthenticator interface {
+	// AuthenticatesByCookie marks the interceptor. It is never called.
+	AuthenticatesByCookie()
+}
 
 // hasCookieAuthenticator reports whether an interceptor registered on c
 // authenticates by a cookie.
 func hasCookieAuthenticator(c *config) bool {
 	found := errors.New("found")
 
-	return eachInterceptor(c, func(cookieAuthenticator) error { return found }) != nil
+	return eachInterceptor(c, func(CookieAuthenticator) error { return found }) != nil
 }
 
 // refuseCookiesWithoutCSRF refuses a chain that authenticates by a cookie with
@@ -454,16 +501,19 @@ func signInsCarryCSRFToken(ctx context.Context) bool {
 	return r != nil && r.layer.issue
 }
 
-// checkCSRFToken checks the CSRF token of a request a cookie authenticated
-// with s. Every cookie-authenticating interceptor calls it before publishing
-// s. It is nil for a safe method and when no CSRF layer ran, which the
-// construction check allows only under WithoutCSRFProtection.
+// CheckCSRFToken checks the CSRF token of a request a cookie authenticated
+// with the sign-in s. Every CookieAuthenticator calls it before handing s on,
+// and refuses the request with its error.
 //
-// The token is read from the header first, then from the form field of a
-// URL-encoded body; one that is absent or empty is refused without asking the
-// source. The source's refusal is ErrCrossSiteRequest; any other failure of
-// the source is returned as it is.
-func checkCSRFToken(ex *Exchange, s *session.Session) error {
+// It is nil for a GET, HEAD or OPTIONS, for a route WithCSRFExemption exempts,
+// and when no CSRF layer ran, which construction allows only under
+// WithoutCSRFProtection. Otherwise the token is read from the header first,
+// then from the form field of a URL-encoded body of at most 1 MiB, never from
+// the query (see WithCSRFTokenNames), and checked through the configured
+// CSRFTokens source. A token that is absent or empty is refused without asking
+// the source. A refusal is ErrCrossSiteRequest; any other failure of the
+// source is returned as it is. No error names the token.
+func CheckCSRFToken(ex *Exchange, s *session.Session) error {
 	r := csrfRequestFrom(ex.Context())
 	if r == nil || !r.unsafe {
 		return nil

@@ -290,7 +290,7 @@ type testCookieAuthenticator struct {
 	cookie   string
 }
 
-func (testCookieAuthenticator) authenticatesByCookie() {}
+func (testCookieAuthenticator) AuthenticatesByCookie() {}
 
 // Intercept loads the cookie's session, checks the CSRF token for it, and
 // publishes it. A request without the cookie continues unauthenticated.
@@ -305,7 +305,7 @@ func (a testCookieAuthenticator) Intercept(ex *Exchange, next Next) error {
 		return ErrAuthenticationRequired
 	}
 
-	if err := checkCSRFToken(ex, s); err != nil {
+	if err := CheckCSRFToken(ex, s); err != nil {
 		return err
 	}
 

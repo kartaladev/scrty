@@ -350,10 +350,13 @@ func TestCSRF_Token(t *testing.T) {
 			assert:  passes,
 		},
 		{
-			name:    "a consumer's source: its token passes",
-			csrf:    []httpsec.CSRFOption{httpsec.WithCSRFTokens(hmacSource)},
-			request: posting(func(f *csrfFixture) string { return must.Must(hmacSource.Token(context.Background(), f.signIn)) }),
-			assert:  passes,
+			name: "a consumer's source: its token passes",
+			csrf: []httpsec.CSRFOption{httpsec.WithCSRFTokens(hmacSource)},
+			request: func(t *testing.T, f *csrfFixture) *http.Request {
+				return cookieRequest(t.Context(), http.MethodPost, f.signIn.ID,
+					map[string]string{"X-CSRF-Token": must.Must(hmacSource.Token(t.Context(), f.signIn))}, "")
+			},
+			assert: passes,
 		},
 		{
 			name:    "a consumer's source: the stored token is refused",
@@ -373,7 +376,7 @@ func TestCSRF_Token(t *testing.T) {
 
 				tok, ok := httpsec.CSRFToken(s.handled.Context())
 				require.True(t, ok)
-				assert.Equal(t, must.Must(hmacSource.Token(context.Background(), f.signIn)), tok)
+				assert.Equal(t, must.Must(hmacSource.Token(t.Context(), f.signIn)), tok)
 				assert.NotEqual(t, f.signIn.CSRFToken, tok)
 			},
 		},
@@ -501,6 +504,18 @@ func TestCSRF_TokenAtSignIn(t *testing.T) {
 			},
 		},
 		{
+			name: "with a consumer's token source, a sign-in holds none",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableCSRFProtection(httpsec.WithCSRFTokens(hmacTokens{key: []byte("the consumer's own key, 32 bytes")})),
+					cookies(f),
+				}
+			},
+			assert: func(t *testing.T, signedIn *session.Session) {
+				assert.Empty(t, signedIn.CSRFToken, "a token the consumer's source never reads is not stored")
+			},
+		},
+		{
 			name: "without a cookie authenticator, a sign-in holds none",
 			opts: func(*csrfFixture) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableCSRFProtection()}
@@ -563,6 +578,34 @@ func TestCSRF_TokenAtSignIn(t *testing.T) {
 	}
 }
 
+// consumerCookieAuthenticator is a consumer's own interceptor authenticating a
+// request by a cookie, written against the exported API alone: it declares
+// that it authenticates by a cookie, and checks the request's CSRF token for
+// the session it loads before handing it on.
+type consumerCookieAuthenticator struct{ sessions *session.Sessions }
+
+func (consumerCookieAuthenticator) AuthenticatesByCookie() {}
+
+func (a consumerCookieAuthenticator) Intercept(ex *httpsec.Exchange, next httpsec.Next) error {
+	id, ok := ex.Request.Cookie(csrfCookie)
+	if !ok {
+		return next(ex)
+	}
+
+	s, err := a.sessions.Load(ex.Context(), id)
+	if err != nil {
+		return httpsec.ErrAuthenticationRequired
+	}
+
+	if err := httpsec.CheckCSRFToken(ex, s); err != nil {
+		return err
+	}
+
+	ex.Session = s
+
+	return next(ex)
+}
+
 func TestCSRF_RequiredWithCookies(t *testing.T) {
 	t.Parallel()
 
@@ -574,6 +617,10 @@ func TestCSRF_RequiredWithCookies(t *testing.T) {
 
 	cookies := func(f *csrfFixture) httpsec.Option {
 		return httpsec.RegisterInterceptor(httpsec.NewTestCookieAuthenticator(f.sessions, csrfCookie), httpsec.OrderBearerToken)
+	}
+
+	consumers := func(f *csrfFixture) httpsec.Option {
+		return httpsec.RegisterInterceptor(consumerCookieAuthenticator{sessions: f.sessions}, httpsec.OrderBearerToken)
 	}
 
 	builds := func(t *testing.T, _ *csrfFixture, chain *httpsec.Chain, err error) {
@@ -590,6 +637,35 @@ func TestCSRF_RequiredWithCookies(t *testing.T) {
 				assert.ErrorContains(t, err, "CSRF protection")
 				assert.ErrorContains(t, err, "EnableCSRFProtection")
 				assert.ErrorContains(t, err, "WithoutCSRFProtection")
+			},
+		},
+		{
+			name: "a consumer's own cookie authenticator without CSRF protection fails construction",
+			opts: func(f *csrfFixture) []httpsec.Option { return []httpsec.Option{consumers(f)} },
+			assert: func(t *testing.T, _ *csrfFixture, _ *httpsec.Chain, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "CSRF protection")
+			},
+		},
+		{
+			name: "a consumer's own cookie authenticator refuses a request without its sign-in's token",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{consumers(f), httpsec.EnableCSRFProtection()}
+			},
+			assert: func(t *testing.T, f *csrfFixture, chain *httpsec.Chain, err error) {
+				require.NoError(t, err)
+				refusedCrossSite(t, serve(t, chain, cookieRequest(t.Context(), http.MethodPost, f.signIn.ID, nil, "")))
+			},
+		},
+		{
+			name: "a consumer's own cookie authenticator passes a request with its sign-in's token",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{consumers(f), httpsec.EnableCSRFProtection()}
+			},
+			assert: func(t *testing.T, f *csrfFixture, chain *httpsec.Chain, err error) {
+				require.NoError(t, err)
+				passedCSRF(t, serve(t, chain, cookieRequest(t.Context(), http.MethodPost, f.signIn.ID,
+					map[string]string{"X-CSRF-Token": f.signIn.CSRFToken}, "")))
 			},
 		},
 		{
