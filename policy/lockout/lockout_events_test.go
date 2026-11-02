@@ -80,6 +80,83 @@ func countingAttemptStore(t *testing.T, under policy.AttemptStore, failOn int32)
 	return store, reads
 }
 
+// streakFailures records failures for id through a policy whose failure-streak
+// limit is 6: old of them first, an hour apart with the newest 47 hours before
+// lockoutNow, so outside the default 24-hour window, then inWindow of them a
+// minute apart with the newest a minute before lockoutNow. Six or more in all
+// set a hold on the sixth, however few the window holds.
+func streakFailures(id string, old, inWindow int) func(*testing.T, policy.AttemptStore) {
+	return func(t *testing.T, s policy.AttemptStore) {
+		t.Helper()
+
+		seeder := lockoutWith(t, lockout.WithAttemptStore(s), lockout.WithFailureStreakLimit(6))
+		ctx := t.Context()
+
+		for i := range old {
+			require.NoError(t, seeder.Attempts().RecordFailure(ctx, id, lockoutNow.Add(-time.Duration(47+old-1-i)*time.Hour)))
+		}
+		for i := range inWindow {
+			require.NoError(t, seeder.Attempts().RecordFailure(ctx, id, lockoutNow.Add(-time.Duration(inWindow-i)*time.Minute)))
+		}
+	}
+}
+
+// streakStoreFaults says which calls of a countingStreakStore fail.
+type streakStoreFaults struct {
+	// streakRead makes every FailureStreak read fail.
+	streakRead bool
+
+	// logWrite makes RecordFailure fail, without recording.
+	logWrite bool
+}
+
+// readCounts is how many reads of each kind a countingStreakStore answered.
+type readCounts struct {
+	window, streak atomic.Int32
+}
+
+// countingStreakStore is an attempt store that also keeps consecutive
+// failures: it forwards every call to under, counts the FailureCount and
+// FailureStreak reads it answers, and fails the calls faults names with
+// errAttemptStoreDown.
+func countingStreakStore(
+	t *testing.T, under *lockout.MemoryAttemptStore, faults streakStoreFaults,
+) (*streakAttemptStore, *readCounts) {
+	t.Helper()
+
+	reads := &readCounts{}
+	store := newStreakAttemptStore(t)
+	store.MockAttemptStore.EXPECT().RecordFailure(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, username string, at time.Time) error {
+			if faults.logWrite {
+				return errAttemptStoreDown
+			}
+
+			return under.RecordFailure(ctx, username, at)
+		})
+	store.MockAttemptStore.EXPECT().Reset(gomock.Any(), gomock.Any()).DoAndReturn(under.Reset).AnyTimes()
+	store.MockAttemptStore.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, username string, since time.Time) (int, error) {
+			reads.window.Add(1)
+
+			return under.FailureCount(ctx, username, since)
+		})
+	store.MockFailureStreakStore.EXPECT().AddStreakFailure(
+		gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+	).DoAndReturn(under.AddStreakFailure).AnyTimes()
+	store.MockFailureStreakStore.EXPECT().FailureStreak(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, username string, since time.Time) (lockout.FailureStreak, error) {
+			reads.streak.Add(1)
+			if faults.streakRead {
+				return lockout.FailureStreak{}, errAttemptStoreDown
+			}
+
+			return under.FailureStreak(ctx, username, since)
+		})
+
+	return store, reads
+}
+
 // TestSecurityEvents_LockoutReports pins that the lockout reports a lock where
 // it decides it, through its own view: the failure that takes an identifier
 // to a lock reports authn_login_fail_max and authn_login_lock once, to the
@@ -108,6 +185,10 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 		// FailureCount fail: the first is the count before the write, the
 		// second the recency the escalating wait reads, when it is read.
 		failCount int32
+
+		// failStreak makes the store's every read of an identifier's streak
+		// fail.
+		failStreak bool
 
 		// act records the failure under test; nil records one through the view.
 		act func(t *testing.T, ctx context.Context, p *lockout.Policy) error
@@ -141,6 +222,25 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountLocked, "locked before the failure")
 		err := p.Attempts().RecordFailure(ctx, "ada", lockoutNow)
 		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountLocked, "locked after it")
+
+		return err
+	}
+
+	// staysHeld records a failure through the view and requires that the
+	// identifier was held before it and still is after.
+	staysHeld := func(t *testing.T, ctx context.Context, p *lockout.Policy) error {
+		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountHeld, "held before the failure")
+		err := p.Attempts().RecordFailure(ctx, "ada", lockoutNow)
+		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountHeld, "held after it")
+
+		return err
+	}
+	// setsHold records a failure through the view and requires that it took
+	// the identifier from allowed to held.
+	setsHold := func(t *testing.T, ctx context.Context, p *lockout.Policy) error {
+		require.Equal(t, policy.Allow, p.Evaluate(ctx, lockoutInput("ada")).Outcome, "allowed before the failure")
+		err := p.Attempts().RecordFailure(ctx, "ada", lockoutNow)
+		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountHeld, "held after it")
 
 		return err
 	}
@@ -310,6 +410,60 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 			},
 		},
 		{
+			// The hold is set while the window holds two failures, so the
+			// window never reaches the threshold on this failure.
+			name:    "the failure that sets a hold while its window is below the threshold reports that lock",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithFailureStreakLimit(6)},
+			before:  streakFailures("ada", 4, 1),
+			act:     setsHold,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Equal(t, lockEvents(lockoutNow, ""), own)
+			},
+		},
+		{
+			name:    "a failure that brings a held identifier's window to the threshold reports nothing more",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithFailureStreakLimit(6)},
+			before:  streakFailures("ada", 4, 4),
+			act:     staysHeld,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own, "a held identifier reported a second lock")
+			},
+		},
+		{
+			name:    "a failure that brings a held identifier's window to the window failure limit reports nothing more",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithFailureStreakLimit(6), lockout.WithWindowFailureLimit(8)},
+			before:  streakFailures("ada", 4, 7),
+			act:     staysHeld,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own, "a held identifier reported reaching the window failure limit")
+			},
+		},
+		{
+			name:       "a failure whose streak could not be read before the write reports no lock",
+			ownSink:    true,
+			opts:       []lockout.Option{lockout.WithFailureStreakLimit(6)},
+			before:     prior("ada", 4),
+			failStreak: true,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own, "an unknown streak is not taken for an identifier that is not held")
+			},
+		},
+		{
+			// Six failures owe a minute. The newest is 90 seconds old, so that
+			// wait has run out, though the two minutes seven would owe, or the
+			// hour of the longest wait, have not.
+			name:    "a failure after the wait its count owes has run out locks again, though a longer wait would still run",
+			ownSink: true,
+			before:  priorAged("ada", 6, 90*time.Second),
+			act:     locksAgain,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Equal(t, lockEvents(lockoutNow, ""), own)
+			},
+		},
+		{
 			name:      "a failure whose window could not be counted before the write reports no lock",
 			ownSink:   true,
 			before:    prior("ada", 4),
@@ -343,6 +497,9 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 			var counted policy.AttemptStore = store
 			if tc.failCount != 0 {
 				counted, _ = countingAttemptStore(t, store, tc.failCount)
+			}
+			if tc.failStreak {
+				counted, _ = countingStreakStore(t, store, streakStoreFaults{streakRead: true})
 			}
 
 			var (
@@ -619,6 +776,142 @@ func TestSecurityEvents_LockoutStoreReads(t *testing.T) {
 			require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow))
 
 			tc.assert(t, reads.Load())
+		})
+	}
+}
+
+// TestSecurityEvents_LockoutStreakReads pins what a failure reads under a
+// failure-streak limit and on the paths that skip a read: the streak once
+// while a sink watches, no window count before the write for a held
+// identifier, and no count after one for the failure that sets a hold or
+// whose write failed.
+func TestSecurityEvents_LockoutStreakReads(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name             string
+		ownSink, observe bool
+		opts             []lockout.Option
+		before           func(t *testing.T, s policy.AttemptStore)
+		faults           streakStoreFaults
+		assert           func(t *testing.T, reads *readCounts, err error)
+	}
+
+	streakLimit := []lockout.Option{lockout.WithFailureStreakLimit(6)}
+	reads := func(window, streak int32) func(*testing.T, *readCounts, error) {
+		return func(t *testing.T, got *readCounts, err error) {
+			require.NoError(t, err)
+			assert.Equal(t, window, got.window.Load(), "window counts")
+			assert.Equal(t, streak, got.streak.Load(), "streak reads")
+		}
+	}
+	readsAfterLogFailure := func(window, streak int32) func(*testing.T, *readCounts, error) {
+		return func(t *testing.T, got *readCounts, err error) {
+			require.ErrorIs(t, err, errAttemptStoreDown)
+			assert.Equal(t, window, got.window.Load(), "window counts")
+			assert.Equal(t, streak, got.streak.Load(), "streak reads")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:    "with a sink and a streak limit, below the threshold, the streak is read once and the window before and after",
+			ownSink: true,
+			opts:    streakLimit,
+			before:  streakFailures("ada", 0, 3),
+			assert:  reads(2, 1),
+		},
+		{
+			name:    "with a sink and a streak limit, between the threshold and the window failure limit, the recency is read too",
+			ownSink: true,
+			// A limit of 7, so that the sixth failure sets no hold.
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(7)},
+			before: streakFailures("ada", 0, 5),
+			assert: reads(3, 1),
+		},
+		{
+			name:    "with a sink, a held identifier's window is counted only after the write",
+			ownSink: true,
+			opts:    streakLimit,
+			before:  streakFailures("ada", 4, 2),
+			assert:  reads(1, 1),
+		},
+		{
+			name:    "with a sink, the failure that sets a hold counts the window before the write and not after",
+			ownSink: true,
+			opts:    streakLimit,
+			before:  streakFailures("ada", 4, 1),
+			assert:  reads(1, 1),
+		},
+		{
+			name:    "with only an observer, the failure that sets a hold reads nothing",
+			observe: true,
+			opts:    streakLimit,
+			before:  streakFailures("ada", 4, 1),
+			assert:  reads(0, 0),
+		},
+		{
+			name:    "with only an observer, a failure on a held identifier counts the window once, after the write",
+			observe: true,
+			opts:    streakLimit,
+			before:  streakFailures("ada", 4, 2),
+			assert:  reads(1, 0),
+		},
+		{
+			name:    "with a sink, a failure whose log write failed counts the window once before it, below the threshold",
+			ownSink: true,
+			before:  priorAged("ada", 3, time.Hour),
+			faults:  streakStoreFaults{logWrite: true},
+			assert:  readsAfterLogFailure(1, 0),
+		},
+		{
+			name:    "with a sink, a failure whose log write failed reads the recency too, between the threshold and the window failure limit",
+			ownSink: true,
+			before:  priorAged("ada", 5, time.Hour),
+			faults:  streakStoreFaults{logWrite: true},
+			assert:  readsAfterLogFailure(2, 0),
+		},
+		{
+			name:    "with a sink and a streak limit, a failure whose log write failed reads the streak and the window before it",
+			ownSink: true,
+			opts:    streakLimit,
+			before:  streakFailures("ada", 0, 3),
+			faults:  streakStoreFaults{logWrite: true},
+			assert:  readsAfterLogFailure(1, 1),
+		},
+		{
+			name:    "with only an observer, a failure whose log write failed reads nothing",
+			observe: true,
+			before:  priorAged("ada", 5, time.Hour),
+			faults:  streakStoreFaults{logWrite: true},
+			assert:  readsAfterLogFailure(0, 0),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			under, err := lockout.NewMemoryAttemptStore()
+			require.NoError(t, err)
+			tc.before(t, under)
+
+			store, counts := countingStreakStore(t, under, tc.faults)
+			counts.window.Store(0)
+			counts.streak.Store(0)
+
+			opts := append([]lockout.Option{lockout.WithAttemptStore(store)}, tc.opts...)
+			if tc.ownSink {
+				opts = append(opts, lockout.WithSecurityEvents(func(context.Context, security.Event) {}))
+			}
+			if tc.observe {
+				opts = append(opts, lockout.WithObserver(func(context.Context, lockout.Report) {}))
+			}
+
+			p := lockoutWith(t, opts...)
+			err = p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow)
+
+			tc.assert(t, counts, err)
 		})
 	}
 }

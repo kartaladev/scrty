@@ -209,18 +209,27 @@ func WithLogger(l *slog.Logger) Option {
 // processes at the same moment may each report it: a lock is reported at
 // least once, and once within a process.
 //
-// Deciding it costs store reads, paid only while a sink watches: the
-// window's count before the failure, and, under the escalating wait for a
-// count between the threshold and the window failure limit, whether any
-// failure is more recent than the wait that count owes, since the count
-// alone cannot tell a wait still running from one that has run out. The
-// count after the failure is read too, and shared with the observer when
-// there is one. So a failure a sink watches reads the store two or three
-// times besides its write, with or without an observer (the failure that
-// sets a hold skips the count after); one with only an observer reads it
-// once; one with neither, none. A store that cannot answer
-// a read before the write loses the event, which the policy logs through
-// WithLogger, and never the failure.
+// Deciding it costs store reads, paid only while a sink watches. Under a
+// failure-streak limit the first is the identifier's streak, since a held
+// identifier is locked whatever its window holds, and a failure for one
+// reports no further lock, however its window stands. An identifier not
+// held, or any under no such limit, has the window's count read before the
+// failure and, under the escalating wait for a count between the threshold
+// and the window failure limit, whether any failure is more recent than the
+// wait that count owes, since the count alone cannot tell a wait still
+// running from one that has run out. The count after the failure is read too,
+// and shared with the observer when there is one.
+//
+// So a failure a sink watches reads the window two or three times besides its
+// write, with or without an observer, and the streak once more under a
+// failure-streak limit. Some read less. One that sets a hold, or
+// whose write to the failure log failed, reads no count after the write, so
+// the window one or two times. One for an identifier already held reads the
+// streak and counts the window only after the write. A failure with only an
+// observer reads the window once, after the write, and none when it sets a
+// hold or its write failed; one with neither, none. A store that cannot
+// answer a read before the write loses the event, which the policy logs
+// through WithLogger, and never the failure.
 //
 // With a failure-streak limit (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
 // consecutive-failure streak and then the failure log, and always attempts the
@@ -382,10 +391,11 @@ func (o *observedAttempts) eventInstant(at time.Time) time.Time {
 }
 
 // msgEventLost is the record for a failure whose lock event could not be
-// decided because the store could not say, before the failure was recorded,
-// whether the identifier was already locked: the failure is recorded and
-// counts, and only its event is gone.
-const msgEventLost = "lockout: a lock event was lost: the attempt store could not count the failures before recording one"
+// decided because the store could not answer one of the reads that say,
+// before the failure was recorded, whether the identifier was already locked:
+// its failure streak, the window's count, or the recency of its newest
+// failure. The failure is recorded and counts, and only its event is gone.
+const msgEventLost = "lockout: a lock event was lost: the attempt store could not answer a read made before the failure was recorded"
 
 // joinWriteErrors returns the one error that is set as itself, so a caller
 // that compares the store's error by identity still can, and joins the two

@@ -58,22 +58,37 @@ func (p *Policy) reportLock(ctx context.Context, at time.Time) {
 }
 
 // lockState is what the policy's own rule said of an identifier just before
-// a failure was recorded for it: how many failures its window held, whether
-// they locked it, and the error that kept the store from saying.
+// a failure was recorded for it: whether it was held by the failure-streak
+// limit, how many failures its window held, whether it was locked, and the
+// error that kept the store from saying. A held identifier is locked, and its
+// window is not counted: Evaluate does not count it either.
 type lockState struct {
+	held   bool
 	count  int
 	locked bool
 	err    error
 }
 
 // lockedAt reads whether username was locked at at, before a failure at at is
-// recorded, by the rule Evaluate judges by: under the sliding lock, the
-// window's count against the threshold; under the escalating wait, the count
-// against the window failure limit, and between the threshold and that limit
-// whether any failure is more recent than the wait the count owes. The count
-// alone cannot tell a wait still running from one that has run out, so the
-// recency costs a second read, and only for a count between the two.
+// recorded, by the rule Evaluate judges by: under a failure-streak limit, a
+// held identifier is locked whatever its window holds; otherwise, under the
+// sliding lock, the window's count against the threshold; under the
+// escalating wait, the count against the window failure limit, and between
+// the threshold and that limit whether any failure is more recent than the
+// wait the count owes. The count alone cannot tell a wait still running from
+// one that has run out, so the recency costs a second read, and only for a
+// count between the two.
 func (p *Policy) lockedAt(ctx context.Context, username string, at time.Time) lockState {
+	if p.streaks != nil {
+		streak, err := p.streaks.FailureStreak(ctx, username, at.Add(-p.capRetention))
+		if err != nil {
+			return lockState{err: err}
+		}
+		if streak.Held() {
+			return lockState{held: true, locked: true}
+		}
+	}
+
 	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
 	if err != nil {
 		return lockState{err: err}
@@ -101,7 +116,15 @@ func (p *Policy) lockedAt(ctx context.Context, username string, at time.Time) lo
 //
 // A failure recorded at or past the threshold leaves its identifier locked by
 // either rule, since it is itself more recent than any wait it owes.
+//
+// A failure for an identifier that was held locks nothing new, whatever its
+// window now holds: the hold stands, and Evaluate refuses before the window
+// is looked at.
 func (p *Policy) locks(before lockState, after int) bool {
+	if before.held {
+		return false
+	}
+
 	if !before.locked && after >= p.threshold {
 		return true
 	}
