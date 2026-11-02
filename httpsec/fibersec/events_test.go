@@ -42,6 +42,9 @@ func TestSecurityEvents_FiberGuardDenied(t *testing.T) {
 				assert.Equal(t, security.AuthzFail, events[0].Name)
 				assert.Equal(t, identity.UserID("u-1"), events[0].User)
 				assert.Equal(t, security.OutcomeFailure, events[0].Outcome)
+				// The address fiber's in-memory test connection reports, which
+				// the chain resolved for the request.
+				assert.Equal(t, "0.0.0.0", events[0].ClientIP, "the client address the chain resolved")
 			},
 		},
 		{

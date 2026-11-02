@@ -48,6 +48,9 @@ type Keys struct {
 	logger *slog.Logger
 	random io.Reader
 
+	// events is the manager's own security-event sink (WithSecurityEvents).
+	events secevent.Own
+
 	// opening is the prefix with its separator already attached, settled once
 	// the prefix has been validated. Issuing and parsing both want it, and
 	// parsing wants it on every presented key, so it is joined here rather
@@ -161,6 +164,27 @@ func WithClock(clk clock.Clock) Option { return func(m *Keys) { m.clock = clk } 
 // where this deployment's randomness comes from.
 func WithRandom(r io.Reader) Option { return func(m *Keys) { m.random = r } }
 
+// WithSecurityEvents reports the outcomes the manager decides outside a chain
+// to sink: a presented key it judged and refused, as
+// security.AuthnLoginFail with factor.APIKey and no user, since the key's
+// owner is not who presented it. A store that could not answer judged nothing
+// and is not reported.
+//
+// Default: no sink, and nothing is reported outside a chain. On a request an
+// httpsec chain reports events for (httpsec.EnableSecurityEvents), the chain's
+// sink receives the outcome and this one is not called, so one outcome is
+// reported once.
+//
+// The sink is called synchronously, on the verification's goroutine, with a
+// context from which the caller's cancellation has been removed. A panic in it
+// is recovered and logged through the manager's logger (WithLogger) without
+// the event's contents, and the verification's result stands; a sink that
+// blocks holds the verification (see security.Sink). A nil sink, or the option
+// given twice, is a configuration error.
+func WithSecurityEvents(sink security.Sink) Option {
+	return func(m *Keys) { m.events.Set(sink) }
+}
+
 // WithLogger replaces the logger. The default is slog.Default().
 //
 // A nil logger is ignored rather than refused: unlike a clock, a nil logger has
@@ -244,6 +268,9 @@ func New(opts ...Option) (*Keys, error) {
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
+	}
+	if err := m.events.Err("WithSecurityEvents"); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	if err := probeDigest(m.digest); err != nil {
 		return nil, err
@@ -416,7 +443,7 @@ func (m *Keys) List(ctx context.Context, principal identity.UserID) ([]Key, erro
 func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal, Key, error) {
 	keyID, secret, ok := m.parsePresented(presented)
 	if !ok {
-		return identity.Principal{}, Key{}, refuseKey(ctx)
+		return identity.Principal{}, Key{}, m.refuseKey(ctx)
 	}
 
 	rec, err := m.store.Get(ctx, keyID)
@@ -429,7 +456,7 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 			append([]slog.Attr{slog.String("key_id", keyID.String())}, diag.Failure("key-store", err)...)...)
 
 		if errors.Is(err, ErrKeyNotFound) {
-			return identity.Principal{}, Key{}, refuseKey(ctx)
+			return identity.Principal{}, Key{}, m.refuseKey(ctx)
 		}
 
 		return identity.Principal{}, Key{}, ErrVerificationFailed
@@ -446,13 +473,13 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 	}
 
 	if subtle.ConstantTimeCompare(digest, rec.SecretDigest) != 1 {
-		return identity.Principal{}, Key{}, refuseKey(ctx)
+		return identity.Principal{}, Key{}, m.refuseKey(ctx)
 	}
 
 	now := m.clock.Now()
 
 	if !rec.liveAt(now) {
-		return identity.Principal{}, Key{}, refuseKey(ctx)
+		return identity.Principal{}, Key{}, m.refuseKey(ctx)
 	}
 
 	// Best effort: a key that works must not stop working because the store
@@ -651,14 +678,14 @@ func (m *Keys) revokeReplacement(ctx context.Context, replacement id.ID) error {
 }
 
 // refuseKey reports a presented key the manager judged and refused, as
-// security.AuthnLoginFail on a request a security-event sink watches, and
-// returns ErrVerificationFailed. A store that could not answer judged nothing
-// and is not reported. The event names no user: the key's owner is not who
-// presented it.
-func refuseKey(ctx context.Context) error {
-	secevent.Send(ctx, security.Event{
-		Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure, Factor: factor.APIKey,
-	})
+// security.AuthnLoginFail, through the chain the request runs in or else the
+// manager's own sink, and returns ErrVerificationFailed. A store that could
+// not answer judged nothing and is not reported. The event names no user: the
+// key's owner is not who presented it.
+func (m *Keys) refuseKey(ctx context.Context) error {
+	m.events.Report(ctx, security.Event{
+		Name: security.AuthnLoginFail, At: m.clock.Now(), Outcome: security.OutcomeFailure, Factor: factor.APIKey,
+	}, m.logger)
 
 	return ErrVerificationFailed
 }

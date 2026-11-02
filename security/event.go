@@ -7,8 +7,12 @@
 // Event, under a standard name, so an application can record, alert on and
 // investigate them without parsing logs. Nothing is reported until a sink is
 // configured: httpsec.EnableSecurityEvents for the HTTP chain, and the
-// component's own option for a component that decides outside a request
-// (signingkey.WithSecurityEvents).
+// component's own option for a component that also decides outside a chain
+// (apikey.WithSecurityEvents, mfa.WithThrottleSecurityEvents,
+// mfa.WithResetSecurityEvents, recovery.WithSecurityEvents,
+// signingkey.WithSecurityEvents). On a request a chain reports for, a
+// component reports through the chain and its own sink is not called, so one
+// outcome is reported once.
 //
 // # Names
 //
@@ -88,6 +92,13 @@ type Event struct {
 // consumer's to manage: a sink that does slow work, such as a network write,
 // hands the event to its own queue and returns.
 //
+// A sink should do no work that depends on what the event says about an
+// account, such as looking the user up only when the event names one. Some
+// outcomes are reported alike whether or not the submitted identifier names an
+// account, a recovery start above all, so that the response's latency does
+// not tell them apart; a sink whose time depends on the account would tell
+// them apart again.
+//
 // It may be called concurrently, from every request the chain serves at once.
 type Sink func(ctx context.Context, e Event)
 
@@ -110,9 +121,20 @@ const (
 	// whose identifier had recent failed attempts, reported in its place.
 	AuthnLoginSuccessAfterFail = "authn_login_successafterfail"
 
-	// AuthnLoginFail is a credential refused: a wrong password at form login
-	// or Basic, an unknown API key, a bearer token the verifier refused or
-	// whose session is unknown, an invalid one-time link or passkey assertion.
+	// AuthnLoginFail is a first factor refused for the credential presented:
+	// a wrong password, an unknown user or a disabled account at form login
+	// or Basic; an API key unknown, wrong, expired or revoked; a bearer token
+	// the verifier refused, or a session reference the store does not hold;
+	// a passkey assertion refused, for a disabled or unknown user included;
+	// an OIDC callback whose ID token failed verification, whose identity is
+	// linked to no account, or whose provisioning was refused.
+	//
+	// It is not reported for a dependency that failed (a user store, a key
+	// store, a session store, an identity provider that could not be reached),
+	// nor for a request whose own context ended before the verdict. A
+	// magic-link redemption and an OIDC handoff answer a refusal and an outage
+	// with one error, by design, and so report no failure at all; nor does an
+	// OIDC callback refused as an invalid state.
 	AuthnLoginFail = "authn_login_fail"
 
 	// AuthnLoginFailMax is a failed attempt that left its identifier locked
@@ -160,6 +182,18 @@ const (
 	// AuthzFail is a request the authorization stage, a route guard or a
 	// per-request policy denied.
 	AuthzFail = "authz_fail"
+
+	// ExcessRateLimitExceeded is a request refused because a rate limit the
+	// library keeps was exceeded: a source over the login, recovery or renewal
+	// limit, or a user over the second-factor verification throttle, the
+	// second-factor challenge issue limit or the enrolment limit. A limiter
+	// that could not answer refuses too, and is not reported: it decided
+	// nothing.
+	ExcessRateLimitExceeded = "excess_rate_limit_exceeded"
+
+	// MaliciousCSRF is a request refused as cross-site by the CSRF
+	// protection.
+	MaliciousCSRF = "malicious_csrf"
 )
 
 // The names under the scrty_ prefix, for outcomes the OWASP Logging Vocabulary
@@ -183,12 +217,25 @@ const (
 	// PasskeyRemoved is a passkey removed from an account.
 	PasskeyRemoved = "scrty_passkey_removed"
 
-	// RecoveryStarted is an account recovery started for an account.
+	// RecoveryStarted is an account recovery start posted. It is reported for
+	// every start, for a username that names an account and for one that names
+	// none alike, as the start's last step, carrying User only when the
+	// username named an active account: the endpoint answers every start
+	// alike, and a sink called only for real accounts would let the latency
+	// tell them apart.
 	RecoveryStarted = "scrty_recovery_started"
 
 	// RecoveryCompleted is an account recovery completed, and its
 	// recovery-pending session stored.
 	RecoveryCompleted = "scrty_recovery_completed"
+
+	// RecoveryRefused is an account recovery's completion refused for its
+	// proofs (recovery.ErrRefused): a recovery code, an issued code, a
+	// second-factor code or a completion token that is not good, a user at the
+	// recovery limit, or a check that refused it. It names no user, as a
+	// failed login does not. A recovery whose dependency failed, or whose
+	// request ended before a verdict, is not reported.
+	RecoveryRefused = "scrty_recovery_refused"
 
 	// Reauthenticated is a signed-in user who proved themselves again.
 	Reauthenticated = "scrty_reauthenticated"
@@ -197,11 +244,12 @@ const (
 	ReauthenticationFail = "scrty_reauthentication_fail"
 
 	// SignInEnded is a sign-in ended through session management, by its
-	// handle or as one of the user's other sign-ins.
+	// handle, or one or more of the user's other sign-ins ended at once;
+	// ending the others when there are none is not reported. User is the
+	// signed-in user, and Session the digest of the caller's own session, the
+	// one that asked: an ended sign-in is named by a handle, which is not a
+	// session identifier, and one request may end several.
 	SignInEnded = "scrty_signin_ended"
-
-	// CSRFRefused is a request refused as cross-site.
-	CSRFRefused = "scrty_csrf_refused"
 
 	// HostRefused is a request whose forwarded host is on none of the
 	// allowed hosts.
@@ -219,10 +267,6 @@ const (
 	// ChallengeRefused is a request the automation challenge refused.
 	ChallengeRefused = "scrty_challenge_refused"
 
-	// RateLimitRefused is a request refused because its source, its
-	// user or its session family is over a rate limit.
-	RateLimitRefused = "scrty_rate_limit_refused"
-
 	// SigningKeyRotated is a new signing key minted and stored by rotation.
 	SigningKeyRotated = "scrty_signing_key_rotated"
 )
@@ -235,11 +279,11 @@ func Names() []string {
 		AuthnLoginSuccess, AuthnLoginSuccessAfterFail, AuthnLoginFail, AuthnLoginFailMax,
 		AuthnLoginLock, AuthnPasswordChange, AuthnPasswordChangeFail, AuthnTokenCreated,
 		AuthnTokenRevoked, AuthnTokenReuse, SessionCreated, SessionRenewed, SessionExpired,
-		SessionUseAfterExpire, SessionLogout, AuthzFail,
+		SessionUseAfterExpire, SessionLogout, AuthzFail, ExcessRateLimitExceeded, MaliciousCSRF,
 
 		MFAVerified, MFAVerifyFail, MFAEnrolled, MFARemoved, PasskeyRegistered, PasskeyRemoved,
-		RecoveryStarted, RecoveryCompleted, Reauthenticated, ReauthenticationFail, SignInEnded,
-		CSRFRefused, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
-		RateLimitRefused, SigningKeyRotated,
+		RecoveryStarted, RecoveryCompleted, RecoveryRefused, Reauthenticated, ReauthenticationFail,
+		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
+		SigningKeyRotated,
 	}
 }

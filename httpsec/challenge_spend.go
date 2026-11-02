@@ -232,6 +232,10 @@ func issueChallenge(ex *Exchange, s *session.Session, cm mfa.ChallengeMethod, is
 
 	switch {
 	case errors.Is(err, onetime.ErrIssueLimitReached):
+		// Decided here, apart from a store that could not decide, so it is
+		// reported as the limit it is.
+		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
+
 		return mfa.ErrVerifyThrottled
 	case err != nil:
 		return diag.Wrap(err, iss.notIssued)

@@ -40,8 +40,10 @@ const (
 	eventsChangePath = "/account/password"
 
 	// eventsRejectedPassword is the new password the world's change function
-	// refuses.
+	// refuses, and eventsUnstoredPassword the one it cannot store, failing
+	// with errEventsStoreDown.
 	eventsRejectedPassword = "password123"
+	eventsUnstoredPassword = "a passphrase the store never sees"
 )
 
 // eventsWorld is one deployment wired the way a consumer wires it, reporting
@@ -63,16 +65,53 @@ type eventsWorld struct {
 func newEventsWorld(t *testing.T, extra ...httpsec.Option) *eventsWorld {
 	t.Helper()
 
-	return newEventsWorldJudgedBy(t, NewMockAuthorizer(gomock.NewController(t)), extra...)
+	return newEventsWorldOf(t, eventsWorldSpec{}, extra...)
 }
 
 // newEventsWorldJudgedBy is newEventsWorld with az as the chain's authorizer.
 func newEventsWorldJudgedBy(t *testing.T, az authorize.Authorizer, extra ...httpsec.Option) *eventsWorld {
 	t.Helper()
 
+	return newEventsWorldOf(t, eventsWorldSpec{az: az}, extra...)
+}
+
+// eventsWorldSpec is what a row varies in the events world beyond the chain
+// options it appends.
+type eventsWorldSpec struct {
+	// az is the chain's authorizer; nil is one never asked.
+	az authorize.Authorizer
+
+	// policies are further policies the engine runs after the lockout and
+	// idle-timeout policies.
+	policies []policy.Policy
+
+	// rules are further authorization rules, judged after the /admin/ rule
+	// and before the trailing permit-all.
+	rules []authorize.Rule[httpsec.Request]
+
+	// renewalOpts configure session renewal.
+	renewalOpts []httpsec.SessionRenewalOption
+
+	// rec, when set, is the recorder the chain reports to in place of a new
+	// one.
+	rec *eventRecorder
+}
+
+// newEventsWorldOf is newEventsWorld built to spec.
+func newEventsWorldOf(t *testing.T, spec eventsWorldSpec, extra ...httpsec.Option) *eventsWorld {
+	t.Helper()
+
+	az := spec.az
+	if az == nil {
+		az = NewMockAuthorizer(gomock.NewController(t))
+	}
+
 	w := &eventsWorld{
 		clk: clockwork.NewFakeClockAt(time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)),
 		rec: &eventRecorder{},
+	}
+	if spec.rec != nil {
+		w.rec = spec.rec
 	}
 
 	var err error
@@ -117,8 +156,11 @@ func newEventsWorldJudgedBy(t *testing.T, az authorize.Authorizer, extra ...http
 	}
 
 	change := func(ex *httpsec.Exchange) error {
-		if ex.Request.FormValue("new") == eventsRejectedPassword {
+		switch ex.Request.FormValue("new") {
+		case eventsRejectedPassword:
 			return password.ErrPasswordRejected
+		case eventsUnstoredPassword:
+			return errEventsStoreDown
 		}
 
 		return nil
@@ -127,7 +169,7 @@ func newEventsWorldJudgedBy(t *testing.T, az authorize.Authorizer, extra ...http
 	w.chain, err = httpsec.New(append([]httpsec.Option{
 		httpsec.WithClock(w.clk),
 		httpsec.WithLogger(discardLogger()),
-		httpsec.WithPolicyEngine(engineOf(t, lock, idle)),
+		httpsec.WithPolicyEngine(engineOf(t, append([]policy.Policy{lock, idle}, spec.policies...)...)),
 		httpsec.EnableSecurityEvents(w.rec.sink),
 		httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
 			Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
@@ -139,12 +181,12 @@ func newEventsWorldJudgedBy(t *testing.T, az authorize.Authorizer, extra ...http
 		}),
 		httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: lock.Attempts()}),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: w.sessions}),
-		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: users}),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: users}, spec.renewalOpts...),
 		httpsec.EnableReauthentication(),
 		httpsec.EnableSessionManagement(),
 		httpsec.EnablePasswordChangeGate(w.sessions, httpsec.WithPasswordChangeEndpoint(eventsChangePath, change)),
 		httpsec.EnableCSRFProtection(),
-		httpsec.EnableAuthorization(az, admin, permitAll),
+		httpsec.EnableAuthorization(az, append(append([]authorize.Rule[httpsec.Request]{admin}, spec.rules...), permitAll)...),
 	}, extra...)...)
 	require.NoError(t, err)
 

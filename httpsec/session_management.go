@@ -344,11 +344,16 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 		return m.respEnd(ex)
 	}
 
-	if _, err := m.sessions.EndOtherSignIns(ex.Context(), s.UserID, s); err != nil {
+	n, err := m.sessions.EndOtherSignIns(ex.Context(), s.UserID, s)
+	if err != nil {
 		return err
 	}
 
-	emitEvent(ex.Context(), sessionEvent(security.SignInEnded, security.OutcomeSuccess, s))
+	// Reported only when a sign-in ended: a caller with no other sign-in
+	// ended nothing.
+	if n > 0 {
+		emitEvent(ex.Context(), sessionEvent(security.SignInEnded, security.OutcomeSuccess, s))
+	}
 
 	return m.respEnd(ex)
 }

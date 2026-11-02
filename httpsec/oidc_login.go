@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"math"
@@ -10,8 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/security"
 )
 
 //go:generate mockgen -destination=flowstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc FlowStore
@@ -143,6 +147,7 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 
 	if err != nil {
 		i.logCallbackFailure(ex, provider, err)
+		emitCallbackRefused(ex.Context(), err)
 
 		return err
 	}
@@ -156,6 +161,27 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 	}
 
 	return i.conveyHandoff(ex, provider, res, next)
+}
+
+// emitCallbackRefused reports err, a callback's failure, as
+// security.AuthnLoginFail when it refuses the external identity the provider
+// asserted: an ID token that failed verification (oidc.ErrInvalidIDToken), an
+// identity linked to no account (oidc.ErrNoLinkedAccount), or one whose
+// provisioning was refused (oidc.ErrProvisioningRefused). A provider that
+// could not be reached (oidc.ErrExchangeFailed, oidc.ErrDiscoveryFailed), a
+// flow store fault, an invalid state, which is a forged or stale callback
+// rather than a login attempt, and a request whose own context ended before
+// the verdict report nothing.
+func emitCallbackRefused(ctx context.Context, err error) {
+	refusal := errors.Is(err, oidc.ErrInvalidIDToken) || errors.Is(err, oidc.ErrNoLinkedAccount) ||
+		errors.Is(err, oidc.ErrProvisioningRefused)
+	outage := errors.Is(err, oidc.ErrExchangeFailed) || errors.Is(err, oidc.ErrDiscoveryFailed)
+
+	if !refusal || outage || hangup.ByCaller(ctx, err) {
+		return
+	}
+
+	emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.OIDC))
 }
 
 // providerError answers the error branch of the callback.

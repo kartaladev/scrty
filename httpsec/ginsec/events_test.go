@@ -42,6 +42,7 @@ func TestSecurityEvents_GinGuardDenied(t *testing.T) {
 				assert.Equal(t, security.AuthzFail, events[0].Name)
 				assert.Equal(t, identity.UserID("u-1"), events[0].User)
 				assert.Equal(t, security.OutcomeFailure, events[0].Outcome)
+				assert.Equal(t, "198.51.100.7", events[0].ClientIP, "the client address the chain resolved")
 			},
 		},
 		{

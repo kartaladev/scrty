@@ -628,7 +628,7 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session, method mf
 	ctx := ex.Context()
 	key := EnrolmentBeginThrottleKey(s.UserID)
 
-	if err := i.throttled(ctx, i.beginLimiter, key); err != nil {
+	if err := i.throttled(ctx, i.beginLimiter, key, s); err != nil {
 		return err
 	}
 
@@ -705,12 +705,14 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 	return nil
 }
 
-// throttled refuses a user at their limit on l, and refuses when l cannot say:
-// a limiter that answered "under the limit" whenever its store was down would
-// lift the limit exactly when something is wrong. That refusal's text is fixed,
-// since a consumer's limiter may quote the bucket key, and with it the user
-// reference, back.
-func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string) error {
+// throttled refuses the user of session s at their limit on l, and refuses
+// when l cannot say: a limiter that answered "under the limit" whenever its
+// store was down would lift the limit exactly when something is wrong. That
+// refusal's text is fixed, since a consumer's limiter may quote the bucket key,
+// and with it the user reference, back. Only the limit reached is reported,
+// as security.ExcessRateLimitExceeded: a limiter that could not say decided
+// nothing.
+func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string, s *session.Session) error {
 	exceeded, err := l.Exceeded(ctx, key)
 	if err != nil {
 		return newEnrolmentFault(reasonLimiterUnavailable, msgLimiterUndecided, err,
@@ -718,6 +720,8 @@ func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limite
 	}
 
 	if exceeded {
+		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
+
 		return mfa.ErrEnrolmentThrottled
 	}
 
@@ -782,7 +786,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 	ctx := ex.Context()
 	key := EnrolmentConfirmThrottleKey(s.UserID)
 
-	if err := i.throttled(ctx, i.confirmLimiter, key); err != nil {
+	if err := i.throttled(ctx, i.confirmLimiter, key, s); err != nil {
 		return err
 	}
 
@@ -1075,7 +1079,7 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session,
 	ctx := ex.Context()
 	key := EnrolmentConfirmThrottleKey(s.UserID)
 
-	if err := i.throttled(ctx, i.confirmLimiter, key); err != nil {
+	if err := i.throttled(ctx, i.confirmLimiter, key, s); err != nil {
 		return err
 	}
 

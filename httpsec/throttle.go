@@ -289,7 +289,7 @@ func sourceThrottled(
 		// share one record. Writing another here would double it, and key it
 		// on the raw address, which an attacker rotating within one IPv6
 		// allocation chooses.
-		emitEvent(ctx, security.Event{Name: security.RateLimitRefused, Outcome: security.OutcomeFailure})
+		emitEvent(ctx, security.Event{Name: security.ExcessRateLimitExceeded, Outcome: security.OutcomeFailure})
 
 		return src, err
 

@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -80,6 +81,18 @@ func TestNewRecoverer(t *testing.T) {
 		{name: "a nil message builder", opts: with(recovery.WithMessages(nil)), assert: configError},
 		{name: "a nil clock", opts: with(recovery.WithClock(nil)), assert: configError},
 		{name: "a nil logger is ignored", opts: with(recovery.WithLogger(nil)), assert: ok},
+		{name: "a nil security-event sink", opts: with(recovery.WithSecurityEvents(nil)), assert: configError},
+		{
+			name: "the security-event sink given twice",
+			opts: with(recovery.WithSecurityEvents(func(context.Context, security.Event) {}),
+				recovery.WithSecurityEvents(func(context.Context, security.Event) {})),
+			assert: configError,
+		},
+		{
+			name:   "a security-event sink",
+			opts:   with(recovery.WithSecurityEvents(func(context.Context, security.Event) {})),
+			assert: ok,
+		},
 
 		// Ports.
 		{name: "no user loader", deps: func(_ *fixture, d *recovery.Deps) { d.Users = nil }, assert: configError},

@@ -24,8 +24,13 @@ import (
 // Default: no sink, and nothing is reported. Once enabled, the chain hands its
 // sink to every component it builds that decides an outcome, and reaches a
 // component the consumer built and registered on it, the account-lockout
-// policy, through the request's context, so one sink receives every event.
-// A component that decides outside any request is given its own sink:
+// policy, an API-key manager, a verification throttle, a recoverer, through
+// the request's context, so one sink receives every event. A component the
+// consumer also calls outside any chain takes a sink of its own
+// (apikey.WithSecurityEvents, mfa.WithThrottleSecurityEvents,
+// mfa.WithResetSecurityEvents, recovery.WithSecurityEvents), which is not
+// called on a request this chain reports for, so one outcome is reported
+// once; signing-key rotation, which runs on no request, reports only to
 // signingkey.WithSecurityEvents.
 //
 // The sink is called synchronously, on the request that decided the outcome,
@@ -33,7 +38,10 @@ import (
 // cannot change the outcome, the status or the error the chain returns: a
 // panic in it is recovered and logged through the chain's logger
 // (WithLogger) without the event's contents. A sink that blocks holds that
-// request, which is the consumer's to manage (see security.Sink).
+// request, which is the consumer's to manage (see security.Sink), and a sink
+// should do no work that depends on whether an event names an account: a
+// recovery start is reported alike for a username that names an account and
+// one that names none, so that its latency does not tell them apart.
 //
 // Each event carries the time from the chain's clock (WithClock), the client
 // address the chain resolved (through EnableTrustedProxies when trusted
@@ -166,15 +174,19 @@ var refusalEvents = []struct {
 	{ErrDPoPNonceRequired, ""},
 	{ErrInvalidDPoPProof, security.DPoPRefused},
 	{ErrCertificateBinding, security.CertificateBindingRefused},
-	{ErrCrossSiteRequest, security.CSRFRefused},
+	{ErrCrossSiteRequest, security.MaliciousCSRF},
 	{ErrChallengeRequired, security.ChallengeRefused},
 }
 
 // emitRefusal reports the refusal err the chain answers ex with, when err is
 // one refusalEvents names and the request's own context had not ended.
+//
+// It reports once per exchange: a chain whose Assemble runs inside another
+// chain's answers the same exchange with the same error as it leaves each of
+// them, and the refusal was decided once.
 func emitRefusal(ex *Exchange, err error) {
 	ctx := ex.Context()
-	if !secevent.Enabled(ctx) || hangup.ByCaller(ctx, err) {
+	if ex.refusalReported || !secevent.Enabled(ctx) || hangup.ByCaller(ctx, err) {
 		return
 	}
 
@@ -185,6 +197,7 @@ func emitRefusal(ex *Exchange, err error) {
 
 		if r.name != "" {
 			emitEvent(ctx, callerEvent(r.name, security.OutcomeFailure, ex))
+			ex.refusalReported = true
 		}
 
 		return

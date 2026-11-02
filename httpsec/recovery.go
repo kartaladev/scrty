@@ -468,10 +468,12 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 
 	// The core stored the recovery-pending session before answering, and its
 	// credential is handed out below.
+	// A completed recovery is a sign-in as well, of the recovery factor.
 	ctx := ex.Context()
 	emitEvent(ctx, sessionEvent(security.RecoveryCompleted, security.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(security.SessionCreated, security.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(security.AuthnTokenCreated, security.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(security.AuthnLoginSuccess, security.OutcomeSuccess, res.Session))
 
 	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
 }

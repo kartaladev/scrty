@@ -13,6 +13,7 @@ package secevent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/kartaladev/scrty/authorize"
@@ -71,6 +72,53 @@ func Deliver(ctx context.Context, sink security.Sink, e security.Event, log *slo
 	}()
 
 	sink(context.WithoutCancel(ctx), e)
+}
+
+// Own is the sink a component was given of its own, by its WithSecurityEvents
+// option, for the outcomes it decides outside a chain. The zero value is no
+// sink.
+type Own struct {
+	sink  security.Sink
+	given int
+}
+
+// Set records the sink the option was given. Calling it a second time, or
+// with a nil sink, is a configuration Err reports.
+func (o *Own) Set(sink security.Sink) {
+	o.sink = sink
+	o.given++
+}
+
+// Err reports a configuration that is not one sink: option given a nil sink,
+// or given more than once. The caller wraps it in its own configuration error.
+func (o *Own) Err(option string) error {
+	switch {
+	case o.given > 1:
+		return fmt.Errorf("%s was given %d times; a component reports to one sink", option, o.given)
+	case o.given == 1 && o.sink == nil:
+		return fmt.Errorf("%s was given no sink: give it the function that receives the events, "+
+			"or leave the option out to report none", option)
+	}
+
+	return nil
+}
+
+// Sink is the sink Set recorded, and nil when none was.
+func (o *Own) Sink() security.Sink { return o.sink }
+
+// Report reports e, an outcome the component decided on ctx, exactly once:
+// through the chain's delivery when ctx carries one, so a component a chain
+// runs reports where the chain's other events go and its own sink is not
+// called; otherwise to the component's own sink, through Deliver. With
+// neither, nothing is reported.
+func (o *Own) Report(ctx context.Context, e security.Event, log *slog.Logger) {
+	if emit, ok := ctx.Value(emitterKey{}).(Emitter); ok && emit != nil {
+		emit(ctx, e)
+
+		return
+	}
+
+	Deliver(ctx, o.sink, e, log)
 }
 
 // GuardRefused reports err, a route guard's refusal, as security.AuthzFail

@@ -23,9 +23,12 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/security"
 )
 
 func TestNewAPIKeyManager(t *testing.T) {
@@ -107,6 +110,23 @@ func TestNewAPIKeyManager(t *testing.T) {
 			},
 		},
 		{name: "nil random", opts: []apikey.Option{apikey.WithRandom(nil)}, assert: configError},
+		{name: "nil security-event sink", opts: []apikey.Option{apikey.WithSecurityEvents(nil)}, assert: configError},
+		{
+			name: "the security-event sink given twice",
+			opts: []apikey.Option{
+				apikey.WithSecurityEvents(func(context.Context, security.Event) {}),
+				apikey.WithSecurityEvents(func(context.Context, security.Event) {}),
+			},
+			assert: configError,
+		},
+		{
+			name: "a security-event sink is accepted",
+			opts: []apikey.Option{apikey.WithSecurityEvents(func(context.Context, security.Event) {})},
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, m)
+			},
+		},
 		{name: "nil store", opts: []apikey.Option{apikey.WithStore(nil)}, assert: configError},
 		{name: "typed-nil store", opts: []apikey.Option{apikey.WithStore((*apikey.MemoryStore)(nil))}, assert: configError},
 		{
@@ -1980,4 +2000,198 @@ func (s *failOldRevokeStore) Revoke(ctx context.Context, keyID id.ID, at time.Ti
 	}
 
 	return s.Store.Revoke(ctx, keyID, at)
+}
+
+// keyEvents is a security-event sink that keeps what it receives, with whether
+// the context it was handed had ended.
+type keyEvents struct {
+	mu     sync.Mutex
+	events []security.Event
+	ended  []bool
+
+	// before, when set, runs at the start of every delivery.
+	before func()
+}
+
+func (r *keyEvents) sink(ctx context.Context, e security.Event) {
+	if r.before != nil {
+		r.before()
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.events = append(r.events, e)
+	r.ended = append(r.ended, ctx.Err() != nil)
+}
+
+func (r *keyEvents) all() []security.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]security.Event(nil), r.events...)
+}
+
+// TestSecurityEvents_KeysOwnSink pins the manager's own sink
+// (WithSecurityEvents): outside a chain a refused key is reported to it, on a
+// context the caller's cancellation does not reach, and a panic in it is
+// recovered and logged without the event; a store that could not answer and
+// a key that verifies report nothing; and on a request a chain delivers
+// events for, the chain's delivery is used and the own sink is not called.
+func TestSecurityEvents_KeysOwnSink(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name string
+
+		// sink is the own sink, built over the row's recorder and the
+		// caller's cancel function.
+		sink func(own *keyEvents, cancel context.CancelFunc) security.Sink
+
+		// store wraps the manager's store; nil keeps it.
+		store func(t *testing.T, inner apikey.Store) apikey.Store
+
+		// presented turns the valid key into the one presented.
+		presented func(valid string) string
+
+		// chain, when set, is the delivery the request carries, as a chain
+		// with a sink puts it there.
+		chain *keyEvents
+
+		assert func(t *testing.T, own, chain *keyEvents, err error, logs string)
+	}
+
+	recording := func(own *keyEvents, _ context.CancelFunc) security.Sink { return own.sink }
+
+	wrongSecret := func(valid string) string {
+		idPart, _, _ := strings.Cut(strings.TrimPrefix(valid, "sk_"), ".")
+
+		return "sk_" + idPart + "." + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0}, 32))
+	}
+
+	cases := []testCase{
+		{
+			name:      "outside a chain a refused key is reported to the own sink",
+			sink:      recording,
+			presented: wrongSecret,
+			assert: func(t *testing.T, own, _ *keyEvents, err error, _ string) {
+				require.ErrorIs(t, err, apikey.ErrVerificationFailed)
+
+				got := own.all()
+				require.Len(t, got, 1)
+				assert.Equal(t, security.AuthnLoginFail, got[0].Name)
+				assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, factor.APIKey, got[0].Factor)
+				assert.Equal(t, base, got[0].At, "the manager's clock")
+				assert.Empty(t, got[0].User, "the key's owner is not who presented it")
+				assert.Empty(t, got[0].ClientIP, "no request resolved one")
+			},
+		},
+		{
+			name:      "a key that verifies reports nothing",
+			sink:      recording,
+			presented: func(valid string) string { return valid },
+			assert: func(t *testing.T, own, _ *keyEvents, err error, _ string) {
+				require.NoError(t, err)
+				assert.Empty(t, own.all())
+			},
+		},
+		{
+			name: "a store that could not answer reports nothing",
+			sink: recording,
+			store: func(t *testing.T, _ apikey.Store) apikey.Store {
+				s := NewMockStore(gomock.NewController(t))
+				s.EXPECT().Get(gomock.Any(), gomock.Any()).Return(apikey.Key{}, errRedactionFixture)
+
+				return s
+			},
+			presented: func(valid string) string { return valid },
+			assert: func(t *testing.T, own, _ *keyEvents, err error, _ string) {
+				require.ErrorIs(t, err, apikey.ErrVerificationFailed)
+				assert.Empty(t, own.all())
+			},
+		},
+		{
+			name: "a panicking own sink: the refusal stands and the panic is logged without the event",
+			sink: func(own *keyEvents, _ context.CancelFunc) security.Sink {
+				return func(ctx context.Context, e security.Event) {
+					own.sink(ctx, e)
+					panic("sink: " + e.Name)
+				}
+			},
+			presented: wrongSecret,
+			assert: func(t *testing.T, own, _ *keyEvents, err error, logs string) {
+				require.ErrorIs(t, err, apikey.ErrVerificationFailed)
+				require.Len(t, own.all(), 1, "the sink was called")
+				assert.Contains(t, logs, secevent.MsgSinkPanicked)
+				assert.NotContains(t, logs, security.AuthnLoginFail, "the record carries nothing of the event")
+			},
+		},
+		{
+			name: "the caller's context cancelled during delivery: the own sink's context is live",
+			sink: func(own *keyEvents, cancel context.CancelFunc) security.Sink {
+				own.before = cancel
+
+				return own.sink
+			},
+			presented: wrongSecret,
+			assert: func(t *testing.T, own, _ *keyEvents, _ error, _ string) {
+				require.Len(t, own.all(), 1)
+				assert.Equal(t, []bool{false}, own.ended)
+			},
+		},
+		{
+			name:      "on a request a chain delivers for, the chain's delivery is used and the own sink is not",
+			sink:      recording,
+			presented: wrongSecret,
+			chain:     &keyEvents{},
+			assert: func(t *testing.T, own, chain *keyEvents, err error, _ string) {
+				require.ErrorIs(t, err, apikey.ErrVerificationFailed)
+				assert.Empty(t, own.all(), "one outcome is reported once")
+
+				got := chain.all()
+				require.Len(t, got, 1)
+				assert.Equal(t, security.AuthnLoginFail, got[0].Name)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			own := &keyEvents{}
+			clk := clockwork.NewFakeClockAt(base)
+			inner := apikey.NewMemoryStore()
+
+			issuer, err := apikey.New(apikey.WithStore(inner), apikey.WithClock(clk))
+			require.NoError(t, err)
+
+			valid, _, err := issuer.Issue(t.Context(), "svc-billing", "nightly export", nil, 7*24*time.Hour)
+			require.NoError(t, err)
+
+			store := apikey.Store(inner)
+			if tc.store != nil {
+				store = tc.store(t, inner)
+			}
+
+			var logs bytes.Buffer
+			m, err := apikey.New(apikey.WithStore(store), apikey.WithClock(clk),
+				apikey.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
+				apikey.WithSecurityEvents(tc.sink(own, cancel)))
+			require.NoError(t, err)
+
+			if tc.chain != nil {
+				ctx = secevent.With(ctx, tc.chain.sink)
+			}
+
+			_, _, err = m.Verify(ctx, tc.presented(valid))
+			tc.assert(t, own, tc.chain, err, logs.String())
+		})
+	}
 }

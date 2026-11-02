@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -13,10 +14,12 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -559,11 +562,15 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	}
 
 	if err != nil {
+		emitPasskeyRefused(ctx, err)
+
 		return err
 	}
 
 	details, err := i.loadUser(ex, res.User)
 	if err != nil {
+		emitPasskeyRefused(ctx, err)
+
 		return err
 	}
 
@@ -592,6 +599,22 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	}
 
 	return i.respond(ex, LoginResult{Token: tok, Session: ex.Session, TokenType: tokenTypeOf(ex.Session)})
+}
+
+// emitPasskeyRefused reports err, a passwordless login's failure, as
+// security.AuthnLoginFail when it is a refusal of the presented credential:
+// the uniform authenticate.ErrAuthenticationFailed, or a pending or suspended
+// credential, which only the key's holder is told. A credential store or user
+// loader that failed, a consumer login check's own error, and a request whose
+// own context ended before the verdict report nothing.
+func emitPasskeyRefused(ctx context.Context, err error) {
+	refusal := errors.Is(err, authenticate.ErrAuthenticationFailed) ||
+		errors.Is(err, passkey.ErrPending) || errors.Is(err, passkey.ErrSuspended)
+	if !refusal || hangup.ByCaller(ctx, err) {
+		return
+	}
+
+	emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Passkey))
 }
 
 // loadUser loads the credential's user, refusing an unknown, disabled or

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,9 +20,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token"
 )
@@ -213,6 +217,138 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 				assert.Empty(t, rec.all())
 			},
 		},
+		{
+			name: "an authorization rule whose store is down reports no authz_fail",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				w := newEventsWorldOf(t, eventsWorldSpec{rec: rec, rules: []authorize.Rule[httpsec.Request]{{
+					Match:   func(r httpsec.Request) bool { return strings.HasPrefix(r.Path(), "/reports/") },
+					Require: func(context.Context) error { return errEventsStoreDown },
+				}}})
+				tok := w.signedIn(t)
+
+				return []served{w.send(t, http.MethodGet, "/reports/1", tok, nil, nil)}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.ErrorIs(t, out[0].err, errEventsStoreDown)
+				assert.Empty(t, rec.named(security.AuthzFail))
+			},
+		},
+		{
+			name: "a per-request policy whose store is down reports no authz_fail",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				down := &outagePolicy{}
+				w := newEventsWorldOf(t, eventsWorldSpec{rec: rec, policies: []policy.Policy{down}})
+				tok := w.signedIn(t)
+				down.on.Store(true)
+
+				return []served{w.send(t, http.MethodGet, "/api/orders", tok, nil, nil)}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.ErrorIs(t, out[0].err, errEventsStoreDown)
+				assert.Empty(t, rec.named(security.AuthzFail))
+				assert.Empty(t, rec.named(security.SessionExpired))
+			},
+		},
+		{
+			name: "a password change whose store is down reports no failure",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				w := newEventsWorldOf(t, eventsWorldSpec{rec: rec})
+				tok := w.signedIn(t)
+
+				return []served{w.send(t, http.MethodPost, eventsChangePath, tok,
+					url.Values{"current": {e2ePassword}, "new": {eventsUnstoredPassword}}, nil)}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.ErrorIs(t, out[0].err, errEventsStoreDown)
+				assert.Empty(t, rec.named(security.AuthnPasswordChangeFail))
+				assert.Empty(t, rec.named(security.AuthnPasswordChange))
+			},
+		},
+		{
+			name: "a logout whose sign-in was already ended reports nothing",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				var w *eventsWorld
+
+				// Another request ends the sign-in between the bearer's load
+				// and the logout's revocation.
+				racer := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if ex.Request.Path() == httpsec.DefaultLogoutPath && ex.Session != nil {
+						_, err := w.sessions.RevokeFamily(ex.Context(), ex.Session.FamilyID)
+						require.NoError(t, err)
+					}
+
+					return next(ex)
+				})
+
+				w = newEventsWorldOf(t, eventsWorldSpec{rec: rec},
+					httpsec.RegisterInterceptor(racer, httpsec.Before(httpsec.OrderLogout)))
+				tok := w.signedIn(t)
+
+				return []served{w.send(t, http.MethodPost, httpsec.DefaultLogoutPath, tok, nil, nil)}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.NoError(t, out[0].err)
+				assert.Empty(t, rec.named(security.SessionLogout), "the logout ended nothing")
+				assert.Empty(t, rec.named(security.AuthnTokenRevoked))
+			},
+		},
+		{
+			name: "ending every other sign-in when there is none reports nothing",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				w := newEventsWorldOf(t, eventsWorldSpec{rec: rec})
+				tok := w.signedIn(t)
+
+				return []served{w.send(t, http.MethodDelete, httpsec.DefaultSessionManagementPrefix, tok, nil, nil)}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.NoError(t, out[0].err)
+				assert.Empty(t, rec.named(security.SignInEnded), "no sign-in was ended")
+			},
+		},
+		{
+			name: "a second-factor response whose method could not answer reports no failure",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				h := newMFAHarness(t)
+				h.channel(factor.AuthenticatorApp).allows()
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, gomock.Any()).Return(errEventsStoreDown)
+				h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+				s := h.pendingSession(t, factor.Password)
+
+				return []served{serve(t, h.chain(t, s, httpsec.EnableSecurityEvents(rec.sink)),
+					postCode(t.Context(), testMFAVerifyPath))}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.ErrorIs(t, out[0].err, errEventsStoreDown)
+				assert.Empty(t, rec.named(security.MFAVerifyFail))
+			},
+		},
+		{
+			name: "a second-factor response whose client hung up reports no failure",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+
+				h := newMFAHarness(t)
+				h.channel(factor.AuthenticatorApp).allows()
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, gomock.Any()).DoAndReturn(
+					func(context.Context, identity.UserID, []byte) error {
+						cancel()
+
+						return fmt.Errorf("totp store: %w", context.Canceled)
+					})
+				h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+				s := h.pendingSession(t, factor.Password)
+
+				return []served{serveWithContext(ctx, h.chain(t, s, httpsec.EnableSecurityEvents(rec.sink)),
+					postCode(ctx, testMFAVerifyPath))}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.ErrorIs(t, out[0].err, context.Canceled)
+				assert.Empty(t, rec.named(security.MFAVerifyFail))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -329,4 +465,20 @@ func (b *barrierIssuer) names() []string {
 	defer b.mu.Unlock()
 
 	return append([]string(nil), b.named...)
+}
+
+// outagePolicy is a per-request policy whose store, once on is set, cannot
+// answer: it denies with errEventsStoreDown, an outage rather than a verdict.
+type outagePolicy struct{ on atomic.Bool }
+
+func (*outagePolicy) Name() string { return "test: outage" }
+
+func (*outagePolicy) Phases() []policy.Phase { return []policy.Phase{policy.PerRequest} }
+
+func (p *outagePolicy) Evaluate(context.Context, *policy.Input) policy.Decision {
+	if !p.on.Load() {
+		return policy.Decision{Outcome: policy.Allow}
+	}
+
+	return policy.Decision{Outcome: policy.Deny, Reason: errEventsStoreDown}
 }

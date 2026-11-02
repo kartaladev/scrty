@@ -13,7 +13,9 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
+	"github.com/kartaladev/scrty/security"
 )
 
 func TestResetEnrolment(t *testing.T) {
@@ -169,6 +171,21 @@ func TestResetEnrolment(t *testing.T) {
 		{
 			name:   "a nil message builder is a configuration error and removes nothing",
 			opts:   []mfa.ResetOption{mfa.WithResetMessage(nil)},
+			expect: func(*testing.T, mocks) {},
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
+		},
+		{
+			name:   "a nil security-event sink is a configuration error and removes nothing",
+			opts:   []mfa.ResetOption{mfa.WithResetSecurityEvents(nil)},
+			expect: func(*testing.T, mocks) {},
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
+		},
+		{
+			name: "the security-event sink given twice is a configuration error and removes nothing",
+			opts: []mfa.ResetOption{
+				mfa.WithResetSecurityEvents(func(context.Context, security.Event) {}),
+				mfa.WithResetSecurityEvents(func(context.Context, security.Event) {}),
+			},
 			expect: func(*testing.T, mocks) {},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
 		},
@@ -417,6 +434,102 @@ func TestResetEnrolmentClock(t *testing.T) {
 
 			require.NoError(t, err)
 			tc.assert(t, before, named, after)
+		})
+	}
+}
+
+// TestSecurityEvents_ResetOwnSink pins the reset's own sink
+// (WithResetSecurityEvents): outside a chain a reset whose removals are done
+// reports scrty_mfa_removed to it at the reset's clock, and a panic in it is
+// recovered while the reset goes on; a removal that fails reports nothing; and
+// on a request a chain delivers events for, only the chain's delivery is
+// called.
+func TestSecurityEvents_ResetOwnSink(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name string
+
+		// removal is what the remover returns.
+		removal error
+
+		// panics makes the own sink panic after recording.
+		panics bool
+
+		// chain, when set, is the delivery the request carries.
+		chain *ownEvents
+
+		assert func(t *testing.T, own, chain *ownEvents, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "outside a chain a reset is reported to the own sink",
+			assert: func(t *testing.T, own, _ *ownEvents, err error) {
+				require.NoError(t, err)
+
+				got := own.all()
+				require.Len(t, got, 1)
+				assert.Equal(t, security.MFARemoved, got[0].Name)
+				assert.Equal(t, security.OutcomeSuccess, got[0].Outcome)
+				assert.Equal(t, identity.UserID("u-1"), got[0].User)
+				assert.Equal(t, at, got[0].At, "the reset's clock")
+			},
+		},
+		{
+			name:    "a removal that fails reports nothing",
+			removal: errMFAFixture,
+			assert: func(t *testing.T, own, _ *ownEvents, err error) {
+				require.ErrorIs(t, err, errMFAFixture)
+				assert.Empty(t, own.all())
+			},
+		},
+		{
+			name:   "a panicking own sink: the reset goes on",
+			panics: true,
+			assert: func(t *testing.T, own, _ *ownEvents, err error) {
+				require.NoError(t, err)
+				assert.Len(t, own.all(), 1, "the sink was called")
+			},
+		},
+		{
+			name:  "on a request a chain delivers for, only the chain's delivery is called",
+			chain: &ownEvents{},
+			assert: func(t *testing.T, own, chain *ownEvents, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, own.all(), "one outcome is reported once")
+
+				got := chain.all()
+				require.Len(t, got, 1)
+				assert.Equal(t, security.MFARemoved, got[0].Name)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			own := &ownEvents{}
+			sink := own.sink
+			if tc.panics {
+				sink = own.panicking
+			}
+
+			remover := NewMockEnrolmentRemover(gomock.NewController(t))
+			remover.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(tc.removal)
+
+			ctx := t.Context()
+			if tc.chain != nil {
+				ctx = secevent.With(ctx, tc.chain.sink)
+			}
+
+			err := mfa.ResetEnrolment(ctx, "u-1", mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{remover}},
+				mfa.WithoutResetSessionRevocation(), mfa.WithoutResetNotification(),
+				mfa.WithResetClock(clockwork.NewFakeClockAt(at)), mfa.WithResetSecurityEvents(sink))
+			tc.assert(t, own, tc.chain, err)
 		})
 	}
 }

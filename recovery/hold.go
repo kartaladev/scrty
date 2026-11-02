@@ -322,7 +322,18 @@ func (r *Recoverer) cancelURL(token string) string {
 //
 // opts change the session the finish creates: WithFinishKeyBinding binds it.
 // With none it is unbound.
+//
+// A refusal (ErrRefused) is reported as security.RecoveryRefused
+// (WithSecurityEvents), as Recover's is.
 func (r *Recoverer) Finish(ctx context.Context, completionToken string, opts ...FinishOption) (*Result, error) {
+	res, err := r.finish(ctx, completionToken, opts...)
+	r.reportRefused(ctx, err)
+
+	return res, err
+}
+
+// finish is Finish's work.
+func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...FinishOption) (*Result, error) {
 	var o finishOptions
 	for _, opt := range opts {
 		if opt != nil {

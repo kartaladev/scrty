@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/security"
@@ -64,11 +65,9 @@ type Keys struct {
 	errorHook      func(error)
 	sampler        *logsample.Sampler
 
-	// events is the sink WithSecurityEvents gave, and eventsSet whether the
-	// option was given at all, so a nil sink is refused rather than read as
-	// none.
-	events    security.Sink
-	eventsSet bool
+	// events is the sink WithSecurityEvents gave, kept so a nil sink or the
+	// option given twice is refused rather than read as none or as the last.
+	events secevent.Own
 }
 
 // New returns a manager holding a current key for every configured
@@ -626,13 +625,10 @@ func WithErrorHook(hook func(error)) Option {
 // construction, for an algorithm the store holds none of, is not a rotation and
 // is not reported. A panic in sink is recovered and logged through the
 // manager's logger without the event's contents, and the rotation stands. A
-// sink that blocks holds the rotation loop. A nil sink is a configuration
-// error.
+// sink that blocks holds the rotation loop. A nil sink, or the option given
+// twice, is a configuration error.
 func WithSecurityEvents(sink security.Sink) Option {
-	return func(km *Keys) {
-		km.events = sink
-		km.eventsSet = true
-	}
+	return func(km *Keys) { km.events.Set(sink) }
 }
 
 // validate reports a configuration that cannot work, so a wiring mistake fails
@@ -658,8 +654,8 @@ func (km *Keys) validate() error {
 		return fmt.Errorf("%w: logger must not be nil", ErrConfig)
 	}
 
-	if km.eventsSet && km.events == nil {
-		return fmt.Errorf("%w: WithSecurityEvents was given no sink", ErrConfig)
+	if err := km.events.Err("WithSecurityEvents"); err != nil {
+		return fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 
 	if len(km.algs) == 0 {

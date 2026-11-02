@@ -146,14 +146,15 @@ func (l *logout) end(ctx context.Context, s *session.Session) error {
 	// Detached so a client hanging up cannot leave the family live;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
 	// still joined.
-	_, err := l.sessions.RevokeFamily(context.WithoutCancel(ctx), s.FamilyID)
+	n, err := l.sessions.RevokeFamily(context.WithoutCancel(ctx), s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
 	}
 
-	// Reported only for a family this logout revoked: one already gone was
-	// ended by something else, which reported it.
-	if err == nil {
+	// Reported only for a family this logout revoked: one already gone, which
+	// the manager answers with nothing revoked and no error, was ended by
+	// something else, which reported it.
+	if err == nil && n > 0 {
 		emitEvent(ctx, sessionEvent(security.SessionLogout, security.OutcomeSuccess, s))
 		emitEvent(ctx, sessionEvent(security.AuthnTokenRevoked, security.OutcomeSuccess, s))
 	}

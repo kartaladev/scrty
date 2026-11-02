@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
@@ -375,6 +376,25 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 			assert: emitted(security.RecoveryCompleted, security.OutcomeSuccess),
 		},
 		{
+			name: security.RecoveryRefused,
+			run: func(t *testing.T) emittedRun {
+				rec := &eventRecorder{}
+				h := newRecoveryHarness(t)
+				h.chainOpts = append(h.chainOpts, httpsec.EnableSecurityEvents(rec.sink))
+				h.build(t)
+
+				saved := h.saved(t)
+				out := h.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, saved, httpsec.RecoveryPasswordParam, "wrong guess"))
+				require.ErrorIs(t, out.err, recovery.ErrRefused)
+
+				return emittedRun{
+					events: rec.all(), clientIP: e2eSource, secrets: []string{saved, "wrong guess"},
+				}
+			},
+			assert: emitted(security.RecoveryRefused, security.OutcomeFailure),
+		},
+		{
 			name: security.Reauthenticated,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
@@ -411,7 +431,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 			assert: emitted(security.SignInEnded, security.OutcomeSuccess),
 		},
 		{
-			name: security.CSRFRefused,
+			name: security.MaliciousCSRF,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				require.ErrorIs(t, w.send(t, http.MethodPost, "/api/orders", "", url.Values{"item": {"1"}},
@@ -419,7 +439,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, "", "", "")
 			},
-			assert: emitted(security.CSRFRefused, security.OutcomeFailure),
+			assert: emitted(security.MaliciousCSRF, security.OutcomeFailure),
 		},
 		{
 			name: security.HostRefused,
@@ -488,7 +508,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 			assert: emitted(security.ChallengeRefused, security.OutcomeFailure),
 		},
 		{
-			name: security.RateLimitRefused,
+			name: security.ExcessRateLimitExceeded,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newLoginGuardHarness(t)
@@ -500,7 +520,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return emittedRun{events: rec.all(), clientIP: loginGuardSource, secrets: []string{"wrong"}}
 			},
-			assert: emitted(security.RateLimitRefused, security.OutcomeFailure),
+			assert: emitted(security.ExcessRateLimitExceeded, security.OutcomeFailure),
 		},
 	}
 

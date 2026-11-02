@@ -30,8 +30,27 @@ func TestSecurityEvents_Names(t *testing.T) {
 					"authn_password_change_fail", "authn_token_created", "authn_token_revoked",
 					"authn_token_reuse", "session_created", "session_renewed", "session_expired",
 					"session_use_after_expire", "session_logout", "authz_fail",
+					"excess_rate_limit_exceeded", "malicious_csrf",
 				} {
 					assert.Contains(t, names, want)
+				}
+			},
+		},
+		{
+			name: "every scrty_ name the spec requires is listed",
+			assert: func(t *testing.T, names []string) {
+				for _, want := range []string{
+					"scrty_recovery_started", "scrty_recovery_completed", "scrty_recovery_refused",
+				} {
+					assert.Contains(t, names, want)
+				}
+			},
+		},
+		{
+			name: "no scrty_ name stands for an outcome the vocabulary names",
+			assert: func(t *testing.T, names []string) {
+				for _, gone := range []string{"scrty_rate_limit_refused", "scrty_csrf_refused"} {
+					assert.NotContains(t, names, gone)
 				}
 			},
 		},
@@ -44,8 +63,8 @@ func TestSecurityEvents_Names(t *testing.T) {
 						scrty++
 					}
 				}
-				assert.Equal(t, 18, scrty, "the outcomes the vocabulary does not name")
-				assert.Len(t, names, 16+18)
+				assert.Equal(t, 17, scrty, "the outcomes the vocabulary does not name")
+				assert.Len(t, names, 18+17)
 			},
 		},
 		{

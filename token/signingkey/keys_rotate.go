@@ -27,7 +27,7 @@ func (km *Keys) rotateAll(ctx context.Context) {
 			continue
 		}
 
-		secevent.Deliver(ctx, km.events, security.Event{
+		secevent.Deliver(ctx, km.events.Sink(), security.Event{
 			Name: security.SigningKeyRotated, At: km.clock.Now(), Outcome: security.OutcomeSuccess,
 		}, km.logger)
 	}

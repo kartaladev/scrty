@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -174,7 +176,19 @@ type issuedSession struct {
 // so a client that hangs up cannot leave a recovery half done. The issuer
 // runs before that, on ctx itself, so a client that hangs up while it issues
 // spends nothing.
+//
+// A refusal (ErrRefused) is reported as security.RecoveryRefused
+// (WithSecurityEvents); a dependency failure, and a request whose own context
+// ended before the verdict, are not.
 func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
+	res, err := r.recover(ctx, req)
+	r.reportRefused(ctx, err)
+
+	return res, err
+}
+
+// recover is Recover's work.
+func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 	v, err := r.verify(ctx, req)
 	if err != nil {
 		return nil, err
@@ -420,4 +434,17 @@ func (r *Recoverer) validateCompletion(c *config) error {
 	}
 
 	return nil
+}
+
+// reportRefused reports err as security.RecoveryRefused when it is a refusal of
+// the presented proofs (ErrRefused) that the caller's own context did not cut
+// short. It names no user, as a failed login does not.
+func (r *Recoverer) reportRefused(ctx context.Context, err error) {
+	if !errors.Is(err, ErrRefused) || hangup.ByCaller(ctx, err) {
+		return
+	}
+
+	r.events.Report(ctx, security.Event{
+		Name: security.RecoveryRefused, At: r.clock.Now(), Outcome: security.OutcomeFailure,
+	}, r.logger)
 }

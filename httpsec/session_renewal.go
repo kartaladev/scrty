@@ -243,7 +243,7 @@ func (r *sessionRenewal) admit(ctx context.Context, key string) error {
 	}
 
 	if exceeded {
-		emitEvent(ctx, security.Event{Name: security.RateLimitRefused, Outcome: security.OutcomeFailure})
+		emitEvent(ctx, security.Event{Name: security.ExcessRateLimitExceeded, Outcome: security.OutcomeFailure})
 
 		return ErrRenewalThrottled
 	}

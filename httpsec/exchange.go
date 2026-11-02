@@ -199,6 +199,11 @@ type Exchange struct {
 	// layer judged the request.
 	csrfOptOut bool
 
+	// refusalReported is whether a chain this exchange ran through has
+	// already reported the refusal it was answered with (emitRefusal), so a
+	// chain assembled inside another's does not have it reported twice.
+	refusalReported bool
+
 	// renewal is the identifier of a session the resolution core let through
 	// to the renewal endpoint without publishing it: one presented after its
 	// grace window under unused-successor recovery, on a request that is the

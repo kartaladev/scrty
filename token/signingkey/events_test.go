@@ -26,7 +26,16 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 		// interval elapse.
 		rotate bool
 
-		assert func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, err error)
+		// opts are added after the row's sink; store, when set, replaces the
+		// memory key store.
+		opts  []signingkey.Option
+		store func(t *testing.T, report *failureReport) signingkey.KeyStore
+
+		// alg is the algorithm whose current key the row reads; empty is
+		// RS256.
+		alg signingkey.Alg
+
+		assert func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, report *failureReport, err error)
 	}
 
 	cases := []testCase{
@@ -34,7 +43,7 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 			name:   "a rotation is reported once, at the clock's time, carrying no key material",
 			sink:   func(rec *rotationEvents) security.Sink { return rec.sink },
 			rotate: true,
-			assert: func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, err error) {
+			assert: func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, _ *failureReport, err error) {
 				require.NoError(t, err)
 
 				got := rec.all()
@@ -58,16 +67,41 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 				}
 			},
 			rotate: true,
-			assert: func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, err error) {
+			assert: func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, _ *failureReport, err error) {
 				require.NoError(t, err)
 				assert.Len(t, rec.all(), 1)
 				assert.NotEqual(t, rec.first, currentKid(t, km, signingkey.RS256), "the key rotated")
 			},
 		},
 		{
+			name:   "a rotation whose key could not be stored reports nothing",
+			sink:   func(rec *rotationEvents) security.Sink { return rec.sink },
+			rotate: true,
+			opts:   []signingkey.Option{signingkey.WithAlgs(signingkey.EdDSA)},
+			alg:    signingkey.EdDSA,
+			store: func(t *testing.T, report *failureReport) signingkey.KeyStore {
+				return failingStore(t, report, opRotate)
+			},
+			assert: func(t *testing.T, rec *rotationEvents, _ *signingkey.Keys, report *failureReport, err error) {
+				require.NoError(t, err)
+
+				_, rejected := report.snapshot()
+				require.NotEmpty(t, rejected, "a rotation was tried and its key refused")
+				assert.Empty(t, rec.all(), "only a key minted and stored is a rotation")
+			},
+		},
+		{
+			name: "the option given twice is a configuration error",
+			sink: func(rec *rotationEvents) security.Sink { return rec.sink },
+			opts: []signingkey.Option{signingkey.WithSecurityEvents(func(context.Context, security.Event) {})},
+			assert: func(t *testing.T, _ *rotationEvents, _ *signingkey.Keys, _ *failureReport, err error) {
+				require.ErrorIs(t, err, signingkey.ErrConfig)
+			},
+		},
+		{
 			name: "a nil sink is a configuration error",
 			sink: func(*rotationEvents) security.Sink { return nil },
-			assert: func(t *testing.T, _ *rotationEvents, _ *signingkey.Keys, err error) {
+			assert: func(t *testing.T, _ *rotationEvents, _ *signingkey.Keys, _ *failureReport, err error) {
 				require.ErrorIs(t, err, signingkey.ErrConfig)
 			},
 		},
@@ -77,27 +111,39 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clk := newClock()
 			rec := &rotationEvents{}
+			report := &failureReport{}
 
-			km, err := signingkey.New(t.Context(),
-				signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
+			store := signingkey.KeyStore(signingkey.NewMemoryKeyStore())
+			if tc.store != nil {
+				store = tc.store(t, report)
+			}
+
+			km, err := signingkey.New(t.Context(), append([]signingkey.Option{
+				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clk),
-				signingkey.WithRotateInterval(6*time.Hour),
+				signingkey.WithRotateInterval(6 * time.Hour),
 				signingkey.WithReloadInterval(time.Minute),
 				signingkey.WithHousekeepingInterval(time.Hour),
-				signingkey.WithKeyLifetime(24*time.Hour),
+				signingkey.WithKeyLifetime(24 * time.Hour),
+				signingkey.WithErrorHook(report.hook),
 				signingkey.WithSecurityEvents(tc.sink(rec)),
-			)
+			}, tc.opts...)...)
 			if err == nil {
 				shutdownAndVerify(t, km)
 			}
 
 			if tc.rotate {
-				rec.first = currentKid(t, km, signingkey.RS256)
+				alg := tc.alg
+				if alg == "" {
+					alg = signingkey.RS256
+				}
+
+				rec.first = currentKid(t, km, alg)
 				require.NoError(t, km.Start(t.Context()))
 				advance(t, clk, 6*time.Hour, loopCount)
 			}
 
-			tc.assert(t, rec, km, err)
+			tc.assert(t, rec, km, report, err)
 		})
 	}
 }
