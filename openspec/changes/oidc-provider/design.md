@@ -4,7 +4,7 @@ See `proposal.md` for the motivation. This design was captured from an explorati
 
 - **Decided:** decisions 1 to 5 and P1 to P9, all chosen by the user on 2026-11-02. Each states its default, how a consumer overrides it, and what was rejected.
 - **The user's standing condition:** the provider must comply with the standards it implements and follow established security practice. "Standards compliance and security practice" maps each requirement to the decision that meets it.
-- **Open questions:** only the package name remains. The values and smaller behaviours the specs had to fix are recorded in "Decisions made while writing the specs".
+- **Open questions:** none remain. The values and smaller behaviours the specs had to fix are recorded in "Decisions made while writing the specs". The mechanisms the task breakdown had to fix, and the package name, are in "Decisions made while writing the tasks" (T1 to T9).
 - **Not yet reproduced:** risks found by reading code are labelled `UNREPRODUCED`. Each becomes a failing test first when its task starts (`defect-claims`).
 
 ### What exists
@@ -882,6 +882,123 @@ The specs had to fix values and smaller behaviours that P1 to P9 left open. Each
 
 **Capabilities added while writing the specs.** `csrf-protection` and `security-events`, both introduced by `close-security-gaps`, gain one requirement each. The proposal lists them.
 
+### Decisions made while writing the tasks (2026-11-02)
+
+Breaking the specs into tasks showed where they say *what* must happen and not yet *how*. Each answer below stays inside the specs and the decisions above, and takes the fail-closed side. All are reasoned from scrty's own settled specs and code, read on `main` at `eb1f22a`, with no new external source.
+
+#### T1. The package is `oidcprovider`, at the module root (decided by the user, 2026-11-02)
+
+- **What it decides:** the core package is `github.com/kartaladev/scrty/oidcprovider`, beside `authenticate/oidc` (the relying party). Its HTTP endpoints live in `httpsec`, as every other endpoint does.
+- **Why:**
+  - the design's sketches already use the name;
+  - it reads unambiguously at call sites (`oidcprovider.New`, `oidcprovider.Client`);
+  - an authorization server is a concept of its own, not a login method under `authenticate/`.
+- **Rejected:**
+  - `authenticate/oidc/provider`: it nests a server under the login methods, and `provider.New` reads vaguely;
+  - `op`: it is opaque to readers who don't know OIDC.
+- **Import direction:** `httpsec` imports `oidcprovider`, never the reverse. `oidcprovider` holds the protocol's domain logic: validation, clients, grants, stores and token minting. It has no HTTP framework dependency and takes no `httpsec` type.
+
+#### T2. A code's single use comes from `token/onetime`, and its request data from a code record
+
+- **What it decides:**
+  - the code's secret, digest and single spend are a `token/onetime` token of purpose `oidc-provider.code`, issued unbound;
+  - the request data lives in the provider's code record, keyed by the onetime token's identifier:
+    - client, redirect URI, challenge, nonce, granted scopes and resources;
+    - the sign-in's family and authentication facts;
+    - `dpop_jkt`;
+    - the grant family `F` chosen at issue (H2).
+- **Why unbound:** a code presented by another client must count as used (`oidc-provider-tokens`). A client-bound onetime check would refuse it *without* spending it.
+- **The resulting order at the exchange:**
+  1. check the code;
+  2. if the client differs: consume, then refuse;
+  3. if the redirect URI, the verifier or `dpop_jkt` fails: refuse, leaving the code unspent;
+  4. consume;
+  5. write the grant.
+- **Why not a code store with its own compare-and-set:** decision 2 maps codes to `token/onetime`, which already pins check-then-consume, digest-only storage and concurrent single use across three adapters.
+
+#### T3. The grant row identifies the sign-in it came from, and remembers that the sign-in ended
+
+- **What it decides:** besides decision 5's fields, the grant row records:
+  - the sign-in's session family, which is the ID token's `sid`;
+  - for a federated sign-in, its upstream issuer and upstream session identifier, as the session recorded them;
+  - a sign-in-ended mark.
+- **One store operation per kind of end.** Ending a sign-in is a single grant-store operation selected by one of:
+  - family;
+  - user;
+  - user except one family;
+  - upstream session;
+  - user and upstream issuer.
+
+  It revokes the matching grants without `offline_access` (or every matching grant of a client tied to its sign-in), sets the sign-in-ended mark on every matching grant, and returns only the grants it newly marked.
+- **Why:**
+  - every way a sign-in ends can be matched to its grants without a lookup `session.Store` lacks. Decision 5 keeps the port unchanged, and an upstream back-channel logout knows only the upstream session;
+  - returning only newly marked grants makes "a client SHALL be notified at most once for one ended sign-in" (`oidc-provider-logout`) a store guarantee. The chain's logout and the session manager can both report one end, and the second report finds nothing new to notify.
+
+#### T4. The session manager reports each explicit end of a sign-in, and the chain checks the wiring
+
+- **The gap:** some ends happen inside `session.Sessions`, where the chain cannot see them:
+  - a family revoked for reuse during a renewal;
+  - `DeleteByUser` and the other user-wide deletions, called by the consumer;
+  - `DeleteByExternalSession` from an upstream logout.
+
+  `WithReuseObserver` exists, but there is only one of it, and it covers reuse only.
+- **What it decides:**
+  - `session` gains a repeatable `WithEndObserver(EndObserver)`. The observer is told after each explicit end through the manager, with the cause, the user, and the family or upstream session when known:
+    - reuse revocation, `RevokeFamily`, `Delete`;
+    - `DeleteByUser`, `DeleteByUserExcept`;
+    - `DeleteByExternalSession`, `DeleteByUserAndExternalIssuer`;
+    - `close-security-gaps` D12's end-by-handle.
+  - Expiry and sweeping are never reported.
+  - `*oidcprovider.Provider` implements `EndObserver`, and `(*session.Sessions).ReportsEndsTo(EndObserver) bool` reports whether a manager was built with it.
+- **Fail closed at construction:** `httpsec.EnableOIDCProvider` refuses a chain any of whose session managers does not report to the enabled provider. Forgetting the wiring would otherwise leave online grants alive after logout, silently (`library-design` rule 6).
+- **Two kinds of call:**
+  - **The chain's logout** calls the provider *before* deleting, so a grant-store failure can fail the logout (`http-security-chain`).
+  - **The manager's report** comes *after* the store write. Its failure is logged and reported as an event, and never undoes the end.
+- **Rejected:**
+  - asking the consumer to remember to wire an observer, with no check;
+  - a chain-side wrapper around the session manager, which would miss calls the consumer makes on the manager directly.
+
+#### T5. The flow cookie carries its own secret, not the handle
+
+- **What it decides:** the flow cookie holds a separate 256-bit random value. The pending request stores only its digest, and a resume or a read must present both the handle and the matching cookie.
+- **Cookie attributes:** the name carries the `__Host-` prefix, which needs `Secure` and `Path=/` and no `Domain`, beside `HttpOnly` and `SameSite=Lax`.
+- **Why:**
+  - the handle travels in URLs (the login and consent pages' query), so a leaked URL must not also carry the browser binding;
+  - `__Host-` stops a sibling subdomain from planting the cookie.
+
+#### T6. Credential formats are distinct by prefix
+
+| Credential | Format | Stored as |
+|---|---|---|
+| refresh token | `rt.<family>.<secret>` (decision 5) | digest of the secret, in the lineage |
+| opaque access token | `at.<id>.<secret>` | digest |
+| pending-request handle | `rh.<id>.<secret>` | digest |
+| authorization code | the `token/onetime` string (T2) | digest |
+
+- **Why:** none of these passes `session.ValidIdentifier`, and none can be mistaken for another, so each verifier refuses the others' values before any lookup (C10).
+
+#### T7. The lineage store is a type only the adapters can build
+
+- **What it decides:** `oidcprovider.RefreshTokenStore` is a struct whose only field is unexported. The SQL adapters build it through a scrty `internal` package, over a session store bound to the fixed `op_refresh_tokens` table. The in-memory default is a private `session.MemoryStore` inside the provider.
+- **Why it holds across modules:** Go's `internal` rule is path-based, so the nested adapter modules can import it and a consumer cannot. That is decision 5's guard 1 made structural: no exported function turns a sign-in `session.Store` into a lineage store.
+
+#### T8. Grant revocation on security events is a one-method port in each package that needs it
+
+- **What it decides:**
+  - `recovery`, `authenticate/mfa` (`ResetDeps`), the passkey clone path in `httpsec`, and the password-change gate each declare a one-method port for revoking a user's grants with a cause;
+  - `*oidcprovider.Provider` satisfies all of them;
+  - when the port is supplied, revocation is the default, and an option per package keeps grants (sub-decision 4). The chain supplies the provider to its own endpoints when it is enabled.
+- **Why:** none of those packages imports `oidcprovider`, so no import cycle can form, and each states its own default and override (`library-design`).
+
+#### T9. The code exchange writes the grant row first, then the lineage, without a cross-store transaction
+
+- **What it decides:** this departs from decision 5's "one transaction through each adapter's `WithTx`". The exchange writes the grant row first, keeping any tombstone, and the lineage second. No transaction port joins the two stores.
+- **Why it is safe in every interleaving:**
+  - a failure between the two writes leaves a grant row with no lineage. The client got an error and holds no refresh token, and the orphan sweep removes the row (decision 5, H4);
+  - a replay that lands between the two writes marks the grant row revoked. The lineage then created is unusable, because every refresh reads the grant row first (decision 5, step [2]);
+  - a lineage can never exist without its grant row, which is the state that would fail open.
+- **Why not a transaction:** it would need a transaction port across stores that consumers may supply separately, and adapters that share one database handle. That buys nothing the order does not already guarantee.
+
 ## Risks / Trade-offs
 
 - **[The tag waits for this whole change, and for a green conformance run]** → v1 stays at the scope above, and every follow-up only adds. The task breakdown sizes it; P9 makes the conformance job part of the gate.
@@ -906,12 +1023,10 @@ The specs had to fix values and smaller behaviours that P1 to P9 left open. Each
 
 ## Open Questions
 
-Former open question 1, whether a green conformance run is a hard precondition for the tag, was decided on 2026-11-02 as recommended: yes, for both plans (P9).
+None remain.
 
-### 1. The provider package's name and place
-
-- **Candidates:** a core package under its own concept, such as `oidcprovider` or `provider`, beside `authenticate/oidc` (the relying party).
-- **Why it can wait:** it is settled with the specs, and does not change the approach.
+- **Former open question 1:** whether a green conformance run is a hard precondition for the tag. Decided on 2026-11-02 as recommended: yes, for both plans (P9).
+- **Former open question 2:** the provider package's name and place. Decided by the user on 2026-11-02: `oidcprovider`, at the module root (T1).
 
 ## References
 

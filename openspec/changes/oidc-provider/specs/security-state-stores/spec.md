@@ -48,6 +48,20 @@ A grant store SHALL revoke every grant of a user, and every grant of a user and 
 - **WHEN** user `u-1` holds an online and an offline grant from sign-in `s-1`, and the store revokes the online grants of `s-1`
 - **THEN** the online grant is revoked and the offline grant is not
 
+### Requirement: Ending a sign-in marks its grants once
+A grant store SHALL end sign-ins in one operation, selected by family, by user, by user except one family, by upstream session, or by user and upstream issuer. The operation SHALL revoke the matching grants that do not hold `offline_access`, and SHALL mark every matching grant as having outlived its sign-in. It SHALL return only the grants it newly marked, so the same end reported twice returns nothing the second time.
+
+#### Scenario: End reported twice
+- **WHEN** sign-in `s-1`, from which `billing-web` and `billing-ios` hold grants, is ended once by the chain's logout and once by the session manager's report
+- **THEN** the first operation returns both grants, and the second returns none
+
+### Requirement: A grant records the sign-in it came from
+A grant SHALL record the family of the sign-in it came from, and the upstream issuer and session of a federated sign-in, unchanged.
+
+#### Scenario: Ended by upstream session
+- **WHEN** a federated sign-in from issuer `https://idp.example.com` with upstream session `x-9` created grant `g-1`, and the store ends sign-ins by that issuer and session
+- **THEN** `g-1` is revoked when it does not hold `offline_access`, and returned
+
 ### Requirement: Expired provider records are swept
 Expired pending requests, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. A revoked grant SHALL be kept until every code that could still name it has expired.
 

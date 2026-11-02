@@ -53,6 +53,7 @@ Settled with the specs on 2026-11-02.
 
 - `token-issuance`: access tokens carry `client_id`, `scope` and a per-resource audience with `typ` `at+jwt`; ID tokens are issued over the same key source; verification enforces `typ`, so each token type validates only as itself.
 - `account-recovery`, `multi-factor-auth`, `passkey-authentication`: completing recovery, resetting MFA and detecting a cloned passkey also revoke the user's grants, by default.
+- `sessions`: the session manager reports each explicit end of a sign-in to end observers, so the provider ends the grants that came from it (design T4).
 - `oidc-logout`: a back-channel logout from an upstream provider also ends the grants without `offline_access` that came from the sessions it ends.
 - `security-state-stores`, `schema-migrations`, `store-conformance`: durable stores, a migration and conformance suites for clients, pending requests, consent and grants.
 - `http-security-chain`: the provider's endpoints and their slots; local logout and session-family revocation tell the provider which sign-in ended; the password-change endpoint gains an option to revoke grants.
@@ -64,7 +65,7 @@ Settled with the specs on 2026-11-02.
 
 ## Impact
 
-- **New code, core module:** a provider package (name settled with the specs), its endpoints in `httpsec`, and their adapters in `ginsec` and `fibersec` through the existing exchange.
+- **New code, core module:** the `oidcprovider` package (design T1), its endpoints in `httpsec`, and their adapters in `ginsec` and `fibersec` through the existing exchange.
 - **Stores:** in-memory defaults, plus `sqlstore`, `pgxstore` and `gormstore` adapters, a security-state migration, and conformance suites in the `test` module.
 - **No new dependency in any published module.** jwx v4 remains the single JOSE stack. The conformance suite (Java and MongoDB, in Docker) runs in CI only.
 - **Order before the tag (decided 2026-11-02):** `close-security-gaps`, then `pre-release-api-fixes` (the `sub` claim becomes the user identifier, which an OpenID Provider must never reassign), then this change, then `release-readiness`'s gate and tag.

@@ -30,10 +30,15 @@ Building a chain with the provider SHALL fail with a configuration error naming 
 - neither bearer mode is enabled, because the resume needs a sign-in credential;
 - the JWKS endpoint is not enabled;
 - the provider is enabled more than once;
+- a session manager the chain is wired with does not report sign-in ends to the provider (`sessions`), because grants would then outlive a logout;
 - two of its paths collide with each other or with another endpoint of the chain.
 
 #### Scenario: No bearer mode
 - **WHEN** the provider is enabled on a chain with form login and no bearer mode
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: Session manager not reporting to the provider
+- **WHEN** the provider is enabled on a chain whose session manager was built without the provider as an end observer
 - **THEN** construction fails with a configuration error naming the provider
 
 #### Scenario: Path collision
