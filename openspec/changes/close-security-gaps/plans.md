@@ -75,7 +75,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 ## Task group 2: request host and scheme, trusted proxies (lane R)
 
 **Interfaces produced (every later lane consumes these):**
-- `type Request interface { ...existing...; Host() string; Secure() bool }`
+- `type Request interface { ...existing...; Host() string; Secure() bool; HeaderValues(name string) []string }` (`HeaderValues` required, D2)
 - `func WithHTTPSDeployment() Option`
 - `type TrustedProxies struct { Prefixes []netip.Prefix; Headers HeaderFamily; MaxHops int }`
 - `func XForwarded(fields ...ForwardedField) HeaderFamily`, `func Forwarded(fields ...ForwardedField) HeaderFamily`

@@ -56,8 +56,11 @@ type Request interface {
     // ... existing methods ...
     Host() string // resolved host: Host header, or a trusted proxy's forwarded host (D7)
     Secure() bool // resolved transport security: TLS, the HTTPS-deployment declaration, or a trusted proxy (D7)
+    HeaderValues(name string) []string // every line of a repeated header, in order (added 2026-11-02)
 }
 ```
+
+- **`HeaderValues` (added 2026-11-02, during task 2.5).** `Header` returns the first line only, and a forwarded chain must be read right to left across every line, or a line the client sent could be read in place of the proxy's. The first implementation made `HeaderValues` optional, falling back to `Header` for a custom adapter that lacks it. That fallback is a silent weakening (`library-design.md` rule 4), so it is a required method, breaking before the tag for the same reason as `Host`/`Secure`.
 
 - **Default:** net/http and gin read `r.Host` and `r.TLS != nil`; fiber reads its host and TLS state from the connection, never from its proxy-aware helpers. The chain wraps the adapter's request with the resolved values (D7), so every interceptor reads one answer.
 - **Override:** `WithHTTPSDeployment()` declares every request secure, for TLS that ends upstream without forwarded headers. It conflicts with `EnableTrustedProxies`, which is a configuration error.
@@ -257,7 +260,7 @@ httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
     ),
     MaxHops: 1,
 })
-func ClientFromContext(ctx context.Context) Client // IP, Secure, Host, ViaProxy
+func ClientFromContext(ctx context.Context) (Client, bool) // IP, Secure, Host, ViaProxy; false outside the chain
 ```
 
 - **Default:** off; the TCP peer, transport TLS and `Host`. Once enabled, every control is on:
@@ -399,10 +402,10 @@ httpsec.EnableDPoP(httpsec.DPoP{
 ```go
 policy, err := password.NewPolicy(
     password.MinLength(15),                        // default 15; below 8 is a configuration error
-    password.ContextWords(func(u *identity.Details) []string { ... }),
-    password.Breached(password.PwnedPasswords(outbound), password.OnLookupFailure(password.Refuse)),
+    password.ContextWords(func(ctx context.Context, u *identity.Details) ([]string, error) { ... }),
+    password.Breached(password.PwnedPasswords(outbound), password.Refuse), // failure mode required
     password.NoReuse(history, 5),
-    password.WithEncoder(enc),
+    password.WithEncoder(enc),                     // default: Argon2id at its defaults; nil refused
 )
 err = policy.Check(ctx, user, candidate)
 err = policy.Change(ctx, user, candidate, write)
@@ -434,6 +437,8 @@ err = policy.Change(ctx, user, candidate, write)
   - no composition rules (NIST: SHALL NOT);
   - rules run cheapest first.
 - **Context words (changed 2026-11-02).** A candidate is refused when it equals a context word, or contains one of 4 or more characters, case-insensitively. Equality alone lets `alice.smith2026!` through. Words shorter than 4 characters are refused only on equality, so a short service name does not refuse ordinary passphrases.
+- **Encoder (changed 2026-11-02, task 10.1 review).** With none named, the policy encodes with Argon2id at the built-in defaults, so `NewPolicy()` works with no configuration. A nil encoder is a configuration error. The reuse guard required one only because it had no default.
+- **The common list at the default minimum (observed 2026-11-02).** The bundled list (SecLists' xato top 10,000, MIT, notice shipped beside it) has 9,917 distinct entries, which meets ASVS's 3,000, but only 2 are 15 characters or longer. At the default minimum, the length rule does most of the work and the list mainly protects consumers who lower the minimum towards 8. A list of long common passphrases would strengthen it. Its source and licence are the open point.
 - **Options replace only the rule they name.** `WithoutCommonPasswords()` removes that default explicitly, so setting one rule never silently drops a safe default.
 - **Breach check:** opt-in. It uses the HIBP range API through the confined outbound client, with `Add-Padding: true`, and the lookup source is replaceable for an offline corpus.
   - `OnLookupFailure` is required: Spring's checker fails open, and the safe and convenient answers differ, so the consumer chooses. A timeout, a non-success status (429 included) and an unparseable body are all lookup failures. A hang-up fails with the context's error, whichever mode was chosen.

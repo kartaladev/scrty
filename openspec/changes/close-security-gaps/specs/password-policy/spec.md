@@ -142,11 +142,19 @@ A history read or retire failure SHALL refuse the change with the history-unavai
 - **THEN** the change is refused with the history-unavailable error and the consumer's write is not called
 
 ### Requirement: Policy wiring mistakes fail at construction
-Building a policy SHALL fail with a configuration error naming the mistake when given: a reuse rule without a history port (including a typed-nil one), or with a depth below one; no encoder for a change; an absent matcher or clock; a breach check without a lookup source or a failure mode; a minimum length below 8; a maximum below 64 or below the minimum; a replaced common-password list that is empty. A check or change given no user record, or a change given no write, SHALL fail with a configuration error and SHALL read and write nothing.
+Building a policy SHALL fail with a configuration error naming the mistake when given: a reuse rule without a history port (including a typed-nil one), or with a depth below one; a nil encoder (including a typed-nil one); an absent matcher or clock; a breach check without a lookup source or a failure mode; a minimum length below 8; a maximum below 64 or below the minimum; a replaced common-password list that is empty. A check or change given no user record, or a change given no write, SHALL fail with a configuration error and SHALL read and write nothing.
 
 #### Scenario: Reuse depth zero
 - **WHEN** a policy is built with the reuse rule at depth 0
 - **THEN** construction fails with a configuration error naming the reuse depth
+
+#### Scenario: No encoder named
+- **WHEN** a policy is built without naming an encoder and changes a password
+- **THEN** the new hash is an Argon2id hash at the built-in encoder's defaults
+
+#### Scenario: Nil encoder
+- **WHEN** a policy is built with a nil encoder
+- **THEN** construction fails with a configuration error naming the encoder
 
 #### Scenario: Empty replacement list
 - **WHEN** a policy is built with the common-password list replaced by an empty list
