@@ -119,8 +119,8 @@ The policy SHALL NOT check or record password history unless the consumer adds t
 - **WHEN** a policy with the reuse rule checks a candidate for a user with no stored password and no history
 - **THEN** the reuse rule accepts it
 
-### Requirement: A change through the policy checks, retires, encodes and writes in order
-A change SHALL run, stopping at the first failure: every rule's check; with the reuse rule, retiring the current hash and keeping only the newest N−1 retired hashes; encoding the candidate; and handing the user record, the new hash and the change time, read from the policy's replaceable clock, to the consumer's write. Retiring a hash identical to the newest retired hash SHALL add nothing. The library SHALL provide a ready-made write over any user provisioner that records the hash and the change time together.
+### Requirement: A change through the policy checks, encodes, retires and writes in order
+A change SHALL run, stopping at the first failure: every rule's check; encoding the candidate; with the reuse rule, retiring the current hash and keeping only the newest N−1 retired hashes; and handing the user record, the new hash and the change time, read from the policy's replaceable clock, to the consumer's write. Retiring a hash identical to the newest retired hash SHALL add nothing. The library SHALL provide a ready-made write over any user provisioner that records the hash and the change time together.
 
 #### Scenario: Retry after a failed write does not double-count
 - **WHEN** a reuse rule of depth 3 is used, a user with current password `p2` and history `p1` changes to `p3`, the consumer's write fails, and the change is retried and succeeds
