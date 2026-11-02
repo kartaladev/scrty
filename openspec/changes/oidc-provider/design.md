@@ -698,7 +698,10 @@ These values were set while elaborating:
 **A conflict with `close-security-gaps` D8, to resolve there.**
 - **The conflict:** D8 makes enabling DPoP with neither bearer mode a configuration error, so a chain that runs only the provider, with no first-party bearer, would be refused.
 - **The fix:** D8's rule must count the provider as a DPoP user. That is a delta to `sender-constrained-tokens`, a capability `close-security-gaps` owns.
-- **When:** it is cheap while that change is still open, so the amendment belongs in `close-security-gaps` before it is archived, not patched afterwards.
+- **Done 2026-11-02:** amended in `close-security-gaps` (commit `8f50e44` on `feat/close-security-gaps`, before task 8.2 is implemented).
+  - **The rule now:** D8 refuses DPoP only when no enabled feature verifies bound credentials.
+  - **How it is checked:** the chain reads an internal set that holds the two bearer modes there.
+  - **What this change adds:** this change's provider adds itself to that set. That is an implementation detail of `httpsec`, and needs no delta to `sender-constrained-tokens` beyond the token endpoint's binding.
 
 **Rejected:** DPoP as a later follow-up. RFC 9700 §2.2.2 gives public clients two ways to protect refresh tokens, and the D8 machinery is already being built.
 
@@ -870,7 +873,7 @@ The user asked that the provider comply with the standards it implements and wit
 - **[A grant without `offline_access` outliving an idle sign-in]** → it ends at logout, family revocation and upstream back-channel logout, and is capped at the sign-in's absolute deadline. Ending it on idle expiry needs a family lookup in `session.Store`, a later additive change (P1).
 - **[Strict `private_key_jwt` audience refusing older clients]** → clients built to Core's token-endpoint audience fail until they send the issuer. The compatibility option exists and is documented as accepting the ambiguity CVE-2025-27370 describes (P7).
 - **[Clickjacking on the consumer's login and consent pages]** → RFC 9700 §4.16 puts it on the authorization server, but the pages are the consumer's. D4's headers cover pages served through the chain; the README states the requirement for any other page.
-- **[`close-security-gaps` D8 refusing a provider-only chain with DPoP]** → D8's rule is amended there before that change is archived (P6).
+- **[`close-security-gaps` D8 refusing a provider-only chain with DPoP]** → amended there on 2026-11-02: DPoP is refused only when no enabled feature verifies bound credentials (P6).
 - **[The conformance suite's exact test lists were not read]** (its profile PDF was unreadable) → the first conformance task records which tests run, before the gate relies on them.
 
 ## Migration Plan

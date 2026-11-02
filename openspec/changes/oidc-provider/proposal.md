@@ -67,7 +67,7 @@ Expected; the final list is settled with the specs.
 - **No new dependency in any published module.** jwx v4 remains the single JOSE stack. The conformance suite (Java and MongoDB, in Docker) runs in CI only.
 - **Order before the tag (decided 2026-11-02):** `close-security-gaps`, then `pre-release-api-fixes` (the `sub` claim becomes the user identifier, which an OpenID Provider must never reassign), then this change, then `release-readiness`'s gate and tag.
 - **Related changes:**
-  - `close-security-gaps`: its D8 must count the provider as a DPoP user, so that a chain running only the provider may enable DPoP. That is an amendment to make there before it is archived (design P6). It also provides DPoP, mTLS binding, CORS, security headers, trusted proxies, security events, and the session listing (its D12), which gains a "revoke application access" choice when ending other sessions; `session.Store` itself is unchanged by this change;
+  - `close-security-gaps`: its D8 must count the provider as a DPoP user, so that a chain running only the provider may enable DPoP. It was amended there on 2026-11-02 (design P6). It also provides DPoP, mTLS binding, CORS, security headers, trusted proxies, security events, and the session listing (its D12), which gains a "revoke application access" choice when ending other sessions; `session.Store` itself is unchanged by this change;
   - `bff-resource-server`: its resource-server mode is the natural verifier of this provider's access tokens, and its cookie session is the prerequisite for single sign-on, a follow-up;
   - `release-readiness`: its gate names the conformance job (P9), and its first changelog entry summarises this change.
 - **Consumers:** none yet. Nothing is tagged.
