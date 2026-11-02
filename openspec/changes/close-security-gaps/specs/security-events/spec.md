@@ -5,7 +5,7 @@ Tells the consuming application about every security-relevant outcome scrty deci
 ## ADDED Requirements
 
 ### Requirement: Security events go to an optional consumer sink
-The library SHALL emit nothing until the consumer supplies an event sink. Every component that decides a security outcome SHALL accept the sink, and the chain SHALL pass its own sink to the components it builds; a component the consumer also calls outside a chain SHALL take a sink of its own, used only outside a chain, so one outcome is reported once. The sink SHALL be called synchronously on the deciding request, with a context from which the request's cancellation has been removed, and SHALL NOT be able to change the outcome: an error it returns SHALL be ignored, and a panic in it SHALL be recovered and logged without the event's contents. A sink that blocks is the consumer's responsibility, and the documentation SHALL say so.
+The library SHALL emit nothing until the consumer supplies an event sink. Every component that decides a security outcome SHALL accept the sink, and the chain SHALL pass its own sink to the components it builds; a component the consumer also calls outside a chain SHALL take a sink of its own, used only when no chain delivers events for the request, so one outcome is reported once. The sink SHALL be called synchronously on the deciding request, with a context from which the request's cancellation has been removed, and SHALL NOT be able to change the outcome: an error it returns SHALL be ignored, and a panic in it SHALL be recovered and logged without the event's contents. A sink that blocks is the consumer's responsibility, and the documentation SHALL say so.
 
 #### Scenario: No sink
 - **WHEN** no sink is configured and a login fails
