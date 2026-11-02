@@ -125,9 +125,10 @@ type Request interface {
 	// none. An integration reads it from the connection itself, never from a
 	// header.
 	//
-	// Inside the chain it is the resolved answer, the one certificate binding
-	// (EnableCertificateBinding) judges: from a peer that is not a trusted
-	// proxy, the connection's certificate; from a trusted proxy, the
+	// Inside the chain it is the resolved answer, given to every interceptor
+	// whether or not certificate binding (EnableCertificateBinding) is
+	// enabled, and the one that binding judges: from a peer that is not a
+	// trusted proxy, the connection's certificate; from a trusted proxy, the
 	// certificate it forwarded in the WithClientCertificateHeader header,
 	// decoded once, or nil when no header is named or its value does not
 	// decode. A trusted proxy's own connection certificate is never taken for

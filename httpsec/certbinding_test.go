@@ -884,6 +884,32 @@ func TestCertificateBinding_Presented(t *testing.T) {
 			assert:    refusedForCertificate,
 		},
 		{
+			name:    "switched off with DPoP required: a certificate-bound token is refused for its binding",
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			request: asBearerWithC,
+			assert:  refusedForCertificate,
+		},
+		{
+			name:    "switched off with DPoP required: a certificate-bound token under the DPoP scheme is refused for its binding",
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			request: underDPoPScheme(theToken),
+			assert:  refusedForCertificate,
+		},
+		{
+			name:      "switched off with DPoP required: a certificate-bound session reference is refused for its binding",
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			reference: true,
+			request:   referenceWithC,
+			assert:    refusedForCertificate,
+		},
+		{
+			name:      "switched off with DPoP required: a certificate-bound session reference under the DPoP scheme is refused for its binding",
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			reference: true,
+			request:   underDPoPScheme(theReference),
+			assert:    refusedForCertificate,
+		},
+		{
 			name:    "switched on: the same token with its certificate is accepted",
 			opts:    []httpsec.Option{httpsec.EnableCertificateBinding()},
 			request: asBearerWithC,

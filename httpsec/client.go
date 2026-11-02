@@ -204,9 +204,10 @@ func (f *forwardedCert) certificate() *x509.Certificate {
 	return f.cert
 }
 
-// ClientCertificate is the client certificate binding uses: a trusted proxy's
-// forwarded certificate, or none, from a trusted proxy, and the connection's
-// own from any other peer.
+// ClientCertificate is the resolved client certificate, answered to every
+// interceptor and judged by certificate binding when it is enabled: a trusted
+// proxy's forwarded certificate, or none, from a trusted proxy, and the
+// connection's own from any other peer.
 func (r *resolvedRequest) ClientCertificate() *x509.Certificate {
 	if r.cert != nil {
 		return r.cert.certificate()
