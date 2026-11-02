@@ -5,7 +5,7 @@ Tells the consuming application about every security-relevant outcome scrty deci
 ## ADDED Requirements
 
 ### Requirement: Security events go to an optional consumer sink
-The library SHALL emit nothing until the consumer supplies an event sink. Every component that decides a security outcome SHALL accept the sink, and the chain SHALL pass its own sink to the components it builds. The sink SHALL be called synchronously on the deciding request, with a context from which the request's cancellation has been removed, and SHALL NOT be able to change the outcome: an error it returns SHALL be ignored, and a panic in it SHALL be recovered and logged without the event's contents. A sink that blocks is the consumer's responsibility, and the documentation SHALL say so.
+The library SHALL emit nothing until the consumer supplies an event sink. Every component that decides a security outcome SHALL accept the sink, and the chain SHALL pass its own sink to the components it builds; a component the consumer also calls outside a chain SHALL take a sink of its own, used only outside a chain, so one outcome is reported once. The sink SHALL be called synchronously on the deciding request, with a context from which the request's cancellation has been removed, and SHALL NOT be able to change the outcome: an error it returns SHALL be ignored, and a panic in it SHALL be recovered and logged without the event's contents. A sink that blocks is the consumer's responsibility, and the documentation SHALL say so.
 
 #### Scenario: No sink
 - **WHEN** no sink is configured and a login fails
@@ -33,7 +33,7 @@ Each event SHALL carry a name from the OWASP Logging Vocabulary where one applie
 - `excess_rate_limit_exceeded`, for a rate-limit refusal;
 - `malicious_csrf`, for a CSRF refusal.
 
-Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, documented in one list, including second-factor verification, enrolment and removal, passkey binding and removal, recovery start and completion, re-authentication, a sign-in ended through session management, host refusal, DPoP refusal, certificate-binding refusal, automation-challenge refusal and signing-key rotation.
+Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, documented in one list, including second-factor verification, enrolment and removal, passkey binding and removal, recovery start, completion and refusal, re-authentication, a sign-in ended through session management, host refusal, DPoP refusal, certificate-binding refusal, automation-challenge refusal and signing-key rotation.
 
 #### Scenario: Lockout
 - **WHEN** an identifier reaches its lockout threshold
@@ -42,6 +42,14 @@ Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, d
 #### Scenario: Library-specific event
 - **WHEN** the chain refuses a request for its host
 - **THEN** the sink receives an event named with the `scrty_` prefix that the documented list names for host refusals
+
+#### Scenario: Recovery start for an unknown username
+- **WHEN** a recovery start is posted for a username no account has
+- **THEN** the sink receives the documented recovery-start event, without a user reference, as it would for a known username
+
+#### Scenario: Component outside a chain
+- **WHEN** a consumer resets a user's second factor through the MFA component with a sink of its own, outside any chain
+- **THEN** that sink receives the documented second-factor removal event
 
 #### Scenario: CSRF refusal
 - **WHEN** a CSRF check refuses a request
