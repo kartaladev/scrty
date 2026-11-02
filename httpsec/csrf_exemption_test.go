@@ -179,12 +179,16 @@ func TestCSRF_Exemptions(t *testing.T) {
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.ErrorContains(t, err, "WithCSRFExemption")
 				assert.ErrorContains(t, err, "escaped form")
+				assert.ErrorContains(t, err, `"caf%C3%A9"`, "the error names the segment's own escaped spelling")
 			},
 		},
 		{
-			name:   "an exemption with a space in a segment fails construction",
-			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/a b")},
-			assert: misconfigured,
+			name: "an exemption with a space in a segment fails construction",
+			csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/a b")},
+			assert: func(t *testing.T, _ served, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, `"a%20b"`, "the error names the segment's own escaped spelling")
+			},
 		},
 		{
 			name:   "an exemption with an escaped space matches that escaped form",

@@ -217,7 +217,9 @@ func checkExemptionSegment(seg string) error {
 	// are; what a request escapes (non-ASCII, a space) is escaped, and so
 	// differs from the segment.
 	if (&url.URL{Path: "/" + decoded, RawPath: "/" + seg}).EscapedPath() != "/"+seg {
-		return fmt.Errorf("a segment holds a character a request escapes; write the pattern in its escaped form, such as %q", "caf%C3%A9")
+		escaped := (&url.URL{Path: "/" + decoded}).EscapedPath()[1:]
+
+		return fmt.Errorf("a segment holds a character a request escapes; write it in its escaped form, %q", escaped)
 	}
 
 	return nil
