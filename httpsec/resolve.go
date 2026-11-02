@@ -38,6 +38,11 @@ type sessionResolver struct {
 	// nil while it is off. A late session the manager says must be renewed is
 	// let through to it, and to nothing else.
 	renewal *sessionRenewal
+
+	// admit, when set, judges the loaded session before its user is reloaded
+	// or anything is published; an error it returns is the request's answer.
+	// The session-reference bearer judges the session's key binding here.
+	admit func(ex *Exchange, s *session.Session) error
 }
 
 // userLookup says how the core reloads the session's user.
@@ -129,12 +134,22 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 		// is refused as for any ended session.
 		if errors.Is(err, session.ErrRenewalRequired) &&
 			r.renewal != nil && r.renewal.answers(ex.Request) {
+			// The session is judged once the endpoint loads it, as admit
+			// judges one loaded here, so a late credential presented by the
+			// wrong sender is refused there and its proof recorded.
 			ex.renewal = id
+			ex.admitRenewal = r.admit
 
 			return nil
 		}
 
 		return classifyLoad(ctx, err)
+	}
+
+	if r.admit != nil {
+		if err := r.admit(ex, s); err != nil {
+			return err
+		}
 	}
 
 	// Reloaded rather than taken from the credential, so a role revoked a
@@ -251,6 +266,10 @@ type perRequestPhase struct {
 	enforced map[policy.ChallengeKind]bool
 
 	now func() time.Time
+
+	// dpop is the chain's DPoP verifier, which every issuing endpoint
+	// verifies a sign-in's proof with, and nil while DPoP is off.
+	dpop *dpopVerifier
 }
 
 // evaluatePerRequest runs the per-request phase for s and p on ex under ph,

@@ -89,6 +89,11 @@ type RenewalResult struct {
 	// Kind is the kind of renewal performed: a fresh rotation, a re-rotation
 	// inside the grace window, or a recovery while the successor was unused.
 	Kind session.RenewalKind
+
+	// TokenType is how Credential is presented: TokenTypeDPoP when the
+	// session is bound to a DPoP key, TokenTypeBearer otherwise. A renewal
+	// never changes it.
+	TokenType TokenType
 }
 
 // RenewalResponder writes the response to a successful renewal.
@@ -194,7 +199,9 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return rotationFailure(err, issueErr)
 	}
 
-	return r.respond(ex, RenewalResult{Credential: credential, Session: successor, User: details, Kind: kind})
+	return r.respond(ex, RenewalResult{
+		Credential: credential, Session: successor, User: details, Kind: kind, TokenType: tokenTypeOf(successor),
+	})
 }
 
 // rotationFailure is the error a failed rotation answers with, given the
@@ -306,6 +313,21 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 		return nil, refusal
 	}
 
+	// The bearer judged the credential's binding and the proof only as far
+	// as it could without the session; the rest is judged on the session
+	// loaded here, before anything is rotated. A refusal that reads as a
+	// missing session, a sender holding a valid credential it may not use,
+	// is charged as a refused load is.
+	if ex.admitRenewal != nil {
+		if err := ex.admitRenewal(ex, s); err != nil {
+			if ex.chargeRenewal != nil && errors.Is(err, ErrAuthenticationRequired) {
+				ex.chargeRenewal(ctx)
+			}
+
+			return nil, err
+		}
+	}
+
 	return s, nil
 }
 
@@ -411,7 +433,7 @@ func refusedRenewal(err error) error {
 func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 	ex.Writer.SetHeader("Cache-Control", "no-store")
 
-	return writeLoginResult(ex, LoginResult{Token: r.Credential, Session: r.Session})
+	return writeLoginResult(ex, LoginResult{Token: r.Credential, Session: r.Session, TokenType: r.TokenType})
 }
 
 // EnableSessionRenewal answers session renewals: a POST on

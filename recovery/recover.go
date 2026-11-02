@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -73,6 +74,12 @@ type Request struct {
 	Lost []string
 	// Source is the request's canonical client source, for the risk hook.
 	Source string
+	// KeyBinding binds the recovery-pending session a recovery completing at
+	// once creates, and the credential issued for it, to a key the client
+	// proved it holds (session.WithKeyBinding). The zero value, the default,
+	// creates an unbound session. A held recovery creates its session at its
+	// finish, which takes its own binding (WithFinishKeyBinding).
+	KeyBinding session.KeyBinding
 }
 
 // PasswordCheck checks a password proof for the username a recovery names. It

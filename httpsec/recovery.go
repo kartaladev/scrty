@@ -135,7 +135,7 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 			"EnableFormLogin, whose generator it uses by default", option)
 	}
 
-	return nil
+	return checkBindingGenerator(c, option, "WithRecoveryTokens", i.tokens)
 }
 
 // endpointPaths are every path the recovery endpoints answer, named for a
@@ -414,6 +414,13 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 		return err
 	}
 
+	// The proof is judged before any recovery proof is looked at, so a bad
+	// one spends none and is counted nowhere, as a malformed request is.
+	req.KeyBinding, err = issuingBinding(ctx, ex.dpop(), ex.Request)
+	if err != nil {
+		return err
+	}
+
 	req.Source = src.Addr()
 
 	res, err := i.recoverer.Recover(ctx, req)
@@ -454,7 +461,7 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	ex.Session = res.Session
 	ex.SetContext(withSession(ex.Context(), res.Session))
 
-	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res})
+	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
 }
 
 // issueRecovered is the credential issuer the chain gives the recovery core
@@ -588,13 +595,14 @@ func readRecoveryForm(r Request) (url.Values, error) {
 // writeRecoveryResult is the response a completed recovery succeeds with when
 // the consumer supplies no responder.
 //
-// It carries the access token, the session's idle expiry, the new saved codes
+// It carries the access token and its token_type, the session's idle expiry,
+// the new saved codes
 // or null, and how many saved codes the user holds and whether that is low,
 // as the core counted them (recovery.Result.Remaining): after a reissue, the
 // new set. It is never cached: it carries a credential and, possibly, codes
 // shown only once.
 func writeRecoveryResult(ex *Exchange, result RecoveryResult) error {
-	body := recoveryDocument{AccessToken: result.Token}
+	body := recoveryDocument{AccessToken: result.Token, TokenType: result.TokenType}
 
 	if s := recoverySession(result.Recovery); s != nil {
 		body.ExpiresAt = s.IdleExpiresAt
@@ -620,6 +628,7 @@ type recoveryDocument struct {
 	RecoveryCodes []string  `json:"recovery_codes"`
 	Remaining     int       `json:"remaining"`
 	Low           bool      `json:"low"`
+	TokenType     TokenType `json:"token_type,omitempty"`
 }
 
 // writeRecoveryHold is the response a held recovery is answered with when the
@@ -755,7 +764,13 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 		return recovery.ErrMalformed
 	}
 
-	res, err := i.recoverer.Finish(ex.Context(), token)
+	// Before the held record is completed, so a bad proof completes nothing.
+	binding, err := issuingBinding(ex.Context(), ex.dpop(), ex.Request)
+	if err != nil {
+		return err
+	}
+
+	res, err := i.recoverer.Finish(ex.Context(), token, recovery.WithFinishKeyBinding(binding))
 	if err != nil {
 		return err
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -318,7 +319,17 @@ func (r *Recoverer) cancelURL(token string) string {
 // A token past the completion window, or of another purpose, is ErrRefused.
 // Everything from the conditional write on runs detached from ctx's
 // cancellation; the issuer runs before it, on ctx itself.
-func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result, error) {
+//
+// opts change the session the finish creates: WithFinishKeyBinding binds it.
+// With none it is unbound.
+func (r *Recoverer) Finish(ctx context.Context, completionToken string, opts ...FinishOption) (*Result, error) {
+	var o finishOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+
 	if r.finishTokens == nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgFinishRefused, slog.String("reason", "no-hold-configured"))
 
@@ -363,7 +374,7 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 
 	// Issued before the record is completed, so a credential that cannot be
 	// issued leaves the record pending and the token usable.
-	issued, err := r.issueSession(ctx, details, now)
+	issued, err := r.issueSession(ctx, details, now, o.binding)
 	if err != nil {
 		return nil, err
 	}
@@ -516,4 +527,21 @@ func (r *Recoverer) CancelPending(ctx context.Context, user identity.UserID) err
 	}
 
 	return nil
+}
+
+// FinishOption changes the session a finish creates.
+type FinishOption func(*finishOptions)
+
+// finishOptions is what the FinishOptions given to one finish chose.
+type finishOptions struct {
+	binding session.KeyBinding
+}
+
+// WithFinishKeyBinding binds the recovery-pending session a finish creates,
+// and the credential issued for it, to b (session.WithKeyBinding). The
+// default, with no option, is an unbound session. A b naming both a DPoP key
+// and a certificate fails the finish with session.ErrConfig before anything
+// is completed or spent.
+func WithFinishKeyBinding(b session.KeyBinding) FinishOption {
+	return func(o *finishOptions) { o.binding = b }
 }

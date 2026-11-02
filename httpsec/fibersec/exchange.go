@@ -51,6 +51,10 @@ func (r request) Path() string {
 	return decoded
 }
 
+// EscapedPath returns the path as the client sent it, percent-encoding intact:
+// fasthttp's original path, read from the request line and never decoded.
+func (r request) EscapedPath() string { return string(r.c.Request().URI().PathOriginal()) }
+
 // QueryValues returns every value of the parameter, in the order sent, and nil
 // when it is absent. Each value is copied, because fasthttp's are views into a
 // buffer it reuses for the next request on the connection.

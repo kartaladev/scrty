@@ -42,6 +42,10 @@ func (h *httpRequest) Path() string           { return h.r.URL.Path }
 func (h *httpRequest) Header(n string) string { return h.r.Header.Get(n) }
 func (h *httpRequest) Query(n string) string  { return h.r.URL.Query().Get(n) }
 
+// EscapedPath is the path as the client sent it: net/http keeps the sent
+// spelling in URL.RawPath whenever it differs from the default encoding.
+func (h *httpRequest) EscapedPath() string { return h.r.URL.EscapedPath() }
+
 // QueryValues returns every value of the parameter, in the order sent.
 func (h *httpRequest) QueryValues(n string) []string { return h.r.URL.Query()[n] }
 

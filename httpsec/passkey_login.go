@@ -363,6 +363,10 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 			return newConfigError("%s's passwordless login needs a token generator: give "+
 				"PasswordlessTokens, or enable form login, whose generator it then uses", option)
 		}
+
+		if err := checkBindingGenerator(c, option, "PasswordlessTokens", i.tokens); err != nil {
+			return err
+		}
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
@@ -520,6 +524,14 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 
 	ctx := ex.Context()
 
+	// The proof is judged before the assertion, so a bad one leaves the
+	// ceremony's challenge unspent and is refused as a malformed response
+	// is, counted nowhere.
+	keyBinding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
+	if err != nil {
+		return err
+	}
+
 	res, err := i.manager.Authenticate(ctx, body, binding)
 	if errors.Is(err, passkey.ErrMalformedResponse) {
 		return refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
@@ -551,12 +563,13 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		binding:           keyBinding,
 	}, in)
 	if err != nil {
 		return err
 	}
 
-	return i.respond(ex, LoginResult{Token: tok, Session: ex.Session})
+	return i.respond(ex, LoginResult{Token: tok, Session: ex.Session, TokenType: tokenTypeOf(ex.Session)})
 }
 
 // loadUser loads the credential's user, refusing an unknown, disabled or

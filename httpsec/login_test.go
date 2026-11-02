@@ -1893,7 +1893,7 @@ func TestFormLoginResponse(t *testing.T) {
 				var members map[string]json.RawMessage
 				require.NoError(t, json.Unmarshal(s.rec.Body.Bytes(), &members))
 				assert.ElementsMatch(t,
-					[]string{"access_token", "refresh_token", "valid_until"},
+					[]string{"access_token", "refresh_token", "valid_until", "token_type"},
 					slices.Collect(maps.Keys(members)),
 					"the member names are the documented contract of the default")
 			},

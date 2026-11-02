@@ -51,6 +51,17 @@ func TestConsumerCanSubstituteTheVerifierPort(t *testing.T) {
 			assert: func(t *testing.T, claims *token.Claims) {
 				assert.Equal(t, "alice", claims.Subject())
 				assert.Equal(t, "s-1", claims.ID())
+				assert.True(t, claims.Confirmation().IsZero())
+			},
+		},
+		{
+			name: "a binding an alternative verifier reports is readable",
+			claims: func() *token.Claims {
+				return token.NewClaimsWithConfirmation("alice", "s-1", token.Confirmation{JKT: thumbprint("k")})
+			},
+			assert: func(t *testing.T, claims *token.Claims) {
+				assert.Equal(t, "alice", claims.Subject())
+				assert.Equal(t, token.Confirmation{JKT: thumbprint("k")}, claims.Confirmation())
 			},
 		},
 	}

@@ -80,12 +80,18 @@ type LoginResult struct {
 
 	// Session is the session the login opened.
 	Session *session.Session
+
+	// TokenType is how Token is presented: TokenTypeDPoP when the login
+	// carried a DPoP proof and Token is bound to its key, TokenTypeBearer
+	// otherwise. A responder writes it as its token response's token_type.
+	TokenType TokenType
 }
 
 // LoginResponder writes the response to a successful login.
 //
 // With none supplied, the library writes a JSON document carrying the access
-// token, an empty refresh token field and the session's idle expiry; a
+// token, its token_type, an empty refresh token field and the session's idle
+// expiry; a
 // consumer replaces that whole response with WithLoginResponder.
 //
 // It is called instead of the downstream handler, because a login is the
@@ -328,6 +334,15 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 	now := l.now()
 
+	// The proof is judged before the password, so a bad one is refused as a
+	// malformed request is, counted nowhere, and never as a failed password:
+	// it cannot lock the account. With DPoP required, a login without one is
+	// refused before any account is looked up.
+	binding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
+	if err != nil {
+		return err
+	}
+
 	verifyCtx, upgrade := requestRehash(ctx, l.rehash)
 
 	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now)
@@ -356,6 +371,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		enforced:          l.enforced,
 		challengeMethods:  l.challengeMethods,
 		cancelHeld:        l.cancelHeld,
+		binding:           binding,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
 
@@ -373,7 +389,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// A login is answered here, not by the application's handler: the handler
 	// behind the chain serves the application, and there is no application
 	// route for the library's own endpoint.
-	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session})
+	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session, TokenType: tokenTypeOf(ex.Session)})
 }
 
 // attemptPassword is the password order a login and a password re-proof both
@@ -766,14 +782,14 @@ func judgeBehindSecondFactor(
 }
 
 // writeLoginResult is the response a login succeeds with when the consumer
-// supplies none: a JSON document carrying the access token, an empty refresh
-// token field and the session's idle expiry.
+// supplies none: a JSON document carrying the access token, its token_type,
+// an empty refresh token field and the session's idle expiry.
 //
 // The refresh token field is present and empty rather than absent, so a client
 // written against this document does not have to be changed when a capability
 // that issues refresh tokens starts filling it.
 func writeLoginResult(ex *Exchange, result LoginResult) error {
-	body := loginDocument{AccessToken: result.Token}
+	body := loginDocument{AccessToken: result.Token, TokenType: result.TokenType}
 	if result.Session != nil {
 		body.ValidUntil = result.Session.IdleExpiresAt
 	}
@@ -812,6 +828,10 @@ type loginDocument struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ValidUntil   time.Time `json:"valid_until"`
+
+	// TokenType is the access token's type, DPoP or Bearer (RFC 9449
+	// section 5), left out when the writer did not know it.
+	TokenType TokenType `json:"token_type,omitempty"`
 }
 
 // LoginFields are the fields a login request carried, as WithLoginLifetime's

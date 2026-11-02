@@ -85,6 +85,13 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
+	// Before the response is checked, so a bad proof leaves the challenge's
+	// attempts and the code unspent.
+	binding, err := reauthBinding(ex, s)
+	if err != nil {
+		return err
+	}
+
 	// Steps 4 to 8.
 	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s); err != nil {
 		return err
@@ -94,7 +101,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	return i.resolve(ex, s, method)
+	return i.resolve(ex, s, method, binding)
 }
 
 // secondFactorPhase applies the post-authentication phase to a verified

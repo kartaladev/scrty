@@ -68,6 +68,11 @@ type MagicLinkResult struct {
 	// Session is the session the redemption opened.
 	Session *session.Session
 
+	// TokenType is how Token is presented: TokenTypeDPoP when the
+	// redemption carried a DPoP proof and Token is bound to its key,
+	// TokenTypeBearer otherwise.
+	TokenType TokenType
+
 	// Next is the resolved redirect target: an allowlisted entry, or "/". It
 	// is never the target the caller submitted, so a responder that redirects
 	// to it cannot send a caller somewhere the allowlist refused.
@@ -196,10 +201,16 @@ func (i *magicLinkInterceptor) check(c *config, option string) error {
 		if err := checkTokenGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
 			return err
 		}
-	} else if i.tokens == nil {
-		return newConfigError("%s needs a token generator: a redeemed link opens a session, "+
-			"and a caller with no credential for it could not use it (WithMagicLinkTokens)",
-			option)
+	} else {
+		if i.tokens == nil {
+			return newConfigError("%s needs a token generator: a redeemed link opens a session, "+
+				"and a caller with no credential for it could not use it (WithMagicLinkTokens)",
+				option)
+		}
+
+		if err := checkBindingGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
+			return err
+		}
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
@@ -402,6 +413,19 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		return magiclink.ErrInvalidLink
 	}
 
+	// The proof is judged before the link is redeemed, so a bad one leaves
+	// the link unspent. An invalid proof is charged against the source as a
+	// redemption carrying no usable token is; the nonce round trip and a
+	// failure of the replay store or nonce cipher are not.
+	binding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
+	if err != nil {
+		if chargesProofRefusal(err) {
+			recordSourceFailure(ctx, i.guard, src)
+		}
+
+		return err
+	}
+
 	token, next := i.readConsume(ex.Request)
 
 	// Read only when the manager binds links. Presenting a cookie to a
@@ -427,6 +451,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		binding:           binding,
 	}, out)
 
 	// The policy check runs first and the consumer's own follow, in the order
@@ -487,11 +512,11 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	// submitted: a responder that redirects to it cannot send a caller
 	// somewhere the allowlist refused, which is the whole reason the allowlist
 	// exists.
-	return i.respond(ex, MagicLinkResult{Token: tok, Session: ex.Session, Next: next})
+	return i.respond(ex, MagicLinkResult{Token: tok, Session: ex.Session, Next: next, TokenType: tokenTypeOf(ex.Session)})
 }
 
 // writeMagicLinkResult is the response a redemption succeeds with when the
-// consumer supplies no responder: the same three members a form login answers
+// consumer supplies no responder: the same members a form login answers
 // with, so a client that already reads one reads the other, plus the redirect
 // target the allowlist settled on.
 //
@@ -501,7 +526,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 // which target survived the allowlist.
 func writeMagicLinkResult(ex *Exchange, result MagicLinkResult) error {
 	body := magicLinkDocument{
-		loginDocument: loginDocument{AccessToken: result.Token},
+		loginDocument: loginDocument{AccessToken: result.Token, TokenType: result.TokenType},
 		Next:          result.Next,
 	}
 	if result.Session != nil {

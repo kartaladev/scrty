@@ -120,6 +120,10 @@ type Claims struct {
 	tok     jwt.Token
 	subject string
 	id      string
+
+	// cnf is the confirmation claim, read once at verification, or reported
+	// by a consumer's Verifier through NewClaimsWithConfirmation.
+	cnf Confirmation
 }
 
 // NewClaims returns the Claims a consumer's own Verifier reports for a token

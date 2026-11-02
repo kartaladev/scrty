@@ -37,6 +37,19 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		return oidc.ErrInvalidHandoff
 	}
 
+	// The proof is judged before the code is redeemed, so a bad one leaves
+	// the code unspent. An invalid proof is counted against the source as a
+	// request carrying no code is; the nonce round trip and a failure of the
+	// replay store or nonce cipher are not.
+	binding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
+	if err != nil {
+		if chargesProofRefusal(err) {
+			recordSourceFailure(ctx, i.guard, src)
+		}
+
+		return err
+	}
+
 	// The check mints the assurance evidence from the candidate the redeemer
 	// hands it, which carries the record the callback wrote from the verified
 	// ID token. Nothing in this request reaches it.
@@ -55,6 +68,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		binding:           binding,
 	}, out)
 
 	// One check, as the redeemer has always been handed: the refusal check,
@@ -144,8 +158,10 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// destination the client asked for when the login started, before any
 	// allowlist looked at it.
 	return writeSuccessDocument(ex, oidcHandoffDocument{
-		loginDocument: loginDocument{AccessToken: tok, ValidUntil: ex.Session.IdleExpiresAt},
-		Next:          i.redirects.Resolve(res.Next),
+		loginDocument: loginDocument{
+			AccessToken: tok, ValidUntil: ex.Session.IdleExpiresAt, TokenType: tokenTypeOf(ex.Session),
+		},
+		Next: i.redirects.Resolve(res.Next),
 	})
 }
 

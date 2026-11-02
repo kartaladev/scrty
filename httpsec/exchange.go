@@ -30,6 +30,16 @@ type Request interface {
 	Method() string
 	Path() string
 
+	// EscapedPath is the request path as the client sent it, percent-encoding
+	// intact: "/api/ord%65rs" stays "/api/ord%65rs", where Path decodes it to
+	// "/api/orders". An integration reads it from the request line itself,
+	// never decoded and re-encoded.
+	//
+	// DPoP (EnableDPoP) compares a proof's htu against it, so a proof made for
+	// one spelling of a path is not accepted for another that decodes to the
+	// same path.
+	EscapedPath() string
+
 	// Header returns the value of the header name: its first line when the
 	// request carries it more than once.
 	Header(name string) string
@@ -176,6 +186,13 @@ type Exchange struct {
 	// bearer alone. The signed-token bearer has no source guard, so it leaves
 	// it nil and nothing is charged.
 	chargeRenewal func(ctx context.Context)
+
+	// admitRenewal judges the session a late renewal loads, as the bearer
+	// that let it through would have judged a session it loaded: its key
+	// binding against the credential and the proof presented, the proof then
+	// recorded. It is set with renewal by the resolution core, and nil when
+	// the bearer has nothing to judge.
+	admitRenewal func(ex *Exchange, s *session.Session) error
 
 	ctx context.Context
 }

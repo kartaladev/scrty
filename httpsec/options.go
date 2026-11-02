@@ -143,6 +143,14 @@ type config struct {
 	// generator.
 	sessionBearer bool
 
+	// bindingVerifiers names the enabled features that verify bound
+	// credentials: the option names of the built-ins that check a token's
+	// binding to a DPoP key. EnableDPoP's construction check reads it once
+	// every option has applied, so the order of options does not matter. It is
+	// internal on purpose: every feature that can join it is a built-in option
+	// of this package.
+	bindingVerifiers []string
+
 	// renewal is the renewal endpoint EnableSessionRenewal registered, and nil
 	// while it is off. The bearers' resolution core reads it to let a late
 	// renewal through to it alone (sessionResolver.renewal).
@@ -205,6 +213,10 @@ type config struct {
 
 	// httpsDeployment is WithHTTPSDeployment's declaration.
 	httpsDeployment bool
+
+	// dpop is the proof verifier EnableDPoP built, and nil without it. Both
+	// bearer modes and every issuing endpoint read it.
+	dpop *dpopVerifier
 
 	// dpopEnabled is set by the option that switches on DPoP-bound tokens. The
 	// CORS layer reads it when the chain is built, to allow the DPoP request
@@ -594,6 +606,7 @@ func (c *config) build() (*Chain, error) {
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          chain.enforced,
 		now:               c.now,
+		dpop:              c.dpop,
 	}
 
 	// The built-ins are wired last, because each of them reads settings — the
