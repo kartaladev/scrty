@@ -51,7 +51,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [x] 5.3 Implement the token layer as D6 settles it (a token stored on the sign-in by default, behind the replaceable `CSRFTokens` port with `WithCSRFTokens`, read through `CSRFToken(ctx)`), test-first: missing, malformed, another sign-in's token, constant-time comparison, a token surviving renewal, a token refused after a new sign-in, a sign-in holding no token, a bearer-only request, and a consumer's token source replacing the default. Verify: `go test -run 'TestCSRF_Token' -count=1 ./httpsec/`.
 - [x] 5.4 Refuse construction with cookie authentication and no CSRF protection unless `WithoutCSRFProtection()` is given, test-first. Verify: `go test -run 'TestCSRF_RequiredWithCookies' -count=1 ./httpsec/`.
 - [ ] 5.5 Add exact method-and-path exemptions and the default, removable back-channel logout exemption, test-first, including the neighbouring paths (trailing slash, case, dot segments), another method on an exempt path, and refusing an exemption without a method or of `/`. Verify: `go test -run 'TestCSRF_Exemptions' -count=1 ./httpsec/`.
-- [ ] 5.6 Register `ErrCrossSiteRequest` at 403, and run the CSRF scenarios, including the re-proof and session-management endpoints, on all three adapters, test-first. Verify: `go test -run 'TestStatusForError' ./httpsec/` and `go test -run 'TestCSRF' ./...` in the `test` module.
+- [ ] 5.6 Register `ErrCrossSiteRequest` at 403, and run the CSRF scenarios, including the re-proof and session-management endpoints, on all three adapters, test-first. Verify: `go test -run 'TestStatusForError' ./httpsec/` and `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/csrf' ./...` in the `test` module.
 - [ ] 5.7 Godoc the options with their defaults, and document the token accessor and the exemption rules in the README. Verify: `go doc ./httpsec EnableCSRFProtection` names each default.
 
 ## 6. Sessions: listing, metadata and binding (D12)
@@ -75,7 +75,12 @@ Every implementation task is test-first: write the failing test, run it and conf
 ## 8. Token confirmation claim and DPoP (D8)
 
 - [ ] 8.1 Add the `cnf` claim to issuance and verification, test-first: `jkt`, `x5t#S256`, none, both (refused at issue), a malformed thumbprint, and a malformed claim at verification. Verify: `go test -run 'TestGenerator_Confirmation|TestVerifier_Confirmation' -count=1 ./token/...`.
-- [ ] 8.2 Add `EnableDPoP` with its construction rules (no bearer mode, enabled twice) and its defaults, test-first, including "Not enabled" passing the `DPoP` scheme through. Verify: `go test -run 'TestDPoP_Construction' -count=1 ./httpsec/`.
+- [ ] 8.2 Add `EnableDPoP` with its construction rules and its defaults, test-first. The rules are D8's as amended on 2026-11-02:
+  - nothing on the chain verifies bound credentials → refused. The check reads an internal set of verifying features, which holds the two bearer modes in this change;
+  - one bearer mode alone → built;
+  - enabled twice → refused.
+
+  Include "Not enabled" passing the `DPoP` scheme through. Verify: `go test -run 'TestDPoP_Construction' -count=1 ./httpsec/`.
 - [ ] 8.3 Implement proof verification in the order D8 gives, as a table of valid and broken proofs signed with jwx v4, test-first: size bound, two headers, `typ`, `none` and `HS256`, a private `jwk`, a key type that does not fit, signature, `htm`, `htu` with case, default port and query, a future and a stale `iat`, `ath` present, absent and for another token. Verify: `go test -run 'TestDPoP_Proof' -count=1 ./httpsec/`.
 - [ ] 8.4 Add the replay port (atomic insert-if-absent, keyed by `jti` and thumbprint, `jti` at most 256 bytes) with the in-memory default, recording only after every other check, a store failure as a dependency failure and a hang-up as the context's error, test-first, including the concurrent replay. Verify: `go test -run 'TestDPoP_Replay' -count=1 -race ./httpsec/`.
 - [ ] 8.5 Accept the `DPoP` scheme in the signed-bearer and session-reference interceptors, refuse bound tokens as `Bearer`, refuse a proof from another key, refuse a `cnf` the chain cannot honour, and add `Require`, test-first. Verify: `go test -run 'TestDPoP_Bearer' -count=1 ./httpsec/`.
