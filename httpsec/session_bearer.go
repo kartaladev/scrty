@@ -165,7 +165,7 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		ctx := ex.Context()
 		if err := admitBinding(ctx, b.dpop, proof,
 			keyBinding{jkt: s.KeyBinding.JKT, x5tS256: s.KeyBinding.X5TS256}); err != nil {
-			return err
+			return refusedReference(err)
 		}
 
 		return recordProof(ctx, b.dpop, proof)
@@ -400,4 +400,17 @@ func WithSessionBearerLimiter(l ratelimit.Limiter) SessionBearerOption {
 
 		return nil
 	}
+}
+
+// refusedReference is a binding refusal of a session reference that loaded:
+// a valid credential presented by the wrong sender (as Bearer when it is
+// bound, or with another key's proof). It also matches
+// ErrAuthenticationRequired, so it is charged to the source as any refused
+// reference is, and cannot be told apart from a missing session.
+func refusedReference(err error) error {
+	if errors.Is(err, ErrAuthenticationRequired) {
+		return err
+	}
+
+	return errors.Join(ErrAuthenticationRequired, err)
 }

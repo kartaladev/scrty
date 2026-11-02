@@ -187,7 +187,7 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 	// spent; a held one creates no session until its finish.
 	var issued *issuedSession
 	if hold <= 0 {
-		if issued, err = r.issueSession(ctx, v.details, now); err != nil {
+		if issued, err = r.issueSession(ctx, v.details, now, req.KeyBinding); err != nil {
 			return nil, err
 		}
 	}
@@ -234,15 +234,23 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 }
 
 // issueSession builds the recovery-pending session for the recovered user,
-// recovered at now, and issues its credential through the issuer. Nothing is
+// recovered at now and bound to binding unless it is the zero value, and
+// issues its credential through the issuer. Nothing is
 // stored: the session loads nothing until complete commits it. ctx is the
 // caller's own, so an issuer bound to it fails when the client has left, and
 // that failure spends nothing either.
 //
 // An issuing failure is logged and returned behind fixed text, a dependency
 // failure: at ERROR, or at DEBUG when ctx's own end cut it short.
-func (r *Recoverer) issueSession(ctx context.Context, details *identity.Details, now time.Time) (*issuedSession, error) {
-	p, err := r.sessions.Prepare(details.ID, session.WithFirstFactor(factor.Recovery))
+func (r *Recoverer) issueSession(
+	ctx context.Context, details *identity.Details, now time.Time, binding session.KeyBinding,
+) (*issuedSession, error) {
+	opts := []session.CreateOption{session.WithFirstFactor(factor.Recovery)}
+	if !binding.IsZero() {
+		opts = append(opts, session.WithKeyBinding(binding))
+	}
+
+	p, err := r.sessions.Prepare(details.ID, opts...)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-build", err)...)
 

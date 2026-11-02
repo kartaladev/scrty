@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"context"
+	"errors"
 	"mime"
 	"strings"
 	"time"
@@ -44,18 +45,43 @@ func policyDenyReason(d policy.Decision) error { return d.Reason }
 type credentialIssuer func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error)
 
 // signedTokens issues a token from g naming s through its jti, which is how a
-// later signed bearer request finds the session. The generator is the
-// consumer's, so its error comes back behind fixed text, marked as an issuing
-// failure (issuingFailure).
+// later signed bearer request finds the session. A token for a bound session
+// carries the session's binding as its cnf claim, so the two never differ.
+// The generator is the consumer's, so its error comes back behind fixed text,
+// marked as an issuing failure (issuingFailure).
 func signedTokens(g token.Generator) credentialIssuer {
 	return func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error) {
-		tok, err := g.Generate(ctx, s.ID, p)
+		tok, err := generateFor(ctx, g, s, p)
 		if err != nil {
 			return "", issuingFailure(err, msgTokenNotIssued)
 		}
 
 		return tok, nil
 	}
+}
+
+// errBindingNotIssuable is the cause of a token that could not be issued for
+// a bound session because the generator cannot bind: it would otherwise be
+// issued unbound for a session bound to a key. Chain assembly refuses such a
+// generator while a binding feature is on, so it is reached only by a session
+// bound while one was.
+var errBindingNotIssuable = errors.New("httpsec: the token generator cannot bind a token to the session's key")
+
+// generateFor issues g's token for s, held by p: bound to s's key when s is
+// bound (token.WithConfirmation), and through Generate when it is not.
+func generateFor(ctx context.Context, g token.Generator, s *session.Session, p *identity.Principal) (string, error) {
+	if s.KeyBinding.IsZero() {
+		return g.Generate(ctx, s.ID, p)
+	}
+
+	binding, ok := g.(token.ConfirmingGenerator)
+	if !ok {
+		return "", errBindingNotIssuable
+	}
+
+	return binding.GenerateWith(ctx, s.ID, p, token.WithConfirmation(token.Confirmation{
+		JKT: s.KeyBinding.JKT, X5TS256: s.KeyBinding.X5TS256,
+	}))
 }
 
 // issueFailure marks a failure of the chain's credential issuer. It is a
@@ -146,6 +172,11 @@ type loginTailDeps struct {
 	// calls it before anything else, ahead of the policy phase; a redemption
 	// calls it once its credential is spent (see completeLogin).
 	cancelHeld heldRecoveryCanceller
+
+	// binding is the key the sign-in is bound to, from the DPoP proof the
+	// request carried (issuingBinding), and the zero value for an unbound
+	// one. The session is built with it, so its credential carries it too.
+	binding session.KeyBinding
 }
 
 // heldRecoveryCanceller cancels every pending recovery of a user: the
@@ -477,8 +508,13 @@ func prepareLogin(
 	// them can undo it, and before any challenge mark: a challenge the phase
 	// still raises, such as a password change, is marked on the satisfied
 	// session and refused as for any login.
-	create := make([]session.CreateOption, 0, len(opts)+3)
+	create := make([]session.CreateOption, 0, len(opts)+4)
 	create = append(create, opts...)
+	if !deps.binding.IsZero() {
+		// After the caller's options, so none of them can unbind a sign-in
+		// whose proof the endpoint verified.
+		create = append(create, session.WithKeyBinding(deps.binding))
+	}
 	if ev := in.FederatedAssurance; ev.Asserted() {
 		create = append(create, session.WithFederatedAssurance(ev.AMR(), ev.ACR()))
 	}

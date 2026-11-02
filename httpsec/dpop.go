@@ -23,6 +23,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
 
@@ -33,6 +34,30 @@ import (
 // a replayed proof. It maps to 401. Its text names no check, token, proof,
 // key or jti.
 var ErrInvalidDPoPProof = errors.New("httpsec: invalid DPoP proof")
+
+// TokenType is the type of an access credential an issuing endpoint hands
+// out, as a token response's token_type names it (RFC 9449 section 5): DPoP
+// for one bound to the client's DPoP key, which the client presents under
+// the DPoP scheme with a proof, and Bearer for any other.
+type TokenType string
+
+// The token types an issuing endpoint reports.
+const (
+	TokenTypeBearer TokenType = "Bearer"
+	TokenTypeDPoP   TokenType = "DPoP"
+)
+
+// tokenTypeOf is the type of the credential issued for s: TokenTypeDPoP when
+// s is bound to a DPoP key, TokenTypeBearer otherwise. A session bound to a
+// client certificate issues a Bearer token, presented over that connection
+// (RFC 8705).
+func tokenTypeOf(s *session.Session) TokenType {
+	if s != nil && s.KeyBinding.JKT != "" {
+		return TokenTypeDPoP
+	}
+
+	return TokenTypeBearer
+}
 
 // The defaults EnableDPoP fills into a DPoP left at its zero value.
 const (
@@ -49,9 +74,10 @@ const (
 // every request, possession of the key its token is bound to. Every field
 // left at its zero value takes the default its comment names.
 type DPoP struct {
-	// Require refuses an unbound token, and (once the issuing endpoints honour
-	// it) a sign-in without a proof. Default: false, so existing bearer
-	// clients keep working while DPoP clients opt in by sending proofs.
+	// Require refuses an unbound token, and a request to an issuing endpoint
+	// that carries no proof, before any account is looked up. Default: false,
+	// so existing bearer clients keep working while DPoP clients opt in by
+	// sending proofs.
 	Require bool
 
 	// ProofMaxAge is how far a proof's iat may lie from the chain's clock,
@@ -94,7 +120,12 @@ const optionDPoP = "EnableDPoP"
 
 // EnableDPoP turns on DPoP for the whole chain: both bearer modes accept the
 // DPoP authorization scheme with a proof, and refuse a bound token without
-// one.
+// one. Every issuing endpoint (login, second-factor verification, passkey
+// login, magic link, OIDC handoff, recovery, re-authentication, renewal)
+// verifies a request's proof before it spends anything, binds the sign-in it
+// creates and the token it issues to the proof's key, and tells its responder
+// the token type (TokenType). A renewal never binds; a re-authentication binds
+// an unbound session and keeps a bound one.
 //
 // Defaults: accepted, not required; a 60-second proof lifetime; ES256; an
 // 8 KiB proof bound; an in-memory replay store; no server nonces; the public
@@ -319,6 +350,7 @@ type proofClaims struct {
 // any part of the proof, the token or the key.
 const (
 	reasonProofCount     = "header-count"
+	reasonProofMissing   = "missing"
 	reasonProofSize      = "size"
 	reasonProofEncoding  = "encoding"
 	reasonProofType      = "typ"
@@ -713,4 +745,51 @@ func recordProof(ctx context.Context, v *dpopVerifier, proof *dpopProof) error {
 	}
 
 	return v.record(ctx, *proof)
+}
+
+// dpop is the chain's DPoP verifier the exchange runs under, and nil when
+// DPoP is off or the exchange runs through no chain.
+func (ex *Exchange) dpop() *dpopVerifier {
+	if ex.perRequest == nil {
+		return nil
+	}
+
+	return ex.perRequest.dpop
+}
+
+// issuingBinding verifies the proof a request to an issuing endpoint carries,
+// and returns the binding the session and credential it issues take: the
+// proof's key, or none when the request carries no proof. It is run among
+// the endpoint's checks, before anything is spent, so a refused proof spends
+// no link, code, attempt or recovery proof.
+//
+// The proof carries no ath: the credential it binds does not exist yet. It is
+// recorded at once, so a replayed proof is refused before anything is spent
+// too. With DPoP off (v nil) it binds nothing and checks nothing. With DPoP
+// required a request without a proof is refused. Every refusal is
+// ErrInvalidDPoPProof; a replay store that fails is a dependency failure, and
+// one the caller's hang-up cut short fails with the context's error.
+func issuingBinding(ctx context.Context, v *dpopVerifier, r Request) (session.KeyBinding, error) {
+	if v == nil {
+		return session.KeyBinding{}, nil
+	}
+
+	if len(r.HeaderValues(dpopHeader)) == 0 {
+		if v.cfg.Require {
+			return session.KeyBinding{}, v.refuse(ctx, reasonProofMissing)
+		}
+
+		return session.KeyBinding{}, nil
+	}
+
+	p, err := v.verify(ctx, r, "")
+	if err != nil {
+		return session.KeyBinding{}, err
+	}
+
+	if err := v.record(ctx, p); err != nil {
+		return session.KeyBinding{}, err
+	}
+
+	return session.KeyBinding{JKT: p.jkt}, nil
 }

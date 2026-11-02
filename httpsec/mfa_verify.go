@@ -31,6 +31,10 @@ type MFAResult struct {
 
 	// Session is the session, carrying its new handle.
 	Session *session.Session
+
+	// TokenType is how Token is presented: TokenTypeDPoP when the session is
+	// bound to a DPoP key, TokenTypeBearer otherwise.
+	TokenType TokenType
 }
 
 // MFAResponder writes the response to a successful second factor.
@@ -563,7 +567,7 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 		return &ChallengeError{Kind: raised, Session: rotated, Token: tok}
 	}
 
-	return i.respond(ex, MFAResult{Token: tok, Session: rotated})
+	return i.respond(ex, MFAResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
 }
 
 // rotationRefusal is what a failed strict rotation is refused with at the
@@ -599,7 +603,7 @@ func rotationRefusal(err error) error {
 // this, and the empty refresh token field carries the same forward-
 // compatibility promise it does there.
 func writeMFAResult(ex *Exchange, result MFAResult) error {
-	body := loginDocument{AccessToken: result.Token}
+	body := loginDocument{AccessToken: result.Token, TokenType: result.TokenType}
 	if result.Session != nil {
 		body.ValidUntil = result.Session.IdleExpiresAt
 	}

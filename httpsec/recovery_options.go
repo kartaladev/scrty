@@ -117,6 +117,11 @@ type RecoveryResult struct {
 	// the user's new saved codes when a saved code was spent, the count of
 	// saved codes the user holds, and the user's details.
 	Recovery *recovery.Result
+
+	// TokenType is how Token is presented: TokenTypeDPoP when the recovery
+	// carried a DPoP proof and Token is bound to its key, TokenTypeBearer
+	// otherwise.
+	TokenType TokenType
 }
 
 // RecoveryResponder writes the response to a completed recovery.

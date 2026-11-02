@@ -71,8 +71,8 @@ type LoginOption func(*formLogin) error
 // DefaultLoginPasswordParam from the form and then, when the form yields
 // neither and the request declares a JSON content type, from the JSON body;
 // at most DefaultLoginBodyLimit bytes of it; answering a success with a JSON
-// document carrying the access token, an empty refresh token and the session's
-// idle expiry. Every one of those is replaced by the option that names it.
+// document carrying the access token, its token type, an empty refresh token
+// and the session's idle expiry. Every one of those is replaced by the option that names it.
 //
 // Every other request passes through untouched, so enabling form login costs
 // the rest of the application nothing.
@@ -248,8 +248,9 @@ func WithLoginBodyLimit(n int64) LoginOption {
 
 // WithLoginResponder writes the success response through fn.
 //
-// Default: a JSON document carrying the access token, an empty refresh token
-// field and the session's idle expiry. fn is called instead of the downstream
+// Default: a JSON document carrying the access token, its token type
+// (LoginResult.TokenType), an empty refresh token field and the session's idle
+// expiry. fn is called instead of the downstream
 // handler, because a login is this library's own endpoint.
 //
 // A nil responder is refused: a login that succeeded and wrote nothing answers

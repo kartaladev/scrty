@@ -991,7 +991,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
-			name: "the default document carries exactly its five members",
+			name: "the default document carries exactly its six members",
 			act: func(t *testing.T, h *recoveryHarness) served {
 				return h.complete(t, recoveryForm(
 					httpsec.RecoverySavedCodeParam, h.saved(t),
@@ -1009,7 +1009,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 					keys = append(keys, k)
 				}
 				assert.ElementsMatch(t,
-					[]string{"access_token", "expires_at", "recovery_codes", "remaining", "low"}, keys)
+					[]string{"access_token", "expires_at", "recovery_codes", "remaining", "low", "token_type"}, keys)
 			},
 		},
 		{

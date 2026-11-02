@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
@@ -469,6 +471,207 @@ func TestDPoP_Bearer(t *testing.T) {
 
 			w := newDPoPBearerWorld(t)
 			tc.assert(t, tc.run(t, w, w.chain(tc.mode, tc.d)))
+		})
+	}
+}
+
+// TestDPoP_ReferenceBindingCharged pins that a session reference refused for
+// its binding, a valid credential presented by the wrong sender, is charged
+// to its source like any refused reference and reads as a missing session,
+// while a proof the interceptor refuses on its own is not charged.
+func TestDPoP_ReferenceBindingCharged(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+	thief := newDPoPKey(t, elliptic.P256())
+
+	proofFor := func(t *testing.T, k dpopKey, credential string) string {
+		t.Helper()
+
+		return k.validProof("j-1").with(map[string]any{"ath": tokenHash(credential)}).sign(t)
+	}
+
+	type testCase struct {
+		name string
+		// charged is how many failures the source limiter records.
+		charged int
+		run     func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served
+		assert  func(t *testing.T, out served)
+	}
+
+	wrongSender := func(t *testing.T, out served) {
+		t.Helper()
+
+		assert.False(t, out.handlerRan)
+		require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+		require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "it reads as a missing session")
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+	}
+
+	cases := []testCase{
+		{
+			name: "a bound reference as Bearer", charged: 1,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.session(key.jkt), "")
+			},
+			assert: wrongSender,
+		},
+		{
+			name: "a bound reference with another key's proof", charged: 1,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+
+				return w.present(c, "DPoP", sid, proofFor(t, thief, sid))
+			},
+			assert: wrongSender,
+		},
+		{
+			name: "a proof whose signature does not verify", charged: 0,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+				parts := key.validProof("j-1").with(map[string]any{"ath": tokenHash(sid)})
+				parts.signKey = thief.priv
+
+				return w.present(c, "DPoP", sid, parts.sign(t))
+			},
+			assert: func(t *testing.T, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+				assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			limiter := NewMockLimiter(gomock.NewController(t))
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).Times(tc.charged)
+
+			w := newDPoPBearerWorld(t)
+			chain, err := httpsec.New(httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+				httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: w.sessions, Users: w.users},
+					httpsec.WithSessionBearerLimiter(limiter)),
+				httpsec.EnableDPoP(httpsec.DPoP{}))
+			require.NoError(t, err)
+
+			tc.assert(t, tc.run(t, w, chain))
+		})
+	}
+}
+
+func TestDPoP_PublicURL(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+
+	proxies := httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+		Headers: httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto,
+			httpsec.ForwardedHost("app.example.com")),
+	})
+
+	// forwarded is a GET of /api/orders the app receives from trusted proxy
+	// 10.20.0.2 at http://10.20.1.5:8080, forwarded for https and
+	// app.example.com.
+	forwarded := func(t *testing.T) *http.Request {
+		t.Helper()
+
+		req := dpopRequest(t, http.MethodGet, "http://10.20.1.5:8080/api/orders")
+		req.RemoteAddr = "10.20.0.2:41000"
+		req.Header.Set("X-Forwarded-For", "198.51.100.7")
+		req.Header.Set("X-Forwarded-Proto", "https")
+		req.Header.Set("X-Forwarded-Host", "app.example.com")
+
+		return req
+	}
+	direct := func(t *testing.T) *http.Request {
+		t.Helper()
+
+		return dpopRequest(t, http.MethodGet, "http://example.com/api/orders")
+	}
+
+	type testCase struct {
+		name    string
+		opts    []httpsec.Option
+		d       httpsec.DPoP
+		request func(t *testing.T) *http.Request
+		// htu is what the client signs its proof for.
+		htu    string
+		assert func(t *testing.T, out served)
+	}
+
+	accepted := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.True(t, out.handlerRan)
+	}
+	refused := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+		assert.False(t, out.handlerRan)
+	}
+
+	cases := []testCase{
+		{
+			name: "behind a trusted proxy, the public URL it forwarded",
+			opts: []httpsec.Option{proxies}, request: forwarded,
+			htu: "https://app.example.com/api/orders", assert: accepted,
+		},
+		{
+			name: "behind a trusted proxy, the URL the app received",
+			opts: []httpsec.Option{proxies}, request: forwarded,
+			htu: "http://10.20.1.5:8080/api/orders", assert: refused,
+		},
+		{
+			name:    "without trusting the proxy, the forwarded URL",
+			request: forwarded,
+			htu:     "https://app.example.com/api/orders", assert: refused,
+		},
+		{
+			name: "a configured public URL",
+			d:    httpsec.DPoP{PublicURL: "https://api.example.com"}, request: direct,
+			htu: "https://api.example.com/api/orders", assert: accepted,
+		},
+		{
+			name: "a configured public URL with a path prefix",
+			d:    httpsec.DPoP{PublicURL: "https://api.example.com/v1/"}, request: direct,
+			htu: "https://api.example.com/v1/api/orders", assert: accepted,
+		},
+		{
+			name: "a configured public URL overrides the resolved one",
+			opts: []httpsec.Option{proxies}, d: httpsec.DPoP{PublicURL: "https://api.example.com"}, request: forwarded,
+			htu: "https://app.example.com/api/orders", assert: refused,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+
+			opts := append([]httpsec.Option{
+				httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: w.gen, Sessions: w.sessions, Users: w.users}),
+				httpsec.EnableDPoP(tc.d),
+			}, tc.opts...)
+			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			tok := w.token(token.Confirmation{JKT: key.jkt})
+			req := tc.request(t)
+			req.Header.Set("Authorization", "DPoP "+tok)
+			req.Header.Set("DPoP", key.validProof("j-1").with(map[string]any{
+				"htu": tc.htu, "ath": tokenHash(tok),
+			}).sign(t))
+
+			tc.assert(t, serve(t, chain, req))
 		})
 	}
 }

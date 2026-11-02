@@ -75,6 +75,13 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return err
 	}
 
+	// Before the password is checked, so a bad proof is never a failed
+	// password and spends nothing.
+	binding, err := reauthBinding(ex, s)
+	if err != nil {
+		return err
+	}
+
 	principal := ex.Authentication.Principal
 	if principal.ID != s.UserID {
 		return authenticate.ErrAuthenticationFailed
@@ -125,7 +132,7 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	l.resetFailures(ctx, username)
 
-	return i.resolve(ex, s, nil)
+	return i.resolve(ex, s, nil, binding)
 }
 
 // postAuthenticate applies the post-authentication phase to a proved

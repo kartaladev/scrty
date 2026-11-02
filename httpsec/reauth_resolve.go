@@ -38,9 +38,14 @@ import (
 // session no longer held is ErrAuthenticationRequired. A spent TOTP step or
 // re-proof challenge stays spent.
 //
+// binding is the key the re-proof's own DPoP proof named (reauthBinding),
+// the zero value when it named none. A re-authentication is a fresh proof of
+// the user's factor, so it binds an unbound session's successor to it
+// (session.WithReauthenticationBinding); a bound session keeps its own.
+//
 // The rotated session is published on the exchange and its context, and the
 // responder answers with it and its credential.
-func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa.Method) error {
+func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa.Method, binding session.KeyBinding) error {
 	now := i.now()
 
 	reproved := *s
@@ -62,7 +67,7 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 		issueErr = err
 
 		return tok, err
-	})
+	}, reauthRotation(binding)...)
 	if issueErr != nil {
 		return issueErr
 	}
@@ -73,5 +78,29 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
 
-	return i.respond(ex, ReauthenticationResult{Token: tok, Session: rotated})
+	return i.respond(ex, ReauthenticationResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
+}
+
+// reauthBinding is the key a re-proof binds its successor to: the key of the
+// DPoP proof the request carries when the session is unbound, verified among
+// the re-proof's checks, before anything is spent (issuingBinding). A bound
+// session reached here under the DPoP scheme with a proof from its own key,
+// which the bearer verified and recorded, so it keeps its binding and nothing
+// more is read. The zero value binds nothing.
+func reauthBinding(ex *Exchange, s *session.Session) (session.KeyBinding, error) {
+	if !s.KeyBinding.IsZero() {
+		return session.KeyBinding{}, nil
+	}
+
+	return issuingBinding(ex.Context(), ex.dpop(), ex.Request)
+}
+
+// reauthRotation is the rotation option binding asks for: none for the zero
+// value, which carries the session's own binding over.
+func reauthRotation(binding session.KeyBinding) []session.RotateOption {
+	if binding.IsZero() {
+		return nil
+	}
+
+	return []session.RotateOption{session.WithReauthenticationBinding(binding)}
 }

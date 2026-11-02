@@ -591,6 +591,7 @@ func (c *config) build() (*Chain, error) {
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          chain.enforced,
 		now:               c.now,
+		dpop:              c.dpop,
 	}
 
 	// The built-ins are wired last, because each of them reads settings — the

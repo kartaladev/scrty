@@ -187,6 +187,13 @@ type Exchange struct {
 	// it nil and nothing is charged.
 	chargeRenewal func(ctx context.Context)
 
+	// admitRenewal judges the session a late renewal loads, as the bearer
+	// that let it through would have judged a session it loaded: its key
+	// binding against the credential and the proof presented, the proof then
+	// recorded. It is set with renewal by the resolution core, and nil when
+	// the bearer has nothing to judge.
+	admitRenewal func(ex *Exchange, s *session.Session) error
+
 	ctx context.Context
 }
 

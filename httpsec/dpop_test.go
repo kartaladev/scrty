@@ -363,6 +363,12 @@ func TestDPoP_Construction(t *testing.T) {
 
 				return h.options(t)
 			}),
+		refusing("with session renewal and a generator that cannot bind", "SessionRenewalDeps.Tokens",
+			func(t *testing.T, g token.Generator) []httpsec.Option {
+				return []httpsec.Option{httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{
+					Users: NewMockUserLoader(gomock.NewController(t)), Tokens: g,
+				})}
+			}),
 		{name: "with the signed bearer", opts: dpop(httpsec.DPoP{}), assert: built},
 		{
 			name:     "with the session-reference bearer",
@@ -548,4 +554,64 @@ func TestDPoP_NotEnabled(t *testing.T) {
 	require.Error(t, out.err)
 	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 	assert.False(t, strings.Contains(out.err.Error(), "some-token"))
+}
+
+// TestDPoP_CORSPreflight pins that EnableDPoP itself, not a test seam, tells
+// the CORS layer to allow the DPoP request header, in either option order.
+func TestDPoP_CORSPreflight(t *testing.T) {
+	t.Parallel()
+
+	policy := httpsec.CORSPolicy{AllowedOrigins: []string{allowedOrigin}, AllowedHeaders: []string{"Authorization"}}
+
+	type testCase struct {
+		name   string
+		opts   []httpsec.Option
+		assert func(t *testing.T, run corsRun)
+	}
+
+	cases := []testCase{
+		{
+			name: "DPoP enabled after CORS",
+			opts: []httpsec.Option{httpsec.EnableCORS(policy), httpsec.EnableDPoP(httpsec.DPoP{})},
+			assert: func(t *testing.T, run corsRun) {
+				assert.Equal(t, "Authorization, DPoP", run.rec.Header().Get("Access-Control-Allow-Headers"))
+			},
+		},
+		{
+			name: "DPoP enabled before CORS",
+			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{}), httpsec.EnableCORS(policy)},
+			assert: func(t *testing.T, run corsRun) {
+				assert.Equal(t, "Authorization, DPoP", run.rec.Header().Get("Access-Control-Allow-Headers"))
+			},
+		},
+		{
+			name: "DPoP not enabled",
+			opts: []httpsec.Option{httpsec.EnableCORS(policy)},
+			assert: func(t *testing.T, run corsRun) {
+				assertNoCORS(t, run.rec.Header())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(append([]httpsec.Option{httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+				Verifier: NewMockVerifier(gomock.NewController(t)),
+				Sessions: dpopSessions(t, clockwork.NewFakeClockAt(dpopNow)),
+				Users:    NewMockUserLoader(gomock.NewController(t)),
+			})}, tc.opts...)...)
+			require.NoError(t, err)
+
+			req := corsRequest(t, http.MethodOptions, "")
+			req.Header = http.Header{
+				"Origin":                         {allowedOrigin},
+				"Access-Control-Request-Method":  {"GET"},
+				"Access-Control-Request-Headers": {"authorization, dpop"},
+			}
+
+			tc.assert(t, serveCORS(t, chain, req))
+		})
+	}
 }

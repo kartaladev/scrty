@@ -74,6 +74,12 @@ type pwlDeployment struct {
 	notices  *capturingSender
 	required *requiredFlag
 
+	// jwt, when set, issues and verifies every token in place of tokens: a
+	// generator that can bind, which EnableDPoP needs. lookups counts the
+	// account lookups the user loader answers.
+	jwt     *token.JWTGenerator
+	lookups atomic.Int64
+
 	// inactive makes the user loader report the user disabled, and
 	// passwordChangedAt is the password-change time it reports.
 	inactive          atomic.Bool
@@ -174,6 +180,8 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 
 	d.users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, username string) (*identity.Details, error) {
+			d.lookups.Add(1)
+
 			if username != e2eAddress {
 				return nil, identity.ErrUserNotFound
 			}
@@ -182,6 +190,8 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 		})
 	d.users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, user identity.UserID) (*identity.Details, error) {
+			d.lookups.Add(1)
+
 			if d.loaderFails.Load() {
 				return nil, errors.New(pwlLoaderCause)
 			}
@@ -268,7 +278,15 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 		authenticate.WithPasswordEncoder(e2eEncoder(t)))
 	require.NoError(t, err)
 
-	mfaOpts := []httpsec.MFAOption{httpsec.WithMFATokens(d.tokens)}
+	var tokens interface {
+		token.Generator
+		token.Verifier
+	} = d.tokens
+	if d.jwt != nil {
+		tokens = d.jwt
+	}
+
+	mfaOpts := []httpsec.MFAOption{httpsec.WithMFATokens(tokens)}
 	if d.mfaLimiter != nil {
 		mfaOpts = append(mfaOpts, httpsec.WithMFAVerifyLimiter(d.mfaLimiter))
 	}
@@ -281,12 +299,12 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 	opts := []httpsec.Option{
 		httpsec.WithPolicyEngine(engineOf(t, policies...)),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-			Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
+			Authenticator: authn, Sessions: d.sessions, Tokens: tokens, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		}),
-		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: d.tokens, Sessions: d.sessions, Users: d.users}),
+		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: tokens, Sessions: d.sessions, Users: d.users}),
 		httpsec.EnableMFA(methods, mfaOpts...),
 		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: d.sessions, Users: d.users}, passkeyOpts...),
-		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(d.tokens)),
+		httpsec.EnableReauthentication(httpsec.WithReauthenticationTokens(tokens)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 	}
 
