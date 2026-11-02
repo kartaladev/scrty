@@ -80,6 +80,11 @@ type Chain struct {
 	// clients resolves each request's client address, host and transport
 	// security before the first interceptor runs (clientResolver.begin).
 	clients *clientResolver
+
+	// headers is the security-headers layer, and nil unless EnableSecurityHeaders
+	// enabled it. The chain applies its header step to a refusal written outside
+	// the layer's slot (see Assemble).
+	headers *securityHeaders
 }
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
@@ -196,6 +201,14 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// one resolved answer, and a forwarded host on none of the allowed
 		// hosts is refused before any of them runs.
 		if err := c.clients.begin(ex); err != nil {
+			// The one response written outside the security-headers slot: no
+			// interceptor runs for it, so the layer's headers are set here,
+			// on the exchange's writer and before a consumer's error handler
+			// sees the refusal.
+			if c.headers != nil {
+				c.headers.applyHeaders(ex.Writer, ex.Request)
+			}
+
 			return err
 		}
 

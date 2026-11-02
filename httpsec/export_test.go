@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"io"
 	"log/slog"
 	"time"
 
@@ -215,4 +216,14 @@ func ResolveClient(r Request, tp TrustedProxies, opts ...ProxyOption) (Client, i
 	res, err := p.resolve(r)
 
 	return res.client, res.parsed, err
+}
+
+// SecurityHeadersRandom replaces the security-headers layer's random source,
+// so a test can make the nonce's randomness fail or repeat.
+func SecurityHeadersRandom(r io.Reader) HeaderOption {
+	return func(l *securityHeaders) error {
+		l.random = r
+
+		return nil
+	}
 }
