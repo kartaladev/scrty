@@ -14,10 +14,13 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -354,6 +357,9 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	verifyCtx, upgrade := requestRehash(ctx, l.rehash)
 
 	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
+		func(ctx context.Context) {
+			emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Password))
+		},
 		func(ctx context.Context, src ratelimit.Source) error {
 			return l.automation.ask(ctx, ex.Request, challengeQuery{
 				flow:       ChallengeFlowFormLogin,
@@ -367,6 +373,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	if err != nil {
 		return err
 	}
+
+	// Read before the failures are cleared, and only on a request a sink
+	// watches: it decides nothing, and names the success's event.
+	afterFailures := l.hadRecentFailures(ctx, username, now)
 
 	l.resetFailures(ctx, username)
 
@@ -391,6 +401,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		cancelHeld:        l.cancelHeld,
 		csrfToken:         l.csrfToken,
 		binding:           binding,
+		afterFailures:     afterFailures,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
 
@@ -436,6 +447,7 @@ func (l *formLogin) attemptPassword(
 	clientIP, username string,
 	password []byte,
 	now time.Time,
+	refused func(ctx context.Context),
 	challenge func(ctx context.Context, src ratelimit.Source) error,
 ) (*authenticate.Authentication, error) {
 	src, err := sourceThrottled(ctx, l.guard, clientIP, l.flow, l.sampler, l.log, now)
@@ -451,7 +463,7 @@ func (l *formLogin) attemptPassword(
 
 	return l.judgePassword(ctx, username, password, now, func() {
 		recordSourceFailure(ctx, l.guard, src)
-	})
+	}, refused)
 }
 
 // authenticatePassword judges a password the way a login does: the
@@ -481,18 +493,25 @@ func (l *formLogin) authenticatePassword(
 	password []byte,
 	now time.Time,
 ) (*authenticate.Authentication, error) {
-	return l.judgePassword(ctx, username, password, now, func() {})
+	return l.judgePassword(ctx, username, password, now, func() {}, nil)
 }
 
 // judgePassword is the pre-authentication phase, a lock refused as a login
 // refuses it, then the password check, calling charge for a lock and for
 // every refused password check, and for nothing else.
+//
+// refused, when not nil, is called for a lock and for a credential the
+// authenticator refused, and never for a user store that could not answer or
+// a load the request's own hang-up ended: it is where the caller reports the
+// refusal it decided (security events), and a dependency failure or a hang-up
+// decided nothing.
 func (l *formLogin) judgePassword(
 	ctx context.Context,
 	username string,
 	password []byte,
 	now time.Time,
 	charge func(),
+	refused func(ctx context.Context),
 ) (*authenticate.Authentication, error) {
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
 		if !errors.Is(err, lockout.ErrAccountLocked) {
@@ -500,6 +519,7 @@ func (l *formLogin) judgePassword(
 		}
 
 		charge()
+		reportRefused(ctx, refused)
 
 		return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
 			identity.NewUsernamePassword(username, password), err)
@@ -508,6 +528,10 @@ func (l *formLogin) judgePassword(
 	auth, err := l.verifyPassword(ctx, username, password, now)
 	if err != nil {
 		charge()
+
+		if credentialRefused(ctx, err) {
+			reportRefused(ctx, refused)
+		}
 
 		return nil, err
 	}
@@ -544,16 +568,32 @@ func (l *formLogin) verifyPassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
-	if errors.Is(err, authenticate.ErrUnavailable) || loadEndedByCaller(ctx, err) {
+	if err != nil && !credentialRefused(ctx, err) {
 		return nil, err
 	}
 	if err != nil {
 		l.recordFailure(ctx, username, now)
+		reportLockedBy(ctx, l.engine, l.enforced, username, now, factor.Password)
 
 		return nil, err
 	}
 
 	return auth, nil
+}
+
+// credentialRefused reports whether err, an authenticator's failure, is a
+// credential it judged and refused: neither a user store that could not
+// answer (authenticate.ErrUnavailable) nor a load the request's own context
+// ended (loadEndedByCaller).
+func credentialRefused(ctx context.Context, err error) bool {
+	return !errors.Is(err, authenticate.ErrUnavailable) && !loadEndedByCaller(ctx, err)
+}
+
+// reportRefused calls refused, when there is one.
+func reportRefused(ctx context.Context, refused func(ctx context.Context)) {
+	if refused != nil {
+		refused(ctx)
+	}
 }
 
 // loadEndedByCaller reports whether err is the authenticator's uniform failure
@@ -677,6 +717,44 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 	}
 
 	return fields, nil
+}
+
+// reportLockedBy reports security.AuthnLoginFailMax for a failure just
+// recorded against username that left it locked: the pre-authentication
+// phase, which let this attempt's password be checked, now refuses the
+// identifier as locked (lockout.ErrAccountLocked, a hold included). It asks
+// only on a request a sink watches, and its answer decides nothing.
+func reportLockedBy(
+	ctx context.Context,
+	engine *policy.Engine,
+	enforced map[policy.ChallengeKind]bool,
+	username string,
+	now time.Time,
+	kind factor.Kind,
+) {
+	if !secevent.Enabled(ctx) || engine == nil {
+		return
+	}
+
+	pre := evaluatePhase(ctx, engine, policy.PreAuthentication, &policy.Input{Username: username, Now: now})
+	if errors.Is(refusePreAuthentication(pre, enforced), lockout.ErrAccountLocked) {
+		emitEvent(ctx, userEvent(security.AuthnLoginFailMax, security.OutcomeFailure, "", kind))
+	}
+}
+
+// hadRecentFailures reports whether username has failed attempts within the
+// lockout's failure window (identifierWindow), so its success is reported as
+// security.AuthnLoginSuccessAfterFail. It reads the attempt store only on a
+// request a sink watches, and a store that cannot answer reads as none: the
+// answer names an event and decides nothing.
+func (l *formLogin) hadRecentFailures(ctx context.Context, username string, now time.Time) bool {
+	if !secevent.Enabled(ctx) || nilcheck.IsNil(l.attempts) {
+		return false
+	}
+
+	n, err := l.attempts.FailureCount(ctx, username, now.Add(-identifierWindow(l.engine)))
+
+	return err == nil && n > 0
 }
 
 // recordFailure counts one failed attempt, logging a store that could not.

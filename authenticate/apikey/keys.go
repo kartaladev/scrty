@@ -14,11 +14,14 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/security"
 )
 
 // compensatingRevokeTimeout bounds the revoke of a replacement that a lost
@@ -413,16 +416,21 @@ func (m *Keys) List(ctx context.Context, principal identity.UserID) ([]Key, erro
 func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal, Key, error) {
 	keyID, secret, ok := m.parsePresented(presented)
 	if !ok {
-		return identity.Principal{}, Key{}, ErrVerificationFailed
+		return identity.Principal{}, Key{}, refuseKey(ctx)
 	}
 
 	rec, err := m.store.Get(ctx, keyID)
 	if err != nil {
 		// ErrKeyNotFound included: an unknown key and an unreachable store are
 		// the same answer to whoever asked. Only the log tells them apart, and
-		// only for the operator reading it.
+		// only for the operator reading it, and the security event, which only
+		// an unknown key reports.
 		m.log(ctx, levelFor(err), "apikey: verification failed",
 			append([]slog.Attr{slog.String("key_id", keyID.String())}, diag.Failure("key-store", err)...)...)
+
+		if errors.Is(err, ErrKeyNotFound) {
+			return identity.Principal{}, Key{}, refuseKey(ctx)
+		}
 
 		return identity.Principal{}, Key{}, ErrVerificationFailed
 	}
@@ -438,13 +446,13 @@ func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal
 	}
 
 	if subtle.ConstantTimeCompare(digest, rec.SecretDigest) != 1 {
-		return identity.Principal{}, Key{}, ErrVerificationFailed
+		return identity.Principal{}, Key{}, refuseKey(ctx)
 	}
 
 	now := m.clock.Now()
 
 	if !rec.liveAt(now) {
-		return identity.Principal{}, Key{}, ErrVerificationFailed
+		return identity.Principal{}, Key{}, refuseKey(ctx)
 	}
 
 	// Best effort: a key that works must not stop working because the store
@@ -640,4 +648,17 @@ func (m *Keys) revokeReplacement(ctx context.Context, replacement id.ID) error {
 	_, err := m.store.Revoke(undoCtx, replacement, m.clock.Now())
 
 	return err
+}
+
+// refuseKey reports a presented key the manager judged and refused, as
+// security.AuthnLoginFail on a request a security-event sink watches, and
+// returns ErrVerificationFailed. A store that could not answer judged nothing
+// and is not reported. The event names no user: the key's owner is not who
+// presented it.
+func refuseKey(ctx context.Context) error {
+	secevent.Send(ctx, security.Event{
+		Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure, Factor: factor.APIKey,
+	})
+
+	return ErrVerificationFailed
 }

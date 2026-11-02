@@ -10,7 +10,9 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -93,6 +95,13 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 
 		return
 	}
+
+	// Started once a code is issued for a real account, on a request a
+	// security-event sink watches. The endpoint answers every start alike, so
+	// only the sink learns that this one named an account.
+	secevent.Send(ctx, security.Event{
+		Name: security.RecoveryStarted, Outcome: security.OutcomeSuccess, User: details.ID,
+	})
 
 	subjectLine, body := r.messages.IssuedCode(code, tok.ExpiresAt)
 

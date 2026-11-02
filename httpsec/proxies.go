@@ -480,7 +480,9 @@ func (p *trustedProxies) resolve(r Request) (resolution, error) {
 	if res.forwardedHost {
 		host, name, ok := canonicalHost(res.client.Host)
 		if !ok || !slices.Contains(p.allowed, strings.TrimSuffix(name, ".")) {
-			return resolution{}, ErrHostNotAllowed
+			// Only the client's address is kept beside the refusal, for its
+			// security event: the forwarded host is never repeated.
+			return resolution{client: Client{IP: res.client.IP}}, ErrHostNotAllowed
 		}
 
 		// Rebuilt from the validated name and port, never the sent text: a

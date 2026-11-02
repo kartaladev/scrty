@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -215,6 +216,8 @@ func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
 	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid, p.registrationContext(s), opts...); err != nil {
 		return err
 	}
+
+	emitEvent(ex.Context(), sessionEvent(security.PasskeyRemoved, security.OutcomeSuccess, s))
 
 	return p.respondRemove(ex, cid)
 }

@@ -3,8 +3,10 @@ package httpsec
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"sync"
 
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -102,6 +104,14 @@ func (cr *clientResolver) begin(ex *Exchange) error {
 	cr.removeForwarded(ex.Request)
 
 	if err != nil {
+		if errors.Is(err, ErrHostNotAllowed) {
+			// The client the trusted proxies named: the host is refused, not
+			// the client address.
+			emitEvent(ex.Context(), security.Event{
+				Name: security.HostRefused, Outcome: security.OutcomeFailure, ClientIP: res.client.IP,
+			})
+		}
+
 		return err
 	}
 

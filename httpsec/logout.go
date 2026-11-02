@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -148,6 +149,13 @@ func (l *logout) end(ctx context.Context, s *session.Session) error {
 	_, err := l.sessions.RevokeFamily(context.WithoutCancel(ctx), s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
+	}
+
+	// Reported only for a family this logout revoked: one already gone was
+	// ended by something else, which reported it.
+	if err == nil {
+		emitEvent(ctx, sessionEvent(security.SessionLogout, security.OutcomeSuccess, s))
+		emitEvent(ctx, sessionEvent(security.AuthnTokenRevoked, security.OutcomeSuccess, s))
 	}
 
 	return nil

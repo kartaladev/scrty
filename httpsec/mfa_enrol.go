@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -884,6 +885,10 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, metho
 	saveErr := i.sessions.Save(ctx, s)
 
 	i.notifyBound(ctx, s.UserID, method.Name())
+
+	// The binding is written whether or not the session then saves, so it is
+	// reported either way, as the notification is.
+	emitEvent(ctx, sessionEvent(security.MFAEnrolled, security.OutcomeSuccess, s))
 
 	if saveErr != nil {
 		s.MFA = was

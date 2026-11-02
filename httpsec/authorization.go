@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/security"
 )
 
 //go:generate mockgen -destination=authorizer_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authorize Authorizer
@@ -50,7 +51,11 @@ func (a *authorization) Intercept(ex *Exchange, next Next) error {
 		// Returned as it came. A rule's requirement answers with a denial, with
 		// a demand to authenticate, or with the outage it hit, and rewriting any
 		// of those here would turn a store that was unreachable into a decision
-		// about the caller.
+		// about the caller. Only the denial is reported.
+		if errors.Is(err, authorize.ErrAccessDenied) && refused(ex.Context(), err) {
+			emitEvent(ex.Context(), callerEvent(security.AuthzFail, security.OutcomeFailure, ex))
+		}
+
 		return err
 	}
 

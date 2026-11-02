@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -338,12 +339,16 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 			return err
 		}
 
+		emitEvent(ex.Context(), sessionEvent(security.SignInEnded, security.OutcomeSuccess, s))
+
 		return m.respEnd(ex)
 	}
 
 	if _, err := m.sessions.EndOtherSignIns(ex.Context(), s.UserID, s); err != nil {
 		return err
 	}
+
+	emitEvent(ex.Context(), sessionEvent(security.SignInEnded, security.OutcomeSuccess, s))
 
 	return m.respEnd(ex)
 }

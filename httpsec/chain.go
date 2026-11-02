@@ -11,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -95,6 +96,12 @@ type Chain struct {
 	// A feature that marks its own responses registers one with the wiring
 	// hook, so its refusals are marked too.
 	refusalSteps []func(*Exchange)
+
+	// events delivers the chain's security events, and is nil unless
+	// EnableSecurityEvents gave it a sink. Every request carries it on its
+	// context (secevent), so whatever decides an outcome on the request
+	// reports it there.
+	events *eventEmitter
 }
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
@@ -207,6 +214,13 @@ func (c *Chain) Assemble(terminal Next) Next {
 		ex.perRequest = c.perRequest
 		ex.csrfOptOut = c.csrfOptOut
 
+		// The request carries the chain's event delivery before anything
+		// decides an outcome on it, so every decision below reports through
+		// it (emitEvent) and a request no sink watches carries nothing.
+		if c.events != nil {
+			ex.SetContext(secevent.With(ex.Context(), c.events.emit))
+		}
+
 		// Client resolution is not an interceptor: it runs once, here, before
 		// the first interceptor, so every interceptor and the handler read the
 		// one resolved answer, and a forwarded host on none of the allowed
@@ -227,7 +241,15 @@ func (c *Chain) Assemble(terminal Next) Next {
 			return err
 		}
 
-		return chain(ex)
+		// The refusals that can arise anywhere in the chain, a cross-site
+		// request or an invalid proof among them, are reported once, here,
+		// as the request leaves it (emitRefusal).
+		err := chain(ex)
+		if err != nil {
+			emitRefusal(ex, err)
+		}
+
+		return err
 	}
 }
 

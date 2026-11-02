@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/secevent"
+	"github.com/kartaladev/scrty/security"
 )
 
 // rotateAll mints and stores a new key for every configured algorithm. Each
@@ -21,7 +23,13 @@ func (km *Keys) rotateAll(ctx context.Context) {
 	for _, alg := range km.algs {
 		if _, f := km.mintAndStore(ctx, alg); f != nil {
 			km.report(ctx, "rotate", alg, f)
+
+			continue
 		}
+
+		secevent.Deliver(ctx, km.events, security.Event{
+			Name: security.SigningKeyRotated, At: km.clock.Now(), Outcome: security.OutcomeSuccess,
+		}, km.logger)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/guardauth"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
@@ -166,6 +167,8 @@ func WithGuardErrorHandler(fn func(gc *gin.Context, err error)) GuardOption {
 // DPoP's WWW-Authenticate, is set first, so a guard's refusal carries it
 // too, whoever renders the answer.
 func (g *Guards) refuse(gc *gin.Context, err error) {
+	secevent.GuardRefused(gc.Request.Context(), err)
+
 	err = guardauth.Challenge(gc.Request.Context(), httpsec.NewHTTPResponseWriter(gc.Writer), err)
 
 	if g.onError != nil {

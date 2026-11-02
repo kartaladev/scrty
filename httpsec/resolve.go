@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -142,6 +143,8 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 
 			return nil
 		}
+
+		emitLoadRefusal(ctx, err)
 
 		return classifyLoad(ctx, err)
 	}
@@ -303,7 +306,10 @@ func (ex *Exchange) evaluatePerRequest(
 
 	switch d.Outcome {
 	case policy.Deny:
-		return policyDenyReason(d)
+		err := policyDenyReason(d)
+		emitPerRequestDenial(ctx, err, s)
+
+		return err
 	case policy.Challenge:
 		// A kind nothing on the chain enforces is refused before anything is
 		// marked, whatever state the session is in; see refuseUnenforced.
@@ -400,3 +406,31 @@ func sessionFederatedAssurance(s *session.Session) policy.FederatedAssurance {
 // msgSessionUnreadable reports a session that could not be decrypted. It is
 // at error because it is an outage of the deployment's own keys.
 const msgSessionUnreadable = "httpsec: a session could not be decrypted"
+
+// emitLoadRefusal reports a presented session the manager refused to load:
+// one past its lifetime as security.SessionUseAfterExpire, and one it does
+// not hold as security.AuthnLoginFail. A store that failed, a session that
+// could not be decrypted, and a load the request's own context ended report
+// nothing, and a superseded session presented again is the reuse observer's
+// to report.
+func emitLoadRefusal(ctx context.Context, err error) {
+	switch {
+	case errors.Is(err, session.ErrReused):
+	case errors.Is(err, session.ErrExpired):
+		emitEvent(ctx, security.Event{Name: security.SessionUseAfterExpire, Outcome: security.OutcomeFailure})
+	case errors.Is(err, session.ErrNotFound):
+		emitEvent(ctx, security.Event{Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure})
+	}
+}
+
+// emitPerRequestDenial reports a per-request policy's denial of s: an idle
+// session as security.SessionExpired, and any other refusal as
+// security.AuthzFail.
+func emitPerRequestDenial(ctx context.Context, err error, s *session.Session) {
+	switch {
+	case errors.Is(err, policy.ErrSessionIdle):
+		emitEvent(ctx, sessionEvent(security.SessionExpired, security.OutcomeFailure, s))
+	case refused(ctx, err):
+		emitEvent(ctx, sessionEvent(security.AuthzFail, security.OutcomeFailure, s))
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/security"
 )
 
 // DefaultBasicAuthRealm is the realm named in the WWW-Authenticate header when
@@ -180,6 +181,7 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 
 		// A source hammering a locked account spends its own allowance.
 		recordSourceFailure(ctx, b.guard, src)
+		emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Basic))
 
 		// Concealed, the lock is a 401 and challenged; disclosed, a 429,
 		// which is not.
@@ -210,11 +212,15 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		// an attempt store that honours cancellation would otherwise drop the
 		// failure. Reset is different, and stays on the request's context:
 		// nobody is owed a clearing the client did not wait for.
-		if !errors.Is(err, authenticate.ErrUnavailable) && !loadEndedByCaller(ctx, err) {
+		if credentialRefused(ctx, err) {
+			emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Basic))
+
 			if recErr := b.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); recErr != nil {
 				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 					diag.Failure("attempt-store", recErr)...)
 			}
+
+			reportLockedBy(ctx, b.engine, b.enforced, username, now, factor.Basic)
 		}
 
 		recordSourceFailure(ctx, b.guard, src)

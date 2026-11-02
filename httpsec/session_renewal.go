@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -199,6 +200,9 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return rotationFailure(err, issueErr)
 	}
 
+	// The successor is stored by now, and its credential is handed out below.
+	emitEvent(ctx, sessionEvent(security.SessionRenewed, security.OutcomeSuccess, successor))
+
 	return r.respond(ex, RenewalResult{
 		Credential: credential, Session: successor, User: details, Kind: kind, TokenType: tokenTypeOf(successor),
 	})
@@ -239,6 +243,8 @@ func (r *sessionRenewal) admit(ctx context.Context, key string) error {
 	}
 
 	if exceeded {
+		emitEvent(ctx, security.Event{Name: security.RateLimitRefused, Outcome: security.OutcomeFailure})
+
 		return ErrRenewalThrottled
 	}
 

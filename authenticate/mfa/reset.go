@@ -12,8 +12,10 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/security"
 )
 
 // SessionRevoker ends every session of a user. *session.Sessions and every
@@ -211,6 +213,12 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 			return diag.Wrap(err, "mfa: reset could not remove the enrolment")
 		}
 	}
+
+	// Reported once every removal is done, on a request a security-event sink
+	// watches: the removals are never undone, whatever follows.
+	secevent.Send(ctx, security.Event{
+		Name: security.MFARemoved, At: c.clock.Now(), Outcome: security.OutcomeSuccess, User: user,
+	})
 
 	if c.revokeSessions {
 		if err := deps.Sessions.DeleteByUser(ctx, user); err != nil {

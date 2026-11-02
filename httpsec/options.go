@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -94,6 +95,9 @@ type config struct {
 	// so an interceptor reading c.engine or c.logger at that moment would
 	// capture a setting a later option was about to replace.
 	wiring []func(*Chain)
+
+	// events is the sink EnableSecurityEvents was given, and nil without one.
+	events security.Sink
 
 	engine *policy.Engine
 	logger *slog.Logger
@@ -618,6 +622,7 @@ func (c *config) build() (*Chain, error) {
 		reportRefusals:    c.refusalLogReporter(),
 		clients:           newClientResolver(c),
 		csrfOptOut:        c.csrfOptOut,
+		events:            newEventEmitter(c),
 	}
 
 	// The sampler is built here rather than by the option, because the default

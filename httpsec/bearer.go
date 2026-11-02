@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -173,6 +174,12 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 	if errors.Is(err, token.ErrInvalid) {
 		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerNotVerified,
 			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
+
+		// The refusal stands as before, but a verdict the request's own
+		// hang-up cut short is reported as nothing.
+		if !hangup.ByCaller(ctx, err) {
+			emitEvent(ctx, security.Event{Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure})
+		}
 
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
 	}

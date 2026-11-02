@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -184,6 +185,11 @@ type loginTailDeps struct {
 	// is decided when the chain is built, never read from the request's
 	// context, which a redeemer may not have passed on.
 	csrfToken bool
+
+	// afterFailures is whether the login's identifier had recent failed
+	// attempts, so its success is reported as
+	// security.AuthnLoginSuccessAfterFail. Only form login knows it.
+	afterFailures bool
 }
 
 // heldRecoveryCanceller cancels every pending recovery of a user: the
@@ -448,6 +454,9 @@ type preparedLogin struct {
 
 	prepared *session.Prepared
 	token    string
+
+	// afterFailures is loginTailDeps.afterFailures, for the success event.
+	afterFailures bool
 }
 
 // prepareLogin is the first half of completeLogin: it decides the
@@ -569,7 +578,10 @@ func prepareLogin(
 		return nil, err
 	}
 
-	return &preparedLogin{in: in, decision: d, methods: methods, prepared: p, token: tok}, nil
+	return &preparedLogin{
+		in: in, decision: d, methods: methods, prepared: p, token: tok,
+		afterFailures: deps.afterFailures,
+	}, nil
 }
 
 // session is the login's session as built and marked, not yet stored. A
@@ -608,11 +620,30 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	}
 	observeSignIn(ctx, s, principal)
 
+	// Reported only now, with the session stored and its credential about to
+	// be handed out: a credential issued for a session whose write failed, or
+	// dropped by a redemption that lost its consume, never reaches here.
+	emitSignIn(ctx, s, l.afterFailures)
+
 	if l.decision.Outcome == policy.Challenge {
 		return l.token, &ChallengeError{Kind: l.decision.Challenge, Session: s, Token: l.token, Methods: l.methods}
 	}
 
 	return l.token, nil
+}
+
+// emitSignIn reports a stored sign-in: its session, its credential, and the
+// login that created it, under its user and first factor.
+func emitSignIn(ctx context.Context, s *session.Session, afterFailures bool) {
+	emitEvent(ctx, sessionEvent(security.SessionCreated, security.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(security.AuthnTokenCreated, security.OutcomeSuccess, s))
+
+	name := security.AuthnLoginSuccess
+	if afterFailures {
+		name = security.AuthnLoginSuccessAfterFail
+	}
+
+	emitEvent(ctx, sessionEvent(name, security.OutcomeSuccess, s))
 }
 
 // declaresJSON reports whether a content type names JSON, ignoring parameters

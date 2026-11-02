@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -116,12 +117,17 @@ func sweepExpired(
 //
 // The two endpoints differ in the throttle and the challenges they pass, never
 // in this order.
+//
+// A response refused at step 3 or 4 is reported on the session as the event
+// named failed (security events); a refused attempt charge, a dependency that
+// failed and a request whose own context ended report nothing here.
 func checkResponse(
 	ex *Exchange,
 	throttle *mfa.VerifyThrottle,
 	challenges map[string]*onetime.Tokens,
 	method mfa.Method,
 	s *session.Session,
+	failed string,
 ) error {
 	ctx := ex.Context()
 	user := s.UserID
@@ -138,6 +144,7 @@ func checkResponse(
 	if cm, ok := method.(mfa.ChallengeMethod); ok {
 		if err := spendChallenge(ctx, challenges[cm.Name()], cm, s, response); err != nil {
 			throttle.RecordFailure(ctx, user)
+			emitResponseRefused(ctx, err, failed, s)
 
 			return err
 		}
@@ -148,10 +155,23 @@ func checkResponse(
 			throttle.RecordFailure(ctx, user)
 		}
 
+		emitResponseRefused(ctx, err, failed, s)
+
 		return err
 	}
 
 	return nil
+}
+
+// emitResponseRefused reports a second-factor response refused with err as
+// the event named failed, unless err is a refused attempt charge, which the
+// throttle reports as a rate limit, or no refusal at all.
+func emitResponseRefused(ctx context.Context, err error, failed string, s *session.Session) {
+	if errors.Is(err, mfa.ErrVerifyThrottled) || !refused(ctx, err) {
+		return
+	}
+
+	emitEvent(ctx, sessionEvent(failed, security.OutcomeFailure, s))
 }
 
 // challengeIssue is what one endpoint issues a challenge method's challenges

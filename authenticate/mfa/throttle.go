@@ -9,9 +9,11 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/security"
 )
 
 //go:generate mockgen -destination=limiter_mock_test.go -package=mfa_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
@@ -176,6 +178,12 @@ func (t *VerifyThrottle) Check(ctx context.Context, user identity.UserID) error 
 
 	if exceeded {
 		t.sampled(ctx, slog.LevelWarn, msgThrottled, reasonThrottled)
+
+		// Only an exceeded limit is reported: a limiter that could not answer
+		// refuses with the same error, and decided nothing.
+		secevent.Send(ctx, security.Event{
+			Name: security.RateLimitRefused, Outcome: security.OutcomeFailure, User: user,
+		})
 
 		return ErrVerifyThrottled
 	}

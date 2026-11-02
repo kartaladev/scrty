@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -93,7 +94,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 	}
 
 	// Steps 4 to 8.
-	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s); err != nil {
+	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s, security.ReauthenticationFail); err != nil {
 		return err
 	}
 
