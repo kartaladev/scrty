@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: A password update can be conditional on the stored hash
-Updating a user SHALL accept an option naming the password hash the caller expects to replace. With it, the store SHALL write the new password only when the stored hash still equals the expected one, deciding it in the write itself rather than by a preceding read, and SHALL otherwise change nothing and report a distinct not-updated result that is not a storage failure. The password-changed time SHALL NOT move on a conditional update unless the caller names it. Every shipped identity store SHALL honour the option, and the conformance suite SHALL check it.
+Updating a user SHALL accept an option naming the password hash the caller expects to replace. With it, the store SHALL write the new password only when the stored hash still equals the expected one, deciding it in the write itself rather than by a preceding read, and SHALL otherwise change nothing and report a distinct not-updated result that is not a storage failure. The password-changed time SHALL NOT move on a conditional update unless the caller names it. Every shipped identity store SHALL honour the option, and the conformance suite SHALL check it. A shipped store SHALL refuse the option when no new password is named, and when it is given to provisioning, since neither has a stored hash to compare.
 
 #### Scenario: Hash unchanged
 - **WHEN** a user's stored hash is `H1` and an update names `H2` as the new password conditional on `H1`

@@ -129,6 +129,8 @@ func CSPNonce(ctx context.Context) (string, bool)
   - **HSTS** is one year with `includeSubDomains`, sent only when `Secure()`.
   - **Not sent:** `X-XSS-Protection`, `X-Frame-Options`, COEP and Origin-Agent-Cluster.
 - **Override:** every header's value can be set, removed or extended. Profiles are chosen by matcher, and the first match wins. `HashCSP(hashes...)` replaces the nonce for a static SPA shell.
+- **Responses written outside the slot (recorded 2026-11-02, task 3.2).** A host refusal, and a 500 when the random source fails, carry the headers with a CSP rendered without its nonce source, which admits no script. On a host refusal, HSTS follows the transport's `Secure()`, since the forwarded values were refused.
+- **Every profile is editable (task 3.5 review).** `WithHeader`, `WithoutHeader` and `WithCSP` edit the document profile. The API profile and any consumer profile are built with the same editors (`APIHeaders(opts...)`), so no profile is fixed (`library-design.md` rule 2). `Strict-Transport-Security` is set only through `WithHSTS`, which takes whole seconds. `PathPrefix` reads a prefix without a leading `/` as rooted, and `/api/` also matches `/api`.
 - **No writer wrapping.** Headers are set on the response before `next`, so a handler's own `Header().Set` wins and `Flush`/`Hijack` are untouched. Choosing a profile from the response's `Content-Type` would need a wrapper, which loses `http.Flusher` and `http.Hijacker`.
 - **Nonce:** 16 bytes from `crypto/rand`, base64, stored in the request context. Handing it to templates follows OWASP's advice against injecting nonces into every script tag.
 - **Why these values:**
