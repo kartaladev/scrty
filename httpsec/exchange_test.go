@@ -153,6 +153,14 @@ func (w *miniWriter) SetHeader(name, value string) {
 	w.ex.outHeader.Set(name, value)
 }
 
+func (w *miniWriter) AddHeader(name, value string) {
+	if w.ex.outHeader == nil {
+		w.ex.outHeader = http.Header{}
+	}
+
+	w.ex.outHeader.Add(name, value)
+}
+
 func (w *miniWriter) SetCookie(c *httpsec.Cookie) { w.ex.cookies = append(w.ex.cookies, c) }
 
 func (w *miniWriter) WriteHeader(status int) {

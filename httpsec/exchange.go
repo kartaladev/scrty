@@ -119,7 +119,15 @@ type Cookie = http.Cookie
 // NewHTTPResponseWriter, which is what a consumer gets when they wire nothing
 // of their own.
 type ResponseWriter interface {
+	// SetHeader replaces every value of the response header name with value.
 	SetHeader(name, value string)
+
+	// AddHeader adds value to the response header name, keeping the values
+	// already set, as net/http's Header.Add does. It is how a list header
+	// such as Vary is extended without dropping what an outer layer or an
+	// earlier interceptor put there.
+	AddHeader(name, value string)
+
 	SetCookie(c *Cookie)
 	WriteHeader(status int)
 	Write(b []byte) (int, error)

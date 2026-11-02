@@ -1193,6 +1193,58 @@ Sources: the [OWASP CSP Cheat Sheet](https://cheatsheetseries.owasp.org/cheatshe
 [Vite's CSP section](https://vite.dev/guide/features#content-security-policy-csp) and
 [Next.js's CSP guide](https://nextjs.org/docs/app/guides/content-security-policy).
 
+## CORS
+
+`httpsec.EnableCORS` is off until you enable it, and then needs an explicit list
+of origins. It runs inside the chain, in `OrderCORS`, so it behaves the same on
+net/http, gin and fiber, and answers a preflight before any authentication or
+the authorizer could refuse it.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSecurityHeaders(),
+    httpsec.EnableCORS(httpsec.CORSPolicy{
+        AllowedOrigins: []string{"https://app.example.com"},
+        AllowedHeaders: []string{"Authorization", "Content-Type"},
+        ExposedHeaders: []string{"WWW-Authenticate"},
+    }, httpsec.WithOriginPattern("https://*.preview.example.com")),
+)
+```
+
+Once enabled:
+
+- an origin is allowed only when it equals one on the list, after both are
+  lower-cased and stripped of a default port, or matches a `WithOriginPattern`
+  pattern, whose `*` is one whole host label followed by at least two more;
+- `*` alone allows every origin without credentials: any request carrying an
+  `Origin`, `null` included, gets `Access-Control-Allow-Origin: *`, and no
+  origin is ever reflected;
+- every response carries `Vary: Origin`, allowed or not. `Origin` is added to
+  any `Vary` your middleware or an earlier interceptor set, never in place of
+  it;
+- an allowed origin gets `Access-Control-Allow-Origin` with its own origin and,
+  on actual responses, the exposed headers, also on the chain's own refusals,
+  so a page can read a 401's `WWW-Authenticate`;
+- a preflight gets 204: with the allow headers when its origin, method (default
+  `GET`, `HEAD`, `POST`) and every requested header are allowed, and with no
+  CORS header otherwise. `Access-Control-Max-Age` defaults to 600 seconds;
+  `WithoutPreflightCaching()` sends `0` instead;
+- with DPoP enabled, `DPoP` is allowed and `DPoP-Nonce` and `WWW-Authenticate`
+  are exposed; with CSRF protection reading a token header, that header is
+  allowed. `WithoutAutomaticCORSHeaders()` turns these additions off.
+
+Construction refuses no origins, `null`, a scheme other than http or https, an
+origin with a path, query, fragment or userinfo, `*` with `AllowCredentials` or
+beside other origins, a wildcard outside `WithOriginPattern`, a pattern with
+fewer than two labels after its wildcard (`https://*.com`), and a `MaxAge`
+below one second or set beside `WithoutPreflightCaching()`. scrty holds no
+public-suffix list, so `https://*.co.uk` is accepted like
+`https://*.example.com`; do not name a pattern under a public suffix.
+
+`ResponseWriter` requires `AddHeader(name, value)`, which keeps the values
+already set (net/http's `Header().Add`). An adapter of your own must implement
+it; the CORS layer uses it to extend `Vary`.
+
 ## Development
 
 ```sh
