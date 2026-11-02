@@ -178,9 +178,13 @@ var refusalEvents = []struct {
 // one refusalEvents names, the request's own context had not ended, and err is
 // answered below 500.
 //
-// A sentinel can stay reachable beneath a dependency failure, such as a
-// verifier's or a consumer port's own error wrapping one, and that is answered
-// at 500: the chain refused nothing, so nothing is reported.
+// The event follows StatusForError: an error the library marks as a
+// dependency failure (ErrChallengeUnavailable, an issuing failure, an
+// unrecognised error) is answered at 500 even when a refusal sentinel stays
+// reachable beneath it, and the chain refused nothing, so a refusal answered
+// at 500 reports no refusal event. A plain error of a consumer's port that
+// wraps a sentinel, such as ErrCrossSiteRequest, maps through the status table
+// (403) and is reported, consistently with that answer.
 //
 // It reports once per exchange: a chain whose Assemble runs inside another
 // chain's answers the same exchange with the same error as it leaves each of

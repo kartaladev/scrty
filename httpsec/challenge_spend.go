@@ -184,23 +184,22 @@ func checkResponse(
 }
 
 // emitResponseRefused reports a second-factor response refused with err on
-// the session s. A refused attempt charge (mfa.ErrVerifyAttemptsExhausted) is
-// reported as security.ExcessRateLimitExceeded, since nothing else reports it;
-// any other refusal as the event named failed. A user the throttle refused
-// (mfa.ErrVerifyThrottled otherwise) is not reported here, because the
-// throttle reports it, and neither is a dependency failure, such as a
-// challenge store that failed beneath the refusal, or a request whose own
-// context ended.
+// the session s. A refused attempt charge (mfa.ErrVerifyAttemptsExhausted) and
+// a plain mfa.ErrVerifyThrottled the method answered are reported as
+// security.ExcessRateLimitExceeded, since nothing else reports them; any other
+// refusal as the event named failed. The built-in throttle's own refusal of a
+// locked-out user returns before a response is judged, so it never reaches
+// here and is reported once, by the throttle. A dependency failure, such as a
+// challenge store that failed beneath the refusal, and a request whose own
+// context ended, are not reported.
 func emitResponseRefused(ctx context.Context, err error, failed string, s *session.Session) {
 	if !refused(ctx, err) || depfault.Silent(ctx, err) {
 		return
 	}
 
 	switch {
-	case errors.Is(err, mfa.ErrVerifyAttemptsExhausted):
+	case errors.Is(err, mfa.ErrVerifyAttemptsExhausted), errors.Is(err, mfa.ErrVerifyThrottled):
 		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
-	case errors.Is(err, mfa.ErrVerifyThrottled):
-		// Reported by the throttle that refused it.
 	default:
 		emitEvent(ctx, sessionEvent(failed, security.OutcomeFailure, s))
 	}

@@ -417,6 +417,29 @@ func TestSecurityHeaders_Nonce(t *testing.T) {
 			},
 		},
 		{
+			// The nonce failure answers before any later interceptor runs, so
+			// the chain's refusal steps are what carry no-store here.
+			name:  "a failing nonce source on a session-management path still answers no-store",
+			opts:  []httpsec.HeaderOption{httpsec.SecurityHeadersRandom(iotest.ErrReader(errors.New("entropy exhausted")))},
+			extra: managementOptions(t),
+			path:  httpsec.DefaultSessionManagementPrefix,
+			assert: func(t *testing.T, run headerRun) {
+				assert.Equal(t, http.StatusInternalServerError, run.rec.Code)
+				assert.False(t, run.handlerRan)
+				assert.Equal(t, "no-store", run.rec.Header().Get("Cache-Control"))
+			},
+		},
+		{
+			name:  "a failing nonce source off the session-management prefix sets no cache directive",
+			opts:  []httpsec.HeaderOption{httpsec.SecurityHeadersRandom(iotest.ErrReader(errors.New("entropy exhausted")))},
+			extra: managementOptions(t),
+			path:  "/page",
+			assert: func(t *testing.T, run headerRun) {
+				assert.Equal(t, http.StatusInternalServerError, run.rec.Code)
+				assert.Empty(t, run.rec.Header().Get("Cache-Control"))
+			},
+		},
+		{
 			name: "a short random source fails the request",
 			opts: []httpsec.HeaderOption{httpsec.SecurityHeadersRandom(strings.NewReader("short"))},
 			path: "/page",

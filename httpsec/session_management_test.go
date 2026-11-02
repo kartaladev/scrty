@@ -84,6 +84,22 @@ func newManagementFixture(
 	return f
 }
 
+// managementOptions are the chain options that enable session management over
+// a session bearer, for a test that composes it with another layer.
+func managementOptions(t *testing.T) []httpsec.Option {
+	t.Helper()
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	users := NewMockUserLoader(gomock.NewController(t))
+
+	return []httpsec.Option{
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+		httpsec.EnableSessionManagement(),
+	}
+}
+
 // signIn stores a new sign-in of user.
 func (f *managementFixture) signIn(t *testing.T, user identity.UserID) *session.Session {
 	t.Helper()
