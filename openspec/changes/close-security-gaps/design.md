@@ -201,6 +201,9 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
   - **Also refused at construction:** an empty or non-token method or header name, `*` in a method or header list, a negative `MaxAge`, an origin with no host or a malformed port, a trailing `/` (a path), and a pattern without a wildcard. A pattern alone counts as an allowed origin.
   - **Pattern breadth.** A pattern needs at least two labels after its wildcard, so `https://*.com` is refused. Without a public-suffix list, `https://*.co.uk` cannot be told apart from `https://*.example.com`, and the godoc says so.
   - **Preflight caching.** `MaxAge` zero means the 10-minute default. `WithoutPreflightCaching()` sends `Access-Control-Max-Age: 0`, so the default is replaceable in both directions.
+  - **`*` allows `null` too.** With `*` and no credentials, every origin gets `*`, including `null`, as the spec says. Nothing is reflected, and no credential is sent.
+  - **`Vary` is added to, never replaced (task 4.2 review).** `ResponseWriter` gains a required `AddHeader(name, value string)`, before the tag, so CORS adds `Origin` to a `Vary` an outer layer or an earlier interceptor set. Replacing it would let a cache serve one variant to a client that cannot read it.
+  - **`MaxAge` below one second** (other than zero) is a configuration error, since it would truncate to `0` and silently turn caching off. Turning it off is `WithoutPreflightCaching()`.
   - **Allowed headers in a preflight answer.** The answer lists the headers the preflight asked for, spelt as the policy spells them, not the whole policy list. That is the spec's wording, and the diagram above shows the request's two headers for the same reason.
 - **Follows the chain:** with DPoP on, `DPoP` is allowed and `DPoP-Nonce`/`WWW-Authenticate` are exposed. With a CSRF token header, its name is allowed. `WithoutAutomaticCORSHeaders()` turns this off.
 - **Departure from the established design.** It relied on a gin-only CORS middleware. scrty serves three adapters and must behave the same on all of them, and a preflight that reaches the fail-closed authorizer is refused. So CORS lives in the chain.
@@ -621,7 +624,7 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
 - **Breaking before the tag:**
   - `Request.Host()`/`Secure()` (D2);
   - `ginsec.WithForwardedClientIP` removed, and with it `ginsec.Option`, so `ginsec.Middleware(chain)` takes no options (D7);
-  - `Request.HeaderValues` and `Request.EscapedPath` required (D2, D8);
+  - `Request.HeaderValues` and `Request.EscapedPath` required (D2, D8), and `ResponseWriter.AddHeader` required (D5);
   - `identity.UserProvisioner.Update` honours `WithUserPasswordIf` in every store (D11);
   - `NewReuseGuard` removed (D10);
   - `session.Store.ListByUser` (D12).

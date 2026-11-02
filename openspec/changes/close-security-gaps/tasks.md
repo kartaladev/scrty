@@ -42,7 +42,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [ ] 4.3 Prove a refusal from an authentication interceptor carries the allow-origin and exposed headers for an allowed origin, test-first. Verify: `go test -run 'TestCORS_RefusalReadable' -count=1 ./httpsec/`.
 - [ ] 4.4 Answer preflights with 204 in `OrderCORS` before authentication: default methods GET, HEAD and POST, header lists across lines and cases, disallowed method or header, the default and a replaced max age, the preflight `Vary` set, and a plain `OPTIONS` that continues through the chain, test-first. Verify: `go test -run 'TestCORS_Preflight' -count=1 ./httpsec/`.
 - [ ] 4.5 Add the DPoP and CSRF header names automatically, with the explicit opt-out, test-first. Verify: `go test -run 'TestCORS_FollowsChain' -count=1 ./httpsec/`.
-- [ ] 4.6 Run the CORS scenarios on all three adapters in conformance, test-first, and document the options with their defaults. Verify: `go test -run 'TestCORS' ./...` in the `test` module, and `go doc ./httpsec EnableCORS`.
+- [ ] 4.6 Run the CORS scenarios on all three adapters in conformance, test-first, and document the options with their defaults. Verify: `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/cors' ./...` in the `test` module, and `go doc ./httpsec EnableCORS`.
 
 ## 5. CSRF protection (D6)
 
