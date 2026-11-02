@@ -31,15 +31,8 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - Supported versions: the latest minor release, during v0.
   - Supported Go releases.
   - How fixed vulnerabilities are published, including the Go vulnerability database.
-- **Pre-release fixes carried from `idiomatic-api-shape`.** Two defects in `notify`, both older than that change and found while it was implemented, are fixed before `v0.1.0`:
-  - a queued sender whose wrapped sender ends its goroutine (`runtime.Goexit`, as `t.FailNow` does) loses that worker. Once every worker is gone, it accepts messages it never delivers;
-  - `ErrConfig` is wrapped by an SMTP send that has no sender address, which its godoc does not admit.
-- **Pre-release API fixes from a sweep of every archived change's follow-ups.** Each would be a breaking change after the first tag:
-  - the token subject becomes the user's identifier by default, with an option to keep the username;
-  - the key manager deletes the signing keys it retires from the store, with an option to keep them;
-  - an unused method is removed from the passkey credential store port;
-  - a reported race in confirming an MFA enrolment is reproduced or dropped before the tag.
-- **Release hygiene from the same sweep.**
+- **Pre-release library fixes moved out (2026-11-02).** The two `notify` defects and the API fixes from the follow-up sweep (token subject, signing-key deletion, the unused passkey store method, the MFA confirmation race) are now the change `pre-release-api-fixes`, which lands before this change's tag. This change summarises them in the first changelog entry.
+- **Release hygiene from the follow-up sweep of every archived change.**
   - The changelog notes left by an archived change are folded into the first entry.
   - The outcome of each claim that change left unreproduced is recorded.
   - The README gains a *Known limitations* section.
@@ -59,10 +52,6 @@ The first consumer's adoption is blocked on this, whatever else is built.
 
 ### Modified Capabilities
 
-- `token-issuance`: the subject is the principal's user identifier by default, or the username when configured; issuing with an empty subject fails.
-- `authentication`: the bearer-token provider reads the subject the same way the generator writes it.
-- `signing-keys`: housekeeping deletes from the store the keys it retires for age, by default.
-- `email-notification`: the queued sender replaces a worker whose wrapped sender ends its goroutine, so it never accepts a message it cannot deliver.
 - `module-layout`:
   - published modules resolve outside the repository at a released version;
   - the Go-release requirement is corrected to the 1.27 floor;
@@ -76,14 +65,12 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - `.github/workflows/`, which gains a release-gate workflow and a post-tag probe;
   - new `CHANGELOG.md`, `SECURITY.md` and `RELEASING.md`;
   - `README.md` (supported versions, install).
-- **Library code and API changes, all before the first tag:**
-  - the two `notify` fixes, with no API change;
-  - a subject option on the token generator and the JWT authenticator;
-  - `signingkey.KeyStore` gains a delete method, implemented by every store and the sealing decorator;
-  - `passkey.CredentialStore` loses `DeleteAwaitingSavedCodes`;
-  - test hardening in the `test` module.
+- **Library code:** none beyond test hardening in the `test` module. The library fixes moved to `pre-release-api-fixes`.
 - **Tags:** `v0.1.0` and eight prefixed `v0.1.0` tags, pushed by the maintainer, not by tooling.
 - **Related changes:**
+  - **Order before the tag (decided 2026-11-02):** `close-security-gaps`, then `pre-release-api-fixes`, then `oidc-provider`, then this change's gate and tag. The first changelog entry summarises all three;
+  - `pre-release-api-fixes` was split out of this change on 2026-11-02 and carries its former library fixes, decisions and the `token-issuance`, `authentication`, `signing-keys` and `email-notification` deltas;
+  - `oidc-provider` is delivered before the tag (decided 2026-11-02), so its new capabilities and its breaking changes to existing ports ship in `v0.1.0`;
   - `first-party-sessions` is implemented first, so its session store port, its security-state migration and its session features ship in `v0.1.0` and are summarised in that entry;
   - `close-security-gaps` is implemented before this change's tag (decided 2026-11-01). Its breaking items and security additions are summarised in the first changelog entry, and its supply-chain gate steps (SHA-pinned actions, SBOMs, `govulncheck` blocking) join this change's release gate;
   - `session-signals` is implemented after `close-security-gaps` and before this change's tag (decided 2026-11-02). It makes `httpsec.ResponseWriter.Flush` required, which would be a breaking change after the tag, and its stream is summarised in the first changelog entry;
