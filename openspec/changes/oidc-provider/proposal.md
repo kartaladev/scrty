@@ -8,7 +8,7 @@ It is delivered before `v0.1.0` (decided 2026-11-02), because it changes ports a
 
 ## What Changes
 
-The scope below is the v1 the research supports (design "Decisions" and "Proposed defaults"). Items marked *proposed* await the user's confirmation, and the specs are blocked on open question 1 (how a grant is stored).
+The scope below is the v1 the research supports (design "Decisions" and "Proposed defaults"). Items marked *proposed* await the user's confirmation. How a grant is stored was decided on 2026-11-02 (design decision 5, option D+).
 
 - **An embeddable OpenID Provider**, built on scrty's own primitives and jwx v4, with no OpenID Provider library underneath (decided 2026-11-02):
   - **Authorization endpoint:** authorization code flow only, PKCE with `S256` required, exact `redirect_uri` matching, `state` and `nonce`, `prompt` (`none`, `login`, `consent`) and `max_age`, and `iss` in every authorization response (RFC 9207).
@@ -21,8 +21,13 @@ The scope below is the v1 the research supports (design "Decisions" and "Propose
   - **Logout:** RP-initiated logout, and back-channel logout sent to relying parties.
   - **A static client registry** the consumer owns: in-memory from configuration by default, durable through the store adapters, with secrets kept only as digests.
 - **Proof of conformance:** the OpenID Foundation conformance suite's Basic OP and Config OP plans run against the provider in CI.
-- **Breaking changes to existing ports, all before the tag** (exact shape depends on open question 1):
-  - `session.Store` or a new grant store, a security-state migration, and conformance cases;
+- **Grants stored apart from sign-ins** (decided 2026-11-02, design decision 5):
+  - refresh-token lineages reuse `session`'s rotation and reuse detection unchanged, in a table the provider fixes, behind a provider-private manager;
+  - refresh tokens take a format no sign-in path accepts;
+  - an authoritative grant row holds the client, scopes, authentication facts, binding and a revoked flag;
+  - logout ends grants without `offline_access`, security events revoke grants, a password change keeps them unless configured otherwise, and reuse revokes the whole grant.
+- **Breaking changes to existing contracts, all before the tag:**
+  - a security-state migration for the provider's tables, and new conformance suites;
   - `token` gains the claims an access token and an ID token need;
   - `http-error-propagation`: provider endpoints render the error bodies the protocol requires, a recorded departure from the bare-status default.
 
@@ -32,7 +37,7 @@ The scope below is the v1 the research supports (design "Decisions" and "Propose
 
 ### New Capabilities
 
-Proposed names; the boundaries are settled with the specs, after open question 1.
+Proposed names; the boundaries are settled with the specs.
 
 - `oidc-provider-clients`: the client registry, client types, redirect and post-logout URIs, secrets kept as digests, and client authentication methods.
 - `oidc-provider-authorization`: the authorization endpoint, request validation, the pending request and its handle, the login and consent handoff, `prompt` and `max_age`, and authorization codes.
@@ -44,12 +49,13 @@ Proposed names; the boundaries are settled with the specs, after open question 1
 
 ### Modified Capabilities
 
-Expected; the final list follows open question 1.
+Expected; the final list is settled with the specs.
 
-- `token-issuance`: access tokens carry `client_id`, `scope` and a per-resource audience with `typ` `at+jwt`; ID tokens are issued over the same key source.
-- `sessions`: what a session records about the grant or client it belongs to, or none if grants get their own store (open question 1).
+- `token-issuance`: access tokens carry `client_id`, `scope` and a per-resource audience with `typ` `at+jwt`; ID tokens are issued over the same key source; verification enforces `typ`, so each token type validates only as itself.
+- `account-recovery`, `multi-factor-auth`, `passkey-authentication`: completing recovery, resetting MFA and detecting a cloned passkey also revoke the user's grants, by default.
+- `oidc-logout`: a back-channel logout from an upstream provider also ends the grants without `offline_access` that came from the sessions it ends.
 - `security-state-stores`, `schema-migrations`, `store-conformance`: durable stores, a migration and conformance suites for clients, pending requests, consent and grants.
-- `http-security-chain`: the provider's endpoints and their slots.
+- `http-security-chain`: the provider's endpoints and their slots; local logout and session-family revocation tell the provider which sign-in ended; the password-change endpoint gains an option to revoke grants.
 - `http-error-propagation`: protocol-mandated error bodies and statuses for the provider's endpoints.
 - `sender-constrained-tokens` (added by `close-security-gaps`): the token endpoint binds tokens, including refresh tokens of public clients and codes bound with `dpop_jkt`.
 - `cors`: the provider's token, UserInfo, metadata and JWKS endpoints may be called cross-origin; the authorization endpoint never is.
@@ -61,7 +67,7 @@ Expected; the final list follows open question 1.
 - **No new dependency in any published module.** jwx v4 remains the single JOSE stack. The conformance suite (Java and MongoDB, in Docker) runs in CI only.
 - **Order before the tag (decided 2026-11-02):** `close-security-gaps`, then `pre-release-api-fixes` (the `sub` claim becomes the user identifier, which an OpenID Provider must never reassign), then this change, then `release-readiness`'s gate and tag.
 - **Related changes:**
-  - `close-security-gaps`: DPoP, mTLS binding, CORS, security headers, trusted proxies, security events, and the session listing (its D12), which open question 1 must coordinate with;
+  - `close-security-gaps`: DPoP, mTLS binding, CORS, security headers, trusted proxies, security events, and the session listing (its D12), which gains a "revoke application access" choice when ending other sessions; `session.Store` itself is unchanged by this change;
   - `bff-resource-server`: its resource-server mode is the natural verifier of this provider's access tokens, and its cookie session is the prerequisite for single sign-on, a follow-up;
   - `release-readiness`: its first changelog entry summarises this change.
 - **Consumers:** none yet. Nothing is tagged.
