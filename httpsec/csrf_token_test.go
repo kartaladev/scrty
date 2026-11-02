@@ -15,6 +15,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
@@ -573,6 +574,79 @@ func TestCSRF_TokenAtSignIn(t *testing.T) {
 
 			signedIn, err := f.sessions.Load(t.Context(), sid)
 			require.NoError(t, err)
+			tc.assert(t, signedIn)
+		})
+	}
+}
+
+func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// csrf is whether the chain has CSRF protection and a cookie
+		// authenticator, with the default token source.
+		csrf bool
+
+		// signIn makes the login and returns the session it created.
+		signIn func(t *testing.T, csrfOpts func(sessions *session.Sessions) []httpsec.Option) *session.Session
+		assert func(t *testing.T, signedIn *session.Session)
+	}
+
+	magicLinkSignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) *session.Session {
+		h := newMagicLinkHarness(t)
+		h.chainOpts = csrfOpts(h.sessions)
+
+		requesting := h.chain(t)
+		token, nonce := h.link(t, requesting)
+		require.NoError(t, h.redeem(t, requesting, token, nonce).err)
+
+		return h.openedSession(t)
+	}
+
+	passkeySignIn := func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) *session.Session {
+		d := newPwlDeployment(t)
+		d.withoutPasskeyMFA = true
+		d.required.on.Store(false)
+		d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UserVerificationPreferred))
+		d.verifier.notUserVerified.Store(true)
+		d.extra = append(d.extra, csrfOpts(d.sessions)...)
+		d.build(t)
+
+		return d.finishedSession(t, d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive)))
+	}
+
+	holdsToken := func(t *testing.T, signedIn *session.Session) {
+		assert.NotEmpty(t, signedIn.CSRFToken)
+	}
+
+	holdsNone := func(t *testing.T, signedIn *session.Session) {
+		assert.Empty(t, signedIn.CSRFToken)
+	}
+
+	cases := []testCase{
+		{name: "a magic-link redemption with CSRF protection holds a token", csrf: true, signIn: magicLinkSignIn, assert: holdsToken},
+		{name: "a magic-link redemption without CSRF protection holds none", signIn: magicLinkSignIn, assert: holdsNone},
+		{name: "a passwordless passkey login with CSRF protection holds a token", csrf: true, signIn: passkeySignIn, assert: holdsToken},
+		{name: "a passwordless passkey login without CSRF protection holds none", signIn: passkeySignIn, assert: holdsNone},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			signedIn := tc.signIn(t, func(sessions *session.Sessions) []httpsec.Option {
+				if !tc.csrf {
+					return nil
+				}
+
+				return []httpsec.Option{
+					httpsec.EnableCSRFProtection(),
+					httpsec.RegisterInterceptor(httpsec.NewTestCookieAuthenticator(sessions, csrfCookie), httpsec.OrderBearerToken),
+				}
+			})
+
 			tc.assert(t, signedIn)
 		})
 	}

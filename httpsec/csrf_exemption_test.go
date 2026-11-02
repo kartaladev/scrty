@@ -168,6 +168,37 @@ func TestCSRF_Exemptions(t *testing.T) {
 		{name: "an exemption with a dot segment", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/../settings")}, assert: misconfigured},
 		{name: "an exemption with an empty segment", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks//payments")}, assert: misconfigured},
 		{name: "an exemption of wildcards alone", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/*")}, assert: misconfigured},
+		{name: "an exemption with an encoded dot-dot segment", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/%2e%2e/settings")}, assert: misconfigured},
+		{name: "an exemption with an encoded dot segment", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/%2E")}, assert: misconfigured},
+		{name: "an exemption with an encoded slash", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/a%2Fb")}, assert: misconfigured},
+		{name: "an exemption with a malformed escape", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/%zz")}, assert: misconfigured},
+		{
+			name:   "an exemption with a legitimately encoded segment matches that escaped form",
+			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/caf%C3%A9")},
+			method: http.MethodPost, path: "/webhooks/caf%C3%A9", assert: exempt,
+		},
+		{
+			name:   "an exemption with a legitimately encoded segment judges another escaping of it",
+			csrf:   []httpsec.CSRFOption{httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/caf%C3%A9")},
+			method: http.MethodPost, path: "/webhooks/caf%c3%a9", assert: judged,
+		},
+		{
+			name:  "a back-channel path the request would escape fails construction",
+			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/déconnexion")),
+			assert: func(t *testing.T, _ served, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithOIDCBackchannelLogoutPath")
+				assert.ErrorContains(t, err, "WithoutBackchannelLogoutExemption")
+			},
+		},
+		{
+			name:  "a back-channel path the request would escape builds once the exemption is removed",
+			csrf:  []httpsec.CSRFOption{httpsec.WithoutBackchannelLogoutExemption()},
+			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/déconnexion")),
+			assert: func(t *testing.T, _ served, err error) {
+				require.NoError(t, err)
+			},
+		},
 	}
 
 	for _, tc := range cases {

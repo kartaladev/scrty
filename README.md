@@ -1428,12 +1428,17 @@ webhook, from both checks. Every other protection still applies to it.
   `OPTIONS`, of `/` alone, with an empty pattern, a relative path, dot or empty
   segments, a `*` inside a segment, or no segment but wildcards. No option
   exempts every route; that is `WithoutCSRFProtection()`.
+- Construction also refuses a fixed segment that is a malformed percent-encoding
+  (`%zz`) or decodes to `.`, `..` or something holding `/` (`%2e%2e`, `%2E`,
+  `a%2Fb`); a legitimate one such as `caf%C3%A9` is kept and matches only that
+  escaped form.
 - With OIDC login, `POST` to the back-channel logout endpoint (the
   `WithOIDCBackchannelLogoutPath` prefix followed by one provider name) is
   exempt by default, because the provider calls it server to server. The
   prefix is matched as a literal, never as a pattern, so a `*` in it widens
   nothing. A prefix that cannot be exempt as written (one holding a
-  percent-encoding, or an empty or dot segment) fails construction; fix the
+  percent-encoding, a character a request escapes such as `/idp/déconnexion`,
+  or an empty or dot segment) fails construction; fix the
   path or give `WithoutBackchannelLogoutExemption()`, which removes the
   exemption.
 

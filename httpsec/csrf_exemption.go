@@ -153,6 +153,10 @@ func parseCSRFExemption(method, pattern string) (csrfExemption, error) {
 	wild, literal := false, false
 
 	for i, seg := range segments {
+		if err := checkExemptionSegment(seg); err != nil {
+			return csrfExemption{}, err
+		}
+
 		switch {
 		case seg == "" && i < len(segments)-1:
 			return csrfExemption{}, errors.New("the path has an empty segment")
@@ -177,6 +181,28 @@ func parseCSRFExemption(method, pattern string) (csrfExemption, error) {
 	}
 
 	return e, nil
+}
+
+// checkExemptionSegment refuses a fixed segment that is not a well-formed
+// escape, or that decodes to a dot segment or to one holding "/": a router
+// that decodes it would hand the handler a path other than the one written.
+func checkExemptionSegment(seg string) error {
+	if seg == "" || seg == csrfWildcard {
+		return nil
+	}
+
+	decoded, err := url.PathUnescape(seg)
+
+	switch {
+	case err != nil:
+		return errors.New("a segment is not a well-formed percent-encoding")
+	case decoded == "." || decoded == "..":
+		return errors.New("the path has a dot segment")
+	case strings.Contains(decoded, "/"):
+		return errors.New("a segment decodes to one holding \"/\"")
+	}
+
+	return nil
 }
 
 // WithoutBackchannelLogoutExemption judges the OIDC back-channel logout
@@ -225,12 +251,19 @@ func (l *csrfLayer) settleExemptions(c *config) error {
 
 // backchannelExemption builds the exemption of POST to prefix followed by one
 // provider segment. prefix is a literal, never a pattern; it always ends in
-// "/" (oidcPrefix). One holding an escape, an empty interior segment or a dot
+// "/" (oidcPrefix). One holding an escape, a character a request escapes
+// (its escaped form differs from itself), an empty interior segment or a dot
 // segment is refused: it would name a path other than the one the endpoint
 // answers once decoded or cleaned.
 func backchannelExemption(prefix string) (csrfExemption, error) {
 	if strings.Contains(prefix, "%") {
 		return csrfExemption{}, errors.New("the path holds a percent-encoding")
+	}
+
+	// RawPath keeps the characters a client may send as they are, such as "*";
+	// what it cannot hold (non-ASCII, a space) is escaped, and so differs.
+	if (&url.URL{Path: prefix, RawPath: prefix}).EscapedPath() != prefix {
+		return csrfExemption{}, errors.New("the path holds a character a request escapes")
 	}
 
 	for _, seg := range strings.Split(strings.TrimSuffix(prefix[1:], "/"), "/") {
