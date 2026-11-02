@@ -498,6 +498,8 @@ err = policy.Change(ctx, user, candidate, write)
   - Ending the current sign-in by its own handle acts as a logout. Refusing it would only send the client to another endpoint.
   - A sign-in still owing a second factor or a recovery step is listed and marked, because an unknown pending sign-in is exactly what the user needs to see.
   - A malformed, unknown or foreign handle is 404 and revokes nothing. Every response is `no-store`.
+  - **Settled during task 7.1 (2026-11-02).** The slot is `OrderSessionManagement` (674), after re-authentication. Only a full session reaches it. The recency window is `reauthentication`'s 15-minute default, replaceable with `WithSessionManagementRecency`. Ending the current sign-in revokes its family. It does not run the logout endpoint's other steps (Clear-Site-Data, the OIDC end-session redirect), which stay with that endpoint. The default listing shows the recorded client address, as the `sessions` spec says, because metadata is opt-in.
+  - **Where metadata comes from.** The chain records the resolved client address and the request's user agent at login completion, for every first factor. The user agent is put on the context when the chain resolves the client, not by individual flows.
 
 ### D13. Security events
 
@@ -529,6 +531,7 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 - **An unseen-device sign-in notice** is opt-in. It requires session metadata and a sender.
   - **Matching against live sign-ins (changed 2026-11-02).** The draft matched the user's sessions of the last 90 days. Expired sessions are swept, so that history does not exist. The notice therefore matches the user's other live sign-ins, by user agent by default, through a replaceable matcher. A consumer who keeps device history supplies a seen-devices port, which is consulted beside them.
   - A user's first sign-in, with nothing to compare, is not notified. A sign-in whose session was never stored is not notified.
+  - **Settled during task 7.4 (2026-11-02).** The seen-devices port can only suppress a notice, and with no other live sign-in nothing is sent whatever the port says. A failing port, listing or recipient lookup sends nothing and is logged without its text. A sign-in still owing a second factor is notified, because an unfamiliar pending sign-in is what the user needs to see. A sender that waits for delivery is refused unless `WithSynchronousSignInNotice` is given.
 
 ### D15. Automation challenge
 

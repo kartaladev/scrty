@@ -70,7 +70,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [ ] 7.2 Register `ErrSessionHandleNotFound` at 404, and answer a listing store outage as 500 with fixed text, test-first. Verify: `go test -run 'TestStatusForError|TestSessionManagement_Outage' -count=1 ./httpsec/`.
 - [ ] 7.3 Add the passkey removal notice, on by default, with `WithoutPasskeyRemovalNotification`, no notice on a refused removal, and a send failure that keeps the removal, test-first. Verify: `go test -run 'TestPasskey_RemovalNotice' ./...` in the core module.
 - [ ] 7.4 Add the opt-in unseen-device notice: matching live sign-ins by user agent through a replaceable matcher, the optional seen-devices port, no notice on a first sign-in or an unstored one, a send failure that does not affect the sign-in, and its construction rules, test-first. Verify: `go test -run 'TestSignInNotice' -count=1 ./httpsec/`.
-- [ ] 7.5 Run session management on all three adapters in conformance, and document the endpoints and notices with their defaults. Verify: `go test -run 'TestSessionManagement' ./...` in the `test` module.
+- [ ] 7.5 Run session management on all three adapters in conformance, and document the endpoints and notices with their defaults. Verify: `go test -run 'TestConformance|TestSessionStore_EndSignInOwnership' ./...` in the `test` module.
 
 ## 8. Token confirmation claim and DPoP (D8)
 
