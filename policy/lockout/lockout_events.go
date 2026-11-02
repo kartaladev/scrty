@@ -57,25 +57,67 @@ func (p *Policy) reportLock(ctx context.Context, at time.Time) {
 	}
 }
 
-// crossed reports whether a failure that took the identifier's count in the
-// window from before to after took it to a lock: past the threshold, or,
-// under the escalating wait, past the window failure limit.
-func (p *Policy) crossed(before, after int) bool {
-	if before < p.threshold && after >= p.threshold {
+// lockState is what the policy's own rule said of an identifier just before
+// a failure was recorded for it: how many failures its window held, whether
+// they locked it, and the error that kept the store from saying.
+type lockState struct {
+	count  int
+	locked bool
+	err    error
+}
+
+// lockedAt reads whether username was locked at at, before a failure at at is
+// recorded, by the rule Evaluate judges by: under the sliding lock, the
+// window's count against the threshold; under the escalating wait, the count
+// against the window failure limit, and between the threshold and that limit
+// whether any failure is more recent than the wait the count owes. The count
+// alone cannot tell a wait still running from one that has run out, so the
+// recency costs a second read, and only for a count between the two.
+func (p *Policy) lockedAt(ctx context.Context, username string, at time.Time) lockState {
+	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
+	if err != nil {
+		return lockState{err: err}
+	}
+
+	switch {
+	case count < p.threshold:
+		return lockState{count: count}
+	case p.sliding || count >= p.ceiling:
+		return lockState{count: count, locked: true}
+	}
+
+	recent, err := p.store.FailureCount(ctx, username, at.Add(-p.waitFor(count)))
+	if err != nil {
+		return lockState{err: err}
+	}
+
+	return lockState{count: count, locked: recent > 0}
+}
+
+// locks reports whether a failure that left after failures in the window
+// locked its identifier, which before describes as it was just before: it
+// took the identifier from allowed to locked, or, under the escalating wait,
+// took the count to the window failure limit, where no wait lifts the lock.
+//
+// A failure recorded at or past the threshold leaves its identifier locked by
+// either rule, since it is itself more recent than any wait it owes.
+func (p *Policy) locks(before lockState, after int) bool {
+	if !before.locked && after >= p.threshold {
 		return true
 	}
 
-	return !p.sliding && before < p.ceiling && after >= p.ceiling
+	return !p.sliding && before.count < p.ceiling && after >= p.ceiling
 }
 
 // identifierLocks serializes, within one process, the failures recorded for
-// one identifier while a sink watches, so that each reads the window's count
-// before and after its own write with no other failure of this process in
-// between, and exactly one of them sees the count cross into a lock.
+// one identifier while a sink watches, so that each reads whether the
+// identifier was locked before its own write, and counts the window after it,
+// with no other failure of this process in between, and one of them sees the
+// transition into a lock.
 //
-// An identifier is held only while a failure for it is being recorded, so
-// what it holds is bounded by the logins in flight, not by the identifiers
-// ever seen.
+// An identifier is held only while a failure for it is being recorded, and
+// released however that ends, a panic included, so what it holds is bounded
+// by the logins in flight, not by the identifiers ever seen.
 type identifierLocks struct {
 	mu    sync.Mutex
 	locks map[string]*identifierLock

@@ -2,12 +2,15 @@ package lockout_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/internal/secevent"
@@ -45,6 +48,38 @@ func lockEvents(at time.Time, kind factor.Kind) []security.Event {
 	}
 }
 
+// priorAged records n failures for id into s, the newest newest before
+// lockoutNow and each earlier one a second before the next.
+func priorAged(id string, n int, newest time.Duration) func(*testing.T, policy.AttemptStore) {
+	return func(t *testing.T, s policy.AttemptStore) {
+		for i := range n {
+			require.NoError(t, s.RecordFailure(t.Context(), id, lockoutNow.Add(-newest-time.Duration(i)*time.Second)))
+		}
+	}
+}
+
+// countingAttemptStore is an attempt store that forwards every call to under,
+// counts the FailureCount calls it answers, and answers the failOn-th of them,
+// when failOn is not zero, with errAttemptStoreDown.
+func countingAttemptStore(t *testing.T, under policy.AttemptStore, failOn int32) (*MockAttemptStore, *atomic.Int32) {
+	t.Helper()
+
+	reads := &atomic.Int32{}
+	store := NewMockAttemptStore(gomock.NewController(t))
+	store.EXPECT().RecordFailure(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(under.RecordFailure).AnyTimes()
+	store.EXPECT().Reset(gomock.Any(), gomock.Any()).DoAndReturn(under.Reset).AnyTimes()
+	store.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, username string, since time.Time) (int, error) {
+			if reads.Add(1) == failOn {
+				return 0, errAttemptStoreDown
+			}
+
+			return under.FailureCount(ctx, username, since)
+		})
+
+	return store, reads
+}
+
 // TestSecurityEvents_LockoutReports pins that the lockout reports a lock where
 // it decides it, through its own view: the failure that takes an identifier
 // to a lock reports authn_login_fail_max and authn_login_lock once, to the
@@ -69,8 +104,13 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 		// ctx stands for the request: chain is the chain's delivery.
 		ctx func(ctx context.Context, chain secevent.Emitter) context.Context
 
+		// failCount, when not zero, makes the store's failCount-th
+		// FailureCount fail: the first is the count before the write, the
+		// second the recency the escalating wait reads, when it is read.
+		failCount int32
+
 		// act records the failure under test; nil records one through the view.
-		act func(ctx context.Context, p *lockout.Policy) error
+		act func(t *testing.T, ctx context.Context, p *lockout.Policy) error
 
 		assert func(t *testing.T, own, chain []security.Event, reports []lockout.Report)
 	}
@@ -84,6 +124,25 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 	}
 	onChain := func(ctx context.Context, chain secevent.Emitter) context.Context {
 		return secevent.With(ctx, chain)
+	}
+
+	// locksAgain records a failure through the view and requires that it took
+	// the identifier from allowed to locked by the policy's own rule.
+	locksAgain := func(t *testing.T, ctx context.Context, p *lockout.Policy) error {
+		require.Equal(t, policy.Allow, p.Evaluate(ctx, lockoutInput("ada")).Outcome, "allowed before the failure")
+		err := p.Attempts().RecordFailure(ctx, "ada", lockoutNow)
+		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountLocked, "locked after it")
+
+		return err
+	}
+	// staysLocked records a failure through the view and requires that the
+	// identifier was locked before it and still is after.
+	staysLocked := func(t *testing.T, ctx context.Context, p *lockout.Policy) error {
+		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountLocked, "locked before the failure")
+		err := p.Attempts().RecordFailure(ctx, "ada", lockoutNow)
+		require.ErrorIs(t, p.Evaluate(ctx, lockoutInput("ada")).Reason, lockout.ErrAccountLocked, "locked after it")
+
+		return err
 	}
 
 	cases := []testCase{
@@ -188,7 +247,7 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 			name:    "the policy's own RecordFailure reports the lock at its clock's instant",
 			ownSink: true,
 			before:  prior("ada", 4),
-			act: func(ctx context.Context, p *lockout.Policy) error {
+			act: func(_ *testing.T, ctx context.Context, p *lockout.Policy) error {
 				return p.RecordFailure(ctx, "ada")
 			},
 			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
@@ -199,11 +258,73 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 			name:    "a failure recorded straight into the store, not through the view, is not reported",
 			ownSink: true,
 			before:  prior("ada", 4),
-			act: func(ctx context.Context, p *lockout.Policy) error {
+			act: func(_ *testing.T, ctx context.Context, p *lockout.Policy) error {
 				return p.StoreForTest().RecordFailure(ctx, "ada", lockoutNow)
 			},
 			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
 				assert.Empty(t, own)
+			},
+		},
+		{
+			name:    "a failure after the escalating wait has run out locks again, longer, and reports again",
+			ownSink: true,
+			observe: true,
+			before:  priorAged("ada", 5, time.Hour),
+			act:     locksAgain,
+			assert: func(t *testing.T, own, _ []security.Event, reports []lockout.Report) {
+				assert.Equal(t, lockEvents(lockoutNow, ""), own)
+				assert.Equal(t, []lockout.Report{
+					{Identifier: "ada", Kind: lockout.ReportLocked, Failures: 6, At: lockoutNow},
+				}, reports)
+			},
+		},
+		{
+			name:    "a failure while an escalated wait still runs reports nothing more",
+			ownSink: true,
+			// Six failures owe a minute, twice the first wait; the newest is
+			// 45 seconds old, past the first wait but not past the minute.
+			before: priorAged("ada", 6, 45*time.Second),
+			act:    staysLocked,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own)
+			},
+		},
+		{
+			name:    "under the sliding lock a failure on an identifier at its threshold reports nothing more, however old its failures",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithSliding(5, 24*time.Hour)},
+			before:  priorAged("ada", 5, time.Hour),
+			act:     staysLocked,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own)
+			},
+		},
+		{
+			name:    "the failure that reaches the window failure limit while a wait still runs reports that lock",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithWindowFailureLimit(8)},
+			before:  priorAged("ada", 7, time.Second),
+			act:     staysLocked,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Equal(t, lockEvents(lockoutNow, ""), own)
+			},
+		},
+		{
+			name:      "a failure whose window could not be counted before the write reports no lock",
+			ownSink:   true,
+			before:    prior("ada", 4),
+			failCount: 1,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own, "an unknown count before the write is not taken for zero")
+			},
+		},
+		{
+			name:      "a failure whose recency could not be read before the write reports no lock",
+			ownSink:   true,
+			before:    priorAged("ada", 5, time.Hour),
+			failCount: 2,
+			assert: func(t *testing.T, own, _ []security.Event, _ []lockout.Report) {
+				assert.Empty(t, own, "an unknown recency is not taken for an allowed identifier")
 			},
 		},
 	}
@@ -219,13 +340,18 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 				tc.before(t, store)
 			}
 
+			var counted policy.AttemptStore = store
+			if tc.failCount != 0 {
+				counted, _ = countingAttemptStore(t, store, tc.failCount)
+			}
+
 			var (
 				own, chain eventLog
 				mu         sync.Mutex
 				reports    []lockout.Report
 			)
 
-			opts := append([]lockout.Option{lockout.WithAttemptStore(store)}, tc.opts...)
+			opts := append([]lockout.Option{lockout.WithAttemptStore(counted)}, tc.opts...)
 			if tc.ownSink {
 				opts = append(opts, lockout.WithSecurityEvents(own.sink))
 			}
@@ -247,11 +373,11 @@ func TestSecurityEvents_LockoutReports(t *testing.T) {
 
 			act := tc.act
 			if act == nil {
-				act = func(ctx context.Context, p *lockout.Policy) error {
+				act = func(_ *testing.T, ctx context.Context, p *lockout.Policy) error {
 					return p.Attempts().RecordFailure(ctx, "ada", lockoutNow)
 				}
 			}
-			require.NoError(t, act(ctx, p))
+			require.NoError(t, act(t, ctx, p))
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -406,4 +532,189 @@ func TestSecurityEvents_LockReportedOnce(t *testing.T) {
 	defer mu.Unlock()
 
 	assert.Equal(t, concurrent, reports, "the observer is told of every failure that leaves the identifier locked")
+}
+
+// TestSecurityEvents_LockoutStoreReads pins what deciding a lock costs the
+// store: nothing beyond the count the observer already reads when no sink
+// watches, the count before the write as well while one does, and the
+// recency the escalating wait reads only for an identifier the count alone
+// cannot tell locked from allowed.
+func TestSecurityEvents_LockoutStoreReads(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name             string
+		ownSink, observe bool
+		opts             []lockout.Option
+		before           func(t *testing.T, s policy.AttemptStore)
+		assert           func(t *testing.T, reads int32)
+	}
+
+	cases := []testCase{
+		{
+			name:   "with no sink and no observer the failure is only written",
+			before: priorAged("ada", 5, time.Hour),
+			assert: func(t *testing.T, reads int32) { assert.Zero(t, reads) },
+		},
+		{
+			name:    "with an observer and no sink the window is counted once, after the write",
+			observe: true,
+			before:  priorAged("ada", 5, time.Hour),
+			assert:  func(t *testing.T, reads int32) { assert.Equal(t, int32(1), reads) },
+		},
+		{
+			name:    "with a sink, below the threshold, the window is counted before and after",
+			ownSink: true,
+			before:  priorAged("ada", 3, time.Hour),
+			assert:  func(t *testing.T, reads int32) { assert.Equal(t, int32(2), reads) },
+		},
+		{
+			name:    "with a sink and an observer, below the threshold, the observer shares the count after",
+			ownSink: true,
+			observe: true,
+			before:  priorAged("ada", 3, time.Hour),
+			assert:  func(t *testing.T, reads int32) { assert.Equal(t, int32(2), reads) },
+		},
+		{
+			name:    "with a sink, between the threshold and the window failure limit, the recency is read too",
+			ownSink: true,
+			before:  priorAged("ada", 5, time.Hour),
+			assert:  func(t *testing.T, reads int32) { assert.Equal(t, int32(3), reads) },
+		},
+		{
+			name:    "with a sink, at the window failure limit, no recency is read",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithWindowFailureLimit(8)},
+			before:  priorAged("ada", 8, time.Hour),
+			assert:  func(t *testing.T, reads int32) { assert.Equal(t, int32(2), reads) },
+		},
+		{
+			name:    "with a sink, under the sliding lock, no recency is read",
+			ownSink: true,
+			opts:    []lockout.Option{lockout.WithSliding(5, 24*time.Hour)},
+			before:  priorAged("ada", 5, time.Hour),
+			assert:  func(t *testing.T, reads int32) { assert.Equal(t, int32(2), reads) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			under, err := lockout.NewMemoryAttemptStore()
+			require.NoError(t, err)
+			tc.before(t, under)
+
+			store, reads := countingAttemptStore(t, under, 0)
+
+			opts := append([]lockout.Option{lockout.WithAttemptStore(store)}, tc.opts...)
+			if tc.ownSink {
+				opts = append(opts, lockout.WithSecurityEvents(func(context.Context, security.Event) {}))
+			}
+			if tc.observe {
+				opts = append(opts, lockout.WithObserver(func(context.Context, lockout.Report) {}))
+			}
+
+			p := lockoutWith(t, opts...)
+			require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow))
+
+			tc.assert(t, reads.Load())
+		})
+	}
+}
+
+// panickingAttemptStore is an attempt store whose first RecordFailure panics,
+// as a consumer's store with a defect might, and whose every other call is
+// forwarded to under.
+func panickingAttemptStore(t *testing.T, under policy.AttemptStore) *MockAttemptStore {
+	t.Helper()
+
+	var calls atomic.Int32
+	store := NewMockAttemptStore(gomock.NewController(t))
+	store.EXPECT().RecordFailure(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, username string, at time.Time) error {
+			if calls.Add(1) == 1 {
+				panic("the consumer's store failed")
+			}
+
+			return under.RecordFailure(ctx, username, at)
+		})
+	store.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(under.FailureCount).AnyTimes()
+
+	return store
+}
+
+// TestSecurityEvents_LockoutIdentifierLocks pins that the per-identifier
+// serialisation a watching sink needs never outlives the failures it
+// serialises: an identifier is released when its failure is done, even when
+// the consumer's store panicked, so no later failure for it waits forever and
+// no identifier is kept once nothing is recorded for it.
+func TestSecurityEvents_LockoutIdentifierLocks(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// store wraps the policy's in-memory store.
+		store func(t *testing.T, under policy.AttemptStore) policy.AttemptStore
+
+		// act records the case's failures through p's view.
+		act func(t *testing.T, ctx context.Context, p *lockout.Policy)
+	}
+
+	cases := []testCase{
+		{
+			name: "a store that panics does not leave the identifier held",
+			store: func(t *testing.T, under policy.AttemptStore) policy.AttemptStore {
+				return panickingAttemptStore(t, under)
+			},
+			act: func(t *testing.T, ctx context.Context, p *lockout.Policy) {
+				assert.Panics(t, func() { _ = p.Attempts().RecordFailure(ctx, "ada", lockoutNow) },
+					"the consumer's panic is the consumer's to see")
+
+				done := make(chan error, 1)
+				go func() { done <- p.Attempts().RecordFailure(ctx, "ada", lockoutNow) }()
+
+				select {
+				case err := <-done:
+					assert.NoError(t, err)
+				case <-time.After(2 * time.Second):
+					require.FailNow(t, "a later failure for the identifier is blocked behind the panicked one")
+				}
+			},
+		},
+		{
+			name: "failures for many identifiers leave none held once they are done",
+			act: func(t *testing.T, ctx context.Context, p *lockout.Policy) {
+				var wg sync.WaitGroup
+				for i := range 50 {
+					wg.Go(func() {
+						assert.NoError(t, p.Attempts().RecordFailure(ctx, fmt.Sprintf("user-%d", i), lockoutNow))
+					})
+				}
+				wg.Wait()
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			under, err := lockout.NewMemoryAttemptStore()
+			require.NoError(t, err)
+
+			var store policy.AttemptStore = under
+			if tc.store != nil {
+				store = tc.store(t, under)
+			}
+
+			p := lockoutWith(t, lockout.WithAttemptStore(store),
+				lockout.WithSecurityEvents(func(context.Context, security.Event) {}))
+
+			tc.act(t, t.Context(), p)
+
+			assert.Zero(t, p.IdentifiersLockedForTest(), "an identifier is held after its failures are done")
+		})
+	}
 }

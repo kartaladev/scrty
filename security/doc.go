@@ -69,7 +69,8 @@
 //     at form login, Basic, an API key, a bearer token or session reference, a
 //     passkey assertion or an OIDC callback.
 //   - authn_login_fail_max: the failed attempt that took its identifier to a
-//     lock in the account-lockout policy, once per lock.
+//     lock in the account-lockout policy, once per lock, including the lock
+//     again, for longer, after an escalating wait has run out.
 //   - authn_login_lock: the same lock, reported beside authn_login_fail_max.
 //   - authn_password_change: a password changed.
 //   - authn_password_change_fail: a password change refused, for a wrong
@@ -147,8 +148,11 @@
 //     mfa.ErrSameChannel), the mfa.Method Verify contract; any other error is
 //     taken for a dependency failure and reports nothing.
 //   - Session is a digest of the session's identifier, never the identifier.
-//   - A lock is reported exactly once within one process. With an attempt
-//     store several processes share, failures on different processes at the
-//     same moment may each report it; and a failure recorded straight into
-//     the store, not through lockout.Policy.Attempts, is not reported.
+//   - A lock is reported once within one process. With an attempt store
+//     several processes share, failures on different processes at the same
+//     moment may each report it; a failure recorded straight into the store,
+//     not through lockout.Policy.Attempts, is not reported; and a failure for
+//     which the store could not say whether the identifier was already
+//     locked loses its event, which the policy logs, while the failure
+//     itself is recorded and counts.
 package security

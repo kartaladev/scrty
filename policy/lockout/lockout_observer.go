@@ -194,21 +194,33 @@ func WithLogger(l *slog.Logger) Option {
 //
 // A lock is reported where it is decided. On a failure a sink watches, the
 // chain's (httpsec.EnableSecurityEvents) or the policy's own
-// (WithSecurityEvents), the view counts the identifier's failures in the
-// window before and after it records the failure, and the failure that takes
-// the count to the threshold, or under the escalating wait to the window
-// failure limit, or that sets a hold, reports security.AuthnLoginFailMax and
-// then security.AuthnLoginLock. The failures after it, which leave the
-// identifier locked but lock nothing new, report no further lock; the
-// observer is still told of each as before. Within one process the failures
-// of one identifier are recorded one at a time while a sink watches, so
-// concurrent failures that cross the threshold together report one lock.
-// With a store several processes share, failures on different processes at
-// the same moment may each report it: a lock is reported at least once, and
-// exactly once within a process. The count before the failure is one extra
-// store read, paid only while a sink watches; a store that cannot answer it
-// loses the event, which the policy logs through WithLogger, and never the
-// failure.
+// (WithSecurityEvents), the view reads, before it records the failure,
+// whether the identifier is locked by the rule Evaluate judges by, and the
+// failure that takes it from allowed to locked, or under the escalating wait
+// takes its count to the window failure limit, or that sets a hold, reports
+// security.AuthnLoginFailMax and then security.AuthnLoginLock. Under the
+// escalating wait an identifier is allowed again once its wait has run out,
+// so the failure after that locks it again, for longer, and reports again.
+// The failures that find it still locked lock nothing new and report no
+// further lock; the observer is still told of each as before. Within one
+// process the failures of one identifier are recorded one at a time while a
+// sink watches, so concurrent failures that lock it together report one
+// lock. With a store several processes share, failures on different
+// processes at the same moment may each report it: a lock is reported at
+// least once, and once within a process.
+//
+// Deciding it costs store reads, paid only while a sink watches: the
+// window's count before the failure, and, under the escalating wait for a
+// count between the threshold and the window failure limit, whether any
+// failure is more recent than the wait that count owes, since the count
+// alone cannot tell a wait still running from one that has run out. The
+// count after the failure is read too, and shared with the observer when
+// there is one. So a failure a sink watches reads the store two or three
+// times besides its write, with or without an observer (the failure that
+// sets a hold skips the count after); one with only an observer reads it
+// once; one with neither, none. A store that cannot answer
+// a read before the write loses the event, which the policy logs through
+// WithLogger, and never the failure.
 //
 // With a failure-streak limit (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
 // consecutive-failure streak and then the failure log, and always attempts the
@@ -243,19 +255,25 @@ func (o *observedAttempts) RecordFailure(ctx context.Context, username string, a
 		at = p.clock.Now()
 	}
 
-	// A lock is reported where it is decided, by comparing the window's count
-	// before and after this failure, and only on a failure some sink watches.
-	// The identifier's failures in this process are recorded one at a time
-	// meanwhile, so one of them sees the crossing; the observer and the sink
-	// are told after the lock is released, so neither holds the next failure.
+	// A lock is reported where it is decided, by reading whether the
+	// identifier was locked before this failure and counting the window after
+	// it, and only on a failure some sink watches. The identifier's failures
+	// in this process are recorded one at a time meanwhile, so one of them
+	// sees the transition; the observer and the sink are told after the lock
+	// is released, so neither holds the next failure.
 	watched := p.eventsWatched(ctx)
 	unlock := func() {}
 	if watched {
 		unlock = o.locks.lock(username)
 	}
 
-	out := o.record(ctx, username, at, watched)
-	unlock()
+	// The release is deferred, so a store that panics leaves the identifier
+	// free for its next failure rather than held for good.
+	out := func() recorded {
+		defer unlock()
+
+		return o.record(ctx, username, at, watched)
+	}()
 
 	if out.report != nil {
 		p.report(ctx, *out.report)
@@ -277,13 +295,16 @@ type recorded struct {
 }
 
 // record writes one failure and decides what it reports. watched is whether a
-// sink watches, so the window is counted before the write as well as after.
+// sink watches, so whether the identifier was locked is read before the write
+// as well as the window counted after.
 func (o *observedAttempts) record(ctx context.Context, username string, at time.Time, watched bool) recorded {
 	p := o.p
 
-	before, beforeErr := 0, error(nil)
+	// Whether the identifier was locked before this failure, by the policy's
+	// own rule, read only while a sink watches.
+	var lockedBefore lockState
 	if watched {
-		before, beforeErr = p.store.FailureCount(ctx, username, at.Add(-p.window))
+		lockedBefore = p.lockedAt(ctx, username, at)
 	}
 
 	// The streak goes first: it is the record that cannot be rebuilt from the
@@ -340,9 +361,9 @@ func (o *observedAttempts) record(ctx context.Context, username string, at time.
 
 	if watched {
 		switch {
-		case beforeErr != nil:
-			p.logger.LogAttrs(ctx, slog.LevelError, msgEventLost, diag.Failure("attempt-store", beforeErr)...)
-		case p.crossed(before, count):
+		case lockedBefore.err != nil:
+			p.logger.LogAttrs(ctx, slog.LevelError, msgEventLost, diag.Failure("attempt-store", lockedBefore.err)...)
+		case p.locks(lockedBefore, count):
 			out.locked = true
 		}
 	}
@@ -361,8 +382,9 @@ func (o *observedAttempts) eventInstant(at time.Time) time.Time {
 }
 
 // msgEventLost is the record for a failure whose lock event could not be
-// decided because the store could not count the window before the failure was
-// recorded: the failure is recorded and counts, and only its event is gone.
+// decided because the store could not say, before the failure was recorded,
+// whether the identifier was already locked: the failure is recorded and
+// counts, and only its event is gone.
 const msgEventLost = "lockout: a lock event was lost: the attempt store could not count the failures before recording one"
 
 // joinWriteErrors returns the one error that is set as itself, so a caller

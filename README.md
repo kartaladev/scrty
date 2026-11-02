@@ -2038,7 +2038,9 @@ chain, err := httpsec.New(
 `go doc github.com/kartaladev/scrty/security` lists every name and when it is
 reported; `security.Names()` returns them. Among them: `authn_login_success`,
 `authn_login_fail`, `authn_login_fail_max` and `authn_login_lock` (the failure
-that locks an identifier, once per lock), `authn_token_created`,
+that locks an identifier, once per lock; under the default escalating wait, a
+failure after a wait has run out locks the identifier again, for longer, and
+is reported again), `authn_token_created`,
 `authn_token_reuse` (a superseded session presented again), `session_created`,
 `session_renewed`, `session_logout`, `authz_fail`, `excess_rate_limit_exceeded`,
 `malicious_csrf`, and the `scrty_` names for second factors, passkeys,
@@ -2098,9 +2100,11 @@ failure.
   outage and reports nothing.
 - `Session` is a digest. To correlate it with a session, digest the identifier
   the same way; the event never names the session itself.
-- A lock is reported exactly once within one process. With an attempt store
-  several replicas share, failures on different replicas at the same moment
-  may each report it.
+- A lock is reported once within one process. With an attempt store several
+  replicas share, failures on different replicas at the same moment may each
+  report it. A failure for which the attempt store could not say whether the
+  identifier was already locked loses its event, which the lockout policy
+  logs; the failure itself is recorded and counts.
 
 ### Defaults
 

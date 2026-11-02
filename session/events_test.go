@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/secevent"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
@@ -154,6 +157,64 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 			defer mu.Unlock()
 
 			tc.assert(t, f, own.all(), chain.all(), observed)
+		})
+	}
+}
+
+// TestSecurityEvents_ReuseAfterRevocation pins that authn_token_reuse reports
+// a family that was revoked: a reuse whose revocation failed is still refused,
+// and reported nowhere, since the family it would name is still live.
+func TestSecurityEvents_ReuseAfterRevocation(t *testing.T) {
+	t.Parallel()
+
+	const sid = "reused"
+
+	type testCase struct {
+		name string
+		// deleteErr is what the store's family revocation returns.
+		deleteErr error
+		assert    func(t *testing.T, own []security.Event, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a revoked family reports the reuse",
+			assert: func(t *testing.T, own []security.Event, err error) {
+				require.ErrorIs(t, err, session.ErrReused)
+				require.Len(t, own, 1)
+				assert.Equal(t, security.AuthnTokenReuse, own[0].Name)
+			},
+		},
+		{
+			name:      "a family whose revocation failed reports nothing",
+			deleteErr: errStoreQuotes,
+			assert: func(t *testing.T, own []security.Event, err error) {
+				require.ErrorIs(t, err, session.ErrReused)
+				assert.Empty(t, own, "a reuse was reported for a family that was not revoked")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := NewMockStore(gomock.NewController(t))
+			gomock.InOrder(
+				store.EXPECT().Load(gomock.Any(), sid).Return(supersededStored(sid), nil),
+				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(
+					func(context.Context, id.ID) (int, error) { return 2, tc.deleteErr }),
+			)
+
+			var own eventLog
+			m := managerFor(t,
+				session.WithStore(store),
+				session.WithClock(clockwork.NewFakeClockAt(createdAt.Add(5*time.Minute))),
+				session.WithSecurityEvents(own.sink),
+			)
+
+			_, err := m.Load(t.Context(), sid)
+			tc.assert(t, own.all(), err)
 		})
 	}
 }

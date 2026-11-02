@@ -102,16 +102,21 @@ const (
 	AuthnLoginFail = "authn_login_fail"
 
 	// AuthnLoginFailMax is the failed attempt that took its identifier to a
-	// lock in the account-lockout policy: to its threshold, to the window
-	// failure limit under the escalating wait, or to a hold under a
-	// failure-streak limit. It is reported by the policy's view
+	// lock in the account-lockout policy: from allowed to locked by the
+	// policy's own rule, to the window failure limit under the escalating
+	// wait, or to a hold under a failure-streak limit. Under the default
+	// escalating wait an identifier is allowed again once its wait has run
+	// out, so the failure after that locks it again, for longer, and is
+	// reported again. It is reported by the policy's view
 	// (lockout.Policy.Attempts) where it records the failure, once per lock:
-	// the failures after it, which leave the identifier locked, report no
-	// further lock. It names no user, since the policy counts identifiers,
-	// and carries the first factor that failed. Within one process concurrent
-	// failures that cross together report it once; with an attempt store
+	// the failures that find the identifier still locked report no further
+	// lock. It names no user, since the policy counts identifiers, and
+	// carries the first factor that failed. Within one process concurrent
+	// failures that lock together report it once; with an attempt store
 	// several processes share, failures on different processes at the same
-	// moment may each report it.
+	// moment may each report it. A store that cannot say whether the
+	// identifier was locked before the failure loses the event, never the
+	// failure.
 	AuthnLoginFailMax = "authn_login_fail_max"
 
 	// AuthnLoginLock is the lock AuthnLoginFailMax reports, reported beside
