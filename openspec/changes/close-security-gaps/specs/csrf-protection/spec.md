@@ -119,7 +119,7 @@ Building a chain SHALL fail with a configuration error when it enables any inter
 - **THEN** the check fails with a configuration error, answered 500, and no session is published
 
 ### Requirement: Exemptions are explicit and narrow
-The consumer SHALL be able to exempt specific routes, each named by an exact method and an exact path or a path pattern whose wildcard matches one path segment, from CSRF protection. Matching SHALL use the path the chain routes by, and SHALL NOT match another path that a redirect, a trailing slash, a case change or a different encoding would lead to. There SHALL be no option that exempts every route, and an exemption naming no method or the path `/` alone SHALL fail construction. An exempted route SHALL still carry every other protection the chain applies.
+The consumer SHALL be able to exempt specific routes, each named by an exact method and an exact path or a path pattern whose wildcard matches one path segment, from CSRF protection. Matching SHALL use the path as the client sent it, still percent-encoded, and SHALL NOT match another path that a redirect, a trailing slash, a case change or a different encoding would lead to. There SHALL be no option that exempts every route, and an exemption naming no method or the path `/` alone SHALL fail construction. An exempted route SHALL still carry every other protection the chain applies.
 
 #### Scenario: Webhook route
 - **WHEN** the consumer exempts `POST /webhooks/payments` and a provider posts to it cross-site with no token
