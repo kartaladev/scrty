@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
@@ -594,7 +595,10 @@ func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
 	}
 
 	type testCase struct {
-		name   string
+		name string
+		// bubble runs the case in a synctest bubble, so synctest.Wait can
+		// stand in for a pause.
+		bubble bool
 		run    func(t *testing.T) chan served
 		assert func(t *testing.T, done chan served)
 	}
@@ -636,7 +640,26 @@ func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
 			},
 		},
 		{
-			name: "a waiter seals itself when the sealer hung up",
+			name: "a nonce from another replica is served while this replica seals its first",
+			run: func(t *testing.T) chan served {
+				x := build(t, func(call int32) bool { return call == 1 })
+				replicaB := x.w.chain(signedBearer, nonceDPoP(t, nonceKeyA))
+				other := askedForNonce(t, serve(t, replicaB, request(t, x, "j-0", "")))
+
+				x.w.clk.Advance(httpsec.DefaultDPoPNonceLifetime / 2)
+				serveAsync(t.Context(), t, x.chain, request(t, x, "j-a", ""))
+				<-x.entered
+
+				return serveAsync(t.Context(), t, x.chain, request(t, x, "j-b", other))
+			},
+			assert: func(t *testing.T, done chan served) {
+				out := within(t, done, "a request presenting a still-valid nonce waited on this replica's seal")
+				authenticatedAsOwner(t, out)
+			},
+		},
+		{
+			name:   "a waiter seals itself when the sealer hung up",
+			bubble: true,
 			run: func(t *testing.T) chan served {
 				x := build(t, func(call int32) bool { return call == 1 })
 
@@ -647,9 +670,10 @@ func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
 				<-x.entered
 
 				waiter := serveAsync(t.Context(), t, x.chain, request(t, x, "j-b", ""))
-				// The waiter is given time to queue behind the seal; one that
-				// has not yet would seal itself, and the case would show nothing.
-				time.Sleep(100 * time.Millisecond)
+				// Wait returns once the waiter is blocked behind the seal; one
+				// that had not queued yet would seal itself, and the case
+				// would show nothing.
+				synctest.Wait()
 				cancel()
 
 				out := within(t, sealer, "the sealer that hung up did not return")
@@ -666,6 +690,12 @@ func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+
+			if tc.bubble {
+				synctest.Test(t, func(t *testing.T) { tc.assert(t, tc.run(t)) })
+
+				return
+			}
 
 			tc.assert(t, tc.run(t))
 		})

@@ -446,6 +446,27 @@ func TestDPoP_Construction(t *testing.T) {
 			}),
 			assert: refused("NonceLifetime"),
 		},
+		{
+			name: "a nonce lifetime of one second",
+			opts: dpop(httpsec.DPoP{
+				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: time.Second,
+			}),
+			assert: refused("NonceLifetime"),
+		},
+		{
+			name: "a nonce lifetime just under the floor",
+			opts: dpop(httpsec.DPoP{
+				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: 9 * time.Second,
+			}),
+			assert: refused("NonceLifetime"),
+		},
+		{
+			name: "a nonce lifetime exactly at the floor",
+			opts: dpop(httpsec.DPoP{
+				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: 10 * time.Second,
+			}),
+			assert: built,
+		},
 	}
 
 	for _, tc := range cases {

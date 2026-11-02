@@ -72,6 +72,12 @@ const (
 	// DefaultDPoPNonceLifetime is how long a server nonce is accepted after
 	// it is issued.
 	DefaultDPoPNonceLifetime = 5 * time.Minute
+
+	// MinDPoPNonceLifetime is the shortest NonceLifetime accepted. A nonce
+	// is dated in whole seconds, so a shorter lifetime would leave a nonce
+	// due for replacement the moment it is sealed, and every request would
+	// seal.
+	MinDPoPNonceLifetime = 10 * time.Second
 )
 
 // DPoP configures sender-constrained tokens (RFC 9449): a client proves, on
@@ -121,8 +127,10 @@ type DPoP struct {
 	NonceCipher NonceCipher
 
 	// NonceLifetime is how long a server nonce is accepted after it is
-	// issued. Default: DefaultDPoPNonceLifetime. Negative, or set with Nonce
-	// off, is a configuration error.
+	// issued. Default: DefaultDPoPNonceLifetime. Below MinDPoPNonceLifetime
+	// (a nonce is dated in whole seconds, so a shorter lifetime would have
+	// every request seal), negative, or set with Nonce off, is a
+	// configuration error.
 	NonceLifetime time.Duration
 
 	// PublicURL is the scheme and host proofs' htu is judged against, such as

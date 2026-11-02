@@ -152,8 +152,9 @@ type nonceSeal struct {
 // issueNonce returns the replica's current nonce, sealing the next one first
 // when half the nonce lifetime has passed since the current one was issued,
 // or none has been. While another request seals that next nonce, a caller
-// that is refreshing (refresh true) is handed the current one at once if it
-// is still valid, with fresh false; any other caller waits for the seal.
+// that is refreshing (refresh true) holds a nonce already judged valid, and
+// is handed none at once, with fresh false; any other caller waits for the
+// seal.
 //
 // A cipher that fails is a dependency failure (nonceFailure), and is not
 // kept: the next request tries the seal again. A request waiting for a seal
@@ -187,8 +188,10 @@ func (v *dpopVerifier) issueNonce(ctx context.Context, refresh bool) (nonce stri
 		}
 		n.mu.Unlock()
 
-		if refresh && cur != nil && now.Before(cur.issued.Add(v.cfg.NonceLifetime)) {
-			return cur.value, false, nil
+		if refresh {
+			// The caller holds a nonce the replica has judged valid, and
+			// discards the value when fresh is false.
+			return "", false, nil
 		}
 
 		select {
@@ -409,6 +412,12 @@ func (v *dpopVerifier) algorithmNames() string {
 func checkNonceConfig(d *DPoP) error {
 	if d.NonceLifetime < 0 {
 		return newConfigError("%s was given a negative NonceLifetime (%s)", optionDPoP, d.NonceLifetime)
+	}
+
+	if d.NonceLifetime > 0 && d.NonceLifetime < MinDPoPNonceLifetime {
+		return newConfigError("%s was given a NonceLifetime of %s, under the floor of %s (MinDPoPNonceLifetime); "+
+			"a nonce is dated in whole seconds, so a shorter lifetime would be due again the moment it is sealed",
+			optionDPoP, d.NonceLifetime, MinDPoPNonceLifetime)
 	}
 
 	if !d.Nonce {
