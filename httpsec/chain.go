@@ -57,6 +57,10 @@ type Chain struct {
 	// once, at construction.
 	perRequest *perRequestPhase
 
+	// csrfOptOut is whether the chain was built with WithoutCSRFProtection,
+	// handed to every exchange it runs (CheckCSRFToken).
+	csrfOptOut bool
+
 	// mfa is the MFA interceptor EnableMFA registered, and nil without one.
 	// Every second-factor challenge the chain returns carries the methods it
 	// looks up (challengeMethods).
@@ -201,6 +205,7 @@ func (c *Chain) Assemble(terminal Next) Next {
 
 	return func(ex *Exchange) error {
 		ex.perRequest = c.perRequest
+		ex.csrfOptOut = c.csrfOptOut
 
 		// Client resolution is not an interceptor: it runs once, here, before
 		// the first interceptor, so every interceptor and the handler read the

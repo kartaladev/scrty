@@ -559,6 +559,14 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// CSRF protection reads the CORS origins, the OIDC back-channel path and
+	// the cookie authenticators, any of which an option applied after
+	// EnableCSRFProtection may have set, and hands each first factor whether
+	// its sign-ins carry a token.
+	if err := c.wireCSRF(); err != nil {
+		return nil, err
+	}
+
 	// Activity is recorded for every chain, with no option to enable: a session
 	// whose idle deadline stops moving while its owner is using it is logged
 	// out mid-work, and that is not a behaviour worth being able to switch off.
@@ -599,6 +607,7 @@ func (c *config) build() (*Chain, error) {
 		refusalReporter:   c.refusalReporter,
 		reportRefusals:    c.refusalLogReporter(),
 		clients:           newClientResolver(c),
+		csrfOptOut:        c.csrfOptOut,
 	}
 
 	// The sampler is built here rather than by the option, because the default

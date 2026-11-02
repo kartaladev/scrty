@@ -193,6 +193,11 @@ type Exchange struct {
 	// exchange runs through, and nil on one run through none.
 	perRequest *perRequestPhase
 
+	// csrfOptOut is whether the chain this exchange runs through was built
+	// with WithoutCSRFProtection, which CheckCSRFToken reads when no CSRF
+	// layer judged the request.
+	csrfOptOut bool
+
 	// renewal is the identifier of a session the resolution core let through
 	// to the renewal endpoint without publishing it: one presented after its
 	// grace window under unused-successor recovery, on a request that is the
