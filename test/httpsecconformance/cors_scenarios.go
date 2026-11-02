@@ -34,6 +34,7 @@ func corsScenarios() []Scenario {
 		corsPreflightMethodNotAllowed(),
 		corsPlainOptionsContinues(),
 		corsVaryKeepsEarlierValue(),
+		corsPreflightVaryKeepsEarlierValue(),
 		corsAnyOriginAllowsNull(),
 	}
 }
@@ -233,6 +234,32 @@ func corsVaryKeepsEarlierValue() Scenario {
 			require.True(t, res.RouteRan)
 			assert.Equal(t, CORSOrigin, res.Header.Get("Access-Control-Allow-Origin"))
 			assert.Equal(t, []string{"Accept-Encoding", "Origin"}, res.Header.Values("Vary"))
+		},
+	}
+}
+
+func corsPreflightVaryKeepsEarlierValue() Scenario {
+	return Scenario{
+		Name: "cors: an allowed preflight adds its Vary values to one an earlier interceptor set, not in place of it",
+		Build: func(*testing.T) ChainSpec {
+			earlier := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+				ex.Writer.SetHeader("Vary", "Accept-Encoding")
+
+				return next(ex)
+			}), httpsec.Before(httpsec.OrderCORS))
+
+			return ChainSpec{Options: []httpsec.Option{earlier, corsPolicy()}, Routes: corsGetRoutes()}
+		},
+		Request: sending(RequestSpec{
+			Method: http.MethodOptions, Path: corsPath, ClientAddress: ClientAddress,
+			Header: map[string]string{"Origin": CORSOrigin, "Access-Control-Request-Method": http.MethodGet},
+		}),
+		Assert: func(t *testing.T, res Result) {
+			assert.Equal(t, http.StatusNoContent, res.Status)
+			require.NoError(t, res.Refusal)
+			assert.False(t, res.RouteRan)
+			assert.Equal(t, CORSOrigin, res.Header.Get("Access-Control-Allow-Origin"))
+			assert.Equal(t, []string{"Accept-Encoding", preflightVary}, res.Header.Values("Vary"))
 		},
 	}
 }
