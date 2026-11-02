@@ -174,6 +174,10 @@ const optionDPoP = "EnableDPoP"
 // nonce in the DPoP-Nonce header; a response to a proof whose nonce is past
 // half its lifetime carries the next one.
 //
+// The challenge is always on with EnableDPoP, because RFC 9449 asks for it.
+// A consumer replaces or removes it from a WithErrorHandler (or
+// WithGuardErrorHandler), which edits the response headers.
+//
 // Defaults, each a field of d: accepted, not required (Require); a 60-second
 // proof lifetime (ProofMaxAge); ES256 alone (Algorithms); an 8 KiB proof
 // bound (MaxProofSize); an in-memory replay store per process (Replay); no
@@ -181,8 +185,12 @@ const optionDPoP = "EnableDPoP"
 // (NonceLifetime) sealed with the consumer's cipher (NonceCipher); the public
 // URL built from the scheme and host the chain resolved (PublicURL).
 //
-// Enabling it with neither EnableBearerToken nor EnableSessionBearer, or more
-// than once, is a configuration error from New. So is an issuing endpoint
+// Enabling it on a chain with no feature that verifies bound credentials
+// (today EnableBearerToken and EnableSessionBearer), or more than once, is a
+// configuration error from New, whatever the order of the options: a chain
+// that bound tokens and never checked a binding would suggest a protection it
+// does not give. A consumer's own handler that checks DPoP proofs does not
+// count. So is an issuing endpoint
 // whose token generator does not implement token.ConfirmingGenerator, which
 // could only issue unbound tokens, and any field the comment of DPoP calls a
 // configuration error. Under EnableSessionBearer no endpoint holds a
@@ -202,18 +210,9 @@ func EnableDPoP(d DPoP) Option {
 		c.dpopEnabled = true
 
 		c.enable(optionDPoP, func() error {
-			bearers := 0
-			count := func(Interceptor) error {
-				bearers++
-
-				return nil
-			}
-			_ = eachInterceptor(c, func(b *bearerToken) error { return count(b) })
-			_ = eachInterceptor(c, func(b *sessionBearer) error { return count(b) })
-
-			if bearers == 0 {
-				return newConfigError("%s needs a bearer mode: enable EnableBearerToken or "+
-					"EnableSessionBearer, which accept the tokens DPoP binds", optionDPoP)
+			if len(c.bindingVerifiers) == 0 {
+				return newConfigError("%s was enabled on a chain with no feature that verifies bound credentials; "+
+					"enable one, such as EnableBearerToken or EnableSessionBearer", optionDPoP)
 			}
 
 			return nil

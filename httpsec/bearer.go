@@ -71,9 +71,10 @@ func (b *bearerToken) wire(c *Chain) {
 // Intercept authenticates a bearer token against a live session and a live
 // user.
 //
-// It sets no WWW-Authenticate header. What a refusal looks like on the wire is
-// the consumer's error handling to decide, and a header written here would be
-// one the consumer cannot take back.
+// It writes no WWW-Authenticate header itself. With EnableDPoP the chain's
+// challenge interceptor adds the DPoP and Bearer challenges to the refusals
+// that come back through it; a consumer's WithErrorHandler can remove them
+// from the response headers.
 //
 // A token the verifier rejects is recorded at debug with the verifier's own
 // text, kept on purpose: it names the check the token failed (expired, wrong
@@ -347,6 +348,8 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 				return err
 			}
 		}
+
+		c.bindingVerifiers = append(c.bindingVerifiers, option)
 
 		c.enable(option, func() error {
 			if err := requireDep(option, "token verifier", d.Verifier); err != nil {

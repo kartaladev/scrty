@@ -143,6 +143,14 @@ type config struct {
 	// generator.
 	sessionBearer bool
 
+	// bindingVerifiers names the enabled features that verify bound
+	// credentials: the option names of the built-ins that check a token's
+	// binding to a DPoP key. EnableDPoP's construction check reads it once
+	// every option has applied, so the order of options does not matter. It is
+	// internal on purpose: every feature that can join it is a built-in option
+	// of this package.
+	bindingVerifiers []string
+
 	// renewal is the renewal endpoint EnableSessionRenewal registered, and nil
 	// while it is off. The bearers' resolution core reads it to let a late
 	// renewal through to it alone (sessionResolver.renewal).

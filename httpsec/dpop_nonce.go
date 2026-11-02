@@ -332,7 +332,9 @@ func setNonce(w guardauth.HeaderWriter, nonce string) {
 // challenge RFC 9449 section 7.1 gives, and a refusal for want of a nonce
 // with a fresh one (section 8). It runs just inside the security-headers
 // slot, so every refusal behind it, at an issuing endpoint or a bearer, is
-// answered.
+// answered. It is always on with EnableDPoP, because the RFC asks for it; a
+// consumer's WithErrorHandler or WithGuardErrorHandler may replace or remove
+// the header it set.
 type dpopChallenge struct{ v *dpopVerifier }
 
 // orderDPoPChallenge is the challenge interceptor's slot.

@@ -284,6 +284,7 @@ func EnableSessionBearer(d SessionBearerDeps, opts ...SessionBearerOption) Optio
 		}
 
 		c.sessionBearer = true
+		c.bindingVerifiers = append(c.bindingVerifiers, option)
 
 		c.enable(option, func() error {
 			if err := eachInterceptor(c, func(*bearerToken) error {

@@ -14,12 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/store/seal"
@@ -50,6 +52,8 @@ func dpopScenarios() []Scenario {
 		dpopReplayedProofIsRefused(),
 		dpopPathIsComparedAsSent(),
 		dpopNonceRoundTrip(),
+		dpopNoTokenGetsBothChallenges(),
+		dpopNonceIsRefreshedOnASuccess(),
 	}
 }
 
@@ -106,6 +110,10 @@ type dpopFixture struct {
 	replay *fixtureReplayStore
 	nonces httpsec.NonceCipher
 	key    dpopClientKey
+
+	// clock is the chain's clock where a scenario installs it, which the
+	// scenario advances to age a nonce.
+	clock *clockwork.FakeClock
 }
 
 func newDPoPFixture(t *testing.T) *dpopFixture {
@@ -134,7 +142,7 @@ func (fx *dpopFixture) spec(t *testing.T, nonces bool) ChainSpec {
 
 	d := httpsec.DPoP{Replay: fx.replay}
 	if nonces {
-		d.Nonce, d.NonceCipher = true, fx.nonces
+		d.Nonce, d.NonceCipher, d.NonceLifetime = true, fx.nonces, httpsec.MinDPoPNonceLifetime
 	}
 
 	return ChainSpec{
@@ -224,6 +232,13 @@ func refusedProof(t *testing.T, res Result) {
 // dpopScenario is a DPoP scenario's Build and Steps over one fixture, made per
 // run of the scenario so no two adapters share one.
 func dpopScenario(name string, nonces bool, steps func(t *testing.T, fx *dpopFixture, send func(RequestSpec) Result)) Scenario {
+	return dpopScenarioWith(name, nonces, nil, steps)
+}
+
+// dpopScenarioWith is dpopScenario with tweak applied to the built chain spec
+// when it is not nil.
+func dpopScenarioWith(name string, nonces bool, tweak func(fx *dpopFixture, spec *ChainSpec),
+	steps func(t *testing.T, fx *dpopFixture, send func(RequestSpec) Result)) Scenario {
 	var (
 		mu       sync.Mutex
 		fixtures = map[*Effects]*dpopFixture{}
@@ -234,6 +249,9 @@ func dpopScenario(name string, nonces bool, steps func(t *testing.T, fx *dpopFix
 		Build: func(t *testing.T) ChainSpec {
 			fx := newDPoPFixture(t)
 			spec := fx.spec(t, nonces)
+			if tweak != nil {
+				tweak(fx, &spec)
+			}
 
 			mu.Lock()
 			fixtures[spec.Effects] = fx
@@ -352,6 +370,55 @@ func dpopNonceRoundTrip() Scenario {
 			resource := send(dpopResource(RoutePath, "DPoP", tok, fx.key.proof(t, http.MethodGet, RoutePath, tok, nonce)))
 			assert.NoError(t, resource.Refusal)
 			assert.True(t, resource.RouteRan)
+		})
+}
+
+func dpopNoTokenGetsBothChallenges() Scenario {
+	return dpopScenarioWith("DPoP: a request with no token to a protected route gets the DPoP and the Bearer challenge", false,
+		func(_ *dpopFixture, spec *ChainSpec) {
+			spec.Options = append(spec.Options, httpsec.EnableAuthorization(
+				fixtureAuthorizer{},
+				authorize.Rule[httpsec.Request]{
+					Match:   func(r httpsec.Request) bool { return r.Path() == RoutePath },
+					Require: authorize.Authenticated(),
+				},
+			))
+		},
+		func(t *testing.T, _ *dpopFixture, send func(RequestSpec) Result) {
+			res := send(RequestSpec{Method: http.MethodGet, Path: RoutePath, ClientAddress: ClientAddress})
+
+			assert.Equal(t, http.StatusUnauthorized, res.Status)
+			assert.False(t, res.RouteRan)
+			assert.Equal(t, []string{`DPoP algs="ES256"`, "Bearer"}, res.Header.Values("WWW-Authenticate"))
+		})
+}
+
+func dpopNonceIsRefreshedOnASuccess() Scenario {
+	return dpopScenarioWith("DPoP: a success to a proof whose nonce is past half its lifetime carries the next nonce", true,
+		func(fx *dpopFixture, spec *ChainSpec) {
+			fx.clock = clockwork.NewFakeClockAt(time.Now())
+			spec.Options = append(spec.Options, httpsec.WithClock(fx.clock))
+		},
+		func(t *testing.T, fx *dpopFixture, send func(RequestSpec) Result) {
+			asked := send(dpopLogin(fx.key.proof(t, http.MethodPost, LoginPath, "", "")))
+			nonce := asked.Header.Get("DPoP-Nonce")
+			require.NotEmpty(t, nonce)
+
+			res := send(dpopLogin(fx.key.proof(t, http.MethodPost, LoginPath, "", nonce)))
+			require.Equal(t, http.StatusOK, res.Status)
+			tok := fx.boundDocument(t, res)
+
+			// Past half the lifetime, and inside it.
+			fx.clock.Advance(httpsec.MinDPoPNonceLifetime/2 + time.Second)
+
+			res = send(dpopResource(RoutePath, "DPoP", tok, fx.key.proof(t, http.MethodGet, RoutePath, tok, nonce)))
+
+			assert.NoError(t, res.Refusal)
+			assert.True(t, res.RouteRan)
+			next := res.Header.Get("DPoP-Nonce")
+			assert.NotEmpty(t, next, "the response carries the next nonce")
+			assert.NotEqual(t, nonce, next)
+			assert.Contains(t, res.Header.Values("Cache-Control"), "no-store")
 		})
 }
 

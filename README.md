@@ -1331,7 +1331,9 @@ it; the CORS layer uses it to extend `Vary`.
 `httpsec.EnableDPoP` binds the tokens the chain issues to a key the client
 holds (RFC 9449). The client signs a short proof for every request, so a token
 copied out of a log, a proxy or a browser extension is of no use without the
-private key. It needs a bearer mode, and is off until you enable it:
+private key. It needs a feature that verifies bound credentials (today
+`EnableBearerToken` or `EnableSessionBearer`; your own handler that checks
+proofs does not count), and is off until you enable it:
 
 ```go
 chain, err := httpsec.New(
@@ -1353,7 +1355,8 @@ Once enabled:
   refused (401, `ErrInvalidDPoPProof`) with
   `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`. A request
   with no token gets a `DPoP` and a `Bearer` challenge, or only the `DPoP` one
-  when DPoP is required;
+  when DPoP is required. The challenge is always on with `EnableDPoP`; to
+  change it, remove or replace the header in a `WithErrorHandler`;
 - a sign-in's binding is fixed when it is created: a second factor and a
   renewal keep it, and a re-authentication may bind a sign-in that was not.
 
@@ -1367,7 +1370,7 @@ Once enabled:
 | `MaxProofSize` | 8 KiB, refused before anything is parsed |
 | `Replay` | in memory, per process |
 | `Nonce` | off |
-| `NonceLifetime` | 5 minutes, when nonces are on |
+| `NonceLifetime` | 5 minutes, when nonces are on; the floor is 10 seconds (`MinDPoPNonceLifetime`) |
 | `PublicURL` | the scheme and host the chain resolved (see "Behind a reverse proxy") |
 
 With more than one replica, give `Replay` a store they share, or a proof can be
@@ -1379,9 +1382,10 @@ Nonces are off by default: the 60-second lifetime and the replay store already
 bound replay, and a nonce costs the client a round trip whenever it has none.
 When you turn them on, they are sealed with your key material, so every
 replica accepts a nonce any of them issued without a shared store. The chain
-holds no key of its own, so `NonceCipher` is required; the cipher your sessions
-already seal with serves, and nonces are sealed with their own additional data,
-so a nonce never opens as anything else:
+holds no key of its own, so `NonceCipher` is required (a construction error
+without it). The cipher your sessions already seal with serves, and nonces are
+sealed with their own additional data, so a nonce never opens as anything else;
+a keyring kept for nonces alone is better, so rotating it touches nothing else:
 
 ```go
 kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("2026-11", key))
@@ -1395,8 +1399,24 @@ A proof without a current nonce is refused (401, `ErrDPoPNonceRequired`, which
 also matches `ErrInvalidDPoPProof`) with `error="use_dpop_nonce"` and a fresh
 nonce in `DPoP-Nonce`. The client signs a new proof with it and retries. A
 response to a proof whose nonce is past half its lifetime carries the next
-one. With `EnableCORS`, `DPoP` is allowed and `DPoP-Nonce` and
+one. Every response that hands out a nonce is `Cache-Control: no-store`, and
+each replica issues one nonce at a time, shared by its requests. With
+`EnableCORS`, `DPoP` is allowed and `DPoP-Nonce` and
 `WWW-Authenticate` are exposed for you.
+
+A client with `Nonce: true` keeps the last `DPoP-Nonce` it saw, from the
+`use_dpop_nonce` 401 and from later responses, puts it in the next proof's
+`nonce` claim, and retries once on that 401:
+
+```js
+let nonce; // the last DPoP-Nonce seen; headersFor signs a proof with it and sets Authorization and DPoP
+let res = await fetch(url, { headers: await headersFor(url, nonce) });
+nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+if (res.status === 401 && res.headers.get("WWW-Authenticate")?.includes("use_dpop_nonce")) {
+  res = await fetch(url, { headers: await headersFor(url, nonce) }); // a new proof, nonce set
+  nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+}
+```
 
 ### In the browser
 
@@ -1552,6 +1572,9 @@ requests go through a Next.js rewrite instead, the browser signs the frontend's
 URL, and the chain needs `PublicURL` set to that origin.
 
 #### htmx
+
+This sample assumes server nonces are off; with `Nonce: true`, add the nonce
+the client last saw to the proof, as in "Server nonces".
 
 A proof is signed asynchronously, and `htmx:configRequest`, where headers are
 set, is not. `htmx:confirm` fires before every request and can hold it:

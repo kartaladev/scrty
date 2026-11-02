@@ -385,7 +385,48 @@ func TestDPoP_Construction(t *testing.T) {
 			},
 			assert: built,
 		},
-		{name: "without either bearer mode", noBearer: true, opts: dpop(httpsec.DPoP{}), assert: refused("EnableDPoP")},
+		{
+			// A consumer's own handler that checks proofs does not count: only an
+			// enabled feature that verifies bound credentials does.
+			name:     "without a feature that verifies bound credentials",
+			noBearer: true,
+			opts:     dpop(httpsec.DPoP{}),
+			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
+				refused("EnableDPoP")(t, chain, err)
+				assert.Contains(t, err.Error(), "no feature that verifies bound credentials")
+				assert.Contains(t, err.Error(), "EnableBearerToken")
+				assert.Contains(t, err.Error(), "EnableSessionBearer")
+			},
+		},
+		{
+			name:     "given before the signed bearer option",
+			noBearer: true,
+			opts: func(t *testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableDPoP(httpsec.DPoP{}),
+					httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+						Verifier: NewMockVerifier(gomock.NewController(t)),
+						Sessions: dpopSessions(t, clockwork.NewFakeClockAt(dpopNow)),
+						Users:    NewMockUserLoader(gomock.NewController(t)),
+					}),
+				}
+			},
+			assert: built,
+		},
+		{
+			name:     "given before the session-reference bearer option",
+			noBearer: true,
+			opts: func(t *testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableDPoP(httpsec.DPoP{}),
+					httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
+						Sessions: dpopSessions(t, clockwork.NewFakeClockAt(dpopNow)),
+						Users:    NewMockUserLoader(gomock.NewController(t)),
+					}),
+				}
+			},
+			assert: built,
+		},
 		{
 			name: "enabled twice",
 			opts: func(*testing.T) []httpsec.Option {
