@@ -25,7 +25,7 @@ The library SHALL provide one password policy that checks a candidate password f
 - **THEN** no lookup is made
 
 ### Requirement: Length is counted in characters and long passwords are accepted
-Length SHALL be counted in Unicode code points of the candidate as given: the policy SHALL NOT trim, normalise or truncate it, and SHALL NOT impose composition rules such as a required digit, case or symbol. An empty candidate SHALL be refused as too short. The minimum SHALL be replaceable, and a minimum below 8 SHALL fail construction. The maximum SHALL be replaceable but no lower than 64, and no lower than the minimum. When the policy's encoder has a byte limit, as bcrypt's 72 bytes, a candidate over it SHALL be refused as too long by the check, so a check and a change agree.
+Length SHALL be counted in Unicode code points of the candidate as given: the policy SHALL NOT trim, normalise or truncate it, and SHALL NOT impose composition rules such as a required digit, case or symbol. An empty candidate SHALL be refused as too short. The minimum SHALL be replaceable, and a minimum below 8 SHALL fail construction. The maximum SHALL be replaceable but no lower than 64, and no lower than the minimum. When the policy's encoder has a byte limit, as bcrypt's 72 bytes, a candidate over it SHALL be refused as too long by the check, so a check and a change agree. A consumer's encoder states its limit through an optional method; a change that its encoder still refuses as too long SHALL be refused as too long, never answered as a failure.
 
 #### Scenario: Multi-byte characters
 - **WHEN** a policy with a minimum of 15 checks a 15-character password whose characters each take 3 bytes

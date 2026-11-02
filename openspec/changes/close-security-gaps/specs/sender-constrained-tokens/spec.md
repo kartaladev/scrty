@@ -168,7 +168,7 @@ When the consumer requires DPoP, an unbound token SHALL be refused, and every is
 - **THEN** the request is refused with the invalid-DPoP-proof error
 
 ### Requirement: Replay protection is replaceable and fails closed
-Seen `jti` values SHALL be kept in an in-memory store by default, for the proof lifetime, keyed by a digest of the `jti` and the proof's key thumbprint, and the consumer SHALL be able to supply a shared store. Recording a `jti` SHALL be one atomic insert-if-absent. A store that cannot record or check a `jti` SHALL fail the request as a dependency failure, with fixed library text, not charged to any throttle. When the request's own context ends while the store answers, the request SHALL fail with an error matching the context's error, and SHALL NOT be logged as a dependency failure.
+Seen `jti` values SHALL be kept in an in-memory store by default, for as long as a proof could still be accepted (its issue time plus twice the proof lifetime, covering the allowed clock skew), keyed by a digest of the `jti` and the proof's key thumbprint, and the consumer SHALL be able to supply a shared store. Recording a `jti` SHALL be one atomic insert-if-absent. A store that cannot record or check a `jti` SHALL fail the request as a dependency failure, with fixed library text, not charged to any throttle. When the request's own context ends while the store answers, the request SHALL fail with an error matching the context's error, and SHALL NOT be logged as a dependency failure.
 
 #### Scenario: Store failure
 - **WHEN** the replay store returns an error while checking a proof

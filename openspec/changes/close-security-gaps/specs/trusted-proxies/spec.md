@@ -21,7 +21,7 @@ Enabling trusted proxies SHALL require a list of proxy address prefixes and exac
 - a prefix covers all IPv4 or all IPv6 addresses, unless the consumer states explicitly that every peer is trusted;
 - no header family or no field is named;
 - the host field is named without at least one allowed host, or an allowed host is empty, carries a scheme, a path or userinfo;
-- the hop limit is less than one;
+- the hop limit is negative (zero selects the default of one);
 - trusted proxies and the declaration that every request is secure are both configured;
 - trusted proxies are enabled more than once.
 

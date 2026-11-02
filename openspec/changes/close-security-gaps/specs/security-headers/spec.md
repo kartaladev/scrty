@@ -5,7 +5,7 @@ Sets the response headers that make browsers enforce HTTPS, refuse injected scri
 ## ADDED Requirements
 
 ### Requirement: Security headers are off until enabled
-The chain SHALL set no security response header beyond those it already sets on credential responses until the consumer enables the security-headers layer. Once enabled, the layer SHALL run outside every other interceptor, and SHALL set its headers on the response before calling the next one, so that every response the chain produces carries them, including the chain's own refusals and a CORS preflight answer, on every adapter. Enabling the layer more than once SHALL fail construction.
+The chain SHALL set no security response header beyond those it already sets on credential responses until the consumer enables the security-headers layer. Once enabled, the layer SHALL run outside every built-in interceptor, and SHALL set its headers on the response before calling the next one, so that every response the chain produces carries them, including the chain's own refusals and a CORS preflight answer, on every adapter. A consumer interceptor registered ahead of the layer runs outside it, and a response it writes carries no security headers; the documentation SHALL say so. Enabling the layer more than once SHALL fail construction.
 
 #### Scenario: Not enabled
 - **WHEN** a chain built without the security-headers layer answers a request

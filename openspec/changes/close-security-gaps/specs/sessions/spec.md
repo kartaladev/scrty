@@ -24,7 +24,7 @@ The session manager SHALL list a user's live sign-ins, one entry per session fam
 - **THEN** the listing has one entry, `u-1`'s
 
 ### Requirement: Sign-in metadata is recorded only when the consumer opts in
-By default a session SHALL record no client metadata. When the consumer opts in, a new session SHALL record the client address and the user agent the chain resolved at sign-in, the user agent truncated to 512 bytes at a UTF-8 character boundary, and every successor in its family SHALL keep them. An unattributable client address SHALL be recorded as absent. The metadata SHALL be returned unchanged by the listing, and SHALL never be written to a log by the library.
+By default a session SHALL record no client metadata. When the consumer opts in, a new session SHALL record the client address and the user agent the chain resolved at sign-in, the user agent truncated to 512 bytes at a UTF-8 character boundary, and every successor in its family SHALL keep them. An unattributable client address SHALL be recorded as absent. The metadata SHALL be returned by the listing as recorded, and SHALL never be written to a log by the library. Before it is recorded, a user agent's invalid UTF-8 SHALL be replaced with U+FFFD and its NUL bytes removed, because a durable store's text column refuses both.
 
 #### Scenario: Off by default
 - **WHEN** metadata recording is off and a user signs in
