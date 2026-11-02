@@ -36,6 +36,8 @@
 - A sign-in listing for a user with many renewed families (100 families, each renewed 10 times): one entry per family and one store query, not a query per family. Test added to 6.2.
 - A password candidate holding a NUL byte: the policy refuses nothing new, but a change must surface the encoder's `ErrContainsNUL` unchanged, not panic or truncate. Test added to 10.2.
 - A forwarded header line of 64 KiB from a trusted peer: resolution walks from the right and stops at the client, so it must not split and parse every entry. Test added to 2.5 (a benchmark-free assertion: the parser is handed only the tail it reaches).
+- A trusted proxy that folds a client-sent forwarded-certificate line into its own (`escaped(D), escaped(C)`), or a value with text before the PEM block: the decoder must find no certificate, not bind the first block. Test added to 9.2.
+- An attacker probing recovery start for usernames whose owner signed in since a failed login: the verifier must receive identical signals for a known and an unknown username. Test added to 12.3.
 
 ---
 
@@ -378,22 +380,24 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ---
 
-## Task group 9: mTLS-bound tokens (lane D, dispatch D4)
+## Task group 9: mTLS-bound tokens (lane D, dispatch D4; review fixes D5)
 
-**Interfaces produced:** `func EnableCertificateBinding(opts ...CertificateBindingOption) Option`; the forwarded header and decoder come from `WithClientCertificateHeader` (group 2); `var ErrCertificateBinding` (401); the check runs at `OrderMTLS`.
+**Interfaces produced:** `func EnableCertificateBinding(opts ...CertificateBindingOption) Option`; `Request.ClientCertificate() *x509.Certificate` (required, D9); the forwarded header and decoder come from `WithClientCertificateHeader` (group 2); `var ErrCertificateBinding` (401); `OrderMTLS` fixes the request's thumbprint on the exchange and the bearer modes (slot 500) compare it with `cnf.x5t#S256` in constant time (D9).
 
 ### Task 9.1: Direct TLS
-- [ ] Red `TestCertificateBinding_Direct` over `httptest.NewUnstartedServer` with `tls.RequireAnyClientCert`: certificate C binds `x5t#S256`; C passes; none and D refused. FAIL; Green in `httpsec/certbinding.go`; PASS; commit.
+- [ ] Red `TestCertificateBinding_Direct` over `httptest.NewUnstartedServer` with `tls.RequestClientCert`: certificate C binds `x5t#S256`; C passes; none and D refused. FAIL; Green in `httpsec/certbinding.go`; PASS; commit.
+- [ ] Red, one table row per issuing endpoint (form login, passkey login, magic link, OIDC redemption, recovery complete and finish, re-authentication of an unbound sign-in), mirroring `dpop_endpoints_test.go`: each binds C's thumbprint on the token and the session. Show each row fails with that endpoint's binding argument replaced by nil. Commit.
 
 ### Task 9.2: Forwarded certificate
-- [ ] Resolution keeps the trusted peer's raw certificate header on the resolved client (unexported) before removing it; red first that the value reaches `OrderMTLS` after removal.
-- [ ] Red `TestCertificateBinding_Forwarded`: URL-encoded PEM from a trusted peer binds C; a consumer decoder is used when given; untrusted peer ignored; undecodable value → no certificate, bound token refused. FAIL; Green; PASS; commit.
+- [ ] Resolution keeps the trusted peer's raw certificate header on the internal resolution (never on `Client`) before removing it; red first that the value reaches `OrderMTLS` after removal.
+- [ ] Red `TestCertificateBinding_Forwarded`: URL-encoded PEM from a trusted peer binds C; a consumer decoder is used when given; untrusted peer ignored; undecodable value → no certificate, bound token refused; the header on two lines → no certificate. FAIL; Green; PASS; commit.
+- [ ] Review Focus row: red `TestCertificateBinding_Forwarded` rows `escaped(D) + ", " + escaped(C)` in one line → no certificate, and `"junk%0A" + escaped(C)` → no certificate. Green: the default decoder accepts exactly one CERTIFICATE block, with only whitespace before and after it. Commit.
 
 ### Task 9.3: Both offered, switched off, conformance
-- [ ] Red: proof and certificate → `cnf.jkt` only; `x5t#S256` token after the feature is off → `ErrCertificateBinding`; `TestStatusForError` row → 401; conformance on three adapters. FAIL; Green; PASS; commit.
+- [ ] Red: proof and certificate → `cnf.jkt` only; `x5t#S256` token after the feature is off → `ErrCertificateBinding` in both bearer modes and under both the `Bearer` and `DPoP` schemes; the session-versus-token check (a `Verifier` dropping `cnf` from a certificate-bound sign-in is refused) with a row that fails when the check is removed; `EnableCertificateBinding` with `EnableDPoP(DPoP{Require: true})` → `ErrConfig` naming both; `TestStatusForError` row → 401; conformance on three adapters. FAIL; Green; PASS; commit.
 
 ### Task 9.4: Docs
-- [ ] Godoc and README: default off, the decoder, validity left to TLS or the proxy, and proxy examples checked against each proxy's documentation. Commit.
+- [ ] Godoc and README: default off, the decoder (one PEM block, nothing else), validity left to TLS or the proxy, that `Request.ClientCertificate` answers the forwarded certificate to every interceptor once a header is named, that every proxy must overwrite or strip the header on every request, and proxy examples checked against each proxy's documentation. Commit.
 
 ---
 
@@ -466,21 +470,28 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ---
 
-## Task group 12: automation challenge (lane C)
+## Task group 12: automation challenge (lane C; review fixes C2; durable limiters C3)
 
-**Interfaces produced:** `type ChallengeVerifier interface { Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error) }`, `type ChallengeSignals struct { SourceHasFailures, IdentifierHasFailures bool }`, `const ChallengePass, ChallengeRefuse, ChallengeNotNeeded ChallengeDecision`, `func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option`, `func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption`, `func WithoutChallengeRefusalCounting() ChallengeOption`, `var ErrChallengeRequired` (403), `var ErrChallengeUnavailable` (500).
+**Interfaces produced:** `type ChallengeVerifier interface { Verify(ctx context.Context, r Request, s ChallengeSignals) (ChallengeDecision, error) }`, `type ChallengeSignals struct { SourceHasFailures, IdentifierHasFailures bool }`, `const ChallengePass, ChallengeRefuse, ChallengeNotNeeded ChallengeDecision`, `func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option`, `func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption`, `func WithoutChallengeRefusalCounting() ChallengeOption`, `var ErrChallengeRequired` (403), `var ErrChallengeUnavailable` (500); `ratelimit.RecentFailureReporter { HasRecentFailures(ctx context.Context, key string) (bool, error) }` (optional, found by type assertion); `func (g *SourceGuard) HasRecentFailures(ctx context.Context, clientAddr string) bool`.
 
 ### Task 12.1: Flows and construction
-- [ ] Red `TestChallenge_Flows` and `TestChallenge_Construction` with a mockgen verifier: refusal before account lookup and without a lockout failure, for each of the five flows; unselected flow not called; no verifier → no calls; nil verifier and no flows fail `New`. FAIL; Green (after the source limit); PASS; commit.
+- [ ] Red `TestChallenge_Flows` and `TestChallenge_Construction` with a mockgen verifier: refusal before account lookup and without a lockout failure, for each of the five flows; unselected flow not called; no verifier → no calls; nil verifier and no flows fail `New`; `WithChallengeFlows(ChallengeFlowPasswordlessBegin)` on a chain without passkey login → `ErrConfig` naming the flow; the default selection on a chain enabling none of the five → `ErrConfig`. FAIL; Green (after the source limit); PASS; commit.
+- [ ] Red: Basic's verifier runs before its pre-authentication phase (a locked account refused by the verifier spends no decoy verification). FAIL by moving the call; Green; commit.
 
 ### Task 12.2: Outage and hang-up
-- [ ] Red `TestChallenge_Outage`: verifier error → `ErrChallengeUnavailable`, 500, no lookup, nothing charged; cancelled context → `context.Canceled`, nothing at ERROR. FAIL; Green; PASS; commit.
+- [ ] Red `TestChallenge_Outage`: verifier error → `ErrChallengeUnavailable`, 500, no lookup, nothing charged; cancelled context → `context.Canceled`, nothing at ERROR; an attempt-store error while reading the identifier signal → reported as failures and logged as other attempt-store failures are. FAIL; Green; PASS; commit.
 
 ### Task 12.3: Signals, counting, status
-- [ ] Red `TestChallenge_Signals` (clean source; suspicious identifier; failing limiter reported as failures), `TestChallenge_CountsAgainstSource` (limit exhausted → refused before the verifier; not charged to lockout; opt-out keeps reaching the verifier), `TestStatusForError` row → 403. FAIL; Green; PASS; commit.
+- [ ] Red `TestChallenge_Signals` and `TestChallenge_SignalsPerFlow` (clean source; suspicious identifier at login and Basic; recovery start, magic-link request and passwordless begin report `IdentifierHasFailures=false` for a username with failures; the window is the lockout's `FailureWindow()`, shown with `lockout.WithFailureWindow(time.Hour)` and a failure 2 h old → false; failing limiter reported as failures; recovery start's source signal read from its completion guard), `TestChallenge_CountsAgainstSource` (a row per flow with a source limit — form login, Basic, passwordless begin, recovery start: limit exhausted → refused before the verifier; not charged to lockout; opt-out keeps reaching the verifier), `TestStatusForError` row → 403. Review Focus row: `TestChallenge_NoEnumeration` — after one failed login each for a known and an unknown username and the owner's successful sign-in, recovery start gives the verifier identical signals for both. FAIL; Green; PASS; commit.
 
 ### Task 12.4: Conformance and docs
-- [ ] Three adapters; godoc and README. Commit.
+- [ ] Three adapters, each scenario run once (`go test -run 'TestChallenge' ./...` in `test`); godoc (`ChallengeSignals.IdentifierHasFailures` states the login/Basic residual) and README (the sample verifier does not challenge on the identifier signal alone; magic-link refusals are uncounted). Commit.
+
+### Task 12.5: Durable limiters report recent failures
+**Files:** `internal/pglimiter/runner.go` (backend query), `internal/unavailable/wrap.go` (forwarding), `store/sqlstore/limiter.go`, `store/pgxstore/limiter.go`, `ratelimit/redisstore/limiter.go`, their tests; PostgreSQL and Redis from the existing `test` helpers.
+- [ ] Red `TestLimiter_HasRecentFailures` per backend (Redis, sqlstore, pgxstore), table rows: a clean key → false; one failure → true; failures older than the window → false; store unreachable → true with an error. FAIL (the limiter lacks the method, so the type assertion reports true for the clean key); Green: a read-only count within the window, recording nothing. PASS; commit.
+- [ ] Red `TestWrap_HasRecentFailures` in `internal/unavailable`: forwards the backend's answer; a backend without the interface, a backend error, and the wrapper in its unavailable mode → true. FAIL; Green; PASS; commit.
+- [ ] Red conformance in `test`: a chain whose source limit is kept by the Redis and the SQL limiter tells the verifier a clean source is clean. FAIL; Green; PASS. Update the README's limit note. Commit.
 
 ---
 

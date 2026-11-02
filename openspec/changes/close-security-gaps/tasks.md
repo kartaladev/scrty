@@ -127,6 +127,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [ ] 12.2 Answer a verifier error as a dependency failure (500, not charged) and a hang-up as the context's error, test-first. Verify: `go test -run 'TestChallenge_Outage' -count=1 ./httpsec/`.
 - [ ] 12.3 Pass source and identifier signals to the verifier (a failing limiter reported as recent failures), count refusals against the source limit but not the lockout, with the opt-out, and register `ErrChallengeRequired` at 403, test-first. Verify: `go test -run 'TestChallenge_Signals|TestChallenge_CountsAgainstSource|TestStatusForError' -count=1 ./httpsec/`.
 - [ ] 12.4 Run the challenge scenarios on all three adapters, and document the port with its defaults. Verify: `go test -run 'TestChallenge' ./...` in the `test` module.
+- [ ] 12.5 Implement `ratelimit.RecentFailureReporter` in the Redis, SQL and pgx limiters, and forward it through the outage wrapper around them, test-first against real stores through the testcontainers helpers: a clean key, a key with one failure, a key whose failures left the window, and a backend that cannot answer (or a wrapper in its unavailable mode) reported as having failures. Verify: `go test -run 'HasRecentFailures' -count=1 ./...` in the core, `ratelimit/redisstore`, `store/pgxstore` and `test` modules.
 
 ## 13. Supply chain (D16)
 
