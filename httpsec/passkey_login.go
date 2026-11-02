@@ -363,6 +363,10 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 			return newConfigError("%s's passwordless login needs a token generator: give "+
 				"PasswordlessTokens, or enable form login, whose generator it then uses", option)
 		}
+
+		if err := checkBindingGenerator(c, option, "PasswordlessTokens", i.tokens); err != nil {
+			return err
+		}
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)

@@ -44,6 +44,7 @@ const loginBodyLimit int64 = 32
 type observed struct {
 	method   string
 	path     string
+	escaped  string
 	header   string
 	query    string
 	states   []string
@@ -67,6 +68,7 @@ func observe(r httpsec.Request, limit int64) observed {
 	return observed{
 		method:      r.Method(),
 		path:        r.Path(),
+		escaped:     r.EscapedPath(),
 		header:      r.Header("Authorization"),
 		query:       r.Query("next"),
 		states:      r.QueryValues("state"),
@@ -116,6 +118,16 @@ func TestFiberExchange(t *testing.T) {
 			},
 			assert: func(t *testing.T, got observed) {
 				assert.Equal(t, "/oauth2/authorization/corp/..", got.path)
+			},
+		},
+		{
+			name: "the escaped path is the path as sent, never decoded",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/ord%65rs/a%2Fb?next=/home", nil)
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "/api/ord%65rs/a%2Fb", got.escaped)
+				assert.Equal(t, "/api/orders/a/b", got.path)
 			},
 		},
 		{

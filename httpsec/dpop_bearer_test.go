@@ -1,0 +1,474 @@
+package httpsec_test
+
+import (
+	"crypto/elliptic"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/jonboulle/clockwork"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
+)
+
+// dpopBearerWorld is a chain in one bearer mode over real components: a
+// memory-store session manager, a JWT generator that also verifies, and a
+// user loader answering with the session's active user.
+type dpopBearerWorld struct {
+	t        *testing.T
+	clk      *clockwork.FakeClock
+	sessions *session.Sessions
+	keys     *signingkey.Keys
+	gen      *token.JWTGenerator
+	users    *MockUserLoader
+}
+
+func newDPoPBearerWorld(t *testing.T) *dpopBearerWorld {
+	t.Helper()
+
+	clk := clockwork.NewFakeClockAt(dpopNow)
+
+	keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+	require.NoError(t, err)
+
+	gen, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience(), token.WithClock(clk))
+	require.NoError(t, err)
+
+	u := &switchableUser{}
+	u.set(userActive(true))
+
+	return &dpopBearerWorld{
+		t: t, clk: clk, sessions: dpopSessions(t, clk), keys: keys, gen: gen, users: u.loader(t),
+	}
+}
+
+// session creates a session for u-1, bound to jkt unless it is empty.
+func (w *dpopBearerWorld) session(jkt string) string {
+	w.t.Helper()
+
+	opts := []session.CreateOption{session.WithFirstFactor(factor.Password)}
+	if jkt != "" {
+		opts = append(opts, session.WithKeyBinding(session.KeyBinding{JKT: jkt}))
+	}
+
+	s, err := w.sessions.Create(w.t.Context(), "u-1", opts...)
+	require.NoError(w.t, err)
+
+	return s.ID
+}
+
+// token issues a token for a new session of u-1's, carrying cnf.
+func (w *dpopBearerWorld) token(cnf token.Confirmation) string {
+	w.t.Helper()
+
+	sid := w.session(cnf.JKT)
+
+	tok, err := w.gen.GenerateWith(w.t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject},
+		token.WithConfirmation(cnf))
+	require.NoError(w.t, err)
+
+	return tok
+}
+
+// rawToken signs a token for a new unbound session of u-1's with the
+// generator's own key, carrying the cnf claim as given: a confirmation no
+// generator of this library would issue.
+func (w *dpopBearerWorld) rawToken(cnf any) string {
+	w.t.Helper()
+
+	sid := w.session("")
+
+	payload, err := json.Marshal(map[string]any{
+		"sub": testSubject, "jti": sid, "iat": dpopNow.Unix(),
+		"exp": dpopNow.Add(time.Hour).Unix(), "cnf": cnf,
+	})
+	require.NoError(w.t, err)
+
+	kid, signer, err := w.keys.Signer(w.t.Context(), signingkey.RS256)
+	require.NoError(w.t, err)
+
+	headers := jws.NewHeaders()
+	require.NoError(w.t, headers.Set(jws.KeyIDKey, kid))
+
+	signed, err := jws.Sign(payload, jws.WithKey(jwa.RS256(), signer, jws.WithProtectedHeaders(headers)))
+	require.NoError(w.t, err)
+
+	return string(signed)
+}
+
+// chain builds the chain in mode, with DPoP configured by d, or off for nil.
+func (w *dpopBearerWorld) chain(mode bearerMode, d *httpsec.DPoP) *httpsec.Chain {
+	w.t.Helper()
+
+	opts := []httpsec.Option{httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler))}
+
+	switch mode {
+	case signedBearer:
+		opts = append(opts, httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+			Verifier: w.gen, Sessions: w.sessions, Users: w.users,
+		}))
+	case referenceBearer:
+		opts = append(opts, httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
+			Sessions: w.sessions, Users: w.users,
+		}))
+	}
+
+	if d != nil {
+		opts = append(opts, httpsec.EnableDPoP(*d))
+	}
+
+	chain, err := httpsec.New(opts...)
+	require.NoError(w.t, err)
+
+	return chain
+}
+
+// present runs a GET of /api/orders through chain, presenting credential
+// under scheme, with proof as its DPoP header unless proof is empty.
+func (w *dpopBearerWorld) present(chain *httpsec.Chain, scheme, credential, proof string) served {
+	w.t.Helper()
+
+	var proofs []string
+	if proof != "" {
+		proofs = append(proofs, proof)
+	}
+
+	req := dpopRequest(w.t, http.MethodGet, "http://example.com/api/orders", proofs...)
+	req.Header.Set("Authorization", scheme+" "+credential)
+
+	return serve(w.t, chain, req)
+}
+
+func TestDPoP_Bearer(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+	thief := newDPoPKey(t, elliptic.P256())
+	certThumb := tokenHash("client certificate")
+
+	// proofFor is k's valid proof for a request presenting credential.
+	proofFor := func(t *testing.T, k dpopKey, jti, credential string) string {
+		t.Helper()
+
+		return k.validProof(jti).with(map[string]any{"ath": tokenHash(credential)}).sign(t)
+	}
+
+	authenticated := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		authenticatedAsOwner(t, out)
+	}
+	refusedProof := func(t *testing.T, out served) {
+		t.Helper()
+
+		assert.False(t, out.handlerRan, "never reaches the handler")
+		require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+	}
+	// refusedToken is refused as a token this chain cannot honour, and never
+	// accepted as a plain bearer token.
+	refusedToken := func(t *testing.T, out served) {
+		t.Helper()
+
+		assert.False(t, out.handlerRan, "not accepted as a bearer token")
+		require.Error(t, out.err)
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+	}
+
+	enabled := &httpsec.DPoP{}
+	required := &httpsec.DPoP{Require: true}
+
+	type testCase struct {
+		name string
+		mode bearerMode
+		d    *httpsec.DPoP // nil: DPoP off
+		// run presents the case's credential through chain and returns what
+		// the last request produced.
+		run    func(t *testing.T, w *dpopBearerWorld, chain *httpsec.Chain) served
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "a bound token under DPoP with a proof from its key",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+
+				return w.present(c, "DPoP", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: authenticated,
+		},
+		{
+			name: "the DPoP scheme in another case",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+
+				return w.present(c, "dpop", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: authenticated,
+		},
+		{
+			name: "an unbound token as Bearer keeps working",
+			mode: signedBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.token(token.Confirmation{}), "")
+			},
+			assert: authenticated,
+		},
+		{
+			name: "a bound token as Bearer",
+			mode: signedBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.token(token.Confirmation{JKT: key.jkt}), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a bound token as Bearer, with a proof from its key",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+
+				return w.present(c, "Bearer", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a bound token under DPoP with no proof",
+			mode: signedBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "DPoP", w.token(token.Confirmation{JKT: key.jkt}), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a bound token with a proof from another key",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+
+				return w.present(c, "DPoP", tok, proofFor(t, thief, "j-1", tok))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "an unbound token under DPoP",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{})
+
+				return w.present(c, "DPoP", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a proof presented twice",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+				proof := proofFor(t, key, "j-1", tok)
+
+				authenticated(t, w.present(c, "DPoP", tok, proof))
+
+				return w.present(c, "DPoP", tok, proof)
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "required refuses an old unbound token",
+			mode: signedBearer, d: required,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.token(token.Confirmation{}), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "required accepts a bound token with its proof",
+			mode: signedBearer, d: required,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+
+				return w.present(c, "DPoP", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: authenticated,
+		},
+		{
+			name: "a cnf naming another member",
+			mode: signedBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.rawToken(map[string]any{"jwk": map[string]any{"kty": "EC"}}), "")
+			},
+			assert: refusedToken,
+		},
+		{
+			name: "a cnf naming another member, with DPoP off",
+			mode: signedBearer,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.rawToken(map[string]any{"jwk": map[string]any{"kty": "EC"}}), "")
+			},
+			assert: refusedToken,
+		},
+		{
+			name: "a cnf naming both bindings, with a proof from the key",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				tok := w.rawToken(map[string]any{"jkt": key.jkt, "x5t#S256": certThumb})
+
+				return w.present(c, "DPoP", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: refusedToken,
+		},
+		{
+			name: "a certificate binding while certificate binding is off",
+			mode: signedBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.token(token.Confirmation{X5TS256: certThumb}), "")
+			},
+			assert: refusedToken,
+		},
+		{
+			name: "a DPoP binding while DPoP is off",
+			mode: signedBearer,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.token(token.Confirmation{JKT: key.jkt}), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			// A consumer's own Verifier may report a bound token's claims
+			// without its cnf; the session's own binding still holds.
+			name: "an unbound token for a bound session, as Bearer",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+				tok, err := w.gen.Generate(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject})
+				require.NoError(t, err)
+
+				return w.present(c, "Bearer", tok, "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a token bound to one key for a session bound to another",
+			mode: signedBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(thief.jkt)
+				tok, err := w.gen.GenerateWith(t.Context(), sid,
+					&identity.Principal{ID: "u-1", Username: testSubject},
+					token.WithConfirmation(token.Confirmation{JKT: key.jkt}))
+				require.NoError(t, err)
+
+				return w.present(c, "DPoP", tok, proofFor(t, key, "j-1", tok))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a bound reference under DPoP, its proof hashing the reference",
+			mode: referenceBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+
+				return w.present(c, "DPoP", sid, proofFor(t, key, "j-1", sid))
+			},
+			assert: authenticated,
+		},
+		{
+			name: "a bound reference under DPoP, its proof hashing something else",
+			mode: referenceBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+
+				return w.present(c, "DPoP", sid, proofFor(t, key, "j-1", "another-reference"))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "an unbound reference as Bearer keeps working",
+			mode: referenceBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.session(""), "")
+			},
+			assert: authenticated,
+		},
+		{
+			name: "a bound reference as Bearer",
+			mode: referenceBearer, d: enabled,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.session(key.jkt), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a bound reference with a proof from another key",
+			mode: referenceBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+
+				return w.present(c, "DPoP", sid, proofFor(t, thief, "j-1", sid))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "an unbound reference under DPoP",
+			mode: referenceBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session("")
+
+				return w.present(c, "DPoP", sid, proofFor(t, key, "j-1", sid))
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "required refuses an unbound reference",
+			mode: referenceBearer, d: required,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.session(""), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a bound reference while DPoP is off",
+			mode: referenceBearer,
+			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				return w.present(c, "Bearer", w.session(key.jkt), "")
+			},
+			assert: refusedProof,
+		},
+		{
+			name: "a reference proof presented twice",
+			mode: referenceBearer, d: enabled,
+			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
+				sid := w.session(key.jkt)
+				proof := proofFor(t, key, "j-1", sid)
+
+				authenticated(t, w.present(c, "DPoP", sid, proof))
+
+				return w.present(c, "DPoP", sid, proof)
+			},
+			assert: refusedProof,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.mode.String()+"/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+			tc.assert(t, tc.run(t, w, w.chain(tc.mode, tc.d)))
+		})
+	}
+}

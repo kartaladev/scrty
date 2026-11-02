@@ -205,6 +205,10 @@ type config struct {
 
 	// httpsDeployment is WithHTTPSDeployment's declaration.
 	httpsDeployment bool
+
+	// dpop is the proof verifier EnableDPoP built, and nil without it. Both
+	// bearer modes and every issuing endpoint read it.
+	dpop *dpopVerifier
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the

@@ -241,7 +241,7 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 					"naming the rotated session (WithMFATokens)", option)
 			}
 
-			return nil
+			return checkBindingGenerator(c, option, "WithMFATokens", i.tokens)
 		})
 
 		c.register(i, OrderMFAChallenge)

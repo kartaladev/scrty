@@ -284,7 +284,7 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 			"the response has to hand back one naming the rotated session", option)
 	}
 
-	return nil
+	return checkBindingGenerator(c, option, "WithReauthenticationTokens", i.tokens)
 }
 
 // buildChallenges builds one re-proof challenge manager per challenge method

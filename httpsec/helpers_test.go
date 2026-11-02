@@ -96,6 +96,10 @@ func (r stubRequest) ClientIP() string { return r.clientIP }
 func (r stubRequest) Host() string     { return r.host }
 func (r stubRequest) Secure() bool     { return r.secure }
 
+// EscapedPath is the stub's path in its default encoding: a stub spells its
+// path once.
+func (r stubRequest) EscapedPath() string { return (&url.URL{Path: r.path}).EscapedPath() }
+
 func (r stubRequest) Cookie(n string) (string, bool) {
 	v, ok := r.cookies[n]
 	return v, ok

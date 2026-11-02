@@ -38,6 +38,11 @@ type sessionResolver struct {
 	// nil while it is off. A late session the manager says must be renewed is
 	// let through to it, and to nothing else.
 	renewal *sessionRenewal
+
+	// admit, when set, judges the loaded session before its user is reloaded
+	// or anything is published; an error it returns is the request's answer.
+	// The session-reference bearer judges the session's key binding here.
+	admit func(ex *Exchange, s *session.Session) error
 }
 
 // userLookup says how the core reloads the session's user.
@@ -135,6 +140,12 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 		}
 
 		return classifyLoad(ctx, err)
+	}
+
+	if r.admit != nil {
+		if err := r.admit(ex, s); err != nil {
+			return err
+		}
 	}
 
 	// Reloaded rather than taken from the credential, so a role revoked a

@@ -43,6 +43,10 @@ type bearerToken struct {
 
 	scheme           string
 	allowEmptyScheme bool
+
+	// dpop is the chain's DPoP verifier, handed over at assembly, and nil
+	// while DPoP is off.
+	dpop *dpopVerifier
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -84,7 +88,8 @@ func (b *bearerToken) wire(c *Chain) {
 // errors.As. A consumer who wants a store's full error logs it inside their
 // own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
-	presented, ok := b.presented(ex.Request.Header("Authorization"))
+	presented, underDPoP, ok := presentedBearer(ex.Request.Header("Authorization"),
+		b.scheme, b.allowEmptyScheme, b.dpop)
 	if !ok {
 		return next(ex)
 	}
@@ -96,10 +101,35 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 		return b.notVerified(ex, err)
 	}
 
+	// The token's binding is judged before its session is looked up, so a
+	// stolen bound token costs no store read, and a token whose binding the
+	// chain cannot honour is never taken for a plain bearer token.
+	cnf := claims.Confirmation()
+	proof, err := b.admitBinding(ex, underDPoP, presented, cnf)
+	if err != nil {
+		return err
+	}
+
+	// The session's own binding must be the token's, so a token reported
+	// without its cnf (a consumer's Verifier, NewClaims) does not unbind a
+	// bound sign-in. The proof is recorded only then, last.
+	resolver := b.resolver
+	resolver.admit = func(ex *Exchange, s *session.Session) error {
+		if s.KeyBinding.JKT != cnf.JKT || s.KeyBinding.X5TS256 != cnf.X5TS256 {
+			if b.dpop == nil {
+				return ErrInvalidDPoPProof
+			}
+
+			return b.dpop.refuse(ex.Context(), reasonProofBinding)
+		}
+
+		return recordProof(ex.Context(), b.dpop, proof)
+	}
+
 	// The session identifier is the token's jti, which is how a token issued at
 	// login finds the session it was issued for. The token's subject is the
 	// username, which is what the user loader is keyed on.
-	if err := b.resolver.resolve(ex, claims.ID(), lookupByUsername(claims.Subject())); err != nil {
+	if err := resolver.resolve(ex, claims.ID(), lookupByUsername(claims.Subject())); err != nil {
 		return err
 	}
 
@@ -155,10 +185,25 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 	return diag.Wrap(err, textVerificationKeysUnavailable)
 }
 
-// presented reports the token an Authorization header carries, and whether this
-// interceptor claims the header at all.
-func (b *bearerToken) presented(header string) (string, bool) {
-	return presentedCredential(header, b.scheme, b.allowEmptyScheme)
+// admitBinding judges a verified token's confirmation claim: a binding the
+// chain cannot honour is refused, and with DPoP on, the proof presented with
+// it is verified, its ath over the token, and must come from the bound key
+// (admitBinding). It returns the verified proof, which is recorded once the
+// session's own binding has been judged.
+func (b *bearerToken) admitBinding(ex *Exchange, underDPoP bool, tok string, cnf token.Confirmation) (*dpopProof, error) {
+	ctx := ex.Context()
+
+	if cnf.X5TS256 != "" || len(cnf.Other) > 0 {
+		return nil, admitBinding(ctx, b.dpop, nil,
+			keyBinding{jkt: cnf.JKT, x5tS256: cnf.X5TS256, other: len(cnf.Other) > 0})
+	}
+
+	proof, err := presentedProof(ctx, b.dpop, ex.Request, underDPoP, tok)
+	if err != nil {
+		return nil, err
+	}
+
+	return proof, admitBinding(ctx, b.dpop, proof, keyBinding{jkt: cnf.JKT})
 }
 
 // presentedCredential reports the credential an Authorization header carries
@@ -319,6 +364,8 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 		// The renewal endpoint may be enabled after this option, so it is
 		// handed to the core once every option has been applied.
 		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
+		// EnableDPoP may come after this option too.
+		c.wire(func(*Chain) { b.dpop = c.dpop })
 		c.register(b, OrderBearerToken)
 
 		return nil

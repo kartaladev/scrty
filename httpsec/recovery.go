@@ -135,7 +135,7 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 			"EnableFormLogin, whose generator it uses by default", option)
 	}
 
-	return nil
+	return checkBindingGenerator(c, option, "WithRecoveryTokens", i.tokens)
 }
 
 // endpointPaths are every path the recovery endpoints answer, named for a

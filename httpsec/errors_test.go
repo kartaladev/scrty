@@ -101,6 +101,7 @@ func TestStatusForError(t *testing.T) {
 		{name: "wrapped invalid code", err: fmt.Errorf("verifying: %w", mfa.ErrInvalidCode), want: 401},
 		{name: "malformed login", err: httpsec.ErrCredentialsMissing, want: 400},
 		{name: "host not allowed", err: fmt.Errorf("resolve: %w", httpsec.ErrHostNotAllowed), want: 400},
+		{name: "invalid DPoP proof", err: fmt.Errorf("bearer: %w", httpsec.ErrInvalidDPoPProof), want: 401},
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
 		{name: "reused password", err: password.ErrReused, want: 422},
 		{
@@ -432,6 +433,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrCredentialsMissing":              httpsec.ErrCredentialsMissing,
 		"httpsec.ErrMalformedRequest":                httpsec.ErrMalformedRequest,
 		"httpsec.ErrHostNotAllowed":                  httpsec.ErrHostNotAllowed,
+		"httpsec.ErrInvalidDPoPProof":                httpsec.ErrInvalidDPoPProof,
 		"httpsec.ErrMFAMethodNotUsable":              httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":           httpsec.ErrNoMFAChallengePending,
 		"httpsec.ErrRenewalThrottled":                httpsec.ErrRenewalThrottled,

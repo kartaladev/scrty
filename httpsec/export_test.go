@@ -1,9 +1,14 @@
 package httpsec
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"time"
+
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/policy"
@@ -217,6 +222,87 @@ func ResolveClient(r Request, tp TrustedProxies, opts ...ProxyOption) (Client, i
 
 	return res.client, res.parsed, err
 }
+
+// DPoPSettings applies opts to a fresh configuration and reports the DPoP
+// configuration EnableDPoP resolved, defaults filled, and whether it was
+// enabled at all.
+func DPoPSettings(opts ...Option) (DPoP, bool, error) {
+	var c config
+	for _, opt := range opts {
+		if err := opt(&c); err != nil {
+			return DPoP{}, false, err
+		}
+	}
+
+	if c.dpop == nil {
+		return DPoP{}, false, nil
+	}
+
+	return c.dpop.cfg, true, nil
+}
+
+// DPoPChecker runs the chain's DPoP proof verification on its own, counting
+// the signatures it verifies, so a test can pin each check and prove an
+// oversized proof costs no signature check.
+type DPoPChecker struct {
+	v          *dpopVerifier
+	signatures atomic.Int64
+}
+
+// NewDPoPChecker builds the verifier EnableDPoP would build for d, reading
+// time from now and logging through log.
+func NewDPoPChecker(d DPoP, now func() time.Time, log *slog.Logger) (*DPoPChecker, error) {
+	v, err := newDPoPVerifier(d, now)
+	if err != nil {
+		return nil, err
+	}
+
+	v.log = log
+
+	c := &DPoPChecker{v: v}
+	verify := v.verifySignature
+	v.verifySignature = func(alg jwa.SignatureAlgorithm, key jwk.Key, compact []byte) error {
+		c.signatures.Add(1)
+
+		return verify(alg, key, compact)
+	}
+
+	return c, nil
+}
+
+// Verify verifies the proof r carries, for token (empty for none), without
+// recording it, and returns its key's thumbprint.
+func (c *DPoPChecker) Verify(ctx context.Context, r Request, token string) (string, error) {
+	p, err := c.v.verify(ctx, r, token)
+
+	return p.jkt, err
+}
+
+// Check verifies the proof r carries and then records it, as the chain does
+// once every other check has passed.
+func (c *DPoPChecker) Check(ctx context.Context, r Request, token string) (string, error) {
+	p, err := c.v.verify(ctx, r, token)
+	if err != nil {
+		return "", err
+	}
+
+	if err := c.v.record(ctx, p); err != nil {
+		return "", err
+	}
+
+	return p.jkt, nil
+}
+
+// Signatures reports how many proof signatures were verified.
+func (c *DPoPChecker) Signatures() int64 { return c.signatures.Load() }
+
+// ProofKeyThumbprint is the thumbprint the chain computes for a proof's key,
+// the value a bound token's cnf.jkt must equal.
+func ProofKeyThumbprint(key jwk.Key) (string, error) { return keyThumbprint(key) }
+
+// NewMemoryReplayStoreForTest is the in-memory replay store EnableDPoP uses by
+// default, reading time from now.
+func NewMemoryReplayStoreForTest(now func() time.Time) ReplayStore { return newMemoryReplayStore(now) }
 
 // SecurityHeadersRandom replaces the security-headers layer's random source,
 // so a test can make the nonce's randomness fail or repeat.

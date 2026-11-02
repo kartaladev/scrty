@@ -73,6 +73,10 @@ func (r *miniRequest) Path() string {
 	return path
 }
 
+// EscapedPath is the path as the target spells it, which is also what Path
+// returns: this framework never decodes it.
+func (r *miniRequest) EscapedPath() string { return r.Path() }
+
 func (r *miniRequest) Header(name string) string { return r.ex.header[http.CanonicalHeaderKey(name)] }
 
 func (r *miniRequest) HeaderValues(name string) []string {

@@ -196,10 +196,16 @@ func (i *magicLinkInterceptor) check(c *config, option string) error {
 		if err := checkTokenGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
 			return err
 		}
-	} else if i.tokens == nil {
-		return newConfigError("%s needs a token generator: a redeemed link opens a session, "+
-			"and a caller with no credential for it could not use it (WithMagicLinkTokens)",
-			option)
+	} else {
+		if i.tokens == nil {
+			return newConfigError("%s needs a token generator: a redeemed link opens a session, "+
+				"and a caller with no credential for it could not use it (WithMagicLinkTokens)",
+				option)
+		}
+
+		if err := checkBindingGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
+			return err
+		}
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)

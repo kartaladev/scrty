@@ -236,6 +236,10 @@ var statusTable = []statusRow{
 	// asked to authenticate again.
 	{magiclink.ErrInvalidLink, http.StatusUnauthorized},
 
+	// A DPoP proof that is missing, does not verify or does not fit its
+	// token: the client is asked to present a credential with a valid proof.
+	{ErrInvalidDPoPProof, http.StatusUnauthorized},
+
 	// A refused recovery (recovery.ErrRefused) and a throttled saved-code
 	// presentation (recovery.ErrCodeThrottled) need no rows: they wrap
 	// authenticate.ErrAuthenticationFailed and ratelimit.ErrThrottled, so the
