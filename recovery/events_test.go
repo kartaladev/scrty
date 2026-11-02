@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,10 +14,13 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // recoveryEvents is a security-event sink that keeps what it receives, in the
@@ -46,6 +51,44 @@ func (r *recoveryEvents) all() []security.Event {
 	return append([]security.Event(nil), r.events...)
 }
 
+// onFaultStore is a one-time token store that answers a lookup or a spend
+// through a hook a case sets, and otherwise passes it on to the real store. A
+// hook that returns an error fails the call; one that returns nil lets it
+// through.
+type onFaultStore struct {
+	onetime.Store
+
+	find    atomic.Pointer[func(ctx context.Context) error]
+	consume atomic.Pointer[func(ctx context.Context) error]
+}
+
+func (s *onFaultStore) FindByID(ctx context.Context, tid id.ID) (*onetime.Token, error) {
+	if hook := s.find.Load(); hook != nil {
+		if err := (*hook)(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.Store.FindByID(ctx, tid)
+}
+
+func (s *onFaultStore) Consume(ctx context.Context, tid id.ID, at time.Time) error {
+	if hook := s.consume.Load(); hook != nil {
+		if err := (*hook)(ctx); err != nil {
+			return err
+		}
+	}
+
+	return s.Store.Consume(ctx, tid, at)
+}
+
+// failing returns a hook that fails every call with err.
+func failing(err error) *func(context.Context) error {
+	hook := func(context.Context) error { return err }
+
+	return &hook
+}
+
 // TestSecurityEvents_RecoveryStart pins that every start reports
 // scrty_recovery_started, for a username that names an account and for one
 // that names none alike, carrying the user only when there is one, and that
@@ -61,6 +104,7 @@ func TestSecurityEvents_RecoveryStart(t *testing.T) {
 		name     string
 		username string
 		setup    func(f *fixture)
+		opts     []recovery.Option
 		assert   func(t *testing.T, got []security.Event, order []string)
 	}
 
@@ -107,6 +151,28 @@ func TestSecurityEvents_RecoveryStart(t *testing.T) {
 			assert: started(""),
 		},
 		{
+			name:     "an account whose contact address could not be resolved: still reported, with the user",
+			username: anaUsername,
+			setup: func(f *fixture) {
+				f.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(anaDetails(), nil)
+			},
+			opts: []recovery.Option{recovery.WithContactResolver(func(context.Context, *identity.Details) (string, error) {
+				return "", errOutage
+			})},
+			assert: started(anaID),
+		},
+		{
+			name:     "an account whose contact address is empty: still reported, with the user",
+			username: anaUsername,
+			setup: func(f *fixture) {
+				f.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(anaDetails(), nil)
+			},
+			opts: []recovery.Option{recovery.WithContactResolver(func(context.Context, *identity.Details) (string, error) {
+				return "", nil
+			})},
+			assert: started(anaID),
+		},
+		{
 			name:     "a user loader that failed: reported alike, without a user",
 			username: anaUsername,
 			setup: func(f *fixture) {
@@ -131,7 +197,7 @@ func TestSecurityEvents_RecoveryStart(t *testing.T) {
 				return nil
 			}).AnyTimes()
 
-			r, err := recovery.NewRecoverer(f.deps(), f.opts(recovery.WithSecurityEvents(own.sink))...)
+			r, err := recovery.NewRecoverer(f.deps(), f.opts(append([]recovery.Option{recovery.WithSecurityEvents(own.sink)}, tc.opts...)...)...)
 			require.NoError(t, err)
 
 			r.Start(t.Context(), tc.username)
@@ -150,13 +216,33 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 	t.Parallel()
 
 	errIssuer := errors.New("issuer: signing key unreachable")
+	errDown := errors.New("store unreachable: ana@example.com")
+
+	// savedAndIssued presents ana's saved and issued codes, both good.
+	savedAndIssued := func(ctx context.Context, e *completeEnv, r *recovery.Recoverer) error {
+		_, err := r.Recover(ctx, savedAndIssuedReq(e))
+
+		return err
+	}
+
+	// heldToken is well formed and names no record: a store asked for it is
+	// the first to answer.
+	const heldToken = "0190f0a0-0000-7000-8000-000000000001.secret"
 
 	type testCase struct {
 		name string
 
+		// store arms the issued-code store the recoverer reads, given the
+		// request's cancel function.
+		store func(f *onFaultStore, cancel context.CancelFunc)
+
+		// holdStore makes the armed store the hold token store as well, which
+		// a case about a finish needs (the case's opts configure the hold).
+		holdStore bool
+
 		// opts adds options to the recoverer, given the request's cancel
 		// function.
-		opts func(cancel context.CancelFunc) []recovery.Option
+		opts func(e *completeEnv, cancel context.CancelFunc) []recovery.Option
 
 		setup func(e *completeEnv)
 
@@ -171,6 +257,16 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 		_, err := r.Recover(ctx, recovery.Request{Username: anaUsername, Saved: "AAAA-BBBB-CCCC", Issued: e.issued})
 
 		return err
+	}
+
+	// kept checks that a refusal the library answered for a dependency's
+	// failure is still the refusal: the same error and text, and reported as
+	// nothing.
+	kept := func(t *testing.T, own *recoveryEvents, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, recovery.ErrRefused)
+		assert.Empty(t, own.all(), "a dependency failure reports no refusal")
 	}
 
 	refusedOnce := func(t *testing.T, got []security.Event) {
@@ -242,8 +338,100 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 			},
 		},
 		{
+			name: "a wrong issued code is reported",
+			act: func(ctx context.Context, e *completeEnv, r *recovery.Recoverer) error {
+				_, err := r.Recover(ctx, recovery.Request{Username: anaUsername, Saved: e.saved[0], Issued: e.issued + "x"})
+
+				return err
+			},
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
+			},
+		},
+		{
+			name: "an issued-code store that failed reports nothing, and the answer is still a refusal",
+			store: func(f *onFaultStore, _ context.CancelFunc) {
+				f.find.Store(failing(errDown))
+			},
+			act: savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the text is the refusal's own")
+				assert.NotContains(t, err.Error(), errDown.Error())
+			},
+		},
+		{
+			name: "a request that ended during the issued-code lookup reports nothing",
+			store: func(f *onFaultStore, cancel context.CancelFunc) {
+				hook := func(ctx context.Context) error {
+					cancel()
+
+					return ctx.Err()
+				}
+				f.find.Store(&hook)
+			},
+			act: savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+			},
+		},
+		{
+			name: "an issued-code store that failed at the spend reports nothing",
+			store: func(f *onFaultStore, _ context.CancelFunc) {
+				f.consume.Store(failing(errDown))
+			},
+			act: savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+			},
+		},
+		{
+			name: "a user limiter that failed reports nothing, and the answer is still a refusal",
+			opts: func(e *completeEnv, _ context.CancelFunc) []recovery.Option {
+				l := NewMockLimiter(e.ctrl)
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, errDown).AnyTimes()
+
+				return []recovery.Option{recovery.WithUserLimiter(l)}
+			},
+			act: savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the text is the refusal's own")
+			},
+		},
+		{
+			name: "a risk hook that failed reports nothing, and the answer is still a refusal",
+			opts: func(*completeEnv, context.CancelFunc) []recovery.Option {
+				return riskOf(0, errDown)
+			},
+			act: savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+				assert.True(t, recovery.RefusedAfterValidCode(err), "still marked, so the source pays")
+			},
+		},
+		{
+			name: "a hold token store that failed at a finish reports nothing, and the answer is still a refusal",
+			opts: func(*completeEnv, context.CancelFunc) []recovery.Option {
+				return holdFor(time.Hour)
+			},
+			holdStore: true,
+			store: func(f *onFaultStore, _ context.CancelFunc) {
+				f.find.Store(failing(errDown))
+			},
+			act: func(ctx context.Context, _ *completeEnv, r *recovery.Recoverer) error {
+				_, err := r.Finish(ctx, heldToken)
+
+				return err
+			},
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+			},
+		},
+		{
 			name: "a request that ended during the password check reports nothing",
-			opts: func(cancel context.CancelFunc) []recovery.Option {
+			opts: func(_ *completeEnv, cancel context.CancelFunc) []recovery.Option {
 				return []recovery.Option{recovery.WithPasswordCheck(func(context.Context, string, []byte) error {
 					cancel()
 
@@ -273,9 +461,21 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 			own := &recoveryEvents{}
 			e := newCompleteEnv(t)
 
-			extra := []recovery.Option{recovery.WithSecurityEvents(own.sink)}
+			faulty := &onFaultStore{Store: e.tokens}
+
+			extra := []recovery.Option{recovery.WithSecurityEvents(own.sink), recovery.WithIssuedCodeStore(faulty)}
 			if tc.opts != nil {
-				extra = append(extra, tc.opts(cancel)...)
+				extra = append(extra, tc.opts(e, cancel)...)
+			}
+
+			if tc.holdStore {
+				hold := &onFaultStore{Store: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(e.clock)))}
+				faulty = hold
+				extra = append(extra, recovery.WithHoldTokenStore(hold))
+			}
+
+			if tc.store != nil {
+				tc.store(faulty, cancel)
 			}
 
 			r := e.recoverer(t, extra...)

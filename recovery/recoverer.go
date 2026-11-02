@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/secevent"
@@ -291,7 +292,10 @@ func WithClock(clk clock.Clock) Option {
 //     whether the event names a user.
 //   - a Recover or a Finish refused for its proofs (ErrRefused), as
 //     security.RecoveryRefused, naming no user. A dependency failure, and a
-//     request whose own context ended before the verdict, are not reported.
+//     request whose own context ended before the verdict, are not reported,
+//     including a failure answered as ErrRefused (an issued-code or hold
+//     token store that could not answer, the user limiter, the risk hook):
+//     the caller still sees ErrRefused, and the failure stays beneath it.
 //
 // Default: no sink, and nothing is reported outside a chain. On a request an
 // httpsec chain reports events for (httpsec.EnableSecurityEvents), the chain's
@@ -630,7 +634,7 @@ func (r *Recoverer) validateIssued(c *config) error {
 
 	topts := []onetime.Option{onetime.WithTokenTTL(c.issuedTTL), onetime.WithClock(c.clock), onetime.WithLogger(c.logger)}
 	if c.issuedStoreSet {
-		topts = append(topts, onetime.WithStore(c.issuedStore))
+		topts = append(topts, onetime.WithStore(depfault.Store(c.issuedStore)))
 	}
 
 	m, err := onetime.New(IssuedCodePurpose, topts...)

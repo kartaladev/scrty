@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
@@ -241,7 +242,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 	m.registration = reg
 
 	login, err := onetime.New(loginPurpose,
-		onetime.WithStore(challenges),
+		onetime.WithStore(depfault.Store(challenges)),
 		onetime.WithTokenTTL(m.ttl),
 		onetime.WithIssuanceWindow(m.ttl),
 		onetime.WithClock(m.clock),

@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ascii"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -145,7 +146,7 @@ func (r *Recoverer) validateHolds(c *config) error {
 // tokens that live for ttl.
 func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
 	m, err := onetime.New(purpose,
-		onetime.WithStore(r.holdStore), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
+		onetime.WithStore(depfault.Store(r.holdStore)), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
 	}
@@ -324,7 +325,8 @@ func (r *Recoverer) cancelURL(token string) string {
 // With none it is unbound.
 //
 // A refusal (ErrRefused) is reported as security.RecoveryRefused
-// (WithSecurityEvents), as Recover's is.
+// (WithSecurityEvents), as Recover's is; a hold token store that could not
+// answer is answered as ErrRefused too and reported as nothing.
 func (r *Recoverer) Finish(ctx context.Context, completionToken string, opts ...FinishOption) (*Result, error) {
 	res, err := r.finish(ctx, completionToken, opts...)
 	r.reportRefused(ctx, err)
@@ -418,11 +420,13 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 // returned behind fixed text. refused is the message a refusal is logged
 // under.
 func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Tokens, token, refused string) (onetime.Checked, *Record, error) {
-	checked, err := m.Check(ctx, token, "")
+	wctx, watch := depfault.Watching(ctx)
+
+	checked, err := m.Check(wctx, token, "")
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, refused, slog.String("reason", "token"), slog.String("purpose", m.Purpose()))
 
-		return onetime.Checked{}, nil, ErrRefused
+		return onetime.Checked{}, nil, refusedByStore(watch)
 	}
 
 	rid, err := id.Parse(checked.Token().Subject)

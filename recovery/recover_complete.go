@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -179,7 +180,9 @@ type issuedSession struct {
 //
 // A refusal (ErrRefused) is reported as security.RecoveryRefused
 // (WithSecurityEvents); a dependency failure, and a request whose own context
-// ended before the verdict, are not.
+// ended before the verdict, are not, even when the failure is answered as
+// ErrRefused (an issued-code store, the user limiter or the risk hook that
+// failed): the error is still ErrRefused, with the failure beneath it.
 func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 	res, err := r.recover(ctx, req)
 	r.reportRefused(ctx, err)
@@ -437,10 +440,12 @@ func (r *Recoverer) validateCompletion(c *config) error {
 }
 
 // reportRefused reports err as security.RecoveryRefused when it is a refusal of
-// the presented proofs (ErrRefused) that the caller's own context did not cut
-// short. It names no user, as a failed login does not.
+// the presented proofs (ErrRefused). A refusal that answers a dependency's
+// failure (a store, the user limiter or the risk hook), and one the caller's
+// own context cut short, report nothing. It names no user, as a failed login
+// does not.
 func (r *Recoverer) reportRefused(ctx context.Context, err error) {
-	if !errors.Is(err, ErrRefused) || hangup.ByCaller(ctx, err) {
+	if !errors.Is(err, ErrRefused) || depfault.Silent(ctx, err) {
 		return
 	}
 

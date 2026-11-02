@@ -13,8 +13,8 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
@@ -605,12 +605,14 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 // security.AuthnLoginFail when it is a refusal of the presented credential:
 // the uniform authenticate.ErrAuthenticationFailed, or a pending or suspended
 // credential, which only the key's holder is told. A credential store or user
-// loader that failed, a consumer login check's own error, and a request whose
-// own context ended before the verdict report nothing.
+// loader that failed, a challenge store that failed (answered as the uniform
+// failure, with its cause kept beneath it), a consumer login check's own
+// error, and a request whose own context ended before the verdict report
+// nothing.
 func emitPasskeyRefused(ctx context.Context, err error) {
 	refusal := errors.Is(err, authenticate.ErrAuthenticationFailed) ||
 		errors.Is(err, passkey.ErrPending) || errors.Is(err, passkey.ErrSuspended)
-	if !refusal || hangup.ByCaller(ctx, err) {
+	if !refusal || depfault.Silent(ctx, err) {
 		return
 	}
 

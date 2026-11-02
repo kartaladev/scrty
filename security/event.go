@@ -130,8 +130,11 @@ const (
 	// linked to no account, or whose provisioning was refused.
 	//
 	// It is not reported for a dependency that failed (a user store, a key
-	// store, a session store, an identity provider that could not be reached),
-	// nor for a request whose own context ended before the verdict. A
+	// store, a session store, a passkey challenge store, an identity provider
+	// that could not be reached), nor for a request whose own context ended
+	// before the verdict. That holds when the failure is answered as a
+	// refusal: a challenge store that could not answer fails the assertion
+	// like a wrong one, with the same status and text, and reports nothing. A
 	// magic-link redemption and an OIDC handoff answer a refusal and an outage
 	// with one error, by design, and so report no failure at all; nor does an
 	// OIDC callback refused as an invalid state.
@@ -234,7 +237,10 @@ const (
 	// second-factor code or a completion token that is not good, a user at the
 	// recovery limit, or a check that refused it. It names no user, as a
 	// failed login does not. A recovery whose dependency failed, or whose
-	// request ended before a verdict, is not reported.
+	// request ended before a verdict, is not reported, even when the failure
+	// is answered as the same refusal (recovery.ErrRefused) a bad proof gets: a
+	// store that could not answer, the user limiter that could not say, or a
+	// risk hook that failed. The answer a caller sees is unchanged.
 	RecoveryRefused = "scrty_recovery_refused"
 
 	// Reauthenticated is a signed-in user who proved themselves again.

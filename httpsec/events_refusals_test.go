@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,9 +21,54 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
+	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/token/onetime"
 )
+
+// faultyChallenges is a passkey challenge store whose lookup and spend run
+// hooks a case sets: a hook fails the call by returning an error, or lets it
+// through by returning nil.
+type faultyChallenges struct {
+	onetime.Store
+
+	find    atomic.Pointer[func(ctx context.Context) error]
+	consume atomic.Pointer[func(ctx context.Context) error]
+}
+
+func (s *faultyChallenges) Consume(ctx context.Context, tid id.ID, at time.Time) error {
+	if hook := s.consume.Load(); hook != nil {
+		if err := (*hook)(ctx); err != nil {
+			return err
+		}
+	}
+
+	return s.Store.Consume(ctx, tid, at)
+}
+
+func (s *faultyChallenges) FindByID(ctx context.Context, tid id.ID) (*onetime.Token, error) {
+	if hook := s.find.Load(); hook != nil {
+		if err := (*hook)(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.Store.FindByID(ctx, tid)
+}
+
+// scriptedBroker is a consumer identity broker that answers every callback
+// with what run returns.
+type scriptedBroker struct {
+	run func(ctx context.Context) error
+}
+
+func (b scriptedBroker) Broker(ctx context.Context, _ oidc.ExternalIdentity) (*identity.Principal, error) {
+	return nil, b.run(ctx)
+}
 
 // refusalRun is what one row of TestSecurityEvents_Refusals produced: the
 // events the chain's sink received, the error the request was answered with,
@@ -159,6 +206,81 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 		return refusalRun{events: rec.all(), own: own.all(), err: out.err}
 	}
 
+	// passwordlessIn logs in from a credential seeded in state.
+	passwordlessIn := func(state passkey.State) func(*testing.T, *eventRecorder) refusalRun {
+		return func(t *testing.T, rec *eventRecorder) refusalRun {
+			d := newPwlDeployment(t)
+			d.extra = append(d.extra, httpsec.EnableSecurityEvents(rec.sink))
+			d.build(t)
+
+			out := d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", state))
+
+			return refusalRun{events: rec.all(), err: out.err}
+		}
+	}
+
+	// passwordlessChallenge logs in after the challenge store's lookup runs
+	// hook, given the request's cancel function.
+	passwordlessChallenge := func(hook func(cancel context.CancelFunc) func(context.Context) error, spend ...bool) func(*testing.T, *eventRecorder) refusalRun {
+		return func(t *testing.T, rec *eventRecorder) refusalRun {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			store := &faultyChallenges{Store: must.Must(onetime.NewMemoryStore())}
+
+			d := newPwlDeployment(t)
+			d.challenges = store
+			d.extra = append(d.extra, httpsec.EnableSecurityEvents(rec.sink))
+			d.build(t)
+
+			handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+			cookie, challenge := d.begun(t)
+
+			h := hook(cancel)
+			if len(spend) > 0 && spend[0] {
+				store.consume.Store(&h)
+			} else {
+				store.find.Store(&h)
+			}
+
+			req := jsonPost(ctx, passwordlessFinishPath, handleAssertionBody(challenge, "cred-1", handle))
+			req.AddCookie(&http.Cookie{Name: httpsec.DefaultPasswordlessCookieName, Value: cookie}) //nolint:gosec // G124: a request cookie
+			out := serveWithContext(ctx, d.chain, req)
+
+			return refusalRun{events: rec.all(), err: out.err}
+		}
+	}
+
+	// oidcBrokered runs one OIDC callback whose consumer broker answers with
+	// run, given the request's cancel function, on a request that carries
+	// that cancel.
+	oidcBrokered := func(run func(cancel context.CancelFunc) func(context.Context) error) func(*testing.T, *eventRecorder) refusalRun {
+		return func(t *testing.T, rec *eventRecorder) refusalRun {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			h := newOIDCHarness(t)
+			registry := must.Must(oidc.NewRegistry(h.provider.provider()))
+			client := must.Must(outbound.New(outbound.WithHTTPClient(h.provider.srv.Client())))
+			h.manager = must.Must(oidc.NewRelyingParty(registry, scriptedBroker{run: run(cancel)},
+				oidc.WithOutboundClient(client), oidc.WithFlowStore(h.flows)))
+			h.chainOpts = append(h.chainOpts, httpsec.EnableSecurityEvents(rec.sink))
+			c := h.chain(t)
+
+			l := startLogin(t, c, "")
+			q := url.Values{"code": {l.nonce}, "state": {l.state}}.Encode()
+			out := serveWithContext(ctx, c, callbackRequest(ctx, q, l.handle))
+
+			return refusalRun{events: rec.all(), err: out.err}
+		}
+	}
+
+	failsWith := func(err error) func(context.CancelFunc) func(context.Context) error {
+		return func(context.CancelFunc) func(context.Context) error {
+			return func(context.Context) error { return err }
+		}
+	}
+
 	cases := []testCase{
 		{
 			name: "a passkey assertion for an unknown credential reports authn_login_fail",
@@ -209,6 +331,113 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 
 				return refusalRun{events: rec.all(), err: out.err}
 			},
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, context.Canceled)
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a passkey assertion from a pending credential reports authn_login_fail",
+			run:  passwordlessIn(passkey.StatePending),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, passkey.ErrPending)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+			},
+		},
+		{
+			name: "a passkey assertion from a suspended credential reports authn_login_fail",
+			run:  passwordlessIn(passkey.StateSuspended),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, passkey.ErrSuspended)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+			},
+		},
+		{
+			name: "a passkey assertion for a challenge the store does not hold reports authn_login_fail",
+			run: func(t *testing.T, rec *eventRecorder) refusalRun {
+				d := newPwlDeployment(t)
+				d.extra = append(d.extra, httpsec.EnableSecurityEvents(rec.sink))
+				d.build(t)
+
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+				cookie, _ := d.begun(t)
+				out := d.finish(t, handleAssertionBody("not-the-challenge", "cred-1", handle), cookie)
+
+				return refusalRun{events: rec.all(), err: out.err}
+			},
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+			},
+		},
+		{
+			name: "a passkey login whose challenge store failed reports nothing, and is still answered as a failed assertion",
+			run: passwordlessChallenge(func(context.CancelFunc) func(context.Context) error {
+				return func(context.Context) error { return errLimiterDown }
+			}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a failed assertion's")
+				assert.Equal(t, authenticate.ErrAuthenticationFailed.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a passkey login whose challenge store failed at the spend reports nothing, and is still answered as a failed assertion",
+			run:  passwordlessChallenge(failsWith(errLimiterDown), true),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err))
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a passkey login whose client hung up during the challenge lookup reports nothing",
+			run: passwordlessChallenge(func(cancel context.CancelFunc) func(context.Context) error {
+				return func(ctx context.Context) error {
+					cancel()
+
+					return ctx.Err()
+				}
+			}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "an OIDC callback whose identity is linked to no account reports authn_login_fail",
+			run:  oidcBrokered(failsWith(oidc.ErrNoLinkedAccount)),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, oidc.ErrNoLinkedAccount)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
+			},
+		},
+		{
+			name: "an OIDC callback whose provisioning was refused reports authn_login_fail",
+			run:  oidcBrokered(failsWith(oidc.ErrProvisioningRefused)),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, oidc.ErrProvisioningRefused)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
+			},
+		},
+		{
+			name: "an OIDC callback refused beside an outage reports nothing",
+			run:  oidcBrokered(failsWith(errors.Join(oidc.ErrNoLinkedAccount, oidc.ErrExchangeFailed))),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, oidc.ErrExchangeFailed)
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "an OIDC callback refused on a request that ended reports nothing",
+			run: oidcBrokered(func(cancel context.CancelFunc) func(context.Context) error {
+				return func(context.Context) error {
+					cancel()
+
+					return errors.Join(oidc.ErrNoLinkedAccount, context.Canceled)
+				}
+			}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, context.Canceled)
 				reportedNothing(t, run)

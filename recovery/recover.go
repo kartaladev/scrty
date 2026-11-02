@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/session"
@@ -412,7 +413,7 @@ func (r *Recoverer) checkUserLimit(ctx context.Context, user identity.UserID) er
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgUserLimiterError, diag.Failure("limiter", err)...)
 
-		return ErrRefused
+		return depfault.Refusal(err, ErrRefused)
 	}
 	if exceeded {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgUserThrottled)
@@ -458,11 +459,14 @@ func (r *Recoverer) checkCodes(ctx context.Context, v *verified, req Request) er
 
 // checkIssued is the write-free check of an issued code presented for user.
 // A code that is not good, and one minted for another user, are both
-// ErrRefused.
+// ErrRefused, and so is a store that could not answer, with the store's
+// failure kept beneath it so that no refusal event is reported for it.
 func (r *Recoverer) checkIssued(ctx context.Context, user identity.UserID, presented string) (onetime.Checked, error) {
-	checked, err := r.issued.Check(ctx, presented, "")
+	wctx, watch := depfault.Watching(ctx)
+
+	checked, err := r.issued.Check(wctx, presented, "")
 	if err != nil {
-		return onetime.Checked{}, ErrRefused
+		return onetime.Checked{}, refusedByStore(watch)
 	}
 
 	if identity.UserID(checked.Token().Subject) != user {
@@ -472,6 +476,17 @@ func (r *Recoverer) checkIssued(ctx context.Context, user identity.UserID, prese
 	}
 
 	return checked, nil
+}
+
+// refusedByStore is ErrRefused for a token the one-time manager refused. When
+// watch saw its store fail, the refusal answers that failure instead: the same
+// error and text, with the failure kept beneath it (see depfault.Refusal).
+func refusedByStore(watch *depfault.Watch) error {
+	if cause := watch.Failure(); cause != nil {
+		return depfault.Refusal(cause, ErrRefused)
+	}
+
+	return ErrRefused
 }
 
 // checkRest runs the side-effect-free checks, in order: the MFA method's
@@ -507,7 +522,7 @@ func (r *Recoverer) checkRest(ctx context.Context, v *verified, req Request) err
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgRiskFailed, diag.Failure("risk", err)...)
 
-			return r.refuse(ctx, v.user, diag.Wrap(err, errTextRisk, ErrRefused), true)
+			return r.refuse(ctx, v.user, diag.Wrap(err, errTextRisk, ErrRefused, depfault.ErrFailed), true)
 		}
 
 		v.hold = max(hold, 0)
@@ -542,8 +557,9 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 	}
 
 	if v.has(ProofIssued) {
-		if err := r.issued.Consume(ctx, v.issued); err != nil {
-			return r.spendFailed(ctx, v.user, "token-consume", err)
+		cctx, watch := depfault.Watching(ctx)
+		if err := r.issued.Consume(cctx, v.issued); err != nil {
+			return r.spendRefused(ctx, v.user, "token-consume", err, refusedByStore(watch))
 		}
 	}
 
@@ -571,9 +587,15 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 // MFA code or a racing recovery, not an outage, and each store logs its own
 // outage — and refuses.
 func (r *Recoverer) spendFailed(ctx context.Context, user identity.UserID, reason string, err error) error {
+	return r.spendRefused(ctx, user, reason, err, ErrRefused)
+}
+
+// spendRefused is spendFailed answering with refusal, which names the store
+// failure a spend of an issued code met, if it met one.
+func (r *Recoverer) spendRefused(ctx context.Context, user identity.UserID, reason string, err, refusal error) error {
 	r.logger.LogAttrs(ctx, slog.LevelDebug, msgSpendFailed, diag.Failure(reason, err)...)
 
-	return r.refuse(ctx, user, ErrRefused, true)
+	return r.refuse(ctx, user, refusal, true)
 }
 
 // refuse records a failure for user and returns err, marked when the recovery
