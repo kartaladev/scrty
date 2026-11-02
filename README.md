@@ -1356,7 +1356,8 @@ Once enabled:
   `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`. A request
   with no token gets a `DPoP` and a `Bearer` challenge, or only the `DPoP` one
   when DPoP is required. The challenge is always on with `EnableDPoP`; to
-  change it, remove or replace the header in a `WithErrorHandler`;
+  change it, remove or replace the header in a `WithErrorHandler` (or a
+  guard's `WithGuardErrorHandler`);
 - a sign-in's binding is fixed when it is created: a second factor and a
   renewal keep it, and a re-authentication may bind a sign-in that was not.
 

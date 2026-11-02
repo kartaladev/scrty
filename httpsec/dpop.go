@@ -190,10 +190,9 @@ const optionDPoP = "EnableDPoP"
 // configuration error from New, whatever the order of the options: a chain
 // that bound tokens and never checked a binding would suggest a protection it
 // does not give. A consumer's own handler that checks DPoP proofs does not
-// count. So is an issuing endpoint
-// whose token generator does not implement token.ConfirmingGenerator, which
-// could only issue unbound tokens, and any field the comment of DPoP calls a
-// configuration error. Under EnableSessionBearer no endpoint holds a
+// count. New also refuses an issuing endpoint whose token generator does not
+// implement token.ConfirmingGenerator, which could only issue unbound tokens,
+// and any field the comment of DPoP calls a configuration error. Under EnableSessionBearer no endpoint holds a
 // generator, and the binding is kept on the session instead.
 func EnableDPoP(d DPoP) Option {
 	return func(c *config) error {
