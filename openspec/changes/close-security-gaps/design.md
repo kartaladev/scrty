@@ -590,16 +590,22 @@ type Event struct {
     Outcome  string
     User     identity.UserID
     ClientIP string
-    Factor   identity.FirstFactor
+    Factor   factor.Kind
     Session  string // digest, never the identifier
 }
 httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 ```
 
 - **Default:** no sink, no events.
+- **Names (corrected 2026-11-02, group 11).** The vocabulary names rate-limit refusals (`excess_rate_limit_exceeded`) and CSRF refusals (`malicious_csrf`), so those use its names; the draft listed both under `scrty_`, against its own rule that a vocabulary name is used where one applies. Host refusal, second factors, passkeys, recovery, re-authentication, session management, DPoP, certificate binding, the automation challenge and key rotation have no vocabulary name and keep `scrty_` names.
 - **Delivery:** synchronous, on a context without cancellation. The sink's errors are ignored, and it cannot change outcomes: a panic is recovered and logged without the event's contents (changed 2026-11-02, because an unrecovered panic would turn a decided outcome into a 500).
 - **Only what happened.** A creation event is emitted after the session is stored and its credential handed out. A credential that `key-port-context` D7 issues and then discards (a lost race, a failed commit, a step that outlived its window) emits nothing. A hang-up or a dependency failure emits no refusal event.
 - **Observers:** the lockout and reuse observers keep working and are also delivered as events.
+- **How the sink reaches each component (settled 2026-11-02, group 11 review).** The chain delivers through the request's context, under an unexported key, to every component a request passes through, so a consumer's context value can neither collide with it nor forge it. A component a consumer also calls outside a chain (`apikey.Keys`, `mfa.VerifyThrottle`, `mfa.ResetEnrolment`, `recovery.Recoverer`, `signingkey`) takes a `WithSecurityEvents(sink)` option of its own: **Default:** no sink. Inside a chain the chain's delivery is used and the component's own sink is not, so one outcome is reported once.
+- **Refusals the chain can tell from outages are reported (settled 2026-11-02).** A passkey assertion or an OIDC callback refused for the credential reports `authn_login_fail`; a refused recovery completion reports `scrty_recovery_refused`. A completed recovery is a sign-in and also reports `authn_login_success`. A magic-link redemption and an OIDC handoff answer a refusal and an outage with one error by an earlier decision, so neither reports a failure, and the godoc of `security.AuthnLoginFail` says so.
+- **Recovery start is reported for every start (settled 2026-11-02).** A synchronous sink called only for a real account would let the start's latency answer whether the account exists, which its non-blocking sender exists to prevent. `scrty_recovery_started` is therefore reported for a known and an unknown username alike, carrying the user reference only when there is one.
+- **A lock is reported where the lockout decides it (settled 2026-11-02).** `authn_login_fail_max` and `authn_login_lock` come from the lockout's own transition, the path that also feeds the lockout observer, not from re-running pre-authentication after a failure: a sink must not change which policies run, and one lock must be reported once.
+- **Only outcomes that happened (settled 2026-11-02).** Ending other sign-ins reports `scrty_signin_ended` only when at least one ended.
 - **Alternatives rejected:**
   - *An asynchronous queue in the library.* It would bound memory and lose events, which is the consumer's trade-off to make.
   - *Logs only.* That is what A09 flags.
@@ -769,7 +775,7 @@ Settled on 2026-11-02: the CSRF token style (a synchronizer token stored on the 
 
 **D12, D13, D14: sessions, events, notices**
 - [ASVS 5.0 V7](https://github.com/OWASP/ASVS/blob/master/5.0/en/0x16-V7-Session-Management.md): 7.5.2, view and terminate sessions after re-authentication.
-- [OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html): event names.
+- [OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html): event names; re-read 2026-11-02 for `excess_rate_limit_exceeded` and `malicious_csrf`, and to confirm it names no MFA or host-refusal event.
 - [NIST SP 800-63B-4: events](https://pages.nist.gov/800-63-4/sp800-63b/events/): §4.1.2.1 and §4.5 notifications.
 - [Ory Kratos API](https://github.com/ory/kratos/blob/master/spec/api.json): session listing and revocation endpoints.
 
