@@ -1326,6 +1326,271 @@ public-suffix list, so `https://*.co.uk` is accepted like
 already set (net/http's `Header().Add`). An adapter of your own must implement
 it; the CORS layer uses it to extend `Vary`.
 
+## DPoP
+
+`httpsec.EnableDPoP` binds the tokens the chain issues to a key the client
+holds (RFC 9449). The client signs a short proof for every request, so a token
+copied out of a log, a proxy or a browser extension is of no use without the
+private key. It needs a bearer mode, and is off until you enable it:
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableBearerToken(bearerDeps), // or EnableSessionBearer
+    httpsec.EnableDPoP(httpsec.DPoP{}),
+)
+```
+
+Once enabled:
+
+- both bearer modes accept `Authorization: DPoP <token>` with one `DPoP` proof
+  header; unbound tokens still work as `Bearer`, unless `Require` is set;
+- every issuing endpoint (login, second factor, passkey login, magic link, OIDC
+  handoff, recovery, re-authentication, renewal) checks a request's proof
+  before it spends anything, and binds the sign-in and the token to the
+  proof's key (`cnf.jkt`). The token response says `"token_type": "DPoP"`;
+- a bound token presented as `Bearer`, or with a proof from another key, is
+  refused (401, `ErrInvalidDPoPProof`) with
+  `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`. A request
+  with no token gets a `DPoP` and a `Bearer` challenge, or only the `DPoP` one
+  when DPoP is required;
+- a sign-in's binding is fixed when it is created: a second factor and a
+  renewal keep it, and a re-authentication may bind a sign-in that was not.
+
+### Defaults
+
+| Field | Default |
+|---|---|
+| `Require` | `false`: accepted, not required |
+| `ProofMaxAge` | 60 seconds either side of the chain's clock |
+| `Algorithms` | `ES256` only; `none` and HMAC are refused at construction |
+| `MaxProofSize` | 8 KiB, refused before anything is parsed |
+| `Replay` | in memory, per process |
+| `Nonce` | off |
+| `NonceLifetime` | 5 minutes, when nonces are on |
+| `PublicURL` | the scheme and host the chain resolved (see "Behind a reverse proxy") |
+
+With more than one replica, give `Replay` a store they share, or a proof can be
+replayed once on each replica within its lifetime.
+
+### Server nonces
+
+Nonces are off by default: the 60-second lifetime and the replay store already
+bound replay, and a nonce costs the client a round trip whenever it has none.
+When you turn them on, they are sealed with your key material, so every
+replica accepts a nonce any of them issued without a shared store. The chain
+holds no key of its own, so `NonceCipher` is required; the cipher your sessions
+already seal with serves, and nonces are sealed with their own additional data,
+so a nonce never opens as anything else:
+
+```go
+kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("2026-11", key))
+// ...
+c, err := seal.NewAEADCipher(kr)
+// ...
+httpsec.EnableDPoP(httpsec.DPoP{Nonce: true, NonceCipher: seal.SessionCipher(c)})
+```
+
+A proof without a current nonce is refused (401, `ErrDPoPNonceRequired`, which
+also matches `ErrInvalidDPoPProof`) with `error="use_dpop_nonce"` and a fresh
+nonce in `DPoP-Nonce`. The client signs a new proof with it and retries. A
+response to a proof whose nonce is past half its lifetime carries the next
+one. With `EnableCORS`, `DPoP` is allowed and `DPoP-Nonce` and
+`WWW-Authenticate` are exposed for you.
+
+### In the browser
+
+The browser's WebCrypto makes the key pair and signs the proofs. The private
+key is generated non-extractable, so no script can read it out; keep the
+`CryptoKeyPair` in IndexedDB so the same key signs every request of the
+sign-in it is bound to. A key that is lost leaves its token unusable, and the
+user signs in again.
+
+```ts
+// dpop.ts
+const encoder = new TextEncoder();
+
+function base64url(bytes: ArrayBuffer | Uint8Array): string {
+  let binary = "";
+  for (const b of new Uint8Array(bytes)) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function createDPoPKey(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+}
+
+export interface ProofOptions {
+  accessToken?: string; // the token sent as "Authorization: DPoP"; none at sign-in
+  nonce?: string;       // the last DPoP-Nonce the server sent
+}
+
+export async function dpopProof(
+  keys: CryptoKeyPair,
+  method: string,
+  url: string,
+  options: ProofOptions = {},
+): Promise<string> {
+  const { kty, crv, x, y } = await crypto.subtle.exportKey("jwk", keys.publicKey);
+  const target = new URL(url, globalThis.location?.href);
+
+  const header = { typ: "dpop+jwt", alg: "ES256", jwk: { kty, crv, x, y } };
+  const claims: Record<string, unknown> = {
+    jti: crypto.randomUUID(),
+    htm: method.toUpperCase(),
+    htu: target.origin + target.pathname,
+    iat: Math.floor(Date.now() / 1000),
+  };
+  if (options.accessToken) {
+    claims.ath = base64url(await crypto.subtle.digest("SHA-256", encoder.encode(options.accessToken)));
+  }
+  if (options.nonce) {
+    claims.nonce = options.nonce;
+  }
+
+  const input = `${base64url(encoder.encode(JSON.stringify(header)))}.${base64url(encoder.encode(JSON.stringify(claims)))}`;
+  // WebCrypto's ECDSA signature is r || s, the encoding JWS uses for ES256.
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, encoder.encode(input));
+
+  return `${input}.${base64url(signature)}`;
+}
+```
+
+`htu` is the URL as the browser sends it, without query or fragment, and the
+chain compares the path as sent, percent-encoding intact. When the page calls
+the API through another host, such as a frontend server's rewrite, set
+`PublicURL` to the origin the browser sees.
+
+The test module signs in with a proof this file produced
+(`test/testdata/dpop/`), so a change on either side that breaks the other
+fails there.
+
+#### React
+
+One fetch wrapper signs every request and retries once when the server asks
+for a nonce:
+
+```ts
+// dpopFetch.ts
+import { createDPoPKey, dpopProof } from "./dpop";
+
+let keys: Promise<CryptoKeyPair> | undefined; // load from IndexedDB in a real app
+let nonce: string | undefined;
+
+export async function dpopFetch(url: string, init: RequestInit = {}, accessToken?: string): Promise<Response> {
+  keys ??= createDPoPKey();
+  const method = init.method ?? "GET";
+
+  const send = async () => {
+    const headers = new Headers(init.headers);
+    headers.set("DPoP", await dpopProof(await keys!, method, url, { accessToken, nonce }));
+    if (accessToken) headers.set("Authorization", `DPoP ${accessToken}`);
+    return fetch(url, { ...init, headers });
+  };
+
+  let res = await send();
+  nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+  if (res.status === 401 && res.headers.get("WWW-Authenticate")?.includes('error="use_dpop_nonce"')) {
+    res = await send(); // a new proof, with the nonce just received
+    nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+  }
+  return res;
+}
+```
+
+```tsx
+import { useEffect, useState } from "react";
+import { dpopFetch } from "./dpopFetch";
+
+export function Orders({ accessToken }: { accessToken: string }) {
+  const [orders, setOrders] = useState<{ id: string }[]>([]);
+
+  useEffect(() => {
+    dpopFetch("/api/orders", {}, accessToken).then((r) => r.json()).then(setOrders);
+  }, [accessToken]);
+
+  return <ul>{orders.map((o) => <li key={o.id}>{o.id}</li>)}</ul>;
+}
+
+// Sign-in: the response's token_type is "DPoP".
+export async function signIn(username: string, password: string): Promise<string> {
+  const res = await dpopFetch("/login", { method: "POST", body: new URLSearchParams({ username, password }) });
+  return (await res.json()).access_token;
+}
+```
+
+A retry sends the body again, so pass one that can be read twice, such as a
+string or `URLSearchParams`, not a stream.
+
+#### Next.js
+
+The private key lives in the browser, so proofs are signed in client
+components; a Server Component or a route handler holds no key and cannot sign
+one. Use the same `dpopFetch` from a component marked `"use client"`:
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { dpopFetch } from "@/lib/dpopFetch";
+
+export default function Orders({ accessToken }: { accessToken: string }) {
+  const [orders, setOrders] = useState<{ id: string }[]>([]);
+
+  useEffect(() => {
+    dpopFetch(`${process.env.NEXT_PUBLIC_API_ORIGIN}/api/orders`, {}, accessToken)
+      .then((r) => r.json())
+      .then(setOrders);
+  }, [accessToken]);
+
+  return <ul>{orders.map((o) => <li key={o.id}>{o.id}</li>)}</ul>;
+}
+```
+
+Calling the API's own origin keeps `htu` equal to the URL the chain sees. If
+requests go through a Next.js rewrite instead, the browser signs the frontend's
+URL, and the chain needs `PublicURL` set to that origin.
+
+#### htmx
+
+A proof is signed asynchronously, and `htmx:configRequest`, where headers are
+set, is not. `htmx:confirm` fires before every request and can hold it:
+`preventDefault()` stops it, and `detail.issueRequest()` sends it later, so the
+proof is made there and added in `htmx:configRequest`:
+
+```js
+import { createDPoPKey, dpopProof } from "./dpop.js";
+
+const keys = createDPoPKey(); // load from IndexedDB in a real app
+const proofs = new WeakMap();
+let accessToken; // set after sign-in
+
+document.body.addEventListener("htmx:confirm", (evt) => {
+  if (!accessToken || proofs.has(evt.detail.elt)) return;
+
+  evt.preventDefault();
+  keys
+    .then((k) => dpopProof(k, evt.detail.verb, evt.detail.path, { accessToken }))
+    .then((proof) => {
+      proofs.set(evt.detail.elt, proof);
+      evt.detail.issueRequest(true); // true skips hx-confirm's window.confirm()
+    });
+});
+
+document.body.addEventListener("htmx:configRequest", (evt) => {
+  const proof = proofs.get(evt.detail.elt);
+  if (!proof) return;
+
+  proofs.delete(evt.detail.elt);
+  evt.detail.headers["Authorization"] = `DPoP ${accessToken}`;
+  evt.detail.headers["DPoP"] = proof;
+});
+```
+
+`issueRequest(true)` skips the `window.confirm()` of `hx-confirm`; on an element
+that has one, ask the question in the `htmx:confirm` handler first. Each
+request gets a new proof, because a proof is accepted once.
+
 ## Development
 
 ```sh

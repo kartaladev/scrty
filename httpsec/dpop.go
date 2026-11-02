@@ -68,6 +68,10 @@ const (
 	// DefaultDPoPMaxProofSize is the longest DPoP header, in bytes, the chain
 	// parses.
 	DefaultDPoPMaxProofSize = 8 << 10
+
+	// DefaultDPoPNonceLifetime is how long a server nonce is accepted after
+	// it is issued.
+	DefaultDPoPNonceLifetime = 5 * time.Minute
 )
 
 // DPoP configures sender-constrained tokens (RFC 9449): a client proves, on
@@ -82,8 +86,7 @@ type DPoP struct {
 
 	// ProofMaxAge is how far a proof's iat may lie from the chain's clock,
 	// either side. A proof's jti is remembered for twice this, from its iat.
-	// Default:
-	// DefaultDPoPProofMaxAge. Negative is a configuration error.
+	// Default: DefaultDPoPProofMaxAge. Negative is a configuration error.
 	ProofMaxAge time.Duration
 
 	// Replay remembers the proofs the chain has accepted. Default: an
@@ -97,10 +100,26 @@ type DPoP struct {
 	// family are configuration errors.
 	Algorithms []jwa.SignatureAlgorithm
 
-	// Nonce turns on server-issued nonces. Default: off. This version cannot
-	// issue them yet, so turning it on is a configuration error rather than a
-	// setting that would read as enforced while nothing was.
+	// Nonce turns on server-issued nonces (RFC 9449 sections 8 and 9): a
+	// proof must then carry a nonce the chain issued no longer than
+	// NonceLifetime ago, or it is refused with ErrDPoPNonceRequired and a
+	// fresh nonce. Default: off, because the proof lifetime and the replay
+	// store already bound replay, and a nonce costs the client a round trip
+	// whenever it has none.
 	Nonce bool
+
+	// NonceCipher seals the server nonces, so every replica with the same
+	// key material accepts the nonces any of them issued, with no shared
+	// store. There is no default: the chain holds no key material of its
+	// own. It is required when Nonce is on, and a configuration error when it
+	// is off. seal.SessionCipher over the deployment's store/seal keyring
+	// serves.
+	NonceCipher NonceCipher
+
+	// NonceLifetime is how long a server nonce is accepted after it is
+	// issued. Default: DefaultDPoPNonceLifetime. Negative, or set with Nonce
+	// off, is a configuration error.
+	NonceLifetime time.Duration
 
 	// PublicURL is the scheme and host proofs' htu is judged against, such as
 	// "https://app.example.com". Default: empty, meaning the scheme and host
@@ -118,24 +137,44 @@ type DPoP struct {
 // optionDPoP names EnableDPoP in its configuration errors.
 const optionDPoP = "EnableDPoP"
 
-// EnableDPoP turns on DPoP for the whole chain: both bearer modes accept the
-// DPoP authorization scheme with a proof, and refuse a bound token without
-// one. Every issuing endpoint (login, second-factor verification, passkey
-// login, magic link, OIDC handoff, recovery, re-authentication, renewal)
-// verifies a request's proof before it spends anything, binds the sign-in it
-// creates and the token it issues to the proof's key, and tells its responder
-// the token type (TokenType). A renewal never binds; a re-authentication binds
-// an unbound session and keeps a bound one.
+// EnableDPoP turns on DPoP (RFC 9449) for the whole chain: a client proves,
+// on every request, that it holds the private key its token is bound to, so a
+// copied token is of no use without that key.
 //
-// Defaults: accepted, not required; a 60-second proof lifetime; ES256; an
-// 8 KiB proof bound; an in-memory replay store; no server nonces; the public
-// URL built from the resolved scheme and host. Each is a field of d.
+// Once it is on, both bearer modes (EnableBearerToken, EnableSessionBearer)
+// accept the DPoP authorization scheme with one DPoP proof header, and refuse
+// a bound token presented without a proof from its key, as Bearer included.
+// Every issuing endpoint (login, second-factor verification, passkey login,
+// magic link, OIDC handoff, recovery and its held finish, re-authentication,
+// renewal) verifies a request's proof before it spends anything, binds the
+// sign-in it creates and the token it issues to the proof's key (cnf.jkt), and
+// tells its responder the token type (TokenType), which the default documents
+// carry as token_type. A sign-in's binding is fixed when it is created: a
+// second factor and a renewal keep it and never add one, and a
+// re-authentication binds an unbound sign-in and keeps a bound one.
+//
+// Every refusal is ErrInvalidDPoPProof (401), and the chain answers it with
+// WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256" (the
+// accepted algorithms), naming no check. A request refused for want of a
+// caller gets a DPoP challenge, and a Bearer challenge beside it unless DPoP is
+// required. With server nonces on, a proof without a current nonce is
+// ErrDPoPNonceRequired, answered with error="use_dpop_nonce" and a fresh
+// nonce in the DPoP-Nonce header; a response to a proof whose nonce is past
+// half its lifetime carries the next one.
+//
+// Defaults, each a field of d: accepted, not required (Require); a 60-second
+// proof lifetime (ProofMaxAge); ES256 alone (Algorithms); an 8 KiB proof
+// bound (MaxProofSize); an in-memory replay store per process (Replay); no
+// server nonces (Nonce), and when they are on, a five-minute nonce lifetime
+// (NonceLifetime) sealed with the consumer's cipher (NonceCipher); the public
+// URL built from the scheme and host the chain resolved (PublicURL).
 //
 // Enabling it with neither EnableBearerToken nor EnableSessionBearer, or more
 // than once, is a configuration error from New. So is an issuing endpoint
 // whose token generator does not implement token.ConfirmingGenerator, which
-// could only issue unbound tokens. Under EnableSessionBearer no endpoint holds
-// a generator, and the binding is kept on the session instead.
+// could only issue unbound tokens, and any field the comment of DPoP calls a
+// configuration error. Under EnableSessionBearer no endpoint holds a
+// generator, and the binding is kept on the session instead.
 func EnableDPoP(d DPoP) Option {
 	return func(c *config) error {
 		if c.dpop != nil {
@@ -172,6 +211,8 @@ func EnableDPoP(d DPoP) Option {
 			v.log = ch.logger
 			v.sampler = ch.sampler
 		})
+
+		c.register(&dpopChallenge{v: v}, orderDPoPChallenge)
 
 		return nil
 	}
@@ -252,9 +293,8 @@ func newDPoPVerifier(d DPoP, now func() time.Time) (*dpopVerifier, error) {
 		d.MaxProofSize = DefaultDPoPMaxProofSize
 	}
 
-	if d.Nonce {
-		return nil, newConfigError("%s was given Nonce, and server nonces are not available in "+
-			"this version; leave it off", optionDPoP)
+	if err := checkNonceConfig(&d); err != nil {
+		return nil, err
 	}
 
 	if len(d.Algorithms) == 0 {
@@ -344,6 +384,8 @@ type proofClaims struct {
 	HTU *string  `json:"htu"`
 	IAT *float64 `json:"iat"`
 	ATH *string  `json:"ath"`
+
+	Nonce *string `json:"nonce"`
 }
 
 // The reasons a proof is refused, recorded at debug. They name a check, never
@@ -454,6 +496,16 @@ func (v *dpopVerifier) verify(ctx context.Context, r Request, tok string) (dpopP
 
 	if !v.hashFits(claims.ATH, tok) {
 		return dpopProof{}, v.refuse(ctx, reasonProofHash)
+	}
+
+	if v.cfg.Nonce {
+		stale, err := v.checkNonce(ctx, claims.Nonce)
+		if err != nil {
+			return dpopProof{}, err
+		}
+		if stale {
+			v.refreshNonce(ctx)
+		}
 	}
 
 	if claims.JTI == nil || *claims.JTI == "" {

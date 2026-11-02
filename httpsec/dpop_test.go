@@ -413,11 +413,38 @@ func TestDPoP_Construction(t *testing.T) {
 		},
 		{name: "a relative public URL", opts: dpop(httpsec.DPoP{PublicURL: "app.example.com"}), assert: refused("PublicURL")},
 		{
-			// Not offered until it can be honoured: accepting it would read as
-			// nonces enforced while none were.
-			name:   "server nonces, which this version cannot honour",
+			name:   "server nonces with a cipher",
+			opts:   dpop(httpsec.DPoP{Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA)}),
+			assert: built,
+		},
+		{
+			// No key material of its own: a nonce nobody could open would
+			// read as enforced while nothing was.
+			name:   "server nonces without a cipher",
 			opts:   dpop(httpsec.DPoP{Nonce: true}),
-			assert: refused("Nonce"),
+			assert: refused("NonceCipher"),
+		},
+		{
+			name:   "server nonces with a typed-nil cipher",
+			opts:   dpop(httpsec.DPoP{Nonce: true, NonceCipher: (*MockNonceCipher)(nil)}),
+			assert: refused("NonceCipher"),
+		},
+		{
+			name:   "a nonce cipher with nonces off",
+			opts:   dpop(httpsec.DPoP{NonceCipher: newNonceCipher(t, nonceKeyA)}),
+			assert: refused("NonceCipher"),
+		},
+		{
+			name:   "a nonce lifetime with nonces off",
+			opts:   dpop(httpsec.DPoP{NonceLifetime: time.Minute}),
+			assert: refused("NonceLifetime"),
+		},
+		{
+			name: "a negative nonce lifetime",
+			opts: dpop(httpsec.DPoP{
+				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: -time.Second,
+			}),
+			assert: refused("NonceLifetime"),
 		},
 	}
 
@@ -454,6 +481,7 @@ func TestDPoP_Defaults(t *testing.T) {
 	t.Parallel()
 
 	store := httpsec.NewMemoryReplayStoreForTest(time.Now)
+	cipher := newNonceCipher(t, nonceKeyA)
 
 	type testCase struct {
 		name   string
@@ -474,6 +502,8 @@ func TestDPoP_Defaults(t *testing.T) {
 				assert.Equal(t, 8<<10, d.MaxProofSize)
 				assert.NotNil(t, d.Replay, "an in-memory store")
 				assert.False(t, d.Nonce)
+				assert.Nil(t, d.NonceCipher)
+				assert.Zero(t, d.NonceLifetime, "no nonces, so no lifetime")
 				assert.Empty(t, d.PublicURL, "built from the resolved scheme and host")
 			},
 		},
@@ -496,6 +526,27 @@ func TestDPoP_Defaults(t *testing.T) {
 				assert.Equal(t, []jwa.SignatureAlgorithm{jwa.ES384(), jwa.EdDSA()}, d.Algorithms)
 				assert.Equal(t, "https://app.example.com", d.PublicURL)
 				assert.Equal(t, 4<<10, d.MaxProofSize)
+			},
+		},
+		{
+			name: "nonces on take the default lifetime",
+			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Nonce: true, NonceCipher: cipher})},
+			assert: func(t *testing.T, d httpsec.DPoP, enabled bool, err error) {
+				require.NoError(t, err)
+				require.True(t, enabled)
+				assert.True(t, d.Nonce)
+				assert.Equal(t, cipher, d.NonceCipher)
+				assert.Equal(t, 5*time.Minute, d.NonceLifetime)
+			},
+		},
+		{
+			name: "a consumer's nonce lifetime is kept",
+			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{
+				Nonce: true, NonceCipher: cipher, NonceLifetime: 90 * time.Second,
+			})},
+			assert: func(t *testing.T, d httpsec.DPoP, _ bool, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 90*time.Second, d.NonceLifetime)
 			},
 		},
 		{

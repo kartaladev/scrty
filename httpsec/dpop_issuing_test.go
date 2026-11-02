@@ -18,7 +18,9 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
@@ -27,6 +29,7 @@ import (
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/onetime"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -418,19 +421,30 @@ func renewalOver(t *testing.T, b *issuingBase, d httpsec.DPoP) issuingFixture {
 }
 
 // magicLinkEndpoint is magic-link redemption.
-func magicLinkEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
+func magicLinkEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
 	h := newMagicLinkHarness(t)
 	gen := issuingGenerator(t)
+
+	// The manager is rebuilt over a user loader that counts its lookups.
+	var lookups *atomic.Int64
+	h.users, lookups = countedUserLoader(t,
+		map[string]*identity.Details{magicLinkKnown: magicLinkUser()},
+		map[identity.UserID]*identity.Details{magicLinkUserID: magicLinkUser()})
+	h.manager = must.Must(magiclink.New(must.Must(onetime.New("magic-link", onetime.WithTokenTTL(magicLinkTTL))),
+		h.users, h.sender, "https://app.example.com"))
 
 	h.tokens = nil
 	h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkTokens(gen))
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: h.sessions, Users: h.users}),
 		httpsec.EnableDPoP(d))
+	h.chainOpts = append(h.chainOpts, extra...)
 
-	f := issuingFixture{chain: h.chain(t), sessions: h.sessions, gen: gen, user: magicLinkUserID}
+	f := issuingFixture{
+		chain: h.chain(t), sessions: h.sessions, gen: gen, user: magicLinkUserID, lookups: lookups.Load,
+	}
 	f.prepare = func(t *testing.T, _ string) func(*testing.T, prover) served {
 		t.Helper()
 
@@ -453,21 +467,28 @@ func magicLinkEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 }
 
 // oidcHandoffEndpoint is the redemption of a federated login's handoff code.
-func oidcHandoffEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
+func oidcHandoffEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
 	h := newOIDCHarness(t)
 	gen := issuingGenerator(t)
+
+	// The handoff is rebuilt over a user loader that counts its lookups.
+	users, lookups := countedUserLoader(t, nil, map[identity.UserID]*identity.Details{
+		oidcTestUserID: {ID: oidcTestUserID, Username: "ada@example.com", Active: true},
+	})
+	h.handoffs = must.Must(oidc.NewHandoff(h.store, users))
 
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 			Verifier: gen, Sessions: h.sessions, Users: NewMockUserLoader(gomock.NewController(t)),
 		}),
 		httpsec.EnableDPoP(d))
+	h.chainOpts = append(h.chainOpts, extra...)
 
 	f := issuingFixture{
 		chain:    h.build(t, h.handoffs, httpsec.WithOIDCTokens(gen), httpsec.WithOIDCSessions(h.sessions)),
-		sessions: h.sessions, gen: gen, user: oidcTestUserID,
+		sessions: h.sessions, gen: gen, user: oidcTestUserID, lookups: lookups.Load,
 	}
 	f.prepare = func(t *testing.T, _ string) func(*testing.T, prover) served {
 		t.Helper()
@@ -487,13 +508,14 @@ func oidcHandoffEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 }
 
 // passkeyLoginEndpoint is passwordless passkey login.
-func passkeyLoginEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
+func passkeyLoginEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
 	dep := newPwlDeployment(t)
 	dep.required.on.Store(false)
 	dep.jwt = issuingGenerator(t)
 	dep.extra = append(dep.extra, httpsec.EnableDPoP(d))
+	dep.extra = append(dep.extra, extra...)
 	dep.build(t)
 
 	handle := dep.seed(t, e2eUser, "cred-1", passkey.StateActive)
@@ -522,11 +544,19 @@ func passkeyLoginEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 
 // recoveryEndpoint is account recovery's completion, with a saved and an
 // issued code.
-func recoveryEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
+func recoveryEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
 	h := newRecoveryHarness(t)
 	gen := issuingGenerator(t)
+
+	// The core and the bearer load users through a loader that counts its
+	// lookups.
+	recovering := &identity.Details{ID: e2eUser, Name: "Grace Hopper", Username: e2eAddress, Active: true}
+	var lookups *atomic.Int64
+	h.users, lookups = countedUserLoader(t,
+		map[string]*identity.Details{e2eAddress: recovering},
+		map[identity.UserID]*identity.Details{e2eUser: recovering})
 
 	h.noFormLogin = true
 	h.proofs = []recovery.ProofKind{recovery.ProofSaved, recovery.ProofIssued}
@@ -534,9 +564,10 @@ func recoveryEndpoint(t *testing.T, d httpsec.DPoP) issuingFixture {
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: h.sessions, Users: h.users}),
 		httpsec.EnableDPoP(d))
+	h.chainOpts = append(h.chainOpts, extra...)
 	h.build(t)
 
-	f := issuingFixture{chain: h.chain, sessions: h.sessions, gen: gen, user: e2eUser}
+	f := issuingFixture{chain: h.chain, sessions: h.sessions, gen: gen, user: e2eUser, lookups: lookups.Load}
 	f.prepare = func(t *testing.T, _ string) func(*testing.T, prover) served {
 		t.Helper()
 
@@ -569,10 +600,10 @@ type issuingEndpoint struct {
 var issuingEndpoints = []issuingEndpoint{
 	{name: "login", build: loginEndpoint},
 	{name: "MFA verify", build: mfaVerifyEndpoint, inherits: true},
-	{name: "passkey login", build: passkeyLoginEndpoint},
-	{name: "magic link", build: magicLinkEndpoint},
-	{name: "OIDC handoff", build: oidcHandoffEndpoint},
-	{name: "recovery", build: recoveryEndpoint},
+	{name: "passkey login", build: func(t *testing.T, d httpsec.DPoP) issuingFixture { return passkeyLoginEndpoint(t, d) }},
+	{name: "magic link", build: func(t *testing.T, d httpsec.DPoP) issuingFixture { return magicLinkEndpoint(t, d) }},
+	{name: "OIDC handoff", build: func(t *testing.T, d httpsec.DPoP) issuingFixture { return oidcHandoffEndpoint(t, d) }},
+	{name: "recovery", build: func(t *testing.T, d httpsec.DPoP) issuingFixture { return recoveryEndpoint(t, d) }},
 	{name: "re-authentication", build: reauthEndpoint},
 	{name: "renewal", build: renewalEndpoint, inherits: true},
 }
@@ -704,12 +735,11 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 			bound: func(issuingEndpoint) string { return "" },
 			proof: noProof,
 			skip:  func(issuingEndpoint) bool { return false },
-			assert: func(t *testing.T, f *issuingFixture, out served, retry func(*testing.T, prover) served, before int, lookups int64) {
-				refused(t, f, out, before)
+			assert: func(t *testing.T, f *issuingFixture, out served, _ func(*testing.T, prover) served, before int, lookups int64) {
+				require.NotNil(t, f.lookups, "every issuing fixture counts its account lookups")
+				assert.Equal(t, lookups, f.lookups(), "no account was looked up")
 
-				if f.lookups != nil {
-					assert.Equal(t, lookups, f.lookups(), "no account was looked up")
-				}
+				refused(t, f, out, before)
 			},
 		},
 	}
@@ -850,4 +880,42 @@ func TestDPoP_TokenTypeToConsumerResponder(t *testing.T) {
 			assert.Equal(t, tc.want, got.TokenType)
 		})
 	}
+}
+
+// countedUserLoader is a user loader answering byName and byID, and
+// identity.ErrUserNotFound for anyone else, that counts every lookup.
+func countedUserLoader(
+	t *testing.T, byName map[string]*identity.Details, byID map[identity.UserID]*identity.Details,
+) (*MockUserLoader, *atomic.Int64) {
+	t.Helper()
+
+	lookups := &atomic.Int64{}
+	users := NewMockUserLoader(gomock.NewController(t))
+
+	users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, username string) (*identity.Details, error) {
+			lookups.Add(1)
+
+			if u, ok := byName[username]; ok {
+				c := *u
+
+				return &c, nil
+			}
+
+			return nil, identity.ErrUserNotFound
+		})
+	users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, id identity.UserID) (*identity.Details, error) {
+			lookups.Add(1)
+
+			if u, ok := byID[id]; ok {
+				c := *u
+
+				return &c, nil
+			}
+
+			return nil, identity.ErrUserNotFound
+		})
+
+	return users, lookups
 }
