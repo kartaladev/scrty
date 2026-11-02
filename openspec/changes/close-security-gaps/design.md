@@ -528,6 +528,9 @@ httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 - An SBOM per published module, produced in the release gate. The generator is a `tool` directive in the `tools` module, chosen in the tasks.
 - `govulncheck` blocks a release.
 - **Coordinates with `release-readiness`**, which owns the release gate and `SECURITY.md`.
+  - This change ships `make release-gate` (`vuln`, then `sbom`) as a stand-in until `release-readiness` adds `make release-check` and its module list. That change then calls both targets from its own.
+  - **Attaching the SBOMs to a release is `release-readiness`'s release workflow (its task 3.3).** This change only produces them, one per published module, and fails the gate when one cannot be made. The `supply-chain` scenario "attached to the release" is met when that workflow lands, and the review of this change records it as owned there.
+  - The published set includes `test`, as `release-readiness` counts it. `tools` gets Dependabot updates, because it pins the gate's own tools, but no SBOM.
 
 ### D17. Clear-Site-Data on logout
 

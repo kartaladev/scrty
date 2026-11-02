@@ -124,10 +124,10 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 13. Supply chain (D16)
 
-- [ ] 13.1 Pin every workflow action and reusable workflow to a full commit SHA with its tag in a comment, container actions by digest, and add the CI pinning check that exempts local actions, proving the check fails on a tag and on a short SHA first. Verify: the check fails on a branch with `actions/checkout@v5`, and passes on the pinned workflows.
-- [ ] 13.2 Add the Dependabot configuration for `gomod` in every published module, nested ones included, and for `github-actions`. Verify: GitHub's Dependabot configuration check accepts the file, and it lists every directory with a published `go.mod`.
-- [ ] 13.3 Add the SBOM generator as a `tool` directive in the `tools` module, and an SBOM step per published module in the release gate that fails when generation fails. Verify: `make release-gate` (or its equivalent target) produces one SBOM per published module.
-- [ ] 13.4 Make `govulncheck` block the release gate, proving the gate fails on a module pinned to a known-vulnerable dependency in a disposable branch. Verify: the gate fails there and passes on `main`.
+- [x] 13.1 Pin every workflow action and reusable workflow to a full commit SHA with its tag in a comment, container actions by digest, and add the CI pinning check that exempts local actions, proving the check fails on a tag and on a short SHA first. Verify: the check fails on a branch with `actions/checkout@v5`, and passes on the pinned workflows.
+- [x] 13.2 Add the Dependabot configuration for `gomod` in every published module, nested ones included, and for `github-actions`. Verify: GitHub's Dependabot configuration check accepts the file, and it lists every directory with a published `go.mod`.
+- [x] 13.3 Add the SBOM generator as a `tool` directive in the `tools` module, and an SBOM step per published module in the release gate that fails when generation fails. Verify: `make release-gate` (or its equivalent target) produces one SBOM per published module.
+- [x] 13.4 Make `govulncheck` block the release gate, proving the gate fails on a module pinned to a known-vulnerable dependency in a disposable branch. Verify: the gate fails there and passes on `main`.
 
 ## 14. Integration
 
