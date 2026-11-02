@@ -261,6 +261,11 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
   - **Declaring a cookie authenticator.** The construction rule binds any interceptor that authenticates by cookie, a consumer's own included. So the marker is an exported interface a consumer's interceptor implements, not an unexported one only built-ins can carry.
   - **Stored tokens follow the default source.** A sign-in is created with a stored token only when CSRF protection is on, a cookie authenticator is registered, and the default token source is in use. A consumer's own source keeps no sealed value it never reads.
   - **Where the token is read.** The header first, then a URL-encoded form field of at most 1 MiB, never the query. A multipart form sends the token in the header. An empty token is refused without asking the source, and a source's own failure is returned as it is, not as a refusal.
+- **Settled during tasks 5.5–5.7 (2026-11-02).**
+  - **A consumer's cookie authenticator.** It implements the exported `CookieAuthenticator` marker and calls the exported `CheckCSRFToken(ex, s)` before it publishes its session. `CheckCSRFToken` also puts the checked sign-in's token where `CSRFToken(ctx)` reads it, so the accessor works for a consumer's authenticator as for a built-in one.
+  - **Exemptions match the path as sent.** An exemption is compared with the escaped path (`Request.EscapedPath`, D8), so `/webhooks%2Fpayments` is not the exempt `/webhooks/payments`, whatever a framework's router does with it. Construction also refuses an exemption of a safe method, a relative path, dot or empty segments, a partial `*`, or a pattern of wildcards alone.
+  - **The back-channel exemption** is `POST` on the back-channel logout path and follows `WithOIDCBackchannelLogoutPath`. It applies only when OIDC login is enabled.
+  - **Whether a sign-in gets a token is decided when the chain is built**, on the login dependencies, not read from the request context, so a redeemer that returns a context not derived from the request still issues it.
 - **Exemptions** are by method and path only. Back-channel logout is exempt by default.
 - **Default:** off, until cookie authentication is enabled (then required).
 - **Alternatives rejected:** *token only.* OWASP and web.dev present Fetch Metadata as the first layer, and it needs no state.
