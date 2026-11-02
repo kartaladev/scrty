@@ -195,13 +195,16 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 #### P4. Access tokens are JWTs per RFC 9068 by default; opaque by option
 
 - **Default:** a JWT with `typ` `at+jwt` and `iss`, `sub`, `aud`, `exp`, `iat`, `jti`, `client_id` and `scope`, signed over the same key source. APIs verify it offline through the JWKS endpoint, which pairs with `bff-resource-server`'s resource-server mode.
+- **Lifetime (amended 2026-11-02, from the grant-storage audit):** 5 minutes by default, replaceable per client. A JWT access token cannot be revoked before it expires, and RFC 7009 §2.1 asks that revoking a grant also end its access tokens (open question 1, C7). A short lifetime is how a JWT meets that.
+- **Typing (amended 2026-11-02):** `token`'s verifier gains `typ` checks, so an access token, a first-party token and an ID token each validate only as themselves (RFC 8725 §3.12, RFC 9068). Today it checks no `typ`, and an access token's `jti` matching a sign-in identifier would resolve as a sign-in through `EnableBearerToken` (open question 1, C10).
 - **Override:** opaque access tokens, verified by introspection. Revocation is then immediate, at one store read per request.
-- **Where it lands:** `token` must issue these claims; that is a `token-issuance` change.
+- **Where it lands:** `token` must issue these claims and enforce `typ`; that is a `token-issuance` change.
 
 #### P5. Refresh tokens rotate, and reuse revokes the grant
 
 - **Default:** every refresh rotates. A rotated token presented after its grace window revokes the whole grant (RFC 9700 §4.14.2).
 - **Override, per client:** rotation off for a confidential, sender-constrained client. FAPI 2.0 asks for that, and permits rotation only with a time-limited retry using the old token. That retry is what the existing grace window already gives.
+- **Bounds (amended 2026-11-02):** the grace window is at most 5 minutes, and `session`'s unused-successor recovery is refused for refresh tokens, because it would keep a superseded token renewable for days rather than for a time-limited retry. Reuse revokes the whole grant (open question 1, sub-decision 5).
 
 #### P6. DPoP and mTLS binding in v1, through `close-security-gaps`
 
@@ -243,7 +246,9 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 
 - **[The tag waits for this whole change]** → v1 stays at the scope above, and every follow-up only adds. The task breakdown, written after open question 1, sizes it.
 - **[No certified library underneath]** → the conformance suite in CI (P9), plus test-first coverage of the pitfalls the advisories cluster on: exact redirect matching, code reuse revoking what it issued, refresh reuse, and token binding.
-- **[A session can mean two things]** → this is open question 1, and the specs wait for it.
+- **[A refresh token mistaken for a sign-in]** → three built-in paths turn a stored session identifier into a sign-in. Open question 1 recommends D+, whose fixed table and token format each keep a refresh token out of them; the specs wait for its confirmation.
+- **[A replayed code racing the first exchange leaves a live grant]** (H2, `UNREPRODUCED`) → the grant row's revoked flag, keyed by the family the code records (open question 1).
+- **[A grant overstating `auth_time`]** (H3, `UNREPRODUCED`) → the grant copies the sign-in's authentication facts explicitly.
 - **[Error bodies depart from the library's default]** → limited to the provider's endpoints, recorded in P3, and pinned by tests against RFC 6749's examples.
 - **[RS256 by default conflicts with FAPI 2.0]** → recorded in P8. A FAPI profile is a later, additive switch.
 - **[`prompt=none` cannot succeed in v1]** → `login_required` is the correct answer when no login is resumable. The README's *Known limitations* names it until the cookie session lands.
@@ -258,74 +263,257 @@ Every established provider uses this shape: Hydra, node-oidc-provider, Duende Id
 
 ### 1. How is a grant stored? (blocks the specs)
 
-**Why it matters.** A *grant* is what the provider holds between a user and a client after a successful authorization. It holds:
-- the user, the client and the granted scopes;
-- when and how the user authenticated (`auth_time`, `amr`, `acr`);
-- the current refresh token, and the lineage of the refresh tokens before it.
+> **Status:** researched and audited on 2026-11-02, with a recommendation (option D+) awaiting the user's confirmation. The specs are written only after it is confirmed. Two research tracks fed this section: a survey of the normative sources and of established providers, and an independent review against the code by a reviewer who was not shown the recommendation. Every defect named here is `UNREPRODUCED`: no provider code exists yet. Each is a candidate for the first failing test of the chosen option.
 
-**What a grant must do:**
-- rotate its refresh token;
-- detect a rotated token presented again and revoke the whole grant (RFC 9700 §4.14.2);
-- give a retry window after rotation (FAPI 2.0's "time-limited retry with the old token");
-- expire on idle and absolute deadlines;
-- end when the user or an administrator revokes it, or when consent is revoked;
-- be listed for the user, and be swept when expired.
+#### The problem
 
-**Why sessions are the obvious candidate.** `session` already does nearly all of this for sign-ins:
-- families, and `RotateWithGrace` with its grace window;
+A *grant* is what the provider holds between a user and a client after a successful authorization. It outlives the sign-in that created it, typically by 30 to 90 days, and is renewed through a rotating refresh token.
+
+```
+ sign-in (login session)                         grant (what this question is about)
+ -----------------------                         ----------------------------------
+ user u-1, browser                               user u-1  x  client "billing-web"
+ lives hours (12 h absolute by default)          lives 30-90 days
+ its id IS a bearer credential                   its refresh token must NEVER be one
+ (EnableSessionBearer, bearer jti, renewal)      scopes: openid profile offline_access
+                                                 auth_time / amr / acr of the sign-in
+                                                 refresh lineage:
+                                                   rt1 --rotate--> rt2 --rotate--> rt3 (live)
+                                                   rt1 presented again  ==> revoke the grant
+```
+
+`session` already does most of what a grant needs:
+- families;
+- `RotateWithGrace`, whose grace window is FAPI 2.0's "time-limited retry";
 - reuse that revokes the family, and `RevokeFamily`;
-- idle and absolute deadlines with per-session lifetimes;
-- digest-only storage of the identifier;
-- durable stores with conformance suites, and expiry sweeping.
+- idle and absolute deadlines;
+- digest-only identifiers;
+- three durable stores with conformance suites, and sweeping.
 
-`first-party-sessions` built and tested that machinery. The question is whether a grant *is* a session, or a separate thing that reuses the same logic.
+That code (`session/reuse.go`, about 680 lines) is the most race-sensitive in the library. It depends on conditional store operations: `Supersede` (compare-and-set on the observed successor), `MarkPresented`, `SuccessorPresented` and `DeleteFamily`. The question is how grants get that machinery without becoming something a sign-in path can load.
 
-#### Option A: a grant is a session, tagged with a kind and its client
+#### What any answer must satisfy
 
-- **How it works.**
-  - The session record gains a kind (sign-in or grant) and a client identifier.
-  - A grant is created at the code exchange, in a family of its own. Its refresh token is the session identifier, rotated with `RotateWithGrace`.
-- **What it gains:**
-  - every mechanism listed above, with no new store, no new migration table and no new conformance suite;
-  - `close-security-gaps` D12's session listing can show "applications with access to my account" next to sign-ins.
-- **What it costs.** Every operation that today treats "all of a user's sessions" alike must learn the kinds:
-  - **Bearer confusion.** With `EnableSessionBearer` on, a session identifier *is* a bearer credential. A refresh token would then authenticate at the consumer's own API as the user, with none of the client's scope limits. Grants must be refused by kind on every bearer path. Missing one is a privilege escalation that a test of the provider alone would not catch.
-  - **Concurrent-session limits.** `CountActiveByUser` feeds the concurrent-session limit. Grants would use up the user's sign-in allowance unless counting excludes them.
-  - **User-wide deletion.** `DeleteByUser` and `DeleteByUserExcept` serve "log out everywhere", "end other sessions" and password changes. `oidc-logout`'s widened scope also calls `DeleteByUser` (`httpsec/oidc_backchannel.go`). Each would end the user's grants to applications as well. Whether a password change *should* end grants is itself a policy question:
-    - ending them is the safer default;
-    - most providers keep `offline_access` grants across a logout.
-  - **Lifetimes.** One `Sessions` manager has one set of maxima: a 12-hour absolute timeout by default, bounded by `WithMaxAbsoluteLifetime` and `WithMaxFamilyLifetime`. Those fit sign-ins, not 30- to 90-day grants. Option A therefore needs a second `Sessions` manager for grants, over the same store or another one, with its own lifetimes.
-  - **Pending-state marks.** `MarkEnrolmentPending` and `MarkRecoveryPending` confine a sign-in. They must never apply to a grant.
-  - **The port change is breaking.** It lands on `session.Store` while `close-security-gaps` D12 is adding `ListByUser` to the same port. If A is chosen, the kind should be designed into `ListByUser` in that same pre-tag break, not added after it.
+| # | Constraint | Source | Strength |
+|---|---|---|---|
+| C1 | Each refresh token is bound to one client; the binding is tamper-proof and checked on every refresh | RFC 6749 §6, §10.4; RFC 6819 §5.2.2.2 | MUST |
+| C2 | A refresh checks that the grant is still active, and that scopes do not exceed the consented ones | OAuth 2.1 draft-17 §4.3.1; RFC 9700 §4.14.2 | MUST |
+| C3 | Public clients get sender-constrained tokens or rotation. A rotated-out token is retained as invalidated, so its reuse is detected | RFC 9700 §2.2.2, §4.14.2 | MUST |
+| C4 | Reuse revokes the active refresh token (RFC 9700). OAuth 2.1, RFC 6819 and ASVS 10.4.5 revoke the whole grant | RFC 9700 §4.14.2; OAuth 2.1 §4.3.1; RFC 6819 §5.2.2.3; ASVS 5.0 10.4.5 | MUST (strongest reading) |
+| C5 | A DPoP-bound refresh token of a public client is checked against its key on every refresh | RFC 9449 §5 | MUST |
+| C6 | At least 128 bits of entropy; confidential at rest. Hashing is a "should" | RFC 6749 §10.10, §10.4; RFC 6819 §5.1.4.1.3 | MUST / should |
+| C7 | Revoking a refresh token also invalidates the access tokens of the same grant; users can revoke tokens and consents | RFC 7009 §2.1; ASVS 10.4.9, 10.7.3 | SHOULD / verify |
+| C8 | Refresh tokens have an absolute expiry | ASVS 10.4.8 | verify |
+| C9 | At logout, tokens without `offline_access` SHOULD be revoked, and tokens with it SHOULD NOT | Back-Channel Logout 1.0 §2.7; OIDC Core §11 | SHOULD / SHOULD NOT |
+| C10 | Validation of each token type excludes the others; access tokens are typed `at+jwt` | RFC 8725 §3.12; RFC 9068; ASVS 9.2.2 | MUST |
+| C11 | A code yields tokens at most once; a valid replay revokes what the first exchange issued | RFC 9700 §4.2.4; OAuth 2.1 §4.1.3, §7.5.3; ASVS 10.4.2 | MUST / SHOULD |
 
-#### Option B: a separate grant store that shares the rotation logic
+**Where the sources are silent or disagree:**
+- **Password change:** no source requires revoking grants. RFC 9700 and OAuth 2.1 say MAY. ASVS 7.4.3 offers ending "other sessions" as an option, and does not say whether OAuth grants count.
+- **Whether reuse also revokes live access tokens:** no source says.
+- **Rotation:** FAPI 2.0 forbids it except in extraordinary circumstances, and then only with a retry window.
+- **Atomic writes at the code exchange:** no source requires them.
 
-- **How it works.** The family, grace and reuse logic is extracted from `session` into an internal package, and both `session` and a new grant store use it.
-- **What it gains.**
-  - A grant is never a bearer credential, never counted as a sign-in and never caught by a user-wide session delete unless a caller asks for it.
-  - Lifetimes are the grant's own.
-- **What it costs:**
-  - a behaviour-preserving refactor of `session`'s rotation code;
-  - a second store port, migration table, set of three SQL adapters and conformance suite;
-  - a listing that must join two sources to show sign-ins and applications together.
+#### How established providers model it
 
-#### Option C: a separate grant store with its own rotation
+| Provider | Grant versus login session | Refresh tokens at logout | At password change |
+|---|---|---|---|
+| Ory Hydra | separate tables (the consent flow holds the grant) | revoking a login session "does not invalidate any tokens" | not found |
+| Duende IdentityServer | separate `PersistedGrant` store, keyed by the token's SHA-256 | survive by default; a client flag ties them to the session | not documented |
+| Spring Authorization Server | separate `OAuth2Authorization` | not tied | none |
+| node-oidc-provider | three models: Session, Grant, RefreshToken | session-bound unless `offline_access` | not handled |
+| Auth0 | a grant entity; revoking it revokes all its tokens | not documented | not automatic |
+| Keycloak | the same session model, separated by an `offline` flag | online tokens end with the session, offline tokens survive | the user chooses whether to log out other sessions |
 
-- Simplest to begin with, but it re-implements reuse detection and the grace window, which are exactly the parts that need race-tested care. Listed so it is recorded as considered. It would need a strong reason to choose.
+Five of the six keep grants out of the login-session store, and the sixth separates them by a flag. None of them revokes grants on a password change without being asked, though Keycloak lets the user choose to.
+
+#### Where a refresh token could be mistaken for a sign-in today
+
+The review found three built-in paths that turn a stored session identifier into a sign-in, not one:
+
+```
+ presented value                       path                                      result
+ ---------------                       ----                                      ------
+ Authorization: Bearer <id>       -->  EnableSessionBearer                  -->  Load(id) in its manager
+                                       (httpsec/session_bearer.go:145-151)       => signed in as the user
+ Authorization: Bearer <JWT>      -->  EnableBearerToken                    -->  Load(jti) in its manager
+                                       (httpsec/bearer.go:102)                   => signed in as the user
+ POST <renewal> with <id>         -->  EnableSessionRenewal                 -->  rotate + first-party credential
+                                       (httpsec/session_renewal.go:282)
+
+ If a grant's lineage lives in the store these managers read, a refresh token
+ (or an access token whose jti equals a lineage id) becomes a full sign-in with
+ none of the client's scope limits.
+```
+
+#### Options
+
+Seven options were considered: four from the first draft (A to D) and three the review added (A′, D+, F).
+
+##### Rejected
+
+- **A: a grant is a session in the same store, with a kind field and kind filters on user-wide operations.** Rejected because it **fails open**:
+  - every present and future path that loads by identifier must reject the grant kind, including the three above and any consumer interceptor using `WithSessions` or `PublishSession`. One missed check makes a refresh token a sign-in, and no provider test would notice;
+  - rejecting after `Load` is already too late, because loading for renewal records the presentation and may revoke the family;
+  - two managers with different policies share one store, and retention is computed by whichever manager writes;
+  - it breaks every `session.Store` statement in the same pre-tag window as `close-security-gaps` D12.
+- **D as first drafted: a separate store instance over the same code.** Rejected as drafted because it also **fails open**:
+  - the SQL session stores have no table-name option: the table is fixed in `internal/pgschema`, in gorm's `TableName()` and in the migration. Two store instances on one database therefore share the `sessions` table, and D silently becomes A without any kind checks;
+  - both managers are `*session.Sessions`, so injecting the grant manager into a sign-in path is a type-correct mistake. The in-flight `di-wiring` change would make that easy;
+  - the client is not on the lineage record, so every endpoint must read the metadata first or tokens cross clients;
+  - a reuse revocation leaves the metadata behind (H4).
+
+  Its strength, reusing the rotation code unchanged, is kept in D+.
+- **C: a separate grant store with newly written rotation.** Rejected because it re-implements, and must re-prove across replicas, the exact edge cases `session` already pins:
+  - a knocked-out successor;
+  - two live heads;
+  - a re-rotation racing a recovery;
+  - retention after a change of family maximum.
+
+  Two implementations of one security rule drift apart.
+
+##### Not recommended
+
+- **B: extract the family, grace and reuse logic into a shared internal package, used by `session` and by a grant store.** Safe by type, but it carries the highest one-time cost: a behaviour-preserving refactor of `reuse.go` and its invariants on a pre-tag schedule, its race suite run against two record types, and a lineage-capable store in three adapters. "Generic" also means generic store SQL per table. Its benefit over D+ is a cleaner type, not a stronger guarantee.
+- **F: one row per grant, holding the current and the previous refresh-token digest, rotated by compare-and-swap.** The smallest state space, with the client, binding and revoked flag on one row. But it remembers only one predecessor. A token two or more rotations old is merely unknown, so presenting it is not detected as reuse. That falls short of RFC 9700 §4.14.2's "information about the relationship is retained" (C3), and fixing it rebuilds the lineage.
+
+##### Runner-up
+
+- **A′: the kind is a partition of one table.** Each store instance is bound to one kind at construction, and every store statement, `Load` included, filters on it, so a sign-in manager cannot load a grant at all. It is fail-closed, keeps one table and one sweeper, reuses the rotation code, and is close to Keycloak's model. Its costs:
+  - a predicate on every statement in the in-memory store, the encrypting decorator and three SQL adapters;
+  - a breaking change to `session.Store` that must land with `close-security-gaps` D12;
+  - per-kind managers;
+  - the client binding still needs fields on the session record.
+
+  Choose it if one table matters more than leaving `session.Store` untouched.
+
+##### Recommended: D+ (awaiting the user's confirmation)
+
+D+ keeps D's reuse of `session` unchanged and adds four guards. Together they make a mis-wiring fail closed, behind two independent barriers, and put every check C1 to C11 needs on one authoritative record.
+
+```
+                         +--------------------------- core: oidcprovider ----------------------------+
+                         |                                                                            |
+  token endpoint ------->|  1. parse "rt.<family>.<secret>"   (format barrier)                        |
+                         |  2. grants.Load(family) ------------------------+                          |
+                         |       client? revoked? binding? scopes?         |                          |
+                         |  3. lineage (provider-private wrapper)          |                          |
+                         |       over session.Sessions with grant lifetimes|                          |
+                         +-----------------------+-------------------------+--------------------------+
+                                                 |                         |
+                                                 v                         v
+                                  +-----------------------------+   +-----------------------------+
+                                  | op_refresh_tokens           |   | op_grants  (AUTHORITATIVE)  |
+                                  | same schema as sessions,    |   | family (PK), user, client,  |
+                                  | table FIXED by the provider |   | scopes, auth_time, amr, acr,|
+                                  | (table barrier)             |   | key binding, code id,       |
+                                  | rotation, grace, reuse:     |   | revoked flag, created,      |
+                                  | session/reuse.go, unchanged |   | offline (bool)              |
+                                  +-----------------------------+   +-----------------------------+
+
+  sign-in paths (EnableSessionBearer, EnableBearerToken, EnableSessionRenewal)
+        |
+        v
+  +-----------------------------+
+  | sessions (sign-ins only)    |   never holds a grant's lineage; refresh tokens are not found here,
+  +-----------------------------+   and "rt.<family>.<secret>" fails session.ValidIdentifier first
+```
+
+**The four guards:**
+
+1. **A table the provider fixes.** The adapters expose a dedicated constructor, for example `pgxstore.NewRefreshTokenStore(pool, cipher)`, whose table (`op_refresh_tokens`) is not configurable. It returns a provider-owned type, so it cannot be passed where a sign-in `session.Store` or `*session.Sessions` is expected, and no consumer-supplied SQL identifier exists.
+2. **A provider-private lineage manager.** The `session.Sessions` over that store is created and held inside the provider, so it cannot be injected into a sign-in path. `WithUnusedSuccessorRecovery` is refused for it, because it would keep a superseded refresh token renewable for days, not for FAPI's time-limited retry. The grace window is bounded at 5 minutes.
+3. **Domain-separated tokens.** The refresh token is `rt.<family>.<secret>`. The family identifier is not a secret (`pkg/id`), and the secret is the lineage session identifier. The value never passes `session.ValidIdentifier`, so a sign-in path refuses it before any lookup, even if the table guard were bypassed.
+4. **An authoritative grant row.** One record holds the client, scopes, `auth_time`, `amr`, `acr`, key binding, code id and a revoked flag. It is read before anything changes state, and it carries the tombstone the lineage cannot:
+
+```
+ refresh request (rt.<family>.<secret>, client credentials, DPoP proof)
+   |
+   v
+ [1] parse; malformed --------------------------------------------> invalid_grant (no lookup)
+   |
+   v
+ [2] grants.Load(family)
+       missing | revoked | client != authenticated client --------> invalid_grant
+       (nothing written: no MarkPresented, no revocation)              (C1, C2)
+   |
+   v
+ [3] binding set and proof key != binding -------------------------> invalid_dpop_proof (C5)
+   |
+   v
+ [4] lineage.LoadForRenewal(secret)
+       superseded past grace ==> family revoked; ReuseObserver marks
+       the grant row revoked --------------------------------------> invalid_grant (C3, C4)
+       s.FamilyID != family ---------------------------------------> invalid_grant
+   |
+   v
+ [5] RotateWithGraceIssuing (grace <= 5 min) --> new rt.<family>.<secret'>
+       + access token (typ at+jwt, short-lived) + ID token if requested
+```
+
+**How D+ answers each constraint:**
+
+| | How D+ meets it |
+|---|---|
+| C1, C2 | client, scopes and revoked flag on the grant row, checked at step [2] before any write |
+| C3, C4 | the lineage keeps every rotated identifier until retention ends; reuse revokes the family, and the revoked flag ends the grant even if a later read races the deletion |
+| C5 | the key binding on the grant row, checked at [3]; `RotateWithGrace` carries a binding but never checks a proof, so the endpoint must |
+| C6 | 256-bit secret, stored only as a digest, by the existing session code |
+| C7 | revoking the grant ends the lineage; access tokens are short-lived JWTs (see P4) or opaque |
+| C8 | the lineage manager's absolute timeout and family maximum |
+| C9 | the grant row's `offline` flag decides what logout ends (sub-decision 2) |
+| C10 | three barriers: a different table, a format no sign-in path accepts, and `typ` checks in `token` (P4) |
+| C11 | the code records the family it created, and the grant row's revoked flag closes the replay race (H2) |
+
+**What D+ costs:**
+- **Two writes at the code exchange** (lineage and grant row), in one transaction through each adapter's `WithTx`:
+  - a lineage without a grant row fails closed at [2];
+  - a grant row without a lineage is an orphan for the sweeper.
+- **A second migrated table** with the session schema. It is reached only through that constructor.
+- **A grant-row store:** in-memory, `sqlstore`, `pgxstore` and `gormstore`, a migration and a conformance suite.
+- **Two sweep tasks**, one renamed (`expiry.Task` supports it), plus an orphan sweep.
+- **Unused sign-in fields on lineage records** (MFA state, confinement marks). They are harmless, because the provider alone constructs those records with a fixed set of create options.
+- **One extra read per refresh** (the grant row).
+
+#### Risks shared by every option
+
+Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
+
+- **H2, the code-replay race (C11).** Two redemptions of one code race the grant's commit:
+
+  ```
+   redemption 1                          redemption 2 (replay of the same code)
+   ------------                          -------------------------------------
+   consume code  (wins)
+   prepare grant G (family F)            consume code  -> already used
+                                         revoke what the code issued: RevokeFamily(F)
+                                           -> nothing stored yet, deletes nothing
+   commit G                  <-- a live grant the replay should have revoked
+  ```
+
+  - **The fix:** the code record names F before commit. The replay writes a tombstone (the grant row's revoked flag, keyed by F), which commit and every refresh check.
+  - **Why the other options can't do this:** the lineage alone has no tombstone, which is why A and D as drafted cannot close the race.
+
+- **H3, `auth_time` overstated.** `Prepare` sets `AuthenticatedAt` to the current time (`session/prepared.go:84`). A grant created at the code exchange would claim the exchange time as `auth_time`, and overstate freshness to a relying party checking `max_age`. The grant must copy the sign-in's `AuthenticatedAt`, `amr` and `acr` explicitly.
+- **H4, an orphaned grant row.** Reuse revocation deletes the lineage but not the grant row. The `ReuseObserver` marks it revoked, and the sweeper removes it. The observer is not called when the revocation itself fails, so the refresh path must treat a missing lineage as revoked.
+- **Access tokens outlive revocation (C7).** A JWT access token stays valid until its expiry whatever the grant storage. P4 answers this with a short lifetime and an opaque option.
+- **Token-type confusion (C10).** `token`'s verifier checks no `typ` today, and P4 signs access tokens over the same key source as first-party tokens. Each token type must validate only as itself.
+
+#### Sub-decisions that follow, with recommendations (all awaiting the user)
+
+| # | Question | Recommendation | Why |
+|---|---|---|---|
+| 2 | What does logout end? | Grants without `offline_access` end with the user's sign-in; `offline_access` grants survive; a per-client flag can tie them to the session | C9; Keycloak, node-oidc-provider and Duende behave this way |
+| 3 | Does a password change revoke grants? | No by default, with an option to revoke. A self-service "end other sessions" offers a "revoke app access" choice | no source requires it (RFC 9700 MAY); no surveyed provider does it by default |
+| 4 | Do security events revoke grants (recovery, MFA reset, passkey clone detection, account disable)? | Yes, by default | they signal possible compromise, where a 90-day grant is what an attacker keeps; ASVS 7.4.2 for a disabled account |
+| 5 | What does reuse revoke? | The whole grant | OAuth 2.1 §4.3.1, ASVS 10.4.5; the rotation code already revokes the family, and the grant row adds the tombstone |
+| 6 | How do access tokens meet C7 and C10? | JWT access tokens default to 5 minutes and carry `typ` `at+jwt`; `token` enforces `typ` so each type validates only as itself; opaque tokens with introspection remain the option for immediate revocation | RFC 7009 §2.1, RFC 8725 §3.12, RFC 9068 |
 
 #### What depends on the answer
 
-- the `session.Store` change, the migration and `store-conformance`;
-- every bearer path (`EnableSessionBearer`, `EnableBearerToken`, the resource-server mode in `bff-resource-server`);
-- how far logout and password change reach;
-- the coordination with `close-security-gaps` D12, which should be settled before D12 is implemented.
-
-#### Questions that help decide
-
-- **Should a user's "log out everywhere" end their applications' access?**
-  - If yes, A's shared deletion is a feature.
-  - If no, A needs exclusions everywhere, and B fits better.
-- **How likely is a consumer to run `EnableSessionBearer` beside the provider?** Under A, that combination is where the escalation risk lives.
+- **Under D+:** a fixed-table constructor in three adapters, a grant-row store, the security-state migration, and two sweep tasks. `session.Store` and `close-security-gaps` D12 are unaffected.
+- **Under A′:** a breaking `session.Store` change, coordinated with D12.
+- **Under any option:** the `typ` checks in `token`, the H2 tombstone, the explicit copy of the sign-in's authentication facts (H3), and the wiring of security events to grant revocation (sub-decision 4).
 
 ### 2. Is a green conformance run a hard precondition for the tag?
 
@@ -421,6 +609,32 @@ Also reasoned from `close-security-gaps` D8 and D9.
 - [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html) and [Back-Channel Logout 1.0](https://openid.net/specs/openid-connect-backchannel-1_0.html): in v1.
 - [Front-Channel Logout 1.0](https://openid.net/specs/openid-connect-frontchannel-1_0.html) and [Session Management 1.0](https://openid.net/specs/openid-connect-session-1_0.html): left out, because their own text admits third-party cookie blocking impairs them.
 
-### Open question 1
+### Open question 1: how a grant is stored
 
-Reasoned from scrty's own settled specs (`sessions`, `security-state-stores`, `http-security-chain`, `oidc-logout`), its code, and `close-security-gaps` D12, with RFC 9700 §4.14.2 and the FAPI 2.0 profile above for what a grant must do.
+**Researched (accessed 2026-11-02):**
+- [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.txt), §6, §10.4 and §10.10: refresh tokens bound to their client, confidential in storage, and at least 128 bits hard to guess (C1, C6).
+- [RFC 6819](https://www.rfc-editor.org/rfc/rfc6819.txt), §5.1.4.1.3, §5.2.2.2 and §5.2.2.3: store hashes rather than clear text, protect the client binding, revoke the grant on reuse (C1, C4, C6).
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §2.2.2, §4.2.4 and §4.14.2: sender-constraining or rotation for public clients, retained rotation relationships, code replay, and revocation on security events "MAY" (C3, C4, C11).
+- [OAuth 2.1, draft-ietf-oauth-v2-1-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt), §4.1.3, §4.3.1, §4.3.3, §7.5.3 and §9.3.2: grant still active, reuse revokes the grant, one token response per code, no revocation on an invalid replay, session-linked refresh tokens for browser apps. It is a draft (C2, C4, C11).
+- [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009.txt), §2 and §2.1: refresh-token revocation, and ending the grant's access tokens (C7).
+- [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449.txt), §5: DPoP-bound refresh tokens for public clients (C5).
+- [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705.txt): certificate-bound refresh tokens.
+- [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.txt), §3.11 and §3.12, and [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.txt): explicit typing and mutually exclusive validation (C10).
+- [OpenID Connect Back-Channel Logout 1.0](https://openid.net/specs/openid-connect-backchannel-1_0.html), §2.7, and [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §11: refresh tokens at logout with and without `offline_access` (C9).
+- [FAPI 2.0 Security Profile](https://openid.net/specs/fapi-security-profile-2_0-final.html), §5.3.2.1: rotation only in extraordinary circumstances, with a time-limited retry.
+- [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/tree/master/5.0/en), 7.4.2, 7.4.3, 9.2.2, 10.4.2, 10.4.5, 10.4.8, 10.4.9 and 10.7.3: token typing, reuse, absolute expiry, user revocation, and session termination after a factor change.
+- [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b.html), §5: access and refresh tokens may outlive the authentication session, and IdP and RP sessions are independent. Its subsection numbers were not confirmed.
+- [OWASP OAuth 2.0 Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/OAuth2_Cheat_Sheet.html) and [Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): sender-constraining combined with rotation, and renewing sessions after a password change.
+- Established practice (provider table):
+  - [Keycloak server administration guide](https://www.keycloak.org/docs/latest/server_admin/): offline sessions survive logout;
+  - [Ory Hydra API specification](https://github.com/ory/hydra/blob/master/spec/api.json): revoking a login session invalidates no tokens; revoking consent sessions does;
+  - [Duende IdentityServer documentation](https://docs.duendesoftware.com/identityserver/): persisted grants keyed by a hash, and `CoordinateLifetimeWithUserSession`;
+  - [Spring Authorization Server core model](https://docs.spring.io/spring-authorization-server/reference/core-model-components.html);
+  - [node-oidc-provider documentation](https://github.com/panva/node-oidc-provider/blob/main/docs/README.md): Session, Grant and RefreshToken models, and `expiresWithSession`;
+  - [zitadel/oidc `op` storage](https://raw.githubusercontent.com/zitadel/oidc/main/pkg/op/storage.go);
+  - [Auth0 refresh token rotation](https://auth0.com/docs/secure/tokens/refresh-tokens/refresh-token-rotation) and [revocation](https://auth0.com/docs/secure/tokens/refresh-tokens/revoke-refresh-tokens);
+  - [Okta refresh token rotation](https://developer.okta.com/docs/guides/refresh-tokens/refresh-token-rotation/).
+
+  Auth0's and Okta's logout and password-change behaviour, and Keycloak's default for offline sessions at a password change, were not verified.
+
+The code paths, the option failure modes and H2 to H4 come from an independent review of scrty's own code (`session`, `httpsec`, the SQL stores, `expiry`) and of `close-security-gaps` D8 and D12. They are reasoned from the code, not reproduced.
