@@ -85,6 +85,12 @@ type Chain struct {
 	// enabled it. The chain applies its header step to a refusal written outside
 	// the layer's slot (see Assemble).
 	headers *securityHeaders
+
+	// refusalSteps are the steps features run on a refusal written outside
+	// every interceptor's slot (see Assemble), after the security headers'.
+	// A feature that marks its own responses registers one with the wiring
+	// hook, so its refusals are marked too.
+	refusalSteps []func(*Exchange)
 }
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
@@ -207,6 +213,10 @@ func (c *Chain) Assemble(terminal Next) Next {
 			// sees the refusal.
 			if c.headers != nil {
 				c.headers.applyHeaders(ex.Writer, ex.Request)
+			}
+
+			for _, step := range c.refusalSteps {
+				step(ex)
 			}
 
 			return err

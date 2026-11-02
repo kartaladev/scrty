@@ -318,6 +318,12 @@ var statusTable = []statusRow{
 	// none at all are the same refusal, as for a passkey.
 	{apikey.ErrKeyNotFound, http.StatusNotFound},
 
+	// A sign-in handle naming no live sign-in of the session's user: a
+	// malformed handle, an unknown one and another user's are the same
+	// refusal. A store failure while listing or ending sign-ins has no row: it
+	// is a dependency failure answered 500 with fixed text.
+	{ErrSessionHandleNotFound, http.StatusNotFound},
+
 	{authorize.ErrAccessDenied, http.StatusForbidden},
 	{policy.ErrDenied, http.StatusForbidden},
 	{policy.ErrMFARequired, http.StatusForbidden},
