@@ -426,7 +426,7 @@ httpsec.EnableDPoP(httpsec.DPoP{
   - **The decision:** the chain holds no key of its own, so the consumer supplies one as `DPoP.NonceCipher` (`httpsec.NonceCipher`: `Seal` and `Open` with additional data, the same methods as `session.Cipher`, so `seal.SessionCipher` plugs in).
   - **Separation:** nonces are sealed with their own additional data (`scrty/httpsec:dpop-nonce:v1`), so a nonce opens as nothing else sealed under the same keys, and nothing else opens as a nonce.
   - **Construction rules:** `Nonce: true` without a cipher is a configuration error from `New`. So are a cipher or a lifetime set while `Nonce` is false, and a negative lifetime.
-  - **Lifetime:** `NonceLifetime` defaults to 5 minutes. A fresh nonce is sent in `DPoP-Nonce` once half the lifetime has passed. RFC 9449 §8.2 leaves the timing to the server.
+  - **Lifetime:** `NonceLifetime` defaults to 5 minutes, and anything below 10 seconds is a configuration error. Nonces are issued to the second, so a lifetime under 2 seconds would seal on every request, which breaks the one-seal-per-half-lifetime bound. Below about 10 seconds, a nonce can expire during a slow client's round trip. A fresh nonce is sent in `DPoP-Nonce` once half the lifetime has passed. RFC 9449 §8.2 leaves the timing to the server.
   - **Override:** the cipher is a port, so key storage and rotation are the consumer's. The lifetime is a field.
   - **Rejected:**
     - *A random key per process when none is given.* On more than one replica, or after a restart, nonces would be refused with no warning, which is the silent degradation `library-design` rule 4 forbids.
