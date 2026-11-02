@@ -1414,3 +1414,88 @@ func TestRecencyGuard(t *testing.T) {
 		})
 	}
 }
+
+// TestGuards_DPoPChallenge pins that a guard behind a chain with DPoP on
+// refuses a caller nothing authenticated with the challenge the chain's own
+// refusal carries, and that without DPoP it answers as it always did.
+//
+// It stands on its own: a whole chain, run as net/http middleware, in front
+// of the guard.
+func TestGuards_DPoPChallenge(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		d      *httpsec.DPoP
+		opts   func(seen *http.Header) []httpsec.GuardOption
+		assert func(t *testing.T, rec *httptest.ResponseRecorder, seen http.Header)
+	}
+
+	challenged := func(challenges ...string) func(*testing.T, *httptest.ResponseRecorder, http.Header) {
+		return func(t *testing.T, rec *httptest.ResponseRecorder, _ http.Header) {
+			t.Helper()
+
+			assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			assert.Equal(t, challenges, rec.Header().Values("WWW-Authenticate"))
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "DPoP optional: the DPoP and Bearer challenges",
+			d:      &httpsec.DPoP{},
+			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
+		},
+		{
+			name:   "DPoP required: the DPoP challenge alone",
+			d:      &httpsec.DPoP{Require: true},
+			assert: challenged(`DPoP algs="ES256"`),
+		},
+		{
+			name:   "DPoP off: no challenge, as before",
+			assert: challenged(),
+		},
+		{
+			name: "a consumer's error handler finds the challenge set, as the chain's does",
+			d:    &httpsec.DPoP{},
+			opts: func(seen *http.Header) []httpsec.GuardOption {
+				return []httpsec.GuardOption{httpsec.WithGuardErrorHandler(
+					func(w http.ResponseWriter, _ *http.Request, err error) {
+						*seen = w.Header().Clone()
+
+						w.WriteHeader(httpsec.StatusForError(err))
+					})}
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, seen http.Header) {
+				challenged(`DPoP algs="ES256"`, "Bearer")(t, rec, seen)
+				assert.Equal(t, []string{`DPoP algs="ES256"`, "Bearer"}, seen.Values("WWW-Authenticate"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+			chain := w.chain(signedBearer, tc.d)
+
+			var seen http.Header
+
+			var opts []httpsec.GuardOption
+			if tc.opts != nil {
+				opts = tc.opts(&seen)
+			}
+
+			g := mustGuards(t, NewMockAuthorizer(gomock.NewController(t)), opts...)
+			h := chain.Middleware()(g.RequireAuthenticated()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("the route must not run")
+			})))
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/api/orders", nil))
+
+			tc.assert(t, rec, seen)
+		})
+	}
+}

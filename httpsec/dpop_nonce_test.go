@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,6 +75,7 @@ func askedForNonce(t *testing.T, out served) string {
 
 	nonce := out.rec.Header().Get(headerDPoPNonce)
 	require.NotEmpty(t, nonce, "a fresh nonce to retry with")
+	assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"), "a nonce is never cached (RFC 9449 section 8.2)")
 
 	return nonce
 }
@@ -211,6 +215,7 @@ func TestDPoP_Nonce(t *testing.T) {
 			assert: func(t *testing.T, out served) {
 				authenticatedAsOwner(t, out)
 				assert.NotEmpty(t, out.rec.Header().Get(headerDPoPNonce), "the next nonce, before this one expires")
+				assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"), "a nonce is never cached")
 			},
 		},
 		{
@@ -295,6 +300,151 @@ func TestDPoP_Nonce(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, tc.run(t, newDPoPBearerWorld(t)))
+		})
+	}
+}
+
+// countingNonceCipher is the deployment's cipher over key, counting the
+// nonces it seals. Each seal takes a moment, so concurrent requests that each
+// sealed would overlap.
+func countingNonceCipher(t *testing.T, key []byte) (httpsec.NonceCipher, *atomic.Int32) {
+	t.Helper()
+
+	sealer := newNonceCipher(t, key)
+
+	var seals atomic.Int32
+
+	c := NewMockNonceCipher(gomock.NewController(t))
+	c.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(ctx context.Context, plaintext, additionalData []byte) ([]byte, error) {
+			seals.Add(1)
+			time.Sleep(time.Millisecond)
+
+			return sealer.Seal(ctx, plaintext, additionalData)
+		})
+	c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(sealer.Open)
+
+	return c, &seals
+}
+
+// TestDPoP_NonceSealedOncePerHalfLifetime pins that a replica seals one
+// current nonce and hands it to every client until half the nonce lifetime
+// has passed, so sealing is bounded by time and not by traffic, while every
+// nonce it sealed is still accepted for its whole lifetime.
+func TestDPoP_NonceSealedOncePerHalfLifetime(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+
+	const clients = 32
+
+	// request is a bound token presented with a proof carrying nonce unless
+	// it is empty, issued at the world's now.
+	request := func(t *testing.T, w *dpopBearerWorld, jti, nonce string) *http.Request {
+		t.Helper()
+
+		tok := w.token(token.Confirmation{JKT: key.jkt})
+		parts := key.validProof(jti).with(map[string]any{"ath": tokenHash(tok), "iat": w.clk.Now().Unix()})
+		if nonce != "" {
+			parts = parts.with(map[string]any{"nonce": nonce})
+		}
+
+		req := dpopRequest(t, http.MethodGet, "http://example.com/api/orders", parts.sign(t))
+		req.Header.Set("Authorization", "DPoP "+tok)
+
+		return req
+	}
+
+	// askAll sends clients requests without a nonce to chain at once, and
+	// returns the nonces they were handed.
+	askAll := func(t *testing.T, w *dpopBearerWorld, chain *httpsec.Chain) []string {
+		t.Helper()
+
+		reqs := make([]*http.Request, clients)
+		for i := range reqs {
+			reqs[i] = request(t, w, "j-ask-"+strconv.Itoa(i), "")
+		}
+
+		nonces := make([]string, clients)
+
+		var wg sync.WaitGroup
+		for i, req := range reqs {
+			wg.Go(func() { nonces[i] = serve(t, chain, req).rec.Header().Get(headerDPoPNonce) })
+		}
+		wg.Wait()
+
+		return nonces
+	}
+
+	// shared asserts every client was handed the same nonce, and returns it.
+	shared := func(t *testing.T, nonces []string) string {
+		t.Helper()
+
+		require.NotEmpty(t, nonces[0])
+		for _, n := range nonces {
+			assert.Equal(t, nonces[0], n, "every client is handed the replica's current nonce")
+		}
+
+		return nonces[0]
+	}
+
+	half := httpsec.DefaultDPoPNonceLifetime / 2
+
+	type testCase struct {
+		name string
+		run  func(t *testing.T, w *dpopBearerWorld, chain *httpsec.Chain, seals *atomic.Int32)
+	}
+
+	cases := []testCase{
+		{
+			name: "concurrent clients within half a lifetime share one seal",
+			run: func(t *testing.T, w *dpopBearerWorld, chain *httpsec.Chain, seals *atomic.Int32) {
+				shared(t, askAll(t, w, chain))
+				assert.Equal(t, int32(1), seals.Load())
+
+				w.clk.Advance(half - time.Second)
+				shared(t, askAll(t, w, chain))
+				assert.Equal(t, int32(1), seals.Load(), "still the current nonce")
+			},
+		},
+		{
+			name: "concurrent clients at the refresh boundary seal once more",
+			run: func(t *testing.T, w *dpopBearerWorld, chain *httpsec.Chain, seals *atomic.Int32) {
+				first := shared(t, askAll(t, w, chain))
+
+				w.clk.Advance(half)
+				next := shared(t, askAll(t, w, chain))
+				assert.NotEqual(t, first, next)
+				assert.Equal(t, int32(2), seals.Load(), "one seal per half lifetime, whatever the traffic")
+			},
+		},
+		{
+			name: "a nonce sealed before the refresh is accepted until its lifetime ends",
+			run: func(t *testing.T, w *dpopBearerWorld, chain *httpsec.Chain, seals *atomic.Int32) {
+				first := askedForNonce(t, serve(t, chain, request(t, w, "j-1", "")))
+
+				w.clk.Advance(half)
+				next := askedForNonce(t, serve(t, chain, request(t, w, "j-2", "")))
+				require.NotEqual(t, first, next)
+
+				out := serve(t, chain, request(t, w, "j-3", first))
+				authenticatedAsOwner(t, out)
+				assert.Equal(t, next, out.rec.Header().Get(headerDPoPNonce), "refreshed with the current nonce")
+				assert.Equal(t, int32(2), seals.Load(), "the refresh seals nothing new")
+
+				w.clk.Advance(httpsec.DefaultDPoPNonceLifetime - half)
+				askedForNonce(t, serve(t, chain, request(t, w, "j-4", first)))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+			c, seals := countingNonceCipher(t, nonceKeyA)
+			tc.run(t, w, w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c}), seals)
 		})
 	}
 }

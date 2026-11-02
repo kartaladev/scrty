@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/elliptic"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sync/atomic"
@@ -26,6 +28,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy/lockout"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -424,6 +427,16 @@ func renewalOver(t *testing.T, b *issuingBase, d httpsec.DPoP) issuingFixture {
 func magicLinkEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
+	return magicLinkEndpointWith(t, d, nil, extra...)
+}
+
+// magicLinkEndpointWith is magicLinkEndpoint whose magic-link login also takes
+// linkOpts.
+func magicLinkEndpointWith(
+	t *testing.T, d httpsec.DPoP, linkOpts []httpsec.MagicLinkOption, extra ...httpsec.Option,
+) issuingFixture {
+	t.Helper()
+
 	h := newMagicLinkHarness(t)
 	gen := issuingGenerator(t)
 
@@ -437,6 +450,7 @@ func magicLinkEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) is
 
 	h.tokens = nil
 	h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkTokens(gen))
+	h.linkOpts = append(h.linkOpts, linkOpts...)
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: h.sessions, Users: h.users}),
 		httpsec.EnableDPoP(d))
@@ -470,6 +484,16 @@ func magicLinkEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) is
 func oidcHandoffEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) issuingFixture {
 	t.Helper()
 
+	return oidcHandoffEndpointWith(t, d, nil, extra...)
+}
+
+// oidcHandoffEndpointWith is oidcHandoffEndpoint whose OIDC login also takes
+// oidcOpts.
+func oidcHandoffEndpointWith(
+	t *testing.T, d httpsec.DPoP, oidcOpts []httpsec.OIDCOption, extra ...httpsec.Option,
+) issuingFixture {
+	t.Helper()
+
 	h := newOIDCHarness(t)
 	gen := issuingGenerator(t)
 
@@ -487,7 +511,8 @@ func oidcHandoffEndpoint(t *testing.T, d httpsec.DPoP, extra ...httpsec.Option) 
 	h.chainOpts = append(h.chainOpts, extra...)
 
 	f := issuingFixture{
-		chain:    h.build(t, h.handoffs, httpsec.WithOIDCTokens(gen), httpsec.WithOIDCSessions(h.sessions)),
+		chain: h.build(t, h.handoffs,
+			append([]httpsec.OIDCOption{httpsec.WithOIDCTokens(gen), httpsec.WithOIDCSessions(h.sessions)}, oidcOpts...)...),
 		sessions: h.sessions, gen: gen, user: oidcTestUserID, lookups: lookups.Load,
 	}
 	f.prepare = func(t *testing.T, _ string) func(*testing.T, prover) served {
@@ -764,6 +789,110 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 				}
 
 				tc.assert(t, &f, send(t, tc.proof), send, before, lookups)
+			})
+		}
+	}
+}
+
+// chargingEndpoint is an issuing endpoint that charges a refused proof to the
+// request's source, built over limiter l.
+type chargingEndpoint struct {
+	name  string
+	build func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter) issuingFixture
+}
+
+// chargingEndpoints are the issuing endpoints that charge a refused proof to
+// the source: the ones whose single-use material arrives without a caller.
+var chargingEndpoints = []chargingEndpoint{
+	{name: "magic link", build: func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter) issuingFixture {
+		return magicLinkEndpointWith(t, d, []httpsec.MagicLinkOption{httpsec.WithMagicLinkLimiter(l)})
+	}},
+	{name: "OIDC handoff", build: func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter) issuingFixture {
+		return oidcHandoffEndpointWith(t, d, []httpsec.OIDCOption{httpsec.WithOIDCHandoffLimiter(l)})
+	}},
+}
+
+// TestDPoP_IssuingChargesOnlyInvalidProofs pins what an issuing endpoint that
+// charges its source charges for a proof: an invalid one, and neither the
+// nonce round trip nor a dependency of the proof check that failed.
+func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+	errDown := errors.New("kms: key arn:aws:kms:eu-west-1:1:key/k-secret unreachable")
+
+	type testCase struct {
+		name  string
+		d     func(t *testing.T) httpsec.DPoP
+		proof prover
+		// charges is how many failures the source is charged; the limiter
+		// fails the case on any other count.
+		charges int
+		assert  func(t *testing.T, out served)
+	}
+
+	// outage asserts out failed as a dependency failure.
+	outage := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, errDown, "the dependency's error stays reachable")
+		assert.NotErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof, "an outage, not the client's proof")
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan)
+	}
+
+	cases := []testCase{
+		{
+			name:    "an invalid proof is charged",
+			d:       func(*testing.T) httpsec.DPoP { return httpsec.DPoP{} },
+			proof:   key.brokenProver("j-1"),
+			charges: 1,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+				assert.NotErrorIs(t, out.err, httpsec.ErrDPoPNonceRequired)
+			},
+		},
+		{
+			name:   "the nonce round trip is not charged",
+			d:      func(t *testing.T) httpsec.DPoP { return *nonceDPoP(t, nonceKeyA) },
+			proof:  key.validProver("j-1"),
+			assert: func(t *testing.T, out served) { askedForNonce(t, out) },
+		},
+		{
+			name: "a nonce cipher that cannot reach its keys is a dependency failure, not charged",
+			d: func(t *testing.T) httpsec.DPoP {
+				c := NewMockNonceCipher(gomock.NewController(t))
+				c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					Return(nil, fmt.Errorf("%w: %w", session.ErrCipherUnavailable, errDown))
+
+				return httpsec.DPoP{Nonce: true, NonceCipher: c}
+			},
+			proof: func(t *testing.T, path, _ string) string {
+				return key.issuingProofParts(path, "j-1", "").with(map[string]any{"nonce": "c2VhbGVk"}).sign(t)
+			},
+			assert: outage,
+		},
+		{
+			name: "a replay store that fails is a dependency failure, not charged",
+			d: func(t *testing.T) httpsec.DPoP {
+				s := NewMockReplayStore(gomock.NewController(t))
+				s.EXPECT().Record(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(false, errDown)
+
+				return httpsec.DPoP{Replay: s}
+			},
+			proof:  key.validProver("j-1"),
+			assert: outage,
+		},
+	}
+
+	for _, ep := range chargingEndpoints {
+		for _, tc := range cases {
+			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				f := ep.build(t, tc.d(t), countingLimiter(t, tc.charges))
+
+				tc.assert(t, f.prepare(t, "")(t, tc.proof))
 			})
 		}
 	}

@@ -9,10 +9,12 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/session"
@@ -33,12 +35,19 @@ var ErrDPoPNonceRequired = fmt.Errorf("%w: a server nonce is required", ErrInval
 // given a cipher over the same keys accepts the nonces any of them issued,
 // without a shared store.
 //
-// It has the method set of session.Cipher, so the cipher a deployment already
-// seals its sessions with serves here too, for example
-// seal.SessionCipher(c) over the store/seal keyring: a nonce is sealed with
-// its own additional data, so it never opens as a session's value, and no
-// session value opens as a nonce. Keys rotate as that keyring rotates them: a
-// nonce sealed under a key that is now retired still opens.
+// It has the method set of session.Cipher, so seal.SessionCipher(c) over a
+// store/seal keyring serves. Give it a keyring kept for nonces alone. A nonce
+// is sealed with its own additional data, so it never opens as anything else
+// sealed under the same keys, and nothing else opens as a nonce, but nonces
+// are sealed for requests that carry no credential: on a keyring shared with
+// sessions, that traffic would spend the session keys' bounded number of
+// safe seals. Keys rotate as that keyring rotates them: a nonce sealed under
+// a key that is now retired still opens.
+//
+// The chain bounds the seals it asks for: each replica seals one current
+// nonce and hands it to every client until half DPoP.NonceLifetime has
+// passed, so at most one seal per half lifetime per replica, whatever the
+// traffic. Open is called for every proof that carries a nonce.
 //
 // An implementation must be safe for concurrent use and must make Open fail
 // when additionalData differs from what Seal was given. An Open failure
@@ -102,19 +111,47 @@ func (v *dpopVerifier) nonceFailure(ctx context.Context, err error) error {
 	return diag.Wrap(err, textDPoPNonceFailed)
 }
 
-// issueNonce seals a fresh nonce: the chain's current instant, under the
-// nonce cipher. A cipher that fails is a dependency failure (nonceFailure).
+// currentNonce is the nonce a replica hands every client: sealed once, and
+// sealed again only once half the nonce lifetime has passed. Sealing is then
+// bounded by time, at most once per half lifetime, and never by traffic: a
+// client that sends a proof with a key it made itself costs no seal.
+type currentNonce struct {
+	// mu is held across a seal, so the requests that find the nonce due at
+	// the same moment wait for one seal rather than each making one.
+	mu sync.Mutex
+
+	value  string
+	sealed time.Time
+}
+
+// issueNonce returns the replica's current nonce, sealing the next one first
+// when half the nonce lifetime has passed since the current one was sealed,
+// or none has been. A cipher that fails is a dependency failure
+// (nonceFailure), and the next request tries the seal again.
 func (v *dpopVerifier) issueNonce(ctx context.Context) (string, error) {
+	n := &v.nonce
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	now := v.now()
+	if n.value != "" && now.Sub(n.sealed) < v.cfg.NonceLifetime/2 {
+		return n.value, nil
+	}
+
 	var plain [noncePlaintextBytes]byte
 	plain[0] = nonceVersion
-	binary.BigEndian.PutUint64(plain[1:], uint64(v.now().Unix())) //nolint:gosec // G115: a clock after 1970
+	binary.BigEndian.PutUint64(plain[1:], uint64(now.Unix())) //nolint:gosec // G115: a clock after 1970
 
 	sealed, err := v.cfg.NonceCipher.Seal(ctx, plain[:], []byte(nonceAdditionalData))
 	if err != nil {
 		return "", v.nonceFailure(ctx, err)
 	}
 
-	return base64.RawURLEncoding.EncodeToString(sealed), nil
+	n.value = base64.RawURLEncoding.EncodeToString(sealed)
+	n.sealed = now
+
+	return n.value, nil
 }
 
 // checkNonce judges a proof's nonce claim, and reports whether it is past
@@ -166,6 +203,15 @@ func (v *dpopVerifier) refuseNonce(ctx context.Context) error {
 	return ErrDPoPNonceRequired
 }
 
+// chargesProofRefusal reports whether an issuing endpoint that charges its
+// source charges err, the failure of an issuing proof check. Only an invalid
+// proof is charged. A refusal asking for a nonce is the protocol's normal
+// first step, and a replay store or nonce cipher that failed is a dependency
+// failure, neither of which the client's request caused.
+func chargesProofRefusal(err error) bool {
+	return errors.Is(err, ErrInvalidDPoPProof) && !errors.Is(err, ErrDPoPNonceRequired)
+}
+
 // dpopResponseKey is the context key under which the challenge interceptor
 // leaves the exchange's writer, so the verifier can hand out the next nonce
 // on a response whose proof carried an ageing one.
@@ -185,7 +231,15 @@ func (v *dpopVerifier) refreshNonce(ctx context.Context) {
 		return
 	}
 
+	setNonce(w, nonce)
+}
+
+// setNonce hands nonce out on w, on a response no cache may keep: a stored
+// one would hand a later client a nonce that may have expired (RFC 9449
+// section 8.2).
+func setNonce(w guardauth.HeaderWriter, nonce string) {
 	w.SetHeader(headerDPoPNonce, nonce)
+	w.SetHeader("Cache-Control", "no-store")
 }
 
 // dpopChallenge is the interceptor that answers DPoP's refusals with the
@@ -199,22 +253,26 @@ type dpopChallenge struct{ v *dpopVerifier }
 const orderDPoPChallenge = OrderSecurityHeaders + 1
 
 // Intercept runs the rest of the chain, and sets the challenge a refusal
-// coming back from it calls for.
+// coming back from it calls for. It publishes the challenge on the request,
+// so a guard behind the chain answers its own refusal alike.
 func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
+	ctx := guardauth.WithChallenger(ex.Context(), c.v.challenge)
 	if c.v.cfg.Nonce {
-		ex.SetContext(context.WithValue(ex.Context(), dpopResponseKey{}, ex.Writer))
+		ctx = context.WithValue(ctx, dpopResponseKey{}, ex.Writer)
 	}
+
+	ex.SetContext(ctx)
 
 	err := next(ex)
 	if err == nil {
 		return nil
 	}
 
-	return c.v.challenge(ex, err)
+	return c.v.challenge(ex.Context(), ex.Writer, err)
 }
 
-// challenge sets the WWW-Authenticate challenge err calls for, and returns
-// the error the request fails with:
+// challenge sets on w the WWW-Authenticate challenge err calls for, and
+// returns the error the request fails with:
 //
 //   - ErrDPoPNonceRequired: DPoP error="use_dpop_nonce", and a fresh nonce
 //     in DPoP-Nonce; a cipher that cannot seal one fails the request as a
@@ -227,24 +285,24 @@ func (c *dpopChallenge) Intercept(ex *Exchange, next Next) error {
 // Each DPoP challenge names the accepted algorithms, and none names the
 // check that failed. Every other error is returned as it came, with no
 // challenge.
-func (v *dpopVerifier) challenge(ex *Exchange, err error) error {
+func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, err error) error {
 	algs := "algs=" + strconv.Quote(v.algorithmNames())
 
 	switch {
 	case errors.Is(err, ErrDPoPNonceRequired):
-		nonce, serr := v.issueNonce(ex.Context())
+		nonce, serr := v.issueNonce(ctx)
 		if serr != nil {
 			return serr
 		}
 
-		ex.Writer.AddHeader(headerWWWAuthenticate, `DPoP error="use_dpop_nonce", `+algs)
-		ex.Writer.SetHeader(headerDPoPNonce, nonce)
+		w.AddHeader(headerWWWAuthenticate, `DPoP error="use_dpop_nonce", `+algs)
+		setNonce(w, nonce)
 	case errors.Is(err, ErrInvalidDPoPProof):
-		ex.Writer.AddHeader(headerWWWAuthenticate, `DPoP error="invalid_dpop_proof", `+algs)
+		w.AddHeader(headerWWWAuthenticate, `DPoP error="invalid_dpop_proof", `+algs)
 	case errors.Is(err, ErrAuthenticationRequired), errors.Is(err, authorize.ErrAuthenticationRequired):
-		ex.Writer.AddHeader(headerWWWAuthenticate, "DPoP "+algs)
+		w.AddHeader(headerWWWAuthenticate, "DPoP "+algs)
 		if !v.cfg.Require {
-			ex.Writer.AddHeader(headerWWWAuthenticate, "Bearer")
+			w.AddHeader(headerWWWAuthenticate, "Bearer")
 		}
 	}
 

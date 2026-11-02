@@ -38,11 +38,14 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	}
 
 	// The proof is judged before the code is redeemed, so a bad one leaves
-	// the code unspent. It is counted against the source as a request
-	// carrying no code is.
+	// the code unspent. An invalid proof is counted against the source as a
+	// request carrying no code is; the nonce round trip and a failure of the
+	// replay store or nonce cipher are not.
 	binding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
 	if err != nil {
-		recordSourceFailure(ctx, i.guard, src)
+		if chargesProofRefusal(err) {
+			recordSourceFailure(ctx, i.guard, src)
+		}
 
 		return err
 	}

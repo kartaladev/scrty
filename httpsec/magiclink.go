@@ -414,11 +414,14 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	}
 
 	// The proof is judged before the link is redeemed, so a bad one leaves
-	// the link unspent. It is charged against the source as a redemption
-	// carrying no usable token is.
+	// the link unspent. An invalid proof is charged against the source as a
+	// redemption carrying no usable token is; the nonce round trip and a
+	// failure of the replay store or nonce cipher are not.
 	binding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
 	if err != nil {
-		recordSourceFailure(ctx, i.guard, src)
+		if chargesProofRefusal(err) {
+			recordSourceFailure(ctx, i.guard, src)
+		}
 
 		return err
 	}

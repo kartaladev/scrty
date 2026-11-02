@@ -106,14 +106,18 @@ type DPoP struct {
 	// fresh nonce. Default: off, because the proof lifetime and the replay
 	// store already bound replay, and a nonce costs the client a round trip
 	// whenever it has none.
+	//
+	// Each replica hands every client the same current nonce, and seals the
+	// next once half NonceLifetime has passed: at most one seal per half
+	// lifetime per replica, whatever the traffic.
 	Nonce bool
 
 	// NonceCipher seals the server nonces, so every replica with the same
 	// key material accepts the nonces any of them issued, with no shared
 	// store. There is no default: the chain holds no key material of its
 	// own. It is required when Nonce is on, and a configuration error when it
-	// is off. seal.SessionCipher over the deployment's store/seal keyring
-	// serves.
+	// is off. seal.SessionCipher over a store/seal keyring kept for nonces
+	// alone serves; see NonceCipher for why the keyring should be their own.
 	NonceCipher NonceCipher
 
 	// NonceLifetime is how long a server nonce is accepted after it is
@@ -256,6 +260,9 @@ type dpopVerifier struct {
 	// verifySignature checks a proof's signature. It is a field so a test can
 	// count the signatures verified.
 	verifySignature func(alg jwa.SignatureAlgorithm, key jwk.Key, compact []byte) error
+
+	// nonce is the replica's current server nonce, when nonces are on.
+	nonce currentNonce
 }
 
 // dpopProof is what a verified proof establishes.
