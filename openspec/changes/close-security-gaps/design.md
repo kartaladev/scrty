@@ -639,6 +639,7 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
   - `ginsec.WithForwardedClientIP` removed, and with it `ginsec.Option`, so `ginsec.Middleware(chain)` takes no options (D7);
   - `Request.HeaderValues` and `Request.EscapedPath` required (D2, D8), and `ResponseWriter.AddHeader` required (D5);
   - `identity.UserProvisioner.Update` honours `WithUserPasswordIf` in every store (D11);
+  - `recovery.Finish` takes variadic options (`WithFinishKeyBinding`); existing calls compile, but a method expression or a consumer interface with the old signature does not (D8);
   - `NewReuseGuard` removed (D10);
   - `session.Store.ListByUser` (D12).
 - **Schema:** one new security-state migration (D12), columns only. They are nullable, so it applies to populated databases and rolls back fully.
