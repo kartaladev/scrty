@@ -29,17 +29,23 @@ Each event SHALL carry a name from the OWASP Logging Vocabulary where one applie
 - `authn_password_change`, `authn_password_change_fail`;
 - `authn_token_created`, `authn_token_revoked`, `authn_token_reuse`;
 - `session_created`, `session_renewed`, `session_expired`, `session_use_after_expire`, `session_logout`;
-- `authz_fail`.
+- `authz_fail`;
+- `excess_rate_limit_exceeded`, for a rate-limit refusal;
+- `malicious_csrf`, for a CSRF refusal.
 
-Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, documented in one list, including second-factor verification, enrolment and removal, passkey binding and removal, recovery start and completion, re-authentication, a sign-in ended through session management, CSRF refusal, host refusal, DPoP refusal, certificate-binding refusal, automation-challenge refusal, rate-limit refusal and signing-key rotation.
+Outcomes the vocabulary does not name SHALL use names under a `scrty_` prefix, documented in one list, including second-factor verification, enrolment and removal, passkey binding and removal, recovery start and completion, re-authentication, a sign-in ended through session management, host refusal, DPoP refusal, certificate-binding refusal, automation-challenge refusal and signing-key rotation.
 
 #### Scenario: Lockout
 - **WHEN** an identifier reaches its lockout threshold
 - **THEN** the sink receives `authn_login_fail_max` for that request
 
 #### Scenario: Library-specific event
+- **WHEN** the chain refuses a request for its host
+- **THEN** the sink receives an event named with the `scrty_` prefix that the documented list names for host refusals
+
+#### Scenario: CSRF refusal
 - **WHEN** a CSRF check refuses a request
-- **THEN** the sink receives an event named with the `scrty_` prefix that the documented list names for CSRF refusals
+- **THEN** the sink receives `malicious_csrf`
 
 ### Requirement: An event reports what happened, not what was attempted
 A creation event, `session_created`, `session_renewed` or `authn_token_created`, SHALL be emitted only after the session it names was stored and its credential handed out. A credential that was issued and then discarded, because its session could not be stored, a racing redemption won, or a rotation's step outlived its window, SHALL produce no creation event. A request whose own context ended before a verdict SHALL produce no failure event. A dependency failure SHALL produce no refusal event.

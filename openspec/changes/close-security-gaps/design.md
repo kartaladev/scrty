@@ -590,13 +590,14 @@ type Event struct {
     Outcome  string
     User     identity.UserID
     ClientIP string
-    Factor   identity.FirstFactor
+    Factor   factor.Kind
     Session  string // digest, never the identifier
 }
 httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event))
 ```
 
 - **Default:** no sink, no events.
+- **Names (corrected 2026-11-02, group 11).** The vocabulary names rate-limit refusals (`excess_rate_limit_exceeded`) and CSRF refusals (`malicious_csrf`), so those use its names; the draft listed both under `scrty_`, against its own rule that a vocabulary name is used where one applies. Host refusal, second factors, passkeys, recovery, re-authentication, session management, DPoP, certificate binding, the automation challenge and key rotation have no vocabulary name and keep `scrty_` names.
 - **Delivery:** synchronous, on a context without cancellation. The sink's errors are ignored, and it cannot change outcomes: a panic is recovered and logged without the event's contents (changed 2026-11-02, because an unrecovered panic would turn a decided outcome into a 500).
 - **Only what happened.** A creation event is emitted after the session is stored and its credential handed out. A credential that `key-port-context` D7 issues and then discards (a lost race, a failed commit, a step that outlived its window) emits nothing. A hang-up or a dependency failure emits no refusal event.
 - **Observers:** the lockout and reuse observers keep working and are also delivered as events.
@@ -769,7 +770,7 @@ Settled on 2026-11-02: the CSRF token style (a synchronizer token stored on the 
 
 **D12, D13, D14: sessions, events, notices**
 - [ASVS 5.0 V7](https://github.com/OWASP/ASVS/blob/master/5.0/en/0x16-V7-Session-Management.md): 7.5.2, view and terminate sessions after re-authentication.
-- [OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html): event names.
+- [OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html): event names; re-read 2026-11-02 for `excess_rate_limit_exceeded` and `malicious_csrf`, and to confirm it names no MFA or host-refusal event.
 - [NIST SP 800-63B-4: events](https://pages.nist.gov/800-63-4/sp800-63b/events/): §4.1.2.1 and §4.5 notifications.
 - [Ory Kratos API](https://github.com/ory/kratos/blob/master/spec/api.json): session listing and revocation endpoints.
 

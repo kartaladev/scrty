@@ -451,7 +451,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ## Task group 11: security events (lane E, dispatches E1: 11.1–11.3, E2: 11.4–11.5)
 
-**Interfaces produced:** package `github.com/kartaladev/scrty/security`: `type Event struct { Name string; At time.Time; Outcome string; User identity.UserID; ClientIP string; Factor identity.FirstFactor; Session string }`, `type Sink func(ctx context.Context, e Event)`, name constants; `httpsec.EnableSecurityEvents(s security.Sink) Option`.
+**Interfaces produced:** package `github.com/kartaladev/scrty/security`: `type Event struct { Name string; At time.Time; Outcome string; User identity.UserID; ClientIP string; Factor factor.Kind; Session string }`, `type Sink func(ctx context.Context, e Event)`, name constants; `httpsec.EnableSecurityEvents(s security.Sink) Option`.
 
 ### Task 11.1: Package and sink
 - [ ] Red `TestSecurityEvents_Sink`: no sink → nothing; failed login → one `authn_login_fail`; a panicking sink → login succeeds, panic logged; a cancelled request context → the sink's context not done. FAIL; Green; PASS; commit.
