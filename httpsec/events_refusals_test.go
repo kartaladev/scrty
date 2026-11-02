@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1070,6 +1071,214 @@ func TestSecurityEvents_ComposedChains(t *testing.T) {
 			require.ErrorIs(t, err, httpsec.ErrCrossSiteRequest)
 
 			tc.assert(t, outerRec, innerRec)
+		})
+	}
+}
+
+// TestSecurityEvents_DependencyFailureWrappingARefusalReportsNothing pins that
+// a dependency failure answered at 500 reports no refusal event, whichever
+// refusal sentinel the consumer's own error wraps: the sentinel is reachable
+// through the failure, but the chain refused nothing.
+//
+// Each row runs one form login behind a challenge verifier that fails with err;
+// a refusal the verifier decides is the control.
+func TestSecurityEvents_DependencyFailureWrappingARefusalReportsNothing(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// verify is what the verifier answers.
+		verify func() (httpsec.ChallengeDecision, error)
+		assert func(t *testing.T, out served, events []security.Event)
+	}
+
+	failing := func(sentinel error) func() (httpsec.ChallengeDecision, error) {
+		return func() (httpsec.ChallengeDecision, error) {
+			return 0, fmt.Errorf("verifier: %w", sentinel)
+		}
+	}
+
+	outage := func(t *testing.T, out served, events []security.Event) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrChallengeUnavailable)
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+		assert.Empty(t, events, "a dependency failure reports no refusal: %v", namesOf(events))
+	}
+
+	cases := []testCase{
+		{
+			name:   "a verifier error wrapping ErrChallengeRequired",
+			verify: failing(httpsec.ErrChallengeRequired),
+			assert: outage,
+		},
+		{
+			name:   "a verifier error wrapping ErrInvalidDPoPProof",
+			verify: failing(httpsec.ErrInvalidDPoPProof),
+			assert: outage,
+		},
+		{
+			name:   "a verifier error wrapping ErrCrossSiteRequest",
+			verify: failing(httpsec.ErrCrossSiteRequest),
+			assert: outage,
+		},
+		{
+			name:   "a verifier error wrapping ErrCertificateBinding",
+			verify: failing(httpsec.ErrCertificateBinding),
+			assert: outage,
+		},
+		{
+			name:   "a refusal the verifier decides still reports scrty_challenge_refused",
+			verify: func() (httpsec.ChallengeDecision, error) { return httpsec.ChallengeRefuse, nil },
+			assert: func(t *testing.T, out served, events []security.Event) {
+				require.ErrorIs(t, out.err, httpsec.ErrChallengeRequired)
+				require.Len(t, events, 1, "events: %v", namesOf(events))
+				assert.Equal(t, security.ChallengeRefused, events[0].Name)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &eventRecorder{}
+
+			h := newAuthHarness(t)
+			h.attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).Return(0, nil).AnyTimes()
+
+			v := NewMockChallengeVerifier(gomock.NewController(t))
+			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+					return tc.verify()
+				})
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableFormLogin(h.formLoginDeps()),
+				httpsec.EnableAutomationChallenge(v),
+				httpsec.EnableSecurityEvents(rec.sink),
+			)
+			require.NoError(t, err)
+
+			out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=wrong"))
+			tc.assert(t, out, rec.all())
+		})
+	}
+}
+
+// TestSecurityEvents_TOTPAttemptsSpent pins that a TOTP verification refused
+// because the enrolment's attempt charge is spent reports
+// excess_rate_limit_exceeded once, and that a charge that could not be taken
+// (an outage, or a client that hung up) reports nothing. A user the throttle
+// itself refuses is reported once, by the throttle, not again here.
+//
+// Each row runs a real TOTP over a store double that answers the charge as the
+// row says.
+func TestSecurityEvents_TOTPAttemptsSpent(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// charge is how the enrolment store answers the attempt charge, given
+		// the request's cancel function; throttled makes the user's limiter
+		// answer that the limit is reached instead.
+		charge    func(ctx context.Context, cancel context.CancelFunc) (time.Time, bool, error)
+		throttled bool
+
+		assert func(t *testing.T, err error, events []security.Event)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a spent attempt charge reports excess_rate_limit_exceeded once",
+			charge: func(context.Context, context.CancelFunc) (time.Time, bool, error) { return time.Time{}, false, nil },
+			assert: func(t *testing.T, err error, events []security.Event) {
+				require.ErrorIs(t, err, mfa.ErrVerifyAttemptsExhausted)
+				run := refusalRun{events: events, err: err}
+				reported(security.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
+				assert.Equal(t, testMFAUser, events[0].User)
+				assert.NotEmpty(t, events[0].Session)
+			},
+		},
+		{
+			name: "a charge the store could not take reports nothing",
+			charge: func(context.Context, context.CancelFunc) (time.Time, bool, error) {
+				return time.Time{}, false, errLimiterDown
+			},
+			assert: func(t *testing.T, err error, events []security.Event) {
+				require.Error(t, err)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(err))
+				reportedNothing(t, refusalRun{events: events, err: err})
+			},
+		},
+		{
+			name: "a charge a client's hang-up cut short reports nothing",
+			charge: func(ctx context.Context, cancel context.CancelFunc) (time.Time, bool, error) {
+				cancel()
+
+				return time.Time{}, false, ctx.Err()
+			},
+			assert: func(t *testing.T, err error, events []security.Event) {
+				require.ErrorIs(t, err, context.Canceled)
+				reportedNothing(t, refusalRun{events: events, err: err})
+			},
+		},
+		{
+			name:      "a user the throttle refuses is reported once, by the throttle",
+			throttled: true,
+			assert: func(t *testing.T, err error, events []security.Event) {
+				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
+				require.NotErrorIs(t, err, mfa.ErrVerifyAttemptsExhausted)
+				reported(security.ExcessRateLimitExceeded, "192.0.2.1", "")(t, refusalRun{events: events, err: err})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			rec := &eventRecorder{}
+			h := newMFAHarness(t)
+			h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(tc.throttled, nil).AnyTimes()
+			h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+			enrolment := mfa.Enrolment{
+				User: testMFAUser, Secret: []byte(rfc6238Secret), ConfirmedAt: h.clock.Now(),
+				Generation: id.MustParse("01920000-0000-7000-8000-0000000000f1"),
+			}
+
+			store := NewMockEnrolmentStore(gomock.NewController(t))
+			store.EXPECT().Get(gomock.Any(), testMFAUser).Return(enrolment, true, nil).AnyTimes()
+
+			if tc.charge != nil {
+				store.EXPECT().ChargeVerifyAttempt(gomock.Any(), testMFAUser, gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ identity.UserID, _ time.Time, _ int, _ time.Duration) (time.Time, bool, error) {
+						return tc.charge(ctx, cancel)
+					})
+			}
+
+			method, err := mfa.NewTOTP(store, "scrty-test", mfa.WithClock(h.clock))
+			require.NoError(t, err)
+
+			s := h.pendingSession(t, factor.Password)
+			c, err := httpsec.New(
+				h.carries(s),
+				httpsec.EnableMFA([]mfa.Method{method},
+					httpsec.WithMFAVerifyLimiter(h.limiter), httpsec.WithMFATokens(h.tokens)),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}),
+				httpsec.EnableSecurityEvents(rec.sink),
+			)
+			require.NoError(t, err)
+
+			out := serveWithContext(ctx, c, postCode(ctx, testMFAVerifyPath))
+			tc.assert(t, out.err, rec.all())
 		})
 	}
 }

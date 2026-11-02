@@ -174,6 +174,16 @@ func EnableCORS(p CORSPolicy, opts ...CORSOption) Option {
 
 		c.register(l, OrderCORS)
 
+		// A refusal written before the layer's slot, a host that is not
+		// allowed or a security-headers nonce that could not be generated,
+		// runs no CORS interceptor, so it is marked here as the layer marks
+		// every other response.
+		c.wire(func(ch *Chain) {
+			ch.refusalSteps = append(ch.refusalSteps, func(ex *Exchange) {
+				ex.Writer.AddHeader(headerVary, headerOrigin)
+			})
+		})
+
 		// The features the layer follows may be enabled by options given after
 		// this one, so it reads them once every option has been applied.
 		c.wire(func(*Chain) { l.follow(c.dpopEnabled, c.csrfTokenHeader) })

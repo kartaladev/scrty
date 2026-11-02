@@ -68,8 +68,11 @@
 // httpsec.ClientFromContext(c.Request.Context()).
 //
 // A transport that is not a TCP connection, such as an in-memory test
-// transport or a Unix socket, reports a peer that is not in host and port
-// form, and the chain attributes such a request to no address.
+// transport or a Unix socket, reports an unspecified peer: one that is not in
+// host and port form, and the chain attributes such a request to no address.
+// The chain's refusal of an empty, malformed or unspecified address applies to
+// it, and a proxy on a Unix socket cannot be trusted by EnableTrustedProxies,
+// which matches prefixes of addresses.
 //
 // # Per-endpoint authorization
 //

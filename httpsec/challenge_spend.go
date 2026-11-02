@@ -138,8 +138,9 @@ func sweepExpired(
 // in this order.
 //
 // A response refused at step 3 or 4 is reported on the session as the event
-// named failed (security events); a refused attempt charge, a dependency that
-// failed and a request whose own context ended report nothing here.
+// named failed (security events); a refused attempt charge is reported as
+// security.ExcessRateLimitExceeded instead, and a dependency that failed and a
+// request whose own context ended report nothing here.
 func checkResponse(
 	ex *Exchange,
 	throttle *mfa.VerifyThrottle,
@@ -182,16 +183,27 @@ func checkResponse(
 	return nil
 }
 
-// emitResponseRefused reports a second-factor response refused with err as
-// the event named failed, unless err is a refused attempt charge, which the
-// throttle reports as a rate limit, or no refusal at all: a challenge store
-// that failed beneath it, or a request whose own context ended.
+// emitResponseRefused reports a second-factor response refused with err on
+// the session s. A refused attempt charge (mfa.ErrVerifyAttemptsExhausted) is
+// reported as security.ExcessRateLimitExceeded, since nothing else reports it;
+// any other refusal as the event named failed. A user the throttle refused
+// (mfa.ErrVerifyThrottled otherwise) is not reported here, because the
+// throttle reports it, and neither is a dependency failure, such as a
+// challenge store that failed beneath the refusal, or a request whose own
+// context ended.
 func emitResponseRefused(ctx context.Context, err error, failed string, s *session.Session) {
-	if errors.Is(err, mfa.ErrVerifyThrottled) || !refused(ctx, err) || depfault.Silent(ctx, err) {
+	if !refused(ctx, err) || depfault.Silent(ctx, err) {
 		return
 	}
 
-	emitEvent(ctx, sessionEvent(failed, security.OutcomeFailure, s))
+	switch {
+	case errors.Is(err, mfa.ErrVerifyAttemptsExhausted):
+		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
+	case errors.Is(err, mfa.ErrVerifyThrottled):
+		// Reported by the throttle that refused it.
+	default:
+		emitEvent(ctx, sessionEvent(failed, security.OutcomeFailure, s))
+	}
 }
 
 // challengeIssue is what one endpoint issues a challenge method's challenges

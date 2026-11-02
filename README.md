@@ -1189,6 +1189,11 @@ options, every response the chain produces, its own refusals included, carries:
 The layer does not wrap the response writer, so a handler's own value for a
 header wins and flushing and hijacking work as without it.
 
+The layer is outside every built-in interceptor. A consumer interceptor you
+register ahead of it (`httpsec.Before(httpsec.OrderSecurityHeaders)`) runs outside
+it, and a response that interceptor writes carries no security headers; register
+yours at or after the layer's slot to have its responses marked.
+
 ```go
 chain, err := httpsec.New(
     httpsec.EnableSecurityHeaders(
