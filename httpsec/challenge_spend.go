@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/security"
@@ -33,7 +34,11 @@ import (
 // wrong response, so a caller learns only that the answer was not good. That
 // includes a store that could not answer: the one-time manager reports its
 // store's failures as an invalid token too, and logs them, so this fails
-// closed rather than letting an attempt reach the method unspent.
+// closed rather than letting an attempt reach the method unspent. The store's
+// failure is kept beneath that refusal (depfault.Refusal), so the status, the
+// text and errors.Is(err, mfa.ErrInvalidCode) are those of a wrong code while
+// no refusal event is reported for it: the manager's store is decorated by
+// challengeManagers, which is what lets this tell the two apart.
 func spendChallenge(
 	ctx context.Context,
 	mgr *onetime.Tokens,
@@ -46,16 +51,30 @@ func spendChallenge(
 		return mfa.ErrInvalidCode
 	}
 
-	checked, err := mgr.Check(ctx, presented, s.ID)
+	wctx, watch := depfault.Watching(ctx)
+
+	checked, err := mgr.Check(wctx, presented, s.ID)
 	if err != nil {
-		return mfa.ErrInvalidCode
+		return refusedByChallengeStore(watch)
 	}
 
-	if err := mgr.Consume(ctx, checked); err != nil {
-		return mfa.ErrInvalidCode
+	if err := mgr.Consume(wctx, checked); err != nil {
+		return refusedByChallengeStore(watch)
 	}
 
 	return nil
+}
+
+// refusedByChallengeStore is the refusal of a challenge the one-time manager
+// answered as invalid: mfa.ErrInvalidCode, carrying the failure of the store
+// beneath it when watch saw one, so that no event is reported for a store that
+// could not answer.
+func refusedByChallengeStore(watch *depfault.Watch) error {
+	if cause := watch.Failure(); cause != nil {
+		return depfault.Refusal(cause, mfa.ErrInvalidCode)
+	}
+
+	return mfa.ErrInvalidCode
 }
 
 // sweepExpired purges method's expired challenges from mgr's store, when
@@ -165,9 +184,10 @@ func checkResponse(
 
 // emitResponseRefused reports a second-factor response refused with err as
 // the event named failed, unless err is a refused attempt charge, which the
-// throttle reports as a rate limit, or no refusal at all.
+// throttle reports as a rate limit, or no refusal at all: a challenge store
+// that failed beneath it, or a request whose own context ended.
 func emitResponseRefused(ctx context.Context, err error, failed string, s *session.Session) {
-	if errors.Is(err, mfa.ErrVerifyThrottled) || !refused(ctx, err) {
+	if errors.Is(err, mfa.ErrVerifyThrottled) || !refused(ctx, err) || depfault.Silent(ctx, err) {
 		return
 	}
 
@@ -271,9 +291,11 @@ func challengeManagers(
 			continue
 		}
 
+		// The store is decorated so that spendChallenge can tell a store
+		// that failed from a challenge that was not good.
 		mgr, err := onetime.New(purpose(m.Name()),
 			onetime.WithTokenTTL(ttl),
-			onetime.WithStore(store),
+			onetime.WithStore(depfault.Store(store)),
 			onetime.WithClock(c.clock),
 			onetime.WithLogger(c.logger))
 		if err != nil {

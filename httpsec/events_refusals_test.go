@@ -281,6 +281,109 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 		}
 	}
 
+	// spendsChallenge is how a second-factor or a re-proof response meets the
+	// challenge store: its lookup (or, with spend, its spend) answers through
+	// hook, given the request's cancel function; no hook leaves the store
+	// alone. A presented challenge, when set, replaces the issued one.
+	type spendsChallenge struct {
+		hook      func(cancel context.CancelFunc) func(context.Context) error
+		spend     bool
+		presented string
+	}
+
+	arm := func(f spendsChallenge, store *faultyChallenges, cancel context.CancelFunc) {
+		if f.hook == nil {
+			return
+		}
+
+		h := f.hook(cancel)
+		if f.spend {
+			store.consume.Store(&h)
+		} else {
+			store.find.Store(&h)
+		}
+	}
+
+	// mfaVerifyAfter answers a second-factor challenge, as f says.
+	mfaVerifyAfter := func(f spendsChallenge) func(*testing.T, *eventRecorder) refusalRun {
+		return func(t *testing.T, rec *eventRecorder) refusalRun {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp).neverVerifies()
+			h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).AnyTimes()
+			h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+			h.extra = []mfa.Method{newChallengeStub()}
+
+			store := &faultyChallenges{Store: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(h.clock)))}
+			h.mfaOpts = []httpsec.MFAOption{httpsec.WithMFAChallengeStore(store)}
+			h.chainOpts = []httpsec.Option{httpsec.EnableSecurityEvents(rec.sink)}
+
+			s := h.pendingSession(t, factor.Password)
+			c := h.bearerChain(t)
+
+			begun := serve(t, c, bearerPost(ctx, testMFABeginPath, mfaTokenFor(s.ID)))
+			require.NoError(t, begun.err)
+
+			challenge := issuedChallenge(t, begun)
+			arm(f, store, cancel)
+
+			if f.presented != "" {
+				challenge = f.presented
+			}
+
+			out := serveWithContext(ctx, c, bearerJSON(ctx, testPasskeyVerifyPath, mfaTokenFor(s.ID), answer(challenge)))
+
+			return refusalRun{events: rec.all(), err: out.err}
+		}
+	}
+
+	// reproofAfter answers a re-proof challenge, as f says.
+	reproofAfter := func(f spendsChallenge) func(*testing.T, *eventRecorder) refusalRun {
+		return func(t *testing.T, rec *eventRecorder) refusalRun {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			h := reauthBearer(t)
+			h.neverVerifies()
+			h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).Return(false, nil).AnyTimes()
+			h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+			stub := newChallengeStub()
+			h.extra = []mfa.Method{stub}
+
+			store := &faultyChallenges{Store: must.Must(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(h.clock)))}
+			h.reauthStore = store
+			h.reauthOpts = append(h.reauthOpts, httpsec.WithReauthenticationChallengeStore(store))
+			h.mfaOpts = append(h.mfaOpts, httpsec.WithMFAChallengeStore(store))
+			h.chainOpts = append(h.chainOpts, httpsec.EnableSecurityEvents(rec.sink))
+
+			c, err := h.build(nil)
+			require.NoError(t, err)
+
+			e := &reauthEnv{h: h, stub: stub, c: c, s: h.fullSession(t, factor.Password)}
+			challenge := e.begun(t, e.token())
+			arm(f, store, cancel)
+
+			if f.presented != "" {
+				challenge = f.presented
+			}
+
+			out := serveWithContext(ctx, c, bearerJSON(ctx, reauthVerifyPasskey, e.token(), answer(challenge)))
+
+			return refusalRun{events: rec.all(), err: out.err}
+		}
+	}
+
+	hangsUp := func(cancel context.CancelFunc) func(context.Context) error {
+		return func(ctx context.Context) error {
+			cancel()
+
+			return ctx.Err()
+		}
+	}
+
 	cases := []testCase{
 		{
 			name: "a passkey assertion for an unknown credential reports authn_login_fail",
@@ -389,6 +492,24 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err))
 				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a passkey login whose challenge store holds no such challenge reports authn_login_fail",
+			run: passwordlessChallenge(func(context.CancelFunc) func(context.Context) error {
+				return func(context.Context) error { return onetime.ErrTokenNotFound }
+			}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+			},
+		},
+		{
+			name: "a passkey login that lost the race to spend its challenge reports authn_login_fail",
+			run:  passwordlessChallenge(failsWith(onetime.ErrTokenNotFound), true),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
+				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -517,6 +638,114 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 				assert.Equal(t, e2eSource, signedIn[0].ClientIP)
 				assert.NotEmpty(t, signedIn[0].Session)
 				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a second-factor response whose challenge store failed reports nothing, and is still answered as an invalid code",
+			run:  mfaVerifyAfter(spendsChallenge{hook: failsWith(errLimiterDown)}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a wrong code's")
+				assert.Equal(t, mfa.ErrInvalidCode.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a second-factor response whose challenge store failed at the spend reports nothing, and is still answered as an invalid code",
+			run:  mfaVerifyAfter(spendsChallenge{hook: failsWith(errLimiterDown), spend: true}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a wrong code's")
+				assert.Equal(t, mfa.ErrInvalidCode.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a second-factor response whose client hung up during the challenge lookup reports nothing, and is still answered as an invalid code",
+			run:  mfaVerifyAfter(spendsChallenge{hook: hangsUp}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a wrong code's")
+				assert.Equal(t, mfa.ErrInvalidCode.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a second-factor response whose challenge store holds no such challenge reports scrty_mfa_verify_fail",
+			run:  mfaVerifyAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound)}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				reported(security.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
+			},
+		},
+		{
+			name: "a second-factor response that lost the race to spend its challenge reports scrty_mfa_verify_fail",
+			run:  mfaVerifyAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound), spend: true}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				reported(security.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
+			},
+		},
+		{
+			name: "a second-factor response that presents a challenge never issued reports scrty_mfa_verify_fail",
+			run:  mfaVerifyAfter(spendsChallenge{presented: "not-the-challenge"}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				reported(security.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
+			},
+		},
+		{
+			name: "a re-proof response whose challenge store failed reports nothing, and is still answered as an invalid code",
+			run:  reproofAfter(spendsChallenge{hook: failsWith(errLimiterDown)}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a wrong code's")
+				assert.Equal(t, mfa.ErrInvalidCode.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a re-proof response whose challenge store failed at the spend reports nothing, and is still answered as an invalid code",
+			run:  reproofAfter(spendsChallenge{hook: failsWith(errLimiterDown), spend: true}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a wrong code's")
+				assert.Equal(t, mfa.ErrInvalidCode.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a re-proof response whose client hung up during the challenge lookup reports nothing, and is still answered as an invalid code",
+			run:  reproofAfter(spendsChallenge{hook: hangsUp}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(run.err), "the status is a wrong code's")
+				assert.Equal(t, mfa.ErrInvalidCode.Error(), run.err.Error(), "the text is the refusal's own")
+				reportedNothing(t, run)
+			},
+		},
+		{
+			name: "a re-proof response whose challenge store holds no such challenge reports scrty_reauthentication_fail",
+			run:  reproofAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound)}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				reported(security.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
+			},
+		},
+		{
+			name: "a re-proof response that lost the race to spend its challenge reports scrty_reauthentication_fail",
+			run:  reproofAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound), spend: true}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				reported(security.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
+			},
+		},
+		{
+			name: "a re-proof response that presents a challenge never issued reports scrty_reauthentication_fail",
+			run:  reproofAfter(spendsChallenge{presented: "not-the-challenge"}),
+			assert: func(t *testing.T, run refusalRun) {
+				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
+				reported(security.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{

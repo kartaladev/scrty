@@ -3,6 +3,7 @@ package recovery_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,11 +14,13 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -279,6 +282,35 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 		assert.Equal(t, monday1000, got[0].At, "the recoverer's clock")
 	}
 
+	// mfaVerifies arms ana's TOTP method to answer a verification with verr,
+	// and byMFA presents a saved code and a TOTP code, so the spend reaches it.
+	mfaVerifies := func(verr error) func(e *completeEnv) {
+		return func(e *completeEnv) {
+			e.totp.EXPECT().Enrolled(gomock.Any(), anaID).Return(true, nil).AnyTimes()
+			e.totp.EXPECT().Verify(gomock.Any(), anaID, []byte("123456")).Return(verr)
+		}
+	}
+	byMFA := func(ctx context.Context, e *completeEnv, r *recovery.Recoverer) error {
+		_, err := r.Recover(ctx, recovery.Request{Username: anaUsername, Saved: e.saved[0], MFAMethod: "totp", MFACode: "123456"})
+
+		return err
+	}
+
+	// savedLimiter gives the recoverer a saved-code manager whose limiter
+	// answers a charge as given.
+	savedLimiter := func(exceeded bool, err error) func(e *completeEnv, _ context.CancelFunc) []recovery.Option {
+		return func(e *completeEnv, _ context.CancelFunc) []recovery.Option {
+			l := NewMockLimiter(e.ctrl)
+			l.EXPECT().Charge(gomock.Any(), gomock.Any()).Return(ratelimit.Receipt{}, exceeded, err).AnyTimes()
+
+			codes, cerr := recovery.NewCodes(recovery.WithCodesClock(e.clock), recovery.WithCodesLimiter(l))
+			require.NoError(t, cerr)
+			e.codes = codes
+
+			return nil
+		}
+	}
+
 	cases := []testCase{
 		{
 			name: "outside a chain a refused completion is reported to the own sink",
@@ -398,6 +430,75 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
 				kept(t, own, err)
 				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the text is the refusal's own")
+			},
+		},
+		{
+			name: "a saved-code limiter that failed reports nothing, and the answer is still a refusal",
+			opts: savedLimiter(false, errDown),
+			act:  savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+				assert.NotErrorIs(t, err, recovery.ErrCodeThrottled, "the answer is the refusal, not the throttle")
+				assert.NotErrorIs(t, err, ratelimit.ErrThrottled)
+				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the text is the refusal's own")
+			},
+		},
+		{
+			name: "a throttled saved-code presentation is reported",
+			opts: savedLimiter(true, nil),
+			act:  savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
+			},
+		},
+		{
+			name:  "an MFA method whose store failed reports nothing, and the answer is still a refusal",
+			setup: mfaVerifies(fmt.Errorf("mfa: totp store: %w", errDown)),
+			act:   byMFA,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				kept(t, own, err)
+				assert.NotErrorIs(t, err, mfa.ErrInvalidCode)
+				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the text is the refusal's own")
+				assert.True(t, recovery.RefusedAfterValidCode(err), "still marked, so the source pays")
+			},
+		},
+		{
+			name:  "a wrong MFA code is reported",
+			setup: mfaVerifies(mfa.ErrInvalidCode),
+			act:   byMFA,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
+			},
+		},
+		{
+			name:  "an MFA code whose enrolment's attempts are spent is reported",
+			setup: mfaVerifies(mfa.ErrVerifyAttemptsExhausted),
+			act:   byMFA,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
+			},
+		},
+		{
+			name:  "an MFA method that refused its authenticator is reported",
+			setup: mfaVerifies(fmt.Errorf("%w: suspected clone", mfa.ErrAuthenticatorRefused)),
+			act:   byMFA,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
+			},
+		},
+		{
+			name: "an issued code the store does not hold is a refusal, and is reported",
+			store: func(f *onFaultStore, _ context.CancelFunc) {
+				f.find.Store(failing(onetime.ErrTokenNotFound))
+			},
+			act: savedAndIssued,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
 			},
 		},
 		{

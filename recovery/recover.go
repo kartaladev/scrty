@@ -437,7 +437,15 @@ func (r *Recoverer) checkCodes(ctx context.Context, v *verified, req Request) er
 		case errors.Is(err, ErrCodeThrottled):
 			r.logger.LogAttrs(ctx, slog.LevelDebug, msgCodeThrottled)
 
-			return r.refuse(ctx, v.user, ErrRefused, false)
+			var refusal error = ErrRefused
+			// A limiter that could not charge throttled nobody: its own
+			// failure is carried beneath the refusal, as a user limiter's is.
+			var failed *limiterFailure
+			if errors.As(err, &failed) {
+				refusal = depfault.Refusal(failed.cause, ErrRefused)
+			}
+
+			return r.refuse(ctx, v.user, refusal, false)
 		case errors.Is(err, ErrRefused):
 			return r.refuse(ctx, v.user, ErrRefused, false)
 		default:
@@ -552,7 +560,7 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 
 	if v.mfa != nil {
 		if err := v.mfa.Verify(ctx, v.user, v.mfaCode); err != nil {
-			return r.spendFailed(ctx, v.user, "mfa-verify", err)
+			return r.spendRefused(ctx, v.user, "mfa-verify", err, mfaRefusal(err))
 		}
 	}
 
@@ -581,6 +589,31 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 	}
 
 	return nil
+}
+
+// mfaRefusals are the refusals an MFA method's Verify documents: a code it
+// refused, a throttled or exhausted attempt budget, an authenticator it
+// refused and a channel it cannot serve. Any other error is the method's
+// dependency failing.
+var mfaRefusals = []error{
+	mfa.ErrInvalidCode,
+	mfa.ErrVerifyThrottled,
+	mfa.ErrAuthenticatorRefused,
+	mfa.ErrSameChannel,
+}
+
+// mfaRefusal answers a failed MFA verification as ErrRefused: a refusal the
+// method documents is reported as one, and any other error is a dependency
+// that failed, answered the same way and carried beneath it, so no refusal
+// event is reported for it.
+func mfaRefusal(err error) error {
+	for _, kind := range mfaRefusals {
+		if errors.Is(err, kind) {
+			return ErrRefused
+		}
+	}
+
+	return depfault.Refusal(err, ErrRefused)
 }
 
 // spendFailed logs a failed spend at debug level — the usual cause is a wrong

@@ -440,7 +440,11 @@ func WithResetPolicy(policy ResetPolicy) Option {
 //
 // It runs after every proof has been checked and before anything is spent. An
 // error refuses the recovery behind fixed library text, and nothing is spent.
-// A negative duration is taken as none. A nil hook is a configuration error.
+// The hook is a dependency, so an error from it is answered as a refusal but
+// is reported as no event: a failed hook refused no proof. A hook that means to
+// refuse a recovery, and wants the refusal reported, belongs in WithChecks,
+// whose errors are reported. A negative duration is taken as none. A nil hook
+// is a configuration error.
 func WithRisk(fn func(ctx context.Context, in RiskInput) (time.Duration, error)) Option {
 	return func(c *config) { c.risk, c.riskSet = fn, true }
 }

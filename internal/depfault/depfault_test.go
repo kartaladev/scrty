@@ -19,17 +19,18 @@ var (
 	errRefused = errors.New("depfault_test: refused")
 )
 
-// failingStore fails the two calls the decorator watches, with findErr and
-// consumeErr, and answers nothing else.
+// failingStore answers the two calls the decorator watches with the token and
+// the errors a case sets, and answers nothing else.
 type failingStore struct {
 	onetime.Store
 
+	token      *onetime.Token
 	findErr    error
 	consumeErr error
 }
 
 func (s failingStore) FindByID(context.Context, id.ID) (*onetime.Token, error) {
-	return nil, s.findErr
+	return s.token, s.findErr
 }
 
 func (s failingStore) Consume(context.Context, id.ID, time.Time) error { return s.consumeErr }
@@ -44,47 +45,97 @@ func (reapingFailingStore) DeleteExpiredBefore(context.Context, string, time.Tim
 func TestStore_RecordsOnlyFailures(t *testing.T) {
 	t.Parallel()
 
+	held := &onetime.Token{Purpose: "held"}
+
 	type testCase struct {
-		name   string
-		inner  failingStore
-		watch  bool
-		call   func(ctx context.Context, s onetime.Store)
-		assert func(t *testing.T, w *depfault.Watch)
+		name  string
+		inner failingStore
+		watch bool
+		call  func(ctx context.Context, s onetime.Store) (*onetime.Token, error)
+
+		// assert sees what the call returned, which must be what the inner
+		// store answered, and what the watch recorded.
+		assert func(t *testing.T, w *depfault.Watch, tok *onetime.Token, err error)
 	}
 
-	find := func(ctx context.Context, s onetime.Store) { _, _ = s.FindByID(ctx, id.Nil) }
-	consume := func(ctx context.Context, s onetime.Store) { _ = s.Consume(ctx, id.Nil, time.Time{}) }
+	find := func(ctx context.Context, s onetime.Store) (*onetime.Token, error) { return s.FindByID(ctx, id.Nil) }
+	consume := func(ctx context.Context, s onetime.Store) (*onetime.Token, error) {
+		return nil, s.Consume(ctx, id.Nil, time.Time{})
+	}
 
 	cases := []testCase{
 		{
-			name: "a lookup that failed is recorded", inner: failingStore{findErr: errDown}, watch: true, call: find,
-			assert: func(t *testing.T, w *depfault.Watch) { assert.ErrorIs(t, w.Failure(), errDown) },
+			name: "a lookup that failed is recorded, and answers as it did", inner: failingStore{findErr: errDown}, watch: true, call: find,
+			assert: func(t *testing.T, w *depfault.Watch, tok *onetime.Token, err error) {
+				assert.ErrorIs(t, w.Failure(), errDown)
+				assert.Nil(t, tok)
+				assert.Equal(t, errDown, err, "the store's own error, not one the decorator made")
+			},
 		},
 		{
-			name: "a spend that failed is recorded", inner: failingStore{consumeErr: errDown}, watch: true, call: consume,
-			assert: func(t *testing.T, w *depfault.Watch) { assert.ErrorIs(t, w.Failure(), errDown) },
+			name: "a spend that failed is recorded, and answers as it did", inner: failingStore{consumeErr: errDown}, watch: true, call: consume,
+			assert: func(t *testing.T, w *depfault.Watch, _ *onetime.Token, err error) {
+				assert.ErrorIs(t, w.Failure(), errDown)
+				assert.Equal(t, errDown, err, "the store's own error, not one the decorator made")
+			},
+		},
+		{
+			name:  "a lookup that found the token returns it, and records nothing",
+			inner: failingStore{token: held}, watch: true, call: find,
+			assert: func(t *testing.T, w *depfault.Watch, tok *onetime.Token, err error) {
+				require.NoError(t, err)
+				assert.Same(t, held, tok)
+				assert.NoError(t, w.Failure())
+			},
+		},
+		{
+			name:  "a spend that succeeded returns no error, and records nothing",
+			inner: failingStore{}, watch: true, call: consume,
+			assert: func(t *testing.T, w *depfault.Watch, _ *onetime.Token, err error) {
+				assert.NoError(t, err)
+				assert.NoError(t, w.Failure())
+			},
 		},
 		{
 			name:  "a token the store does not hold is an answer, not a failure",
 			inner: failingStore{findErr: onetime.ErrTokenNotFound}, watch: true, call: find,
-			assert: func(t *testing.T, w *depfault.Watch) { assert.NoError(t, w.Failure()) },
+			assert: func(t *testing.T, w *depfault.Watch, tok *onetime.Token, err error) {
+				assert.NoError(t, w.Failure())
+				assert.Nil(t, tok)
+				assert.Equal(t, onetime.ErrTokenNotFound, err)
+			},
 		},
 		{
 			name:  "a spend that lost the race is an answer, not a failure",
 			inner: failingStore{consumeErr: onetime.ErrTokenNotFound}, watch: true, call: consume,
-			assert: func(t *testing.T, w *depfault.Watch) { assert.NoError(t, w.Failure()) },
+			assert: func(t *testing.T, w *depfault.Watch, _ *onetime.Token, err error) {
+				assert.NoError(t, w.Failure())
+				assert.Equal(t, onetime.ErrTokenNotFound, err)
+			},
 		},
 		{
 			name: "the first failure is kept", inner: failingStore{findErr: errDown, consumeErr: errRefused}, watch: true,
-			call: func(ctx context.Context, s onetime.Store) { find(ctx, s); consume(ctx, s) },
-			assert: func(t *testing.T, w *depfault.Watch) {
+			call: func(ctx context.Context, s onetime.Store) (*onetime.Token, error) {
+				tok, ferr := find(ctx, s)
+				cerr := s.Consume(ctx, id.Nil, time.Time{})
+
+				return tok, errors.Join(ferr, cerr)
+			},
+			assert: func(t *testing.T, w *depfault.Watch, _ *onetime.Token, err error) {
 				require.ErrorIs(t, w.Failure(), errDown)
 				assert.NotErrorIs(t, w.Failure(), errRefused)
+				assert.ErrorIs(t, err, errDown, "each call answers as the store did")
+				assert.ErrorIs(t, err, errRefused, "each call answers as the store did")
 			},
 		},
 		{
 			name: "a call whose context carries no watch passes through", inner: failingStore{findErr: errDown},
-			call: find, assert: func(t *testing.T, w *depfault.Watch) {},
+			call: find,
+			assert: func(t *testing.T, w *depfault.Watch, tok *onetime.Token, err error) {
+				assert.Nil(t, tok)
+				assert.Equal(t, errDown, err, "the store's own error, with nothing recorded to hide it")
+				assert.NoError(t, w.Failure(), "a watch the call's context did not carry saw nothing")
+			},
 		},
 	}
 
@@ -97,8 +148,8 @@ func TestStore_RecordsOnlyFailures(t *testing.T) {
 				ctx = t.Context()
 			}
 
-			tc.call(ctx, depfault.Store(tc.inner))
-			tc.assert(t, w)
+			tok, err := tc.call(ctx, depfault.Store(tc.inner))
+			tc.assert(t, w, tok, err)
 		})
 	}
 }
