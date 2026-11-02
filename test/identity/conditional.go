@@ -108,7 +108,7 @@ func runConditionalPasswordCases(t *testing.T, newFixture Factory) {
 		},
 		{
 			name: "an unknown user is not found, not not-updated",
-			arrange: func(t *testing.T, _ context.Context, _ Fixture, user string) string {
+			arrange: func(_ *testing.T, _ context.Context, _ Fixture, user string) string {
 				return user + "-absent"
 			},
 			opts: []identity.UserOption{
@@ -188,22 +188,22 @@ func runConditionalPasswordRaceCase(t *testing.T, newFixture Factory) {
 		close(start)
 		wg.Wait()
 
-		won := -1
+		var winner []byte
 		for i, err := range errs {
 			switch {
 			case err == nil:
-				assert.Equal(t, -1, won,
+				assert.Nil(t, winner,
 					"round %d: the conditional-update check failed: both updates conditional on the "+
 						"same hash wrote, so the condition was decided by a read the other raced", round)
-				won = i
+				winner = hashes[i]
 			case errors.Is(err, identity.ErrNotUpdated):
 			default:
 				t.Errorf("round %d: the losing conditional update must report not-updated, got %v", round, err)
 			}
 		}
 
-		require.NotEqual(t, -1, won, "round %d: one of two conditional updates on the stored hash must win", round)
-		assert.Equal(t, hashes[won], mustLoad(ctx, t, f, user).Password,
+		require.NotNil(t, winner, "round %d: one of two conditional updates on the stored hash must win", round)
+		assert.Equal(t, winner, mustLoad(ctx, t, f, user).Password,
 			"round %d: the stored hash must be the winner's", round)
 	}
 }

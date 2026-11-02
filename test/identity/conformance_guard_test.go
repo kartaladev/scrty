@@ -171,7 +171,7 @@ const (
 // namedCheck is, for a defect whose catch must be attributable, the part of
 // the suite that must report it: a consumer whose store carries it learns
 // which contract it broke from the name of the failing check.
-var namedCheck = map[defect]string{
+var namedCheck = map[defect]string{ //nolint:gosec // G101: names of conformance checks, not credentials
 	defectIgnoresPasswordCondition:   "--- FAIL: TestBrokenStoreConformance/Provisioner/ConditionalPassword/",
 	defectPreflightPasswordCondition: "--- FAIL: TestBrokenStoreConformance/Provisioner/ConcurrentConditionalPassword",
 }

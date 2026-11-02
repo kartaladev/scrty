@@ -45,7 +45,7 @@ func resolvedThroughChain(t *testing.T, req *http.Request, opts ...httpsec.Optio
 		return seenClient{}, err
 	}
 
-	run := chain.Assemble(func(*httpsec.Exchange) error { return nil })
+	run := chain.Assemble(func(*httpsec.Exchange) error { return nil }) //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 	ex := httpsec.NewExchange(req.Context(), httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
 	require.NoError(t, run(ex))
 

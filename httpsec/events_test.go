@@ -77,7 +77,7 @@ func (r *eventRecorder) names() []string {
 // serveWithContext is serve with the exchange's context chosen by the caller.
 func serveWithContext(ctx context.Context, chain *httpsec.Chain, req *http.Request) served {
 	out := served{rec: httptest.NewRecorder()}
-	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
 		out.handled = ex
 

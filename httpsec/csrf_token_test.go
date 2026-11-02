@@ -65,7 +65,7 @@ func cookieRequest(ctx context.Context, method, sid string, headers map[string]s
 	}
 
 	req := csrfRequest(ctx, method, "https://app.example.com/orders", all, body)
-	req.AddCookie(&http.Cookie{Name: csrfCookie, Value: sid})
+	req.AddCookie(&http.Cookie{Name: csrfCookie, Value: sid}) //nolint:gosec // G124: a request cookie in a test fixture; attributes belong to Set-Cookie
 
 	return req
 }
@@ -330,7 +330,7 @@ func TestCSRF_Token(t *testing.T) {
 		{
 			name: "the default source compares through the comparison it is handed",
 			csrf: []httpsec.CSRFOption{httpsec.WithCSRFTokens(httpsec.SessionCSRFTokensComparingWith(
-				func(x, y []byte) int {
+				func(_, _ []byte) int {
 					// It refuses whatever the bytes, so a pass would mean the
 					// comparison was bypassed.
 					return 0

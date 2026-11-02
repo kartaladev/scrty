@@ -28,7 +28,7 @@ func packageDoc(t *testing.T) string {
 			continue
 		}
 
-		src, err := os.ReadFile(name)
+		src, err := os.ReadFile(name) //nolint:gosec // G304: the names are this package's own files, listed above
 		require.NoError(t, err)
 
 		f, err := parser.ParseFile(token.NewFileSet(), name, src, parser.ParseComments|parser.PackageClauseOnly)

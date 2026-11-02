@@ -696,17 +696,17 @@ func TestSessionManagement_Outage(t *testing.T) {
 			req := httptest.NewRequestWithContext(ctx, tc.method, tc.path(other), nil)
 			req.Header.Set("Authorization", "Bearer "+current.ID)
 
-			tc.assert(t, serveCtx(t, f.chain, ctx, req))
+			tc.assert(t, serveCtx(ctx, t, f.chain, req))
 		})
 	}
 }
 
 // serveCtx is serve with the exchange seeded from ctx.
-func serveCtx(t *testing.T, chain *httpsec.Chain, ctx context.Context, req *http.Request) served {
+func serveCtx(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *http.Request) served {
 	t.Helper()
 
 	out := served{rec: httptest.NewRecorder()}
-	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
 		out.handled = ex
 

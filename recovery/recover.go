@@ -437,7 +437,7 @@ func (r *Recoverer) checkCodes(ctx context.Context, v *verified, req Request) er
 		case errors.Is(err, ErrCodeThrottled):
 			r.logger.LogAttrs(ctx, slog.LevelDebug, msgCodeThrottled)
 
-			var refusal error = ErrRefused
+			refusal := ErrRefused
 			// A limiter that could not charge throttled nobody: its own
 			// failure is carried beneath the refusal, as a user limiter's is.
 			var failed *limiterFailure

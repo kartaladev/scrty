@@ -264,7 +264,7 @@ const (
 	sessionSaveWritesMetadata sessionDefect = "save-writes-metadata"
 	// Save writes the caller's CSRF token rather than keeping the stored
 	// one, as a column left in the UPDATE would.
-	sessionSaveWritesCSRFToken sessionDefect = "save-writes-csrf-token"
+	sessionSaveWritesCSRFToken sessionDefect = "save-writes-csrf-token" //nolint:gosec // G101: the name of a seeded defect, not a credential
 	// Supersede inserts its successor without the sign-in state (metadata,
 	// key binding, CSRF token), as an INSERT naming only the older columns
 	// would.

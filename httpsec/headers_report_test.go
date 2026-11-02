@@ -204,7 +204,7 @@ func TestSecurityHeaders_ReportOnly(t *testing.T) {
 			var run headerRun
 
 			run.rec = httptest.NewRecorder()
-			chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			chain.Middleware()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 				run.nonce, run.nonceOK = httpsec.CSPNonce(r.Context())
 			})).ServeHTTP(run.rec, getRequest(t, "/"))
 
@@ -340,7 +340,7 @@ func TestSecurityHeaders_HashPreset(t *testing.T) {
 			var run headerRun
 
 			run.rec = httptest.NewRecorder()
-			chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			chain.Middleware()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 				run.nonce, run.nonceOK = httpsec.CSPNonce(r.Context())
 			})).ServeHTTP(run.rec, getRequest(t, "/"))
 

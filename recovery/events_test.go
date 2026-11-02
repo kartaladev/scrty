@@ -230,7 +230,7 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 
 	// heldToken is well formed and names no record: a store asked for it is
 	// the first to answer.
-	const heldToken = "0190f0a0-0000-7000-8000-000000000001.secret"
+	const heldToken = "0190f0a0-0000-7000-8000-000000000001.secret" //nolint:gosec // G101: a test fixture token, not a credential
 
 	type testCase struct {
 		name string

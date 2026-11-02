@@ -122,7 +122,7 @@ const lookupUnavailableText = "password: breach lookup unavailable"
 
 // PwnedPasswordsRangeURL is the range API [PwnedPasswords] queries, with the
 // five-character prefix appended.
-const PwnedPasswordsRangeURL = "https://api.pwnedpasswords.com/range/"
+const PwnedPasswordsRangeURL = "https://api.pwnedpasswords.com/range/" //nolint:gosec // G101: the public Pwned Passwords range URL, not a credential
 
 // PwnedPasswords returns a [BreachSource] over the public Pwned Passwords
 // range API, sent through c so the request is confined, bounded in time and

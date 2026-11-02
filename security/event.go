@@ -136,17 +136,17 @@ const (
 	AuthnPasswordChangeFail = "authn_password_change_fail"
 
 	// AuthnTokenCreated is a credential handed out for a stored session.
-	AuthnTokenCreated = "authn_token_created"
+	AuthnTokenCreated = "authn_token_created" //nolint:gosec // G101: an event name, not a credential
 
 	// AuthnTokenRevoked is a sign-in's credentials revoked, at logout.
-	AuthnTokenRevoked = "authn_token_revoked"
+	AuthnTokenRevoked = "authn_token_revoked" //nolint:gosec // G101: an event name, not a credential
 
 	// AuthnTokenReuse is a superseded session identifier presented again,
 	// and its family revoked: reported by the session manager where it
 	// detects the reuse, once the revocation is stored, naming the session's
 	// user and first factor and the presented session's digest. The session
 	// manager's reuse observer is called as before.
-	AuthnTokenReuse = "authn_token_reuse"
+	AuthnTokenReuse = "authn_token_reuse" //nolint:gosec // G101: an event name, not a credential
 
 	// SessionCreated is a session stored for a sign-in.
 	SessionCreated = "session_created"
@@ -198,10 +198,10 @@ const (
 	MFARemoved = "scrty_mfa_removed"
 
 	// PasskeyRegistered is a passkey bound to an account.
-	PasskeyRegistered = "scrty_passkey_registered"
+	PasskeyRegistered = "scrty_passkey_registered" //nolint:gosec // G101: an event name, not a credential
 
 	// PasskeyRemoved is a passkey removed from an account.
-	PasskeyRemoved = "scrty_passkey_removed"
+	PasskeyRemoved = "scrty_passkey_removed" //nolint:gosec // G101: an event name, not a credential
 
 	// RecoveryStarted is an account recovery start posted. It is reported for
 	// every start, for a username that names an account and for one that names

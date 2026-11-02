@@ -206,7 +206,7 @@ func (f *noticeFixture) login(t *testing.T, userAgent string) served {
 // chain answers, without waiting for the notice's background work.
 func (f *noticeFixture) loginOn(ctx context.Context, userAgent string) served {
 	out := served{rec: httptest.NewRecorder()}
-	run := f.chain.Assemble(func(*httpsec.Exchange) error { return nil })
+	run := f.chain.Assemble(func(*httpsec.Exchange) error { return nil }) //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 
 	ex := httpsec.NewExchange(ctx,
 		httpsec.NewHTTPRequest(loginRequest(ctx, userAgent)), httpsec.NewHTTPResponseWriter(out.rec))

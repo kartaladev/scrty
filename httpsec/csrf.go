@@ -383,7 +383,7 @@ func WithoutCORSOriginsTrustedForCSRF() CSRFOption {
 
 // Default names of the CSRF token's header and form field.
 const (
-	DefaultCSRFTokenHeader = "X-CSRF-Token"
+	DefaultCSRFTokenHeader = "X-CSRF-Token" //nolint:gosec // G101: the name of a request header, not a credential
 	DefaultCSRFTokenField  = "csrf_token"
 )
 

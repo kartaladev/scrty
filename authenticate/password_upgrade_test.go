@@ -71,7 +71,7 @@ func TestPasswordProvider_Upgrade(t *testing.T) {
 				assert.Equal(t, "ada", user.Username)
 				assert.Equal(t, stored, replaced)
 				assert.NotEqual(t, stored, upgraded)
-				assert.True(t, enc.Encoder.Match(storedPassword, upgraded), "the new hash does not verify the password")
+				assert.True(t, enc.Match(storedPassword, upgraded), "the new hash does not verify the password")
 			},
 		},
 		{

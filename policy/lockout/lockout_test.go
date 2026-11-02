@@ -1622,7 +1622,7 @@ func TestLockoutCapView(t *testing.T) {
 				s.MockAttemptStore.EXPECT().RecordFailure(gomock.Any(), "ada", lockoutNow).Return(nil)
 			},
 			act: recordAda,
-			assert: func(t *testing.T, p *lockout.Policy, s *streakAttemptStore, err error) {
+			assert: func(t *testing.T, p *lockout.Policy, _ *streakAttemptStore, err error) {
 				require.NoError(t, err)
 				assert.Same(t, p.Attempts(), p.Attempts(), "the view is one value")
 			},

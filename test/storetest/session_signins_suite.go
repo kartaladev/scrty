@@ -21,7 +21,7 @@ const (
 	signInUserAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
 	signInJKT       = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
 	signInX5TS256   = "bwcK0esc3ACC3DB2Y5_lESsXE8o9ltc05O89jdN-dg2"
-	signInCSRFToken = "Zm9yLXRoZS1zdWl0ZS1hLWNzcmYtdG9rZW4tMzItYnl0ZXM"
+	signInCSRFToken = "Zm9yLXRoZS1zdWl0ZS1hLWNzcmYtdG9rZW4tMzItYnl0ZXM" //nolint:gosec // G101: a test fixture value, not a credential
 )
 
 // withSignInState gives s the suite's sign-in metadata, a DPoP key binding and

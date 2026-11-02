@@ -857,7 +857,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 		},
 		{
 			name: "a renewal of a family over its limit reports excess_rate_limit_exceeded",
-			run: func(t *testing.T, rec *eventRecorder) refusalRun {
+			run: func(t *testing.T, _ *eventRecorder) refusalRun {
 				w := newEventsWorldOf(t, eventsWorldSpec{
 					renewalOpts: []httpsec.SessionRenewalOption{httpsec.WithRenewalLimiter(exceededLimiter(t))},
 				})

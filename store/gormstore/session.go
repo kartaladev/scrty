@@ -499,16 +499,16 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	return int(n), nil
 }
 
-// stale reports whether row is past what Load returns at now: a superseded
+// stale reports whether r is past what Load returns at now: a superseded
 // row with a retention deadline once that deadline is not after now, any
 // other once either of its own deadlines is not. It is the condition
 // SessionDeleteExpired deletes by, judged in Go.
-func (row *sessionRow) stale(now time.Time) bool {
-	if row.SupersededAt != nil && row.RetainUntil != nil {
-		return !now.Before(*row.RetainUntil)
+func (r *sessionRow) stale(now time.Time) bool {
+	if r.SupersededAt != nil && r.RetainUntil != nil {
+		return !now.Before(*r.RetainUntil)
 	}
 
-	return !now.Before(row.IdleExpiresAt) || !now.Before(row.AbsoluteExpiresAt)
+	return !now.Before(r.IdleExpiresAt) || !now.Before(r.AbsoluteExpiresAt)
 }
 
 // ListByUser returns user's sessions that are not superseded and are before

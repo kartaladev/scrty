@@ -162,7 +162,7 @@ func RunSessionCSRFSuccessor(t *testing.T, raw *sql.DB, newStore func(t *testing
 	require.NoError(t, err)
 	s := newStore(t, c)
 
-	const token = "SENTINEL-CSRF-TOKEN-of-the-sign-in"
+	const token = "SENTINEL-CSRF-TOKEN-of-the-sign-in" //nolint:gosec // G101: a test fixture marker, not a credential
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
 	// supersede creates oldID's session with the token, supersedes it by

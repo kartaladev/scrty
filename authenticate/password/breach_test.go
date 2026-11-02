@@ -120,7 +120,7 @@ const (
 )
 
 // hang answers only once the request has gone.
-func hang(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
+func hang(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
 
 func TestPolicy_Breached(t *testing.T) {
 	t.Parallel()

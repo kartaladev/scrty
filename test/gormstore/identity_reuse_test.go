@@ -15,7 +15,7 @@ import (
 
 // newPassword is the password a change moves to: long and uncommon enough
 // that only the reuse rule could refuse it.
-const newPassword = "p2-plum-orchard-river"
+const newPassword = "p2-plum-orchard-river" //nolint:gosec // G101: a test fixture password, not a credential
 
 // TestIdentityReuse_PolicyOverStore runs the password policy's reuse rule end
 // to end over the gorm store, which backs both the user and the history: a change
