@@ -69,7 +69,7 @@ Every origin the CORS policy lists exactly, or matches by an explicit pattern, S
 - **THEN** it is refused with the cross-site-request error
 
 ### Requirement: Cookie-authenticated unsafe requests need a token bound to the sign-in
-An unsafe request authenticated by a cookie SHALL carry a CSRF token, in a header or form field whose names are replaceable, `X-CSRF-Token` and `csrf_token` by default. The token SHALL be issued for the request's sign-in, and SHALL be refused when it is missing, malformed, or issued for another sign-in. It SHALL stay valid across the renewals and rotations of that sign-in, and SHALL NOT be accepted for a new sign-in after logout or a fresh login. It SHALL be compared in constant time. The token SHALL be readable by the consumer's page through a documented accessor. A request authenticated only by an `Authorization` header SHALL NOT need a token.
+An unsafe request authenticated by a cookie SHALL carry a CSRF token, in a header or form field whose names are replaceable, `X-CSRF-Token` and `csrf_token` by default. The token SHALL be issued for the request's sign-in, and SHALL be refused when it is missing, malformed, or issued for another sign-in. It SHALL stay valid across the renewals and rotations of that sign-in, and SHALL NOT be accepted for a new sign-in after logout or a fresh login. It SHALL be compared in constant time. The token SHALL be readable by the consumer's page through a documented accessor. A request authenticated only by an `Authorization` header SHALL NOT need a token. By default the token SHALL be at least 32 random bytes made when the sign-in's session is built and stored on the sign-in, and a sign-in that holds no token SHALL be refused on unsafe cookie-authenticated requests. The consumer SHALL be able to replace the token source, and the accessor and the check SHALL then use the consumer's source.
 
 #### Scenario: Missing token
 - **WHEN** a cookie-authenticated `POST` passes the Fetch Metadata check but carries no CSRF token
@@ -90,6 +90,14 @@ An unsafe request authenticated by a cookie SHALL carry a CSRF token, in a heade
 #### Scenario: Bearer request
 - **WHEN** a `POST` authenticated by `Authorization: Bearer` carries no CSRF token
 - **THEN** the token check does not refuse it
+
+#### Scenario: Sign-in without a token
+- **WHEN** a cookie-authenticated `POST` arrives for a sign-in made before CSRF protection was enabled, so it holds no token
+- **THEN** it is refused with the cross-site-request error
+
+#### Scenario: Consumer's token source
+- **WHEN** the consumer replaces the token source with one that derives the token from the sign-in's handle under their own key
+- **THEN** the accessor returns that source's token, a cookie-authenticated `POST` carrying it passes, and one carrying the default source's token is refused
 
 ### Requirement: Cookie authentication cannot be enabled without CSRF protection
 Building a chain SHALL fail with a configuration error when it enables any interceptor that authenticates requests by a cookie and CSRF protection is not enabled, unless the consumer opts out explicitly with an option whose name states that CSRF protection is off.

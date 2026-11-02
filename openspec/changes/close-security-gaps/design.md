@@ -1,6 +1,6 @@
 # Design
 
-> Reconciled on 2026-11-02 with `reauthentication` (archived on `main`) and `key-port-context` (PR #39, about to merge). D1 records what that changed.
+> Reconciled on 2026-11-02 with `reauthentication` (archived on `main`) and `key-port-context` (merged as `9248c66`, archived). D1 records what that changed.
 
 ## Context
 
@@ -46,6 +46,8 @@ The draft was written before either change landed. The reconciliation changed th
 - **Outage and hang-up (`key-port-context` D3, D8).** The DPoP replay store, the breach lookup, the challenge verifier and the session listing each fail as a dependency failure (500, fixed text, not charged), or with the context's error when the caller left. This reverses the draft's "a verifier error refuses with challenge-required" (D15).
 - **Rotation refuses an ended family** (`key-port-context`, `86e7d4c`). A binding is never carried into a family that has ended.
 - **Recency for ending sessions** uses `reauthentication`'s guard and its default window, unchanged (D12).
+
+**Rechecked against the merged text (task 1.1, 2026-11-02).** `key-port-context` merged as `9248c66` (PR #39), whose tree is identical to the reviewed head `86e7d4c`, and was archived in `e8762b6`. `Sessions.Prepare`/`Prepared.Commit`, `Sessions.RotateIssuing` and `RotateWithGraceIssuing`, `internal/hangup.ByCaller`, and the issuing mark `StatusForError` checks before anything else are as this decision describes them. Nothing above changed. One rule the bullets do not restate: a user store that cannot answer a login, Basic, recovery or API key owner check (`authenticate.ErrUnavailable`) stays 401, not 500. No dependency this change adds is a user store, so D18's 500 rows are unaffected.
 
 ### D2. `Request` gains `Host()` and `Secure()` (BREAKING, pre-tag)
 
@@ -227,7 +229,17 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
 ```
 
 - **Trusted origins:** every CORS-allowed origin by default, so a frontend on a sibling subdomain works. Same-site is refused otherwise, as Go's implementation does. **Override:** `WithCSRFTrustedOrigins`, `WithoutCORSOriginsTrustedForCSRF`.
-- **Token layer:** cookie-authenticated unsafe requests need a token bound to the session, in a header (`X-CSRF-Token`) or a form field (`csrf_token`), both replaceable. Bearer-only requests need none.
+- **Token layer:** cookie-authenticated unsafe requests need a token bound to the sign-in, in a header (`X-CSRF-Token`) or a form field (`csrf_token`), both replaceable. Bearer-only requests need none.
+- **Token style (settled 2026-11-02, task 1.2): a synchronizer token stored on the sign-in, behind a replaceable port.**
+  - **Default:** 32 bytes from `crypto/rand`, made when a cookie-authenticated sign-in's session is built (`Prepare`/`Create`, through a create option the chain passes only when CSRF protection is on). Every successor carries it, the way it carries the key binding (D12), so it survives renewal and rotation. A new sign-in is a new family and gets a new token. It is compared in constant time.
+  - **At rest:** sealed by the sealing decorator and bound to its session identifier, as the retained ID token is. A successor's copy is sealed again for the successor's identifier. The page needs to read it again, so a one-way digest cannot serve.
+  - **A sign-in without a token** (made before the migration, or before CSRF protection was enabled) is refused on unsafe cookie requests until the user signs in again. The README says so.
+  - **Override:** `WithCSRFTokens(t CSRFTokens)` replaces the source, for example with an HMAC over the family handle under the consumer's own key. The port takes the request's session and answers its token, and verifies a presented one. `CSRFToken(ctx)` reads through it, whichever source is in use.
+  - **Why stored by default:** OWASP recommends the synchronizer pattern for stateful applications, and Spring's default and Django's session mode keep the token server-side. A signed token needs a server key, and the chain has none, so it could not be a default that works with no configuration (`library-design.md`). Its key rotation, which needs several keys verified side by side, and its lack of revocation on its own are the consumer's to take on.
+  - **Alternatives rejected:**
+    - *Signed double-submit as the default:* a mandatory key.
+    - *Rotating the token with the session identifier:* the bff draft did this, but the spec requires the token to survive renewals, so a page would race every renewal.
+    - *Per-request tokens:* OWASP notes they break the Back button.
 - **Mandatory with cookie authentication.** A chain enabling any cookie-authenticating interceptor fails construction without CSRF protection, unless `WithoutCSRFProtection()` is given. Today no built-in cookie authenticator exists. The rule binds the cookie session `bff-resource-server` will add.
 - **Exemptions** are by method and path only. Back-channel logout is exempt by default.
 - **Default:** off, until cookie authentication is enabled (then required).
@@ -561,7 +573,7 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
 - [The DPoP replay store is per process by default, so across replicas a proof could be replayed within its 60 seconds] → The same documented limit as the in-memory rate limiter, with the same remedy: a shared store.
 - [Building DPoP and mTLS doubles the bearer interceptor's paths] → Both share one binding abstraction on the session and token, and conformance runs each on all three adapters.
 - [The bundled common-password list adds size to the core module] → A few tens of kilobytes, compressed in the binary. The list is replaceable.
-- [`key-port-context` lands differently from PR #39's head] → It is reviewed and green. This change only names its published rules (D1), and task 1.1 rechecks them against the merged text before group 8.
+- [`key-port-context` lands differently from PR #39's head] → Retired: it merged with the reviewed head's tree unchanged, and task 1.1 found no difference (D1).
 - [Thirty-four requirements exceed OpenSpec's 500-character advisory] → `openspec validate --strict` reports them as warnings, as it does for `key-port-context`. No CI step runs it. Splitting them is left to archive time, when the main specs are rewritten anyway.
 
 ## Migration Plan
@@ -581,9 +593,9 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
 
 ## Open Questions
 
-- The CSRF token style: a synchronizer token stored on the session, or a double-submit cookie signed with a server key. Either satisfies the spec, which now requires the token to survive a sign-in's renewals and not a new sign-in. It matters once cookie sessions exist, and blocks only task 5.3.
+None.
 
-Settled on 2026-11-02: the forwarded-certificate format (a replaceable decoder, D9); header profiles take a path prefix or a function, and an `authorize.Rule` adapter is additive later (D4); DPoP server nonces stay off by default (D8).
+Settled on 2026-11-02: the CSRF token style (a synchronizer token stored on the sign-in, behind a replaceable port, D6); the forwarded-certificate format (a replaceable decoder, D9); header profiles take a path prefix or a function, and an `authorize.Rule` adapter is additive later (D4); DPoP server nonces stay off by default (D8).
 
 ## References
 
@@ -610,6 +622,14 @@ Settled on 2026-11-02: the forwarded-certificate format (a replaceable decoder, 
 
 **D6: CSRF**
 - [web.dev: Fetch Metadata](https://web.dev/articles/fetch-metadata) and the [Go 1.25 release notes](https://go.dev/doc/go1.25): `net/http.CrossOriginProtection`, read in go1.27.3's `net/http/csrf.go`.
+
+**D6: CSRF token style** (accessed 2026-11-02)
+- [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html): the synchronizer token is the recommended pattern for stateful software; a signed double-submit token must be bound to the session; per-request tokens can break the Back button; a new session gets a new token.
+- [Spring Security 7.1.2 CSRF](https://docs.spring.io/spring-security/reference/servlet/exploits/csrf.html) and [`CsrfAuthenticationStrategy`](https://github.com/spring-projects/spring-security/blob/main/web/src/main/java/org/springframework/security/web/csrf/CsrfAuthenticationStrategy.java) (main branch): server-side token by default, replaced at authentication.
+- [Django CSRF](https://docs.djangoproject.com/en/stable/ref/csrf/) and [`django.contrib.auth.login`](https://github.com/django/django/blob/main/django/contrib/auth/__init__.py) (main branch): the token rotates at login; `CSRF_USE_SESSIONS` keeps it in the session.
+- [ASP.NET Core antiforgery](https://learn.microsoft.com/en-us/aspnet/core/security/anti-request-forgery): tokens tied to the user's identity and refreshed after authentication.
+- [Go `net/http.CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection) (go1.25.0 source): header checks only, no token; why the token layer is scrty's own.
+- Unverified, not relied on: how gorilla/csrf v1.7.3 treats a login, and the key-rotation cost of a signed token, which is reasoned and not sourced.
 
 **D7: trusted proxies**
 - [ASP.NET Core: proxy servers and load balancers](https://learn.microsoft.com/en-us/aspnet/core/host-and-deploy/proxy-load-balancer): `ForwardedHeaders.None`, loopback `KnownProxies`, `ForwardLimit` 1, `AllowedHosts`, `X-Original-*`.

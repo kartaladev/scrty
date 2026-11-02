@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> Reconciled on 2026-11-02 with `reauthentication` (archived) and `key-port-context` (PR #39). Implementation starts after `key-port-context` merges; task 1.1 rechecks its merged text first.
+> Reconciled on 2026-11-02 with `reauthentication` (archived) and `key-port-context` (merged as `9248c66`; task 1.1 found no difference). Task 1.2 settled the CSRF token style: a token stored on the sign-in by default, behind a replaceable port (D6).
 
 **Goal:** Close the thirteen security gaps in `proposal.md` before `v0.1.0`, with every edge case the specs pin.
 
@@ -48,7 +48,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 | 0 | main session | 1.1–1.2 | OpenSpec artifacts only | — |
 | A | R: request and proxies | 2.1–2.6; 2.7–2.11 | `httpsec/nethttp.go`, `client.go` (new), `proxies.go` (new), `chain.go`, `throttle.go`, `options.go`, `errors.go`, `httpsec/ginsec/*`, `httpsec/fibersec/*`, `test/httpsecconformance/proxy_scenarios.go` (new) | Opus (an interface every lane compiles against; refusal logic) |
 | B (worktrees) | H: headers, CORS, CSRF | 3.1–3.6; 3.7–3.11; 4.1–4.6; 5.1–5.4; 5.5–5.7 | `httpsec/order_outer.go`, `headers.go`, `cors.go`, `csrf.go` (all new), `httpsec/logout.go`, conformance `headers_scenarios.go`, `cors_scenarios.go`, `csrf_scenarios.go` | Sonnet for 3.x (known pattern); Opus for 4.x and 5.x (refusal logic written for the first time) |
-| B (worktrees) | S: sessions | 6.1–6.4; 6.5–6.7; 7.1–7.5 | `session/*`, `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, `store/migrate/securitystate/` (new file), `test/storetest/session*.go`, `httpsec/session_management.go` (new), `httpsec/signin_notice.go` (new), the passkey removal path, `notify` templates | Opus (store contract other modules implement; owner checks; `Commit` rules) |
+| B (worktrees) | S: sessions | 6.1–6.4 (S1, before H4); 6.5–6.7; 7.1–7.5 | `session/*`, `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, `store/migrate/securitystate/` (new file), `test/storetest/session*.go`, `httpsec/session_management.go` (new), `httpsec/signin_notice.go` (new), the passkey removal path, `notify` templates | Opus (store contract other modules implement; owner checks; `Commit` rules) |
 | B (worktrees) | P: passwords | 10.1–10.6; 10.7–10.10 | `authenticate/password/*`, `httpsec/login.go`, `httpsec/basic.go`, the password re-proof path, `test/identity` history conformance | Opus for 10.1–10.6 (behaviour-preserving move of the reuse guard); Sonnet for 10.7–10.10 |
 | B | T: supply chain | 13.1–13.4 | `.github/`, `tools/`, `Makefile` | Sonnet |
 | C | D: sender-constrained tokens | 8.1–8.5; 8.6–8.9; 8.10–8.12; 9.1–9.4 | `token/*`, `httpsec/dpop.go`, `dpop_replay.go`, `dpop_nonce.go`, `certbinding.go` (new), `bearer.go`, `session_bearer.go`, `session_renewal.go`, `complete.go`, `mfa_verify.go`, `passkey_login.go`, `magiclink.go`, `oidc_redeem.go`, `redemption.go`, `recovery.go`, `reauth*.go`, conformance `dpop_scenarios.go` | Opus (security-critical verification; issue-before-spend ordering; several packages) |
@@ -63,12 +63,12 @@ Each lane owns its files; a file not listed is held by the main session for revi
 ## Task group 1: baseline check (main session)
 
 ### Task 1.1: Recheck `key-port-context` as merged
-- [ ] Read the merged `key-port-context` specs and `httpsec/bearer.go`, `session/prepared.go`, `session/reuse.go`, `internal/hangup/hangup.go`, and `StatusForError`'s issuing mark.
-- [ ] Where the merged text differs from D1, update `design.md` D1 and the affected deltas; run `openspec validate close-security-gaps`. Expected: no errors (the 500-character warnings are known).
-- [ ] If a signature in this plan changed, regenerate the affected tasks through `/superpowers:writing-plans`.
+- [x] Read the merged `key-port-context` specs and `httpsec/bearer.go`, `session/prepared.go`, `session/reuse.go`, `internal/hangup/hangup.go`, and `StatusForError`'s issuing mark.
+- [x] Where the merged text differs from D1, update `design.md` D1 and the affected deltas; run `openspec validate close-security-gaps`. Expected: no errors (the 500-character warnings are known).
+- [x] If a signature in this plan changed, regenerate the affected tasks through `/superpowers:writing-plans`.
 
 ### Task 1.2: Settle the CSRF token style
-- [ ] Decide synchronizer token on the sign-in, or HMAC-signed double-submit cookie keyed by the family; both must survive renewal and not a new sign-in. Record in D6 with sources; empty the Open Questions; regenerate task 5.3 if its shape changed.
+- [x] Decide synchronizer token on the sign-in, or HMAC-signed double-submit cookie keyed by the family; both must survive renewal and not a new sign-in. Record in D6 with sources; empty the Open Questions; regenerate task 5.3 if its shape changed. Settled: stored on the sign-in, replaceable (D6); tasks 5.3, 6.4, 6.6 and 6.7 regenerated.
 
 ---
 
@@ -219,7 +219,10 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 **Interfaces produced:**
 - `func EnableCSRFProtection(opts ...CSRFOption) Option`, `func WithCSRFTrustedOrigins(origins ...string) CSRFOption`, `func WithoutCORSOriginsTrustedForCSRF() CSRFOption`, `func WithCSRFTokenNames(header, field string) CSRFOption`, `func WithCSRFExemption(method, pattern string) CSRFOption`, `func WithoutBackchannelLogoutExemption() CSRFOption`, `func WithoutCSRFProtection() Option`
-- `func CSRFToken(ctx context.Context) (string, bool)`
+- `func CSRFToken(ctx context.Context) (string, bool)` (reads through the configured `CSRFTokens`)
+- `type CSRFTokens interface { Token(ctx context.Context, s *session.Session) (string, error); Verify(ctx context.Context, s *session.Session, presented string) error }` — `Verify` returns `ErrCrossSiteRequest` for a missing, malformed or foreign token; the default reads `Session.CSRFToken` and compares with `subtle.ConstantTimeCompare`, and a session holding no token fails `Verify`
+- `func WithCSRFTokens(t CSRFTokens) CSRFOption` (default: the session-stored source; nil fails `New`)
+- The chain passes `session.WithCSRFToken()` to `Prepare`/`Create` at every sign-in when CSRF protection and a cookie authenticator are both on
 - `var ErrCrossSiteRequest = errors.New("httpsec: cross-site request refused")`
 - Interceptors that authenticate by cookie carry an unexported `cookieAuthenticator` marker the construction check reads.
 
@@ -230,8 +233,9 @@ Each lane owns its files; a file not listed is held by the main session for revi
 ### Task 5.2: Trusted origins
 - [ ] Red `TestCSRF_TrustedOrigins`: CORS sibling passes on `same-site`; opt-out refuses it; `WithCSRFTrustedOrigins` adds one (normalised; `null` fails `New`); CORS `*` trusts nothing; unlisted `blog.example.com` refused. FAIL; Green; PASS; commit.
 
-### Task 5.3: Token layer (style from task 1.2)
-- [ ] Red `TestCSRF_Token`: missing, malformed, another sign-in's → refused; correct → passes; token read before a renewal passes after it; token read before logout refused after a new login; bearer-only `POST` passes; `CSRFToken(ctx)` returns the sign-in's token; comparison through `subtle.ConstantTimeCompare`.
+### Task 5.3: Token layer (D6: stored on the sign-in, replaceable)
+**Consumes:** `session.Session.CSRFToken`, `session.WithCSRFToken()` (task 6.4, lane S). Dispatch H4 starts only after S1 has landed; until then it stops at 5.2.
+- [ ] Red `TestCSRF_Token`: missing, malformed, another sign-in's → refused; correct → passes; token read before a renewal passes after it; token read before logout refused after a new login; a session with no token (built without `WithCSRFToken`) → refused; bearer-only `POST` passes; `CSRFToken(ctx)` returns the sign-in's token; comparison through `subtle.ConstantTimeCompare`; `WithCSRFTokens(hmacSource)` (a test source deriving `HMAC(k, family)`) → its token passes, the stored token is refused, `CSRFToken(ctx)` returns the HMAC token; `WithCSRFTokens(nil)` fails `New`.
 - [ ] FAIL; Green; PASS; commit.
 
 ### Task 5.4: Mandatory with cookie authentication
@@ -255,8 +259,8 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - `type SignIn struct { Handle id.ID; CreatedAt, LastUsedAt time.Time; FirstFactor identity.FirstFactor; Pending policy.ChallengeKind; ClientIP, UserAgent string; Current bool }`
 - `func (m *Sessions) ListSignIns(ctx context.Context, user identity.UserID, current *Session) ([]SignIn, error)`
 - `func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle string) error` (`ErrNotFound` for malformed, unknown or foreign), `func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, current *Session) (int, error)` over `DeleteByUserExcept`
-- `func WithSessionMetadata() Option`; `CreateOption`s `WithClientMetadata(ip, userAgent string)` and `WithKeyBinding(b KeyBinding)`; `RotateOption` `WithReauthenticationBinding(b KeyBinding)`
-- `type KeyBinding struct { JKT, X5TS256 string }` (at most one); `Session.KeyBinding`, `Session.ClientIP`, `Session.UserAgent` written by `Create` and `Supersede` only.
+- `func WithSessionMetadata() Option`; `CreateOption`s `WithClientMetadata(ip, userAgent string)`, `WithKeyBinding(b KeyBinding)` and `WithCSRFToken()` (32 bytes from `crypto/rand`, base64url without padding); `RotateOption` `WithReauthenticationBinding(b KeyBinding)`
+- `type KeyBinding struct { JKT, X5TS256 string }` (at most one); `Session.KeyBinding`, `Session.ClientIP`, `Session.UserAgent`, `Session.CSRFToken` written by `Create` and `Supersede` only.
 - `var ErrListUnavailable` (fixed text, wraps the store error).
 
 ### Task 6.1: `ListByUser` in memory
@@ -270,16 +274,18 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ### Task 6.4: Key binding
 - [ ] Red `TestSessions_KeyBinding`: rotation, renewal and re-authentication successors keep `K`; the successor handed to `RotateIssuing`'s and `RotateWithGraceIssuing`'s step already carries `K`; `Save` of a cleared copy leaves it; `Prepare` with `K`, set `K2`, `Commit` → `ErrConfig`, nothing stored; `WithReauthenticationBinding(K2)` on a session bound to `K` → `ErrConfig`; on an unbound one → bound to `K2`; both members set → `ErrConfig`. FAIL; Green (successor construction; `Commit`'s built-field check; `Save` preserves like `MFAAtFirstFactor`). PASS; commit.
+- [ ] Red `TestSessions_CSRFToken`: no `WithCSRFToken` → `""`; with it → decodes to 32 bytes; rotation, renewal (within and outside grace) and re-authentication successors carry the same token, already set on the successor handed to the issuing step; `Save` of a cleared copy keeps it; `Prepare` with `T`, change to `T2`, `Commit` → `ErrConfig`, nothing stored; two sign-ins of one user → different tokens. FAIL; Green beside the binding. PASS; commit.
 
 ### Task 6.5: End by handle
 - [ ] Red `TestSessions_EndSignIn`: own handle revokes the family; current handle revokes the current session; `not-a-family`, unknown and `u-2`'s handle → `ErrNotFound`, nothing revoked; `EndOtherSignIns` racing a renewal keeps the successor (barrier test). FAIL; Green; PASS; commit.
 
 ### Task 6.6: Migration
 **Files:** Create `store/migrate/securitystate/2026MMDD000000_session_signins.sql`; Test `test/migrate_securitystate_test.go`
-- [ ] Red: populated-database and rollback tests on PostgreSQL 15 and 18. FAIL; Green: nullable `client_ip text`, `user_agent text`, `binding_kind text`, `binding_thumbprint text`; no index (listing uses `sessions_user`). PASS; commit.
+- [ ] Red: populated-database and rollback tests on PostgreSQL 15 and 18. FAIL; Green: nullable `client_ip text`, `user_agent text`, `binding_kind text`, `binding_thumbprint text`, `csrf_token text` (sealed); no index (listing uses `sessions_user`). The populated-database test asserts existing rows load with no token. PASS; commit.
 
 ### Task 6.7: Durable stores
-- [ ] Red: new cases in the `test/storetest` session suite (listing, exact match, metadata and binding round trip, save keeps both, supersession inserts both, a store whose listing returns another user's session fails naming the listing check). FAIL for every durable store.
+- [ ] Red: new cases in the `test/storetest` session suite (listing, exact match, metadata, binding and CSRF token round trip, save keeps all three, supersession inserts all three, a store whose listing returns another user's session fails naming the listing check). FAIL for every durable store.
+- [ ] Red: sealing tests beside the existing ID-token ones: the stored `csrf_token` neither equals nor contains the token; a successor's copy is sealed for the successor's identifier and opens; a token copied into another session's row → unreadable-session error, token not returned. FAIL.
 - [ ] Green in `store/sqlstore`, `store/pgxstore`, `store/gormstore` session files and the sealing decorator. PASS; commit.
 
 ---

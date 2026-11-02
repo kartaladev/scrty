@@ -76,6 +76,10 @@ It SHALL also expose one challenge error type, whose kinds include account recov
 - **THEN** the refusal is identifiable as the reused-session refusal, and also as the authentication-required and session-expired refusals
 - **AND** its text contains no session identifier
 
+#### Scenario: Recency refusal carries its window
+- **WHEN** a recency guard with a 5-minute window refuses a stale session
+- **THEN** the refusal is identifiable as the reauthentication-required refusal, reports the 5-minute window, and its text contains no session handle
+
 #### Scenario: Passkey refusal reveals no credential
 - **WHEN** one passwordless finish is refused for an unknown credential and another for a bad signature
 - **THEN** both errors are the authentication-failed refusal, and neither's text contains a credential ID or a challenge
@@ -188,6 +192,10 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 - **WHEN** the error is the refusal of the method-listing endpoint for a fully authenticated session
 - **THEN** the mapping returns 403
 
+#### Scenario: No MFA challenge pending at verify
+- **WHEN** the error is the refusal of the verify endpoint for a fully authenticated session
+- **THEN** the mapping returns 403
+
 #### Scenario: Unrecognised error
 - **WHEN** the error is a database connection failure that wraps no refusal
 - **THEN** the mapping returns 500
@@ -295,6 +303,14 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Unknown API key
 - **WHEN** an error wraps the API key not-found refusal
 - **THEN** the mapping returns 404
+
+#### Scenario: Recency guard refusal
+- **WHEN** the error is the reauthentication-required refusal of a recency guard
+- **THEN** the mapping returns 403
+
+#### Scenario: Re-proof method not usable
+- **WHEN** the error is the refusal of a password re-proof from a user who holds a usable second factor
+- **THEN** the mapping returns 403
 
 #### Scenario: CSRF refusal
 - **WHEN** an error wraps the cross-site-request refusal
