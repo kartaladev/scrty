@@ -243,6 +243,11 @@ var statusTable = []statusRow{
 	{ErrDPoPNonceRequired, http.StatusUnauthorized},
 	{ErrInvalidDPoPProof, http.StatusUnauthorized},
 
+	// A certificate-bound credential on a request that does not present its
+	// certificate (RFC 8705): the client is asked to present the credential
+	// over a connection with the certificate it was bound to.
+	{ErrCertificateBinding, http.StatusUnauthorized},
+
 	// A refused recovery (recovery.ErrRefused) and a throttled saved-code
 	// presentation (recovery.ErrCodeThrottled) need no rows: they wrap
 	// authenticate.ErrAuthenticationFailed and ratelimit.ErrThrottled, so the

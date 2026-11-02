@@ -116,12 +116,16 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	// bound sign-in. The proof is recorded only then, last.
 	resolver := b.resolver
 	resolver.admit = func(ex *Exchange, s *session.Session) error {
-		if s.KeyBinding.JKT != cnf.JKT || s.KeyBinding.X5TS256 != cnf.X5TS256 {
+		if s.KeyBinding.JKT != cnf.JKT {
 			if b.dpop == nil {
 				return ErrInvalidDPoPProof
 			}
 
 			return b.dpop.refuse(ex.Context(), reasonProofBinding)
+		}
+
+		if s.KeyBinding.X5TS256 != cnf.X5TS256 {
+			return ErrCertificateBinding
 		}
 
 		return recordProof(ex.Context(), b.dpop, proof)
@@ -187,24 +191,31 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 }
 
 // admitBinding judges a verified token's confirmation claim: a binding the
-// chain cannot honour is refused, and with DPoP on, the proof presented with
-// it is verified, its ath over the token, and must come from the bound key
+// chain cannot honour is refused, a certificate binding is judged against the
+// request's certificate, and with DPoP on, the proof presented with it is
+// verified, its ath over the token, and must come from the bound key
 // (admitBinding). It returns the verified proof, which is recorded once the
 // session's own binding has been judged.
+//
+// A token bound to a certificate is judged without verifying a proof: one
+// presented under the DPoP scheme is refused for that alone, since it is not
+// bound to a DPoP key.
 func (b *bearerToken) admitBinding(ex *Exchange, underDPoP bool, tok string, cnf token.Confirmation) (*dpopProof, error) {
-	ctx := ex.Context()
-
 	if cnf.X5TS256 != "" || len(cnf.Other) > 0 {
-		return nil, admitBinding(ctx, b.dpop, nil,
+		if underDPoP && cnf.JKT == "" && len(cnf.Other) == 0 {
+			return nil, b.dpop.refuse(ex.Context(), reasonProofBinding)
+		}
+
+		return nil, admitBinding(ex, b.dpop, nil,
 			keyBinding{jkt: cnf.JKT, x5tS256: cnf.X5TS256, other: len(cnf.Other) > 0})
 	}
 
-	proof, err := presentedProof(ctx, b.dpop, ex.Request, underDPoP, tok)
+	proof, err := presentedProof(ex.Context(), b.dpop, ex.Request, underDPoP, tok)
 	if err != nil {
 		return nil, err
 	}
 
-	return proof, admitBinding(ctx, b.dpop, proof, keyBinding{jkt: cnf.JKT})
+	return proof, admitBinding(ex, b.dpop, proof, keyBinding{jkt: cnf.JKT})
 }
 
 // presentedCredential reports the credential an Authorization header carries

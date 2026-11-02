@@ -2,8 +2,11 @@ package httpsec
 
 import (
 	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"net/netip"
 	"net/textproto"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -429,6 +432,17 @@ type resolution struct {
 	// request's own Host header never is.
 	forwardedHost bool
 
+	// trustedPeer reports whether the transport peer is a trusted proxy,
+	// whose own connection certificate is then never the client's.
+	trustedPeer bool
+
+	// forwardedCert is the raw value of the WithClientCertificateHeader
+	// header a trusted peer sent, kept before the header is removed so
+	// certificate binding can decode it, and "" when no header is named, the
+	// peer is not trusted, or the header is absent or repeated. An untrusted
+	// peer's value is never kept.
+	forwardedCert string
+
 	parsed int
 }
 
@@ -444,6 +458,16 @@ func (p *trustedProxies) resolve(r Request) (resolution, error) {
 	peer, ok := parseAddr(res.client.IP)
 	if !ok || !p.trusted(peer) {
 		return res, nil
+	}
+
+	res.trustedPeer = true
+
+	// Only a single line is kept: a proxy sets the header once, and a second
+	// line could only be the client's own, which must not be chosen between.
+	if p.settings.certHeader != "" {
+		if lines := r.HeaderValues(p.settings.certHeader); len(lines) == 1 {
+			res.forwardedCert = lines[0]
+		}
 	}
 
 	if p.family == familyForwarded {
@@ -964,8 +988,21 @@ func unquote(v string) (string, bool) {
 // Certificate binding (EnableCertificateBinding) reads the certificate from
 // it; nothing else does.
 //
+// The header is read only from a peer within TrustedProxies.Prefixes, and only
+// when it is sent once; a request from any other peer keeps its own
+// connection's certificate, and a request from a trusted proxy never has the
+// proxy's own connection certificate taken for the client's. Its raw value is
+// kept before the header is removed, and decoded once, the first time the
+// request's certificate is asked for (Request.ClientCertificate).
+//
 // A nil decode selects the default: the value is a URL-encoded PEM
-// certificate, as nginx's $ssl_client_escaped_cert writes it.
+// certificate, as nginx's $ssl_client_escaped_cert writes it, percent-decoded
+// with "+" read as itself and, failing that, as a space (as Go's
+// url.QueryEscape writes one); its first PEM block must be a certificate. A decode of the consumer's own reads any other format, such as base64
+// DER; it is handed the header's value as received. A value decode refuses,
+// or answers with no certificate, leaves the request with no certificate, so
+// a certificate-bound token on it is refused. The certificate is not
+// validated here either: the proxy that terminated TLS judged it.
 //
 // Default: no certificate header is named, and none is read. The named header
 // is removed from every request after resolution, with the forwarded headers,
@@ -976,6 +1013,39 @@ func WithClientCertificateHeader(name string, decode func(string) (*x509.Certifi
 		s.certHeader, s.certHeaderSet = name, true
 		s.certDecode = decode
 	}
+}
+
+// errUndecodableCertificate is decodeEscapedPEM's refusal of a value that is
+// not a URL-encoded PEM certificate. Its text carries nothing of the value.
+var errUndecodableCertificate = errors.New("httpsec: the forwarded client certificate does not decode")
+
+// decodeEscapedPEM decodes a client certificate a proxy forwarded as
+// URL-encoded PEM, the default decoder of WithClientCertificateHeader.
+//
+// The value is percent-decoded with "+" read as itself, which is how nginx's
+// $ssl_client_escaped_cert must be read, since a PEM body may hold "+"; a
+// value that then holds no PEM certificate is decoded again with "+" read as
+// a space, as an encoder for HTML forms (Go's url.QueryEscape) writes it. The
+// first PEM block must be a CERTIFICATE that parses. Anything else is an
+// error, whose text carries nothing of the value.
+func decodeEscapedPEM(value string) (*x509.Certificate, error) {
+	for _, unescape := range []func(string) (string, error){url.PathUnescape, url.QueryUnescape} {
+		text, err := unescape(value)
+		if err != nil {
+			continue
+		}
+
+		block, _ := pem.Decode([]byte(text))
+		if block == nil || block.Type != "CERTIFICATE" {
+			continue
+		}
+
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+			return cert, nil
+		}
+	}
+
+	return nil, errUndecodableCertificate
 }
 
 // hostHasPort reports whether host, lower-cased and without a trailing dot,

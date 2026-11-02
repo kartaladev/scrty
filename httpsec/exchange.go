@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
 
@@ -117,6 +118,24 @@ type Request interface {
 	// answer: true for every request under WithHTTPSDeployment, or a trusted
 	// proxy's forwarded scheme when EnableTrustedProxies trusts that field.
 	Secure() bool
+
+	// ClientCertificate is the certificate the client presented on the TLS
+	// connection the request arrived on: the leaf, the first certificate the
+	// client sent, or nil when the connection is not TLS or the client sent
+	// none. An integration reads it from the connection itself, never from a
+	// header.
+	//
+	// Inside the chain it is the resolved answer, the one certificate binding
+	// (EnableCertificateBinding) judges: from a peer that is not a trusted
+	// proxy, the connection's certificate; from a trusted proxy, the
+	// certificate it forwarded in the WithClientCertificateHeader header,
+	// decoded once, or nil when no header is named or its value does not
+	// decode. A trusted proxy's own connection certificate is never taken for
+	// the client's.
+	//
+	// The certificate is reported, not judged: whether its chain and dates are
+	// valid is for the TLS server or the proxy that accepted it to decide.
+	ClientCertificate() *x509.Certificate
 }
 
 // Cookie is a cookie an interceptor sets. It mirrors http.Cookie so the
@@ -193,6 +212,13 @@ type Exchange struct {
 	// recorded. It is set with renewal by the resolution core, and nil when
 	// the bearer has nothing to judge.
 	admitRenewal func(ex *Exchange, s *session.Session) error
+
+	// certificateThumb is the thumbprint of the client certificate the
+	// request presents, "" for none, once certificateRead says it has been
+	// read (presentedThumbprint). Certificate binding reads it once, at
+	// OrderMTLS, so every interceptor inside judges one answer.
+	certificateThumb string
+	certificateRead  bool
 
 	ctx context.Context
 }

@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,7 @@ type stubRequest struct {
 	clientIP     string
 	host         string
 	secure       bool
+	cert         *x509.Certificate
 }
 
 func (r stubRequest) Method() string         { return r.method }
@@ -95,6 +97,10 @@ func (r stubRequest) QueryValues(n string) []string {
 func (r stubRequest) ClientIP() string { return r.clientIP }
 func (r stubRequest) Host() string     { return r.host }
 func (r stubRequest) Secure() bool     { return r.secure }
+
+// ClientCertificate is the stub's connection certificate, nil unless a test sets
+// one.
+func (r stubRequest) ClientCertificate() *x509.Certificate { return r.cert }
 
 // EscapedPath is the stub's path in its default encoding: a stub spells its
 // path once.

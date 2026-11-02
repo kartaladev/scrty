@@ -338,7 +338,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// malformed request is, counted nowhere, and never as a failed password:
 	// it cannot lock the account. With DPoP required, a login without one is
 	// refused before any account is looked up.
-	binding, err := issuingBinding(ctx, ex.dpop(), ex.Request)
+	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request)
 	if err != nil {
 		return err
 	}

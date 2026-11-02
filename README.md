@@ -1615,6 +1615,142 @@ document.body.addEventListener("htmx:configRequest", (evt) => {
 that has one, ask the question in the `htmx:confirm` handler first. Each
 request gets a new proof, because a proof is accepted once.
 
+## Certificate-bound tokens (mTLS)
+
+`httpsec.EnableCertificateBinding` binds the tokens the chain issues to the
+TLS client certificate the client signed in with (RFC 8705). It suits
+service-to-service callers that already hold a certificate and no browser key:
+a token copied out of a log is of no use without the certificate's private
+key. Like DPoP, it needs a feature that verifies bound credentials
+(`EnableBearerToken` or `EnableSessionBearer`), and it is off until you enable
+it:
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableBearerToken(bearerDeps), // or EnableSessionBearer
+    httpsec.EnableCertificateBinding(),
+)
+
+srv := &http.Server{
+    Handler: chain.Middleware()(app),
+    TLSConfig: &tls.Config{
+        ClientAuth: tls.RequireAndVerifyClientCert, // the TLS server judges the certificate
+        ClientCAs:  clientCAs,
+        MinVersion: tls.VersionTLS12,
+    },
+}
+```
+
+Once enabled:
+
+- every issuing endpoint (login, second factor, passkey login, magic link, OIDC
+  handoff, recovery, re-authentication of an unbound sign-in) whose request
+  presents a client certificate binds the sign-in and the token to the
+  certificate's thumbprint, `cnf.x5t#S256`: base64url of the SHA-256 of its
+  DER encoding. A request without a certificate gets an unbound token. The
+  token is still presented as `Bearer`, and the token response says
+  `"token_type": "Bearer"`;
+- a certificate-bound token, or session reference, is accepted only on a
+  request presenting the same certificate. Another certificate, or none, is
+  refused with `ErrCertificateBinding` (401). The request's certificate is read
+  once, in the `OrderMTLS` slot;
+- with DPoP enabled too, a sign-in that carries a valid proof is bound to the
+  DPoP key only, whether or not it also presents a certificate. A token carries
+  one confirmation, and a DPoP key survives proxies that do not forward
+  certificates;
+- a token carrying `cnf.x5t#S256` presented while certificate binding is off
+  is refused with `ErrCertificateBinding`, never accepted as a plain bearer
+  token.
+
+**The library compares thumbprints and nothing else.** It does not check the
+certificate's chain, dates, key usage or revocation; that is the TLS server's
+job (`tls.Config.ClientAuth` and `ClientCAs` above) or the job of the proxy
+that terminates TLS. A server that asks for a certificate without verifying it
+still binds soundly, since only the holder of the private key can present the
+certificate again, but then any self-signed certificate can sign in.
+
+### Behind a proxy that terminates TLS
+
+The application then never sees the client's TLS connection. Name the header
+the proxy forwards the certificate in, on the trusted-proxy configuration:
+
+```go
+httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+    Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+    Headers:  httpsec.XForwarded(httpsec.ForwardedFor),
+}, httpsec.WithClientCertificateHeader("X-Client-Cert", nil)) // nil: URL-encoded PEM
+```
+
+- The header is read only from a trusted proxy, and only when it is sent once.
+  A peer that is not a trusted proxy has its header ignored, and its own TLS
+  connection's certificate, if any, is used. A trusted proxy's own connection
+  certificate is never taken for the client's.
+- The header is removed with the other forwarded headers before the first
+  interceptor (unless `KeepForwardedHeaders()`), and its value is kept for
+  certificate binding alone.
+- The default decoder reads URL-encoded PEM, as nginx's
+  `$ssl_client_escaped_cert` writes it. A value that does not decode means the
+  request has no certificate, so a certificate-bound token on it is refused.
+- A proxy that forwards another format needs a decoder of your own, handed the
+  header's value as received:
+
+```go
+// The proxy forwards the DER certificate, base64-encoded.
+decodeDER := func(v string) (*x509.Certificate, error) {
+    der, err := base64.StdEncoding.DecodeString(v)
+    if err != nil {
+        return nil, err
+    }
+    return x509.ParseCertificate(der)
+}
+
+httpsec.WithClientCertificateHeader("X-Client-Cert", decodeDER)
+```
+
+#### nginx
+
+```nginx
+server {
+    listen 443 ssl;
+    # ssl_certificate and ssl_certificate_key as usual.
+
+    ssl_client_certificate /etc/nginx/client-ca.pem; # the CAs client certificates are verified against
+    ssl_verify_client      optional;                 # or on, to refuse clients without one
+
+    location / {
+        proxy_pass http://app:8080;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Client-Cert   $ssl_client_escaped_cert;
+    }
+}
+```
+
+`$ssl_client_escaped_cert` is the client certificate as URL-encoded PEM, which
+the default decoder reads. `proxy_set_header` redefines the header, so an
+`X-Client-Cert` the client sent itself is not passed on, and a field whose
+value is empty is not passed at all. nginx verifies the certificate against
+`ssl_client_certificate`; the outcome is in `$ssl_client_verify`. With
+`ssl_verify_client optional_no_ca`, nginx asks for a certificate but does not
+require it to be signed by a trusted CA, and verification is left to another
+service: the library does none, so choose it only when that service exists.
+Do not forward the deprecated `$ssl_client_cert`, whose lines are joined with
+tabs; the default decoder does not read it.
+
+Other proxies are not listed here because their forwarded format has not been
+checked against their documentation. Write a decoder for the format yours
+documents, and test it with a certificate forwarded through your deployment.
+
+### Defaults
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Certificate binding | off; a certificate-bound token is refused | `EnableCertificateBinding()` |
+| Where the certificate comes from | the TLS connection | `WithClientCertificateHeader` behind a trusted proxy |
+| Forwarded certificate format | URL-encoded PEM | the decoder given to `WithClientCertificateHeader` |
+| Certificate validation | none in the library | the TLS server's `ClientAuth`/`ClientCAs`, or the proxy |
+| A sign-in with a DPoP proof and a certificate | bound to the DPoP key | none: a token carries one confirmation |
+
 ## Development
 
 ```sh

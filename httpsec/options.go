@@ -145,7 +145,8 @@ type config struct {
 
 	// bindingVerifiers names the enabled features that verify bound
 	// credentials: the option names of the built-ins that check a token's
-	// binding to a DPoP key. EnableDPoP's construction check reads it once
+	// binding to a DPoP key or a client certificate. EnableDPoP's and
+	// EnableCertificateBinding's construction checks read it once
 	// every option has applied, so the order of options does not matter. It is
 	// internal on purpose: every feature that can join it is a built-in option
 	// of this package.
@@ -222,6 +223,11 @@ type config struct {
 	// CORS layer reads it when the chain is built, to allow the DPoP request
 	// header and expose DPoP-Nonce and WWW-Authenticate.
 	dpopEnabled bool
+
+	// certBinding is the certificate binding EnableCertificateBinding built,
+	// and nil without it. Both bearer modes and every issuing endpoint read
+	// it.
+	certBinding *certBinding
 
 	// csrfTokenHeader is the request header CSRF protection reads its token
 	// from, and "" when it reads none. The CORS layer reads it when the chain
@@ -607,6 +613,7 @@ func (c *config) build() (*Chain, error) {
 		enforced:          chain.enforced,
 		now:               c.now,
 		dpop:              c.dpop,
+		certBinding:       c.certBinding,
 	}
 
 	// The built-ins are wired last, because each of them reads settings — the

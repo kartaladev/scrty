@@ -17,7 +17,15 @@ import (
 func Run(t *testing.T, adapter Adapter) {
 	t.Helper()
 
-	for _, sc := range Scenarios() {
+	run(t, adapter, Scenarios())
+}
+
+// run puts every one of scenarios through adapter, each as its own parallel
+// subtest.
+func run(t *testing.T, adapter Adapter, scenarios []Scenario) {
+	t.Helper()
+
+	for _, sc := range scenarios {
 		t.Run(sc.Name, func(t *testing.T) {
 			t.Parallel()
 

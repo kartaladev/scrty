@@ -332,3 +332,11 @@ func TestSessionBearerFloodedSourceGin(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
 	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
 }
+
+// TestCertificateBindingGin runs the certificate-binding scenarios on
+// gin, through a trusted proxy that forwards the client's certificate.
+func TestCertificateBindingGin(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunCertificateBinding(t, ginAdapter{})
+}

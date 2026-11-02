@@ -270,6 +270,11 @@ type perRequestPhase struct {
 	// dpop is the chain's DPoP verifier, which every issuing endpoint
 	// verifies a sign-in's proof with, and nil while DPoP is off.
 	dpop *dpopVerifier
+
+	// certBinding is the chain's certificate binding, which every issuing
+	// endpoint binds a sign-in to a client certificate through, and nil while
+	// it is off.
+	certBinding *certBinding
 }
 
 // evaluatePerRequest runs the per-request phase for s and p on ex under ph,
