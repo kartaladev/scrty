@@ -183,7 +183,7 @@ Seen `jti` values SHALL be kept in an in-memory store by default, for the proof 
 - **THEN** the request fails with an error matching the cancellation, and nothing is recorded at ERROR
 
 ### Requirement: Server nonces are opt-in
-By default the server SHALL issue no DPoP nonces. When the consumer enables them, a proof without a current server nonce SHALL be refused with 401, `WWW-Authenticate: DPoP error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header; responses SHALL carry a fresh `DPoP-Nonce` when the current one is about to expire. Nonces SHALL be verifiable by every replica that shares the chain's key material, without a shared store.
+By default the server SHALL issue no DPoP nonces. When the consumer enables them, a proof without a nonce the server still accepts SHALL be refused with 401, `WWW-Authenticate: DPoP error="use_dpop_nonce"`, and the replica's current `DPoP-Nonce`. Responses SHALL carry the next `DPoP-Nonce` when the presented one is past half its lifetime. Every response that carries `DPoP-Nonce` SHALL also carry `Cache-Control: no-store`. A replica SHALL hand the same current nonce to every client until half its lifetime has passed, so the rate of sealing does not depend on traffic. Nonces SHALL be verifiable by every replica that shares the nonce key, without a shared store.
 
 #### Scenario: Nonce required
 - **WHEN** nonces are enabled and a proof carries no nonce
@@ -191,7 +191,11 @@ By default the server SHALL issue no DPoP nonces. When the consumer enables them
 
 #### Scenario: Expired nonce
 - **WHEN** nonces are enabled and a proof carries a nonce the server issued long enough ago to have expired
-- **THEN** the response is 401 with `error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header
+- **THEN** the response is 401 with `error="use_dpop_nonce"`, a `DPoP-Nonce` header carrying a nonce the server accepts, and `Cache-Control: no-store`
+
+#### Scenario: One nonce per replica
+- **WHEN** nonces are enabled and many clients ask for one within half a nonce lifetime
+- **THEN** every client is handed the same nonce, and the replica seals once
 
 ### Requirement: DPoP refusals tell the client which scheme to use
 A refusal for a missing or invalid proof SHALL carry `WWW-Authenticate: DPoP` with an `error` parameter, `invalid_dpop_proof` or `use_dpop_nonce`, and the accepted algorithms, and SHALL carry no detail about which check failed. When DPoP is not required, a refusal for a missing token SHALL carry both the `DPoP` and the `Bearer` challenge.
@@ -201,7 +205,7 @@ A refusal for a missing or invalid proof SHALL carry `WWW-Authenticate: DPoP` wi
 - **THEN** the response is 401 with `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`
 
 #### Scenario: No token at all
-- **WHEN** DPoP is enabled but not required, and a request to a protected route carries no `Authorization` header
+- **WHEN** DPoP is enabled but not required, and a request to a protected route carries no `Authorization` header, whether the route is protected by the chain's authorization rules or by a per-route guard
 - **THEN** the 401 response carries a `DPoP` challenge and a `Bearer` challenge
 
 ### Requirement: Tokens can be bound to a TLS client certificate
