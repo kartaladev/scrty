@@ -1326,6 +1326,134 @@ public-suffix list, so `https://*.co.uk` is accepted like
 already set (net/http's `Header().Add`). An adapter of your own must implement
 it; the CORS layer uses it to extend `Vary`.
 
+## CSRF protection
+
+`httpsec.EnableCSRFProtection` refuses state-changing requests another site
+makes the user's browser send. It is off until you enable it, and required as
+soon as an interceptor authenticates by a cookie: `New` fails unless you give
+`EnableCSRFProtection` or say plainly that you opt out with
+`WithoutCSRFProtection()`.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableCORS(httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example.com"}}),
+    httpsec.EnableCSRFProtection(
+        httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/payments"),
+    ),
+)
+```
+
+Every request whose method is not exactly `GET`, `HEAD` or `OPTIONS` is judged
+in `OrderCSRF`, before any authentication:
+
+- `Sec-Fetch-Site: same-origin` or `none` passes; any other value is refused
+  unless the `Origin` is trusted;
+- without `Sec-Fetch-Site`, an `Origin` that differs in scheme, host or port
+  from the request's own is refused unless it is trusted, and `Origin: null`
+  never matches;
+- a request with neither header is not a browser's, and passes.
+
+Trusted origins are every origin `EnableCORS` lists or matches by a pattern (a
+CORS `*` trusts none), plus those `WithCSRFTrustedOrigins` adds;
+`WithoutCORSOriginsTrustedForCSRF()` stops trusting the CORS ones. The refusal
+is `httpsec.ErrCrossSiteRequest`, answered 403.
+
+**Behind a proxy that ends TLS**, the request's own origin is the one the chain
+resolves. Without `EnableTrustedProxies` or `WithHTTPSDeployment()`, the chain
+sees a plain-HTTP request for the proxy's upstream address, so an older browser
+that sends no Fetch Metadata, only `Origin: https://app.example.com`, is refused.
+Configure one of them.
+
+### The token
+
+A request authenticated by a cookie must also carry its sign-in's token, in the
+`X-CSRF-Token` header or the `csrf_token` field of a URL-encoded form
+(`WithCSRFTokenNames` renames both). A request authenticated only by an
+`Authorization` header needs none. The page reads the token from the request it
+was served on:
+
+```go
+func page(w http.ResponseWriter, r *http.Request) {
+    token, ok := httpsec.CSRFToken(r.Context())
+    // render token into a <meta> tag or a hidden csrf_token field
+}
+```
+
+- By default the token is 32 random bytes made when the sign-in is created and
+  stored on it. It survives renewal and rotation, and a new
+  sign-in gets a new one. It is compared in constant time.
+- A sign-in made before CSRF protection was enabled holds no token, and its
+  unsafe cookie requests are refused until the user signs in again.
+- The header is read first, then the form field of an
+  `application/x-www-form-urlencoded` body of at most 1 MiB, never the query
+  string. A multipart form must send the token in the header. A body over
+  1 MiB that carries the token only in the field is refused (403).
+- `WithCSRFTokens` replaces the source, for example with an HMAC over the
+  sign-in's family under your own key. `CSRFToken` and the check then both read
+  through it, and sign-ins no longer store a token.
+
+An interceptor of your own that authenticates by a cookie implements
+`httpsec.CookieAuthenticator` and calls `httpsec.CheckCSRFToken(ex, session)`
+before handing the session on. A check that passes also makes that sign-in the
+one `CSRFToken` reads, so your page gets its token with nothing more to
+publish.
+
+- Register it **after** `OrderCSRF` (at `OrderBearerToken`, for example). With
+  `EnableCSRFProtection`, `New` refuses a cookie authenticator at or before
+  `OrderCSRF`: it would run before the request was judged, and its token would
+  go unchecked. There is no override.
+- `CheckCSRFToken` fails closed when CSRF protection never judged the request,
+  for example when it is called outside the chain: the error wraps
+  `httpsec.ErrConfig`, is answered 500, and your interceptor publishes no
+  session. On a chain built with `WithoutCSRFProtection()` it passes.
+- On a `GET`, `HEAD` or `OPTIONS`, and on an exempt route, it checks no token
+  and passes.
+
+### Exemptions
+
+`WithCSRFExemption(method, path)` exempts one route, such as a provider's
+webhook, from both checks. Every other protection still applies to it.
+
+- The method and the path are matched exactly, against the path as the client
+  sent it (`Request.EscapedPath`), neither decoded nor cleaned. Write the
+  pattern as clients send it. `/webhooks/payments/`, `/Webhooks/payments`,
+  `/webhooks/payments/../../settings` and any other encoding, such as
+  `/webhooks%2Fpayments` or `/webhooks/p%61yments`, are other routes and are
+  judged, whatever your framework's router decodes them to.
+- A `*` segment matches exactly one path segment that, decoded, is not empty,
+  `.` or `..` and holds no `/`: `/webhooks/*/events` matches
+  `/webhooks/stripe/events`, not `/webhooks/a/b/events` or
+  `/webhooks/a%2Fb/events`.
+- Construction refuses an exemption with no method, of `GET`, `HEAD` or
+  `OPTIONS`, of `/` alone, with an empty pattern, a relative path, dot or empty
+  segments, a `*` inside a segment, or no segment but wildcards. No option
+  exempts every route; that is `WithoutCSRFProtection()`.
+- Construction also refuses a fixed segment that is a malformed percent-encoding
+  (`%zz`), decodes to `.`, `..` or something holding `/` (`%2e%2e`, `%2E`,
+  `a%2Fb`), or holds a character a request always escapes, such as a space or
+  `é` (`/webhooks/café`): it could never match, so write it in its escaped form
+  (`/webhooks/caf%C3%A9`, `/webhooks/a%20b`). An escaped segment is kept and
+  matches only that escaped form.
+- With OIDC login, `POST` to the back-channel logout endpoint (the
+  `WithOIDCBackchannelLogoutPath` prefix followed by one provider name) is
+  exempt by default, because the provider calls it server to server. The
+  prefix is matched as a literal, never as a pattern, so a `*` in it widens
+  nothing. A prefix that cannot be exempt as written (one holding a
+  percent-encoding, a character a request escapes such as `/idp/déconnexion`,
+  or an empty or dot segment) fails construction; fix the
+  path or give `WithoutBackchannelLogoutExemption()`, which removes the
+  exemption.
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Protection | off; required with a cookie authenticator | `httpsec.EnableCSRFProtection`, or `httpsec.WithoutCSRFProtection` |
+| Trusted origins | the CORS layer's, never `*` | `httpsec.WithCSRFTrustedOrigins`, `httpsec.WithoutCORSOriginsTrustedForCSRF` |
+| Token names | header `X-CSRF-Token`, field `csrf_token` | `httpsec.WithCSRFTokenNames` |
+| Token source | 32 random bytes stored on the sign-in | `httpsec.WithCSRFTokens` |
+| Exempt routes | the OIDC back-channel logout endpoint only | `httpsec.WithCSRFExemption`, `httpsec.WithoutBackchannelLogoutExemption` |
+
 ## DPoP
 
 `httpsec.EnableDPoP` binds the tokens the chain issues to a key the client

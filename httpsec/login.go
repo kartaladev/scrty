@@ -132,6 +132,10 @@ type formLogin struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// csrfToken is whether the sign-ins this first factor makes carry a CSRF
+	// token, decided when the chain is built (config.wireCSRF).
+	csrfToken bool
+
 	// limiter is the consumer's own (WithLoginLimiter), and nil means the
 	// password-login limiter the chain shares with Basic.
 	limiter ratelimit.Limiter
@@ -385,6 +389,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		enforced:          l.enforced,
 		challengeMethods:  l.challengeMethods,
 		cancelHeld:        l.cancelHeld,
+		csrfToken:         l.csrfToken,
 		binding:           binding,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
