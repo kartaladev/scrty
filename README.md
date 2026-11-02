@@ -1789,7 +1789,12 @@ Once enabled:
   certificates;
 - a token carrying `cnf.x5t#S256` presented while certificate binding is off
   is refused with `ErrCertificateBinding`, never accepted as a plain bearer
-  token.
+  token, by `EnableBearerToken` and `EnableSessionBearer` alike and whatever
+  scheme (`Bearer` or `DPoP`) carried it;
+- `EnableCertificateBinding` together with `EnableDPoP(httpsec.DPoP{Require:
+  true})` is refused by `New` with an error wrapping `httpsec.ErrConfig` that
+  names both options: with a proof required, every issuing request would carry
+  one and be bound to its key, so no certificate binding could be made.
 
 **The library compares thumbprints and nothing else.** It does not check the
 certificate's chain, dates, key usage or revocation; that is the TLS server's
@@ -1810,16 +1815,29 @@ httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
 }, httpsec.WithClientCertificateHeader("X-Client-Cert", nil)) // nil: URL-encoded PEM
 ```
 
-- The header is read only from a trusted proxy, and only when it is sent once.
-  A peer that is not a trusted proxy has its header ignored, and its own TLS
-  connection's certificate, if any, is used. A trusted proxy's own connection
-  certificate is never taken for the client's.
+- The header is read only from a trusted proxy, and only when it is sent once;
+  on two lines it is ignored, and the request has no certificate. A peer that
+  is not a trusted proxy has its header ignored, and its own TLS connection's
+  certificate, if any, is used. A trusted proxy's own connection certificate is
+  never taken for the client's.
 - The header is removed with the other forwarded headers before the first
-  interceptor (unless `KeepForwardedHeaders()`), and its value is kept for
-  certificate binding alone.
+  interceptor (unless `KeepForwardedHeaders()`). Its value is kept, from a
+  trusted proxy only, and decoded once: `Request.ClientCertificate()` answers
+  the forwarded certificate to every interceptor, whether or not certificate
+  binding is enabled, so an interceptor of your own that judges the client by
+  its certificate sees the same answer the binding does.
+- **Whichever proxy you run, it must overwrite or strip the header on every
+  request**, a request that arrives without a client certificate included. A
+  proxy that sets the header only when it has a certificate passes on a copy
+  the client sent itself, and the library cannot tell it from the proxy's own.
+  The client could then present anybody's certificate, which is public, as its
+  own, and a token bound to that certificate would be accepted from it.
 - The default decoder reads URL-encoded PEM, as nginx's
-  `$ssl_client_escaped_cert` writes it. A value that does not decode means the
-  request has no certificate, so a certificate-bound token on it is refused.
+  `$ssl_client_escaped_cert` writes it. The decoded text must be exactly one
+  `CERTIFICATE` PEM block, with nothing but whitespace before and after it.
+  Several blocks, text before or after the block, or a block that does not
+  parse mean the request has no certificate, so a certificate-bound token on
+  it is refused. A value that does not decode means the same.
 - A proxy that forwards another format needs a decoder of your own, handed the
   header's value as received:
 
@@ -1857,7 +1875,8 @@ server {
 `$ssl_client_escaped_cert` is the client certificate as URL-encoded PEM, which
 the default decoder reads. `proxy_set_header` redefines the header, so an
 `X-Client-Cert` the client sent itself is not passed on, and a field whose
-value is empty is not passed at all. nginx verifies the certificate against
+value is empty is not passed at all; that meets the rule above for requests
+with and without a certificate. nginx verifies the certificate against
 `ssl_client_certificate`; the outcome is in `$ssl_client_verify`. With
 `ssl_verify_client optional_no_ca`, nginx asks for a certificate but does not
 require it to be signed by a trusted CA, and verification is left to another
@@ -1878,6 +1897,8 @@ documents, and test it with a certificate forwarded through your deployment.
 | Forwarded certificate format | URL-encoded PEM | the decoder given to `WithClientCertificateHeader` |
 | Certificate validation | none in the library | the TLS server's `ClientAuth`/`ClientCAs`, or the proxy |
 | A sign-in with a DPoP proof and a certificate | bound to the DPoP key | none: a token carries one confirmation |
+| `DPoP{Require: true}` beside certificate binding | refused at construction (`ErrConfig`) | none: no certificate binding could be made |
+| Forwarded certificate header sent on two lines, or a value that is not exactly one PEM certificate | no certificate | none |
 
 ## Development
 

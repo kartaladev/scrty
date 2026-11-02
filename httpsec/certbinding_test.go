@@ -119,7 +119,7 @@ func (s *certServer) login(t *testing.T, certs []tls.Certificate) certIssued {
 
 	res, err := s.client(certs).Do(req)
 	require.NoError(t, err)
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	require.Equal(t, http.StatusOK, res.StatusCode, "the sign-in succeeds")
 
 	var doc struct {
@@ -290,6 +290,40 @@ func TestEnableCertificateBinding_Construction(t *testing.T) {
 				return []httpsec.Option{httpsec.EnableCertificateBinding()}
 			},
 			assert: refused,
+		},
+		{
+			name: "with DPoP required it is refused, naming both options",
+			opts: func(_ *testing.T, b *issuingBase) []httpsec.Option {
+				return []httpsec.Option{
+					b.bearer(), httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{Require: true}),
+				}
+			},
+			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
+				refused(t, chain, err)
+				assert.Contains(t, err.Error(), "EnableDPoP")
+			},
+		},
+		{
+			name: "with DPoP required it is refused whatever the order of the options",
+			opts: func(_ *testing.T, b *issuingBase) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableDPoP(httpsec.DPoP{Require: true}), b.bearer(), httpsec.EnableCertificateBinding(),
+				}
+			},
+			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
+				refused(t, chain, err)
+				assert.Contains(t, err.Error(), "EnableDPoP")
+			},
+		},
+		{
+			name: "beside DPoP that is not required it builds",
+			opts: func(_ *testing.T, b *issuingBase) []httpsec.Option {
+				return []httpsec.Option{b.bearer(), httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})}
+			},
+			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, chain)
+			},
 		},
 		{
 			name: "an issuing endpoint whose generator cannot bind is refused",
@@ -483,6 +517,39 @@ func TestCertificateBinding_Forwarded(t *testing.T) {
 		}
 	}
 
+	// noCertificateFrom is the run of a header that must yield no certificate:
+	// signing in with it binds nothing, and a token bound to boundBy by a clean
+	// sign-in is refused when it is presented with it. send puts the header on
+	// a request arriving from the trusted proxy. boundBy is the certificate a
+	// reader that took part of the header would bind.
+	noCertificateFrom := func(boundBy clientCert, send func(*http.Request) *http.Request) func(
+		*testing.T, *issuingBase, *httpsec.Chain,
+	) (certIssued, served) {
+		return func(t *testing.T, b *issuingBase, chain *httpsec.Chain) (certIssued, served) {
+			t.Helper()
+
+			via := func(req *http.Request) *http.Request {
+				return send(fromPeer(req, certProxyPeer, ""))
+			}
+
+			unbound(t, issuedBy(t, b, serve(t, chain, via(certLoginRequest(t)))))
+
+			got := issuedBy(t, b, serve(t, chain, fromPeer(certLoginRequest(t), certProxyPeer, boundBy.escaped())))
+
+			return got, serve(t, chain, via(resource(t, got.token)))
+		}
+	}
+	setHeader := func(value string) func(*http.Request) *http.Request {
+		return func(req *http.Request) *http.Request {
+			req.Header.Set(certHeader, value)
+
+			return req
+		}
+	}
+	// brokenPEMBlock is a CERTIFICATE block whose body is not base64, which a
+	// PEM reader steps over to the next block.
+	const brokenPEMBlock = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n"
+
 	cases := []testCase{
 		{
 			name: "URL-encoded PEM from a trusted proxy binds C, and C forwarded again is accepted",
@@ -585,6 +652,59 @@ func TestCertificateBinding_Forwarded(t *testing.T) {
 			},
 		},
 		{
+			name: "whitespace around the one certificate block is allowed",
+			run:  signInVia(certProxyPeer, "%20%0A"+c.escaped()+"%0A%20", "%0A"+c.escaped()),
+			assert: func(t *testing.T, got certIssued, last served) {
+				boundTo(c)(t, got)
+				accepted(t, last)
+			},
+		},
+		{
+			name: "a client's line folded into the proxy's own, D first, binds nothing",
+			run:  noCertificateFrom(d, setHeader(d.escaped()+", "+c.escaped())),
+			assert: func(t *testing.T, got certIssued, last served) {
+				boundTo(d)(t, got)
+				refused(t, last)
+			},
+		},
+		{
+			name: "text before the certificate means no certificate",
+			run:  noCertificateFrom(c, setHeader("junk%0A"+c.escaped())),
+			assert: func(t *testing.T, got certIssued, last served) {
+				boundTo(c)(t, got)
+				refused(t, last)
+			},
+		},
+		{
+			name: "text after the certificate means no certificate",
+			run:  noCertificateFrom(c, setHeader(c.escaped()+"%0Atrailing")),
+			assert: func(t *testing.T, got certIssued, last served) {
+				boundTo(c)(t, got)
+				refused(t, last)
+			},
+		},
+		{
+			name: "a block that does not decode before the real one means no certificate",
+			run:  noCertificateFrom(c, setHeader(url.QueryEscape(brokenPEMBlock)+c.escaped())),
+			assert: func(t *testing.T, got certIssued, last served) {
+				boundTo(c)(t, got)
+				refused(t, last)
+			},
+		},
+		{
+			name: "the header on two lines means no certificate",
+			run: noCertificateFrom(c, func(req *http.Request) *http.Request {
+				req.Header.Add(certHeader, c.escaped())
+				req.Header.Add(certHeader, c.escaped())
+
+				return req
+			}),
+			assert: func(t *testing.T, got certIssued, last served) {
+				boundTo(c)(t, got)
+				refused(t, last)
+			},
+		},
+		{
 			name: "a consumer decoder's error means no certificate",
 			decode: func(string) (*x509.Certificate, error) {
 				return nil, errors.New("not a certificate")
@@ -673,6 +793,9 @@ func TestCertificateBinding_Presented(t *testing.T) {
 		// opts is the chain beside the bearer mode.
 		opts      []httpsec.Option
 		reference bool // the session-reference bearer, not the signed one
+		// unconfirmed presents a token with no cnf for the certificate-bound
+		// sign-in, as a consumer's Verifier that drops the claim would report.
+		unconfirmed bool
 		// request presents the case's credential.
 		request func(t *testing.T, sid, tok string) *http.Request
 		assert  func(t *testing.T, out served)
@@ -684,6 +807,23 @@ func TestCertificateBinding_Presented(t *testing.T) {
 	referenceWithC := func(t *testing.T, sid, _ string) *http.Request {
 		return withConnectionCert(resource(t, sid), c)
 	}
+	// underDPoPScheme presents the credential pick chooses, over C's
+	// connection, under the DPoP scheme with a valid proof for it.
+	underDPoPScheme := func(pick func(sid, tok string) string) func(*testing.T, string, string) *http.Request {
+		return func(t *testing.T, sid, tok string) *http.Request {
+			credential := pick(sid, tok)
+
+			req := withConnectionCert(resource(t, credential), c)
+			req.Header.Set("Authorization", "DPoP "+credential)
+			req.Header.Set("DPoP", key.validProof("j-1").with(map[string]any{
+				"htu": "https://example.com/api/orders", "iat": time.Now().Unix(), "ath": tokenHash(credential),
+			}).sign(t))
+
+			return req
+		}
+	}
+	theToken := func(_, tok string) string { return tok }
+	theReference := func(sid, _ string) string { return sid }
 	refusedForCertificate := func(t *testing.T, out served) {
 		t.Helper()
 
@@ -718,9 +858,29 @@ func TestCertificateBinding_Presented(t *testing.T) {
 			assert:  refusedForCertificate,
 		},
 		{
+			name:    "switched off with DPoP on: a certificate-bound token under the DPoP scheme is refused for its binding",
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			request: underDPoPScheme(theToken),
+			assert:  refusedForCertificate,
+		},
+		{
 			name:      "switched off: a certificate-bound session reference is refused for its binding",
 			reference: true,
 			request:   referenceWithC,
+			assert:    refusedForCertificate,
+		},
+		{
+			name:      "switched off with DPoP on: a certificate-bound session reference is refused for its binding",
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			reference: true,
+			request:   referenceWithC,
+			assert:    refusedForCertificate,
+		},
+		{
+			name:      "switched off with DPoP on: a certificate-bound session reference under the DPoP scheme is refused for its binding",
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			reference: true,
+			request:   underDPoPScheme(theReference),
 			assert:    refusedForCertificate,
 		},
 		{
@@ -737,6 +897,13 @@ func TestCertificateBinding_Presented(t *testing.T) {
 			assert:    accepted,
 		},
 		{
+			name:        "switched on: a token without its cnf for a certificate-bound sign-in is refused, its certificate presented",
+			opts:        []httpsec.Option{httpsec.EnableCertificateBinding()},
+			unconfirmed: true,
+			request:     asBearerWithC,
+			assert:      refusedForCertificate,
+		},
+		{
 			name:      "switched on: the session reference without its certificate is refused",
 			opts:      []httpsec.Option{httpsec.EnableCertificateBinding()},
 			reference: true,
@@ -750,26 +917,17 @@ func TestCertificateBinding_Presented(t *testing.T) {
 			},
 		},
 		{
-			name: "a certificate-bound token under the DPoP scheme is refused, its certificate notwithstanding",
-			opts: []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})},
-			request: func(t *testing.T, _, tok string) *http.Request {
-				req := withConnectionCert(resource(t, tok), c)
-				req.Header.Set("Authorization", "DPoP "+tok)
-				req.Header.Set("DPoP", key.validProof("j-1").with(map[string]any{
-					"htu": "https://example.com/api/orders", "iat": time.Now().Unix(), "ath": tokenHash(tok),
-				}).sign(t))
-
-				return req
-			},
-			assert: refusedProof,
+			name:    "switched on: a certificate-bound token under the DPoP scheme is refused, its certificate notwithstanding",
+			opts:    []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})},
+			request: underDPoPScheme(theToken),
+			assert:  refusedProof,
 		},
 		{
-			name: "a certificate-bound token is refused while DPoP is required",
-			opts: []httpsec.Option{
-				httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{Require: true}),
-			},
-			request: asBearerWithC,
-			assert:  refusedProof,
+			name:      "switched on: a certificate-bound session reference under the DPoP scheme is refused, its certificate notwithstanding",
+			opts:      []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})},
+			reference: true,
+			request:   underDPoPScheme(theReference),
+			assert:    refusedProof,
 		},
 	}
 
@@ -779,6 +937,10 @@ func TestCertificateBinding_Presented(t *testing.T) {
 
 			b := newIssuingBase(t)
 			sid, tok := certBoundSignIn(t, b, c.thumb)
+			if tc.unconfirmed {
+				tok = must.Must(b.gen.Generate(t.Context(), sid,
+					&identity.Principal{ID: e2eUser, Username: e2eAddress}))
+			}
 
 			bearer := b.bearer()
 			if tc.reference {
@@ -887,5 +1049,149 @@ func TestCertificateBinding_BothOffered(t *testing.T) {
 
 			tc.assert(t, claims.Confirmation(), stored.KeyBinding, doc.TokenType)
 		})
+	}
+}
+
+// TestCertificateBinding_ReadOnceAtTheSlot pins that the request's certificate
+// is read in the OrderMTLS slot and kept: an interceptor between the slot and
+// the bearer that changes what the request answers afterwards does not change
+// what the binding judges.
+//
+// Standalone: one case, whose setup (an interceptor between two slots) has no
+// counterpart in the other tables.
+func TestCertificateBinding_ReadOnceAtTheSlot(t *testing.T) {
+	t.Parallel()
+
+	c := newClientCert(t, "service-c")
+	d := newClientCert(t, "service-d")
+
+	b := newIssuingBase(t)
+	chain, err := httpsec.New(b.bearer(), httpsec.EnableCertificateBinding(),
+		httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+			ex.Request = certRequest{Request: ex.Request, cert: d.cert}
+
+			return next(ex)
+		}), httpsec.OrderMTLS+1))
+	require.NoError(t, err)
+
+	_, tok := certBoundSignIn(t, b, c.thumb)
+
+	out := serve(t, chain, withConnectionCert(resource(t, tok), c))
+
+	require.NoError(t, out.err, "the certificate read at the slot is C, whatever is answered after it")
+	assert.True(t, out.handlerRan)
+}
+
+// certRequest is a request whose client certificate is cert, whatever the
+// request it wraps carries.
+type certRequest struct {
+	httpsec.Request
+
+	cert *x509.Certificate
+}
+
+// ClientCertificate implements httpsec.Request.
+func (r certRequest) ClientCertificate() *x509.Certificate { return r.cert }
+
+// presentingCertificate makes every request through the chain arrive as if
+// its TLS connection's client sent c, ahead of every slot. It stands in for
+// the connection where a fixture builds its own requests.
+func presentingCertificate(c clientCert) httpsec.Option {
+	return httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		ex.Request = certRequest{Request: ex.Request, cert: c.cert}
+
+		return next(ex)
+	}), httpsec.Order(50))
+}
+
+// TestCertificateBinding_Endpoints pins that every issuing endpoint binds the
+// certificate its request presents: the token's cnf.x5t#S256 and the stored
+// sign-in carry its thumbprint, and a request without a certificate issues
+// neither. Form login is TestCertificateBinding_Direct's, over a real TLS
+// connection; second-factor verification and renewal keep the binding their
+// sign-in already has, and are not issuing endpoints in this sense.
+func TestCertificateBinding_Endpoints(t *testing.T) {
+	t.Parallel()
+
+	c := newClientCert(t, "service-c")
+
+	type endpoint struct {
+		name string
+		// build is the endpoint on a chain with certificate binding on and
+		// extra beside it.
+		build func(t *testing.T, extra ...httpsec.Option) issuingFixture
+	}
+
+	endpoints := []endpoint{
+		{name: "passkey login", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
+			return passkeyLoginEndpoint(t, httpsec.DPoP{}, extra...)
+		}},
+		{name: "magic link", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
+			return magicLinkEndpoint(t, httpsec.DPoP{}, extra...)
+		}},
+		{name: "OIDC handoff", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
+			return oidcHandoffEndpoint(t, httpsec.DPoP{}, extra...)
+		}},
+		{name: "recovery complete", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
+			return recoveryEndpoint(t, httpsec.DPoP{}, extra...)
+		}},
+		{name: "recovery finish", build: recoveryFinishFixtureWith},
+		{name: "re-authentication of an unbound sign-in", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
+			return reauthEndpointWith(t, httpsec.DPoP{}, extra...)
+		}},
+	}
+
+	type testCase struct {
+		name string
+		// extra is the chain's options beside certificate binding.
+		extra func() []httpsec.Option
+		// assert reads what the endpoint issued: the token's confirmation
+		// and the stored sign-in.
+		assert func(t *testing.T, cnf token.Confirmation, stored session.KeyBinding)
+	}
+
+	cases := []testCase{
+		{
+			name:  "a presented certificate binds the token and the stored sign-in",
+			extra: func() []httpsec.Option { return []httpsec.Option{presentingCertificate(c)} },
+			assert: func(t *testing.T, cnf token.Confirmation, stored session.KeyBinding) {
+				assert.Equal(t, token.Confirmation{X5TS256: c.thumb}, cnf, "the token carries cnf.x5t#S256")
+				assert.Equal(t, session.KeyBinding{X5TS256: c.thumb}, stored, "the stored sign-in is bound")
+			},
+		},
+		{
+			name:  "no certificate issues an unbound token and sign-in",
+			extra: func() []httpsec.Option { return nil },
+			assert: func(t *testing.T, cnf token.Confirmation, stored session.KeyBinding) {
+				assert.Equal(t, token.Confirmation{}, cnf, "the token carries no cnf")
+				assert.True(t, stored.IsZero(), "the stored sign-in is unbound")
+			},
+		},
+	}
+
+	for _, ep := range endpoints {
+		for _, tc := range cases {
+			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				f := ep.build(t, append([]httpsec.Option{httpsec.EnableCertificateBinding()}, tc.extra()...)...)
+				out := f.prepare(t, "")(t, noProof)
+				require.NoError(t, out.err)
+
+				var doc struct {
+					AccessToken string `json:"access_token"`
+				}
+				require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc))
+				require.NotEmpty(t, doc.AccessToken, "the response carries a credential")
+
+				claims, err := f.gen.Verify(t.Context(), doc.AccessToken)
+				require.NoError(t, err)
+
+				stored, err := f.sessions.Load(t.Context(), claims.ID())
+				require.NoError(t, err)
+
+				tc.assert(t, claims.Confirmation(), stored.KeyBinding)
+			})
+		}
 	}
 }

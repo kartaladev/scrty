@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -985,24 +986,39 @@ func unquote(v string) (string, bool) {
 
 // WithClientCertificateHeader names the header in which a trusted proxy that
 // terminates TLS forwards the client's certificate, and how to decode it.
-// Certificate binding (EnableCertificateBinding) reads the certificate from
-// it; nothing else does.
+//
+// Once a header is named, Request.ClientCertificate answers the forwarded
+// certificate to every interceptor inside the chain, whether or not
+// certificate binding (EnableCertificateBinding) is enabled; an interceptor of
+// the consumer's that judges the client by its certificate sees the answer the
+// binding judges.
 //
 // The header is read only from a peer within TrustedProxies.Prefixes, and only
-// when it is sent once; a request from any other peer keeps its own
-// connection's certificate, and a request from a trusted proxy never has the
-// proxy's own connection certificate taken for the client's. Its raw value is
-// kept before the header is removed, and decoded once, the first time the
-// request's certificate is asked for (Request.ClientCertificate).
+// when it is sent once: on two lines it is ignored, and the request has no
+// certificate. A request from any other peer keeps its own connection's
+// certificate, and a request from a trusted proxy never has the proxy's own
+// connection certificate taken for the client's. Its raw value is kept before
+// the header is removed, and decoded once, the first time the request's
+// certificate is asked for (Request.ClientCertificate).
+//
+// The proxy must overwrite or strip the named header on every request,
+// including a request that arrives without a client certificate. A proxy that
+// sets it only when it has a certificate passes on a copy the client sent, and
+// the library cannot tell that copy from the proxy's own.
 //
 // A nil decode selects the default: the value is a URL-encoded PEM
 // certificate, as nginx's $ssl_client_escaped_cert writes it, percent-decoded
 // with "+" read as itself and, failing that, as a space (as Go's
-// url.QueryEscape writes one); its first PEM block must be a certificate. A decode of the consumer's own reads any other format, such as base64
-// DER; it is handed the header's value as received. A value decode refuses,
-// or answers with no certificate, leaves the request with no certificate, so
-// a certificate-bound token on it is refused. The certificate is not
-// validated here either: the proxy that terminated TLS judged it.
+// url.QueryEscape writes one). The decoded text must be exactly one
+// CERTIFICATE PEM block that parses, with nothing but whitespace before and
+// after it: several blocks, text around the block, or a block that does not
+// parse is no certificate, so a client's line folded into the proxy's own
+// cannot choose the certificate read. A decode of the consumer's own reads any
+// other format, such as base64 DER; it is handed the header's value as
+// received, and it carries that rule for its format itself. A value decode
+// refuses, or answers with no certificate, leaves the request with no
+// certificate, so a certificate-bound token on it is refused. The certificate
+// is not validated here either: the proxy that terminated TLS judged it.
 //
 // Default: no certificate header is named, and none is read. The named header
 // is removed from every request after resolution, with the forwarded headers,
@@ -1025,9 +1041,13 @@ var errUndecodableCertificate = errors.New("httpsec: the forwarded client certif
 // The value is percent-decoded with "+" read as itself, which is how nginx's
 // $ssl_client_escaped_cert must be read, since a PEM body may hold "+"; a
 // value that then holds no PEM certificate is decoded again with "+" read as
-// a space, as an encoder for HTML forms (Go's url.QueryEscape) writes it. The
-// first PEM block must be a CERTIFICATE that parses. Anything else is an
-// error, whose text carries nothing of the value.
+// a space, as an encoder for HTML forms (Go's url.QueryEscape) writes it.
+//
+// The decoded text must be exactly one CERTIFICATE PEM block that parses, with
+// nothing but whitespace before and after it. A proxy that folds a line the
+// client sent into its own, or a client's text that comes ahead of the
+// proxy's, would otherwise let the client choose which certificate is read.
+// Anything else is an error, whose text carries nothing of the value.
 func decodeEscapedPEM(value string) (*x509.Certificate, error) {
 	for _, unescape := range []func(string) (string, error){url.PathUnescape, url.QueryUnescape} {
 		text, err := unescape(value)
@@ -1035,18 +1055,41 @@ func decodeEscapedPEM(value string) (*x509.Certificate, error) {
 			continue
 		}
 
-		block, _ := pem.Decode([]byte(text))
-		if block == nil || block.Type != "CERTIFICATE" {
-			continue
-		}
-
-		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+		if cert, ok := onlyCertificate(text); ok {
 			return cert, nil
 		}
 	}
 
 	return nil, errUndecodableCertificate
 }
+
+// onlyCertificate parses text as one CERTIFICATE PEM block and nothing else,
+// bar whitespace around it. pem.Decode skips text ahead of a block and steps
+// over a block it cannot decode to the next one, so the text must start at
+// the block and hold no second marker, or the certificate read might not be
+// the first thing the text says.
+func onlyCertificate(text string) (*x509.Certificate, bool) {
+	text = strings.TrimSpace(text)
+
+	if !strings.HasPrefix(text, pemBegin) || strings.Count(text, pemBegin) != 1 {
+		return nil, false
+	}
+
+	block, rest := pem.Decode([]byte(text))
+	if block == nil || block.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, false
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, false
+	}
+
+	return cert, true
+}
+
+// pemBegin opens every PEM block.
+const pemBegin = "-----BEGIN "
 
 // hostHasPort reports whether host, lower-cased and without a trailing dot,
 // carries a port: anything after a bracketed IPv6 literal's closing bracket,

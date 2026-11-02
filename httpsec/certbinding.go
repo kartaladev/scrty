@@ -35,9 +35,9 @@ type certBinding struct{}
 // request presenting the same certificate, so a copied token is of no use
 // without the certificate's private key.
 //
-// Default: off. A request's client certificate is then never read, and a
-// token carrying cnf.x5t#S256 is refused with ErrCertificateBinding, never
-// accepted as a plain bearer token.
+// Default: off. No token is bound, and a token carrying cnf.x5t#S256 is
+// refused with ErrCertificateBinding by both bearer modes, whatever scheme
+// carried it, never accepted as a plain bearer token.
 //
 // Once it is on:
 //
@@ -59,15 +59,17 @@ type certBinding struct{}
 //     ErrCertificateBinding (401). The request's certificate is read once, at
 //     OrderMTLS, for every interceptor inside it.
 //   - A certificate-bound token is presented as Bearer: the issuing endpoints
-//     report TokenTypeBearer for it. Under the DPoP scheme it is refused, as
-//     it is while DPoP is required.
+//     report TokenTypeBearer for it. Under the DPoP scheme it is refused.
 //
 // The certificate is the request's Request.ClientCertificate: the TLS
 // connection's leaf certificate, or, behind a trusted proxy that terminates
 // TLS, the certificate it forwards in the header WithClientCertificateHeader
 // names, read only from a trusted peer and decoded as URL-encoded PEM unless
 // the consumer supplies a decoder there. A forwarded value that does not
-// decode means the request has no certificate.
+// decode means the request has no certificate. The default decoder accepts
+// exactly one CERTIFICATE PEM block with only whitespace around it, and the
+// header sent on two lines is ignored; the proxy must overwrite or strip the
+// header on every request (WithClientCertificateHeader).
 //
 // The library compares thumbprints and nothing else (RFC 8705 section 3). It
 // does not validate the certificate's chain, its validity period, its key
@@ -87,7 +89,10 @@ type certBinding struct{}
 // on a chain with no feature that verifies bound credentials (today
 // EnableBearerToken and EnableSessionBearer) is a configuration error from
 // New, whatever the order of the options, as is an issuing endpoint whose
-// token generator does not implement token.ConfirmingGenerator.
+// token generator does not implement token.ConfirmingGenerator, and so is
+// enabling it together with EnableDPoP(DPoP{Require: true}): every issuing
+// request would then carry a proof and be bound to its key, so no certificate
+// binding could be made. That error wraps ErrConfig and names both options.
 func EnableCertificateBinding(opts ...CertificateBindingOption) Option {
 	return func(c *config) error {
 		if c.certBinding != nil {
@@ -110,6 +115,12 @@ func EnableCertificateBinding(opts ...CertificateBindingOption) Option {
 				return newConfigError("%s was enabled on a chain with no feature that verifies bound "+
 					"credentials; enable one, such as EnableBearerToken or EnableSessionBearer",
 					optionCertificateBinding)
+			}
+
+			if c.dpop != nil && c.dpop.cfg.Require {
+				return newConfigError("%s was enabled beside %s with Require set: every issuing request "+
+					"would carry a proof and be bound to its key, so no certificate binding could be made; "+
+					"drop one of the two, or leave Require unset", optionCertificateBinding, optionDPoP)
 			}
 
 			return nil
@@ -169,17 +180,20 @@ func (ex *Exchange) certBinding() *certBinding {
 }
 
 // admitCertificate decides a credential bound to the certificate thumbprint
-// x5t. With certificate binding off it is refused, never taken for a plain
-// bearer credential. Presented under the DPoP scheme (proof not nil), or while
-// DPoP is required, it is refused as a DPoP refusal: it is not bound to a DPoP
-// key. Otherwise it is accepted only when the request's certificate has the
-// same thumbprint, compared in constant time.
+// x5t. With certificate binding off it is refused with ErrCertificateBinding,
+// whatever scheme carried it and whatever else is enabled, never taken for a
+// plain bearer credential. With it on, a credential presented under the DPoP
+// scheme (proof not nil) is refused as a DPoP refusal: it is not bound to a
+// DPoP key. Otherwise it is accepted only when the request's certificate has
+// the same thumbprint, compared in constant time. DPoP is never required while
+// certificate binding is on: EnableCertificateBinding refuses that at
+// construction.
 func admitCertificate(ex *Exchange, v *dpopVerifier, proof *dpopProof, x5t string) error {
 	if ex.certBinding() == nil {
 		return ErrCertificateBinding
 	}
 
-	if v != nil && (proof != nil || v.cfg.Require) {
+	if v != nil && proof != nil {
 		return v.refuse(ex.Context(), reasonProofBinding)
 	}
 

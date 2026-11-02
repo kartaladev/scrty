@@ -197,12 +197,13 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 // (admitBinding). It returns the verified proof, which is recorded once the
 // session's own binding has been judged.
 //
-// A token bound to a certificate is judged without verifying a proof: one
-// presented under the DPoP scheme is refused for that alone, since it is not
-// bound to a DPoP key.
+// A token bound to a certificate is judged without verifying a proof: with
+// certificate binding on, one presented under the DPoP scheme is refused for
+// that alone, since it is not bound to a DPoP key. With certificate binding off
+// it is refused for its binding (ErrCertificateBinding) whatever the scheme.
 func (b *bearerToken) admitBinding(ex *Exchange, underDPoP bool, tok string, cnf token.Confirmation) (*dpopProof, error) {
 	if cnf.X5TS256 != "" || len(cnf.Other) > 0 {
-		if underDPoP && cnf.JKT == "" && len(cnf.Other) == 0 {
+		if underDPoP && ex.certBinding() != nil && cnf.JKT == "" && len(cnf.Other) == 0 {
 			return nil, b.dpop.refuse(ex.Context(), reasonProofBinding)
 		}
 
