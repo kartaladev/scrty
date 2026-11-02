@@ -76,6 +76,10 @@ type Chain struct {
 	// sampler bounds the chain's own refusal records. It is built once, at
 	// construction, so every request of every flow shares one set of windows.
 	sampler *logsample.Sampler
+
+	// clients resolves each request's client address, host and transport
+	// security before the first interceptor runs (clientResolver.begin).
+	clients *clientResolver
 }
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
@@ -186,6 +190,14 @@ func (c *Chain) Assemble(terminal Next) Next {
 
 	return func(ex *Exchange) error {
 		ex.perRequest = c.perRequest
+
+		// Client resolution is not an interceptor: it runs once, here, before
+		// the first interceptor, so every interceptor and the handler read the
+		// one resolved answer, and a forwarded host on none of the allowed
+		// hosts is refused before any of them runs.
+		if err := c.clients.begin(ex); err != nil {
+			return err
+		}
 
 		return chain(ex)
 	}

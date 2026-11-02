@@ -66,11 +66,20 @@ type stubRequest struct {
 	form         map[string]string
 	body         []byte
 	clientIP     string
+	host         string
+	secure       bool
 }
 
-func (r stubRequest) Method() string            { return r.method }
-func (r stubRequest) Path() string              { return r.path }
-func (r stubRequest) Header(n string) string    { return r.headers[n] }
+func (r stubRequest) Method() string         { return r.method }
+func (r stubRequest) Path() string           { return r.path }
+func (r stubRequest) Header(n string) string { return r.headers[n] }
+func (r stubRequest) HeaderValues(n string) []string {
+	if v, ok := r.headers[n]; ok {
+		return []string{v}
+	}
+
+	return nil
+}
 func (r stubRequest) Query(n string) string     { return r.query[n] }
 func (r stubRequest) FormValue(n string) string { return r.form[n] }
 
@@ -84,6 +93,8 @@ func (r stubRequest) QueryValues(n string) []string {
 	return []string{v}
 }
 func (r stubRequest) ClientIP() string { return r.clientIP }
+func (r stubRequest) Host() string     { return r.host }
+func (r stubRequest) Secure() bool     { return r.secure }
 
 func (r stubRequest) Cookie(n string) (string, bool) {
 	v, ok := r.cookies[n]

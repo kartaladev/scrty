@@ -6,6 +6,7 @@ require (
 	github.com/gofiber/fiber/v3 v3.5.0
 	github.com/kartaladev/scrty v0.0.0
 	github.com/stretchr/testify v1.12.1
+	github.com/valyala/fasthttp v1.73.0
 	go.uber.org/mock v0.6.0
 )
 
@@ -26,7 +27,6 @@ require (
 	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.73.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect

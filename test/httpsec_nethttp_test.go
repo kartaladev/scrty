@@ -79,6 +79,7 @@ func nethttpRoute(
 ) http.Handler {
 	var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		res.RouteRan = true
+		res.RouteHeader = r.Header.Clone()
 		httpsecconformance.ReadContext(r.Context(), res)
 
 		if route.Status != 0 {

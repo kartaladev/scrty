@@ -198,6 +198,13 @@ type config struct {
 	// discloseLocks answers a locked account's login with the lock itself
 	// (WithLockDisclosure), rather than as a wrong password.
 	discloseLocks bool
+
+	// proxies is the validated configuration EnableTrustedProxies was given,
+	// and nil without it.
+	proxies *trustedProxies
+
+	// httpsDeployment is WithHTTPSDeployment's declaration.
+	httpsDeployment bool
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the
@@ -556,6 +563,7 @@ func (c *config) build() (*Chain, error) {
 		refusalInterval:   c.refusalInterval,
 		refusalReporter:   c.refusalReporter,
 		reportRefusals:    c.refusalLogReporter(),
+		clients:           newClientResolver(c),
 	}
 
 	// The sampler is built here rather than by the option, because the default

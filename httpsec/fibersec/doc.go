@@ -69,42 +69,31 @@
 //
 // # Client addresses
 //
-// A request is attributed to fiber's own client address, which is the transport
-// peer until the consumer enables fiber's proxy trust. The chain's refusal of
-// an empty, malformed or unspecified address applies to whatever that returns.
+// The adapter hands the chain the connection's own peer, the Host header, the
+// connection's TLS state and the headers as received. A request is therefore
+// attributed to its transport peer, the one address a client cannot choose
+// for itself, unless the chain's own httpsec.EnableTrustedProxies trusts a
+// proxy in front of it, which resolves the client, scheme and host the same
+// way on every adapter:
 //
-// Behind a proxy, all four of these are needed before a forwarded address may
-// be believed:
+//	chain, err := httpsec.New(
+//		httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+//			Prefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/32")},
+//			Headers:  httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto),
+//		}),
+//		// ...
+//	)
 //
-//	app := fiber.New(fiber.Config{
-//		TrustProxy: true,
-//		TrustProxyConfig: fiber.TrustProxyConfig{
-//			Proxies: []string{"10.0.0.2"}, // every proxy, named explicitly
-//		},
-//		ProxyHeader:        fiber.HeaderXForwardedFor,
-//		EnableIPValidation: true,
-//	})
+// fiber's own proxy settings have no effect on the chain: TrustProxy,
+// TrustProxyConfig and ProxyHeader change what c.IP(), c.Hostname(),
+// c.Secure() and c.Scheme() return, and the adapter calls none of them. A
+// handler that wants the values the chain resolved reads
+// httpsec.ClientFromContext(c.Context()).
 //
-// TrustProxy turns the whole mechanism on; without it fiber reads no forwarding
-// header at all. TrustProxyConfig.Proxies names the peers whose header may be
-// believed. ProxyHeader names the header, and until it is set fiber reads none,
-// so trusting a proxy without it changes nothing. EnableIPValidation makes
-// fiber walk the chain and skip the proxies it trusts, rather than taking a
-// value whole.
-//
-// When the proxy reaches the app over a Unix socket, set
-// TrustProxyConfig.UnixSocket as well, and keep an explicit Proxies list —
-// "0.0.0.0" is the entry for a socket-only proxy, which is also what fiber's
-// in-memory test transport reports as the peer. UnixSocket on its own is not
-// enough: fiber treats a configuration with no Proxies, ranges, Loopback,
-// Private or LinkLocal as having no trusted-proxy list, and then selects the
-// leftmost address in the header — the one the client wrote. That is the
-// address an attacker chooses for themselves.
-//
-// Loopback, Private and LinkLocal are the other trap. They trust every address
-// in those ranges as a proxy, which means a real client inside one of them —
-// an internal service, a VPN client, a container network — is skipped rather
-// than attributed. Name the proxies instead.
+// A transport that is not a TCP connection reports a peer the chain cannot
+// attribute: fiber's in-memory test transport (app.Test) reports the
+// unspecified address, and the chain's refusal of an empty, malformed or
+// unspecified address applies to it.
 //
 // # What fiber's context does not promise
 //

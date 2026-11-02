@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 
@@ -219,14 +220,83 @@ func (r request) Body(limit int64) ([]byte, error) {
 	return bytes.Clone(b), nil
 }
 
-// ClientIP is fiber's own client address.
+// ClientIP is the connection's own peer address: the host part of a TCP
+// peer, and "" for a peer that is not in host and port form.
 //
-// That is the transport peer unless the consumer enabled fiber's proxy trust,
-// which is the only configuration that knows which proxies may name an address
-// for a client. The package documentation gives the configuration in full, and
-// the chain's own refusal of an empty, malformed or unspecified address applies
-// to whatever this returns.
-func (r request) ClientIP() string { return r.c.IP() }
+// It never calls fiber's IP or IPs, which follow a forwarded header once
+// fiber's proxy trust is enabled: which proxies may name a client is the
+// chain's decision (httpsec.EnableTrustedProxies), made the same way on every
+// adapter. fiber's in-memory test transport reports the unspecified address,
+// which the chain refuses to attribute a request to.
+func (r request) ClientIP() string {
+	switch addr := r.c.RequestCtx().RemoteAddr().(type) {
+	case *net.TCPAddr:
+		return addr.IP.String()
+	case nil:
+		return ""
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return ""
+		}
+
+		return host
+	}
+}
+
+// DelHeaders removes every header whose name match reports true from the
+// request fiber hands to the handlers after the chain. The chain calls it to
+// remove the forwarded headers it consumed (httpsec.EnableTrustedProxies).
+// The names are collected before any is removed, because fasthttp's header
+// iteration must not see the headers change under it.
+func (r request) DelHeaders(match func(name string) bool) {
+	h := &r.c.Request().Header
+
+	var names []string
+
+	for k := range h.All() {
+		if name := string(k); match(name) {
+			names = append(names, name)
+		}
+	}
+
+	for _, name := range names {
+		h.Del(name)
+	}
+}
+
+// HeaderValues returns every line of the header, in the order received, so the
+// chain's trusted-proxy resolution joins repeated forwarded headers rather
+// than reading the first line alone. Each value is copied out of fasthttp's
+// reused buffer.
+func (r request) HeaderValues(name string) []string {
+	raw := r.c.Request().Header.PeekAll(name)
+	if len(raw) == 0 {
+		return nil
+	}
+
+	out := make([]string, len(raw))
+	for i, v := range raw {
+		out[i] = string(v)
+	}
+
+	return out
+}
+
+// Host is the host the client asked for: the request's Host header, or the
+// host of an absolute request target, as fasthttp parsed it.
+//
+// It never calls fiber's Host, Hostname or Scheme, which follow a forwarded
+// header once fiber's proxy trust is enabled: which proxies may name a host is
+// the chain's decision (httpsec.EnableTrustedProxies), made the same way on
+// every adapter. The result is copied out of fasthttp's reused buffer.
+func (r request) Host() string { return string(r.c.Request().Host()) }
+
+// Secure reports whether the connection the request arrived on is TLS.
+//
+// It never calls fiber's Secure or Scheme, which believe a forwarded scheme
+// once fiber's proxy trust is enabled.
+func (r request) Secure() bool { return r.c.RequestCtx().IsTLS() }
 
 // responseWriter implements httpsec.ResponseWriter over fiber's context.
 //

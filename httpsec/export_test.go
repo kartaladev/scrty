@@ -201,3 +201,18 @@ func LoginTailDepsWithEnrolmentForTest(
 		enrolmentLifetime: enrolmentLifetime, enforced: everyBuiltInEnforced(),
 	}
 }
+
+// ResolveClient validates tp and opts as EnableTrustedProxies does and
+// resolves r's client through them, returning the client and how many
+// forwarded entries the resolution parsed. It is how a test proves the walk
+// parses only the entries it reaches.
+func ResolveClient(r Request, tp TrustedProxies, opts ...ProxyOption) (Client, int, error) {
+	p, err := newTrustedProxies(tp, applyProxyOptions(opts))
+	if err != nil {
+		return Client{}, 0, err
+	}
+
+	res, err := p.resolve(r)
+
+	return res.client, res.parsed, err
+}

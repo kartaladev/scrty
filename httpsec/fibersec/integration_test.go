@@ -102,19 +102,14 @@ func (d *referenceDeployment) lastAccess(t *testing.T) time.Time {
 	return stored.LastAccessedAt
 }
 
-// attributedClients lets the app read a client address from X-Forwarded-For
-// off fiber's in-memory peer, which is the unspecified address the session
-// bearer refuses to attribute a request to.
-var attributedClients = fiber.Config{
-	TrustProxy:         true,
-	TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0"}},
-	ProxyHeader:        fiber.HeaderXForwardedFor,
-	EnableIPValidation: true,
-}
+// referencePeer is the transport peer every session-reference request comes
+// from: an attributable address, which the session bearer's source throttle
+// requires. fiber's in-memory transport reports the unspecified address, so
+// these requests are served with serveFrom.
+const referencePeer = "198.51.100.7:51000"
 
 func referenceRequest(ctx context.Context, reference string) *http.Request {
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/orders", nil)
-	req.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.7")
 	req.Header.Set("Authorization", "Bearer "+reference)
 
 	return req
@@ -163,7 +158,7 @@ func TestSessionReferenceBearer(t *testing.T) {
 
 			var published *session.Session
 
-			app := fiber.New(attributedClients)
+			app := fiber.New()
 			app.Use(fibersec.Middleware(newChain(t, d.opts...)))
 			app.Get("/orders", func(fc fiber.Ctx) error {
 				published, _ = httpsec.SessionFromContext(fc.Context())
@@ -172,7 +167,7 @@ func TestSessionReferenceBearer(t *testing.T) {
 				return fc.SendStatus(http.StatusOK)
 			})
 
-			out.status = serve(t, app, referenceRequest(t.Context(), tc.reference(d))).status
+			out.status = serveFrom(t, app, referenceRequest(t.Context(), tc.reference(d)), referencePeer).status
 			tc.assert(t, d, out, published)
 		})
 	}
@@ -230,7 +225,7 @@ func TestActivityRecordedAfterTheHandler(t *testing.T) {
 
 			var duringHandler time.Time
 
-			app := fiber.New(attributedClients)
+			app := fiber.New()
 			app.Use(fibersec.Middleware(newChain(t, d.opts...)))
 			app.Get("/orders", func(fc fiber.Ctx) error {
 				duringHandler = d.lastAccess(t)
@@ -239,7 +234,7 @@ func TestActivityRecordedAfterTheHandler(t *testing.T) {
 				return fc.SendStatus(http.StatusOK)
 			})
 
-			out.status = serve(t, app, referenceRequest(t.Context(), d.live.ID)).status
+			out.status = serveFrom(t, app, referenceRequest(t.Context(), d.live.ID), referencePeer).status
 			tc.assert(t, out, duringHandler, d.lastAccess(t), started)
 		})
 	}

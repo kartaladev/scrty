@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"math"
@@ -528,6 +529,53 @@ func TestHTTPRequestClientIP(t *testing.T) {
 			},
 			assert: func(t *testing.T, r httpsec.Request) {
 				assert.Equal(t, "2001:db8::1", r.ClientIP())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, httpsec.NewHTTPRequest(tc.build(t)))
+		})
+	}
+}
+
+func TestHTTPRequest_HostAndSecure(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) *http.Request
+		assert func(t *testing.T, r httpsec.Request)
+	}
+
+	cases := []testCase{
+		{
+			name: "a TLS request is secure and keeps its Host",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+				req.Host = "app.example.com"
+				req.TLS = &tls.ConnectionState{}
+				return req
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Equal(t, "app.example.com", r.Host())
+				assert.True(t, r.Secure())
+			},
+		},
+		{
+			name: "a plain request is not secure, whatever its forwarded headers say",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+				req.Host = "app.example.com:8080"
+				req.Header.Set("X-Forwarded-Proto", "https")
+				req.Header.Set("X-Forwarded-Host", "evil.example")
+				return req
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Equal(t, "app.example.com:8080", r.Host())
+				assert.False(t, r.Secure())
 			},
 		},
 	}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 // NewHTTPRequest adapts a net/http request.
@@ -43,6 +44,23 @@ func (h *httpRequest) Query(n string) string  { return h.r.URL.Query().Get(n) }
 
 // QueryValues returns every value of the parameter, in the order sent.
 func (h *httpRequest) QueryValues(n string) []string { return h.r.URL.Query()[n] }
+
+// HeaderValues returns every line of the header, in the order received, so the
+// chain's trusted-proxy resolution joins repeated forwarded headers rather
+// than reading the first line alone. The slice is the caller's own copy.
+func (h *httpRequest) HeaderValues(n string) []string { return slices.Clone(h.r.Header.Values(n)) }
+
+// DelHeaders removes every header whose name match reports true from the
+// request itself, so the handler behind the chain does not read it either.
+// The chain calls it to remove the forwarded headers it consumed
+// (EnableTrustedProxies).
+func (h *httpRequest) DelHeaders(match func(name string) bool) {
+	for name := range h.r.Header {
+		if match(name) {
+			delete(h.r.Header, name)
+		}
+	}
+}
 
 // Cookie reports absence separately from an empty value, so an interceptor can
 // tell a cookie that was never sent from one deliberately cleared.
@@ -303,6 +321,14 @@ func (h *httpRequest) ClientIP() string {
 	}
 	return host
 }
+
+// Host is r.Host: the Host header, or the host of an absolute request target,
+// as net/http resolved it. No forwarded header is read.
+func (h *httpRequest) Host() string { return h.r.Host }
+
+// Secure reports whether the request arrived over TLS, which net/http records
+// as a non-nil r.TLS. No forwarded header is read.
+func (h *httpRequest) Secure() bool { return h.r.TLS != nil }
 
 // NewHTTPResponseWriter adapts a net/http response writer.
 //

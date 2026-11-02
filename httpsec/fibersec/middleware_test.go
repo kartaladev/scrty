@@ -176,85 +176,78 @@ func TestFiberContext(t *testing.T) {
 }
 
 // TestFiberClientIP pins the one thing the adapter decides about attribution:
-// which address it hands the chain. It is fiber's own, so what a deployment
-// gets depends entirely on fiber's proxy trust, and the rows are the
-// configurations the package documentation tells a consumer to use.
-//
-// What the chain then does with an address it cannot attribute is the chain's
-// own rule, applied identically behind every framework, so nothing here
-// reimplements it.
+// it hands the chain the connection's own peer, whatever fiber's proxy trust
+// says. What the chain then does with it — trusted proxies, or refusing an
+// address it cannot attribute — is the chain's own rule, applied identically
+// behind every framework, so nothing here reimplements it.
 //
 // It stands apart from TestFiberContext: each case builds its own fiber app
 // configuration, and reads the address the chain was handed.
 func TestFiberClientIP(t *testing.T) {
 	t.Parallel()
 
-	// inMemoryPeer is what fiber's in-memory test transport reports as the
-	// peer. It is the unspecified address, which names no client at all.
-	const inMemoryPeer = "0.0.0.0"
+	// trustingEveryone makes fiber believe X-Forwarded-For from any peer.
+	trustingEveryone := fiber.Config{
+		TrustProxy:         true,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0/0", "::/0"}},
+		ProxyHeader:        fiber.HeaderXForwardedFor,
+		EnableIPValidation: true,
+	}
+
+	chainTrusts := httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/32")},
+		Headers:  httpsec.XForwarded(httpsec.ForwardedFor),
+	})
 
 	type testCase struct {
 		name      string
 		config    fiber.Config
+		chainOpts []httpsec.Option
+
+		// peer is the transport peer, and "" sends over fiber's in-memory
+		// transport, which reports the unspecified address.
+		peer      string
 		forwarded string
 		assert    func(t *testing.T, addr string)
 	}
 
 	cases := []testCase{
 		{
-			name:      "with no proxy trust the in-memory transport names no client",
+			name:      "the default is the transport peer, ignoring a forwarding header",
+			peer:      "198.51.100.7:51000",
 			forwarded: "203.0.113.9",
 			assert: func(t *testing.T, addr string) {
-				assert.Equal(t, inMemoryPeer, addr,
-					"the forwarding header is ignored until the consumer trusts a proxy")
-
-				parsed, err := netip.ParseAddr(addr)
-				require.NoError(t, err)
-				assert.True(t, parsed.IsUnspecified(),
-					"the chain refuses such an address rather than pooling every "+
-						"caller behind it into one rate-limit bucket")
+				assert.Equal(t, "198.51.100.7", addr)
 			},
 		},
 		{
-			name: "a trusted proxy's forwarded address is used",
-			config: fiber.Config{
-				TrustProxy: true,
-				// 0.0.0.0 is in the list because fiber's in-memory transport
-				// reports that peer, which is also what a proxy reaching the
-				// app over a Unix socket looks like.
-				TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{"10.0.0.2", inMemoryPeer}},
-				ProxyHeader:        fiber.HeaderXForwardedFor,
-				EnableIPValidation: true,
+			name:      "fiber's proxy trust has no effect on the chain",
+			config:    trustingEveryone,
+			peer:      "198.51.100.7:51000",
+			forwarded: "203.0.113.9",
+			assert: func(t *testing.T, addr string) {
+				assert.Equal(t, "198.51.100.7", addr, "a client cannot name its own address through fiber's settings")
 			},
+		},
+		{
+			name:      "the chain's trusted proxy names the client, with fiber's proxy trust off",
+			chainOpts: []httpsec.Option{chainTrusts},
+			peer:      "10.0.0.2:41000",
 			forwarded: "198.51.100.7",
 			assert: func(t *testing.T, addr string) {
 				assert.Equal(t, "198.51.100.7", addr)
 			},
 		},
 		{
-			name: "a header from a peer the consumer did not trust is ignored",
-			config: fiber.Config{
-				TrustProxy:         true,
-				TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{"10.0.0.2"}},
-				ProxyHeader:        fiber.HeaderXForwardedFor,
-				EnableIPValidation: true,
-			},
+			name:      "the in-memory transport names no client, even with fiber's proxy trust on",
+			config:    trustingEveryone,
 			forwarded: "198.51.100.7",
 			assert: func(t *testing.T, addr string) {
-				assert.Equal(t, inMemoryPeer, addr,
-					"a client cannot name its own address through an untrusted peer")
-			},
-		},
-		{
-			name: "trusting a proxy without naming the header changes nothing",
-			config: fiber.Config{
-				TrustProxy:       true,
-				TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
-			},
-			forwarded: "198.51.100.7",
-			assert: func(t *testing.T, addr string) {
-				assert.Equal(t, inMemoryPeer, addr,
-					"fiber reads no forwarding header until ProxyHeader names one")
+				parsed, err := netip.ParseAddr(addr)
+				require.NoError(t, err)
+				assert.True(t, parsed.IsUnspecified(),
+					"the chain refuses such an address rather than pooling every "+
+						"caller behind it into one rate-limit bucket")
 			},
 		},
 	}
@@ -269,10 +262,10 @@ func TestFiberClientIP(t *testing.T) {
 			)
 
 			app := fiber.New(tc.config)
-			app.Use(fibersec.Middleware(newChain(t,
+			app.Use(fibersec.Middleware(newChain(t, append(tc.chainOpts,
 				httpsec.RegisterInterceptor(
 					inspecting(func(r httpsec.Request) { addr, seen = r.ClientIP(), true }),
-					httpsec.OrderJWKS))))
+					httpsec.OrderJWKS))...)))
 			app.Get("/orders", func(fc fiber.Ctx) error {
 				return fc.SendStatus(http.StatusNoContent)
 			})
@@ -282,7 +275,13 @@ func TestFiberClientIP(t *testing.T) {
 				req.Header.Set(fiber.HeaderXForwardedFor, tc.forwarded)
 			}
 
-			res := serve(t, app, req)
+			var res response
+			if tc.peer == "" {
+				res = serve(t, app, req)
+			} else {
+				res = serveFrom(t, app, req, tc.peer)
+			}
+
 			require.Equal(t, http.StatusNoContent, res.status)
 			require.True(t, seen, "the chain was handed the request's address")
 

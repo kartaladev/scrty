@@ -75,6 +75,14 @@ func (r *miniRequest) Path() string {
 
 func (r *miniRequest) Header(name string) string { return r.ex.header[http.CanonicalHeaderKey(name)] }
 
+func (r *miniRequest) HeaderValues(name string) []string {
+	if v, ok := r.ex.header[http.CanonicalHeaderKey(name)]; ok {
+		return []string{v}
+	}
+
+	return nil
+}
+
 func (r *miniRequest) Query(name string) string {
 	if r.ex.query == nil {
 		_, raw, _ := strings.Cut(r.ex.target, "?")
@@ -129,6 +137,10 @@ func (r *miniRequest) Body(limit int64) ([]byte, error) {
 }
 
 func (r *miniRequest) ClientIP() string { return r.ex.peer }
+
+func (r *miniRequest) Host() string { return r.ex.header["Host"] }
+
+func (r *miniRequest) Secure() bool { return false }
 
 // miniWriter writes the consumer's framework through the library's port.
 type miniWriter struct{ ex *miniExchange }

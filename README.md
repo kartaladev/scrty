@@ -940,6 +940,87 @@ if errors.Is(err, httpsec.ErrReauthenticationRequired) ||
 | Begin response | the method's data, `Cache-Control: no-store` | `httpsec.WithReauthenticationBeginResponder` |
 | Method listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithReauthenticationMethodsResponder` |
 
+## Behind a reverse proxy
+
+By default the chain attributes a request to its TCP peer, judges it secure only over TLS, and takes
+its host from the `Host` header. Forwarded headers are neither read nor removed. That is the safe
+answer when nothing sits in front of the application, and the wrong one behind a proxy: every client
+shares the proxy's rate-limit bucket.
+
+`httpsec.EnableTrustedProxies` names the proxies whose forwarded headers are believed, the one header
+family they write, and the fields of it to trust:
+
+```go
+chain, err := httpsec.New(
+	httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}, // the proxies, never 0.0.0.0/0
+		Headers: httpsec.XForwarded(
+			httpsec.ForwardedFor,
+			httpsec.ForwardedProto,
+			httpsec.ForwardedHost("app.example.com"), // the allowlist is required
+		),
+		MaxHops: 1, // the default: only the peer is a trusted hop
+	}),
+	// ...
+)
+```
+
+The same configuration answers the client, the scheme and the host on net/http, gin and fiber. The
+adapters hand the chain the raw peer and headers; gin's `SetTrustedProxies` and fiber's
+`TrustProxy`/`ProxyHeader` have no effect on it. A handler reads the resolved values with
+`httpsec.ClientFromContext`.
+
+Two limits to know. A custom adapter that does not remove the consumed headers hides them from the
+chain's interceptors, but not from its framework's own handlers, which still see what the client
+and proxy sent. And a proxy connected over a Unix socket has no IP address, so no prefix can trust
+it: its forwarded headers are ignored, and there is no override today.
+
+### Defaults
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Forwarded headers | ignored | `EnableTrustedProxies` |
+| Trusted hops skipped | 1 | `TrustedProxies.MaxHops` |
+| A catch-all prefix (`0.0.0.0/0`, `::/0`) | refused at construction | `TrustAllProxies()` |
+| A forwarded host outside the allowlist | refused 400 (`ErrHostNotAllowed`), before any interceptor | none: name the host in `ForwardedHost` |
+| Consumed headers (`Forwarded`, `X-Forwarded-*`, the certificate header) | removed from every request | `KeepForwardedHeaders()` |
+| TLS ending upstream with no forwarded headers | requests are plain HTTP | `WithHTTPSDeployment()` (not with trusted proxies) |
+
+### nginx
+
+```nginx
+location / {
+    proxy_pass http://app:8080;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+}
+```
+
+`$proxy_add_x_forwarded_for` appends the peer nginx saw to whatever the client sent. The chain reads
+the list from the right, so a client's own entries are never reached. `proxy_set_header` replaces
+the client's `X-Forwarded-Proto` and `X-Forwarded-Host`; a header nginx does not set is passed
+through as the client sent it, which is why each field is trusted only when named.
+
+### Traefik
+
+```yaml
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      insecure: false   # do not pass through forwarded headers from untrusted clients
+      # trustedIPs: ["10.30.0.0/16"]  # only when another proxy sits in front of Traefik
+```
+
+Traefik writes `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` itself. Whether it
+replaces a `X-Forwarded-Proto` or `X-Forwarded-Host` the client sent in every configuration and
+version is **not verified** here. Before trusting `ForwardedHost` or `ForwardedProto` behind Traefik,
+send a request with forged `X-Forwarded-Host: evil.example` and `X-Forwarded-Proto: https` through
+your deployment and check that the chain refuses the host and sees the scheme Traefik terminated.
+Until then, trust `ForwardedFor` alone.
+
 ## Development
 
 ```sh

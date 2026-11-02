@@ -116,6 +116,12 @@ var (
 	// re-proof. Nothing was checked or counted. It maps to 403.
 	// Its text names no method, session or user.
 	ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication method not usable")
+
+	// ErrHostNotAllowed refuses a request whose host a trusted proxy forwarded
+	// (EnableTrustedProxies with ForwardedHost) and which is on none of the
+	// allowed hosts. The chain refuses it before any interceptor runs. It maps
+	// to 400. Its text never names the host.
+	ErrHostNotAllowed = errors.New("httpsec: host not allowed")
 )
 
 // ReauthenticationRequiredError is the recency guard's refusal. It carries the
@@ -237,6 +243,7 @@ var statusTable = []statusRow{
 
 	{ErrCredentialsMissing, http.StatusBadRequest},
 	{ErrMalformedRequest, http.StatusBadRequest},
+	{ErrHostNotAllowed, http.StatusBadRequest},
 
 	// A passkey ceremony response the verifier could not read. The chain's
 	// endpoints answer it as ErrCredentialsMissing, wrapping it; this row

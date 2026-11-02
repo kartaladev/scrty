@@ -54,6 +54,12 @@ func (ginAdapter) Serve(
 
 	engine := gin.New()
 
+	if spec.FrameworkTrustsProxies {
+		// gin's own trust in every peer, so c.ClientIP() would read the
+		// forwarding header: the chain must not care.
+		require.NoError(t, engine.SetTrustedProxies([]string{"0.0.0.0/0", "::/0"}))
+	}
+
 	if spec.Upstream {
 		engine.Use(ginUpstream())
 	}
@@ -98,6 +104,7 @@ func ginRoute(
 
 	return append(handlers, func(gc *gin.Context) {
 		res.RouteRan = true
+		res.RouteHeader = gc.Request.Header.Clone()
 		httpsecconformance.ReadContext(gc.Request.Context(), res)
 
 		if route.Status != 0 {

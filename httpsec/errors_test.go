@@ -100,6 +100,7 @@ func TestStatusForError(t *testing.T) {
 		{name: "throttled enrolment", err: mfa.ErrEnrolmentThrottled, want: 401},
 		{name: "wrapped invalid code", err: fmt.Errorf("verifying: %w", mfa.ErrInvalidCode), want: 401},
 		{name: "malformed login", err: httpsec.ErrCredentialsMissing, want: 400},
+		{name: "host not allowed", err: fmt.Errorf("resolve: %w", httpsec.ErrHostNotAllowed), want: 400},
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
 		{name: "reused password", err: password.ErrReused, want: 422},
 		{
@@ -430,6 +431,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrConfig":                          httpsec.ErrConfig,
 		"httpsec.ErrCredentialsMissing":              httpsec.ErrCredentialsMissing,
 		"httpsec.ErrMalformedRequest":                httpsec.ErrMalformedRequest,
+		"httpsec.ErrHostNotAllowed":                  httpsec.ErrHostNotAllowed,
 		"httpsec.ErrMFAMethodNotUsable":              httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":           httpsec.ErrNoMFAChallengePending,
 		"httpsec.ErrRenewalThrottled":                httpsec.ErrRenewalThrottled,

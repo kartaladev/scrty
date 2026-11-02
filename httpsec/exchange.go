@@ -18,10 +18,31 @@ import (
 //
 // The library supplies an implementation over net/http through NewHTTPRequest,
 // which is what a consumer gets when they wire nothing of their own.
+//
+// An integration whose request also has a method
+// DelHeaders(match func(name string) bool), removing every header match
+// reports true for from the request its framework hands on, lets the chain
+// remove the forwarded headers EnableTrustedProxies consumed from that request
+// too. Every integration the library provides has it. Without it the removed
+// headers are still hidden from every interceptor, but not from the
+// framework's own handlers.
 type Request interface {
 	Method() string
 	Path() string
+
+	// Header returns the value of the header name: its first line when the
+	// request carries it more than once.
 	Header(name string) string
+
+	// HeaderValues returns every line of the header name, in the order
+	// received, and nil when the request carries none.
+	//
+	// The chain's trusted-proxy resolution (EnableTrustedProxies) reads
+	// forwarded headers through it, because the line a trusted proxy appended
+	// is the last one: reading the first line alone would read a line the
+	// client sent in place of the proxy's.
+	HeaderValues(name string) []string
+
 	Query(name string) string
 
 	// QueryValues returns every value of the query parameter name, in the
@@ -66,9 +87,26 @@ type Request interface {
 	Body(limit int64) ([]byte, error)
 
 	// ClientIP is the address the request is attributed to, or "" when the
-	// integration cannot tell. It is never read from a forwarding header
-	// unless that integration's own trusted-proxy configuration says so.
+	// integration cannot tell. The chain's trusted-proxy resolution reads it
+	// as the transport peer. Inside the chain it is the resolved address: a
+	// trusted proxy's forwarded client when EnableTrustedProxies trusts that
+	// field.
 	ClientIP() string
+
+	// Host is the host the client asked for: the request's Host header, or
+	// the host of an absolute request target, port included when one was
+	// sent. An integration reads it from the request itself, never from a
+	// framework helper that consults a forwarded header. Inside the chain it
+	// is the resolved host: a trusted proxy's forwarded host when
+	// EnableTrustedProxies trusts that field.
+	Host() string
+
+	// Secure reports whether the request reached the application over TLS. An
+	// integration reads it from the connection, never from a framework helper
+	// that consults a forwarded header. Inside the chain it is the resolved
+	// answer: true for every request under WithHTTPSDeployment, or a trusted
+	// proxy's forwarded scheme when EnableTrustedProxies trusts that field.
+	Secure() bool
 }
 
 // Cookie is a cookie an interceptor sets. It mirrors http.Cookie so the
