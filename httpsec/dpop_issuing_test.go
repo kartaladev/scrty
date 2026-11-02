@@ -798,23 +798,39 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 // request's source, built over limiter l.
 type chargingEndpoint struct {
 	name  string
-	build func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter) issuingFixture
+	build func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter, extra ...httpsec.Option) issuingFixture
 }
 
 // chargingEndpoints are the issuing endpoints that charge a refused proof to
 // the source: the ones whose single-use material arrives without a caller.
 var chargingEndpoints = []chargingEndpoint{
-	{name: "magic link", build: func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter) issuingFixture {
-		return magicLinkEndpointWith(t, d, []httpsec.MagicLinkOption{httpsec.WithMagicLinkLimiter(l)})
+	{name: "magic link", build: func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter, extra ...httpsec.Option) issuingFixture {
+		return magicLinkEndpointWith(t, d, []httpsec.MagicLinkOption{httpsec.WithMagicLinkLimiter(l)}, extra...)
 	}},
-	{name: "OIDC handoff", build: func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter) issuingFixture {
-		return oidcHandoffEndpointWith(t, d, []httpsec.OIDCOption{httpsec.WithOIDCHandoffLimiter(l)})
+	{name: "OIDC handoff", build: func(t *testing.T, d httpsec.DPoP, l ratelimit.Limiter, extra ...httpsec.Option) issuingFixture {
+		return oidcHandoffEndpointWith(t, d, []httpsec.OIDCOption{httpsec.WithOIDCHandoffLimiter(l)}, extra...)
 	}},
 }
 
+// issuingHangUpKey is the context key under which issuingHangUpOption leaves the cancel
+// func of the request's context, so a test double can end the request.
+type issuingHangUpKey struct{}
+
+// issuingHangUpOption runs every request under a context of its own that a test
+// double ends by calling the cancel func it finds under issuingHangUpKey.
+var issuingHangUpOption = httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+	ctx, cancel := context.WithCancel(ex.Context())
+	defer cancel()
+
+	ex.SetContext(context.WithValue(ctx, issuingHangUpKey{}, cancel))
+
+	return next(ex)
+}), httpsec.Before(httpsec.OrderSecurityHeaders))
+
 // TestDPoP_IssuingChargesOnlyInvalidProofs pins what an issuing endpoint that
 // charges its source charges for a proof: an invalid one, and neither the
-// nonce round trip nor a dependency of the proof check that failed.
+// nonce round trip, a client that left, nor a dependency of the proof check
+// that failed.
 func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 	t.Parallel()
 
@@ -824,6 +840,7 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 	type testCase struct {
 		name  string
 		d     func(t *testing.T) httpsec.DPoP
+		extra []httpsec.Option
 		proof prover
 		// charges is how many failures the source is charged; the limiter
 		// fails the case on any other count.
@@ -873,6 +890,29 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 			assert: outage,
 		},
 		{
+			name: "a client that left while its nonce was opened is not charged",
+			d: func(t *testing.T) httpsec.DPoP {
+				c := NewMockNonceCipher(gomock.NewController(t))
+				c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(ctx context.Context, _, _ []byte) ([]byte, error) {
+						ctx.Value(issuingHangUpKey{}).(context.CancelFunc)()
+
+						return nil, ctx.Err()
+					})
+
+				return httpsec.DPoP{Nonce: true, NonceCipher: c}
+			},
+			extra: []httpsec.Option{issuingHangUpOption},
+			proof: func(t *testing.T, path, _ string) string {
+				return key.issuingProofParts(path, "j-1", "").with(map[string]any{"nonce": "c2VhbGVk"}).sign(t)
+			},
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, context.Canceled, "the client's own hang-up")
+				assert.NotErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof, "not the client's proof")
+				assert.False(t, out.handlerRan)
+			},
+		},
+		{
 			name: "a replay store that fails is a dependency failure, not charged",
 			d: func(t *testing.T) httpsec.DPoP {
 				s := NewMockReplayStore(gomock.NewController(t))
@@ -890,7 +930,7 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				f := ep.build(t, tc.d(t), countingLimiter(t, tc.charges))
+				f := ep.build(t, tc.d(t), countingLimiter(t, tc.charges), tc.extra...)
 
 				tc.assert(t, f.prepare(t, "")(t, tc.proof))
 			})

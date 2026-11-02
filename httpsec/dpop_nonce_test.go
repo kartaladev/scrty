@@ -219,6 +219,29 @@ func TestDPoP_Nonce(t *testing.T) {
 			},
 		},
 		{
+			// The nonce carries its issuing instant in whole seconds; one
+			// sealed mid-second is past half its lifetime by its own instant
+			// before it is by the exact one, and must not be handed back as
+			// its own replacement then.
+			name: "a nonce sealed mid-second is replaced at half its lifetime, not handed back",
+			run: func(t *testing.T, w *dpopBearerWorld) served {
+				chain := w.chain(signedBearer, nonceDPoP(t, nonceKeyA))
+				w.clk.Advance(500 * time.Millisecond)
+				nonce := askNonce(t, w, chain)
+
+				w.clk.Advance(httpsec.DefaultDPoPNonceLifetime/2 - 400*time.Millisecond)
+
+				out := presentWith(t, w, chain, "j-2", nonce)
+				assert.NotEqual(t, nonce, out.rec.Header().Get(headerDPoPNonce), "the presented nonce is not its own replacement")
+
+				return out
+			},
+			assert: func(t *testing.T, out served) {
+				authenticatedAsOwner(t, out)
+				assert.NotEmpty(t, out.rec.Header().Get(headerDPoPNonce), "the next nonce")
+			},
+		},
+		{
 			name: "a nonce issued by another replica with the same key material",
 			run: func(t *testing.T, w *dpopBearerWorld) served {
 				replica := w.chain(signedBearer, nonceDPoP(t, nonceKeyA))
@@ -274,6 +297,27 @@ func TestDPoP_Nonce(t *testing.T) {
 				assert.NotContains(t, out.err.Error(), "k-secret", "fixed text")
 				assert.Empty(t, out.rec.Header().Get(headerDPoPNonce))
 			},
+		},
+		{
+			name: "a seal that failed is not kept: the next request seals again",
+			run: func(t *testing.T, w *dpopBearerWorld) served {
+				c := NewMockNonceCipher(gomock.NewController(t))
+				sealer := newNonceCipher(t, nonceKeyA)
+				gomock.InOrder(
+					c.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errCipherFixture),
+					c.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(sealer.Seal),
+				)
+
+				chain := w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c})
+				tok := w.token(token.Confirmation{JKT: key.jkt})
+
+				failed := w.present(chain, "DPoP", tok, resourceProof(t, w, "j-1", tok, ""))
+				require.ErrorIs(t, failed.err, errCipherFixture)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(failed.err))
+
+				return w.present(chain, "DPoP", tok, resourceProof(t, w, "j-1", tok, ""))
+			},
+			assert: func(t *testing.T, out served) { askedForNonce(t, out) },
 		},
 		{
 			name: "a nonce cipher that cannot reach its keys to open is a dependency failure",
@@ -445,6 +489,185 @@ func TestDPoP_NonceSealedOncePerHalfLifetime(t *testing.T) {
 			w := newDPoPBearerWorld(t)
 			c, seals := countingNonceCipher(t, nonceKeyA)
 			tc.run(t, w, w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c}), seals)
+		})
+	}
+}
+
+// TestDPoP_NonceSealDoesNotBlock pins that a seal in progress holds up only
+// the requests that have no nonce to be handed without it, and each of those
+// only as long as its own context lasts: a request presenting a nonce still
+// valid is served while the next is sealed, and a waiter outlives a sealer
+// that hung up by sealing itself.
+func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+
+	type world struct {
+		w       *dpopBearerWorld
+		chain   *httpsec.Chain
+		entered chan struct{}
+		release chan struct{}
+	}
+
+	// build is a chain whose cipher seals the nth call at once unless hang
+	// reports true for it; a hanging seal reports entering, then waits for
+	// the test's end or its context's.
+	build := func(t *testing.T, hang func(call int32) bool) *world {
+		t.Helper()
+
+		w := newDPoPBearerWorld(t)
+		sealer := newNonceCipher(t, nonceKeyA)
+		x := &world{w: w, entered: make(chan struct{}, 8), release: make(chan struct{})}
+
+		var calls atomic.Int32
+
+		c := NewMockNonceCipher(gomock.NewController(t))
+		c.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+			DoAndReturn(func(ctx context.Context, p, ad []byte) ([]byte, error) {
+				if hang(calls.Add(1)) {
+					x.entered <- struct{}{}
+					select {
+					case <-x.release:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+
+				return sealer.Seal(ctx, p, ad)
+			})
+		c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(sealer.Open)
+		x.chain = w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c})
+		t.Cleanup(func() { close(x.release) })
+
+		return x
+	}
+
+	request := func(t *testing.T, x *world, jti, nonce string) *http.Request {
+		t.Helper()
+
+		tok := x.w.token(token.Confirmation{JKT: key.jkt})
+		parts := key.validProof(jti).with(map[string]any{"ath": tokenHash(tok), "iat": x.w.clk.Now().Unix()})
+		if nonce != "" {
+			parts = parts.with(map[string]any{"nonce": nonce})
+		}
+
+		req := dpopRequest(t, http.MethodGet, "http://example.com/api/orders", parts.sign(t))
+		req.Header.Set("Authorization", "DPoP "+tok)
+
+		return req
+	}
+
+	// serveAsync serves req under ctx on a goroutine of its own.
+	serveAsync := func(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *http.Request) chan served {
+		t.Helper()
+
+		done := make(chan served, 1)
+		go func() {
+			out := served{rec: httptest.NewRecorder()}
+			run := chain.Assemble(func(ex *httpsec.Exchange) error {
+				out.handlerRan = true
+				out.handled = ex
+
+				return nil
+			})
+			out.err = run(httpsec.NewExchange(ctx, httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(out.rec)))
+			done <- out
+		}()
+
+		return done
+	}
+
+	// within is what done serves, failing the test with stuck when nothing
+	// is served within a second.
+	within := func(t *testing.T, done chan served, stuck string) served {
+		t.Helper()
+
+		select {
+		case out := <-done:
+			return out
+		case <-time.After(time.Second):
+			t.Fatal(stuck)
+
+			return served{}
+		}
+	}
+
+	type testCase struct {
+		name   string
+		run    func(t *testing.T) chan served
+		assert func(t *testing.T, done chan served)
+	}
+
+	cases := []testCase{
+		{
+			name: "a waiter whose context ended returns",
+			run: func(t *testing.T) chan served {
+				x := build(t, func(int32) bool { return true })
+				serveAsync(t.Context(), t, x.chain, request(t, x, "j-a", ""))
+				<-x.entered
+
+				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				t.Cleanup(cancel)
+
+				return serveAsync(ctx, t, x.chain, request(t, x, "j-b", ""))
+			},
+			assert: func(t *testing.T, done chan served) {
+				out := within(t, done, "a request whose context had ended was still waiting on another request's seal")
+				require.ErrorIs(t, out.err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+			},
+		},
+		{
+			name: "a still-valid nonce is served while the next is sealed",
+			run: func(t *testing.T) chan served {
+				x := build(t, func(call int32) bool { return call > 1 })
+				first := askedForNonce(t, serve(t, x.chain, request(t, x, "j-1", "")))
+
+				x.w.clk.Advance(httpsec.DefaultDPoPNonceLifetime / 2)
+				serveAsync(t.Context(), t, x.chain, request(t, x, "j-a", ""))
+				<-x.entered
+
+				return serveAsync(t.Context(), t, x.chain, request(t, x, "j-b", first))
+			},
+			assert: func(t *testing.T, done chan served) {
+				out := within(t, done, "a request with a valid nonce was blocked by another request's seal of the next one")
+				authenticatedAsOwner(t, out)
+			},
+		},
+		{
+			name: "a waiter seals itself when the sealer hung up",
+			run: func(t *testing.T) chan served {
+				x := build(t, func(call int32) bool { return call == 1 })
+
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+
+				sealer := serveAsync(ctx, t, x.chain, request(t, x, "j-a", ""))
+				<-x.entered
+
+				waiter := serveAsync(t.Context(), t, x.chain, request(t, x, "j-b", ""))
+				// The waiter is given time to queue behind the seal; one that
+				// has not yet would seal itself, and the case would show nothing.
+				time.Sleep(100 * time.Millisecond)
+				cancel()
+
+				out := within(t, sealer, "the sealer that hung up did not return")
+				require.ErrorIs(t, out.err, context.Canceled, "the sealer fails with its own hang-up")
+
+				return waiter
+			},
+			assert: func(t *testing.T, done chan served) {
+				askedForNonce(t, within(t, done, "the waiter did not outlive the sealer's hang-up"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.run(t))
 		})
 	}
 }

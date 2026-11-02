@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
@@ -115,43 +116,123 @@ func (v *dpopVerifier) nonceFailure(ctx context.Context, err error) error {
 // sealed again only once half the nonce lifetime has passed. Sealing is then
 // bounded by time, at most once per half lifetime, and never by traffic: a
 // client that sends a proof with a key it made itself costs no seal.
+//
+// The request that finds the current nonce due seals the next one under its
+// own context, and no other request seals meanwhile. A request whose proof
+// carries a nonce still valid never waits for that seal: it is served, and
+// its response carries the next nonce only once that exists. A request being
+// handed a nonce to retry with waits for the seal, so every client asking at
+// once is handed the same next nonce, but each only for as long as its own
+// context lasts.
 type currentNonce struct {
-	// mu is held across a seal, so the requests that find the nonce due at
-	// the same moment wait for one seal rather than each making one.
-	mu sync.Mutex
+	// current is the nonce last sealed, nil until the first seal; it is read
+	// without a lock.
+	current atomic.Pointer[sealedNonce]
 
+	// mu guards inflight alone, and is never held across a seal.
+	mu       sync.Mutex
+	inflight *nonceSeal
+}
+
+// sealedNonce is one sealed nonce and the issuing instant sealed in it.
+type sealedNonce struct {
 	value  string
-	sealed time.Time
+	issued time.Time
+}
+
+// nonceSeal is a seal in progress. done closes when it ends; err is then
+// what it failed with, and hungUp whether that was its sealer's own context
+// ending, which leaves a waiter free to seal in its place.
+type nonceSeal struct {
+	done   chan struct{}
+	err    error
+	hungUp bool
 }
 
 // issueNonce returns the replica's current nonce, sealing the next one first
-// when half the nonce lifetime has passed since the current one was sealed,
-// or none has been. A cipher that fails is a dependency failure
-// (nonceFailure), and the next request tries the seal again.
-func (v *dpopVerifier) issueNonce(ctx context.Context) (string, error) {
+// when half the nonce lifetime has passed since the current one was issued,
+// or none has been. While another request seals that next nonce, a caller
+// that is refreshing (refresh true) is handed the current one at once if it
+// is still valid, with fresh false; any other caller waits for the seal.
+//
+// A cipher that fails is a dependency failure (nonceFailure), and is not
+// kept: the next request tries the seal again. A request waiting for a seal
+// fails with its own context's error when that ends first.
+func (v *dpopVerifier) issueNonce(ctx context.Context, refresh bool) (nonce string, fresh bool, err error) {
+	n := &v.nonce
+	half := v.cfg.NonceLifetime / 2
+
+	for {
+		now := v.now()
+		cur := n.current.Load()
+		if cur != nil && now.Sub(cur.issued) < half {
+			return cur.value, true, nil
+		}
+
+		n.mu.Lock()
+		if n.current.Load() != cur {
+			// Another request stored a seal since cur was read.
+			n.mu.Unlock()
+
+			continue
+		}
+
+		s := n.inflight
+		if s == nil {
+			s = &nonceSeal{done: make(chan struct{})}
+			n.inflight = s
+			n.mu.Unlock()
+
+			return v.sealNonce(ctx, s, now)
+		}
+		n.mu.Unlock()
+
+		if refresh && cur != nil && now.Before(cur.issued.Add(v.cfg.NonceLifetime)) {
+			return cur.value, false, nil
+		}
+
+		select {
+		case <-s.done:
+			if s.err != nil && !s.hungUp {
+				return "", false, v.nonceFailure(ctx, s.err)
+			}
+		case <-ctx.Done():
+			return "", false, v.nonceFailure(ctx, ctx.Err())
+		}
+	}
+}
+
+// sealNonce seals the nonce issued at now under ctx, as the one seal s in
+// progress, stores it as current when it succeeds, and ends s either way.
+func (v *dpopVerifier) sealNonce(ctx context.Context, s *nonceSeal, now time.Time) (string, bool, error) {
 	n := &v.nonce
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		n.inflight = nil
+		n.mu.Unlock()
+		close(s.done)
+	}()
 
-	now := v.now()
-	if n.value != "" && now.Sub(n.sealed) < v.cfg.NonceLifetime/2 {
-		return n.value, nil
-	}
+	// The nonce carries its instant in whole seconds; the replica judges it
+	// by the same instant, so it is due exactly when a proof presenting it is.
+	issued := time.Unix(now.Unix(), 0)
 
 	var plain [noncePlaintextBytes]byte
 	plain[0] = nonceVersion
-	binary.BigEndian.PutUint64(plain[1:], uint64(now.Unix())) //nolint:gosec // G115: a clock after 1970
+	binary.BigEndian.PutUint64(plain[1:], uint64(issued.Unix())) //nolint:gosec // G115: a clock after 1970
 
 	sealed, err := v.cfg.NonceCipher.Seal(ctx, plain[:], []byte(nonceAdditionalData))
 	if err != nil {
-		return "", v.nonceFailure(ctx, err)
+		s.err, s.hungUp = err, hangup.ByCaller(ctx, err)
+
+		return "", false, v.nonceFailure(ctx, err)
 	}
 
-	n.value = base64.RawURLEncoding.EncodeToString(sealed)
-	n.sealed = now
+	value := base64.RawURLEncoding.EncodeToString(sealed)
+	n.current.Store(&sealedNonce{value: value, issued: issued})
 
-	return n.value, nil
+	return value, true, nil
 }
 
 // checkNonce judges a proof's nonce claim, and reports whether it is past
@@ -219,15 +300,17 @@ type dpopResponseKey struct{}
 
 // refreshNonce sets a fresh nonce on the response of the exchange ctx
 // belongs to. It is best effort: the presented nonce is still current, so a
-// cipher that fails is recorded and the request goes on.
+// cipher that fails is recorded and the request goes on, and while another
+// request seals the next nonce the response carries none, rather than one as
+// close to expiring as the nonce presented.
 func (v *dpopVerifier) refreshNonce(ctx context.Context) {
 	w, ok := ctx.Value(dpopResponseKey{}).(ResponseWriter)
 	if !ok {
 		return
 	}
 
-	nonce, err := v.issueNonce(ctx)
-	if err != nil {
+	nonce, fresh, err := v.issueNonce(ctx, true)
+	if err != nil || !fresh {
 		return
 	}
 
@@ -290,7 +373,7 @@ func (v *dpopVerifier) challenge(ctx context.Context, w guardauth.HeaderWriter, 
 
 	switch {
 	case errors.Is(err, ErrDPoPNonceRequired):
-		nonce, serr := v.issueNonce(ctx)
+		nonce, _, serr := v.issueNonce(ctx, false)
 		if serr != nil {
 			return serr
 		}
