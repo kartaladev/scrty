@@ -211,6 +211,37 @@ func RunSessionCSRFSuccessor(t *testing.T, raw *sql.DB, newStore func(t *testing
 		require.ErrorIs(t, err, seal.ErrDecryptionFailed)
 		assert.Nil(t, got, "a session whose token will not open was returned")
 	})
+
+	// One row carries both sealed fields, each bound to its own field as well
+	// as to the session, so an envelope moved between the two columns of the
+	// same row opens as neither.
+	crossColumn := []struct {
+		name, sid, from, to string
+	}{
+		{"the CSRF token copied into the same row's ID-token column does not open",
+			"csrf-into-id-token", "csrf_token", "external_id_token"},
+		{"the ID token copied into the same row's CSRF-token column does not open",
+			"id-token-into-csrf", "external_id_token", "csrf_token"},
+	}
+	for _, tc := range crossColumn {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := DurableSession(tc.sid, now)
+			sess.CSRFToken = token
+			sess.ExternalIDToken = "SENTINEL-ID-TOKEN-of-the-sign-in"
+			require.NoError(t, s.Create(t.Context(), sess))
+
+			// The column names are this table's, not input: they are fixed
+			// above.
+			_, err := raw.ExecContext(t.Context(), //nolint:gosec // G202: fixed column names
+				`UPDATE sessions SET `+tc.to+` = `+tc.from+` WHERE id_digest = $1`, Digest(tc.sid))
+			require.NoError(t, err)
+
+			got, err := s.Load(t.Context(), tc.sid)
+			require.ErrorIs(t, err, session.ErrUnreadable)
+			require.ErrorIs(t, err, seal.ErrDecryptionFailed)
+			assert.Nil(t, got, "a session whose sealed field will not open was returned")
+		})
+	}
 }
 
 // SealedEnrolments is the sealed-column suite's view of the MFA store, built

@@ -1,6 +1,10 @@
 package httpsec
 
-import "context"
+import (
+	"context"
+
+	"github.com/kartaladev/scrty/session"
+)
 
 // Client is what the chain resolved about who sent a request and how it
 // arrived: the address the request is attributed to, whether it reached the
@@ -83,8 +87,9 @@ func (cr *clientResolver) resolve(r Request) (Client, error) {
 }
 
 // begin resolves ex's request before the first interceptor runs: it removes
-// the consumed forwarded headers, publishes the Client on the exchange's
-// context and, where the answer can differ from the adapter's, wraps the
+// the consumed forwarded headers, publishes the Client and the request's user
+// agent on the exchange's context, the sign-in metadata every first factor
+// records (signInMetadata), and, where the answer can differ from the adapter's, wraps the
 // request so every interceptor reads the one resolved answer. A refusal leaves
 // the exchange's request and context as they were.
 func (cr *clientResolver) begin(ex *Exchange) error {
@@ -96,7 +101,8 @@ func (cr *clientResolver) begin(ex *Exchange) error {
 		return err
 	}
 
-	ex.SetContext(context.WithValue(ex.Context(), clientContextKey{}, client))
+	ctx := context.WithValue(ex.Context(), clientContextKey{}, client)
+	ex.SetContext(withSignInUserAgent(ctx, ex.Request.Header("User-Agent")))
 
 	if cr.rewrites() {
 		ex.Request = &resolvedRequest{Request: ex.Request, client: client, hide: cr.hidden()}
@@ -179,4 +185,27 @@ func (r *resolvedRequest) HeaderValues(name string) []string {
 	}
 
 	return r.Request.HeaderValues(name)
+}
+
+// signInUserAgentKey is the context key the request's user agent is carried
+// under, from where the chain resolves the client to where a login builds its
+// session.
+type signInUserAgentKey struct{}
+
+// withSignInUserAgent returns ctx carrying ua as the user agent of a sign-in
+// made on it. The chain sets it once per request, when it resolves the client
+// (clientResolver.begin), so no flow reads the header itself.
+func withSignInUserAgent(ctx context.Context, ua string) context.Context {
+	return context.WithValue(ctx, signInUserAgentKey{}, ua)
+}
+
+// signInMetadata is the client address and user agent a sign-in made on ctx
+// records (session.WithClientMetadata): the address the chain resolved
+// (ClientFromContext) and the user agent withSignInUserAgent carried, each
+// empty when absent.
+func signInMetadata(ctx context.Context) session.CreateOption {
+	client, _ := ClientFromContext(ctx)
+	ua, _ := ctx.Value(signInUserAgentKey{}).(string)
+
+	return session.WithClientMetadata(client.IP, ua)
 }

@@ -798,3 +798,81 @@ func TestRemove_EndsOtherSessionsByFamily(t *testing.T) {
 		})
 	}
 }
+
+// TestPasskey_RemovalNotice pins the removal notice: sent by default, never
+// sent when the removal turns it off or is refused, and a failure to send it
+// keeps the removal.
+func TestPasskey_RemovalNotice(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		advance time.Duration
+		sendErr error
+		opts    []passkey.RemoveOption
+		assert  func(t *testing.T, e *manageEnv, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "on by default: the user is told the passkey's label and the time, never its credential ID",
+			assert: func(t *testing.T, e *manageEnv, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.False(t, e.exists(t, "u-1", e.cred.ID))
+
+				body := e.lastNotice(t)
+				assert.Contains(t, body, "Security key")
+				assert.Contains(t, body, regStart.UTC().Format("2 January 2006 15:04"))
+				assert.NotContains(t, body, e.cred.ID.String())
+			},
+		},
+		{
+			name: "turned off for the removal: the passkey is removed and nothing is sent",
+			opts: []passkey.RemoveOption{passkey.WithoutRemovalNotice()},
+			assert: func(t *testing.T, e *manageEnv, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.False(t, e.exists(t, "u-1", e.cred.ID))
+				assert.Empty(t, e.f.messages())
+			},
+		},
+		{
+			name:    "a removal refused outside the freshness window sends nothing",
+			advance: 20 * time.Minute,
+			assert: func(t *testing.T, e *manageEnv, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, passkey.ErrReauthenticationRequired)
+				assert.True(t, e.exists(t, "u-1", e.cred.ID))
+				assert.Empty(t, e.f.messages())
+			},
+		},
+		{
+			name:    "a failure to send keeps the removal",
+			sendErr: errors.New("mail queue down"),
+			assert: func(t *testing.T, e *manageEnv, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.False(t, e.exists(t, "u-1", e.cred.ID))
+				assert.Equal(t, 1, countRecords(e.logs, "passkey: a notice was not queued"))
+				assert.Contains(t, e.logs.String(), `"level":"ERROR"`)
+				assert.NotContains(t, e.logs.String(), "mail queue down")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := newManageEnv(t)
+			e.f.sendErr = tc.sendErr
+
+			m := e.manager(t)
+			e.f.clock.Advance(tc.advance)
+
+			err := m.Remove(t.Context(), fullSession("sess-1", "u-1"), e.cred.ID, passkey.RegistrationContext{}, tc.opts...)
+			tc.assert(t, e, err)
+		})
+	}
+}

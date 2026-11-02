@@ -477,7 +477,12 @@ func prepareLogin(
 	// them can undo it, and before any challenge mark: a challenge the phase
 	// still raises, such as a password change, is marked on the satisfied
 	// session and refused as for any login.
-	create := make([]session.CreateOption, 0, len(opts)+3)
+	//
+	// The sign-in's client address and user agent come first, so a caller's
+	// option may still replace them; the manager records them only when it
+	// records sign-in metadata (session.WithSessionMetadata).
+	create := make([]session.CreateOption, 0, len(opts)+4)
+	create = append(create, signInMetadata(ctx))
 	create = append(create, opts...)
 	if ev := in.FederatedAssurance; ev.Asserted() {
 		create = append(create, session.WithFederatedAssurance(ev.AMR(), ev.ACR()))
@@ -546,6 +551,14 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	// still reads who is being challenged.
 	ex.Session = s
 	ex.SetContext(withSession(WithCaller(ctx, ex.Authentication), s))
+
+	// The sign-in is stored: a sign-in notice watching the request may now
+	// judge it (EnableSignInNotice). One never stored is never seen.
+	var principal *identity.Principal
+	if ex.Authentication != nil {
+		principal = ex.Authentication.Principal
+	}
+	observeSignIn(ctx, s, principal)
 
 	if l.decision.Outcome == policy.Challenge {
 		return l.token, &ChallengeError{Kind: l.decision.Challenge, Session: s, Token: l.token, Methods: l.methods}

@@ -2,6 +2,8 @@ package session_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -324,4 +327,48 @@ func TestSessions_EndSignIn_OthersDuringRenewal(t *testing.T) {
 			require.ErrorIs(t, err, session.ErrNotFound, "the other sign-in is ended")
 		}
 	})
+}
+
+// hangUpExceptStore stands in for a store whose caller hangs up while
+// DeleteByUserExcept runs: it cancels the caller's context with a cause and
+// answers as a driver does, with an error wrapping that cause and not
+// context.Canceled itself.
+type hangUpExceptStore struct {
+	*session.MemoryStore
+
+	cancel context.CancelCauseFunc
+	cause  error
+}
+
+func (s *hangUpExceptStore) DeleteByUserExcept(context.Context, identity.UserID, string) (int, error) {
+	s.cancel(s.cause)
+
+	return 0, fmt.Errorf("driver: statement interrupted: %w", s.cause)
+}
+
+// TestSessions_EndOtherSignIns_HangUp pins that a caller who hangs up while
+// the other sign-ins are being ended gets its context's error, as the listing
+// and ending one sign-in answer, and not the outage's text.
+func TestSessions_EndOtherSignIns_HangUp(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	cause := errors.New("client went away")
+	store := &hangUpExceptStore{
+		MemoryStore: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
+		cause:       cause,
+	}
+	m := managerFor(t, session.WithStore(store), session.WithClock(clk))
+
+	current, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancelCause(t.Context())
+	store.cancel = cancel
+
+	_, err = m.EndOtherSignIns(ctx, testUser, current)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, cause, "the store's error stays reachable")
+	assert.NotContains(t, err.Error(), "could not be ended", "a hang-up is not an outage")
+	assert.NotContains(t, err.Error(), "driver", "the text is fixed library text")
 }

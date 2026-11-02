@@ -3,6 +3,7 @@ package httpsec
 import (
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/assurance"
@@ -227,3 +228,13 @@ func SecurityHeadersRandom(r io.Reader) HeaderOption {
 		return nil
 	}
 }
+
+// WithSignInNoticeTracker counts the sign-in notice's work in flight on wg, so
+// a test can wait for the background work to finish.
+func WithSignInNoticeTracker(wg *sync.WaitGroup) SignInNoticeOption {
+	return withSignInNoticeTracker(wg)
+}
+
+// SignInDeviceDescription is the device text a sign-in notice carries for a
+// user agent.
+var SignInDeviceDescription = deviceDescription
