@@ -377,6 +377,11 @@ httpsec.EnableDPoP(httpsec.DPoP{
   - renewal or re-authentication without the bound key;
   - a token whose `cnf` the chain cannot honour: an unknown member, both members, or a binding whose feature is off. Such a token is never accepted as a plain bearer token.
   - All answer 401 with `WWW-Authenticate: DPoP error=...`. A missing token with DPoP optional gets both the `DPoP` and the `Bearer` challenge.
+- **Settled during tasks 8.1–8.5 (2026-11-02).**
+  - **Issuing a bound token.** `token.Generator` keeps its signature. A generator that can bind implements the optional `token.ConfirmingGenerator` (`GenerateWith(ctx, id, p, opts ...IssueOption)`), as the built-in JWT generator does. `EnableDPoP` and `EnableCertificateBinding` refuse, at construction, a chain whose token generator does not implement it, so a token is never issued unbound when binding was asked for. Changing the interface would have broken every consumer generator, DPoP or not.
+  - **The path as sent.** `Request` gains `EscapedPath()` (required, before the tag, as `HeaderValues` did), so `htu` compares the path the client sent on every adapter. An optional interface with a fallback to the decoded path would let `/api/ord%65rs` match `/api/orders` on an adapter that lacks it.
+  - **Session-reference binding is checked before anything is published.** Resolution gains an admission step after the session loads, so a session bound to another key is refused before the caller is published or a policy runs.
+  - **What the chain refuses.** An unbound credential presented under the `DPoP` scheme is refused. In signed mode the stored session's binding must equal the token's `cnf`. A `cnf` with an unknown member, or both members, is refused as unauthenticated (401), never read as unbound. `x5t#S256` belongs to D9. `Nonce: true` is a configuration error until server nonces exist (task 8.10), so it never reads as enforced when it is not.
 - **Replay store:** a port with one atomic insert-if-absent, keyed by a digest of the `jti` and the key thumbprint. It shares the multi-replica caveat of the rate limiter and accepts a shared store. A store failure is a dependency failure: 500, fixed text, not charged. A request whose context ended fails with the context's error (`key-port-context` D8).
 - **Nonces:** off by default. They cost a round trip, and the 60-second lifetime with `jti` already bounds replay. When on, they are stateless (sealed with the chain's key material), so every replica can verify them without a shared store.
 - **Default:** accepted, not required, so existing bearer clients keep working while browser clients opt in by sending proofs.
@@ -606,7 +611,7 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
 - **Breaking before the tag:**
   - `Request.Host()`/`Secure()` (D2);
   - `ginsec.WithForwardedClientIP` removed, and with it `ginsec.Option`, so `ginsec.Middleware(chain)` takes no options (D7);
-  - `Request.HeaderValues` required (D2);
+  - `Request.HeaderValues` and `Request.EscapedPath` required (D2, D8);
   - `identity.UserProvisioner.Update` honours `WithUserPasswordIf` in every store (D11);
   - `NewReuseGuard` removed (D10);
   - `session.Store.ListByUser` (D12).
