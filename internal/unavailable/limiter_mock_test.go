@@ -195,3 +195,66 @@ func (c *MockLimiterRefundCall) DoAndReturn(f func(context.Context, ratelimit.Re
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// MockRecentFailureReporter is a mock of RecentFailureReporter interface.
+type MockRecentFailureReporter struct {
+	ctrl     *gomock.Controller
+	recorder *MockRecentFailureReporterMockRecorder
+	isgomock struct{}
+}
+
+// MockRecentFailureReporterMockRecorder is the mock recorder for MockRecentFailureReporter.
+type MockRecentFailureReporterMockRecorder struct {
+	mock *MockRecentFailureReporter
+}
+
+// NewMockRecentFailureReporter creates a new mock instance.
+func NewMockRecentFailureReporter(ctrl *gomock.Controller) *MockRecentFailureReporter {
+	mock := &MockRecentFailureReporter{ctrl: ctrl}
+	mock.recorder = &MockRecentFailureReporterMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockRecentFailureReporter) EXPECT() *MockRecentFailureReporterMockRecorder {
+	return m.recorder
+}
+
+// HasRecentFailures mocks base method.
+func (m *MockRecentFailureReporter) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HasRecentFailures", ctx, key)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// HasRecentFailures indicates an expected call of HasRecentFailures.
+func (mr *MockRecentFailureReporterMockRecorder) HasRecentFailures(ctx, key any) *MockRecentFailureReporterHasRecentFailuresCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasRecentFailures", reflect.TypeOf((*MockRecentFailureReporter)(nil).HasRecentFailures), ctx, key)
+	return &MockRecentFailureReporterHasRecentFailuresCall{Call: call}
+}
+
+// MockRecentFailureReporterHasRecentFailuresCall wrap *gomock.Call
+type MockRecentFailureReporterHasRecentFailuresCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockRecentFailureReporterHasRecentFailuresCall) Return(arg0 bool, arg1 error) *MockRecentFailureReporterHasRecentFailuresCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockRecentFailureReporterHasRecentFailuresCall) Do(f func(context.Context, string) (bool, error)) *MockRecentFailureReporterHasRecentFailuresCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockRecentFailureReporterHasRecentFailuresCall) DoAndReturn(f func(context.Context, string) (bool, error)) *MockRecentFailureReporterHasRecentFailuresCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

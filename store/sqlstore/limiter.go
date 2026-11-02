@@ -60,7 +60,7 @@ import (
 // limiters with NewLimiter only builds a factory over the same handle for the
 // prune.
 type Limiter struct {
-	limiter ratelimit.Limiter
+	limiter unavailable.Limiter
 	check   limiterCheck
 
 	// limit and window are the policy NewLimiter was given, kept so Policy
@@ -70,8 +70,9 @@ type Limiter struct {
 }
 
 var (
-	_ ratelimit.Limiter        = (*Limiter)(nil)
-	_ ratelimit.PolicyReporter = (*Limiter)(nil)
+	_ ratelimit.Limiter               = (*Limiter)(nil)
+	_ ratelimit.PolicyReporter        = (*Limiter)(nil)
+	_ ratelimit.RecentFailureReporter = (*Limiter)(nil)
 )
 
 // NewLimiter returns a Limiter counting up to limit failures per key within
@@ -295,6 +296,22 @@ func WithLimiterPruneBatchSize(n int) LimiterOption {
 // ratelimit.ErrBackendUnavailable.
 func (l *Limiter) Exceeded(ctx context.Context, key string) (bool, error) {
 	return l.limiter.Exceeded(ctx, key)
+}
+
+// HasRecentFailures reports whether key has at least one failure counted
+// within the window, however far below the limit. It writes nothing and takes
+// no row lock. It implements ratelimit.RecentFailureReporter.
+//
+// It cannot decide whenever the check cannot: an ended context answers true
+// with its error before any I/O, and while the database cannot be reached, or
+// the replica is not calling it, the answer is true with an error wrapping
+// ratelimit.ErrBackendUnavailable, whatever the unavailable mode
+// (WithLimiterOnUnavailable) is. A failure this replica could not record,
+// held against its key by that mode, counts as a recent failure. A caller
+// reading only the bool therefore treats a key it could not check as one that
+// has failures.
+func (l *Limiter) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	return l.limiter.HasRecentFailures(ctx, key)
 }
 
 // RecordFailure counts one failure for key. The caller's cancellation is

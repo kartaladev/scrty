@@ -274,3 +274,61 @@ func TestLimiter_VerifyErrorsStartWithThePrefix(t *testing.T) {
 	require.ErrorIs(t, err, errStubQuery)
 	assert.True(t, strings.HasPrefix(err.Error(), "sqlstore: "), "got %q", err)
 }
+
+// TestLimiter_HasRecentFailures covers the limiter's answer to a store it
+// cannot read: true, with an error saying the backend is unavailable. The
+// rows that need rows in a table, a clean key, a failure and an aged one, run
+// against a real server in the test module.
+func TestLimiter_HasRecentFailures(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		db     func(t *testing.T) *sql.DB
+		ctx    func(ctx context.Context) context.Context // nil means identity
+		assert func(t *testing.T, has bool, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a database that fails the read answers true with an unavailable error", db: stubDB,
+			assert: func(t *testing.T, has bool, err error) {
+				require.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
+				require.ErrorIs(t, err, errStubQuery)
+				assert.True(t, has)
+				assert.NotContains(t, err.Error(), errStubQuery.Error(), "the driver's text must not reach the caller")
+			},
+		},
+		{
+			name: "an ended context answers true with its error", db: stubDB,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return cctx
+			},
+			assert: func(t *testing.T, has bool, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.True(t, has)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			l, err := sqlstore.NewLimiter(tc.db(t), "api-key", 3, time.Minute)
+			require.NoError(t, err)
+			var r ratelimit.Limiter = l
+			reporter, ok := r.(ratelimit.RecentFailureReporter)
+			require.True(t, ok, "the limiter does not implement ratelimit.RecentFailureReporter")
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+			has, err := reporter.HasRecentFailures(ctx, "k")
+			tc.assert(t, has, err)
+		})
+	}
+}

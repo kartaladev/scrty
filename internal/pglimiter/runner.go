@@ -102,6 +102,27 @@ func (b *backend) Exceeded(ctx context.Context, key string) (bool, error) {
 	return n >= b.limit, nil
 }
 
+// HasRecentFailures reports whether key has at least one failure inside the
+// window, however far below the limit, with the statement Exceeded runs: one
+// primary-key read that records nothing and takes no row lock, so a failure
+// counts here exactly while it counts towards the limit. It implements
+// ratelimit.RecentFailureReporter.
+//
+// An error, a context that has ended included, answers true, wrapped as
+// "<prefix>: rate-limit recent failures": a caller reading only the bool
+// treats the key as one that has failures.
+func (b *backend) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	var n int
+	err := b.r.QueryRow(ctx, pgschema.LimiterCheck,
+		b.namespace, pgschema.LimiterKey(key), b.windowUS, Now(b.clock)).Scan(&n)
+	if err != nil {
+		return true, fmt.Errorf("%s: rate-limit recent failures: %w", b.prefix, err)
+	}
+	return n > 0, nil
+}
+
+var _ ratelimit.RecentFailureReporter = (*backend)(nil)
+
 // RecordFailure counts one failure for key, in a READ COMMITTED transaction
 // of its own: at a stronger default isolation, records racing on one key
 // would fail with a serialization failure. An error is wrapped as
