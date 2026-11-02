@@ -125,7 +125,7 @@ The chain SHALL read only the header family the consumer named, and only the fie
 - **THEN** the resolved host is the request's `Host` header
 
 ### Requirement: A forwarded host must be an allowed host
-When the host field is trusted, a host taken from a forwarded header SHALL be compared with the consumer's allowed hosts by its host name, case-insensitively, without a trailing dot, and ignoring any port it carries. A forwarded host that matches none SHALL cause the request to be refused with the host-not-allowed error before any interceptor or handler runs. The refusal's text SHALL NOT contain the forwarded host. A host taken from the request's own `Host` header, because no forwarded host was supplied, SHALL NOT be judged against the list.
+When the host field is trusted, a host taken from a forwarded header SHALL be compared with the consumer's allowed hosts by its host name, case-insensitively, without a trailing dot, and ignoring any port it carries. A forwarded host that matches none, or that is not a host name or bracketed IPv6 literal followed by nothing or by a decimal port of at most 65535, SHALL cause the request to be refused with the host-not-allowed error before any interceptor or handler runs. The resolved host SHALL be the matched name in lower case with the validated port, never the forwarded text as sent. The refusal's text SHALL NOT contain the forwarded host. A host taken from the request's own `Host` header, because no forwarded host was supplied, SHALL NOT be judged against the list.
 
 #### Scenario: Unknown host
 - **WHEN** `app.example.com` is the only allowed host and a trusted proxy forwards `X-Forwarded-Host: evil.example`
@@ -134,6 +134,10 @@ When the host field is trusted, a host taken from a forwarded header SHALL be co
 #### Scenario: Case and port
 - **WHEN** `app.example.com` is the only allowed host and a trusted proxy forwards `X-Forwarded-Host: App.Example.COM:8443`
 - **THEN** the host is allowed, and the resolved host is `app.example.com:8443`
+
+#### Scenario: Malformed forwarded host
+- **WHEN** `app.example.com` is the only allowed host and a trusted proxy forwards `X-Forwarded-Host: app.example.com:1@evil.example`, or `app.example.com:999999`
+- **THEN** the request is refused with the host-not-allowed error, and the refusal's text contains neither value
 
 #### Scenario: Look-alike host
 - **WHEN** `app.example.com` is the only allowed host and a trusted proxy forwards `X-Forwarded-Host: app.example.com.evil.example`

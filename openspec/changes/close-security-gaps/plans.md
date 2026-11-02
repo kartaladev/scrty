@@ -49,7 +49,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 | A | R: request and proxies | 2.1–2.6; 2.7–2.11 | `httpsec/nethttp.go`, `client.go` (new), `proxies.go` (new), `chain.go`, `throttle.go`, `options.go`, `errors.go`, `httpsec/ginsec/*`, `httpsec/fibersec/*`, `test/httpsecconformance/proxy_scenarios.go` (new) | Opus (an interface every lane compiles against; refusal logic) |
 | B (worktrees) | H: headers, CORS, CSRF | 3.1–3.6; 3.7–3.11; 4.1–4.6; 5.1–5.4; 5.5–5.7 | `httpsec/order_outer.go`, `headers.go`, `cors.go`, `csrf.go` (all new), `httpsec/logout.go`, conformance `headers_scenarios.go`, `cors_scenarios.go`, `csrf_scenarios.go` | Sonnet for 3.x (known pattern); Opus for 4.x and 5.x (refusal logic written for the first time) |
 | B (worktrees) | S: sessions | 6.1–6.4 (S1, before H4); 6.5–6.7; 7.1–7.5 | `session/*`, `store/sqlstore/session.go`, `store/pgxstore/session.go`, `store/gormstore/session.go`, `store/migrate/securitystate/` (new file), `test/storetest/session*.go`, `httpsec/session_management.go` (new), `httpsec/signin_notice.go` (new), the passkey removal path, `notify` templates | Opus (store contract other modules implement; owner checks; `Commit` rules) |
-| B (worktrees) | P: passwords | 10.1–10.6; 10.7–10.10 | `authenticate/password/*`, `httpsec/login.go`, `httpsec/basic.go`, the password re-proof path, `test/identity` history conformance | Opus for 10.1–10.6 (behaviour-preserving move of the reuse guard); Sonnet for 10.7–10.10 |
+| B (worktrees) | P: passwords | 10.1–10.6; 10.7–10.10; 10.11 | `authenticate/password/*`, `httpsec/login.go`, `httpsec/basic.go`, the password re-proof path, `test/identity` history conformance | Opus for 10.1–10.6 (behaviour-preserving move of the reuse guard); Sonnet for 10.7–10.10 |
 | B | T: supply chain | 13.1–13.4 | `.github/`, `tools/`, `Makefile` | Sonnet |
 | C | D: sender-constrained tokens | 8.1–8.5; 8.6–8.9; 8.10–8.12; 9.1–9.4 | `token/*`, `httpsec/dpop.go`, `dpop_replay.go`, `dpop_nonce.go`, `certbinding.go` (new), `bearer.go`, `session_bearer.go`, `session_renewal.go`, `complete.go`, `mfa_verify.go`, `passkey_login.go`, `magiclink.go`, `oidc_redeem.go`, `redemption.go`, `recovery.go`, `reauth*.go`, conformance `dpop_scenarios.go` | Opus (security-critical verification; issue-before-spend ordering; several packages) |
 | C, after D | C: automation challenge | 12.1–12.4 | `httpsec/challenge.go` (new) and its call sites in `login.go`, `basic.go`, `magiclink.go`, `passkey_login.go`, `recovery.go` | Opus (refusal ordering before account lookup; outage split) |
@@ -155,7 +155,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ### Task 3.2: Default document headers
 **Files:** Create `httpsec/headers.go`; Test `headers_test.go`
-- [ ] Red `TestSecurityHeaders_Defaults`: the four headers with the exact spec values; none of the four not sent; a 401 bearer refusal carries the same headers; a host-not-allowed 400 carries them; without the layer none; enabled twice fails `New`.
+- [ ] Red `TestSecurityHeaders_Defaults`: the four headers with the exact spec values; none of the four not sent; a 401 bearer refusal carries the same headers; a host-not-allowed 400 carries them (the layer exposes an unexported `applyHeaders(w, req)` the chain calls on a resolution refusal; no interceptor runs); without the layer none; enabled twice fails `New`.
 - [ ] FAIL; Green: interceptor at `OrderSecurityHeaders` setting headers before `next`. PASS; commit.
 
 ### Task 3.3: Directive editing
@@ -280,7 +280,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - [ ] Red `TestSessions_EndSignIn`: own handle revokes the family; current handle revokes the current session; `not-a-family`, unknown and `u-2`'s handle → `ErrNotFound`, nothing revoked; `EndOtherSignIns` racing a renewal keeps the successor (barrier test). FAIL; Green; PASS; commit.
 
 ### Task 6.6: Migration
-**Files:** Create `store/migrate/securitystate/2026MMDD000000_session_signins.sql`; Test `test/migrate_securitystate_test.go`
+**Files:** Create `store/migrate/securitystate/20261102000000_session_signins.sql`; Test `test/migrate_securitystate_test.go`
 - [ ] Red: populated-database and rollback tests on PostgreSQL 15 and 18. FAIL; Green: nullable `client_ip text`, `user_agent text`, `binding_kind text`, `binding_thumbprint text`, `csrf_token text` (sealed); no index (listing uses `sessions_user`). The populated-database test asserts existing rows load with no token. PASS; commit.
 
 ### Task 6.7: Durable stores
@@ -375,6 +375,7 @@ Each lane owns its files; a file not listed is held by the main session for revi
 - [ ] Red `TestCertificateBinding_Direct` over `httptest.NewUnstartedServer` with `tls.RequireAnyClientCert`: certificate C binds `x5t#S256`; C passes; none and D refused. FAIL; Green in `httpsec/certbinding.go`; PASS; commit.
 
 ### Task 9.2: Forwarded certificate
+- [ ] Resolution keeps the trusted peer's raw certificate header on the resolved client (unexported) before removing it; red first that the value reaches `OrderMTLS` after removal.
 - [ ] Red `TestCertificateBinding_Forwarded`: URL-encoded PEM from a trusted peer binds C; a consumer decoder is used when given; untrusted peer ignored; undecodable value → no certificate, bound token refused. FAIL; Green; PASS; commit.
 
 ### Task 9.3: Both offered, switched off, conformance
@@ -421,6 +422,12 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ### Task 10.9: Login rehash
 - [ ] Red `TestLogin_Rehash` for form login, Basic and the password re-proof: write receives the 64 MiB hash replaced and a 128 MiB hash; no write → no encode; wrong password → no call; write error → success, log without hashes; MFA challenge → write called; `ConditionalProvisionerRehash` after a concurrent password change leaves the new hash. FAIL; Green; PASS; commit.
+
+### Task 10.11: Atomic conditional password update (D11)
+**Files:** `identity/ports.go` (option), the identity stores in `identity/` (in-memory, if any), `store/sqlstore/identity.go`, `store/pgxstore/identity.go`, `store/gormstore/identity.go`, the identity conformance suite in `test/identity`, `authenticate/password/rehash.go`.
+**Interfaces:** `func WithUserPasswordIf(expected []byte) UserOption`; `var ErrNotUpdated` (identity; not a storage failure); `ConditionalProvisionerRehash` maps `ErrNotUpdated` to success-without-write.
+- [ ] Red: conformance cases — `H1` → `H2` when unchanged; stays `H3` after a change meanwhile, `errors.Is(err, identity.ErrNotUpdated)`; two concurrent conditional updates on `H1` → exactly one wins (barrier); a broken consumer store that ignores the condition fails the suite naming the conditional-update check. `TestConditionalProvisionerRehash`: no reload call; `ErrNotUpdated` → nil, nothing written.
+- [ ] FAIL on every store; Green: `UPDATE … SET password_hash = $new WHERE id = $id AND password_hash = $expected`, zero rows → `ErrNotUpdated` (re-check existence only to tell not-found apart); `PasswordChangedAt` unchanged unless named. PASS; commit.
 
 ### Task 10.10: Docs
 - [ ] Godoc each option with its default; README password section with the failure-mode choice and the conditional rehash write. `go doc ./authenticate/password NewPolicy`. Commit.

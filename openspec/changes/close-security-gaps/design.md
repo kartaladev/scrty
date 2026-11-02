@@ -84,6 +84,7 @@ const (
   - The exploration's chain diagram drew CORS before headers. That order was revised here, and the gap-review document should follow.
 - **CORS sits before CSRF**, so a preflight (`OPTIONS`, a safe method) is answered before the CSRF check could matter.
 - **Client resolution happens before the first interceptor.** It is not an interceptor: it wraps the adapter's `Request` once, when the chain starts.
+- **A host refusal still carries the security headers (settled 2026-11-02, task 2.7 review).** Resolution refuses an unknown forwarded host before any interceptor runs, so nothing a consumer registers sees the forged host. The security-headers layer exposes its header-setting step to the chain, and the chain applies it to that one response before writing the refusal. That is the only response written outside the slot.
 - **The spacing follows the existing rule:** slots 25 apart, with the neighbours free for `Before`/`After`.
 
 ```
@@ -384,6 +385,7 @@ httpsec.EnableDPoP(httpsec.DPoP{
 - **Behaviour:** an issuing request with a client certificate binds `cnf.x5t#S256`. A bound token is accepted only with the same certificate, checked in the existing `OrderMTLS` slot.
 - **Behind a TLS-terminating proxy:** the certificate comes from a header the consumer names in the trusted-proxy configuration. It is read only from a trusted peer, removed with the other forwarded headers, and decoded as URL-encoded PEM by default, or by a decoder the consumer supplies.
 - **Proxy formats (changed 2026-11-02).** The draft left the header and encoding of each proxy open. A replaceable decoder settles the spec without that survey. The README gives examples for proxies whose format has been verified against their documentation (task 9.4), and a value that does not decode means no certificate.
+- **The forwarded value is captured before removal (settled 2026-11-02, task 2.8 review).** Resolution removes every forwarded header, the named certificate header included, so the binding at `OrderMTLS` could never read it. Resolution therefore keeps the raw header value from a trusted peer on the resolved client, unexported, before removing the header. Group 9 decodes it, and an untrusted peer's value is never kept.
 - **Validity is not checked here.** The library compares thumbprints only (RFC 8705 §3). The TLS server or the proxy validates the chain and dates, and the godoc says so.
 - **Both offered:** a request with a valid DPoP proof and a client certificate binds DPoP only. A token carries one confirmation, and DPoP survives proxies that do not forward certificates.
 ```
@@ -454,7 +456,9 @@ err = policy.Change(ctx, user, candidate, write)
 
 - **Encoder side:** an optional `password.Upgrader` interface (`NeedsUpgrade(encoded) bool`), type-asserted as `Recognizer` is. The built-ins implement it; a consumer encoder without it never upgrades.
 - **Login side:** `httpsec.WithLoginRehash(func(ctx, user, oldHash, newHash) error)` runs after a password verified and the request was not refused afterwards: form login, Basic authentication and password re-proof, including a login challenged for a second factor. It costs one extra key derivation on that request. Its error is logged and never changes the outcome.
-- **The write receives the hash it replaces (changed 2026-11-02).** A login that verified the old password can finish after a concurrent password change stored a new hash. An unconditional write would then put the old password back. Handing the write the replaced hash lets the consumer update only while it is still the stored one (compare-and-swap). The ready-made provisioner write does exactly that.
+- **The write receives the hash it replaces (changed 2026-11-02).** A login that verified the old password can finish after a concurrent password change stored a new hash. An unconditional write would then put the old password back. Handing the write the replaced hash lets the consumer update only while it is still the stored one (compare-and-swap).
+- **The ready-made write is atomic (decided 2026-11-02).** `identity.UserProvisioner.Update` gains an option naming the expected hash (`WithUserPasswordIf`), and every shipped identity store decides it in the `UPDATE`'s own `WHERE`, reporting not-updated as a distinct result, not a storage error (`default-identity-store`). `password.ConditionalProvisionerRehash` uses it. The first implementation reloaded and then updated, which left a window between the two calls. A consumer store that does not honour the option fails the conformance suite.
+- **How the login reaches the hashes.** The password provider wipes the submitted password and `Authentication` never carries a hash, so the login layer asks for an upgrade through the request context (`authenticate.RequestPasswordUpgrade`). The provider re-encodes with its own encoder only when asked, after the password verified and the current encoder's `NeedsUpgrade` said so, and leaves the result in that handle.
 - **Upgrade judged by the current encoder.** `NeedsUpgrade` is asked of the policy's current encoder, so a bcrypt hash under an Argon2id encoder upgrades, and a value it cannot parse never does.
 - **Default:** no rehash without a write.
 - **Alternatives rejected:** *rehashing in the background.* It would need a goroutine that outlives the request, holding the plaintext.
@@ -477,7 +481,9 @@ err = policy.Change(ctx, user, candidate, write)
  DELETE /sessions/Fx (u-2) -> 404, nothing revoked
 ```
 
-- **`session.Store` gains `ListByUser`.** Every store implements it from the existing `sessions_user` index, judging liveness by the time the caller passes, as `CountActiveByUser` does. The security-state migration adds the metadata and binding columns, and no index (`schema-migrations`).
+- **`session.Store` gains `ListByUser`.** A listing opens no sealed field: the retained ID token and the CSRF token come back empty from it, and a row whose listed fields cannot be read fails the whole call.
+- **Ending sign-ins (task 6.5).** `EndSignIn` confirms ownership through one listing, then revokes the family, so a family with no live member is not found. `EndOtherSignIns` refuses a nil current session, or one of another user, rather than ending every sign-in.
+- **The listing is `ListByUser`.** Every store implements it from the existing `sessions_user` index, judging liveness by the time the caller passes, as `CountActiveByUser` does. The security-state migration adds the metadata and binding columns, and no index (`schema-migrations`).
 - **Sign-in metadata** (client address, user agent) is off by default, because both are personal data. `WithSessionMetadata()` turns it on. The user agent is truncated to 512 bytes at a UTF-8 boundary.
 - **Endpoints:** `httpsec.EnableSessionManagement` registers `GET /sessions`, `DELETE /sessions/{handle}` and `DELETE /sessions`, all under a replaceable prefix and off by default.
   - Ending sessions requires a recent authentication, using `reauthentication`'s recency guard and window (ASVS 7.5.2). Listing does not.
@@ -589,7 +595,9 @@ These rows MODIFY the `http-error-propagation` contract and table (D1). A reques
 - **Implement after** `key-port-context` merges. `reauthentication` already has. Branch from `main`.
 - **Breaking before the tag:**
   - `Request.Host()`/`Secure()` (D2);
-  - `ginsec.WithForwardedClientIP` removed (D7);
+  - `ginsec.WithForwardedClientIP` removed, and with it `ginsec.Option`, so `ginsec.Middleware(chain)` takes no options (D7);
+  - `Request.HeaderValues` required (D2);
+  - `identity.UserProvisioner.Update` honours `WithUserPasswordIf` in every store (D11);
   - `NewReuseGuard` removed (D10);
   - `session.Store.ListByUser` (D12).
 - **Schema:** one new security-state migration (D12), columns only. They are nullable, so it applies to populated databases and rolls back fully.

@@ -24,7 +24,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 ## 3. Outer slots and security headers (D3, D4, D17)
 
 - [ ] 3.1 Publish `OrderSecurityHeaders`, `OrderCORS` and `OrderCSRF`, test-first: a slot-order test asserting 25 < 50 < 75 < `OrderJWKS`. Verify: `go test -run 'TestOrder_OuterSlots' -count=1 ./httpsec/`.
-- [ ] 3.2 Implement `EnableSecurityHeaders` with the document defaults, setting headers before `next`, test-first, including "A refusal carries the headers", "Host refusal carries the headers" and enabling twice. Verify: `go test -run 'TestSecurityHeaders_Defaults' -count=1 ./httpsec/`.
+- [ ] 3.2 Implement `EnableSecurityHeaders` with the document defaults, setting headers before `next`, test-first, including "A refusal carries the headers", "Host refusal carries the headers" (the chain applies the layer's header step to a resolution refusal, D3) and enabling twice. Verify: `go test -run 'TestSecurityHeaders_Defaults' -count=1 ./httpsec/`.
 - [ ] 3.3 Add directive editing: add, replace a default directive without duplicating it, remove a header, and refuse a directive holding `;`, `,` or a line break, test-first. Verify: `go test -run 'TestSecurityHeaders_Directives' -count=1 ./httpsec/`.
 - [ ] 3.4 Generate the per-response nonce and expose `CSPNonce`, failing the request on a randomness error, with no nonce on routes not served by the document profile, test-first. Verify: `go test -run 'TestSecurityHeaders_Nonce' -count=1 ./httpsec/`.
 - [ ] 3.5 Add route profiles with the path-prefix (whole segments) and function matchers, first match wins, and the API profile, test-first. Verify: `go test -run 'TestSecurityHeaders_Profiles' -count=1 ./httpsec/`.
@@ -90,7 +90,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 ## 9. mTLS-bound tokens (D9)
 
 - [ ] 9.1 Bind tokens to a direct TLS client certificate with `EnableCertificateBinding`, test-first, over an `httptest` TLS server with client certificates: same certificate, none, another one. Verify: `go test -run 'TestCertificateBinding_Direct' -count=1 ./httpsec/`.
-- [ ] 9.2 Read a forwarded client certificate only from a trusted peer, URL-encoded PEM by default or through the consumer's decoder, with an undecodable value meaning no certificate, test-first. Verify: `go test -run 'TestCertificateBinding_Forwarded' -count=1 ./httpsec/`.
+- [ ] 9.2 Read a forwarded client certificate only from a trusted peer, from the raw value resolution keeps before removing the header (D9), URL-encoded PEM by default or through the consumer's decoder, with an undecodable value meaning no certificate, test-first. Verify: `go test -run 'TestCertificateBinding_Forwarded' -count=1 ./httpsec/`.
 - [ ] 9.3 Bind DPoP only when both a proof and a certificate are offered, refuse a certificate-bound token after the feature is turned off, register the refusal at 401, and run the scenarios on all three adapters, test-first. Verify: `go test -run 'TestCertificateBinding' ./...` in the core and `test` modules.
 - [ ] 9.4 Document certificate binding with its default, the decoder, that chain and validity checks belong to TLS or the proxy, and proxy examples verified against each proxy's documentation. Verify: `go doc ./httpsec EnableCertificateBinding`.
 
@@ -105,6 +105,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 - [ ] 10.7 Register `ErrPasswordRejected` at 422, with `password.ErrReused` also matching it, and the lookup-unavailable error at 500, test-first. Verify: `go test -run 'TestStatusForError' -count=1 ./httpsec/`.
 - [ ] 10.8 Add `password.Upgrader` to the three built-in encoders, test-first: weaker, current, stronger, another algorithm, unparseable. Verify: `go test -run 'TestEncoder_NeedsUpgrade' -count=1 ./authenticate/password/`.
 - [ ] 10.9 Add `WithLoginRehash` to form login, Basic and the password re-proof, handing the write the replaced and the new hash, test-first, including "No write configured", "Wrong password", "Write fails", "Challenged for a second factor", and a ready-made conditional provisioner write that leaves a concurrent change in place. Verify: `go test -run 'TestLogin_Rehash' -count=1 ./httpsec/`.
+- [ ] 10.11 Add `identity.WithUserPasswordIf(expected)` to `UserProvisioner.Update`, decided in the write itself by the in-memory, `sqlstore`, `pgxstore` and `gormstore` identity stores, with a not-updated result that is not a storage error, a conformance case (hash unchanged, changed meanwhile, two concurrent conditional updates, a consumer store ignoring the condition), and `ConditionalProvisionerRehash` built on it, test-first. Verify: `go test -run 'TestIdentity.*Conditional|TestConditionalProvisionerRehash|TestLogin_Rehash' ./...` in the core and `test` modules.
 - [ ] 10.10 Document the policy, the breach check's failure-mode choice and rehash, each with its default, and update the README's password section. Verify: `go doc ./authenticate/password NewPolicy`.
 
 ## 11. Security events (D13)

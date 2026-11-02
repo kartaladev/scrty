@@ -33,7 +33,7 @@ Every request an interceptor judges SHALL expose its host and whether it arrived
 - **THEN** an interceptor sees a secure request and the `Host` header's host
 
 ### Requirement: Browser-hardening layers run outside every authentication interceptor
-The library SHALL publish three named slots ahead of every existing slot, in this order: security headers, then CORS, then CSRF protection. Each SHALL be empty unless its layer is enabled. Client resolution through trusted proxies SHALL happen before the first interceptor runs, and a host-not-allowed refusal SHALL still pass through the security-headers slot. Every response the chain produces, including a CORS preflight answer and a CSRF refusal, SHALL pass through the security-headers slot.
+The library SHALL publish three named slots ahead of every existing slot, in this order: security headers, then CORS, then CSRF protection. Each SHALL be empty unless its layer is enabled. Client resolution through trusted proxies SHALL happen before the first interceptor runs, and a host-not-allowed refusal, which no interceptor sees, SHALL still carry the headers the security-headers layer would set for that request. Every response the chain produces, including a CORS preflight answer and a CSRF refusal, SHALL pass through the security-headers slot.
 
 #### Scenario: Preflight carries the headers
 - **WHEN** security headers and CORS are enabled and an allowed preflight is answered
@@ -109,6 +109,10 @@ When the consumer supplies a rehash write, a password login, Basic authenticatio
 #### Scenario: Password changed meanwhile
 - **WHEN** a login with the old password verifies the old 64 MiB hash while a password change stores a new hash, and the rehash write then runs
 - **THEN** the write receives the old 64 MiB hash as the one it replaces, so a conditional write leaves the new password in place
+
+#### Scenario: Ready-made write is atomic
+- **WHEN** the consumer uses the library's ready-made rehash write over a shipped identity store, and a password change commits between the login's verification and the write
+- **THEN** the store decides the condition in the write itself, the new password stays, and the login still succeeds
 
 #### Scenario: Challenged for a second factor
 - **WHEN** a rehash write is configured and a login with an outdated stored hash is challenged for a second factor
