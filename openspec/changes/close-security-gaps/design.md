@@ -256,6 +256,11 @@ httpsec.EnableCORS(httpsec.CORSPolicy{
     - *Rotating the token with the session identifier:* the bff draft did this, but the spec requires the token to survive renewals, so a page would race every renewal.
     - *Per-request tokens:* OWASP notes they break the Back button.
 - **Mandatory with cookie authentication.** A chain enabling any cookie-authenticating interceptor fails construction without CSRF protection, unless `WithoutCSRFProtection()` is given. Today no built-in cookie authenticator exists. The rule binds the cookie session `bff-resource-server` will add.
+- **Settled during tasks 5.1–5.4 (2026-11-02).**
+  - **Departures from Go's `CrossOriginProtection`, all stricter or normalising.** A default port is normalised (`:443` matches `https` with no port). An `http` Origin is refused on an `https` request, because Go compares the host only. The scheme and host compared are the resolved ones, so a request behind a trusted proxy is judged by the origin the browser saw.
+  - **Declaring a cookie authenticator.** The construction rule binds any interceptor that authenticates by cookie, a consumer's own included. So the marker is an exported interface a consumer's interceptor implements, not an unexported one only built-ins can carry.
+  - **Stored tokens follow the default source.** A sign-in is created with a stored token only when CSRF protection is on, a cookie authenticator is registered, and the default token source is in use. A consumer's own source keeps no sealed value it never reads.
+  - **Where the token is read.** The header first, then a URL-encoded form field of at most 1 MiB, never the query. A multipart form sends the token in the header. An empty token is refused without asking the source, and a source's own failure is returned as it is, not as a refusal.
 - **Exemptions** are by method and path only. Back-channel logout is exempt by default.
 - **Default:** off, until cookie authentication is enabled (then required).
 - **Alternatives rejected:** *token only.* OWASP and web.dev present Fetch Metadata as the first layer, and it needs no state.
