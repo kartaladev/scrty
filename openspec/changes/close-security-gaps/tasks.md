@@ -138,9 +138,9 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 14. Integration
 
-- [ ] 14.1 Run every module's full suite with the race detector, and the whole conformance suite on net/http, gin and fiber. Verify: `make check` (or the per-module `go test -race ./...`) passes in every module.
-- [ ] 14.2 Run `govulncheck`, `gofmt -l` and `go vet` on every module. Verify: all three are clean.
-- [ ] 14.3 Review the whole branch against every requirement in this change's specs, with a reviewer that did not write the code. Verify: the review lists each requirement as met, or files a finding.
+- [x] 14.1 Run every module's full suite with the race detector, and the whole conformance suite on net/http, gin and fiber. Verify: `make check` (or the per-module `go test -race ./...`) passes in every module.
+- [x] 14.2 Run `govulncheck`, `gofmt -l` and `go vet` on every module. Verify: all three are clean.
+- [x] 14.3 Review the whole branch against every requirement in this change's specs, with a reviewer that did not write the code. Verify: the review lists each requirement as met, or files a finding.
 
 ## Workflow follow-up
 
