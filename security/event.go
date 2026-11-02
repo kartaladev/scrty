@@ -110,9 +110,11 @@ const (
 	// reported again. It is reported by the policy's view
 	// (lockout.Policy.Attempts) where it records the failure, once per lock:
 	// the failures that find the identifier still locked report no further
-	// lock, and a held identifier stays locked whatever its window holds, so
-	// no failure while the hold stands reports one, though it brings the
-	// window to the threshold. It names no user, since the policy counts identifiers, and
+	// lock, except the one that sets a hold, which is a lock of its own and
+	// reports even when the window already locked the identifier. A held
+	// identifier stays locked whatever its window holds, so no failure while
+	// the hold stands reports one, though it brings the window to the
+	// threshold. It names no user, since the policy counts identifiers, and
 	// carries the first factor that failed. Within one process concurrent
 	// failures that lock together report it once; with an attempt store
 	// several processes share, failures on different processes at the same
