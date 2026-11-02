@@ -81,6 +81,20 @@ type Request struct {
 	// creates an unbound session. A held recovery creates its session at its
 	// finish, which takes its own binding (WithFinishKeyBinding).
 	KeyBinding session.KeyBinding
+	// SessionOptions are the caller's own attributes for the
+	// recovery-pending session a recovery completing at once creates, such
+	// as the sign-in's CSRF token (session.WithCSRFToken) and its client
+	// address and user agent (session.WithClientMetadata), applied in the one
+	// write that creates it. The default, none, creates the session with
+	// neither. A held recovery creates its session at its finish, which takes
+	// its own (WithFinishSessionOptions).
+	//
+	// The recovery's own attributes are applied after them, so none of them
+	// can replace those: the first factor, factor.Recovery; the binding
+	// KeyBinding names, unless it is the zero value; and the recovery-pending
+	// state, confined to the pending lifetime and with no second factor met,
+	// whatever an option such as session.WithSecondFactorAtLogin recorded.
+	SessionOptions []session.CreateOption
 }
 
 // PasswordCheck checks a password proof for the username a recovery names. It

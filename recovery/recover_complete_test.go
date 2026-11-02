@@ -200,6 +200,24 @@ func TestRecoverer_Complete(t *testing.T) {
 			},
 		},
 		{
+			name: "the caller's session options are written with the session, and the recovery's own attributes win",
+			req: func(e *completeEnv) recovery.Request {
+				req := savedAndIssuedReq(e)
+				req.KeyBinding = session.KeyBinding{JKT: provedJKT}
+				req.SessionOptions = callerSessionOptions()
+
+				return req
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				callerOptionsUnderRecoveryOwn(t, s)
+			},
+		},
+		{
 			name: "the recovery session expires after the default 15 minutes",
 			req:  savedAndIssuedReq,
 			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
@@ -722,4 +740,37 @@ func TestRecoverer_IssueFailureSpendsAndEndsNothing(t *testing.T) {
 			assert.Equal(t, issuedForPrefix+again.Session.ID, again.Credential)
 		})
 	}
+}
+
+// provedJKT is the key a recovery's caller proved the client holds, and
+// claimedJKT another one a caller's own session option names.
+const (
+	provedJKT  = "jkt-proved"
+	claimedJKT = "jkt-claimed"
+)
+
+// callerSessionOptions are a caller's own attributes for a recovery session:
+// a CSRF token it may set, and a first factor, a second factor met at login
+// and a key binding the recovery's own attributes must win over.
+func callerSessionOptions() []session.CreateOption {
+	return []session.CreateOption{
+		session.WithCSRFToken(),
+		session.WithFirstFactor(factor.Password),
+		session.WithSecondFactorAtLogin(),
+		session.WithKeyBinding(session.KeyBinding{JKT: claimedJKT}),
+	}
+}
+
+// callerOptionsUnderRecoveryOwn asserts s, stored by a recovery given
+// callerSessionOptions and bound to provedJKT, holds the caller's CSRF token
+// and the recovery's own first factor, binding and recovery-pending state.
+func callerOptionsUnderRecoveryOwn(t *testing.T, s *session.Session) {
+	t.Helper()
+
+	assert.NotEmpty(t, s.CSRFToken, "the caller's CSRF token is written with the session")
+	assert.Equal(t, factor.Recovery, s.FirstFactor, "the recovery's first factor wins")
+	assert.Equal(t, session.KeyBinding{JKT: provedJKT}, s.KeyBinding, "the recovery's binding wins")
+	assert.Equal(t, session.MFARecoveryPending, s.MFA)
+	assert.False(t, s.MFAAtFirstFactor, "no second factor was met at the first")
+	assert.True(t, s.MFASatisfiedAt.IsZero(), "no second factor was met")
 }

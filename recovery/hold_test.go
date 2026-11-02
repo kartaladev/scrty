@@ -135,6 +135,30 @@ func TestRecoverer_Hold(t *testing.T) {
 			},
 		},
 		{
+			name: "a finish writes the caller's session options with its session, and the recovery's own attributes win",
+			opts: holdFor(72 * time.Hour),
+			act: func(ctx context.Context, t *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {
+				h := heldRecovery(ctx, t, r, savedAndIssuedReq(e))
+				e.clock.Advance(72 * time.Hour)
+
+				// Given across two options, which add up.
+				opts := callerSessionOptions()
+
+				return r.Finish(ctx, h.CompletionToken,
+					recovery.WithFinishSessionOptions(opts[:2]...),
+					recovery.WithFinishSessionOptions(opts[2:]...),
+					recovery.WithFinishKeyBinding(session.KeyBinding{JKT: provedJKT}))
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				callerOptionsUnderRecoveryOwn(t, s)
+			},
+		},
+		{
 			name: "finishing too early is refused, and the same token works after the hold",
 			opts: holdFor(72 * time.Hour),
 			act: func(ctx context.Context, t *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {

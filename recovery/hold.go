@@ -387,7 +387,7 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 
 	// Issued before the record is completed, so a credential that cannot be
 	// issued leaves the record pending and the token usable.
-	issued, err := r.issueSession(ctx, details, now, o.binding)
+	issued, err := r.issueSession(ctx, details, now, o.binding, o.sessionOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -549,7 +549,8 @@ type FinishOption func(*finishOptions)
 
 // finishOptions is what the FinishOptions given to one finish chose.
 type finishOptions struct {
-	binding session.KeyBinding
+	binding     session.KeyBinding
+	sessionOpts []session.CreateOption
 }
 
 // WithFinishKeyBinding binds the recovery-pending session a finish creates,
@@ -559,4 +560,19 @@ type finishOptions struct {
 // is completed or spent.
 func WithFinishKeyBinding(b session.KeyBinding) FinishOption {
 	return func(o *finishOptions) { o.binding = b }
+}
+
+// WithFinishSessionOptions adds opts to the caller's own attributes for the
+// recovery-pending session a finish creates, such as the sign-in's CSRF token
+// (session.WithCSRFToken) and its client address and user agent
+// (session.WithClientMetadata), applied in the one write that creates it.
+// Given more than once, the options add up, in order. The default, with no
+// option, creates the session with neither.
+//
+// The recovery's own attributes are applied after them, as for
+// Request.SessionOptions, so none of them can replace those: the first
+// factor, the binding WithFinishKeyBinding names, and the recovery-pending
+// state with no second factor met.
+func WithFinishSessionOptions(opts ...session.CreateOption) FinishOption {
+	return func(o *finishOptions) { o.sessionOpts = append(o.sessionOpts, opts...) }
 }

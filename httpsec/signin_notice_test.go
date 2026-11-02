@@ -25,6 +25,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
@@ -825,6 +826,31 @@ func TestSignInMetadata_RecordedWithoutNotice(t *testing.T) {
 				require.NoError(t, serve(t, c, req).err)
 
 				return magicLinkUserID, magicLinkSource
+			},
+		},
+		{
+			name: "a passwordless passkey sign-in",
+			signIn: func(t *testing.T, sessions *session.Sessions) (identity.UserID, string) {
+				t.Helper()
+
+				d := newPwlDeployment(t)
+				d.sessions = sessions
+				d.withoutPasskeyMFA = true
+				d.required.on.Store(false)
+				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UserVerificationPreferred))
+				d.verifier.notUserVerified.Store(true)
+				d.build(t)
+
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+				cookie, challenge := d.begun(t)
+
+				req := jsonPost(t.Context(), passwordlessFinishPath, handleAssertionBody(challenge, "cred-1", handle))
+				req.RemoteAddr = e2eSource + ":51000"
+				req.AddCookie(&http.Cookie{Name: httpsec.DefaultPasswordlessCookieName, Value: cookie}) //nolint:gosec // G124: a request cookie
+				req.Header.Set("User-Agent", userAgent)
+				require.NoError(t, serve(t, d.chain, req).err)
+
+				return e2eUser, e2eSource
 			},
 		},
 		{

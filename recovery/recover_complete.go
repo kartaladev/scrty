@@ -204,7 +204,7 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 	// spent; a held one creates no session until its finish.
 	var issued *issuedSession
 	if hold <= 0 {
-		if issued, err = r.issueSession(ctx, v.details, now, req.KeyBinding); err != nil {
+		if issued, err = r.issueSession(ctx, v.details, now, req.KeyBinding, req.SessionOptions); err != nil {
 			return nil, err
 		}
 	}
@@ -251,21 +251,28 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 }
 
 // issueSession builds the recovery-pending session for the recovered user,
-// recovered at now and bound to binding unless it is the zero value, and
-// issues its credential through the issuer. Nothing is
-// stored: the session loads nothing until complete commits it. ctx is the
-// caller's own, so an issuer bound to it fails when the client has left, and
-// that failure spends nothing either.
+// recovered at now, with the caller's own attributes callerOpts and bound to
+// binding unless it is the zero value, and issues its credential through the
+// issuer. Nothing is stored: the session loads nothing until complete commits
+// it. ctx is the caller's own, so an issuer bound to it fails when the client
+// has left, and that failure spends nothing either.
+//
+// The recovery's own attributes are applied after callerOpts, so none of them
+// can replace those: the first factor, the binding, and no second factor met
+// (recoveryOwn), before the session is marked recovery-pending.
 //
 // An issuing failure is logged and returned behind fixed text, a dependency
 // failure: at ERROR, or at DEBUG when ctx's own end cut it short.
 func (r *Recoverer) issueSession(
-	ctx context.Context, details *identity.Details, now time.Time, binding session.KeyBinding,
+	ctx context.Context, details *identity.Details, now time.Time,
+	binding session.KeyBinding, callerOpts []session.CreateOption,
 ) (*issuedSession, error) {
-	opts := []session.CreateOption{session.WithFirstFactor(factor.Recovery)}
+	opts := make([]session.CreateOption, 0, len(callerOpts)+3)
+	opts = append(opts, callerOpts...)
 	if !binding.IsZero() {
 		opts = append(opts, session.WithKeyBinding(binding))
 	}
+	opts = append(opts, session.WithFirstFactor(factor.Recovery), recoveryOwn)
 
 	p, err := r.sessions.Prepare(details.ID, opts...)
 	if err != nil {
@@ -295,6 +302,13 @@ func (r *Recoverer) issueSession(
 	}
 
 	return &issuedSession{prepared: p, credential: credential}, nil
+}
+
+// recoveryOwn clears a second factor a caller's create option recorded as met
+// (session.WithSecondFactorAtLogin): a recovery session has met none, and
+// becomes a full session only by binding a new authenticator.
+func recoveryOwn(s *session.Session) {
+	s.MFASatisfiedAt, s.MFAAtFirstFactor = time.Time{}, false
 }
 
 // complete runs the completion sequence from the reset on: reset, revoke,

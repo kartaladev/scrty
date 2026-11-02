@@ -109,7 +109,26 @@ type recoveryInterceptor struct {
 	// start, settled at assembly, and nil otherwise.
 	automation *challengeGate
 
+	// csrfToken is whether the sign-ins a recovery makes carry a CSRF token,
+	// as every first factor's do, settled at assembly (csrfTokensAtLogin).
+	csrfToken bool
+
 	now func() time.Time
+}
+
+// signInOptions are the attributes a recovery's sign-in is created with, as
+// every first factor's sign-in is (prepareLogin): the client address and user
+// agent the chain resolved for ctx, which the session manager records only
+// when it records sign-in metadata (signInMetadata), and the CSRF token its
+// unsafe cookie requests must present when the chain issues one. The recovery
+// core applies its own attributes after them.
+func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.CreateOption {
+	opts := []session.CreateOption{signInMetadata(ctx)}
+	if i.csrfToken {
+		opts = append(opts, session.WithCSRFToken())
+	}
+
+	return opts
 }
 
 // check reports the wiring faults only the assembled configuration can see:
@@ -427,6 +446,7 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 	}
 
 	req.Source = src.Addr()
+	req.SessionOptions = i.signInOptions(ctx)
 
 	res, err := i.recoverer.Recover(ctx, req)
 	if err != nil {
@@ -810,7 +830,8 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 		return err
 	}
 
-	res, err := i.recoverer.Finish(ex.Context(), token, recovery.WithFinishKeyBinding(binding))
+	res, err := i.recoverer.Finish(ex.Context(), token,
+		recovery.WithFinishKeyBinding(binding), recovery.WithFinishSessionOptions(i.signInOptions(ex.Context())...))
 	if err != nil {
 		return err
 	}

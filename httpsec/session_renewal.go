@@ -160,6 +160,12 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
+	// A proof given beside the session's credential is verified before the
+	// limit is asked and anything is rotated.
+	if err := continuingProof(ex, s); err != nil {
+		return err
+	}
+
 	// The user is reloaded before anything is rotated, so a removed user is
 	// refused without a successor being written.
 	details, principal, err := r.user(ctx, s)
@@ -461,7 +467,11 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // For a renewal it:
 //
 //  1. refuses a request with no authentication result or no session with
-//     ErrAuthenticationRequired;
+//     ErrAuthenticationRequired, and, with EnableDPoP on, refuses with
+//     ErrInvalidDPoPProof a DPoP proof the request carries beside an unbound
+//     session's Bearer credential that does not verify, recording the jti of
+//     one that does: a renewal adds no binding, but a proof it is given is
+//     checked before anything is counted or rotated;
 //  2. reloads the session's user with LoadByUserID, refusing with
 //     ErrAuthenticationRequired a user who no longer exists
 //     (identity.ErrUserNotFound), is not the user the session records, or is

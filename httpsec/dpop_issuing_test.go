@@ -749,6 +749,32 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 			},
 		},
 		{
+			// An endpoint that continues a sign-in adds no binding, but still
+			// verifies a proof it is given beside the sign-in's Bearer
+			// credential, which the bearer itself does not look at.
+			name:  "an unbound sign-in's bad proof beside its Bearer credential is refused with everything left unspent",
+			bound: func(issuingEndpoint) string { return "" },
+			proof: key.brokenProver("j-bad"),
+			skip:  func(ep issuingEndpoint) bool { return !ep.inherits },
+			assert: func(t *testing.T, f *issuingFixture, out served, retry func(*testing.T, prover) served, before int, _ int64) {
+				refused(t, f, out, before)
+				unspent(t, retry)
+			},
+		},
+		{
+			name:  "an unbound sign-in's proof beside its Bearer credential is recorded, so its replay is refused",
+			bound: func(issuingEndpoint) string { return "" },
+			proof: key.validProver("j-once"),
+			skip:  func(ep issuingEndpoint) bool { return !ep.inherits },
+			assert: func(t *testing.T, f *issuingFixture, out served, _ func(*testing.T, prover) served, _ int, _ int64) {
+				require.NoError(t, out.err)
+
+				// Another sign-in of the same user, presenting the same proof.
+				before := f.activeSessions(t)
+				refused(t, f, f.prepare(t, "")(t, key.validProver("j-once")), before+1)
+			},
+		},
+		{
 			name:  "a proof for another URL at login records no lockout failure",
 			bound: boundIfInherited,
 			proof: key.wrongURLProver("j-url"),

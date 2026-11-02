@@ -173,7 +173,8 @@ func (c *config) wireCSRF() error {
 
 // csrfTokensAtLogin hands issue to every first factor that ends its login
 // through completeLogin: form login, magic link, OIDC and passwordless passkey
-// login.
+// login; and to account recovery, whose sign-in the recovery core creates, at
+// its completion or its finish.
 func (c *config) csrfTokensAtLogin(issue bool) {
 	_ = eachInterceptor(c, func(l *formLogin) error {
 		l.csrfToken = issue
@@ -194,6 +195,12 @@ func (c *config) csrfTokensAtLogin(issue bool) {
 	})
 
 	_ = eachInterceptor(c, func(i *passwordlessInterceptor) error {
+		i.csrfToken = issue
+
+		return nil
+	})
+
+	_ = eachInterceptor(c, func(i *recoveryInterceptor) error {
 		i.csrfToken = issue
 
 		return nil

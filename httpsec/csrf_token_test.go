@@ -588,6 +588,10 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 	type signedIn struct {
 		chain   *httpsec.Chain
 		session *session.Session
+		// route is a path an unsafe request on the sign-in may reach, and
+		// empty for any path: a recovery-pending sign-in reaches only the
+		// routes that bind a new authenticator.
+		route string
 	}
 
 	type testCase struct {
@@ -655,6 +659,21 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		return signedIn{chain: chain, session: s}
 	}
 
+	// recoverySignIn is an account recovery's sign-in, completed at once or,
+	// with finish, finished after a hold.
+	recoverySignIn := func(finish bool) func(*testing.T, func(*session.Sessions) []httpsec.Option) signedIn {
+		return func(t *testing.T, csrfOpts func(*session.Sessions) []httpsec.Option) signedIn {
+			h := newRecoveryHarness(t)
+			h.chainOpts = csrfOpts(h.sessions)
+			if finish {
+				h.withHold()
+			}
+			h.build(t)
+
+			return signedIn{chain: h.chain, session: recoveredSignIn(t, h, finish, nil), route: passwordResolvePath}
+		}
+	}
+
 	// holdsToken asserts the login holds a token, that a request authenticated
 	// by its cookie passes the check with it and is refused without it, and
 	// that no two sign-ins share one.
@@ -662,10 +681,29 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		require.NotEmpty(t, first.session.CSRFToken)
 		assert.NotEqual(t, other.session.CSRFToken, first.session.CSRFToken, "a token belongs to one sign-in")
 
-		passedCSRF(t, serve(t, first.chain, cookieRequest(t.Context(), http.MethodPost, first.session.ID,
-			map[string]string{"X-CSRF-Token": first.session.CSRFToken}, "")))
+		unsafe := func(headers map[string]string) *http.Request {
+			req := cookieRequest(t.Context(), http.MethodPost, first.session.ID, headers, "")
+			if first.route != "" {
+				req.URL.Path = first.route
+			}
 
-		refusedCrossSite(t, serve(t, first.chain, cookieRequest(t.Context(), http.MethodPost, first.session.ID, nil, "")))
+			return req
+		}
+
+		// Refused first, since a passing request on a binding route may move
+		// the sign-in on.
+		refusedCrossSite(t, serve(t, first.chain, unsafe(nil)))
+
+		out := serve(t, first.chain, unsafe(map[string]string{"X-CSRF-Token": first.session.CSRFToken}))
+		if first.route == "" {
+			passedCSRF(t, out)
+
+			return
+		}
+
+		// A binding route is answered by the chain's own endpoint, which the
+		// request reached past the check, not by the handler.
+		require.NoError(t, out.err)
 	}
 
 	holdsNone := func(t *testing.T, first, _ signedIn) {
@@ -679,6 +717,10 @@ func TestCSRF_TokenAtFirstFactorLogins(t *testing.T) {
 		{name: "a passwordless passkey login without CSRF protection holds none", signIn: passkeySignIn, assert: holdsNone},
 		{name: "an OIDC redemption with CSRF protection holds a token", csrf: true, signIn: oidcSignIn, assert: holdsToken},
 		{name: "an OIDC redemption without CSRF protection holds none", signIn: oidcSignIn, assert: holdsNone},
+		{name: "a recovery completed at once with CSRF protection holds a token", csrf: true, signIn: recoverySignIn(false), assert: holdsToken},
+		{name: "a recovery completed at once without CSRF protection holds none", signIn: recoverySignIn(false), assert: holdsNone},
+		{name: "a recovery finished after its hold with CSRF protection holds a token", csrf: true, signIn: recoverySignIn(true), assert: holdsToken},
+		{name: "a recovery finished after its hold without CSRF protection holds none", signIn: recoverySignIn(true), assert: holdsNone},
 	}
 
 	for _, tc := range cases {
