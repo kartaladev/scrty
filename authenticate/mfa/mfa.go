@@ -141,6 +141,13 @@ type Method interface {
 	// Verify checks response for user. The response is the bytes the library
 	// read as Response declares: a form field's value, or a whole JSON body.
 	// A wrong, reused or malformed response returns ErrInvalidCode.
+	//
+	// A refusal matches ErrInvalidCode, ErrVerifyThrottled,
+	// ErrAuthenticatorRefused or ErrSameChannel; any other error is taken for
+	// a dependency failure. The distinction is what security events rest on:
+	// account recovery reports a refused second factor as a refusal and a
+	// failed one as nothing, so a method's own refusal that should be reported
+	// wraps one of those errors.
 	Verify(ctx context.Context, user identity.UserID, response []byte) error
 }
 

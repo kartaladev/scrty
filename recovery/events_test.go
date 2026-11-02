@@ -491,6 +491,15 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 			},
 		},
 		{
+			name:  "an MFA method that refused a response from the same channel is reported",
+			setup: mfaVerifies(fmt.Errorf("%w: code sent to the recovery address", mfa.ErrSameChannel)),
+			act:   byMFA,
+			assert: func(t *testing.T, own, _ *recoveryEvents, err error) {
+				require.ErrorIs(t, err, recovery.ErrRefused)
+				refusedOnce(t, own.all())
+			},
+		},
+		{
 			name: "an issued code the store does not hold is a refusal, and is reported",
 			store: func(f *onFaultStore, _ context.CancelFunc) {
 				f.find.Store(failing(onetime.ErrTokenNotFound))

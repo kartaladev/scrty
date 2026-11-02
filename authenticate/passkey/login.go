@@ -62,6 +62,12 @@ const (
 // credential's counter, flags and last use are left as they were. A consumer
 // can use it to refuse device-bound passkeys for some users only. A nil check
 // is a configuration error.
+//
+// Security events report a refusal only when its error says it is one: wrap
+// authenticate.ErrAuthenticationFailed (at a passwordless login) or
+// mfa.ErrAuthenticatorRefused (as a second factor, which account recovery
+// spends) for the refusal to be reported; any other error is taken for a
+// failed dependency and reported as nothing.
 func WithLoginCheck(fn func(ctx context.Context, f LoginFacts) error) Option {
 	return func(m *Passkeys) {
 		m.loginCheck = fn

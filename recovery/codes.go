@@ -210,7 +210,9 @@ func (c *Codes) Generate(ctx context.Context, user identity.UserID) ([]string, e
 // ErrCodeThrottled before the code is looked up, and a wrong code is refused
 // with ErrRefused and stays charged against the user. A store that cannot
 // answer is an error that is neither, and its charge stands too: an outage
-// during the lookup costs the user one attempt.
+// during the lookup costs the user one attempt. A limiter that cannot charge
+// refuses with an error matching ErrCodeThrottled that also carries the
+// limiter's own failure, so compare with errors.Is.
 func (c *Codes) Confirm(ctx context.Context, user identity.UserID, presented string) error {
 	_, err := c.check(ctx, user, presented)
 
@@ -251,10 +253,11 @@ func (f *limiterFailure) Unwrap() error { return f.cause }
 //
 // The charge and the refund are made with the caller's cancellation stripped,
 // so a client that hangs up can neither slip past the limit nor take back the
-// guess it made. A limiter that cannot charge refuses, as ErrCodeThrottled
-// carrying its failure (depfault.Refusal), which throttles no user. A store that cannot
-// answer is returned as an error, and its charge stands: the presentation was
-// counted before the lookup, and only a valid code earns it back.
+// guess it made. A limiter that cannot charge refuses, as an error matching
+// ErrCodeThrottled and carrying the limiter's own failure, which throttles no
+// user; compare it with errors.Is, not ==. A store that cannot answer is
+// returned as an error, and its charge stands: the presentation was counted
+// before the lookup, and only a valid code earns it back.
 func (c *Codes) check(ctx context.Context, user identity.UserID, presented string) ([32]byte, error) {
 	key := CodeThrottleKey(user)
 
