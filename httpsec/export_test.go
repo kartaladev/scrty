@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -314,6 +315,16 @@ func SecurityHeadersRandom(r io.Reader) HeaderOption {
 	}
 }
 
+// WithSignInNoticeTracker counts the sign-in notice's work in flight on wg, so
+// a test can wait for the background work to finish.
+func WithSignInNoticeTracker(wg *sync.WaitGroup) SignInNoticeOption {
+	return withSignInNoticeTracker(wg)
+}
+
+// SignInDeviceDescription is the device text a sign-in notice carries for a
+// user agent.
+var SignInDeviceDescription = deviceDescription
+
 // DeclareDPoPForTest records on the configuration that DPoP is enabled, as the
 // DPoP option does, so the CORS layer's additions can be pinned before that
 // option exists.
@@ -354,4 +365,51 @@ func CORSOrigins(origin string, opts ...Option) (exact []string, matchesPattern 
 	}
 
 	return exact, false, nil
+}
+
+// testCookieAuthenticator authenticates a request by the session identifier a
+// cookie carries. No built-in authenticates by cookie yet, so it is the shape
+// one will have: it carries the cookie-authenticator marker, and has CSRF
+// protection check the request's token for the session before publishing it.
+type testCookieAuthenticator struct {
+	sessions *session.Sessions
+	cookie   string
+}
+
+func (testCookieAuthenticator) authenticatesByCookie() {}
+
+// Intercept loads the cookie's session, checks the CSRF token for it, and
+// publishes it. A request without the cookie continues unauthenticated.
+func (a testCookieAuthenticator) Intercept(ex *Exchange, next Next) error {
+	id, ok := ex.Request.Cookie(a.cookie)
+	if !ok {
+		return next(ex)
+	}
+
+	s, err := a.sessions.Load(ex.Context(), id)
+	if err != nil {
+		return ErrAuthenticationRequired
+	}
+
+	if err := checkCSRFToken(ex, s); err != nil {
+		return err
+	}
+
+	ex.Session = s
+	ex.SetContext(withSession(ex.Context(), s))
+
+	return next(ex)
+}
+
+// NewTestCookieAuthenticator is a cookie-authenticating interceptor reading
+// the session named by cookie through sessions.
+func NewTestCookieAuthenticator(sessions *session.Sessions, cookie string) Interceptor {
+	return testCookieAuthenticator{sessions: sessions, cookie: cookie}
+}
+
+// SessionCSRFTokensComparingWith is the default token source with its
+// comparison replaced by compare, so a test can see that the comparison the
+// default makes is the constant-time one it is handed.
+func SessionCSRFTokensComparingWith(compare func(x, y []byte) int) CSRFTokens {
+	return sessionCSRFTokens{compare: compare}
 }

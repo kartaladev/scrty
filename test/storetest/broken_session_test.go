@@ -250,6 +250,25 @@ const (
 	// Save writes the caller's key binding rather than keeping the stored
 	// one, as a column left in the UPDATE would.
 	sessionSaveWritesBinding sessionDefect = "save-writes-binding"
+	// ListByUser ignores the user and lists every live session it holds, as
+	// a query that lost its WHERE clause would.
+	sessionListIgnoresUser sessionDefect = "list-ignores-user"
+	// ListByUser also lists superseded members, as a query that does not
+	// filter on supersession would.
+	sessionListIncludesSuperseded sessionDefect = "list-includes-superseded"
+	// ListByUser also lists sessions past a deadline, as a query that does
+	// not judge expiry would.
+	sessionListIncludesExpired sessionDefect = "list-includes-expired"
+	// Save writes the caller's sign-in metadata rather than keeping the
+	// stored one, as columns left in the UPDATE would.
+	sessionSaveWritesMetadata sessionDefect = "save-writes-metadata"
+	// Save writes the caller's CSRF token rather than keeping the stored
+	// one, as a column left in the UPDATE would.
+	sessionSaveWritesCSRFToken sessionDefect = "save-writes-csrf-token"
+	// Supersede inserts its successor without the sign-in state (metadata,
+	// key binding, CSRF token), as an INSERT naming only the older columns
+	// would.
+	sessionSupersedeDropsSignInState sessionDefect = "supersede-drops-sign-in-state"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -426,6 +445,12 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	keepLibraryState(kept, stored)
 	if s.defect == sessionSaveWritesBinding {
 		kept.KeyBinding = sess.KeyBinding
+	}
+	if s.defect == sessionSaveWritesMetadata {
+		kept.ClientIP, kept.UserAgent = sess.ClientIP, sess.UserAgent
+	}
+	if s.defect == sessionSaveWritesCSRFToken {
+		kept.CSRFToken = sess.CSRFToken
 	}
 	if s.defect == sessionSaveMovesAuthenticatedAt {
 		kept.AuthenticatedAt = sess.AuthenticatedAt
@@ -642,10 +667,15 @@ func (s *sessionStore) ListByUser(_ context.Context, user identity.UserID, now t
 	listed := []*session.Session{}
 	for _, sess := range s.records {
 		match := sess.UserID == user
-		if s.defect == sessionListFoldsCase {
+		switch s.defect {
+		case sessionListFoldsCase:
 			match = strings.EqualFold(string(sess.UserID), string(user))
+		case sessionListIgnoresUser:
+			match = true
 		}
-		if match && sess.SupersededAt.IsZero() && !expiredSession(sess, now) {
+		live := sess.SupersededAt.IsZero() || s.defect == sessionListIncludesSuperseded
+		unexpired := !expiredSession(sess, now) || s.defect == sessionListIncludesExpired
+		if match && live && unexpired {
 			listed = append(listed, cloneSession(sess))
 		}
 	}
@@ -801,6 +831,10 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	s.retain(old, op)
 	successor := cloneSession(op.Successor)
 	successor.RotatedStrictly = successor.RotatedStrictly && s.defect == sessionCreateWritesStrictMark
+	if s.defect == sessionSupersedeDropsSignInState {
+		successor.ClientIP, successor.UserAgent = "", ""
+		successor.KeyBinding, successor.CSRFToken = session.KeyBinding{}, ""
+	}
 	s.records[op.Successor.ID] = successor
 	return nil
 }

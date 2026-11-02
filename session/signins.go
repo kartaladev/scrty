@@ -56,6 +56,13 @@ type SignIn struct {
 	Current bool
 }
 
+// RecordsMetadata reports whether the manager records sign-in metadata
+// (WithSessionMetadata), so a component that needs it, such as a notice
+// comparing a sign-in's user agent with the user's other sign-ins, can refuse
+// a manager that records none when it is wired rather than finding nothing
+// to compare at its first use.
+func (m *Sessions) RecordsMetadata() bool { return m.metadata }
+
 // textListEnded is the fixed text of a listing whose caller's own context
 // ended before the store answered: a hang-up, not an outage.
 const textListEnded = "session: the sign-in listing ended with its caller"
@@ -210,6 +217,11 @@ var (
 // A nil current, or one belonging to another user, is refused with an error
 // and nothing is ended: with no current sign-in of user to keep, the call
 // would end every sign-in, which is DeleteByUser's job and never this one's.
+//
+// A store failure is returned behind fixed text, the store's error reachable
+// through errors.Is and errors.As. A failure caused by ctx ending first, a
+// caller that hung up, is returned matching ctx's error instead, as
+// ListSignIns and EndSignIn answer it.
 func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, current *Session) (int, error) {
 	if current == nil || current.ID == "" {
 		return 0, errNoCurrentSignIn
@@ -220,6 +232,10 @@ func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, cu
 
 	n, err := m.store.DeleteByUserExcept(ctx, user, current.ID)
 	if err != nil {
+		if hangup.ByCaller(ctx, err) {
+			return n, diag.Wrap(err, textEndEnded, ctx.Err())
+		}
+
 		return n, storeFailed(err, "session: the user's other sign-ins could not be ended")
 	}
 

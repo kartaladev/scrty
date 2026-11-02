@@ -88,6 +88,10 @@ type passkeyInterceptor struct {
 	respondRename       PasskeyChangeResponder
 	respondRemove       PasskeyChangeResponder
 
+	// silentRemoval is WithoutPasskeyRemovalNotification: a removal queues
+	// no notice.
+	silentRemoval bool
+
 	// method reports, from assembly on, that the passkey MFA method is on the
 	// MFA slot, so a passkey bound on a recovery-pending session can be proven
 	// there. Without it a recovery-pending session is refused registration:

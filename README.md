@@ -940,6 +940,87 @@ if errors.Is(err, httpsec.ErrReauthenticationRequired) ||
 | Begin response | the method's data, `Cache-Control: no-store` | `httpsec.WithReauthenticationBeginResponder` |
 | Method listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithReauthenticationMethodsResponder` |
 
+## Session management
+
+Users can see where they are signed in and sign out other devices. A sign-in is a session family:
+renewals do not show as extra devices, and a sign-in's handle is its family identifier, which is not
+a secret and never a session identifier.
+
+```go
+sessions, err := session.New(session.WithSessionMetadata()) // record address and user agent
+
+chain, err := httpsec.New(
+	httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+	httpsec.EnableSessionManagement(),
+	httpsec.EnableSignInNotice(queuedSender), // optional: tell the user about a new device
+	// ...
+)
+```
+
+### Endpoints
+
+| Request | Answer |
+|---|---|
+| `GET /sessions` | 200 `{"sessions":[{"handle","created_at","last_used_at","first_factor","pending","current","client_ip","user_agent"}]}` |
+| `DELETE /sessions/{handle}` | 204; ends that sign-in's whole family. The current sign-in's own handle ends it, as a logout does |
+| `DELETE /sessions` | 204; ends every sign-in but the current one, keeping a successor a racing renewal inserts |
+
+- Only a full session reaches them. A session owing a second factor, an enrolment, a recovery step
+  or a password change is refused with the challenge it owes, as on any other route.
+- Ending needs a recent authentication, judged as the recency guard judges it (`httpsec.ErrReauthenticationRequired`,
+  403). Listing does not.
+- The request's own sign-in is marked `current`, also when it presents a predecessor still inside
+  its renewal grace window. A sign-in owing a second factor or a recovery step is listed with
+  `pending` set, because an unknown pending sign-in is what a user most needs to see.
+- A malformed, unknown or foreign handle is `httpsec.ErrSessionHandleNotFound` (404), and nothing
+  is revoked.
+- Every response to a request under the prefix carries `Cache-Control: no-store`, including a
+  refusal from an earlier layer, such as a bearer refusing a revoked session reference.
+- A store failure is 500 with fixed text (`session.ErrListUnavailable` for the listing). A request
+  whose own context ended fails with the context's error.
+- `client_ip` and `user_agent` are empty unless the manager records sign-in metadata, which is off
+  by default because both are personal data.
+
+### Notices
+
+- **Passkey removal** notifies the user by default, naming the passkey and the time, never its
+  credential ID. `httpsec.WithoutPasskeyRemovalNotification` turns it off for the removal endpoint
+  (`passkey.WithoutRemovalNotice` for a single `Remove` call). A refused removal sends nothing, and
+  a failure to send keeps the removal.
+- **Sign-in from an unseen device** is opt-in (`httpsec.EnableSignInNotice`). After a login stores
+  a sign-in, it is compared with the user's other live sign-ins. When none matches, and the
+  consumer's `httpsec.SeenDevices` port (if any) has not seen the device either, the user is sent a
+  notice with the time and the device's browser and platform family ("Firefox on Linux", or "an
+  unrecognised device"). It never carries a token, a handle, the client address or the raw user
+  agent.
+  - A user's first sign-in is not notified.
+  - A sign-in whose session was never stored is not notified.
+  - All of its work runs after the sign-in, off the request path, so it never delays the response.
+    It runs on a context the request's end does not cancel, bounded by a timeout, and a panic in it
+    is recovered.
+  - A failure, a timeout or a panic is logged without its text and does not affect the sign-in.
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Endpoints | off | `httpsec.EnableSessionManagement` |
+| Prefix | `/sessions` (`httpsec.DefaultSessionManagementPrefix`) | `httpsec.WithSessionManagementPrefix` |
+| Recency to end a sign-in | 15 minutes (`httpsec.DefaultRecentAuthenticationWindow`) | `httpsec.WithSessionManagementRecency` |
+| Session manager | the chain's (`httpsec.WithSessions`, or the first built-in's); none fails `New` | `httpsec.WithSessions` |
+| Listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithSignInListResponder` |
+| End response | 204, `Cache-Control: no-store` | `httpsec.WithSignInEndResponder` |
+| Caching under the prefix | `Cache-Control: no-store` on every response | none: a listing of sign-ins is never cacheable |
+| Sign-in metadata | not recorded | `session.WithSessionMetadata` |
+| Unseen-device notice | off; needs metadata recording and a sender, or `New` fails | `httpsec.EnableSignInNotice` |
+| Same device | equal user agents | `httpsec.WithSignInMatcher` |
+| Device history beyond live sign-ins | none | `httpsec.WithSeenDevices` |
+| Notice recipient | the principal's username | `httpsec.WithSignInNoticeRecipient` |
+| Notice text | plain English, no brand | `httpsec.WithSignInNoticeMessage` |
+| Notice work timeout | 30 seconds (`httpsec.DefaultSignInNoticeTimeout`) | `httpsec.WithSignInNoticeTimeout` |
+| Notice device text | browser and platform family, never the raw user agent | `httpsec.WithSignInNoticeMessage` (it receives only the family text) |
+| Passkey removal notice | on | `httpsec.WithoutPasskeyRemovalNotification` |
+
 ## Behind a reverse proxy
 
 By default the chain attributes a request to its TCP peer, judges it secure only over TLS, and takes

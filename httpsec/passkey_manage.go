@@ -91,6 +91,20 @@ func WithPasskeyRemoveResponder(fn PasskeyChangeResponder) PasskeyOption {
 	}
 }
 
+// WithoutPasskeyRemovalNotification sends the user no notice when a passkey
+// is removed through the removal endpoint, for a consumer who tells the user
+// some other way. It passes passkey.WithoutRemovalNotice to every removal.
+//
+// Default: every removal that succeeds queues the manager's Removed notice,
+// naming the passkey's label and the time, never its credential ID.
+func WithoutPasskeyRemovalNotification() PasskeyOption {
+	return func(p *passkeyInterceptor) error {
+		p.silentRemoval = true
+
+		return nil
+	}
+}
+
 // manage serves the management endpoints: GET on the credentials prefix
 // lists, POST on its rename and remove paths changes. It reports false for
 // any other request, which the caller passes on. A request on which the
@@ -192,6 +206,10 @@ func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
 	opts, err := otherSessionsChoice(values)
 	if err != nil {
 		return err
+	}
+
+	if p.silentRemoval {
+		opts = append(opts, passkey.WithoutRemovalNotice())
 	}
 
 	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid, p.registrationContext(s), opts...); err != nil {

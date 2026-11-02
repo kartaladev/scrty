@@ -102,6 +102,9 @@ func TestStatusForError(t *testing.T) {
 		{name: "malformed login", err: httpsec.ErrCredentialsMissing, want: 400},
 		{name: "host not allowed", err: fmt.Errorf("resolve: %w", httpsec.ErrHostNotAllowed), want: 400},
 		{name: "invalid DPoP proof", err: fmt.Errorf("bearer: %w", httpsec.ErrInvalidDPoPProof), want: 401},
+		{name: "cross-site request", err: fmt.Errorf("csrf: %w", httpsec.ErrCrossSiteRequest), want: 403},
+		{name: "sign-in handle not found", err: fmt.Errorf("ending: %w", httpsec.ErrSessionHandleNotFound), want: 404},
+		{name: "sign-in listing outage", err: fmt.Errorf("listing: %w", session.ErrListUnavailable), want: 500},
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
 		{name: "reused password", err: password.ErrReused, want: 422},
 		{
@@ -444,6 +447,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrMalformedRequest":                httpsec.ErrMalformedRequest,
 		"httpsec.ErrHostNotAllowed":                  httpsec.ErrHostNotAllowed,
 		"httpsec.ErrInvalidDPoPProof":                httpsec.ErrInvalidDPoPProof,
+		"httpsec.ErrCrossSiteRequest":                httpsec.ErrCrossSiteRequest,
 		"httpsec.ErrMFAMethodNotUsable":              httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":           httpsec.ErrNoMFAChallengePending,
 		"httpsec.ErrRenewalThrottled":                httpsec.ErrRenewalThrottled,
@@ -451,6 +455,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrReauthenticationMethodNotUsable": httpsec.ErrReauthenticationMethodNotUsable,
 		"httpsec.ErrRequestTooLarge":                 httpsec.ErrRequestTooLarge,
 		"httpsec.ErrSessionRenewalConflict":          httpsec.ErrSessionRenewalConflict,
+		"httpsec.ErrSessionHandleNotFound":           httpsec.ErrSessionHandleNotFound,
 		"httpsec.ErrUnknownMFAMethod":                httpsec.ErrUnknownMFAMethod,
 	},
 	"github.com/kartaladev/scrty/session": {

@@ -91,11 +91,15 @@ The `jti` SHALL be recorded only for a proof that passed every other check, so a
 - **THEN** the `htu` check passes
 
 ### Requirement: Every issuing endpoint binds the token when the request carries a proof
-When a request to an endpoint that issues a credential carries a valid proof without `ath`, the issued access token SHALL carry `cnf.jkt`, the base64url JWK SHA-256 thumbprint of the proof's key, and the session SHALL be built with the binding before its credential is issued. The endpoints are login completion, second-factor verification, passkey login, magic-link redemption, OIDC handoff redemption, recovery completion, re-authentication and session renewal. The issued result SHALL tell the consumer's responder that the token type is `DPoP`, so it can answer `token_type` accordingly.
+When a request to an endpoint that issues a credential carries a valid proof without `ath`, the issued access token SHALL carry `cnf.jkt`, the base64url JWK SHA-256 thumbprint of the proof's key, and the session SHALL be built with the binding before its credential is issued. The endpoints that bind are login completion, passkey login, magic-link redemption, OIDC handoff redemption, recovery completion and re-authentication. Second-factor verification and session renewal continue a sign-in already created, so they carry its binding and add none. Every issuing endpoint, those two included, SHALL verify a proof it is given before anything is spent. The issued result SHALL tell the consumer's responder that the token type is `DPoP`, so it can answer `token_type` accordingly.
 
 The proof SHALL be verified in the endpoint's checks, before anything is spent or stored: a refused proof SHALL leave a magic link, a handoff code, a pending challenge's attempts and recovery proofs unspent, and SHALL be charged as the endpoint charges a malformed request, not as a failed credential.
 
 A binding SHALL be set when a sign-in is created and SHALL carry over to every successor through rotation and renewal. Renewal SHALL NOT add, change or remove a binding. Re-authentication of an unbound session MAY bind its successor to the proof's key; re-authentication of a bound session SHALL keep the binding.
+
+#### Scenario: Second factor carries the sign-in's binding
+- **WHEN** a sign-in created without a proof completes its second factor with a request carrying a valid proof without `ath`
+- **THEN** the issued token carries no `cnf` and the session stays unbound, because the binding is set when the sign-in is created
 
 #### Scenario: Bound login
 - **WHEN** a client posts its credentials to `/login` with a valid proof
