@@ -417,6 +417,29 @@ func TestSecurityHeaders_Nonce(t *testing.T) {
 			},
 		},
 		{
+			// The nonce failure answers before any later interceptor runs, so
+			// the chain's refusal steps are what carry no-store here.
+			name:  "a failing nonce source on a session-management path still answers no-store",
+			opts:  []httpsec.HeaderOption{httpsec.SecurityHeadersRandom(iotest.ErrReader(errors.New("entropy exhausted")))},
+			extra: managementOptions(t),
+			path:  httpsec.DefaultSessionManagementPrefix,
+			assert: func(t *testing.T, run headerRun) {
+				assert.Equal(t, http.StatusInternalServerError, run.rec.Code)
+				assert.False(t, run.handlerRan)
+				assert.Equal(t, "no-store", run.rec.Header().Get("Cache-Control"))
+			},
+		},
+		{
+			name:  "a failing nonce source off the session-management prefix sets no cache directive",
+			opts:  []httpsec.HeaderOption{httpsec.SecurityHeadersRandom(iotest.ErrReader(errors.New("entropy exhausted")))},
+			extra: managementOptions(t),
+			path:  "/page",
+			assert: func(t *testing.T, run headerRun) {
+				assert.Equal(t, http.StatusInternalServerError, run.rec.Code)
+				assert.Empty(t, run.rec.Header().Get("Cache-Control"))
+			},
+		},
+		{
 			name: "a short random source fails the request",
 			opts: []httpsec.HeaderOption{httpsec.SecurityHeadersRandom(strings.NewReader("short"))},
 			path: "/page",
@@ -707,6 +730,62 @@ func TestSecurityHeaders_HSTS(t *testing.T) {
 			chain.Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, req)
 
 			tc.assert(t, rec.Header(), nil)
+		})
+	}
+}
+
+// TestSecurityHeaders_ConsumerInterceptorPlacement pins the documented limit of
+// the layer: it is outside every built-in interceptor, but a consumer
+// interceptor registered ahead of OrderSecurityHeaders runs outside it, and a
+// response that interceptor writes carries no security headers. One registered
+// behind the layer, in its slot or after it, has them.
+func TestSecurityHeaders_ConsumerInterceptorPlacement(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		order  httpsec.Order
+		assert func(t *testing.T, run headerRun)
+	}
+
+	hasNoHeaders := func(t *testing.T, run headerRun) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusTeapot, run.rec.Code, "the interceptor answered")
+		assert.False(t, run.handlerRan)
+
+		for _, name := range []string{
+			"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "Cross-Origin-Opener-Policy",
+		} {
+			assert.Empty(t, run.rec.Header().Values(name), "%s: the interceptor runs outside the layer", name)
+		}
+	}
+
+	hasHeaders := func(t *testing.T, run headerRun) {
+		t.Helper()
+
+		assert.Equal(t, http.StatusTeapot, run.rec.Code, "the interceptor answered")
+		assert.NotEmpty(t, run.rec.Header().Get("Content-Security-Policy"))
+		assert.Equal(t, "nosniff", run.rec.Header().Get("X-Content-Type-Options"))
+	}
+
+	cases := []testCase{
+		{name: "registered ahead of the layer", order: httpsec.Before(httpsec.OrderSecurityHeaders), assert: hasNoHeaders},
+		{name: "registered behind the layer", order: httpsec.After(httpsec.OrderSecurityHeaders), assert: hasHeaders},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			answers := httpsec.RegisterInterceptor(
+				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
+					ex.Writer.WriteHeader(http.StatusTeapot)
+
+					return nil
+				}), tc.order)
+
+			tc.assert(t, serveHeaders(t, getRequest(t, "/page"), httpsec.EnableSecurityHeaders(), answers))
 		})
 	}
 }

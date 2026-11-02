@@ -2,6 +2,8 @@ package password_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,6 +71,25 @@ func TestPolicy_Defaults(t *testing.T) {
 			tc.assert(t, p.Check(t.Context(), checkUser(), tc.candidate))
 		})
 	}
+}
+
+// TestPolicy_Defaults_Encoder pins that a policy built without naming an
+// encoder hashes a change with the built-in Argon2id encoder at its defaults.
+func TestPolicy_Defaults_Encoder(t *testing.T) {
+	t.Parallel()
+
+	p, err := password.NewPolicy()
+	require.NoError(t, err)
+
+	w := &recordingWrite{}
+	require.NoError(t, p.Change(t.Context(), checkUser(), "correcthorsebatterystaple", w.write))
+
+	defaults, err := password.NewArgon2idEncoder()
+	require.NoError(t, err)
+
+	assert.True(t, strings.HasPrefix(string(w.hash), "argon2id$65536$1$4$"),
+		"an Argon2id hash at the default parameters, got %q", w.hash)
+	assert.True(t, defaults.Match("correcthorsebatterystaple", w.hash))
 }
 
 func TestPolicy_Options(t *testing.T) {
@@ -185,6 +206,26 @@ func TestPolicy_Options(t *testing.T) {
 			},
 			candidate: breachCandidate,
 			assert:    rejectedBy(password.RuleBreached),
+		},
+		{
+			name: "a lookup outage accepted by the breach rule lets the next rule run",
+			opts: func(ctrl *gomock.Controller) []password.PolicyOption {
+				enc := fastArgon2id(t)
+
+				source := NewMockBreachSource(ctrl)
+				source.EXPECT().Range(gomock.Any(), gomock.Any()).Return(nil, errors.New("outage"))
+
+				// checkUser's earlier password is the candidate, so reuse refuses it.
+				history := newMemHistory().seed(checkUser().ID, mustEncode(t, enc, p1))
+
+				return []password.PolicyOption{
+					password.WithEncoder(enc),
+					password.Breached(source, password.Accept),
+					password.NoReuse(history, 3),
+				}
+			},
+			candidate: p1,
+			assert:    rejectedBy(password.RuleReused),
 		},
 		{
 			name: "a nil option is ignored",

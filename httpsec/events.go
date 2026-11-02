@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
@@ -174,14 +175,24 @@ var refusalEvents = []struct {
 }
 
 // emitRefusal reports the refusal err the chain answers ex with, when err is
-// one refusalEvents names and the request's own context had not ended.
+// one refusalEvents names, the request's own context had not ended, and err is
+// answered below 500.
+//
+// The event follows StatusForError: an error the library marks as a
+// dependency failure (ErrChallengeUnavailable, an issuing failure, an
+// unrecognised error) is answered at 500 even when a refusal sentinel stays
+// reachable beneath it, and the chain refused nothing, so a refusal answered
+// at 500 reports no refusal event. A plain error of a consumer's port that
+// wraps a sentinel, such as ErrCrossSiteRequest, maps through the status table
+// (403) and is reported, consistently with that answer.
 //
 // It reports once per exchange: a chain whose Assemble runs inside another
 // chain's answers the same exchange with the same error as it leaves each of
 // them, and the refusal was decided once.
 func emitRefusal(ex *Exchange, err error) {
 	ctx := ex.Context()
-	if ex.refusalReported || !secevent.Enabled(ctx) || hangup.ByCaller(ctx, err) {
+	if ex.refusalReported || !secevent.Enabled(ctx) || hangup.ByCaller(ctx, err) ||
+		StatusForError(err) >= http.StatusInternalServerError {
 		return
 	}
 

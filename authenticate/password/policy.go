@@ -294,9 +294,14 @@ func ContextWords(fn ContextWordsFunc) PolicyOption {
 }
 
 // WithEncoder replaces the encoder a change encodes the new password with,
-// which is also the first matcher of the [NoReuse] rule. When the encoder has
-// a byte limit, as bcrypt's 72 bytes, a check refuses a longer candidate as
-// too long, so a check and a change agree.
+// which is also the first matcher of the [NoReuse] rule.
+//
+// An encoder that states a byte limit through [InputLimiter], as the bcrypt
+// encoder's 72 bytes, has a longer candidate refused as too long by the check,
+// so a check and a change agree. For an encoder that states none, the check
+// cannot know its limit: a candidate it would refuse passes the check, and
+// [Policy.Change] answers the encoder's [ErrTooLong] as a too-long rejection.
+// Implement [InputLimiter] to have the check refuse it first.
 //
 // Default: the library's Argon2id encoder at its default parameters
 // ([NewArgon2idEncoder]). A nil encoder, typed nil included, fails
@@ -373,23 +378,26 @@ func (p *Policy) Check(ctx context.Context, user *identity.Details, candidate st
 // stops at the first failure:
 //
 //  1. every rule's check, as [Policy.Check];
-//  2. with the [NoReuse] rule, retire user.Password, keeping only the newest
+//  2. encode candidate with the policy's encoder; an encoder error, such as
+//     [ErrContainsNUL], is returned as is, except [ErrTooLong], which is
+//     refused as too long ([RuleTooLong]);
+//  3. with the [NoReuse] rule, retire user.Password, keeping only the newest
 //     depth−1 retired hashes; a failure refuses with [ErrHistoryUnavailable]
 //     and the password is unchanged. A user with no current hash retires
 //     nothing;
-//  3. encode candidate with the policy's encoder; an encoder error, such as
-//     [ErrContainsNUL], is returned as is;
 //  4. call write with user, the new hash and the time from the policy's
 //     clock, and return its error unchanged.
 //
-// Retiring comes before writing, so every failure before step 4 leaves the
-// password untouched. If write fails, the retired entry stays; it holds the
-// hash that is still current, and retiring the same bytes again adds nothing,
-// so a retry is not refused and does not count the password twice. With the
-// default identity store backing both the user and the history, run Change
-// with [ProvisionerWrite](store) inside one transaction attached to ctx with
-// the store's WithTx (or a configured WithTxResolver), so the retire, the
-// prune it carries and the write commit or roll back together.
+// Encoding comes before retiring, so a refusal of any kind, an encoder's
+// included, leaves the history as it was; and retiring comes before writing,
+// so every failure before step 4 leaves the password untouched. If write
+// fails, the retired entry stays; it holds the hash that is still current, and
+// retiring the same bytes again adds nothing, so a retry is not refused and
+// does not count the password twice. With the default identity store backing
+// both the user and the history, run Change with [ProvisionerWrite](store)
+// inside one transaction attached to ctx with the store's WithTx (or a
+// configured WithTxResolver), so the retire, the prune it carries and the
+// write commit or roll back together.
 //
 // The one record keys everything: user.ID keys the history, user.Password is
 // the current hash, and write receives the same pointer. A nil user or a nil
@@ -408,15 +416,23 @@ func (p *Policy) Change(ctx context.Context, user *identity.Details, candidate s
 		return err
 	}
 
+	// Encode before retiring: a refusal, an encoder's too-long one included,
+	// must leave the history untouched.
+	hash, err := p.enc.Encode(candidate)
+	if errors.Is(err, ErrTooLong) {
+		// An encoder that states no limit through InputLimiter reaches here: the
+		// candidate is too long for it, which is the user's to fix, not a failure.
+		return RejectedError{Rule: RuleTooLong}
+	}
+
+	if err != nil {
+		return err
+	}
+
 	if p.reuse != nil {
 		if err := p.reuse.retire(ctx, user); err != nil {
 			return err
 		}
-	}
-
-	hash, err := p.enc.Encode(candidate)
-	if err != nil {
-		return err
 	}
 
 	return write(ctx, user, hash, p.clock.Now())
@@ -442,11 +458,11 @@ func containsContextWord(candidate string, words []string) bool {
 	return false
 }
 
-// encoderByteLimit returns the most bytes enc accepts, or 0 for no limit
-// below the policy's maximum.
+// encoderByteLimit returns the most bytes enc states it accepts through
+// [InputLimiter], or 0 for no limit below the policy's maximum.
 func encoderByteLimit(enc Encoder) int {
-	if _, ok := enc.(*BcryptEncoder); ok {
-		return bcryptMaxInput
+	if l, ok := enc.(InputLimiter); ok {
+		return max(l.MaxInputBytes(), 0)
 	}
 
 	return 0

@@ -593,7 +593,9 @@ func TestLogin_RehashConditionalWriteKeepsAConcurrentChange(t *testing.T) {
 			prov := NewMockUserProvisioner(gomock.NewController(t))
 			prov.EXPECT().Update(gomock.Any(), "ada", gomock.Any()).DoAndReturn(store.update).Times(1)
 
-			conditional := password.ConditionalProvisionerRehash(prov)
+			conditional, err := password.ConditionalProvisionerRehash(prov)
+			require.NoError(t, err)
+
 			write := func(ctx context.Context, user *identity.Details, replaced, upgraded []byte) error {
 				if tc.changeBeforeWrite {
 					store.set(changed)

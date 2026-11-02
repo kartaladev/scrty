@@ -265,3 +265,14 @@ func TestBcryptCost(t *testing.T) {
 		})
 	}
 }
+
+func TestBcryptEncoder_StatesItsInputLimit(t *testing.T) {
+	t.Parallel()
+
+	enc, err := password.NewBcryptEncoder(password.WithBcryptCost(10))
+	require.NoError(t, err)
+
+	limiter, ok := any(enc).(interface{ MaxInputBytes() int })
+	require.True(t, ok, "the bcrypt encoder states its limit")
+	assert.Equal(t, bcryptMaxInput, limiter.MaxInputBytes())
+}

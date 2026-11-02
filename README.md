@@ -1122,6 +1122,12 @@ Rules run cheapest first and the first refusal ends the check, so a short or com
 causes a breach lookup or a history read. A refusal matches `password.ErrPasswordRejected` (422) and
 names its rule; its text never carries the candidate, a hash or a context word.
 
+An encoder with a byte limit, as bcrypt's 72 bytes, has a longer candidate refused as too long by
+the check, so a check and a change agree. The built-in bcrypt encoder states its limit through the
+optional `password.InputLimiter` method `MaxInputBytes() int`; your own encoder implements it the
+same way to get the same answer from the check. An encoder that states none gets no byte check, and
+`Policy.Change` answers its `password.ErrTooLong` as a too-long refusal (422), never as a failure.
+
 ### The breach check says what a failed lookup means
 
 The breach check is opt-in, and it has no default failure mode, because the safe answer and the
@@ -1158,8 +1164,12 @@ meanwhile is undone. `password.ConditionalProvisionerRehash(store)` does that fo
 identity stores:
 
 ```go
-httpsec.EnableFormLogin(deps,
-	httpsec.WithLoginRehash(password.ConditionalProvisionerRehash(identityStore)))
+rehash, err := password.ConditionalProvisionerRehash(identityStore) // a nil store is an error here
+if err != nil {
+	return err
+}
+
+httpsec.EnableFormLogin(deps, httpsec.WithLoginRehash(rehash))
 ```
 
 It is one call to the store: an update conditional on the replaced hash
@@ -1188,6 +1198,11 @@ options, every response the chain produces, its own refusals included, carries:
 `Origin-Agent-Cluster` are never sent unless you add them with `WithHeader`.
 The layer does not wrap the response writer, so a handler's own value for a
 header wins and flushing and hijacking work as without it.
+
+The layer is outside every built-in interceptor. A consumer interceptor you
+register ahead of it (`httpsec.Before(httpsec.OrderSecurityHeaders)`) runs outside
+it, and a response that interceptor writes carries no security headers; register
+yours at or after the layer's slot to have its responses marked.
 
 ```go
 chain, err := httpsec.New(
@@ -1300,9 +1315,13 @@ Once enabled:
 - `*` alone allows every origin without credentials: any request carrying an
   `Origin`, `null` included, gets `Access-Control-Allow-Origin: *`, and no
   origin is ever reflected;
-- every response carries `Vary: Origin`, allowed or not. `Origin` is added to
-  any `Vary` your middleware or an earlier interceptor set, never in place of
-  it;
+- every response the layer or an interceptor behind it answers carries
+  `Vary: Origin`, allowed or not. `Origin` is added to any `Vary` your
+  middleware or an earlier interceptor set, never in place of it. A consumer
+  interceptor you register ahead of the layer (`httpsec.Before(httpsec.OrderCORS)`)
+  runs outside it, and a response that interceptor writes carries no
+  `Vary: Origin` unless it adds one; register yours at or after the layer's
+  slot to have its responses marked;
 - an allowed origin gets `Access-Control-Allow-Origin` with its own origin and,
   on actual responses, the exposed headers, also on the chain's own refusals,
   so a page can read a 401's `WWW-Authenticate`;
@@ -2119,10 +2138,22 @@ failure.
 
 ```sh
 make tools   # install pinned golangci-lint, mockgen and govulncheck into ./.bin
-make check   # gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
+make check   # pin check, tools tests, gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
 ```
 
 `make check` is what continuous integration runs.
+
+### Supply chain
+
+`make vuln` runs `govulncheck` over every published module with the workspace off, so each module is
+scanned against the versions its own `go.mod` requires, as a consumer gets them. `make pincheck`
+fails a workflow that references an action by anything but a full commit SHA, and `make sbom` writes
+a CycloneDX SBOM per module.
+
+`.github/dependabot.yml` configures Dependabot **version** updates for each module. Security updates
+are a separate repository setting that no file can enable: the repository requires **Dependabot
+security updates** to be enabled (Settings, Advanced Security) so that a published advisory opens a
+pull request without waiting for the weekly schedule.
 
 ## License
 

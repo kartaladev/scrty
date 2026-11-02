@@ -11,7 +11,8 @@ version: 2
 # layout tests, not modules anyone depends on.
 #
 # Security updates are proposed as soon as they are published, independent of
-# the weekly version-update schedule.
+# the weekly version-update schedule, once the repository setting "Dependabot
+# security updates" is enabled; this file cannot enable it (see the README).
 updates:
   - package-ecosystem: gomod
     directory: /

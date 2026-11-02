@@ -114,10 +114,15 @@ type corsLayer struct {
 //     pattern. "*" alone allows every origin, without credentials: any
 //     request carrying an Origin, including "null" and one that is not a
 //     well-formed origin, gets "*", and no origin is ever reflected.
-//   - Every response carries Vary: Origin, whether or not the request carried
-//     an Origin and whether or not it was allowed. Origin is added to the Vary
-//     values already set, by middleware outside the chain or an earlier
-//     interceptor, never in place of them.
+//   - Every response the layer or an interceptor behind it answers carries
+//     Vary: Origin, whether or not the request carried an Origin and whether
+//     or not it was allowed. Origin is added to the Vary values already set,
+//     by middleware outside the chain or an earlier interceptor, never in
+//     place of them. The limit: a consumer interceptor registered ahead of
+//     OrderCORS, such as at Before(OrderCORS), runs outside the layer, and a
+//     response it writes carries no Vary: Origin unless it adds one itself.
+//     Register a consumer interceptor at or after the layer's slot to have
+//     its responses marked.
 //   - An allowed actual request gets Access-Control-Allow-Origin with its
 //     origin ("*" for "*"), Access-Control-Allow-Credentials: true when
 //     p.AllowCredentials is set (default false), and
@@ -173,6 +178,16 @@ func EnableCORS(p CORSPolicy, opts ...CORSOption) Option {
 		}
 
 		c.register(l, OrderCORS)
+
+		// A refusal written before the layer's slot, a host that is not
+		// allowed or a security-headers nonce that could not be generated,
+		// runs no CORS interceptor, so it is marked here as the layer marks
+		// every other response.
+		c.wire(func(ch *Chain) {
+			ch.refusalSteps = append(ch.refusalSteps, func(ex *Exchange) {
+				ex.Writer.AddHeader(headerVary, headerOrigin)
+			})
+		})
 
 		// The features the layer follows may be enabled by options given after
 		// this one, so it reads them once every option has been applied.

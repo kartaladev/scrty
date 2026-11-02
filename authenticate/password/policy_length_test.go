@@ -10,6 +10,24 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 )
 
+// forwardingEncoder is a consumer's encoder that wraps another and states no
+// input limit of its own.
+type forwardingEncoder struct{ inner password.Encoder }
+
+func (e forwardingEncoder) Encode(input string) ([]byte, error) { return e.inner.Encode(input) }
+
+func (e forwardingEncoder) Match(input string, encoded []byte) bool {
+	return e.inner.Match(input, encoded)
+}
+
+// limitedEncoder also states its limit through MaxInputBytes.
+type limitedEncoder struct {
+	forwardingEncoder
+	limit int
+}
+
+func (e limitedEncoder) MaxInputBytes() int { return e.limit }
+
 func TestPolicy_Length(t *testing.T) {
 	t.Parallel()
 
@@ -30,6 +48,8 @@ func TestPolicy_Length(t *testing.T) {
 	check := func(assert func(t *testing.T, err error)) func(t *testing.T, err error, _ *recordingWrite) {
 		return func(t *testing.T, err error, _ *recordingWrite) { assert(t, err) }
 	}
+
+	wrapped := forwardingEncoder{inner: bcrypt}
 
 	euro := func(n int) string { return strings.Repeat("€", n) } // 3 bytes each
 
@@ -101,6 +121,40 @@ func TestPolicy_Length(t *testing.T) {
 			opts:      []password.PolicyOption{password.WithEncoder(fast)},
 			candidate: euro(30),
 			assert:    check(accepted),
+		},
+		{
+			name:      "a consumer encoder stating a limit has it refused as too long at the check",
+			opts:      []password.PolicyOption{password.WithEncoder(limitedEncoder{wrapped, 72})},
+			candidate: euro(30),
+			assert:    check(rejectedBy(password.RuleTooLong)),
+		},
+		{
+			name:      "a consumer encoder stating a limit accepts exactly that many bytes",
+			opts:      []password.PolicyOption{password.WithEncoder(limitedEncoder{wrapped, 72})},
+			candidate: euro(24),
+			assert:    check(accepted),
+		},
+		{
+			name:      "a consumer encoder stating a limit of zero has no limit",
+			opts:      []password.PolicyOption{password.WithEncoder(limitedEncoder{wrapped, 0})},
+			candidate: euro(30),
+			assert:    check(accepted),
+		},
+		{
+			name:      "a consumer encoder stating no limit leaves the check to accept what its encoder refuses",
+			opts:      []password.PolicyOption{password.WithEncoder(wrapped)},
+			candidate: euro(30),
+			assert:    check(accepted),
+		},
+		{
+			name:      "a change answers an encoder's too-long refusal as a too-long rejection, not a failure",
+			opts:      []password.PolicyOption{password.WithEncoder(wrapped)},
+			candidate: euro(30),
+			change:    true,
+			assert: func(t *testing.T, err error, w *recordingWrite) {
+				rejectedBy(password.RuleTooLong)(t, err)
+				assert.Zero(t, w.calls, "nothing is written")
+			},
 		},
 		{
 			name:      "a NUL byte is the bcrypt encoder's refusal, returned unchanged by a change",

@@ -93,8 +93,61 @@ func TestConditionalProvisionerRehash(t *testing.T) {
 			prov := NewMockUserProvisioner(gomock.NewController(t))
 			tc.setup(t, prov)
 
-			write := password.ConditionalProvisionerRehash(prov)
+			write, err := password.ConditionalProvisionerRehash(prov)
+			require.NoError(t, err)
+
 			tc.assert(t, write(t.Context(), user, replaced, upgraded))
+		})
+	}
+}
+
+func TestConditionalProvisionerRehash_RefusesWiringMistakes(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		store  func(ctrl *gomock.Controller) identity.UserProvisioner
+		assert func(t *testing.T, write func(context.Context, *identity.Details, []byte, []byte) error, err error)
+	}
+
+	refused := func(t *testing.T, write func(context.Context, *identity.Details, []byte, []byte) error, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, password.ErrConfig)
+		assert.Contains(t, err.Error(), "provisioner")
+		assert.Nil(t, write)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a nil store",
+			store:  func(*gomock.Controller) identity.UserProvisioner { return nil },
+			assert: refused,
+		},
+		{
+			name:   "a typed-nil store",
+			store:  func(*gomock.Controller) identity.UserProvisioner { return (*MockUserProvisioner)(nil) },
+			assert: refused,
+		},
+		{
+			name: "a nil user is refused by the write and nothing is updated",
+			store: func(ctrl *gomock.Controller) identity.UserProvisioner {
+				return NewMockUserProvisioner(ctrl) // no Update expected: any call fails the case
+			},
+			assert: func(t *testing.T, write func(context.Context, *identity.Details, []byte, []byte) error, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, write)
+				require.ErrorIs(t, write(t.Context(), nil, []byte("a"), []byte("b")), password.ErrConfig)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			write, err := password.ConditionalProvisionerRehash(tc.store(gomock.NewController(t)))
+			tc.assert(t, write, err)
 		})
 	}
 }

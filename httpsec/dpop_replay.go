@@ -18,10 +18,13 @@ import (
 // ReplayStore remembers the DPoP proofs the chain has accepted, so each proof
 // is accepted once (RFC 9449 section 11.1).
 //
-// The default, when DPoP.Replay is nil, is an in-memory store per process. A
-// deployment with more than one replica supplies a store its replicas share,
-// for the same reason it shares its rate limiters: otherwise a proof can be
-// replayed once on each replica within its lifetime.
+// The default, when DPoP.Replay is nil, is an in-memory store per process with
+// no size cap: it holds one entry per valid proof for about three minutes with
+// the default proof age, so its size follows the request rate the deployment
+// admits. A deployment with more than one replica supplies a store its
+// replicas share, for the same reason it shares its rate limiters: otherwise a
+// proof can be replayed once on each replica within its lifetime. A deployment
+// that needs the store bounded supplies a shared or capped one the same way.
 type ReplayStore interface {
 	// Record records key until the instant until, and reports whether it was
 	// absent: fresh is true for the first Record of a key, and false for
@@ -116,7 +119,9 @@ func replayKey(jti, jkt string) string {
 //
 // Expired keys are swept on a Record at most once per sweep interval, so the
 // map holds only the records still current and those that expired within the
-// last interval, and no goroutine is needed to keep it bounded.
+// last interval, and no goroutine is needed to drop them. It has no size cap:
+// the records still current are one per valid proof, kept for about three
+// minutes, so a deployment that must bound them supplies its own store.
 type memoryReplayStore struct {
 	now func() time.Time
 

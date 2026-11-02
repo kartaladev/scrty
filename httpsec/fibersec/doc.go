@@ -91,9 +91,11 @@
 // httpsec.ClientFromContext(c.Context()).
 //
 // A transport that is not a TCP connection reports a peer the chain cannot
-// attribute: fiber's in-memory test transport (app.Test) reports the
-// unspecified address, and the chain's refusal of an empty, malformed or
-// unspecified address applies to it.
+// attribute. fiber's in-memory test transport (app.Test) and a Unix-socket
+// listener both report an unspecified peer, and the chain's refusal of an
+// empty, malformed or unspecified address applies to it. A proxy on a Unix
+// socket therefore cannot be trusted by EnableTrustedProxies, which matches
+// prefixes of addresses, and its forwarded headers are never read.
 //
 // # What fiber's context does not promise
 //
