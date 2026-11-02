@@ -182,6 +182,10 @@ type oidcInterceptor struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// csrfToken is whether the sign-ins this first factor makes carry a CSRF
+	// token, decided when the chain is built (config.wireCSRF).
+	csrfToken bool
+
 	// limiter, limit and window are what the redemption source guard is built
 	// from. A nil limiter means a dedicated in-memory one of limit per window.
 	limiter       ratelimit.Limiter

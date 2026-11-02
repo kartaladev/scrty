@@ -91,6 +91,10 @@ type passwordlessInterceptor struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// csrfToken is whether the sign-ins this first factor makes carry a CSRF
+	// token, decided when the chain is built (config.wireCSRF).
+	csrfToken bool
+
 	now func() time.Time
 }
 
@@ -563,6 +567,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		csrfToken:         i.csrfToken,
 		binding:           keyBinding,
 	}, in)
 	if err != nil {

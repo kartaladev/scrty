@@ -682,6 +682,53 @@ func TestCSRF_RequiredWithCookies(t *testing.T) {
 			},
 		},
 		{
+			name: "a cookie authenticator in the CSRF slot fails construction",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.RegisterInterceptor(consumerCookieAuthenticator{sessions: f.sessions}, httpsec.OrderCSRF),
+					httpsec.EnableCSRFProtection(),
+				}
+			},
+			assert: func(t *testing.T, _ *csrfFixture, _ *httpsec.Chain, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "CSRF protection")
+				assert.ErrorContains(t, err, "OrderCSRF")
+			},
+		},
+		{
+			name: "a cookie authenticator ahead of the CSRF slot fails construction",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableCSRFProtection(),
+					httpsec.RegisterInterceptor(consumerCookieAuthenticator{sessions: f.sessions}, httpsec.OrderCORS),
+				}
+			},
+			assert: func(t *testing.T, _ *csrfFixture, _ *httpsec.Chain, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "CSRF protection")
+			},
+		},
+		{
+			name: "a cookie authenticator just behind the CSRF slot builds",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableCSRFProtection(),
+					httpsec.RegisterInterceptor(consumerCookieAuthenticator{sessions: f.sessions}, httpsec.OrderCSRF+1),
+				}
+			},
+			assert: builds,
+		},
+		{
+			name: "a cookie authenticator ahead of the CSRF slot builds when protection is opted out",
+			opts: func(f *csrfFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.WithoutCSRFProtection(),
+					httpsec.RegisterInterceptor(consumerCookieAuthenticator{sessions: f.sessions}, httpsec.OrderCORS),
+				}
+			},
+			assert: builds,
+		},
+		{
 			name: "a cookie authenticator with CSRF protection builds",
 			opts: func(f *csrfFixture) []httpsec.Option {
 				return []httpsec.Option{cookies(f), httpsec.EnableCSRFProtection()}

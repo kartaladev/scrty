@@ -19,14 +19,16 @@ const WebhookPath = "/webhooks/payments"
 
 // csrfScenarios is every behaviour of CSRF protection that must be identical
 // on every adapter: a cross-site login, password re-proof and sign-in end
-// refused before anything is checked or changed, and an exempt route reached
-// while another method on its path is still judged.
+// refused before anything is checked or changed, an exempt route reached
+// while another method on its path is still judged, and an exemption matched
+// against the path as sent, so another encoding of it is judged.
 func csrfScenarios() []Scenario {
 	return []Scenario{
 		crossSiteLoginIsRefused(),
 		crossSiteReproofIsRefused(),
 		crossSiteSessionEndIsRefused(),
 		exemptRouteIsNotJudged(),
+		encodedExemptPathIsJudged(),
 	}
 }
 
@@ -56,7 +58,7 @@ func requireCrossSiteRefusal(t *testing.T, res Result) {
 // crossSiteLoginIsRefused pins spec csrf-protection "Login CSRF".
 func crossSiteLoginIsRefused() Scenario {
 	return Scenario{
-		Name: "a cross-site login is refused before any credential is checked",
+		Name: "csrf: a cross-site login is refused before any credential is checked",
 		Build: func(t *testing.T) ChainSpec {
 			t.Helper()
 
@@ -84,7 +86,7 @@ func crossSiteLoginIsRefused() Scenario {
 // crossSiteReproofIsRefused pins spec csrf-protection "Re-proof endpoint".
 func crossSiteReproofIsRefused() Scenario {
 	return Scenario{
-		Name: "a cross-site password re-proof is refused",
+		Name: "csrf: a cross-site password re-proof is refused",
 		Build: func(t *testing.T) ChainSpec {
 			t.Helper()
 
@@ -111,7 +113,7 @@ func crossSiteReproofIsRefused() Scenario {
 // crossSiteSessionEndIsRefused pins spec csrf-protection "Session management".
 func crossSiteSessionEndIsRefused() Scenario {
 	return Scenario{
-		Name: "a cross-site DELETE of the other sign-ins is refused and ends none",
+		Name: "csrf: a cross-site DELETE of the other sign-ins is refused and ends none",
 		Build: func(t *testing.T) ChainSpec {
 			t.Helper()
 
@@ -136,7 +138,7 @@ func crossSiteSessionEndIsRefused() Scenario {
 // method stays protected".
 func exemptRouteIsNotJudged() Scenario {
 	return Scenario{
-		Name: "an exempt route is reached cross-site, and another method on its path is refused",
+		Name: "csrf: an exempt route is reached cross-site, and another method on its path is refused",
 		Build: func(t *testing.T) ChainSpec {
 			t.Helper()
 
@@ -167,5 +169,31 @@ func exemptRouteIsNotJudged() Scenario {
 				Header: crossSite(nil), ClientAddress: ClientAddress,
 			}))
 		},
+	}
+}
+
+// encodedExemptPathIsJudged pins spec csrf-protection "Neighbouring paths stay
+// protected" for an encoding: "/webhooks%2Fpayments" is not the exempt
+// "/webhooks/payments", whatever the framework's router decodes it to.
+func encodedExemptPathIsJudged() Scenario {
+	return Scenario{
+		Name: "csrf: an encoded slash in an exempt path is judged as another route",
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			return ChainSpec{
+				Options: []httpsec.Option{httpsec.EnableCSRFProtection(
+					httpsec.WithCSRFExemption(http.MethodPost, WebhookPath))},
+				Effects: newEffects(t),
+				Routes:  []Route{{Method: http.MethodPost, Path: WebhookPath, Body: RouteBody}},
+			}
+		},
+		Request: func(ChainSpec) RequestSpec {
+			return RequestSpec{
+				Method: http.MethodPost, Path: "/webhooks%2Fpayments",
+				Header: crossSite(nil), ClientAddress: ClientAddress,
+			}
+		},
+		Assert: requireCrossSiteRefusal,
 	}
 }

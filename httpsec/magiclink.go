@@ -169,6 +169,10 @@ type magicLinkInterceptor struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// csrfToken is whether the sign-ins this first factor makes carry a CSRF
+	// token, decided when the chain is built (config.wireCSRF).
+	csrfToken bool
+
 	limiter   ratelimit.Limiter
 	redirects *origin.Allowlist
 
@@ -451,6 +455,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		csrfToken:         i.csrfToken,
 		binding:           binding,
 	}, out)
 

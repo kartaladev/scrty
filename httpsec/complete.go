@@ -177,6 +177,13 @@ type loginTailDeps struct {
 	// request carried (issuingBinding), and the zero value for an unbound
 	// one. The session is built with it, so its credential carries it too.
 	binding session.KeyBinding
+
+	// csrfToken is whether the sign-in is created holding a CSRF token
+	// (session.WithCSRFToken): CSRF protection is enabled, a cookie
+	// authenticator is registered and the default token source is in use. It
+	// is decided when the chain is built, never read from the request's
+	// context, which a redeemer may not have passed on.
+	csrfToken bool
 }
 
 // heldRecoveryCanceller cancels every pending recovery of a user: the
@@ -522,7 +529,7 @@ func prepareLogin(
 	}
 	// A sign-in a cookie may carry gets the CSRF token its unsafe requests
 	// must present, in the same creating write.
-	if signInsCarryCSRFToken(ctx) {
+	if deps.csrfToken {
 		create = append(create, session.WithCSRFToken())
 	}
 	if ev := in.FederatedAssurance; ev.Asserted() {

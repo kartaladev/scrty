@@ -3,6 +3,7 @@ package httpsec
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 )
@@ -12,7 +13,7 @@ const csrfWildcard = "*"
 
 // csrfExemption is one route CSRF protection does not judge: an exact method
 // and an exact path, or a path pattern whose wildcard segments match one path
-// segment each.
+// segment each, or a literal prefix followed by one segment.
 type csrfExemption struct {
 	method  string
 	pattern string
@@ -20,15 +21,29 @@ type csrfExemption struct {
 	// segments are the pattern's segments after its leading "/", and nil when
 	// it has no wildcard and is compared as a whole.
 	segments []string
+
+	// prefix, when set, makes the exemption the back-channel logout
+	// endpoint's: prefix, compared as a literal, followed by exactly one
+	// provider segment. pattern and segments are then unused.
+	prefix string
 }
 
-// matches reports whether the request's method and its routed path, as
-// Request.Path returns it, name this exempt route. Nothing is cleaned, folded
-// or decoded further, so a path a router would redirect, or another route's
-// path written differently, never matches.
+// matches reports whether the request's method and its path as sent
+// (Request.EscapedPath) name this exempt route. Nothing is cleaned, folded or
+// decoded before the comparison, so a path a router would redirect, or
+// another route's path written differently or encoded differently, never
+// matches.
 func (e csrfExemption) matches(method, path string) bool {
 	if method != e.method {
 		return false
+	}
+
+	if e.prefix != "" {
+		rest, ok := strings.CutPrefix(path, e.prefix)
+
+		// A provider segment holding an escape could decode to a "/", which
+		// would make it another route; a provider's name needs none.
+		return ok && !strings.Contains(rest, "%") && oneRealSegment(rest)
 	}
 
 	if e.segments == nil {
@@ -54,14 +69,22 @@ func (e csrfExemption) matches(method, path string) bool {
 			continue
 		}
 
-		// A wildcard stands for one real segment: an empty or dot segment is
-		// a path a router cleans into another route.
-		if parts[i] == "" || parts[i] == "." || parts[i] == ".." {
+		// A wildcard stands for one real segment, judged as it decodes: an
+		// encoded "/" would make it two, and an encoded dot segment is a path
+		// a router cleans into another route.
+		decoded, err := url.PathUnescape(parts[i])
+		if err != nil || !oneRealSegment(decoded) {
 			return false
 		}
 	}
 
 	return true
+}
+
+// oneRealSegment reports whether seg is one path segment a router keeps as
+// it is: not empty, not "." or "..", and holding no "/".
+func oneRealSegment(seg string) bool {
+	return seg != "" && seg != "." && seg != ".." && !strings.Contains(seg, "/")
 }
 
 // WithCSRFExemption exempts one route from CSRF protection: requests whose
@@ -70,13 +93,15 @@ func (e csrfExemption) matches(method, path string) bool {
 // another server calls, such as a payment provider's webhook, which carry no
 // browser signals the check could trust and no sign-in's token.
 //
-// The path compared is the one the chain routes by (Request.Path: decoded,
-// never cleaned), and the comparison is exact: a trailing slash, a change of
-// case, dot segments, or an encoding that decodes to any of those names
-// another route, which is judged as an ordinary one. A pattern segment "*"
-// matches exactly one path segment that is not empty, "." or "..", so
-// "/webhooks/*/events" matches "/webhooks/stripe/events" and not
-// "/webhooks/a/b/events". Every other protection the chain applies still
+// The path compared is the path as the client sent it (Request.EscapedPath:
+// neither decoded nor cleaned), and the comparison is exact: a trailing
+// slash, a change of case, dot segments, or any percent-encoding the pattern
+// does not spell names another route, which is judged as an ordinary one, so
+// "/webhooks%2Fpayments" is not "/webhooks/payments", whatever a router makes
+// of it. Write a pattern as clients send it. A pattern segment "*" matches
+// exactly one path segment which, decoded, is not empty, "." or ".." and holds
+// no "/", so "/webhooks/*/events" matches "/webhooks/stripe/events" and not
+// "/webhooks/a/b/events" or "/webhooks/a%2Fb/events". Every other protection the chain applies still
 // applies to an exempt route. Exemptions accumulate; give the option once per
 // route.
 //
@@ -160,10 +185,11 @@ func parseCSRFExemption(method, pattern string) (csrfExemption, error) {
 // Default: with EnableOIDCLogin, POST to the back-channel logout path followed
 // by one provider segment (DefaultOIDCBackchannelPath, or the path
 // WithOIDCBackchannelLogoutPath sets) is exempt, because the identity provider
-// calls it server to server, and its signed logout token is its credential. A
-// provider sends no Origin and no Sec-Fetch-Site, which the check passes in
-// any case; remove the exemption to have a browser's request there judged as
-// well.
+// calls it server to server, and its signed logout token is its credential.
+// The path is compared with the path as sent, as a literal: a "*" in it is
+// that character, never a wildcard. A provider sends no Origin and no
+// Sec-Fetch-Site, which the check passes in any case; remove the exemption to
+// have a browser's request there judged as well.
 func WithoutBackchannelLogoutExemption() CSRFOption {
 	return func(l *csrfLayer) error {
 		l.noBackchannel = true
@@ -174,29 +200,54 @@ func WithoutBackchannelLogoutExemption() CSRFOption {
 
 // settleExemptions settles the exempt routes: those WithCSRFExemption names
 // and, unless WithoutBackchannelLogoutExemption was given, the back-channel
-// logout endpoint of every OIDC login on the chain.
-func (l *csrfLayer) settleExemptions(c *config) {
+// logout endpoint of every OIDC login on the chain. An exemption that cannot
+// be built fails construction, rather than being dropped.
+func (l *csrfLayer) settleExemptions(c *config) error {
 	l.exempt = slices.Clone(l.exemptions)
 
 	if l.noBackchannel {
-		return
+		return nil
 	}
 
-	_ = eachInterceptor(c, func(i *oidcInterceptor) error {
-		// The back-channel prefix always ends in "/", and a provider is one
-		// segment after it (providerSegment).
-		e, err := parseCSRFExemption(http.MethodPost, i.backchannelPath+csrfWildcard)
-		if err == nil {
-			l.exempt = append(l.exempt, e)
+	return eachInterceptor(c, func(i *oidcInterceptor) error {
+		e, err := backchannelExemption(i.backchannelPath)
+		if err != nil {
+			return newConfigError("the CSRF exemption of the OIDC back-channel logout endpoint cannot be built "+
+				"from WithOIDCBackchannelLogoutPath(%q): %s; give a path a router keeps as it is, or "+
+				"judge the endpoint with WithoutBackchannelLogoutExemption", i.backchannelPath, err)
 		}
+
+		l.exempt = append(l.exempt, e)
 
 		return nil
 	})
 }
 
+// backchannelExemption builds the exemption of POST to prefix followed by one
+// provider segment. prefix is a literal, never a pattern; it always ends in
+// "/" (oidcPrefix). One holding an escape, an empty interior segment or a dot
+// segment is refused: it would name a path other than the one the endpoint
+// answers once decoded or cleaned.
+func backchannelExemption(prefix string) (csrfExemption, error) {
+	if strings.Contains(prefix, "%") {
+		return csrfExemption{}, errors.New("the path holds a percent-encoding")
+	}
+
+	for _, seg := range strings.Split(strings.TrimSuffix(prefix[1:], "/"), "/") {
+		switch seg {
+		case "":
+			return csrfExemption{}, errors.New("the path has an empty segment")
+		case ".", "..":
+			return csrfExemption{}, errors.New("the path has a dot segment")
+		}
+	}
+
+	return csrfExemption{method: http.MethodPost, prefix: prefix}, nil
+}
+
 // exempts reports whether the request names an exempt route.
 func (l *csrfLayer) exempts(req Request) bool {
-	method, path := req.Method(), req.Path()
+	method, path := req.Method(), req.EscapedPath()
 
 	return slices.ContainsFunc(l.exempt, func(e csrfExemption) bool { return e.matches(method, path) })
 }

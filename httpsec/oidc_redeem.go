@@ -68,6 +68,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		csrfToken:         i.csrfToken,
 		binding:           binding,
 	}, out)
 

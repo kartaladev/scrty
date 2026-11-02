@@ -84,6 +84,11 @@ func TestCSRF_Exemptions(t *testing.T) {
 			name: "encoded dot segments", csrf: webhook,
 			method: http.MethodPost, path: "/webhooks/payments%2F..%2F..%2Fsettings", assert: judged,
 		},
+		{name: "an encoded slash is not the exempt path", csrf: webhook, method: http.MethodPost, path: "/webhooks%2Fpayments", assert: judged},
+		{name: "an encoded letter is not the exempt path", csrf: webhook, method: http.MethodPost, path: "/webhooks/p%61yments", assert: judged},
+		{name: "a wildcard does not match a segment holding an encoded slash", csrf: events, method: http.MethodPost, path: "/webhooks/a%2Fb/events", assert: judged},
+		{name: "a wildcard does not match an encoded dot segment", csrf: events, method: http.MethodPost, path: "/webhooks/%2E%2E/events", assert: judged},
+		{name: "a wildcard matches an encoded segment", csrf: events, method: http.MethodPost, path: "/webhooks/str%69pe/events", assert: exempt},
 		{name: "a wildcard matches one segment", csrf: events, method: http.MethodPost, path: "/webhooks/stripe/events", assert: exempt},
 		{name: "a wildcard does not match two segments", csrf: events, method: http.MethodPost, path: "/webhooks/a/b/events", assert: judged},
 		{name: "a wildcard does not match an empty segment", csrf: events, method: http.MethodPost, path: "/webhooks//events", assert: judged},
@@ -116,6 +121,41 @@ func TestCSRF_Exemptions(t *testing.T) {
 		{
 			name:  "the back-channel exemption is POST only",
 			extra: oidcLogin(), method: http.MethodPut, path: backchannel, assert: judged,
+		},
+		{
+			name:   "a wildcard in the back-channel path widens nothing",
+			extra:  oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/*/logout")),
+			method: http.MethodPost, path: "/idp/settings/logout/" + testOIDCProvider, assert: judged,
+		},
+		{
+			name:   "a back-channel path holding \"*\" is exempt as written",
+			extra:  oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/*/logout")),
+			method: http.MethodPost, path: "/idp/*/logout/" + testOIDCProvider, assert: notRefusedAsCrossSite,
+		},
+		{
+			name:  "an encoded slash in the provider segment is not the back-channel endpoint",
+			extra: oidcLogin(), method: http.MethodPost, path: backchannel + "%2Fextra", assert: judged,
+		},
+		{
+			name:  "an encoded back-channel path is not the back-channel endpoint",
+			extra: oidcLogin(), method: http.MethodPost, path: "/l%6Fgout" + backchannel[len("/logout"):], assert: judged,
+		},
+		{
+			name:  "a back-channel exemption that cannot be built fails construction",
+			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/../logout")),
+			assert: func(t *testing.T, _ served, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "WithOIDCBackchannelLogoutPath")
+				assert.ErrorContains(t, err, "WithoutBackchannelLogoutExemption")
+			},
+		},
+		{
+			name:  "a back-channel path that cannot be exempt builds once the exemption is removed",
+			csrf:  []httpsec.CSRFOption{httpsec.WithoutBackchannelLogoutExemption()},
+			extra: oidcLogin(httpsec.WithOIDCBackchannelLogoutPath("/idp/../logout")),
+			assert: func(t *testing.T, _ served, err error) {
+				require.NoError(t, err)
+			},
 		},
 		{name: "without OIDC login nothing is exempt", method: http.MethodPost, path: backchannel, assert: judged},
 		{name: "an exemption without a method", csrf: []httpsec.CSRFOption{httpsec.WithCSRFExemption("", "/webhooks/payments")}, assert: misconfigured},
