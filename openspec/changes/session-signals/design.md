@@ -92,7 +92,7 @@ err = chain.PublishSignal(ctx, userID, "app.roles_changed", json.RawMessage(`{"r
   - a cap below 1;
   - `assurance_lapsed` without re-authentication enabled, since there is no window to lapse;
   - `EnableSessionSignals` given twice.
-- **The query string:** `?signals=` is split on commas, at most 16 names and 256 bytes in all. A name that is not in the chain's set is dropped.
+- **The query string:** `?signals=` is split on commas, at most 16 names and 256 bytes in all, and more than that is refused with 400. A name that is not in the chain's set is dropped.
 - **`PublishSignal`:**
   - it returns `ErrSessionSignalsDisabled` when the stream is not enabled, `ErrInvalidSignal` for a name without `app.` or data over 8 KiB, and the bus's error otherwise;
   - it never blocks on a slow stream: each stream has a buffered queue of 32, and a full queue drops the event for that stream only.
@@ -122,7 +122,11 @@ err = chain.PublishSignal(ctx, userID, "app.roles_changed", json.RawMessage(`{"r
 ### D5. Where signals come from
 
 - **Ended sign-ins:**
-  - `session.WithEndObserver(func(ctx, session.EndReport))` reports `{User, Family, Reason}` after each successful end. The reasons are `logout`, `ended`, `reuse`, `all_ended` and `provider_logout`.
+  - `session.WithEndObserver(func(ctx, session.EndReport))` reports `{User, Family, Kept, Reason}` after each successful end. The reasons are `logout`, `ended`, `reuse`, `all_ended` and `provider_logout`.
+  - **A bulk end is one report** (settled while planning, 2026-11-02). `DeleteByUser` and `DeleteByUserExcept` report the user with no `Family`, and `Kept` for the family the second one spares. Listing the sign-ins first would cost a read per bulk delete and race the delete. The stream reloads anyway (D4), so a report that names only the user is enough to wake every stream of that user.
+  - **`Delete(id)`** loads the session before deleting only when an observer is set, so it can name the user and the family. Without an observer, nothing changes.
+  - **`RevokeFamily(family)`** names only the family, and reports it without a user. The registry routes by family as well as by user (D6).
+  - **An end that names neither** (`DeleteByExternalSession`, which names only the provider's session) is not reported. The heartbeat ends those streams within its interval.
   - Panics are recovered and errors ignored, as with `WithReuseObserver`.
   - `EnableSessionSignals` installs it on the manager the chain uses, and refuses construction if the consumer's manager already has another one. The consumer then composes the two with `session.EndObservers(a, b)`.
   - Sweeping reports nothing. A deadline is an expiry, which the stream's own timer handles.
@@ -173,6 +177,7 @@ type SignalEnvelope struct {
 - The caps are kept in the local registry and counted per replica. With N replicas, a user can hold N × `MaxPerUser` streams, which the godoc states.
 - A request over a cap gets 429, `ErrTooManyStreams`, and is charged to nothing. A stream frees its place when its body returns.
 - **Override:** the three fields.
+- **Shutdown** (settled while planning, 2026-11-02). `http.Server.Shutdown` waits for active handlers and does not cancel their contexts, so an open stream would hold it until its deadline. `chain.CloseSessionSignals(ctx)` ends every stream without an event, and refuses new ones with 503. The README registers it with `RegisterOnShutdown`. On fiber, fasthttp's `Done()` at shutdown ends streams too. Without the call, streams end at the shutdown deadline as they would otherwise.
 
 ## Risks / Trade-offs
 
