@@ -117,8 +117,10 @@ type ReuseReport struct {
 	DetectedAt time.Time
 }
 
-// RotateOption configures one RotateWithGrace call. The default, with no
-// option, carries the absolute deadline over unchanged.
+// RotateOption configures one rotation. The default, with no option,
+// carries the absolute deadline and the key binding over unchanged. Each
+// option says which rotations take it; one given to a rotation that does not
+// is refused with ErrConfig and nothing is stored.
 type RotateOption func(*rotation)
 
 // rotation is what RotateOptions set.
@@ -127,6 +129,23 @@ type rotation struct {
 	// deadline over.
 	lifetime    time.Duration
 	lifetimeSet bool
+
+	// binding is WithReauthenticationBinding's key, which only a strict
+	// rotation takes.
+	binding    KeyBinding
+	bindingSet bool
+}
+
+// rotationOf applies opts.
+func rotationOf(opts []RotateOption) rotation {
+	var r rotation
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&r)
+		}
+	}
+
+	return r
 }
 
 // WithSuccessorLifetime gives the successor an absolute deadline of now plus
@@ -299,11 +318,9 @@ func (m *Sessions) RotateWithGraceIssuing(
 	if grace < 0 || grace > MaxRenewalGrace {
 		return nil, 0, "", fmt.Errorf("%w: renewal grace must be between 0 and %s, got %s", ErrConfig, MaxRenewalGrace, grace)
 	}
-	var r rotation
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&r)
-		}
+	r := rotationOf(opts)
+	if r.bindingSet {
+		return nil, 0, "", fmt.Errorf("%w: a renewal cannot bind a session", ErrConfig)
 	}
 	if r.lifetimeSet && (r.lifetime <= 0 || r.lifetime > m.maxLifetime) {
 		return nil, 0, "", fmt.Errorf("%w: successor lifetime %s is outside 0 to the maximum %s",
@@ -546,6 +563,16 @@ func successorOf(from *Session, id string) *Session {
 	next.FirstPresentedAt = time.Time{}
 
 	return next
+}
+
+// keepSignInState sets on dst the state a sign-in fixes when it is built
+// and every member of its family keeps, read from from: the key binding, the
+// CSRF token and the sign-in metadata.
+// Save keeps it from the stored record, and a strict rotation takes it from
+// the stored record rather than from the caller's copy.
+func keepSignInState(dst, from *Session) {
+	dst.KeyBinding, dst.CSRFToken = from.KeyBinding, from.CSRFToken
+	dst.ClientIP, dst.UserAgent = from.ClientIP, from.UserAgent
 }
 
 // superseded reports whether a rotation with a grace window replaced s.

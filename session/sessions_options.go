@@ -5,7 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -183,8 +185,9 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithRandom replaces the source session identifiers are drawn from. The
-// default is crypto/rand.Reader.
+// WithRandom replaces the source session identifiers are drawn from. It is
+// also the source of the CSRF tokens WithCSRFToken mints. The default for
+// both is crypto/rand.Reader.
 //
 // It exists so a test can make the entropy source fail, and so a consumer
 // whose platform supplies its own cryptographic source can use it. A nil
@@ -248,6 +251,57 @@ func WithExternalSession(provider, issuer, sessionID, idToken string) CreateOpti
 		s.ExternalSessionID = sessionID
 		s.ExternalIDToken = idToken
 	}
+}
+
+// MaxUserAgentBytes is the longest user agent a session records. A longer
+// one is cut to at most this many bytes, at a UTF-8 character boundary.
+const MaxUserAgentBytes = 512
+
+// WithSessionMetadata turns on recording sign-in metadata: the client address
+// and user agent a creating call supplies through WithClientMetadata. The
+// default is off, and a session then records neither, whatever the creating
+// call supplied, because both are personal data.
+func WithSessionMetadata() Option {
+	return func(m *Sessions) { m.metadata = true }
+}
+
+// WithClientMetadata supplies the client address and user agent of the
+// sign-in creating the session. They are recorded only when the manager
+// records sign-in metadata (WithSessionMetadata); otherwise this option
+// records nothing. The default, with no option, records neither.
+//
+// An empty ip, an address that could not be attributed, is recorded as
+// absent. Both values arrive from the client and are made safe to store:
+// invalid UTF-8 is replaced with U+FFFD and NUL bytes are removed, because a
+// text column refuses both. A userAgent longer than MaxUserAgentBytes is then
+// cut to at most that many bytes at a UTF-8 character boundary. Beyond that
+// neither value is interpreted.
+func WithClientMetadata(ip, userAgent string) CreateOption {
+	return func(s *Session) {
+		s.ClientIP = cleanText(ip)
+		s.UserAgent = truncateUTF8(cleanText(userAgent), MaxUserAgentBytes)
+	}
+}
+
+// cleanText returns v as valid UTF-8 without NUL bytes: invalid sequences
+// become U+FFFD and NULs are dropped.
+func cleanText(v string) string {
+	return strings.ReplaceAll(strings.ToValidUTF8(v, "\uFFFD"), "\x00", "")
+}
+
+// truncateUTF8 cuts v to at most limit bytes without splitting a UTF-8
+// character: the cut moves back to the start of the character that would
+// cross the limit. A v within the limit is returned whole.
+func truncateUTF8(v string, limit int) string {
+	if len(v) <= limit {
+		return v
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(v[cut]) {
+		cut--
+	}
+
+	return v[:cut]
 }
 
 // WithFederatedAssurance records the authentication methods references (amr)

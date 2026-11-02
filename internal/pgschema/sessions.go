@@ -1,5 +1,14 @@
 package pgschema
 
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/kartaladev/scrty/session"
+)
+
 // Session statements. A session is found by id_digest, the SHA-256 of its
 // identifier, which is never stored; every lookup takes that digest as $1.
 // Save is an update only, so a save racing a logout never re-creates the
@@ -21,22 +30,27 @@ const (
 	// superseded), $26 accept_until (NULL when not superseded),
 	// $27 successor_digest (NULL for none), $28 first_presented_at (NULL when
 	// never presented), $29 authenticated_at, $30 retain_until (NULL for no
-	// retention deadline). Zero rows affected means the digest is already
-	// stored.
+	// retention deadline), and the sign-in columns SessionSignInArgs returns:
+	// $31 client_ip, $32 user_agent, $33 binding_kind, $34 binding_thumbprint
+	// and $35 csrf_token, each NULL for none. Zero rows affected means the
+	// digest is already stored.
 	SessionInsert = `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
   password_change_pending, external_provider, external_issuer, external_session_id,
   external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
   federated_amr, federated_acr, mfa_at_first_factor, family_id, family_created_at,
-  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at, retain_until)
+  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at, retain_until,
+  client_ip, user_agent, binding_kind, binding_thumbprint, csrf_token)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-  $23, $24, $25, $26, $27, $28, $29, $30)
+  $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
 ON CONFLICT (id_digest) DO NOTHING`
 
 	// SessionUpdate replaces every field of the session with digest $1, in
 	// SessionInsert's order from $2 user_id to $20 federated_acr. It leaves
-	// mfa_at_first_factor, authenticated_at and the family, supersession
-	// (retain_until included) and presentation columns out: only the insert,
+	// mfa_at_first_factor, authenticated_at, the sign-in columns (client_ip,
+	// user_agent, binding_kind, binding_thumbprint, csrf_token) and the
+	// family, supersession (retain_until included) and presentation columns
+	// out: only the insert,
 	// the supersession and the first presentation write them, so no later save
 	// can undo them. On a superseded row (superseded_at set) it also leaves
 	// both of the row's own deadlines as they were when it was superseded, so a
@@ -54,18 +68,26 @@ ON CONFLICT (id_digest) DO NOTHING`
 WHERE id_digest = $1 AND NOT rotated_strictly`
 
 	// SessionSelect reads the session with digest $1, rotated_strictly (the
-	// strict-rotation mark) last. Expiry is judged by the
-	// caller, with its clock, by the condition sessionLoadable states: a
+	// strict-rotation mark) after retain_until, then the sign-in columns, each
+	// '' for none: client_ip, user_agent, binding_kind, binding_thumbprint
+	// (ParseSessionBinding reads the two) and csrf_token. Expiry is judged by
+	// the caller, with its clock, by the condition sessionLoadable states: a
 	// stored row that is not loadable is an expired session, not a missing
 	// one.
-	SessionSelect = `SELECT user_id, created_at, last_accessed_at, idle_expires_at,
-  absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at, password_change_pending,
-  external_provider, external_issuer, external_session_id, external_id_token, data,
-  enrolment_origin_deadline, enrolment_generation, recovered_at,
-  mfa_at_first_factor, federated_amr, federated_acr, family_id, family_created_at,
-  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at,
-  retain_until, rotated_strictly
+	SessionSelect = `SELECT ` + sessionReadHead + `external_id_token` + sessionReadMid + `COALESCE(csrf_token, '')
 FROM sessions WHERE id_digest = $1`
+
+	// SessionListByUser reads the sessions of user $1, matched exactly, that
+	// are not superseded and are before both of their own deadlines at $2,
+	// the caller's time: the condition SessionCountActive counts by. It reads
+	// SessionSelect's columns in SessionSelect's order, except the two sealed
+	// ones, external_id_token and csrf_token, which it reads as '': a listing
+	// needs neither, and opens neither. No row carries the session
+	// identifier, which is never stored. It is answered through the
+	// sessions_user index.
+	SessionListByUser = `SELECT ` + sessionReadHead + `''` + sessionReadMid + `''
+FROM sessions
+WHERE user_id = $1 AND superseded_at IS NULL AND idle_expires_at > $2 AND absolute_expires_at > $2`
 
 	// SessionSuccessorPresented reads, in one row, whether the current
 	// successor of the session with digest $1 was used at $2: true when that
@@ -245,6 +267,90 @@ WHERE external_issuer = $1 AND external_session_id = $2 AND $1 <> '' AND $2 <> '
 	// row, as it does SessionDeleteFamily.
 	SessionDeleteByUserIssuer = `DELETE FROM sessions WHERE user_id = $1 AND external_issuer = $2 AND $2 <> ''`
 )
+
+// sessionReadHead and sessionReadMid are the columns SessionSelect and
+// SessionListByUser read around the two sealed ones: the head runs up to the
+// provider ID token, and the mid from it to the CSRF token. The statements
+// put the token column, or an empty string in its place, between them.
+const (
+	sessionReadHead = `user_id, created_at, last_accessed_at, idle_expires_at,
+  absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at, password_change_pending,
+  external_provider, external_issuer, external_session_id, `
+	sessionReadMid = `, data,
+  enrolment_origin_deadline, enrolment_generation, recovered_at,
+  mfa_at_first_factor, federated_amr, federated_acr, family_id, family_created_at,
+  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at,
+  retain_until, rotated_strictly, COALESCE(client_ip, ''), COALESCE(user_agent, ''),
+  COALESCE(binding_kind, ''), COALESCE(binding_thumbprint, ''), `
+)
+
+// The binding_kind values: a DPoP key thumbprint (the cnf "jkt" member) and a
+// client certificate thumbprint (the cnf "x5t#S256" member).
+const (
+	SessionBindingJKT     = "jkt"
+	SessionBindingX5TS256 = "x5t#S256"
+)
+
+// ErrSessionSignInUnstorable is wrapped by SessionSignInArgs's refusal of a
+// session whose sign-in state would not read back as itself: a key binding
+// naming both a DPoP key and a certificate, or text PostgreSQL cannot store
+// (a NUL byte or invalid UTF-8). Its text names the field, never the value.
+var ErrSessionSignInUnstorable = errors.New("the session's sign-in state cannot be stored")
+
+// SessionSignInArgs is SessionInsert's $31 to $35 for s: client_ip,
+// user_agent, binding_kind, binding_thumbprint and csrf_token, each nil (NULL)
+// when s has none. The CSRF token is taken as it is, so the caller hands in
+// the sealed value.
+func SessionSignInArgs(s *session.Session) ([]any, error) {
+	var kind, thumbprint string
+	switch b := s.KeyBinding; {
+	case b.JKT != "" && b.X5TS256 != "":
+		return nil, fmt.Errorf("%w: the key binding names both a DPoP key and a certificate", ErrSessionSignInUnstorable)
+	case b.JKT != "":
+		kind, thumbprint = SessionBindingJKT, b.JKT
+	case b.X5TS256 != "":
+		kind, thumbprint = SessionBindingX5TS256, b.X5TS256
+	}
+
+	fields := []struct{ name, value string }{
+		{"client address", s.ClientIP},
+		{"user agent", s.UserAgent},
+		{"key binding kind", kind},
+		{"key binding thumbprint", thumbprint},
+		{"CSRF token", s.CSRFToken},
+	}
+	args := make([]any, len(fields))
+	for i, f := range fields {
+		if strings.IndexByte(f.value, 0) >= 0 || !utf8.ValidString(f.value) {
+			return nil, fmt.Errorf("%w: the %s is not text PostgreSQL can store", ErrSessionSignInUnstorable, f.name)
+		}
+		if f.value != "" {
+			args[i] = f.value
+		}
+	}
+
+	return args, nil
+}
+
+// ParseSessionBinding reads binding_kind and binding_thumbprint back, as
+// SessionSelect reads them (empty for NULL): the zero binding when both are
+// empty. Any other pair SessionSignInArgs does not write is an error that
+// carries no stored value, never a binding read as unbound, since that would
+// lift the binding off the session.
+func ParseSessionBinding(kind, thumbprint string) (session.KeyBinding, error) {
+	switch {
+	case kind == "" && thumbprint == "":
+		return session.KeyBinding{}, nil
+	case thumbprint == "":
+		return session.KeyBinding{}, errors.New("a stored key binding has no thumbprint")
+	case kind == SessionBindingJKT:
+		return session.KeyBinding{JKT: thumbprint}, nil
+	case kind == SessionBindingX5TS256:
+		return session.KeyBinding{X5TS256: thumbprint}, nil
+	default:
+		return session.KeyBinding{}, errors.New("a stored key binding is not of a known kind")
+	}
+}
 
 // The values SessionSupersedeRefusal reads: the session is not stored, was
 // refused for its successor or its supersession, or is stored in no family.

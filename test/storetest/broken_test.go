@@ -160,6 +160,8 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionSuccessorGoneAsUsed, "successor deleted reads as unused"),
 	sessionVariant(sessionSuccessorReadsStaleRecord, "a record past its retention deadline is not stored, swept or not"),
 	sessionVariant(sessionSuccessorIgnoresStaleness, "a successor past its own deadlines, unswept, reads as unused"),
+	sessionVariant(sessionListFoldsCase, "listing returns only the user's own sessions, matching the reference exactly"),
+	sessionVariant(sessionSaveWritesBinding, "a save keeps the key binding"),
 	{
 		name: "session-" + string(sessionCreateRefusesEchoing),
 		run: func(t *testing.T) {

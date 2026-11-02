@@ -158,9 +158,10 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 
 // insertArgs returns SessionInsert's arguments for sess, under a primary key
 // minted from the store's id generator, or the refusal of a session this
-// store cannot hold without altering it. Only the insert writes the marker
-// and the family, supersession and presentation columns: SessionUpdate has
-// no column for them. A session is inserted with its RetainUntil as given,
+// store cannot hold without altering it. Only the insert writes the marker,
+// the sign-in state (metadata, key binding and CSRF token) and the family,
+// supersession and presentation columns: SessionUpdate has no column for
+// them. A session is inserted with its RetainUntil as given,
 // NULL when it is zero.
 func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, error) {
 	cols, err := sessionColumns(op, sess)
@@ -172,14 +173,21 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 		return nil, failed(op, err)
 	}
 
-	args := append([]any{rowID, storekit.SessionDigest(sess.ID)}, cols...)
+	signIn, err := pgschema.SessionSignInArgs(sess)
+	if err != nil {
+		return nil, failed(op, err)
+	}
 
-	return append(args, sess.MFAAtFirstFactor, sess.FamilyID, storekit.Time(sess.FamilyCreatedAt),
+	args := append([]any{rowID, storekit.SessionDigest(sess.ID)}, cols...)
+	args = append(args, sess.MFAAtFirstFactor, sess.FamilyID, storekit.Time(sess.FamilyCreatedAt),
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
-		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil)), nil
+		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil))
+
+	return append(args, signIn...), nil
 }
 
-// Save replaces the stored session whole, except for MFAAtFirstFactor and the
+// Save replaces the stored session whole, except for MFAAtFirstFactor, the
+// sign-in state (ClientIP, UserAgent, KeyBinding and CSRFToken) and the
 // family, supersession (RetainUntil included) and presentation fields, and
 // never inserts. A superseded session also keeps both of its own deadlines.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
@@ -208,31 +216,8 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Session, error) {
 	const op = "load session"
 
-	var (
-		sess          = session.Session{ID: sessionID}
-		user          string
-		firstFactor   string
-		mfaState      int64
-		mfaSatisfied  sql.NullTime
-		encoded, amr  []byte
-		created, last time.Time
-		idle, abs     time.Time
-		origin        sql.NullTime
-		generation    sql.Null[id.ID]
-		recovered     sql.NullTime
-		familyCreated time.Time
-		authenticated time.Time
-		superseded    sql.NullTime
-		acceptUntil   sql.NullTime
-		presented     sql.NullTime
-		retain        sql.NullTime
-	)
-	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
-		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
-		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
-		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
-		&amr, &sess.FederatedACR, &sess.FamilyID, &familyCreated, &superseded, &acceptUntil,
-		&sess.SuccessorDigest, &presented, &authenticated, &retain, &sess.RotatedStrictly)
+	var row sessionRow
+	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)}, row.dest()...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, session.ErrNotFound
 	}
@@ -240,29 +225,83 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, err
 	}
 
-	if stale(s.c.clock.Now(), superseded.Valid, retain, idle, abs) {
+	if stale(s.c.clock.Now(), row.superseded.Valid, row.retain, row.idle, row.abs) {
 		return nil, session.ErrExpired
 	}
 
-	if sess.Data, err = storekit.DecodeSessionData(encoded); err != nil {
+	sess, err := row.session()
+	if err != nil {
 		return nil, failed(op, err)
 	}
-	if sess.FederatedAMR, err = storekit.DecodeAMR(amr); err != nil {
-		return nil, failed(op, err)
+	sess.ID = sessionID
+
+	return sess, nil
+}
+
+// sessionRow is a sessions row as SessionSelect and SessionListByUser read
+// it.
+type sessionRow struct {
+	sess          session.Session
+	user          string
+	firstFactor   string
+	mfaState      int64
+	mfaSatisfied  sql.NullTime
+	encoded, amr  []byte
+	created, last time.Time
+	idle, abs     time.Time
+	origin        sql.NullTime
+	generation    sql.Null[id.ID]
+	recovered     sql.NullTime
+	familyCreated time.Time
+	authenticated time.Time
+	superseded    sql.NullTime
+	acceptUntil   sql.NullTime
+	presented     sql.NullTime
+	retain        sql.NullTime
+	bindingKind   string
+	thumbprint    string
+}
+
+// dest is the scan destinations of SessionSelect's columns, in its order.
+func (r *sessionRow) dest() []any {
+	return []any{
+		&r.user, &r.created, &r.last, &r.idle, &r.abs, &r.firstFactor, &r.mfaState, &r.mfaSatisfied,
+		&r.sess.PasswordChangePending, &r.sess.ExternalProvider, &r.sess.ExternalIssuer, &r.sess.ExternalSessionID,
+		&r.sess.ExternalIDToken, &r.encoded, &r.origin, &r.generation, &r.recovered, &r.sess.MFAAtFirstFactor,
+		&r.amr, &r.sess.FederatedACR, &r.sess.FamilyID, &r.familyCreated, &r.superseded, &r.acceptUntil,
+		&r.sess.SuccessorDigest, &r.presented, &r.authenticated, &r.retain, &r.sess.RotatedStrictly,
+		&r.sess.ClientIP, &r.sess.UserAgent, &r.bindingKind, &r.thumbprint, &r.sess.CSRFToken,
 	}
-	sess.UserID = identity.UserID(user)
-	sess.FirstFactor = factor.Kind(firstFactor)
-	sess.MFA = session.MFAState(mfaState)
-	sess.MFASatisfiedAt = fromNull(mfaSatisfied)
-	sess.EnrolmentOriginDeadline, sess.EnrolmentGeneration = fromNull(origin), generation.V
-	sess.RecoveredAt = fromNull(recovered)
-	sess.FamilyCreatedAt = familyCreated.UTC()
-	sess.AuthenticatedAt = authenticated.UTC()
-	sess.SupersededAt, sess.AcceptUntil = fromNull(superseded), fromNull(acceptUntil)
-	sess.FirstPresentedAt = fromNull(presented)
-	sess.RetainUntil = fromNull(retain)
-	sess.CreatedAt, sess.LastAccessedAt = created.UTC(), last.UTC()
-	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = idle.UTC(), abs.UTC()
+}
+
+// session is the row as a session, with no identifier: the row does not
+// hold one. A column that will not decode is an error naming no stored value.
+func (r *sessionRow) session() (*session.Session, error) {
+	sess := r.sess
+
+	var err error
+	if sess.Data, err = storekit.DecodeSessionData(r.encoded); err != nil {
+		return nil, err
+	}
+	if sess.FederatedAMR, err = storekit.DecodeAMR(r.amr); err != nil {
+		return nil, err
+	}
+	if sess.KeyBinding, err = pgschema.ParseSessionBinding(r.bindingKind, r.thumbprint); err != nil {
+		return nil, err
+	}
+	sess.UserID = identity.UserID(r.user)
+	sess.FirstFactor = factor.Kind(r.firstFactor)
+	sess.MFA = session.MFAState(r.mfaState)
+	sess.MFASatisfiedAt = fromNull(r.mfaSatisfied)
+	sess.EnrolmentOriginDeadline, sess.EnrolmentGeneration = fromNull(r.origin), r.generation.V
+	sess.RecoveredAt = fromNull(r.recovered)
+	sess.FamilyCreatedAt = r.familyCreated.UTC()
+	sess.AuthenticatedAt = r.authenticated.UTC()
+	sess.SupersededAt, sess.AcceptUntil = fromNull(r.superseded), fromNull(r.acceptUntil)
+	sess.FirstPresentedAt = fromNull(r.presented)
+	sess.RetainUntil = fromNull(r.retain)
+	sess.CreatedAt, sess.LastAccessedAt = r.created.UTC(), r.last.UTC()
+	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = r.idle.UTC(), r.abs.UTC()
 
 	return &sess, nil
 }
@@ -339,6 +378,47 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 
 	return s.c.count(ctx, "count user's active sessions", pgschema.SessionCountActive,
 		string(user), storekit.Time(s.c.clock.Now()))
+}
+
+// ListByUser returns user's sessions that are not superseded and are before
+// both of their own deadlines at now, the caller's time, in one query over
+// the sessions_user index. The reference is matched exactly; one PostgreSQL
+// text cannot hold matches nothing. A listed session carries no identifier,
+// which is never stored, and neither sealed token: the listing reads neither
+// column. A row that will not decode fails the whole call.
+func (s *sessionStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	const op = "list user's sessions"
+
+	if !storekit.Storable(string(user)) {
+		return []*session.Session{}, nil
+	}
+	q, _, _, err := s.c.conn(ctx)
+	if err != nil {
+		return nil, failed(op, err)
+	}
+	rows, err := q.QueryContext(ctx, pgschema.SessionListByUser, string(user), storekit.Time(now))
+	if err != nil {
+		return nil, failed(op, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	listed := []*session.Session{}
+	for rows.Next() {
+		var row sessionRow
+		if err := rows.Scan(row.dest()...); err != nil {
+			return nil, failed(op, err)
+		}
+		sess, err := row.session()
+		if err != nil {
+			return nil, failed(op, err)
+		}
+		listed = append(listed, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, failed(op, err)
+	}
+
+	return listed, nil
 }
 
 // stale reports whether a stored session is past what Load returns at now: a

@@ -279,7 +279,8 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 }
 
 // Save updates the stored session, whole except for MFAAtFirstFactor,
-// AuthenticatedAt and the family, supersession (RetainUntil and
+// AuthenticatedAt, the sign-in state (KeyBinding, CSRFToken, ClientIP and
+// UserAgent) and the family, supersession (RetainUntil and
 // RotatedStrictly included) and presentation fields, and never inserts. Those
 // are kept as Create, Supersede and MarkPresented wrote them, whatever the
 // saved session says. A superseded record also keeps both of its own
@@ -314,6 +315,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	rec.RetainUntil = stored.RetainUntil
 	rec.RotatedStrictly = stored.RotatedStrictly
 	rec.FirstPresentedAt = stored.FirstPresentedAt
+	keepSignInState(rec, stored)
 	if !stored.SupersededAt.IsZero() {
 		rec.IdleExpiresAt = stored.IdleExpiresAt
 		rec.AbsoluteExpiresAt = stored.AbsoluteExpiresAt
@@ -427,6 +429,24 @@ func (s *MemoryStore) CountActiveByUser(_ context.Context, user identity.UserID)
 	}
 
 	return n, nil
+}
+
+// ListByUser returns copies of this user's sessions that are not superseded
+// and not past either of their own deadlines at now, the caller's time, not
+// the store's clock. The reference is compared byte-for-byte, as DeleteByUser
+// compares it. It scans the store under its read lock, once per call.
+func (s *MemoryStore) ListByUser(_ context.Context, user identity.UserID, now time.Time) ([]*Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var listed []*Session
+	for _, rec := range s.records {
+		if rec.UserID == user && !rec.superseded() && !rec.expired(now) {
+			listed = append(listed, rec.clone())
+		}
+	}
+
+	return listed, nil
 }
 
 // DeleteExpired removes every expired session and reports how many went: a

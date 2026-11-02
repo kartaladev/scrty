@@ -119,6 +119,19 @@ func TestSessionStore_SealedColumns(t *testing.T) {
 				return newSessionStore(t, pool, c)
 			}))
 	})
+
+	t.Run("pgx csrf token", func(t *testing.T) {
+		storetest.RunSealedColumns(t, h, storefix.SealedSessionCSRFTokens(db.Pool,
+			func(t *testing.T, pool *pgxpool.Pool, c seal.Cipher) session.Store {
+				return newSessionStore(t, pool, c)
+			}))
+	})
+
+	t.Run("pgx csrf token successor", func(t *testing.T) {
+		storefix.RunSessionCSRFSuccessor(t, h.Raw, func(t *testing.T, c seal.Cipher) session.Store {
+			return newSessionStore(t, db.Pool, c)
+		})
+	})
 }
 
 func TestSessionStore_Durable(t *testing.T) {

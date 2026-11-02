@@ -13,8 +13,9 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// Cipher seals and opens the one session field that is a credential in its own
-// right, binding each value to the session it belongs to.
+// Cipher seals and opens the session fields that are credentials in their own
+// right, the provider ID token and the CSRF token, binding each value to the
+// session it belongs to.
 //
 // It is declared here, in the package that consumes it, rather than imported
 // from a package that owns encryption. A cipher shipped by another capability
@@ -66,6 +67,17 @@ type Cipher interface {
 // rotation's machinery, so it is not something a consumer configures.
 const aadPrefix = "scrty/session:external-id-token:"
 
+// csrfAADPrefix prefixes the additional authenticated data every sealed CSRF
+// token is bound to, as aadPrefix does for the ID token. It differs from
+// aadPrefix, so one field's envelope will not open as the other's, even within
+// one session. It is a documented constant for the same reason aadPrefix is.
+const csrfAADPrefix = "scrty/session:csrf-token:"
+
+// textSessionUnreadableCSRFTokenNotOpened is ErrUnreadable's own words for a
+// CSRF token that would not open, kept as a constant for the reason
+// textSessionUnreadableIDTokenNotOpened is.
+const textSessionUnreadableCSRFTokenNotOpened = "session: session cannot be read: the CSRF token would not open"
+
 // textSessionUnreadableIDTokenNotOpened is ErrUnreadable's own words,
 // kept as a constant (never ErrUnreadable.Error(), which forbidigo
 // forbids outside a stated exception) so this fixed text is never a
@@ -73,20 +85,32 @@ const aadPrefix = "scrty/session:external-id-token:"
 // ErrUnreadable.Error() does, followed by what additionally failed.
 const textSessionUnreadableIDTokenNotOpened = "session: session cannot be read: the provider ID token would not open"
 
-// encryptedStore seals Session.ExternalIDToken on the way to inner and opens
-// it on the way back.
+// encryptedStore seals Session.ExternalIDToken and Session.CSRFToken on the
+// way to inner and opens them on the way back.
 type encryptedStore struct {
 	inner  Store
 	cipher Cipher
 }
 
-// NewEncryptedStore wraps inner so a session's provider ID token is sealed
-// before it reaches storage and opened when it is loaded.
+// NewEncryptedStore wraps inner so a session's provider ID token and CSRF
+// token are sealed before they reach storage and opened when they are loaded.
 //
-// Only ExternalIDToken is sealed: it is the one field of the record that is a
-// credential in its own right, and a store that sealed more would hand back
-// rows no query could filter. Every other field, and every other operation,
-// passes straight through.
+// Only ExternalIDToken and CSRFToken are sealed: they are the fields of the
+// record that are credentials in their own right, and a store that sealed more
+// would hand back rows no query could filter. Every other field, and every
+// other operation, passes straight through. Each is sealed under additional
+// data of its own (the field and the session identifier), so neither opens as
+// the other.
+//
+// The CSRF token is written by Create and by a supersession's successor only
+// (see Store.Save): Create and Supersede seal it, the successor's copy sealed
+// again for the successor's own identifier, and Save hands inner a copy with no
+// token at all, so a save neither pays for a seal inner ignores nor could put a
+// token in the clear into a store that disregarded the contract.
+//
+// ListByUser opens nothing: a listing needs no sealed field, so it lists with
+// the cipher's keys unreachable or retired, and the sessions it returns carry
+// neither token, never an envelope in a token's place.
 //
 // A failure of inner or of the cipher is returned behind fixed text of this
 // package — never naming the session identifier, which is the bearer
@@ -101,7 +125,7 @@ type encryptedStore struct {
 // or Load it serves.
 //
 // The sealed value is bound to the session identifier, so an envelope moved to
-// another session's row will not open. An empty token is stored unsealed,
+// another session's row will not open. An empty token, either one, is stored unsealed,
 // because there is nothing to hide and an envelope over nothing still says a
 // federated session was here.
 //
@@ -125,31 +149,48 @@ func additionalData(id string) []byte {
 	return []byte(aadPrefix + id)
 }
 
-// sealed returns a copy of sess whose ID token is an envelope, leaving the
-// caller's own record holding plaintext.
+// csrfAdditionalData is what a session's CSRF token is sealed against.
+func csrfAdditionalData(id string) []byte {
+	return []byte(csrfAADPrefix + id)
+}
+
+// sealed returns a copy of sess whose ID token and, with csrf, CSRF token are
+// envelopes, leaving the caller's own record holding plaintext. Without csrf,
+// the copy carries no CSRF token at all: Save is the caller that passes it,
+// and a save never writes the token.
 //
 // Sealing a copy is what keeps a create or a save from reaching back into the
 // caller's struct. A caller that handed over a session and then read its token
 // would otherwise find ciphertext there, and a retry of the same write would
 // seal the envelope a second time.
-func (s *encryptedStore) sealed(ctx context.Context, sess *Session) (*Session, error) {
-	if sess.ExternalIDToken == "" {
+func (s *encryptedStore) sealed(ctx context.Context, sess *Session, csrf bool) (*Session, error) {
+	if sess.ExternalIDToken == "" && sess.CSRFToken == "" {
 		return sess, nil
 	}
 
-	envelope, err := s.cipher.Seal(ctx, []byte(sess.ExternalIDToken), additionalData(sess.ID))
-	if err != nil {
-		return nil, diag.Wrap(err, "session: the provider ID token of the session could not be sealed")
+	out := sess.clone()
+	if sess.ExternalIDToken != "" {
+		envelope, err := s.cipher.Seal(ctx, []byte(sess.ExternalIDToken), additionalData(sess.ID))
+		if err != nil {
+			return nil, diag.Wrap(err, "session: the provider ID token of the session could not be sealed")
+		}
+		out.ExternalIDToken = base64.RawURLEncoding.EncodeToString(envelope)
 	}
 
-	out := sess.clone()
-	out.ExternalIDToken = base64.RawURLEncoding.EncodeToString(envelope)
+	out.CSRFToken = ""
+	if csrf && sess.CSRFToken != "" {
+		envelope, err := s.cipher.Seal(ctx, []byte(sess.CSRFToken), csrfAdditionalData(sess.ID))
+		if err != nil {
+			return nil, diag.Wrap(err, "session: the CSRF token of the session could not be sealed")
+		}
+		out.CSRFToken = base64.RawURLEncoding.EncodeToString(envelope)
+	}
 
 	return out, nil
 }
 
 func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
-	out, err := s.sealed(ctx, sess)
+	out, err := s.sealed(ctx, sess, true)
 	if err != nil {
 		return err
 	}
@@ -158,7 +199,7 @@ func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
 }
 
 func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
-	out, err := s.sealed(ctx, sess)
+	out, err := s.sealed(ctx, sess, false)
 	if err != nil {
 		return err
 	}
@@ -166,7 +207,8 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 	return storeFailed(s.inner.Save(ctx, out), "session: the inner store could not save the session")
 }
 
-// Load opens the stored ID token and returns the session with plaintext in it.
+// Load opens the stored ID token and CSRF token and returns the session with
+// plaintext in them.
 //
 // A value that will not open is ErrUnreadable, and the session is not
 // returned at all. Returning it with the token blanked would turn a retired
@@ -189,27 +231,47 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 	if sess == nil {
 		return nil, ErrNotFound
 	}
-	if sess.ExternalIDToken == "" {
-		return sess, nil
-	}
 
-	envelope, err := base64.RawURLEncoding.DecodeString(sess.ExternalIDToken)
+	idToken, err := s.open(ctx, sess.ExternalIDToken, additionalData(sess.ID),
+		textSessionUnreadableIDTokenNotOpened, "session: the provider ID token of the session could not be opened")
 	if err != nil {
-		return nil, fmt.Errorf("%w: the stored provider ID token is not a valid envelope: %w",
-			ErrUnreadable, err)
+		return nil, err
 	}
-
-	plaintext, err := s.cipher.Open(ctx, envelope, additionalData(sess.ID))
+	csrfToken, err := s.open(ctx, sess.CSRFToken, csrfAdditionalData(sess.ID),
+		textSessionUnreadableCSRFTokenNotOpened, "session: the CSRF token of the session could not be opened")
 	if err != nil {
-		return nil, openFailed(err)
+		return nil, err
 	}
 
-	sess.ExternalIDToken = string(plaintext)
+	sess.ExternalIDToken, sess.CSRFToken = idToken, csrfToken
 
 	return sess, nil
 }
 
-// openFailed classifies a cipher's failure to open a stored ID token.
+// open opens one stored sealed value against aad; an empty one is returned as
+// it is. A value that is not an envelope, or that the cipher judges not to
+// open, is ErrUnreadable under unreadable; an outage is a store failure under
+// outage (see openFailed).
+func (s *encryptedStore) open(ctx context.Context, stored string, aad []byte, unreadable, outage string) (string, error) {
+	if stored == "" {
+		return "", nil
+	}
+
+	envelope, err := base64.RawURLEncoding.DecodeString(stored)
+	if err != nil {
+		return "", diag.Wrap(err, unreadable, ErrUnreadable)
+	}
+
+	plaintext, err := s.cipher.Open(ctx, envelope, aad)
+	if err != nil {
+		return "", openFailed(err, unreadable, outage)
+	}
+
+	return string(plaintext), nil
+}
+
+// openFailed classifies a cipher's failure to open a stored sealed value,
+// under the fixed texts of the field it was opening.
 //
 // A failure that is an outage — the context ended, or the cipher marked it
 // with ErrCipherUnavailable — says nothing about the value, so it comes back
@@ -218,13 +280,13 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 // joined with it. Every other failure is ErrUnreadable, the safe default: a
 // value that truly does not open lets the user log in again instead of
 // failing every request until it expires.
-func openFailed(err error) error {
+func openFailed(err error, unreadable, outage string) error {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
 		errors.Is(err, ErrCipherUnavailable):
-		return diag.Wrap(err, "session: the provider ID token of the session could not be opened")
+		return diag.Wrap(err, outage)
 	default:
-		return diag.Wrap(err, textSessionUnreadableIDTokenNotOpened, ErrUnreadable)
+		return diag.Wrap(err, unreadable, ErrUnreadable)
 	}
 }
 
@@ -246,6 +308,24 @@ func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.Us
 	n, err := s.inner.CountActiveByUser(ctx, user)
 
 	return n, storeFailed(err, "session: the inner store could not count the user's active sessions")
+}
+
+// ListByUser passes the listing on and opens nothing: a listing needs no
+// sealed field. Each session it returns has its ID token and CSRF token
+// cleared, so no envelope is ever handed back in a token's place; a caller
+// needing a token loads the session.
+func (s *encryptedStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error) {
+	listed, err := s.inner.ListByUser(ctx, user, now)
+	if err != nil {
+		return nil, storeFailed(err, "session: the inner store could not list the user's sessions")
+	}
+	for _, sess := range listed {
+		if sess != nil {
+			sess.ExternalIDToken, sess.CSRFToken = "", ""
+		}
+	}
+
+	return listed, nil
 }
 
 func (s *encryptedStore) DeleteExpired(ctx context.Context) (int, error) {
@@ -271,14 +351,14 @@ func (s *encryptedStore) RecordActivity(ctx context.Context, id string, lastAcce
 		"session: the inner store could not record the session's activity")
 }
 
-// Supersede seals the successor's ID token, bound to the successor's own
-// identifier, as Create does, and passes the supersession on. The caller's
-// successor keeps its plaintext.
+// Supersede seals the successor's ID token and CSRF token, bound to the
+// successor's own identifier, as Create does, and passes the supersession on.
+// The caller's successor keeps its plaintext.
 func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
 	if op.Successor == nil {
 		return errors.New("session: a supersession needs a successor")
 	}
-	successor, err := s.sealed(ctx, op.Successor)
+	successor, err := s.sealed(ctx, op.Successor, true)
 	if err != nil {
 		return err
 	}

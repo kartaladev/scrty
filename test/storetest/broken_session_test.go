@@ -243,6 +243,13 @@ const (
 	// not been swept as used, as a query that does not judge the successor
 	// as Load does would.
 	sessionSuccessorIgnoresStaleness sessionDefect = "successor-ignores-staleness"
+	// ListByUser matches the user reference case-insensitively, as a lookup
+	// through a lower-cased column would, so one user's listing returns
+	// another user's sessions.
+	sessionListFoldsCase sessionDefect = "list-folds-case"
+	// Save writes the caller's key binding rather than keeping the stored
+	// one, as a column left in the UPDATE would.
+	sessionSaveWritesBinding sessionDefect = "save-writes-binding"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -327,13 +334,15 @@ func cloneSession(sess *session.Session) *session.Session {
 	return &out
 }
 
-// keepLibraryState copies onto sess the authentication time and the family,
-// supersession (retention and the strict mark included) and presentation
-// fields stored holds,
-// which only Create, Supersede and MarkPresented write, and both deadlines of
-// a superseded record.
+// keepLibraryState copies onto sess the authentication time, the sign-in
+// state (key binding, CSRF token, metadata) and the family, supersession
+// (retention and the strict mark included) and presentation fields stored
+// holds, which only Create, Supersede and MarkPresented write, and both
+// deadlines of a superseded record.
 func keepLibraryState(sess, stored *session.Session) {
 	sess.AuthenticatedAt = stored.AuthenticatedAt
+	sess.KeyBinding, sess.CSRFToken = stored.KeyBinding, stored.CSRFToken
+	sess.ClientIP, sess.UserAgent = stored.ClientIP, stored.UserAgent
 	sess.FamilyID, sess.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
 	sess.SupersededAt, sess.AcceptUntil = stored.SupersededAt, stored.AcceptUntil
 	sess.RetainUntil = stored.RetainUntil
@@ -415,6 +424,9 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	kept := cloneSession(sess)
 	kept.MFAAtFirstFactor = marker
 	keepLibraryState(kept, stored)
+	if s.defect == sessionSaveWritesBinding {
+		kept.KeyBinding = sess.KeyBinding
+	}
 	if s.defect == sessionSaveMovesAuthenticatedAt {
 		kept.AuthenticatedAt = sess.AuthenticatedAt
 	}
@@ -621,6 +633,23 @@ func (s *sessionStore) DeleteByUserExcept(_ context.Context, user identity.UserI
 		n++
 	}
 	return n, nil
+}
+
+func (s *sessionStore) ListByUser(_ context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	listed := []*session.Session{}
+	for _, sess := range s.records {
+		match := sess.UserID == user
+		if s.defect == sessionListFoldsCase {
+			match = strings.EqualFold(string(sess.UserID), string(user))
+		}
+		if match && sess.SupersededAt.IsZero() && !expiredSession(sess, now) {
+			listed = append(listed, cloneSession(sess))
+		}
+	}
+	return listed, nil
 }
 
 func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID) (int, error) {
