@@ -21,6 +21,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
@@ -324,6 +325,28 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
 				assert.Empty(t, rec.named(security.MFAVerifyFail))
+			},
+		},
+		{
+			// The built-in throttle's own refusal returns before the response is
+			// judged and is reported there. A method that answers the plain
+			// sentinel itself ran no throttle report, so the endpoint reports it.
+			name: "a second-factor response whose method answers a plain throttle refusal reports one rate limit",
+			run: func(t *testing.T, rec *eventRecorder) []served {
+				h := newMFAHarness(t)
+				h.channel(factor.AuthenticatorApp).allows()
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, gomock.Any()).Return(mfa.ErrVerifyThrottled)
+				h.limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+				s := h.pendingSession(t, factor.Password)
+
+				return []served{serve(t, h.chain(t, s, httpsec.EnableSecurityEvents(rec.sink)),
+					postCode(t.Context(), testMFAVerifyPath))}
+			},
+			assert: func(t *testing.T, rec *eventRecorder, out []served) {
+				require.ErrorIs(t, out[0].err, mfa.ErrVerifyThrottled)
+				assert.Len(t, rec.named(security.ExcessRateLimitExceeded), 1)
+				assert.Empty(t, rec.named(security.MFAVerifyFail), "a throttle refusal is not a failed code")
 			},
 		},
 		{

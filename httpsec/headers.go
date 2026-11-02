@@ -91,6 +91,12 @@ type securityHeaders struct {
 	// random is where nonces come from: crypto/rand, replaced only by tests.
 	random io.Reader
 
+	// failed is run on the exchange whose nonce could not be generated. That
+	// request fails outside every other interceptor's slot, so the steps
+	// features run on such a refusal (Chain.refusalSteps) are run for it too.
+	// It is nil until the chain is built.
+	failed func(*Exchange)
+
 	// scoped is set while the editors build one profile (APIHeaders,
 	// NewHeaderProfile), where an option that reaches beyond the profile is
 	// refused rather than silently ignored.
@@ -168,11 +174,17 @@ func NewHeaderProfile(opts ...HeaderOption) HeaderProfile {
 // consumer's own (NewHeaderProfile), both edited with the same editors; by
 // default every route gets the document set.
 //
-// The layer runs in OrderSecurityHeaders, outside every other interceptor, and
-// sets its headers before calling the next one, without wrapping the response
-// writer: a handler's own value for a header wins, and flushing and hijacking
-// work as without the layer. A host refusal, which no interceptor sees, carries
-// the headers too. A handler reads the response's nonce with CSPNonce.
+// The layer runs in OrderSecurityHeaders, outside every built-in interceptor,
+// and sets its headers before calling the next one, without wrapping the
+// response writer: a handler's own value for a header wins, and flushing and
+// hijacking work as without the layer. A host refusal, which no interceptor
+// sees, carries the headers too. A handler reads the response's nonce with
+// CSPNonce.
+//
+// The limit: a consumer interceptor registered ahead of OrderSecurityHeaders,
+// such as at Before(OrderSecurityHeaders), runs outside the layer, and a
+// response it writes carries no security headers. Register a consumer
+// interceptor at or after the layer's slot to have its responses marked.
 //
 // Enabling the layer twice fails construction.
 func EnableSecurityHeaders(opts ...HeaderOption) Option {
@@ -203,7 +215,14 @@ func EnableSecurityHeaders(opts ...HeaderOption) Option {
 		}
 
 		c.register(l, OrderSecurityHeaders)
-		c.wire(func(ch *Chain) { ch.headers = l })
+		c.wire(func(ch *Chain) {
+			ch.headers = l
+			l.failed = func(ex *Exchange) {
+				for _, step := range ch.refusalSteps {
+					step(ex)
+				}
+			}
+		})
 
 		return nil
 	}
@@ -237,6 +256,10 @@ func (l *securityHeaders) Intercept(ex *Exchange, next Next) error {
 			// admits no script at all, which is the safe reading of a failed
 			// random source. The request itself fails.
 			l.apply(ex.Writer, profile, "", ex.Request.Secure())
+
+			if l.failed != nil {
+				l.failed(ex)
+			}
 
 			return diag.Wrap(err, "httpsec: the CSP nonce could not be generated")
 		}

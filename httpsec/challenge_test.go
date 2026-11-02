@@ -46,12 +46,15 @@ type challengeFlow struct {
 	build func(t *testing.T, work bool, extra ...httpsec.Option) challengeRun
 }
 
-// challengeRun is a built flow: send posts one request of it, and worked
-// reports, from what was served, whether its guarded work ran.
+// challengeRun is a built flow: sendWith posts one request of it under ctx,
+// and worked reports, from what was served, whether its guarded work ran.
 type challengeRun struct {
-	send   func(t *testing.T) served
-	worked func(t *testing.T, out served) bool
+	sendWith func(t *testing.T, ctx context.Context) served
+	worked   func(t *testing.T, out served) bool
 }
+
+// send posts one request of the flow under the test's own context.
+func (r challengeRun) send(t *testing.T) served { return r.sendWith(t, t.Context()) }
 
 // challengeFlows is every flow the seam covers.
 func challengeFlows() []challengeFlow {
@@ -120,8 +123,8 @@ func formLoginChallengeRun(t *testing.T, work bool, extra ...httpsec.Option) cha
 	require.NoError(t, err)
 
 	return challengeRun{
-		send: func(t *testing.T) served {
-			return serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath, "username=ada&password=wrong"))
+		sendWith: func(_ *testing.T, ctx context.Context) served {
+			return serveWithContext(ctx, chain, formRequest(ctx, httpsec.DefaultLoginPath, "username=ada&password=wrong"))
 		},
 		worked: func(_ *testing.T, out served) bool {
 			return errors.Is(out.err, authenticate.ErrAuthenticationFailed)
@@ -142,8 +145,8 @@ func basicChallengeRun(t *testing.T, work bool, extra ...httpsec.Option) challen
 	require.NoError(t, err)
 
 	return challengeRun{
-		send: func(t *testing.T) served {
-			return serve(t, chain, basicRequest(t.Context(), "ada", "wrong"))
+		sendWith: func(_ *testing.T, ctx context.Context) served {
+			return serveWithContext(ctx, chain, basicRequest(ctx, "ada", "wrong"))
 		},
 		worked: func(_ *testing.T, out served) bool {
 			return errors.Is(out.err, authenticate.ErrAuthenticationFailed)
@@ -172,10 +175,10 @@ func magicLinkChallengeRun(t *testing.T, work bool, extra ...httpsec.Option) cha
 	chain := h.chain(t)
 
 	return challengeRun{
-		send: func(t *testing.T) served {
+		sendWith: func(_ *testing.T, ctx context.Context) served {
 			body := url.Values{httpsec.DefaultMagicLinkAddressParam: {magicLinkKnown}}.Encode()
 
-			return serve(t, chain, formRequest(t.Context(), httpsec.DefaultMagicLinkRequestPath, body))
+			return serveWithContext(ctx, chain, formRequest(ctx, httpsec.DefaultMagicLinkRequestPath, body))
 		},
 		worked: func(_ *testing.T, out served) bool {
 			return out.err == nil && out.rec.Code == http.StatusAccepted
@@ -191,7 +194,9 @@ func passwordlessChallengeRun(t *testing.T, _ bool, extra ...httpsec.Option) cha
 	d.build(t)
 
 	return challengeRun{
-		send: func(t *testing.T) served { return d.begin(t) },
+		sendWith: func(_ *testing.T, ctx context.Context) served {
+			return serveWithContext(ctx, d.chain, post(ctx, passwordlessBeginPath, ""))
+		},
 		worked: func(t *testing.T, out served) bool {
 			assert.Zero(t, d.lookups.Load(), "a passwordless begin looks up no account")
 
@@ -216,10 +221,10 @@ func recoveryStartChallengeRun(t *testing.T, work bool, extra ...httpsec.Option)
 	h.build(t)
 
 	return challengeRun{
-		send: func(t *testing.T) served {
+		sendWith: func(_ *testing.T, ctx context.Context) served {
 			body := url.Values{httpsec.RecoveryUsernameParam: {"nobody"}}.Encode()
 
-			return serve(t, h.chain, formRequest(t.Context(), httpsec.DefaultRecoveryStartPath, body))
+			return serveWithContext(ctx, h.chain, formRequest(ctx, httpsec.DefaultRecoveryStartPath, body))
 		},
 		worked: func(_ *testing.T, out served) bool {
 			return out.err == nil && out.rec.Code == http.StatusAccepted
@@ -645,6 +650,109 @@ func TestChallenge_Outage(t *testing.T) {
 
 			tc.assert(t, run(ex), h.logs.records())
 		})
+	}
+}
+
+// TestChallenge_OutageAcrossFlows pins, at every flow the verifier stands in
+// front of, that a verifier that fails is a dependency failure answered 500
+// with the guarded work not run, and that a client who hangs up while it runs
+// fails with its context's error: neither is a refusal. TestChallenge_Outage
+// goes deeper at form login alone.
+func TestChallenge_OutageAcrossFlows(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		flow challengeFlow
+
+		// verify is what the verifier does, given the request's cancel
+		// function and context.
+		verify func(cancel context.CancelFunc, ctx context.Context) (httpsec.ChallengeDecision, error)
+		assert func(t *testing.T, run challengeRun, out served)
+	}
+
+	var cases []testCase
+
+	for _, f := range challengeFlows() {
+		cases = append(cases,
+			testCase{
+				name: f.name + ": a verifier error is a dependency failure, and no guarded work runs",
+				flow: f,
+				verify: func(context.CancelFunc, context.Context) (httpsec.ChallengeDecision, error) {
+					return 0, errVerifierDown
+				},
+				assert: func(t *testing.T, run challengeRun, out served) {
+					require.ErrorIs(t, out.err, httpsec.ErrChallengeUnavailable)
+					require.NotErrorIs(t, out.err, httpsec.ErrChallengeRequired, "an outage is not a refusal")
+					assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+					assert.NotContains(t, out.err.Error(), "sk-live-123", "the verifier's own text never reaches the error")
+					assert.False(t, run.worked(t, out), "no guarded work runs")
+				},
+			},
+			testCase{
+				name: f.name + ": a client that hangs up while the verifier runs fails with its context's error",
+				flow: f,
+				verify: func(cancel context.CancelFunc, ctx context.Context) (httpsec.ChallengeDecision, error) {
+					cancel()
+
+					return 0, fmt.Errorf("verify: %w", ctx.Err())
+				},
+				assert: func(t *testing.T, run challengeRun, out served) {
+					require.ErrorIs(t, out.err, context.Canceled)
+					require.NotErrorIs(t, out.err, httpsec.ErrChallengeUnavailable, "a hang-up is not an outage")
+					require.NotErrorIs(t, out.err, httpsec.ErrChallengeRequired, "nor a refusal")
+					assert.False(t, run.worked(t, out), "no guarded work runs")
+				},
+			},
+		)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
+			v := NewMockChallengeVerifier(gomock.NewController(t))
+			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(vctx context.Context, _ httpsec.Request, _ httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+					return tc.verify(cancel, vctx)
+				})
+
+			run := tc.flow.build(t, false, httpsec.EnableAutomationChallenge(v))
+			tc.assert(t, run, run.sendWith(t, ctx))
+		})
+	}
+}
+
+// TestChallenge_MagicLinkRefusalCountsNowhere pins that a refused challenge at
+// a magic-link request counts against no source limit, because the endpoint
+// has none: its limiter counts failed redemptions alone. The limiter is
+// strict, so a charge to it fails the test, and the refusals stay refusals
+// however many arrive.
+func TestChallenge_MagicLinkRefusalCountsNowhere(t *testing.T) {
+	t.Parallel()
+
+	const requests = 5
+
+	limiter := NewMockLimiter(gomock.NewController(t))
+	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+
+	v := NewMockChallengeVerifier(gomock.NewController(t))
+	v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Return(httpsec.ChallengeRefuse, nil).Times(requests)
+
+	h := newMagicLinkHarness(t)
+	h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkLimiter(limiter))
+	h.chainOpts = append(h.chainOpts, httpsec.EnableAutomationChallenge(v))
+	chain := h.chain(t)
+
+	body := url.Values{httpsec.DefaultMagicLinkAddressParam: {magicLinkKnown}}.Encode()
+
+	for range requests {
+		out := serve(t, chain, formRequest(t.Context(), httpsec.DefaultMagicLinkRequestPath, body))
+		require.ErrorIs(t, out.err, httpsec.ErrChallengeRequired)
+		require.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "nothing was counted, so nothing is throttled")
 	}
 }
 

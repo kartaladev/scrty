@@ -96,9 +96,13 @@ type DPoP struct {
 	ProofMaxAge time.Duration
 
 	// Replay remembers the proofs the chain has accepted. Default: an
-	// in-memory store, per process; a deployment with more than one replica
-	// supplies one its replicas share, or a proof can be replayed once on
-	// each replica.
+	// in-memory store, per process, with no size cap: every valid proof adds
+	// one entry, kept for twice ProofMaxAge from the proof's iat (about three
+	// minutes by default), so its size is bounded by the request rate the
+	// deployment admits, not by the store. A deployment with more than one
+	// replica supplies one its replicas share, or a proof can be replayed once
+	// on each replica; a deployment that needs a bound on the store supplies a
+	// shared or capped one through ReplayStore.
 	Replay ReplayStore
 
 	// Algorithms are the proof signature algorithms accepted. Default: ES256

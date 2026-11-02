@@ -6,8 +6,10 @@ package httpsec
 // and After.
 const (
 	// OrderSecurityHeaders is the security-headers layer (EnableSecurityHeaders).
-	// It is outermost, so every response the chain produces, including a CORS
-	// preflight answer and a CSRF refusal, carries its headers.
+	// It is outside every built-in interceptor, so every response the chain
+	// produces, including a CORS preflight answer and a CSRF refusal, carries
+	// its headers. A consumer interceptor registered ahead of it runs outside
+	// it, and a response that interceptor writes carries none.
 	OrderSecurityHeaders Order = 25
 
 	// OrderCORS is cross-origin resource sharing: it answers a preflight before

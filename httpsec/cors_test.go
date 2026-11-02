@@ -1,10 +1,13 @@
 package httpsec_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -919,6 +922,85 @@ func TestCORS_PreflightInTheChain(t *testing.T) {
 			req.Header.Set("Access-Control-Request-Method", "GET")
 
 			tc.assert(t, serveCORS(t, chain, req), &o)
+		})
+	}
+}
+
+// TestCORS_VaryOnRefusalsBeforeTheSlot pins that Vary: Origin is on every
+// response of a CORS-enabled chain, including the two refusals written before
+// the CORS interceptor runs: a forwarded host that is not allowed, which no
+// interceptor sees, and a security-headers nonce that could not be generated,
+// which fails outside the CORS slot. A cache that stored either without it
+// could serve one origin's refusal to another.
+func TestCORS_VaryOnRefusalsBeforeTheSlot(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		options []httpsec.Option
+
+		// header is the request's extra headers; remote its peer, when set.
+		header http.Header
+		remote string
+		assert func(t *testing.T, run corsRun)
+	}
+
+	proxy := httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+		Headers:  httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedHost("app.example.com")),
+	}
+
+	cases := []testCase{
+		{
+			name:    "a forwarded host that is not allowed",
+			options: []httpsec.Option{httpsec.EnableTrustedProxies(proxy)},
+			header:  http.Header{"Origin": {allowedOrigin}, "X-Forwarded-For": {"203.0.113.7"}, "X-Forwarded-Host": {"evil.example"}},
+			remote:  "10.20.0.2:41000",
+			assert: func(t *testing.T, run corsRun) {
+				assert.False(t, run.handlerRan)
+				assert.Equal(t, http.StatusBadRequest, run.rec.Code)
+				assert.Equal(t, []string{"Origin"}, run.rec.Header().Values("Vary"))
+			},
+		},
+		{
+			name: "a security-headers nonce that could not be generated",
+			options: []httpsec.Option{httpsec.EnableSecurityHeaders(
+				httpsec.SecurityHeadersRandom(iotest.ErrReader(errors.New("entropy exhausted"))))},
+			header: http.Header{"Origin": {allowedOrigin}},
+			assert: func(t *testing.T, run corsRun) {
+				assert.False(t, run.handlerRan)
+				assert.Equal(t, http.StatusInternalServerError, run.rec.Code)
+				assert.Equal(t, []string{"Origin"}, run.rec.Header().Values("Vary"))
+			},
+		},
+		{
+			name:    "a response that reaches the CORS interceptor carries Vary: Origin once, beside the same options",
+			options: []httpsec.Option{httpsec.EnableTrustedProxies(proxy), httpsec.EnableSecurityHeaders()},
+			header:  http.Header{"Origin": {allowedOrigin}},
+			assert: func(t *testing.T, run corsRun) {
+				assert.True(t, run.handlerRan)
+				assert.Equal(t, []string{"Origin"}, run.rec.Header().Values("Vary"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(append(
+				[]httpsec.Option{httpsec.EnableCORS(httpsec.CORSPolicy{AllowedOrigins: []string{allowedOrigin}})},
+				tc.options...)...)
+			require.NoError(t, err)
+
+			req := corsRequest(t, http.MethodGet, "")
+			req.Header = tc.header.Clone()
+
+			if tc.remote != "" {
+				req.RemoteAddr = tc.remote
+			}
+
+			tc.assert(t, serveCORS(t, chain, req))
 		})
 	}
 }

@@ -1199,6 +1199,11 @@ options, every response the chain produces, its own refusals included, carries:
 The layer does not wrap the response writer, so a handler's own value for a
 header wins and flushing and hijacking work as without it.
 
+The layer is outside every built-in interceptor. A consumer interceptor you
+register ahead of it (`httpsec.Before(httpsec.OrderSecurityHeaders)`) runs outside
+it, and a response that interceptor writes carries no security headers; register
+yours at or after the layer's slot to have its responses marked.
+
 ```go
 chain, err := httpsec.New(
     httpsec.EnableSecurityHeaders(
@@ -1310,9 +1315,13 @@ Once enabled:
 - `*` alone allows every origin without credentials: any request carrying an
   `Origin`, `null` included, gets `Access-Control-Allow-Origin: *`, and no
   origin is ever reflected;
-- every response carries `Vary: Origin`, allowed or not. `Origin` is added to
-  any `Vary` your middleware or an earlier interceptor set, never in place of
-  it;
+- every response the layer or an interceptor behind it answers carries
+  `Vary: Origin`, allowed or not. `Origin` is added to any `Vary` your
+  middleware or an earlier interceptor set, never in place of it. A consumer
+  interceptor you register ahead of the layer (`httpsec.Before(httpsec.OrderCORS)`)
+  runs outside it, and a response that interceptor writes carries no
+  `Vary: Origin` unless it adds one; register yours at or after the layer's
+  slot to have its responses marked;
 - an allowed origin gets `Access-Control-Allow-Origin` with its own origin and,
   on actual responses, the exposed headers, also on the chain's own refusals,
   so a page can read a 401's `WWW-Authenticate`;

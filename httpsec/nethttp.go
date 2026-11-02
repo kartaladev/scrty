@@ -315,10 +315,12 @@ func (h *httpRequest) Body(limit int64) ([]byte, error) {
 // ClientIP is the host part of the transport peer, and "" when the peer
 // address is not in host and port form.
 //
-// No forwarding header is read: net/http holds no trusted-proxy configuration
-// to decide from, so honouring one here would let a client choose the bucket
-// its own failures are counted under. Forwarded-header resolution belongs to
-// an integration whose framework knows which proxies it trusts.
+// No forwarding header is read here: the request holds no trusted-proxy
+// configuration to decide from, so honouring one would let a client choose the
+// bucket its own failures are counted under. Forwarded-header resolution is the
+// chain's: with EnableTrustedProxies it resolves the client address from the
+// proxies the consumer names, and the chain reads the result from
+// ClientFromContext.
 func (h *httpRequest) ClientIP() string {
 	host, _, err := net.SplitHostPort(h.r.RemoteAddr)
 	if err != nil {
