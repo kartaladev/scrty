@@ -102,6 +102,25 @@ type PolicyReporter interface {
 	Policy() (limit int, window time.Duration)
 }
 
+// RecentFailureReporter is implemented by a Limiter that can say whether a key
+// has any failure counted in its window, however far below its limit.
+//
+// It is optional, like PolicyReporter. A caller that wants the answer, such as
+// SourceGuard.HasRecentFailures telling an automation challenge which sources
+// look suspicious, asks for it with a type assertion, and treats a limiter
+// without it as one that cannot say, which it reports as a key that has
+// failures. MemoryLimiter implements it; a consumer's own Limiter may, to have
+// its clean keys reported clean.
+//
+// Like Exceeded, it records nothing, and an implementation that cannot decide
+// returns an error, with true: a caller reading only the bool then treats the
+// key as one that has failures rather than as a clean one.
+type RecentFailureReporter interface {
+	// HasRecentFailures reports whether key has at least one failure counted
+	// in the limiter's window.
+	HasRecentFailures(ctx context.Context, key string) (bool, error)
+}
+
 // Pruner removes the keys a limiter no longer counts, by the window recorded for
 // each key, and reports how many it removed. It accepts no cutoff, so a sweep
 // can never shorten a limit: the only keys it can remove are those that window

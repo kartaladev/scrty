@@ -180,3 +180,11 @@ func TestConformanceNetHTTP(t *testing.T) {
 
 	httpsecconformance.Run(t, nethttpAdapter{})
 }
+
+// TestChallengeNetHTTP runs the automation-challenge rows on their own, so
+// they can be run by name.
+func TestChallengeNetHTTP(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunScenarios(t, nethttpAdapter{}, httpsecconformance.ChallengeScenarios())
+}

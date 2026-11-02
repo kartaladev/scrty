@@ -182,6 +182,10 @@ type magicLinkInterceptor struct {
 	cookieName    string
 	bodyLimit     int64
 	countRefusals bool
+
+	// automation is the automation-challenge gate when it was selected for the
+	// link request, settled at assembly, and nil otherwise.
+	automation *challengeGate
 }
 
 // check reports the wiring faults only the assembled configuration can see:
@@ -312,9 +316,24 @@ func (i *magicLinkInterceptor) Intercept(ex *Exchange, next Next) error {
 // branch inside the manager — an unknown address, a disabled user, a store
 // outage, a reached issuance limit, a failed send, a link that went out —
 // produces this same response, and each cause is logged there rather than
-// answered here.
+// answered here. The one exception is an automation challenge
+// (EnableAutomationChallenge) that refuses or fails: it is answered before the
+// manager looks the address up, so it says nothing about one.
 func (i *magicLinkInterceptor) request(ex *Exchange) error {
 	address, next := i.readRequest(ex.Request)
+
+	// Before the manager looks the address up or sends anything. The request
+	// endpoint has no source limit, so a refusal is charged to nothing; the
+	// source signal reads the redemption guard, the only one the magic link
+	// counts failures in. No lockout counts failures by address, so no
+	// identifier is read.
+	if err := i.automation.ask(ex.Context(), ex.Request, challengeQuery{
+		flow:     ChallengeFlowMagicLinkRequest,
+		source:   i.guard,
+		clientIP: ex.Request.ClientIP(),
+	}); err != nil {
+		return err
+	}
 
 	result := i.manager.Request(ex.Context(), address, i.redirects.Resolve(next))
 

@@ -163,6 +163,10 @@ type formLogin struct {
 
 	// rehash stores an upgraded password hash, and nil upgrades nothing.
 	rehash RehashFunc
+
+	// automation is the automation-challenge gate when it was selected for
+	// form login, settled at assembly, and nil otherwise.
+	automation *challengeGate
 }
 
 // wire takes the settings the chain resolved. It runs once, after every option
@@ -345,7 +349,17 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	verifyCtx, upgrade := requestRehash(ctx, l.rehash)
 
-	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now)
+	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
+		func(ctx context.Context, src ratelimit.Source) error {
+			return l.automation.ask(ctx, ex.Request, challengeQuery{
+				flow:       ChallengeFlowFormLogin,
+				source:     l.guard,
+				clientIP:   ex.Request.ClientIP(),
+				identifier: username,
+				attempts:   l.attempts,
+				charge:     func() { recordSourceFailure(ctx, l.guard, src) },
+			})
+		})
 	if err != nil {
 		return err
 	}
@@ -417,10 +431,17 @@ func (l *formLogin) attemptPassword(
 	clientIP, username string,
 	password []byte,
 	now time.Time,
+	challenge func(ctx context.Context, src ratelimit.Source) error,
 ) (*authenticate.Authentication, error) {
 	src, err := sourceThrottled(ctx, l.guard, clientIP, l.flow, l.sampler, l.log, now)
 	if err != nil {
 		return nil, err
+	}
+
+	if challenge != nil {
+		if err := challenge(ctx, src); err != nil {
+			return nil, err
+		}
 	}
 
 	return l.judgePassword(ctx, username, password, now, func() {

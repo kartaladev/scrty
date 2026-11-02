@@ -104,6 +104,10 @@ type recoveryInterceptor struct {
 	log         *slog.Logger
 	sampler     *logsample.Sampler
 
+	// automation is the automation-challenge gate when it was selected for the
+	// start, settled at assembly, and nil otherwise.
+	automation *challengeGate
+
 	now func() time.Time
 }
 
@@ -667,7 +671,10 @@ type recoveryHoldDocument struct {
 // disabled username, a lookup that failed, a reached issuance limit, a token
 // store or sender that failed, a body that could not be read, and a source
 // that is throttled or cannot be attributed. The core logs each cause
-// server-side; nothing here tells them apart.
+// server-side; nothing here tells them apart. The one exception is an
+// automation challenge (EnableAutomationChallenge) that refuses or fails: it
+// is answered before the username is read for a lookup, so its refusal says
+// nothing about the account.
 //
 // Every start is counted against its source, whatever it did, because what
 // the guard bounds is how often one source asks for mail to be sent. A source
@@ -678,11 +685,32 @@ func (i *recoveryInterceptor) start(ex *Exchange) error {
 	src, err := sourceThrottled(ctx, i.startGuard, ex.Request.ClientIP(), recoveryStartFlow,
 		i.sampler, i.log, i.now())
 	if err == nil {
+		username := readRecoveryStart(ex.Request)
+
+		// After the source limit and before the start is counted or the
+		// username is looked up. Its refusal is the one answer that differs
+		// from the uniform 202, and it says nothing about the account, which
+		// nothing has read yet.
+		//
+		// The source signal reads the completion guard, which counts refused
+		// recoveries, since the start guard counts every start; the identifier
+		// signal reads the chain's password-login attempt store.
+		if err := i.automation.ask(ctx, ex.Request, challengeQuery{
+			flow:       ChallengeFlowRecoveryStart,
+			source:     i.guard,
+			clientIP:   ex.Request.ClientIP(),
+			identifier: username,
+			attempts:   i.automation.loginAttempts(),
+			charge:     func() { recordSourceFailure(ctx, i.startGuard, src) },
+		}); err != nil {
+			return err
+		}
+
 		recordSourceFailure(ctx, i.startGuard, src)
 
 		// An empty username names no account, so there is nothing to start:
 		// a body that could not be read is not a question about one.
-		if username := readRecoveryStart(ex.Request); username != "" {
+		if username != "" {
 			i.recoverer.Start(ctx, username)
 		}
 	}

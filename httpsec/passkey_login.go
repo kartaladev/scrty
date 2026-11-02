@@ -91,6 +91,10 @@ type passwordlessInterceptor struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// automation is the automation-challenge gate when it was selected for the
+	// begin, settled at assembly, and nil otherwise.
+	automation *challengeGate
+
 	now func() time.Time
 }
 
@@ -463,6 +467,19 @@ func (i *passwordlessInterceptor) begin(ex *Exchange) error {
 	src, err := sourceThrottled(ctx, i.guard, ex.Request.ClientIP(), passwordlessFlow,
 		i.sampler, i.log, i.now())
 	if err != nil {
+		return err
+	}
+
+	// After the source limit and before the begin is recorded or anything is
+	// issued.
+	// The begin reads no identifier. Its guard counts every begin, so the
+	// source signal says whether the source has begun before in the window.
+	if err := i.automation.ask(ctx, ex.Request, challengeQuery{
+		flow:     ChallengeFlowPasswordlessBegin,
+		source:   i.guard,
+		clientIP: ex.Request.ClientIP(),
+		charge:   func() { recordSourceFailure(ctx, i.guard, src) },
+	}); err != nil {
 		return err
 	}
 

@@ -1615,6 +1615,94 @@ document.body.addEventListener("htmx:configRequest", (evt) => {
 that has one, ask the question in the `htmx:confirm` handler first. Each
 request gets a new proof, because a proof is accepted once.
 
+## Automation challenge
+
+`httpsec.EnableAutomationChallenge` puts a challenge of your choosing, a
+CAPTCHA, a managed challenge or a proof of work, in front of the chain's
+unauthenticated flows, so credential stuffing and enumeration cost more. scrty
+bundles no vendor: you implement `httpsec.ChallengeVerifier` over the service
+you use, and the chain asks it. Nothing asks for a challenge until you enable
+it.
+
+```go
+// stubVerifier shows the shape of a verifier. It is a stub, not an
+// integration: a real one sends the response token to your challenge
+// service, with your secret, and reads its verdict.
+type stubVerifier struct {
+    check func(ctx context.Context, token string) (bool, error)
+}
+
+func (v stubVerifier) Verify(
+    ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals,
+) (httpsec.ChallengeDecision, error) {
+    // Ordinary traffic is not asked; a source or a username with recent
+    // failures is.
+    if !s.SourceHasFailures && !s.IdentifierHasFailures {
+        return httpsec.ChallengeNotNeeded, nil
+    }
+
+    token := r.Header("X-Challenge-Response") // wherever your page puts it
+    if token == "" {
+        return httpsec.ChallengeRefuse, nil
+    }
+
+    ok, err := v.check(ctx, token)
+    if err != nil {
+        return 0, err // an outage, not a refusal: answered 500
+    }
+    if !ok {
+        return httpsec.ChallengeRefuse, nil
+    }
+
+    return httpsec.ChallengePass, nil
+}
+
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableAutomationChallenge(stubVerifier{check: myService.Check}),
+)
+```
+
+Once enabled:
+
+- form login, Basic, the magic-link request, the passwordless passkey begin and
+  the recovery start ask the verifier, after their source limit and before
+  their own work and any account lookup. `WithChallengeFlows(...)` narrows
+  them;
+- `ChallengePass` and `ChallengeNotNeeded` let the request through;
+  `ChallengeRefuse` refuses it with `ErrChallengeRequired` (403). The refusal
+  counts against the flow's source limit like a failed attempt, never against
+  the username's lockout; `WithoutChallengeRefusalCounting()` stops the count;
+- a verifier error is a dependency failure: `ErrChallengeUnavailable` (500)
+  with fixed text, the verifier's error reachable through `errors.Is` and
+  `errors.As` but never in the text or a log record, charged to nothing. A
+  client that hangs up while the verifier runs fails with its context's error;
+- the verifier is told whether the source and the username have recent
+  failures (`ChallengeSignals`). Whatever cannot answer, a limiter or attempt
+  store that fails, or a limiter that does not implement
+  `ratelimit.RecentFailureReporter`, reads as having failures, so the verifier
+  asks.
+
+### Defaults
+
+| Setting | Default |
+|---|---|
+| Verifier | none: the seam is off |
+| Flows | all five (`WithChallengeFlows`) |
+| Refusal | counted against the source limit (`WithoutChallengeRefusalCounting`) |
+| Identifier signal | a failed login for the username in the last 24 hours |
+
+### Stated limits
+
+- The in-memory limiter reports recent failures. The shared limiters of
+  `redisstore`, `sqlstore` and `pgxstore` do not yet, so behind them every
+  source reads as having failures, and a verifier that keys on
+  `SourceHasFailures` asks every request.
+- The magic-link request has no source limit, so a refusal there is counted
+  nowhere.
+- The passwordless begin's limiter counts every begin, so there
+  `SourceHasFailures` means the source has begun before in the window.
+
 ## Development
 
 ```sh

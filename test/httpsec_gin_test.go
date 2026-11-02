@@ -179,6 +179,14 @@ func TestConformanceGin(t *testing.T) {
 	httpsecconformance.Run(t, ginAdapter{})
 }
 
+// TestChallengeGin runs the automation-challenge rows on gin on their own, so
+// they can be run by name.
+func TestChallengeGin(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunScenarios(t, ginAdapter{}, httpsecconformance.ChallengeScenarios())
+}
+
 // sessionReferenceFixture is a chain in the session-reference bearer mode over
 // the memory session store and the in-memory identity store, holding two
 // session references of one user: one live, and one superseded by a renewal

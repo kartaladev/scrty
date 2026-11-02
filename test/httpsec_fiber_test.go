@@ -251,6 +251,14 @@ func TestConformanceFiber(t *testing.T) {
 	httpsecconformance.Run(t, fiberAdapter{})
 }
 
+// TestChallengeFiber runs the automation-challenge rows on fiber on their own,
+// so they can be run by name.
+func TestChallengeFiber(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunScenarios(t, fiberAdapter{}, httpsecconformance.ChallengeScenarios())
+}
+
 // The adapters are held to the one interface the table is written against, so a
 // change to it is a compile error here rather than a row that quietly stops
 // running.

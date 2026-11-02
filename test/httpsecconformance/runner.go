@@ -17,7 +17,16 @@ import (
 func Run(t *testing.T, adapter Adapter) {
 	t.Helper()
 
-	for _, sc := range Scenarios() {
+	RunScenarios(t, adapter, Scenarios())
+}
+
+// RunScenarios puts scenarios through adapter, each row as Run puts it. It is
+// how an adapter's suite runs one group of the table on its own, such as
+// ChallengeScenarios.
+func RunScenarios(t *testing.T, adapter Adapter, scenarios []Scenario) {
+	t.Helper()
+
+	for _, sc := range scenarios {
 		t.Run(sc.Name, func(t *testing.T) {
 			t.Parallel()
 

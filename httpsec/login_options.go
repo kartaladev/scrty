@@ -88,6 +88,9 @@ type LoginOption func(*formLogin) error
 //     client address as a failed authentication, before any policy or
 //     password work. The guard is shared with EnableBasicAuth and counts
 //     failures per source, 50 per 15 minutes by default (WithLoginLimiter).
+//     With EnableAutomationChallenge selecting form login, the challenge
+//     verifier is asked next, before any policy or password work; its refusal
+//     is ErrChallengeRequired.
 //  3. Run the pre-authentication policy phase. A deny refuses with its
 //     reason, except a locked account, which by default is refused as a
 //     wrong password after a decoy password verification (WithLockDisclosure)

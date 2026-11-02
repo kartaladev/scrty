@@ -96,7 +96,9 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	verifyCtx, upgrade := requestRehash(ctx, i.rehash)
 
-	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now)
+	// A re-proof is made from a signed-in session, so no automation challenge
+	// stands in front of it.
+	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now, nil)
 	if err != nil {
 		return err
 	}

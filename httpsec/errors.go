@@ -253,6 +253,12 @@ var statusTable = []statusRow{
 	{ErrHostNotAllowed, http.StatusBadRequest},
 	{ErrCrossSiteRequest, http.StatusForbidden},
 
+	// A request the automation-challenge verifier refused: the client must
+	// pass the challenge, not present other credentials. A verifier that
+	// could not answer (ErrChallengeUnavailable) is not here: it is answered
+	// 500 before this table is read.
+	{ErrChallengeRequired, http.StatusForbidden},
+
 	// A passkey ceremony response the verifier could not read. The chain's
 	// endpoints answer it as ErrCredentialsMissing, wrapping it; this row
 	// answers it the same way where it reaches StatusForError alone.
@@ -385,7 +391,10 @@ var statusTable = []statusRow{
 // sentinel below that is answered 401 still does not send the client back to
 // log in. It is 500 as well when a refusal is joined beside the issuing
 // failure, not only when its cause wraps one: the failure decides. The
-// generator's error stays reachable for a consumer's own handler.
+// generator's error stays reachable for a consumer's own handler. An
+// automation-challenge verifier that could not answer (ErrChallengeUnavailable)
+// is 500 in the same way, whatever its own error wraps, while a request the
+// verifier refused (ErrChallengeRequired) is 403.
 //
 // A challenge is checked next, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
@@ -421,6 +430,12 @@ func StatusForError(err error) int {
 	// so it is answered before the challenge and the refusal table are read.
 	var issuing *issueFailure
 	if errors.As(err, &issuing) {
+		return http.StatusInternalServerError
+	}
+
+	// So is a challenge verifier that could not answer, whatever its own
+	// error wraps: an outage never reads to the client as a refusal.
+	if errors.Is(err, ErrChallengeUnavailable) {
 		return http.StatusInternalServerError
 	}
 

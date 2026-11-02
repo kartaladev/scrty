@@ -230,6 +230,10 @@ type config struct {
 
 	// csrfOptOut is set by WithoutCSRFProtection.
 	csrfOptOut bool
+
+	// challenge is the automation-challenge gate EnableAutomationChallenge
+	// configured, and nil without it.
+	challenge *challengeGate
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the
@@ -552,6 +556,10 @@ func (c *config) build() (*Chain, error) {
 	if err := c.wireAccountRecovery(); err != nil {
 		return nil, err
 	}
+
+	// The challenge verifier stands in front of the flows it was selected for,
+	// whichever order their options and EnableAutomationChallenge came in.
+	c.wireChallenge()
 
 	// Activity is recorded for every chain, with no option to enable: a session
 	// whose idle deadline stops moving while its owner is using it is logged

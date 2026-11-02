@@ -69,6 +69,10 @@ type basicAuth struct {
 
 	// rehash stores an upgraded password hash, and nil upgrades nothing.
 	rehash RehashFunc
+
+	// automation is the automation-challenge gate when it was selected for
+	// Basic, settled at assembly, and nil otherwise.
+	automation *challengeGate
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -148,6 +152,18 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), b.flow,
 		b.sampler, b.log, now)
 	if err != nil {
+		return nil, err
+	}
+
+	// After the source limit and before anything about the account is read.
+	if err := b.automation.ask(ctx, ex.Request, challengeQuery{
+		flow:       ChallengeFlowBasicAuth,
+		source:     b.guard,
+		clientIP:   ex.Request.ClientIP(),
+		identifier: username,
+		attempts:   b.attempts,
+		charge:     func() { recordSourceFailure(ctx, b.guard, src) },
+	}); err != nil {
 		return nil, err
 	}
 

@@ -493,6 +493,35 @@ var _ PolicyReporter = (*MemoryLimiter)(nil)
 
 var _ Pruner = (*MemoryLimiter)(nil)
 
+// HasRecentFailures reports whether key has at least one failure in the
+// window, recording nothing. It implements RecentFailureReporter.
+//
+// As with Exceeded, a context that has already ended is an error with true,
+// and so is a key the limiter does not hold while it holds its maximum number
+// of keys, wrapping ErrLimiterFull: that key's failure may be one there was
+// no room to store, so the limiter cannot say it has none.
+func (l *MemoryLimiter) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return true, fmt.Errorf("ratelimit: recent failures of %q: %w", key, err)
+	}
+
+	now := l.clock.Now()
+	s := l.shardFor(key)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l.release(s.sweepLocked(now, l.window))
+
+	if _, ok := s.keys[key]; !ok && l.held.Load() >= int64(l.maxKeys) {
+		return true, fmt.Errorf("ratelimit: recent failures of %q: %w", key, ErrLimiterFull)
+	}
+
+	return s.countLocked(key, now.Add(-l.window)) > 0, nil
+}
+
+var _ RecentFailureReporter = (*MemoryLimiter)(nil)
+
 // Charge records one failure for key and reports the key below its limit, or
 // reports it at its limit and records nothing, under the one hold of key's
 // shard lock that also guards Exceeded and RecordFailure, so concurrent
