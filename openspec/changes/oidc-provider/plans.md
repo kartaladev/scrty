@@ -213,7 +213,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a store mock failing the write calls no observer;
   - `DeleteExpired` calls none.
 - [ ] FAIL. Implement:
-  - `Delete` and `DeleteByUserExcept` load the session first, only when observers exist, to learn its family. A failed load does not block the deletion; the report then carries the user and a nil family;
+  - `Delete` and `DeleteByUserExcept` load the session first, only when observers exist, to learn its family. A failed load does not block the deletion. `Delete` then reports no user and a nil family, since it holds only an identifier, and `DeleteByUserExcept` reports the user and a nil `KeptFamily`;
   - reports are sent after the store write returns nil.
 - [ ] PASS with `-race`. Commit.
 - [ ] Red rows on `TestSessions_EndObserver`: a caller's context cancelled before the report reaches the observer uncancelled, with its values kept (`context.WithoutCancel`); the first of two observers panicking leaves the second called and the end unchanged, with a log line carrying none of the report. FAIL; implement; PASS; commit.
@@ -747,7 +747,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 7.8: Ending grants
 **Files:** Create `oidcprovider/endsignin.go`
 - [ ] Red `TestProvider_EndSignIn`:
-  - each `session.EndReport` cause maps to the right `SignInSelector`;
+  - each `session.EndReport` cause maps to the right `SignInSelector`, with `EndDeleted` selecting the family, and `EndUserSessionsExcept` or `EndOtherSignIns` with a nil `KeptFamily` selecting the whole user;
+  - a report naming nobody ends nothing and is logged;
   - the online grant is revoked and the offline one survives;
   - an `EndsWithSignIn` client loses both;
   - the clients returned are queued for delivery, once each;

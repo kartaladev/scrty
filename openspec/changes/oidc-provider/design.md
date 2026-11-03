@@ -973,6 +973,13 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 - **Two kinds of call:**
   - **The chain's logout** calls the provider *before* deleting, so a grant-store failure can fail the logout (`http-security-chain`).
   - **The manager's report** comes *after* the store write. Its failure is logged and reported as an event, and never undoes the end.
+- **Settled while building it (2026-11-04):**
+  - **A write that matches nothing is still reported.** `Delete` and `DeleteByUser` return no count, so the manager cannot tell. `SignInsEnded` must therefore accept a repeat, which T3's "newly marked" guarantees, and a report naming nobody, which it ignores.
+  - **An upstream delete with an empty issuer or session is not reported.** Its contract says it ends nothing, and `{User: u}` with no issuer could read as all of `u`'s sign-ins.
+  - **`EndDeleted` ends the family's grants.** `Delete` removes one record, so during a renewal window the family's successor can outlive it. The provider cannot tell, since decision 5 keeps `session.Store` without a family lookup. Ending the grants costs at most one more login, and leaving them would keep online grants alive after an explicit delete, so the safe side is to end them. With no family known, as for a session already expired or gone, no grant can be matched, and the provider logs that.
+  - **A nil `KeptFamily` spares nothing.** It is nil when the kept session could not be read: expired, another user's, or a failed read. The provider then ends all of that user's online grants. A sign-in it should have spared must log in again, which is the safe mistake.
+  - **On reuse, end observers run before `WithReuseObserver`.** A panic in the reuse observer still propagates, as it did before.
+  - **Raw stores do not report.** `authenticate/mfa` reset and the `passkey` revoker (`clone.go`, `manage.go`) accept anything with the store's method, so a consumer can hand them a `session.Store`, which ends sessions with no report that `ReportsEndsTo` could see. Sub-decision 4's grant ports cover MFA reset and clone detection. Lane H4 checks the `manage.go` path when it wires them (task 11.x).
 - **Rejected:**
   - asking the consumer to remember to wire an observer, with no check;
   - a chain-side wrapper around the session manager, which would miss calls the consumer makes on the manager directly.
