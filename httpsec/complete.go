@@ -9,10 +9,10 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -188,7 +188,7 @@ type loginTailDeps struct {
 
 	// afterFailures is whether the login's identifier had recent failed
 	// attempts, so its success is reported as
-	// security.AuthnLoginSuccessAfterFail. Only form login knows it.
+	// event.AuthnLoginSuccessAfterFail. Only form login knows it.
 	afterFailures bool
 }
 
@@ -635,15 +635,15 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 // emitSignIn reports a stored sign-in: its session, its credential, and the
 // login that created it, under its user and first factor.
 func emitSignIn(ctx context.Context, s *session.Session, afterFailures bool) {
-	emitEvent(ctx, sessionEvent(security.SessionCreated, security.OutcomeSuccess, s))
-	emitEvent(ctx, sessionEvent(security.AuthnTokenCreated, security.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(event.SessionCreated, event.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, s))
 
-	name := security.AuthnLoginSuccess
+	name := event.AuthnLoginSuccess
 	if afterFailures {
-		name = security.AuthnLoginSuccessAfterFail
+		name = event.AuthnLoginSuccessAfterFail
 	}
 
-	emitEvent(ctx, sessionEvent(name, security.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(name, event.OutcomeSuccess, s))
 }
 
 // declaresJSON reports whether a content type names JSON, ignoring parameters

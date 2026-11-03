@@ -24,11 +24,11 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/secevent"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/security"
 )
 
 func TestNewAPIKeyManager(t *testing.T) {
@@ -114,14 +114,14 @@ func TestNewAPIKeyManager(t *testing.T) {
 		{
 			name: "the security-event sink given twice",
 			opts: []apikey.Option{
-				apikey.WithSecurityEvents(func(context.Context, security.Event) {}),
-				apikey.WithSecurityEvents(func(context.Context, security.Event) {}),
+				apikey.WithSecurityEvents(func(context.Context, event.Event) {}),
+				apikey.WithSecurityEvents(func(context.Context, event.Event) {}),
 			},
 			assert: configError,
 		},
 		{
 			name: "a security-event sink is accepted",
-			opts: []apikey.Option{apikey.WithSecurityEvents(func(context.Context, security.Event) {})},
+			opts: []apikey.Option{apikey.WithSecurityEvents(func(context.Context, event.Event) {})},
 			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
@@ -2006,14 +2006,14 @@ func (s *failOldRevokeStore) Revoke(ctx context.Context, keyID id.ID, at time.Ti
 // the context it was handed had ended.
 type keyEvents struct {
 	mu     sync.Mutex
-	events []security.Event
+	events []event.Event
 	ended  []bool
 
 	// before, when set, runs at the start of every delivery.
 	before func()
 }
 
-func (r *keyEvents) sink(ctx context.Context, e security.Event) {
+func (r *keyEvents) sink(ctx context.Context, e event.Event) {
 	if r.before != nil {
 		r.before()
 	}
@@ -2025,11 +2025,11 @@ func (r *keyEvents) sink(ctx context.Context, e security.Event) {
 	r.ended = append(r.ended, ctx.Err() != nil)
 }
 
-func (r *keyEvents) all() []security.Event {
+func (r *keyEvents) all() []event.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return append([]security.Event(nil), r.events...)
+	return append([]event.Event(nil), r.events...)
 }
 
 // TestSecurityEvents_KeysOwnSink pins the manager's own sink
@@ -2048,7 +2048,7 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 
 		// sink is the own sink, built over the row's recorder and the
 		// caller's cancel function.
-		sink func(own *keyEvents, cancel context.CancelFunc) security.Sink
+		sink func(own *keyEvents, cancel context.CancelFunc) event.Sink
 
 		// store wraps the manager's store; nil keeps it.
 		store func(t *testing.T, inner apikey.Store) apikey.Store
@@ -2063,7 +2063,7 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 		assert func(t *testing.T, own, chain *keyEvents, err error, logs string)
 	}
 
-	recording := func(own *keyEvents, _ context.CancelFunc) security.Sink { return own.sink }
+	recording := func(own *keyEvents, _ context.CancelFunc) event.Sink { return own.sink }
 
 	wrongSecret := func(valid string) string {
 		idPart, _, _ := strings.Cut(strings.TrimPrefix(valid, "sk_"), ".")
@@ -2081,8 +2081,8 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 
 				got := own.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.AuthnLoginFail, got[0].Name)
-				assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, event.AuthnLoginFail, got[0].Name)
+				assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
 				assert.Equal(t, factor.APIKey, got[0].Factor)
 				assert.Equal(t, base, got[0].At, "the manager's clock")
 				assert.Empty(t, got[0].User, "the key's owner is not who presented it")
@@ -2115,8 +2115,8 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 		},
 		{
 			name: "a panicking own sink: the refusal stands and the panic is logged without the event",
-			sink: func(own *keyEvents, _ context.CancelFunc) security.Sink {
-				return func(ctx context.Context, e security.Event) {
+			sink: func(own *keyEvents, _ context.CancelFunc) event.Sink {
+				return func(ctx context.Context, e event.Event) {
 					own.sink(ctx, e)
 					panic("sink: " + e.Name)
 				}
@@ -2125,13 +2125,13 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 			assert: func(t *testing.T, own, _ *keyEvents, err error, logs string) {
 				require.ErrorIs(t, err, apikey.ErrVerificationFailed)
 				require.Len(t, own.all(), 1, "the sink was called")
-				assert.Contains(t, logs, secevent.MsgSinkPanicked)
-				assert.NotContains(t, logs, security.AuthnLoginFail, "the record carries nothing of the event")
+				assert.Contains(t, logs, eventsink.MsgSinkPanicked)
+				assert.NotContains(t, logs, event.AuthnLoginFail, "the record carries nothing of the event")
 			},
 		},
 		{
 			name: "the caller's context cancelled during delivery: the own sink's context is live",
-			sink: func(own *keyEvents, cancel context.CancelFunc) security.Sink {
+			sink: func(own *keyEvents, cancel context.CancelFunc) event.Sink {
 				own.before = cancel
 
 				return own.sink
@@ -2153,7 +2153,7 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 
 				got := chain.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.AuthnLoginFail, got[0].Name)
+				assert.Equal(t, event.AuthnLoginFail, got[0].Name)
 			},
 		},
 	}
@@ -2187,7 +2187,7 @@ func TestSecurityEvents_KeysOwnSink(t *testing.T) {
 			require.NoError(t, err)
 
 			if tc.chain != nil {
-				ctx = secevent.With(ctx, tc.chain.sink)
+				ctx = eventsink.With(ctx, tc.chain.sink)
 			}
 
 			_, _, err = m.Verify(ctx, tc.presented(valid))

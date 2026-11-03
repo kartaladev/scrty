@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/security"
 )
 
 // failAfterReader serves n bytes from the secure source, then fails. Beginning
@@ -166,25 +166,25 @@ func (s failingEnrolmentStore) RefundVerifyAttempt(
 // ownEvents is a security-event sink that keeps what it receives.
 type ownEvents struct {
 	mu     sync.Mutex
-	events []security.Event
+	events []event.Event
 }
 
-func (r *ownEvents) sink(_ context.Context, e security.Event) {
+func (r *ownEvents) sink(_ context.Context, e event.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.events = append(r.events, e)
 }
 
-func (r *ownEvents) all() []security.Event {
+func (r *ownEvents) all() []event.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return append([]security.Event(nil), r.events...)
+	return append([]event.Event(nil), r.events...)
 }
 
 // panicking is a sink that records e and then panics.
-func (r *ownEvents) panicking(ctx context.Context, e security.Event) {
+func (r *ownEvents) panicking(ctx context.Context, e event.Event) {
 	r.sink(ctx, e)
 	panic("sink: " + e.Name)
 }

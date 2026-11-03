@@ -15,14 +15,14 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/must"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -30,14 +30,14 @@ import (
 // order given by the steps it shares with the sender (see order).
 type recoveryEvents struct {
 	mu     sync.Mutex
-	events []security.Event
+	events []event.Event
 
 	// order, when set, is appended "event" on every delivery, beside what the
 	// sender appends, so a row can see which came first.
 	order *[]string
 }
 
-func (r *recoveryEvents) sink(_ context.Context, e security.Event) {
+func (r *recoveryEvents) sink(_ context.Context, e event.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -47,11 +47,11 @@ func (r *recoveryEvents) sink(_ context.Context, e security.Event) {
 	}
 }
 
-func (r *recoveryEvents) all() []security.Event {
+func (r *recoveryEvents) all() []event.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return append([]security.Event(nil), r.events...)
+	return append([]event.Event(nil), r.events...)
 }
 
 // onFaultStore is a one-time token store that answers a lookup or a spend
@@ -108,16 +108,16 @@ func TestSecurityEvents_RecoveryStart(t *testing.T) {
 		username string
 		setup    func(f *fixture)
 		opts     []recovery.Option
-		assert   func(t *testing.T, got []security.Event, order []string)
+		assert   func(t *testing.T, got []event.Event, order []string)
 	}
 
-	started := func(user identity.UserID) func(t *testing.T, got []security.Event, order []string) {
-		return func(t *testing.T, got []security.Event, _ []string) {
+	started := func(user identity.UserID) func(t *testing.T, got []event.Event, order []string) {
+		return func(t *testing.T, got []event.Event, _ []string) {
 			t.Helper()
 
 			require.Len(t, got, 1)
-			assert.Equal(t, security.RecoveryStarted, got[0].Name)
-			assert.Equal(t, security.OutcomeSuccess, got[0].Outcome)
+			assert.Equal(t, event.RecoveryStarted, got[0].Name)
+			assert.Equal(t, event.OutcomeSuccess, got[0].Outcome)
 			assert.Equal(t, user, got[0].User)
 			assert.Equal(t, monday1000, got[0].At, "the recoverer's clock")
 		}
@@ -130,7 +130,7 @@ func TestSecurityEvents_RecoveryStart(t *testing.T) {
 			setup: func(f *fixture) {
 				f.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(anaDetails(), nil)
 			},
-			assert: func(t *testing.T, got []security.Event, order []string) {
+			assert: func(t *testing.T, got []event.Event, order []string) {
 				started(anaID)(t, got, order)
 				assert.Equal(t, []string{"send", "event"}, order, "the sink is the start's last step")
 			},
@@ -272,12 +272,12 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 		assert.Empty(t, own.all(), "a dependency failure reports no refusal")
 	}
 
-	refusedOnce := func(t *testing.T, got []security.Event) {
+	refusedOnce := func(t *testing.T, got []event.Event) {
 		t.Helper()
 
 		require.Len(t, got, 1)
-		assert.Equal(t, security.RecoveryRefused, got[0].Name)
-		assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+		assert.Equal(t, event.RecoveryRefused, got[0].Name)
+		assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
 		assert.Empty(t, got[0].User, "a refusal names no user")
 		assert.Equal(t, monday1000, got[0].At, "the recoverer's clock")
 	}
@@ -595,7 +595,7 @@ func TestSecurityEvents_RecoveryRefused(t *testing.T) {
 			}
 
 			if tc.chain != nil {
-				ctx = secevent.With(ctx, tc.chain.sink)
+				ctx = eventsink.With(ctx, tc.chain.sink)
 			}
 
 			tc.assert(t, own, tc.chain, tc.act(ctx, e, r))

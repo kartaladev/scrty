@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/ginsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/security"
 )
 
 // TestSecurityEvents_GinGuardDenied pins that a gin route guard behind the
@@ -29,26 +29,26 @@ func TestSecurityEvents_GinGuardDenied(t *testing.T) {
 	type testCase struct {
 		name   string
 		judged error
-		assert func(t *testing.T, events []security.Event, status int)
+		assert func(t *testing.T, events []event.Event, status int)
 	}
 
 	cases := []testCase{
 		{
 			name:   "a denial is reported, naming the caller",
 			judged: fmt.Errorf("%w: not yours", authorize.ErrAccessDenied),
-			assert: func(t *testing.T, events []security.Event, status int) {
+			assert: func(t *testing.T, events []event.Event, status int) {
 				assert.Equal(t, http.StatusForbidden, status)
 				require.Len(t, events, 1)
-				assert.Equal(t, security.AuthzFail, events[0].Name)
+				assert.Equal(t, event.AuthzFail, events[0].Name)
 				assert.Equal(t, identity.UserID("u-1"), events[0].User)
-				assert.Equal(t, security.OutcomeFailure, events[0].Outcome)
+				assert.Equal(t, event.OutcomeFailure, events[0].Outcome)
 				assert.Equal(t, "198.51.100.7", events[0].ClientIP, "the client address the chain resolved")
 			},
 		},
 		{
 			name:   "an authorizer that could not answer reports nothing",
 			judged: errors.New("test: the authorizer is down"),
-			assert: func(t *testing.T, events []security.Event, status int) {
+			assert: func(t *testing.T, events []event.Event, status int) {
 				assert.Equal(t, http.StatusInternalServerError, status)
 				assert.Empty(t, events)
 			},
@@ -61,10 +61,10 @@ func TestSecurityEvents_GinGuardDenied(t *testing.T) {
 
 			var (
 				mu     sync.Mutex
-				events []security.Event
+				events []event.Event
 			)
 
-			sink := func(_ context.Context, e security.Event) {
+			sink := func(_ context.Context, e event.Event) {
 				mu.Lock()
 				defer mu.Unlock()
 

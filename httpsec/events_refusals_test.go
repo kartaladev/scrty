@@ -21,13 +21,13 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -77,8 +77,8 @@ func (b scriptedBroker) Broker(ctx context.Context, _ oidc.ExternalIdentity) (*i
 // and, for a row whose component has a sink of its own, what that sink
 // received.
 type refusalRun struct {
-	events []security.Event
-	own    []security.Event
+	events []event.Event
+	own    []event.Event
 	err    error
 }
 
@@ -88,9 +88,9 @@ func reported(name, clientIP string, kind factor.Kind) func(t *testing.T, run re
 	return func(t *testing.T, run refusalRun) {
 		t.Helper()
 
-		var failures []security.Event
+		var failures []event.Event
 		for _, e := range run.events {
-			if e.Outcome == security.OutcomeFailure {
+			if e.Outcome == event.OutcomeFailure {
 				failures = append(failures, e)
 			}
 		}
@@ -108,7 +108,7 @@ func reportedNothing(t *testing.T, run refusalRun) {
 	t.Helper()
 
 	for _, e := range run.events {
-		assert.NotEqual(t, security.OutcomeFailure, e.Outcome, "%s reported", e.Name)
+		assert.NotEqual(t, event.OutcomeFailure, e.Outcome, "%s reported", e.Name)
 	}
 }
 
@@ -417,7 +417,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  passwordless(nil, "cred-unknown"),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -425,7 +425,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  passwordless(func(d *pwlDeployment) { d.inactive.Store(true) }, "cred-1"),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -471,7 +471,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  passwordlessIn(passkey.StatePending),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, passkey.ErrPending)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -479,7 +479,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  passwordlessIn(passkey.StateSuspended),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, passkey.ErrSuspended)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -497,7 +497,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -528,7 +528,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -536,7 +536,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  passwordlessChallenge(failsWith(onetime.ErrTokenNotFound), true),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.Passkey)(t, run)
 			},
 		},
 		{
@@ -558,7 +558,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  oidcBrokered(failsWith(oidc.ErrNoLinkedAccount)),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, oidc.ErrNoLinkedAccount)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
 			},
 		},
 		{
@@ -566,7 +566,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  oidcBrokered(failsWith(oidc.ErrProvisioningRefused)),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, oidc.ErrProvisioningRefused)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
 			},
 		},
 		{
@@ -596,7 +596,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  oidcCallback(nil, func(oidcLogin) string { return "not-the-nonce" }),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, oidc.ErrInvalidIDToken)
-				reported(security.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", factor.OIDC)(t, run)
 			},
 		},
 		{
@@ -620,7 +620,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, recovery.ErrRefused)
-				reported(security.RecoveryRefused, e2eSource, "")(t, run)
+				reported(event.RecoveryRefused, e2eSource, "")(t, run)
 				assert.Empty(t, run.events[0].User, "a refusal names no user")
 			},
 		},
@@ -636,7 +636,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, recovery.ErrRefused)
-				reported(security.ExcessRateLimitExceeded, e2eSource, "")(t, run)
+				reported(event.ExcessRateLimitExceeded, e2eSource, "")(t, run)
 			},
 		},
 		{
@@ -652,9 +652,9 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			assert: func(t *testing.T, run refusalRun) {
 				require.NoError(t, run.err)
 
-				var signedIn []security.Event
+				var signedIn []event.Event
 				for _, e := range run.events {
-					if e.Name == security.AuthnLoginSuccess {
+					if e.Name == event.AuthnLoginSuccess {
 						signedIn = append(signedIn, e)
 					}
 				}
@@ -702,7 +702,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  mfaVerifyAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound)}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
-				reported(security.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
+				reported(event.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -710,7 +710,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  mfaVerifyAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound), spend: true}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
-				reported(security.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
+				reported(event.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -718,7 +718,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  mfaVerifyAfter(spendsChallenge{presented: "not-the-challenge"}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
-				reported(security.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
+				reported(event.MFAVerifyFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -756,7 +756,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  reproofAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound)}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
-				reported(security.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
+				reported(event.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -764,7 +764,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  reproofAfter(spendsChallenge{hook: failsWith(onetime.ErrTokenNotFound), spend: true}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
-				reported(security.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
+				reported(event.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -772,7 +772,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  reproofAfter(spendsChallenge{presented: "not-the-challenge"}),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrInvalidCode)
-				reported(security.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
+				reported(event.ReauthenticationFail, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -800,7 +800,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrVerifyThrottled)
-				reported(security.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
+				reported(event.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
 			},
 		},
 		{
@@ -820,7 +820,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrVerifyThrottled)
-				reported(security.ExcessRateLimitExceeded, "192.0.2.1", "")(t, run)
+				reported(event.ExcessRateLimitExceeded, "192.0.2.1", "")(t, run)
 			},
 		},
 		{
@@ -828,7 +828,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  enrolmentBegin(exceededLimiter),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, mfa.ErrEnrolmentThrottled)
-				reported(security.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
+				reported(event.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
 				assert.Equal(t, testMFAUser, run.events[0].User)
 			},
 		},
@@ -852,7 +852,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, apiKeySource, factor.APIKey)(t, run)
+				reported(event.AuthnLoginFail, apiKeySource, factor.APIKey)(t, run)
 				assert.Empty(t, run.own, "one outcome is reported once")
 			},
 		},
@@ -869,7 +869,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			},
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, httpsec.ErrRenewalThrottled)
-				reported(security.ExcessRateLimitExceeded, eventsClient, "")(t, run)
+				reported(event.ExcessRateLimitExceeded, eventsClient, "")(t, run)
 			},
 		},
 		{
@@ -880,7 +880,7 @@ func TestSecurityEvents_Refusals(t *testing.T) {
 			run:  bearerVerdict(func(ctx context.Context) error { return errors.Join(token.ErrInvalid, ctx.Err()) }),
 			assert: func(t *testing.T, run refusalRun) {
 				require.ErrorIs(t, run.err, authenticate.ErrAuthenticationFailed)
-				reported(security.AuthnLoginFail, "192.0.2.1", "")(t, run)
+				reported(event.AuthnLoginFail, "192.0.2.1", "")(t, run)
 			},
 		},
 		{
@@ -923,21 +923,21 @@ func TestSecurityEvents_RecoveryStartHoldsAlike(t *testing.T) {
 	type testCase struct {
 		name     string
 		username string
-		assert   func(t *testing.T, e security.Event)
+		assert   func(t *testing.T, e event.Event)
 	}
 
 	cases := []testCase{
 		{
 			name:     "a known username",
 			username: e2eAddress,
-			assert: func(t *testing.T, e security.Event) {
+			assert: func(t *testing.T, e event.Event) {
 				assert.Equal(t, e2eUser, e.User)
 			},
 		},
 		{
 			name:     "an unknown username",
 			username: "nobody@example.com",
-			assert: func(t *testing.T, e security.Event) {
+			assert: func(t *testing.T, e event.Event) {
 				assert.Empty(t, e.User, "no account, no user reference")
 			},
 		},
@@ -947,11 +947,11 @@ func TestSecurityEvents_RecoveryStartHoldsAlike(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			called := make(chan security.Event, 1)
+			called := make(chan event.Event, 1)
 			release := make(chan struct{})
 
-			sink := func(_ context.Context, e security.Event) {
-				if e.Name != security.RecoveryStarted {
+			sink := func(_ context.Context, e event.Event) {
+				if e.Name != event.RecoveryStarted {
 					return
 				}
 
@@ -969,7 +969,7 @@ func TestSecurityEvents_RecoveryStartHoldsAlike(t *testing.T) {
 					url.Values{httpsec.RecoveryUsernameParam: {tc.username}}))
 			}()
 
-			var e security.Event
+			var e event.Event
 			select {
 			case e = <-called:
 			case out := <-done:
@@ -988,7 +988,7 @@ func TestSecurityEvents_RecoveryStartHoldsAlike(t *testing.T) {
 
 			require.NoError(t, out.err)
 			assert.Equal(t, http.StatusAccepted, out.rec.Code)
-			assert.Equal(t, security.OutcomeSuccess, e.Outcome)
+			assert.Equal(t, event.OutcomeSuccess, e.Outcome)
 			assert.Equal(t, e2eSource, e.ClientIP)
 			tc.assert(t, e)
 		})
@@ -1016,7 +1016,7 @@ func TestSecurityEvents_ComposedChains(t *testing.T) {
 			name:      "the outer chain reports, the inner refuses",
 			outerSink: true,
 			assert: func(t *testing.T, outer, _ *eventRecorder) {
-				assert.Equal(t, []string{security.MaliciousCSRF}, outer.names())
+				assert.Equal(t, []string{event.MaliciousCSRF}, outer.names())
 			},
 		},
 		{
@@ -1024,7 +1024,7 @@ func TestSecurityEvents_ComposedChains(t *testing.T) {
 			outerSink: true,
 			innerSink: true,
 			assert: func(t *testing.T, outer, inner *eventRecorder) {
-				assert.Equal(t, []string{security.MaliciousCSRF}, inner.names())
+				assert.Equal(t, []string{event.MaliciousCSRF}, inner.names())
 				assert.Empty(t, outer.names(), "one outcome is reported once")
 			},
 		},
@@ -1032,7 +1032,7 @@ func TestSecurityEvents_ComposedChains(t *testing.T) {
 			name:      "only the inner chain reports",
 			innerSink: true,
 			assert: func(t *testing.T, outer, inner *eventRecorder) {
-				assert.Equal(t, []string{security.MaliciousCSRF}, inner.names())
+				assert.Equal(t, []string{event.MaliciousCSRF}, inner.names())
 				assert.Empty(t, outer.names())
 			},
 		},
@@ -1090,7 +1090,7 @@ func TestSecurityEvents_DependencyFailureWrappingARefusalReportsNothing(t *testi
 
 		// verify is what the verifier answers.
 		verify func() (httpsec.ChallengeDecision, error)
-		assert func(t *testing.T, out served, events []security.Event)
+		assert func(t *testing.T, out served, events []event.Event)
 	}
 
 	failing := func(sentinel error) func() (httpsec.ChallengeDecision, error) {
@@ -1099,7 +1099,7 @@ func TestSecurityEvents_DependencyFailureWrappingARefusalReportsNothing(t *testi
 		}
 	}
 
-	outage := func(t *testing.T, out served, events []security.Event) {
+	outage := func(t *testing.T, out served, events []event.Event) {
 		t.Helper()
 
 		require.ErrorIs(t, out.err, httpsec.ErrChallengeUnavailable)
@@ -1131,10 +1131,10 @@ func TestSecurityEvents_DependencyFailureWrappingARefusalReportsNothing(t *testi
 		{
 			name:   "a refusal the verifier decides still reports scrty_challenge_refused",
 			verify: func() (httpsec.ChallengeDecision, error) { return httpsec.ChallengeRefuse, nil },
-			assert: func(t *testing.T, out served, events []security.Event) {
+			assert: func(t *testing.T, out served, events []event.Event) {
 				require.ErrorIs(t, out.err, httpsec.ErrChallengeRequired)
 				require.Len(t, events, 1, "events: %v", namesOf(events))
-				assert.Equal(t, security.ChallengeRefused, events[0].Name)
+				assert.Equal(t, event.ChallengeRefused, events[0].Name)
 			},
 		},
 	}
@@ -1188,17 +1188,17 @@ func TestSecurityEvents_TOTPAttemptsSpent(t *testing.T) {
 		charge    func(ctx context.Context, cancel context.CancelFunc) (time.Time, bool, error)
 		throttled bool
 
-		assert func(t *testing.T, err error, events []security.Event)
+		assert func(t *testing.T, err error, events []event.Event)
 	}
 
 	cases := []testCase{
 		{
 			name:   "a spent attempt charge reports excess_rate_limit_exceeded once",
 			charge: func(context.Context, context.CancelFunc) (time.Time, bool, error) { return time.Time{}, false, nil },
-			assert: func(t *testing.T, err error, events []security.Event) {
+			assert: func(t *testing.T, err error, events []event.Event) {
 				require.ErrorIs(t, err, mfa.ErrVerifyAttemptsExhausted)
 				run := refusalRun{events: events, err: err}
-				reported(security.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
+				reported(event.ExcessRateLimitExceeded, "192.0.2.1", factor.Password)(t, run)
 				assert.Equal(t, testMFAUser, events[0].User)
 				assert.NotEmpty(t, events[0].Session)
 			},
@@ -1208,7 +1208,7 @@ func TestSecurityEvents_TOTPAttemptsSpent(t *testing.T) {
 			charge: func(context.Context, context.CancelFunc) (time.Time, bool, error) {
 				return time.Time{}, false, errLimiterDown
 			},
-			assert: func(t *testing.T, err error, events []security.Event) {
+			assert: func(t *testing.T, err error, events []event.Event) {
 				require.Error(t, err)
 				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(err))
 				reportedNothing(t, refusalRun{events: events, err: err})
@@ -1221,7 +1221,7 @@ func TestSecurityEvents_TOTPAttemptsSpent(t *testing.T) {
 
 				return time.Time{}, false, ctx.Err()
 			},
-			assert: func(t *testing.T, err error, events []security.Event) {
+			assert: func(t *testing.T, err error, events []event.Event) {
 				require.ErrorIs(t, err, context.Canceled)
 				reportedNothing(t, refusalRun{events: events, err: err})
 			},
@@ -1229,10 +1229,10 @@ func TestSecurityEvents_TOTPAttemptsSpent(t *testing.T) {
 		{
 			name:      "a user the throttle refuses is reported once, by the throttle",
 			throttled: true,
-			assert: func(t *testing.T, err error, events []security.Event) {
+			assert: func(t *testing.T, err error, events []event.Event) {
 				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
 				require.NotErrorIs(t, err, mfa.ErrVerifyAttemptsExhausted)
-				reported(security.ExcessRateLimitExceeded, "192.0.2.1", "")(t, refusalRun{events: events, err: err})
+				reported(event.ExcessRateLimitExceeded, "192.0.2.1", "")(t, refusalRun{events: events, err: err})
 			},
 		},
 	}

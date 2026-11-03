@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -19,7 +20,6 @@ import (
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -602,7 +602,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 }
 
 // emitPasskeyRefused reports err, a passwordless login's failure, as
-// security.AuthnLoginFail when it is a refusal of the presented credential:
+// event.AuthnLoginFail when it is a refusal of the presented credential:
 // the uniform authenticate.ErrAuthenticationFailed, or a pending or suspended
 // credential, which only the key's holder is told. A credential store or user
 // loader that failed, a challenge store that failed (answered as the uniform
@@ -616,7 +616,7 @@ func emitPasskeyRefused(ctx context.Context, err error) {
 		return
 	}
 
-	emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Passkey))
+	emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Passkey))
 }
 
 // loadUser loads the credential's user, refusing an unknown, disabled or

@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/security"
 )
 
 // compensatingRevokeTimeout bounds the revoke of a replacement that a lost
@@ -49,7 +49,7 @@ type Keys struct {
 	random io.Reader
 
 	// events is the manager's own security-event sink (WithSecurityEvents).
-	events secevent.Own
+	events eventsink.Own
 
 	// opening is the prefix with its separator already attached, settled once
 	// the prefix has been validated. Issuing and parsing both want it, and
@@ -166,7 +166,7 @@ func WithRandom(r io.Reader) Option { return func(m *Keys) { m.random = r } }
 
 // WithSecurityEvents reports the outcomes the manager decides outside a chain
 // to sink: a presented key it judged and refused, as
-// security.AuthnLoginFail with factor.APIKey and no user, since the key's
+// event.AuthnLoginFail with factor.APIKey and no user, since the key's
 // owner is not who presented it. A store that could not answer judged nothing
 // and is not reported.
 //
@@ -179,9 +179,9 @@ func WithRandom(r io.Reader) Option { return func(m *Keys) { m.random = r } }
 // context from which the caller's cancellation has been removed. A panic in it
 // is recovered and logged through the manager's logger (WithLogger) without
 // the event's contents, and the verification's result stands; a sink that
-// blocks holds the verification (see security.Sink). A nil sink, or the option
+// blocks holds the verification (see event.Sink). A nil sink, or the option
 // given twice, is a configuration error.
-func WithSecurityEvents(sink security.Sink) Option {
+func WithSecurityEvents(sink event.Sink) Option {
 	return func(m *Keys) { m.events.Set(sink) }
 }
 
@@ -678,13 +678,13 @@ func (m *Keys) revokeReplacement(ctx context.Context, replacement id.ID) error {
 }
 
 // refuseKey reports a presented key the manager judged and refused, as
-// security.AuthnLoginFail, through the chain the request runs in or else the
+// event.AuthnLoginFail, through the chain the request runs in or else the
 // manager's own sink, and returns ErrVerificationFailed. A store that could
 // not answer judged nothing and is not reported. The event names no user: the
 // key's owner is not who presented it.
 func (m *Keys) refuseKey(ctx context.Context) error {
-	m.events.Report(ctx, security.Event{
-		Name: security.AuthnLoginFail, At: m.clock.Now(), Outcome: security.OutcomeFailure, Factor: factor.APIKey,
+	m.events.Report(ctx, event.Event{
+		Name: event.AuthnLoginFail, At: m.clock.Now(), Outcome: event.OutcomeFailure, Factor: factor.APIKey,
 	}, m.logger)
 
 	return ErrVerificationFailed

@@ -13,31 +13,31 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/must"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
 // eventLog is a security-event sink that keeps what it receives.
 type eventLog struct {
 	mu     sync.Mutex
-	events []security.Event
+	events []event.Event
 }
 
-func (l *eventLog) sink(_ context.Context, e security.Event) {
+func (l *eventLog) sink(_ context.Context, e event.Event) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.events = append(l.events, e)
 }
 
-func (l *eventLog) all() []security.Event {
+func (l *eventLog) all() []event.Event {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	return append([]security.Event(nil), l.events...)
+	return append([]event.Event(nil), l.events...)
 }
 
 // TestSecurityEvents_Reuse pins that a detected reuse is reported as
@@ -58,16 +58,16 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 		// onChain presents the reused session on a chain's request.
 		onChain bool
 
-		assert func(t *testing.T, f *graceFixture, own, chain []security.Event, observed int)
+		assert func(t *testing.T, f *graceFixture, own, chain []event.Event, observed int)
 	}
 
-	reuseOf := func(f *graceFixture) []security.Event {
+	reuseOf := func(f *graceFixture) []event.Event {
 		sum := sha256.Sum256([]byte(f.o.ID))
 
-		return []security.Event{{
-			Name:    security.AuthnTokenReuse,
+		return []event.Event{{
+			Name:    event.AuthnTokenReuse,
 			At:      createdAt.Add(5 * time.Minute),
-			Outcome: security.OutcomeFailure,
+			Outcome: event.OutcomeFailure,
 			User:    testUser,
 			Session: hex.EncodeToString(sum[:]),
 		}}
@@ -77,7 +77,7 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 		{
 			name:    "a reuse reports authn_token_reuse to the manager's own sink",
 			ownSink: true,
-			assert: func(t *testing.T, f *graceFixture, own, chain []security.Event, _ int) {
+			assert: func(t *testing.T, f *graceFixture, own, chain []event.Event, _ int) {
 				assert.Equal(t, reuseOf(f), own)
 				assert.Empty(t, chain)
 			},
@@ -86,7 +86,7 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 			name:    "a configured reuse observer is still called beside the sink",
 			ownSink: true,
 			observe: true,
-			assert: func(t *testing.T, f *graceFixture, own, _ []security.Event, observed int) {
+			assert: func(t *testing.T, f *graceFixture, own, _ []event.Event, observed int) {
 				assert.Equal(t, reuseOf(f), own)
 				assert.Equal(t, 1, observed)
 			},
@@ -94,7 +94,7 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 		{
 			name:    "without a sink the observer alone is called",
 			observe: true,
-			assert: func(t *testing.T, _ *graceFixture, own, chain []security.Event, observed int) {
+			assert: func(t *testing.T, _ *graceFixture, own, chain []event.Event, observed int) {
 				assert.Empty(t, own)
 				assert.Empty(t, chain)
 				assert.Equal(t, 1, observed)
@@ -104,7 +104,7 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 			name:    "on a chain's request the reuse reports through the chain, not the manager's own sink",
 			ownSink: true,
 			onChain: true,
-			assert: func(t *testing.T, f *graceFixture, own, chain []security.Event, _ int) {
+			assert: func(t *testing.T, f *graceFixture, own, chain []event.Event, _ int) {
 				assert.Empty(t, own, "one reuse is reported once")
 				assert.Equal(t, reuseOf(f), chain)
 			},
@@ -112,7 +112,7 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 		{
 			name:    "on a chain's request a manager with no sink of its own reports through the chain",
 			onChain: true,
-			assert: func(t *testing.T, f *graceFixture, _, chain []security.Event, _ int) {
+			assert: func(t *testing.T, f *graceFixture, _, chain []event.Event, _ int) {
 				assert.Equal(t, reuseOf(f), chain)
 			},
 		},
@@ -147,7 +147,7 @@ func TestSecurityEvents_Reuse(t *testing.T) {
 
 			ctx := t.Context()
 			if tc.onChain {
-				ctx = secevent.With(ctx, chain.sink)
+				ctx = eventsink.With(ctx, chain.sink)
 			}
 
 			_, err := f.m.Load(ctx, f.o.ID)
@@ -173,22 +173,22 @@ func TestSecurityEvents_ReuseAfterRevocation(t *testing.T) {
 		name string
 		// deleteErr is what the store's family revocation returns.
 		deleteErr error
-		assert    func(t *testing.T, own []security.Event, err error)
+		assert    func(t *testing.T, own []event.Event, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "a revoked family reports the reuse",
-			assert: func(t *testing.T, own []security.Event, err error) {
+			assert: func(t *testing.T, own []event.Event, err error) {
 				require.ErrorIs(t, err, session.ErrReused)
 				require.Len(t, own, 1)
-				assert.Equal(t, security.AuthnTokenReuse, own[0].Name)
+				assert.Equal(t, event.AuthnTokenReuse, own[0].Name)
 			},
 		},
 		{
 			name:      "a family whose revocation failed reports nothing",
 			deleteErr: errStoreQuotes,
-			assert: func(t *testing.T, own []security.Event, err error) {
+			assert: func(t *testing.T, own []event.Event, err error) {
 				require.ErrorIs(t, err, session.ErrReused)
 				assert.Empty(t, own, "a reuse was reported for a family that was not revoked")
 			},
@@ -231,7 +231,7 @@ func TestSecurityEvents_SessionsConfig(t *testing.T) {
 		assert func(t *testing.T, m *session.Sessions, err error)
 	}
 
-	sink := func(context.Context, security.Event) {}
+	sink := func(context.Context, event.Event) {}
 
 	cases := []testCase{
 		{

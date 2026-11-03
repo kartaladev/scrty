@@ -6,14 +6,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 )
 
 //go:generate mockgen -destination=limiter_mock_test.go -package=mfa_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
@@ -83,7 +83,7 @@ type VerifyThrottle struct {
 
 	// events is the throttle's own security-event sink
 	// (WithThrottleSecurityEvents).
-	events secevent.Own
+	events eventsink.Own
 }
 
 // NewVerifyThrottle builds the throttle.
@@ -189,8 +189,8 @@ func (t *VerifyThrottle) Check(ctx context.Context, user identity.UserID) error 
 
 		// Only an exceeded limit is reported: a limiter that could not answer
 		// refuses with the same error, and decided nothing.
-		t.events.Report(ctx, security.Event{
-			Name: security.ExcessRateLimitExceeded, At: t.clock.Now(), Outcome: security.OutcomeFailure, User: user,
+		t.events.Report(ctx, event.Event{
+			Name: event.ExcessRateLimitExceeded, At: t.clock.Now(), Outcome: event.OutcomeFailure, User: user,
 		}, t.logger)
 
 		return ErrVerifyThrottled
@@ -341,7 +341,7 @@ func WithThrottleLogInterval(d time.Duration) ThrottleOption {
 
 // WithThrottleSecurityEvents reports the outcomes the throttle decides
 // outside a chain to sink: a user over the limit, refused by Check, as
-// security.ExcessRateLimitExceeded naming the user. A limiter that could not
+// event.ExcessRateLimitExceeded naming the user. A limiter that could not
 // answer refuses too and is not reported: it decided nothing.
 //
 // Default: no sink, and nothing is reported outside a chain. On a request an
@@ -353,9 +353,9 @@ func WithThrottleLogInterval(d time.Duration) ThrottleOption {
 // which the caller's cancellation has been removed. A panic in it is recovered
 // and logged through the throttle's logger (WithThrottleLogger) without the
 // event's contents, and the refusal stands; a sink that blocks holds the
-// check (see security.Sink). A nil sink, or the option given twice, is a
+// check (see event.Sink). A nil sink, or the option given twice, is a
 // configuration error.
-func WithThrottleSecurityEvents(sink security.Sink) ThrottleOption {
+func WithThrottleSecurityEvents(sink event.Sink) ThrottleOption {
 	return func(t *VerifyThrottle) { t.events.Set(sink) }
 }
 

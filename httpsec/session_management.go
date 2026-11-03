@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -339,7 +339,7 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 			return err
 		}
 
-		emitEvent(ex.Context(), sessionEvent(security.SignInEnded, security.OutcomeSuccess, s))
+		emitEvent(ex.Context(), sessionEvent(event.SignInEnded, event.OutcomeSuccess, s))
 
 		return m.respEnd(ex)
 	}
@@ -352,7 +352,7 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 	// Reported only when a sign-in ended: a caller with no other sign-in
 	// ended nothing.
 	if n > 0 {
-		emitEvent(ex.Context(), sessionEvent(security.SignInEnded, security.OutcomeSuccess, s))
+		emitEvent(ex.Context(), sessionEvent(event.SignInEnded, event.OutcomeSuccess, s))
 	}
 
 	return m.respEnd(ex)

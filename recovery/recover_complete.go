@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -16,7 +17,6 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -178,7 +178,7 @@ type issuedSession struct {
 // runs before that, on ctx itself, so a client that hangs up while it issues
 // spends nothing.
 //
-// A refusal (ErrRefused) is reported as security.RecoveryRefused
+// A refusal (ErrRefused) is reported as event.RecoveryRefused
 // (WithSecurityEvents); a dependency failure, and a request whose own context
 // ended before the verdict, are not, even when the failure is answered as
 // ErrRefused (an issued-code store, the user limiter or the risk hook that
@@ -466,7 +466,7 @@ func (r *Recoverer) validateCompletion(c *config) error {
 	return nil
 }
 
-// reportRefused reports err as security.RecoveryRefused when it is a refusal of
+// reportRefused reports err as event.RecoveryRefused when it is a refusal of
 // the presented proofs (ErrRefused). A refusal that answers a dependency's
 // failure (a store, the user limiter or the risk hook), and one the caller's
 // own context cut short, report nothing. It names no user, as a failed login
@@ -476,7 +476,7 @@ func (r *Recoverer) reportRefused(ctx context.Context, err error) {
 		return
 	}
 
-	r.events.Report(ctx, security.Event{
-		Name: security.RecoveryRefused, At: r.clock.Now(), Outcome: security.OutcomeFailure,
+	r.events.Report(ctx, event.Event{
+		Name: event.RecoveryRefused, At: r.clock.Now(), Outcome: event.OutcomeFailure,
 	}, r.logger)
 }

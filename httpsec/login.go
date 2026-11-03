@@ -11,16 +11,16 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -362,7 +362,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
 		func(ctx context.Context) {
-			emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Password))
+			emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Password))
 		},
 		func(ctx context.Context, src ratelimit.Source) error {
 			return l.automation.ask(ctx, ex.Request, challengeQuery{
@@ -724,11 +724,11 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 
 // hadRecentFailures reports whether username has failed attempts within the
 // lockout's failure window (identifierWindow), so its success is reported as
-// security.AuthnLoginSuccessAfterFail. It reads the attempt store only on a
+// event.AuthnLoginSuccessAfterFail. It reads the attempt store only on a
 // request a sink watches, and a store that cannot answer reads as none: the
 // answer names an event and decides nothing.
 func (l *formLogin) hadRecentFailures(ctx context.Context, username string, now time.Time) bool {
-	if !secevent.Enabled(ctx) || nilcheck.IsNil(l.attempts) {
+	if !eventsink.Enabled(ctx) || nilcheck.IsNil(l.attempts) {
 		return false
 	}
 
@@ -752,7 +752,7 @@ func (l *formLogin) recordFailure(ctx context.Context, username string, now time
 	// sending its guess must still be charged for it, and an attempt store that
 	// honours cancellation would otherwise drop the failure. The context names
 	// the password factor, which the lockout's view reports a lock with.
-	recordCtx := secevent.WithFactor(context.WithoutCancel(ctx), factor.Password)
+	recordCtx := eventsink.WithFactor(context.WithoutCancel(ctx), factor.Password)
 	if err := l.attempts.RecordFailure(recordCtx, username, now); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 			diag.Failure("attempt-store", err)...)

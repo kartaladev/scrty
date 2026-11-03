@@ -5,8 +5,8 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/security"
 )
 
 // reprove answers a password re-proof at POST <prefix>/password.
@@ -105,7 +105,7 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 	// stands in front of it.
 	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
 		func(ctx context.Context) {
-			emitEvent(ctx, sessionEvent(security.ReauthenticationFail, security.OutcomeFailure, s))
+			emitEvent(ctx, sessionEvent(event.ReauthenticationFail, event.OutcomeFailure, s))
 		}, nil)
 	if err != nil {
 		return err

@@ -1,4 +1,4 @@
-package security_test
+package event_test
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
 )
 
 // TestSecurityEvents_Names pins the documented list: every OWASP Logging
@@ -81,7 +81,7 @@ func TestSecurityEvents_Names(t *testing.T) {
 			name: "the slice is the caller's own",
 			assert: func(t *testing.T, names []string) {
 				names[0] = "changed"
-				assert.Equal(t, security.AuthnLoginSuccess, security.Names()[0])
+				assert.Equal(t, event.AuthnLoginSuccess, event.Names()[0])
 			},
 		},
 	}
@@ -90,7 +90,7 @@ func TestSecurityEvents_Names(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, security.Names())
+			tc.assert(t, event.Names())
 		})
 	}
 }

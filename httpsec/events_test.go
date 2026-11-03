@@ -14,23 +14,23 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/internal/secevent"
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/internal/eventsink"
 )
 
 // eventRecorder is a sink that keeps every event it receives, with whether
 // the context it was handed had ended.
 type eventRecorder struct {
 	mu     sync.Mutex
-	events []security.Event
+	events []event.Event
 	ended  []bool
 
 	// before, when set, runs at the start of every delivery.
-	before func(ctx context.Context, e security.Event)
+	before func(ctx context.Context, e event.Event)
 }
 
-func (r *eventRecorder) sink(ctx context.Context, e security.Event) {
+func (r *eventRecorder) sink(ctx context.Context, e event.Event) {
 	if r.before != nil {
 		r.before(ctx, e)
 	}
@@ -43,16 +43,16 @@ func (r *eventRecorder) sink(ctx context.Context, e security.Event) {
 }
 
 // all is every event received so far, in order.
-func (r *eventRecorder) all() []security.Event {
+func (r *eventRecorder) all() []event.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return append([]security.Event(nil), r.events...)
+	return append([]event.Event(nil), r.events...)
 }
 
 // named is every event received so far under name.
-func (r *eventRecorder) named(name string) []security.Event {
-	var out []security.Event
+func (r *eventRecorder) named(name string) []event.Event {
+	var out []event.Event
 
 	for _, e := range r.all() {
 		if e.Name == name {
@@ -98,14 +98,14 @@ func TestSecurityEvents_Sink(t *testing.T) {
 
 		// sink builds the sink the chain is given from the row's recorder and
 		// the request's cancel function, and nil means no sink at all.
-		sink func(rec *eventRecorder, cancel context.CancelFunc) security.Sink
+		sink func(rec *eventRecorder, cancel context.CancelFunc) event.Sink
 
 		password string
 
 		assert func(t *testing.T, out served, rec *eventRecorder, logs []slog.Record)
 	}
 
-	recording := func(rec *eventRecorder, _ context.CancelFunc) security.Sink { return rec.sink }
+	recording := func(rec *eventRecorder, _ context.CancelFunc) event.Sink { return rec.sink }
 
 	cases := []testCase{
 		{
@@ -123,10 +123,10 @@ func TestSecurityEvents_Sink(t *testing.T) {
 			password: "wrong",
 			assert: func(t *testing.T, out served, rec *eventRecorder, _ []slog.Record) {
 				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-				assert.Equal(t, []string{security.AuthnLoginFail}, rec.names())
+				assert.Equal(t, []string{event.AuthnLoginFail}, rec.names())
 
 				e := rec.all()[0]
-				assert.Equal(t, security.OutcomeFailure, e.Outcome)
+				assert.Equal(t, event.OutcomeFailure, e.Outcome)
 				assert.Equal(t, loginGuardSource, e.ClientIP)
 				assert.Equal(t, factor.Password, e.Factor)
 				assert.Empty(t, e.User, "a failed login names no user")
@@ -135,8 +135,8 @@ func TestSecurityEvents_Sink(t *testing.T) {
 		},
 		{
 			name: "a panicking sink: the login still succeeds, and the panic is logged without the event",
-			sink: func(rec *eventRecorder, _ context.CancelFunc) security.Sink {
-				return func(ctx context.Context, e security.Event) {
+			sink: func(rec *eventRecorder, _ context.CancelFunc) event.Sink {
+				return func(ctx context.Context, e event.Event) {
 					rec.sink(ctx, e)
 					panic("sink: " + e.Name + " " + string(e.User) + " " + e.ClientIP + " " + e.Session)
 				}
@@ -149,7 +149,7 @@ func TestSecurityEvents_Sink(t *testing.T) {
 
 				panicked := 0
 				for _, r := range logs {
-					if r.Message == secevent.MsgSinkPanicked {
+					if r.Message == eventsink.MsgSinkPanicked {
 						panicked++
 						assert.Zero(t, r.NumAttrs(), "the panic record carries nothing of the event")
 					}
@@ -168,15 +168,15 @@ func TestSecurityEvents_Sink(t *testing.T) {
 		},
 		{
 			name: "a request context cancelled after the outcome: the sink is still called, on a live context",
-			sink: func(rec *eventRecorder, cancel context.CancelFunc) security.Sink {
-				rec.before = func(context.Context, security.Event) { cancel() }
+			sink: func(rec *eventRecorder, cancel context.CancelFunc) event.Sink {
+				rec.before = func(context.Context, event.Event) { cancel() }
 
 				return rec.sink
 			},
 			password: "wrong",
 			assert: func(t *testing.T, out served, rec *eventRecorder, _ []slog.Record) {
 				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-				require.Equal(t, []string{security.AuthnLoginFail}, rec.names())
+				require.Equal(t, []string{event.AuthnLoginFail}, rec.names())
 				assert.Equal(t, []bool{false}, rec.ended, "the sink's context did not end with the request's")
 			},
 		},
@@ -216,7 +216,7 @@ func TestSecurityEvents_Config(t *testing.T) {
 		assert func(t *testing.T, c *httpsec.Chain, err error)
 	}
 
-	sink := func(context.Context, security.Event) {}
+	sink := func(context.Context, event.Event) {}
 
 	cases := []testCase{
 		{

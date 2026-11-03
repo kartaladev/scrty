@@ -198,7 +198,7 @@ func WithLogger(l *slog.Logger) Option {
 // whether the identifier is locked by the rule Evaluate judges by, and the
 // failure that takes it from allowed to locked, or under the escalating wait
 // takes its count to the window failure limit, or that sets a hold, reports
-// security.AuthnLoginFailMax and then security.AuthnLoginLock. Under the
+// event.AuthnLoginFailMax and then event.AuthnLoginLock. Under the
 // escalating wait an identifier is allowed again once its wait has run out,
 // so the failure after that locks it again, for longer, and reports again.
 // The failures that find it still locked lock nothing new and report no

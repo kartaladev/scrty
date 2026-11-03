@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -207,7 +207,7 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 	}
 
 	// The successor is stored by now, and its credential is handed out below.
-	emitEvent(ctx, sessionEvent(security.SessionRenewed, security.OutcomeSuccess, successor))
+	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, successor))
 
 	return r.respond(ex, RenewalResult{
 		Credential: credential, Session: successor, User: details, Kind: kind, TokenType: tokenTypeOf(successor),
@@ -249,7 +249,7 @@ func (r *sessionRenewal) admit(ctx context.Context, key string) error {
 	}
 
 	if exceeded {
-		emitEvent(ctx, security.Event{Name: security.ExcessRateLimitExceeded, Outcome: security.OutcomeFailure})
+		emitEvent(ctx, event.Event{Name: event.ExcessRateLimitExceeded, Outcome: event.OutcomeFailure})
 
 		return ErrRenewalThrottled
 	}

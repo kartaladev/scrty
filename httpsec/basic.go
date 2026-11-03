@@ -13,14 +13,14 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/internal/secevent"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 )
 
 // DefaultBasicAuthRealm is the realm named in the WWW-Authenticate header when
@@ -182,7 +182,7 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 
 		// A source hammering a locked account spends its own allowance.
 		recordSourceFailure(ctx, b.guard, src)
-		emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Basic))
+		emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Basic))
 
 		// Concealed, the lock is a 401 and challenged; disclosed, a 429,
 		// which is not.
@@ -218,11 +218,11 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		// failure. Reset is different, and stays on the request's context:
 		// nobody is owed a clearing the client did not wait for.
 		if credentialRefused(ctx, err) {
-			emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Basic))
+			emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Basic))
 
 			// The lockout's view reports a lock this failure decides, with the
 			// factor the context names.
-			recordCtx := secevent.WithFactor(context.WithoutCancel(ctx), factor.Basic)
+			recordCtx := eventsink.WithFactor(context.WithoutCancel(ctx), factor.Basic)
 			if recErr := b.attempts.RecordFailure(recordCtx, username, now); recErr != nil {
 				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 					diag.Failure("attempt-store", recErr)...)

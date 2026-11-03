@@ -12,11 +12,11 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -318,7 +318,7 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	// Steps 5 to 8.
-	if err := checkResponse(ex, i.throttle, i.challenges, method, s, security.MFAVerifyFail); err != nil {
+	if err := checkResponse(ex, i.throttle, i.challenges, method, s, event.MFAVerifyFail); err != nil {
 		return err
 	}
 
@@ -604,8 +604,8 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 
 	// The rotated session is stored, and its credential is handed out below,
 	// with the challenge error when one is still raised.
-	emitEvent(ctx, sessionEvent(security.MFAVerified, security.OutcomeSuccess, rotated))
-	emitEvent(ctx, sessionEvent(security.SessionRenewed, security.OutcomeSuccess, rotated))
+	emitEvent(ctx, sessionEvent(event.MFAVerified, event.OutcomeSuccess, rotated))
+	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 
 	// Published on the exchange and on the context, so a consumer's error
 	// handling and their responder read the handle the caller is to present

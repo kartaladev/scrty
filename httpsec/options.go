@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -97,7 +97,7 @@ type config struct {
 	wiring []func(*Chain)
 
 	// events is the sink EnableSecurityEvents was given, and nil without one.
-	events security.Sink
+	events event.Sink
 
 	engine *policy.Engine
 	logger *slog.Logger

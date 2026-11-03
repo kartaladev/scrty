@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/logsample"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -150,7 +150,7 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 // authenticate.ErrAuthenticationFailed joined rather than wrapped: an
 // operator's log records which check the token failed, while a caller still
 // matches the one uniform failure. The cause reaches the record, never the
-// client. The refusal is reported as security.AuthnLoginFail on a request a
+// client. The refusal is reported as event.AuthnLoginFail on a request a
 // sink watches.
 //
 // A verdict wins over a hang-up: a rejection is classified first, so an err
@@ -187,7 +187,7 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 		// A verdict wins over a hang-up: the token was refused, so the
 		// refusal is reported even when the request's own context ended
 		// beside it.
-		emitEvent(ctx, security.Event{Name: security.AuthnLoginFail, Outcome: security.OutcomeFailure})
+		emitEvent(ctx, event.Event{Name: event.AuthnLoginFail, Outcome: event.OutcomeFailure})
 
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
 	}

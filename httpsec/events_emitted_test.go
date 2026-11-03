@@ -15,20 +15,20 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
 // reportedElsewhere names the events TestSecurityEvents_Emitted has no row
 // for, and where each is pinned instead.
 var reportedElsewhere = map[string]string{
-	security.AuthnLoginLock:    "the lockout observer's report (TestSecurityEvents_Observers)",
-	security.AuthnTokenReuse:   "the session-reuse observer's report (TestSecurityEvents_Observers)",
-	security.SigningKeyRotated: "token/signingkey TestSecurityEvents_SigningKeyRotated",
+	event.AuthnLoginLock:    "the lockout observer's report (TestSecurityEvents_Observers)",
+	event.AuthnTokenReuse:   "the session-reuse observer's report (TestSecurityEvents_Observers)",
+	event.SigningKeyRotated: "token/signingkey TestSecurityEvents_SigningKeyRotated",
 }
 
 // accessToken is the access_token member of a JSON success document.
@@ -77,12 +77,12 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:   security.AuthnLoginSuccess,
+			name:   event.AuthnLoginSuccess,
 			run:    signedInRun,
-			assert: emitted(security.AuthnLoginSuccess, security.OutcomeSuccess),
+			assert: emitted(event.AuthnLoginSuccess, event.OutcomeSuccess),
 		},
 		{
-			name: security.AuthnLoginSuccessAfterFail,
+			name: event.AuthnLoginSuccessAfterFail,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				require.Error(t, w.login(t, "wrong guess").err)
@@ -90,35 +90,35 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok, "wrong guess")
 			},
-			assert: emitted(security.AuthnLoginSuccessAfterFail, security.OutcomeSuccess),
+			assert: emitted(event.AuthnLoginSuccessAfterFail, event.OutcomeSuccess),
 		},
 		{
-			name: security.AuthnLoginFail,
+			name: event.AuthnLoginFail,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				require.Error(t, w.login(t, "wrong guess").err)
 
 				return worldRun(w, "", factor.Password, "", "wrong guess")
 			},
-			assert: emitted(security.AuthnLoginFail, security.OutcomeFailure),
+			assert: emitted(event.AuthnLoginFail, event.OutcomeFailure),
 		},
 		{
-			name: security.AuthnLoginFailMax,
+			name: event.AuthnLoginFailMax,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				for range 10 {
 					_ = w.login(t, "wrong guess")
-					if len(w.rec.named(security.AuthnLoginFailMax)) > 0 {
+					if len(w.rec.named(event.AuthnLoginFailMax)) > 0 {
 						break
 					}
 				}
 
 				return worldRun(w, "", factor.Password, "", "wrong guess")
 			},
-			assert: emitted(security.AuthnLoginFailMax, security.OutcomeFailure),
+			assert: emitted(event.AuthnLoginFailMax, event.OutcomeFailure),
 		},
 		{
-			name: security.AuthnPasswordChange,
+			name: event.AuthnPasswordChange,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -128,10 +128,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok, "a brand new passphrase")
 			},
-			assert: emitted(security.AuthnPasswordChange, security.OutcomeSuccess),
+			assert: emitted(event.AuthnPasswordChange, event.OutcomeSuccess),
 		},
 		{
-			name: security.AuthnPasswordChangeFail,
+			name: event.AuthnPasswordChangeFail,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -141,15 +141,15 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok, eventsRejectedPassword)
 			},
-			assert: emitted(security.AuthnPasswordChangeFail, security.OutcomeFailure),
+			assert: emitted(event.AuthnPasswordChangeFail, event.OutcomeFailure),
 		},
 		{
-			name:   security.AuthnTokenCreated,
+			name:   event.AuthnTokenCreated,
 			run:    signedInRun,
-			assert: emitted(security.AuthnTokenCreated, security.OutcomeSuccess),
+			assert: emitted(event.AuthnTokenCreated, event.OutcomeSuccess),
 		},
 		{
-			name: security.AuthnTokenRevoked,
+			name: event.AuthnTokenRevoked,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -157,15 +157,15 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok)
 			},
-			assert: emitted(security.AuthnTokenRevoked, security.OutcomeSuccess),
+			assert: emitted(event.AuthnTokenRevoked, event.OutcomeSuccess),
 		},
 		{
-			name:   security.SessionCreated,
+			name:   event.SessionCreated,
 			run:    signedInRun,
-			assert: emitted(security.SessionCreated, security.OutcomeSuccess),
+			assert: emitted(event.SessionCreated, event.OutcomeSuccess),
 		},
 		{
-			name: security.SessionRenewed,
+			name: event.SessionRenewed,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -173,10 +173,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, successor, tok, successor)
 			},
-			assert: emitted(security.SessionRenewed, security.OutcomeSuccess),
+			assert: emitted(event.SessionRenewed, event.OutcomeSuccess),
 		},
 		{
-			name: security.SessionExpired,
+			name: event.SessionExpired,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -185,10 +185,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok)
 			},
-			assert: emitted(security.SessionExpired, security.OutcomeFailure),
+			assert: emitted(event.SessionExpired, event.OutcomeFailure),
 		},
 		{
-			name: security.SessionUseAfterExpire,
+			name: event.SessionUseAfterExpire,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -197,10 +197,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, "", "", "", tok)
 			},
-			assert: emitted(security.SessionUseAfterExpire, security.OutcomeFailure),
+			assert: emitted(event.SessionUseAfterExpire, event.OutcomeFailure),
 		},
 		{
-			name: security.SessionLogout,
+			name: event.SessionLogout,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -208,10 +208,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok)
 			},
-			assert: emitted(security.SessionLogout, security.OutcomeSuccess),
+			assert: emitted(event.SessionLogout, event.OutcomeSuccess),
 		},
 		{
-			name: security.AuthzFail,
+			name: event.AuthzFail,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -219,10 +219,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok)
 			},
-			assert: emitted(security.AuthzFail, security.OutcomeFailure),
+			assert: emitted(event.AuthzFail, event.OutcomeFailure),
 		},
 		{
-			name: security.MFAVerified,
+			name: event.MFAVerified,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				d := newE2EDeployment(t)
@@ -238,10 +238,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					session: strings.TrimPrefix(rotated, mfaTokenPrefix), secrets: []string{pending, rotated, e2ePassword},
 				}
 			},
-			assert: emitted(security.MFAVerified, security.OutcomeSuccess),
+			assert: emitted(event.MFAVerified, event.OutcomeSuccess),
 		},
 		{
-			name: security.MFAVerifyFail,
+			name: event.MFAVerifyFail,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				d := newE2EDeployment(t)
@@ -263,10 +263,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					session: strings.TrimPrefix(challenged, mfaTokenPrefix), secrets: []string{challenged, "000000"},
 				}
 			},
-			assert: emitted(security.MFAVerifyFail, security.OutcomeFailure),
+			assert: emitted(event.MFAVerifyFail, event.OutcomeFailure),
 		},
 		{
-			name: security.MFAEnrolled,
+			name: event.MFAEnrolled,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				d := newE2EDeployment(t)
@@ -282,10 +282,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					session: strings.TrimPrefix(pending, mfaTokenPrefix), secrets: []string{pending, e2ePassword},
 				}
 			},
-			assert: emitted(security.MFAEnrolled, security.OutcomeSuccess),
+			assert: emitted(event.MFAEnrolled, event.OutcomeSuccess),
 		},
 		{
-			name: security.MFARemoved,
+			name: event.MFARemoved,
 			run: func(t *testing.T) emittedRun {
 				totp, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example")
 				require.NoError(t, err)
@@ -301,10 +301,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, "", "", tok)
 			},
-			assert: emitted(security.MFARemoved, security.OutcomeSuccess),
+			assert: emitted(event.MFARemoved, event.OutcomeSuccess),
 		},
 		{
-			name: security.PasskeyRegistered,
+			name: event.PasskeyRegistered,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newPasskeyHarness(t)
@@ -318,10 +318,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					session: s.ID, secrets: []string{s.ID},
 				}
 			},
-			assert: emitted(security.PasskeyRegistered, security.OutcomeSuccess),
+			assert: emitted(event.PasskeyRegistered, event.OutcomeSuccess),
 		},
 		{
-			name: security.PasskeyRemoved,
+			name: event.PasskeyRemoved,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newPasskeyHarness(t)
@@ -338,10 +338,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					session: s.ID, secrets: []string{s.ID},
 				}
 			},
-			assert: emitted(security.PasskeyRemoved, security.OutcomeSuccess),
+			assert: emitted(event.PasskeyRemoved, event.OutcomeSuccess),
 		},
 		{
-			name: security.RecoveryStarted,
+			name: event.RecoveryStarted,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newRecoveryHarness(t)
@@ -354,10 +354,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					events: rec.all(), clientIP: e2eSource, user: e2eUser, secrets: []string{issued},
 				}
 			},
-			assert: emitted(security.RecoveryStarted, security.OutcomeSuccess),
+			assert: emitted(event.RecoveryStarted, event.OutcomeSuccess),
 		},
 		{
-			name: security.RecoveryCompleted,
+			name: event.RecoveryCompleted,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newRecoveryHarness(t)
@@ -373,10 +373,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					session: strings.TrimPrefix(tok, mfaTokenPrefix), secrets: []string{saved, tok, e2ePassword},
 				}
 			},
-			assert: emitted(security.RecoveryCompleted, security.OutcomeSuccess),
+			assert: emitted(event.RecoveryCompleted, event.OutcomeSuccess),
 		},
 		{
-			name: security.RecoveryRefused,
+			name: event.RecoveryRefused,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newRecoveryHarness(t)
@@ -392,10 +392,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					events: rec.all(), clientIP: e2eSource, secrets: []string{saved, "wrong guess"},
 				}
 			},
-			assert: emitted(security.RecoveryRefused, security.OutcomeFailure),
+			assert: emitted(event.RecoveryRefused, event.OutcomeFailure),
 		},
 		{
-			name: security.Reauthenticated,
+			name: event.Reauthenticated,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -404,10 +404,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, rotated, tok, rotated)
 			},
-			assert: emitted(security.Reauthenticated, security.OutcomeSuccess),
+			assert: emitted(event.Reauthenticated, event.OutcomeSuccess),
 		},
 		{
-			name: security.ReauthenticationFail,
+			name: event.ReauthenticationFail,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				tok := w.signedIn(t)
@@ -416,10 +416,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok, "wrong guess")
 			},
-			assert: emitted(security.ReauthenticationFail, security.OutcomeFailure),
+			assert: emitted(event.ReauthenticationFail, event.OutcomeFailure),
 		},
 		{
-			name: security.SignInEnded,
+			name: event.SignInEnded,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				other := w.signedIn(t)
@@ -428,10 +428,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, e2eUser, factor.Password, tok, tok, other)
 			},
-			assert: emitted(security.SignInEnded, security.OutcomeSuccess),
+			assert: emitted(event.SignInEnded, event.OutcomeSuccess),
 		},
 		{
-			name: security.MaliciousCSRF,
+			name: event.MaliciousCSRF,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				require.ErrorIs(t, w.send(t, http.MethodPost, "/api/orders", "", url.Values{"item": {"1"}},
@@ -439,10 +439,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, "", "", "")
 			},
-			assert: emitted(security.MaliciousCSRF, security.OutcomeFailure),
+			assert: emitted(event.MaliciousCSRF, event.OutcomeFailure),
 		},
 		{
-			name: security.HostRefused,
+			name: event.HostRefused,
 			run: func(t *testing.T) emittedRun {
 				w := newEventsWorld(t)
 				require.ErrorIs(t, w.send(t, http.MethodGet, "/", "", nil,
@@ -450,10 +450,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return worldRun(w, "", "", "", "evil.example")
 			},
-			assert: emitted(security.HostRefused, security.OutcomeFailure),
+			assert: emitted(event.HostRefused, event.OutcomeFailure),
 		},
 		{
-			name: security.DPoPRefused,
+			name: event.DPoPRefused,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				world := newDPoPBearerWorld(t)
@@ -473,10 +473,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", secrets: []string{tok, sid}}
 			},
-			assert: emitted(security.DPoPRefused, security.OutcomeFailure),
+			assert: emitted(event.DPoPRefused, event.OutcomeFailure),
 		},
 		{
-			name: security.CertificateBindingRefused,
+			name: event.CertificateBindingRefused,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				s := newCertServer(t, httpsec.EnableCertificateBinding(), httpsec.EnableSecurityEvents(rec.sink))
@@ -490,10 +490,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 					events: rec.all()[before:], clientIP: "127.0.0.1", secrets: []string{got.token, cert.thumb},
 				}
 			},
-			assert: emitted(security.CertificateBindingRefused, security.OutcomeFailure),
+			assert: emitted(event.CertificateBindingRefused, event.OutcomeFailure),
 		},
 		{
-			name: security.ChallengeRefused,
+			name: event.ChallengeRefused,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				v := NewMockChallengeVerifier(gomock.NewController(t))
@@ -505,10 +505,10 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", secrets: []string{"wrong"}}
 			},
-			assert: emitted(security.ChallengeRefused, security.OutcomeFailure),
+			assert: emitted(event.ChallengeRefused, event.OutcomeFailure),
 		},
 		{
-			name: security.ExcessRateLimitExceeded,
+			name: event.ExcessRateLimitExceeded,
 			run: func(t *testing.T) emittedRun {
 				rec := &eventRecorder{}
 				h := newLoginGuardHarness(t)
@@ -520,7 +520,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 
 				return emittedRun{events: rec.all(), clientIP: loginGuardSource, secrets: []string{"wrong"}}
 			},
-			assert: emitted(security.ExcessRateLimitExceeded, security.OutcomeFailure),
+			assert: emitted(event.ExcessRateLimitExceeded, event.OutcomeFailure),
 		},
 	}
 
@@ -531,7 +531,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 	for name := range reportedElsewhere {
 		covered = append(covered, name)
 	}
-	require.ElementsMatch(t, security.Names(), covered, "one row per event name")
+	require.ElementsMatch(t, event.Names(), covered, "one row per event name")
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

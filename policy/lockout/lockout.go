@@ -10,8 +10,8 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 )
@@ -214,7 +214,7 @@ type Policy struct {
 
 	// events is the sink WithSecurityEvents gave the policy, for the locks it
 	// decides outside a chain.
-	events secevent.Own
+	events eventsink.Own
 
 	// capLimit and capRetention are WithFailureStreakLimit's limit and
 	// WithFailureStreakRetention's retention; the set flags record which of them

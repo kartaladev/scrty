@@ -13,9 +13,9 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/security"
 )
 
 //go:generate mockgen -destination=flowstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc FlowStore
@@ -164,7 +164,7 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 }
 
 // emitCallbackRefused reports err, a callback's failure, as
-// security.AuthnLoginFail when it refuses the external identity the provider
+// event.AuthnLoginFail when it refuses the external identity the provider
 // asserted: an ID token that failed verification (oidc.ErrInvalidIDToken), an
 // identity linked to no account (oidc.ErrNoLinkedAccount), or one whose
 // provisioning was refused (oidc.ErrProvisioningRefused). A provider that
@@ -181,7 +181,7 @@ func emitCallbackRefused(ctx context.Context, err error) {
 		return
 	}
 
-	emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.OIDC))
+	emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.OIDC))
 }
 
 // providerError answers the error branch of the callback.

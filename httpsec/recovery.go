@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -490,10 +490,10 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	// credential is handed out below.
 	// A completed recovery is a sign-in as well, of the recovery factor.
 	ctx := ex.Context()
-	emitEvent(ctx, sessionEvent(security.RecoveryCompleted, security.OutcomeSuccess, res.Session))
-	emitEvent(ctx, sessionEvent(security.SessionCreated, security.OutcomeSuccess, res.Session))
-	emitEvent(ctx, sessionEvent(security.AuthnTokenCreated, security.OutcomeSuccess, res.Session))
-	emitEvent(ctx, sessionEvent(security.AuthnLoginSuccess, security.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.RecoveryCompleted, event.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.SessionCreated, event.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.AuthnLoginSuccess, event.OutcomeSuccess, res.Session))
 
 	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
 }

@@ -1,4 +1,4 @@
-// Package security names the security events scrty reports, and the sink a
+// Package event names the security events scrty reports, and the sink a
 // consumer receives them on.
 //
 // scrty decides security outcomes: a login that succeeded or failed, a
@@ -155,4 +155,4 @@
 //     which the store could not say whether the identifier was already
 //     locked loses its event, which the policy logs, while the failure
 //     itself is recorded and counts.
-package security
+package event

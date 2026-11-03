@@ -12,10 +12,10 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/secevent"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/security"
 )
 
 func TestResetEnrolment(t *testing.T) {
@@ -183,8 +183,8 @@ func TestResetEnrolment(t *testing.T) {
 		{
 			name: "the security-event sink given twice is a configuration error and removes nothing",
 			opts: []mfa.ResetOption{
-				mfa.WithResetSecurityEvents(func(context.Context, security.Event) {}),
-				mfa.WithResetSecurityEvents(func(context.Context, security.Event) {}),
+				mfa.WithResetSecurityEvents(func(context.Context, event.Event) {}),
+				mfa.WithResetSecurityEvents(func(context.Context, event.Event) {}),
 			},
 			expect: func(*testing.T, mocks) {},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
@@ -472,8 +472,8 @@ func TestSecurityEvents_ResetOwnSink(t *testing.T) {
 
 				got := own.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.MFARemoved, got[0].Name)
-				assert.Equal(t, security.OutcomeSuccess, got[0].Outcome)
+				assert.Equal(t, event.MFARemoved, got[0].Name)
+				assert.Equal(t, event.OutcomeSuccess, got[0].Outcome)
 				assert.Equal(t, identity.UserID("u-1"), got[0].User)
 				assert.Equal(t, at, got[0].At, "the reset's clock")
 			},
@@ -503,7 +503,7 @@ func TestSecurityEvents_ResetOwnSink(t *testing.T) {
 
 				got := chain.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.MFARemoved, got[0].Name)
+				assert.Equal(t, event.MFARemoved, got[0].Name)
 			},
 		},
 	}
@@ -523,7 +523,7 @@ func TestSecurityEvents_ResetOwnSink(t *testing.T) {
 
 			ctx := t.Context()
 			if tc.chain != nil {
-				ctx = secevent.With(ctx, tc.chain.sink)
+				ctx = eventsink.With(ctx, tc.chain.sink)
 			}
 
 			err := mfa.ResetEnrolment(ctx, "u-1", mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{remover}},

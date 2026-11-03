@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -20,7 +20,7 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 		name string
 
 		// sink is the option's argument, built over the row's recorder.
-		sink func(rec *rotationEvents) security.Sink
+		sink func(rec *rotationEvents) event.Sink
 
 		// rotate is whether the row starts the manager and lets one rotation
 		// interval elapse.
@@ -41,15 +41,15 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "a rotation is reported once, at the clock's time, carrying no key material",
-			sink:   func(rec *rotationEvents) security.Sink { return rec.sink },
+			sink:   func(rec *rotationEvents) event.Sink { return rec.sink },
 			rotate: true,
 			assert: func(t *testing.T, rec *rotationEvents, km *signingkey.Keys, _ *failureReport, err error) {
 				require.NoError(t, err)
 
 				got := rec.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.SigningKeyRotated, got[0].Name)
-				assert.Equal(t, security.OutcomeSuccess, got[0].Outcome)
+				assert.Equal(t, event.SigningKeyRotated, got[0].Name)
+				assert.Equal(t, event.OutcomeSuccess, got[0].Outcome)
 				assert.Equal(t, epoch.Add(6*time.Hour), got[0].At)
 
 				kid := currentKid(t, km, signingkey.RS256)
@@ -60,8 +60,8 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 		},
 		{
 			name: "a panicking sink: the rotation stands",
-			sink: func(rec *rotationEvents) security.Sink {
-				return func(ctx context.Context, e security.Event) {
+			sink: func(rec *rotationEvents) event.Sink {
+				return func(ctx context.Context, e event.Event) {
 					rec.sink(ctx, e)
 					panic("sink")
 				}
@@ -75,7 +75,7 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 		},
 		{
 			name:   "a rotation whose key could not be stored reports nothing",
-			sink:   func(rec *rotationEvents) security.Sink { return rec.sink },
+			sink:   func(rec *rotationEvents) event.Sink { return rec.sink },
 			rotate: true,
 			opts:   []signingkey.Option{signingkey.WithAlgs(signingkey.EdDSA)},
 			alg:    signingkey.EdDSA,
@@ -92,15 +92,15 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 		},
 		{
 			name: "the option given twice is a configuration error",
-			sink: func(rec *rotationEvents) security.Sink { return rec.sink },
-			opts: []signingkey.Option{signingkey.WithSecurityEvents(func(context.Context, security.Event) {})},
+			sink: func(rec *rotationEvents) event.Sink { return rec.sink },
+			opts: []signingkey.Option{signingkey.WithSecurityEvents(func(context.Context, event.Event) {})},
 			assert: func(t *testing.T, _ *rotationEvents, _ *signingkey.Keys, _ *failureReport, err error) {
 				require.ErrorIs(t, err, signingkey.ErrConfig)
 			},
 		},
 		{
 			name: "a nil sink is a configuration error",
-			sink: func(*rotationEvents) security.Sink { return nil },
+			sink: func(*rotationEvents) event.Sink { return nil },
 			assert: func(t *testing.T, _ *rotationEvents, _ *signingkey.Keys, _ *failureReport, err error) {
 				require.ErrorIs(t, err, signingkey.ErrConfig)
 			},
@@ -151,20 +151,20 @@ func TestSecurityEvents_SigningKeyRotated(t *testing.T) {
 // rotationEvents keeps the events a manager reports.
 type rotationEvents struct {
 	mu     sync.Mutex
-	events []security.Event
+	events []event.Event
 	first  string
 }
 
-func (r *rotationEvents) sink(_ context.Context, e security.Event) {
+func (r *rotationEvents) sink(_ context.Context, e event.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.events = append(r.events, e)
 }
 
-func (r *rotationEvents) all() []security.Event {
+func (r *rotationEvents) all() []event.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return append([]security.Event(nil), r.events...)
+	return append([]event.Event(nil), r.events...)
 }

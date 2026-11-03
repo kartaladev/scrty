@@ -14,12 +14,12 @@ import (
 
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
-	"github.com/kartaladev/scrty/security"
 )
 
 // Default configuration, each replaceable by the Option of the same name.
@@ -67,7 +67,7 @@ type Keys struct {
 
 	// events is the sink WithSecurityEvents gave, kept so a nil sink or the
 	// option given twice is refused rather than read as none or as the last.
-	events secevent.Own
+	events eventsink.Own
 }
 
 // New returns a manager holding a current key for every configured
@@ -618,7 +618,7 @@ func WithErrorHook(hook func(error)) Option {
 }
 
 // WithSecurityEvents reports each signing key rotation mints and stores to
-// sink, as security.SigningKeyRotated, on the rotation loop's goroutine.
+// sink, as event.SigningKeyRotated, on the rotation loop's goroutine.
 //
 // Default: no sink, and nothing is reported. A rotation that fails reports
 // nothing: it is the error hook's (WithErrorHook). The key a manager mints at
@@ -627,7 +627,7 @@ func WithErrorHook(hook func(error)) Option {
 // manager's logger without the event's contents, and the rotation stands. A
 // sink that blocks holds the rotation loop. A nil sink, or the option given
 // twice, is a configuration error.
-func WithSecurityEvents(sink security.Sink) Option {
+func WithSecurityEvents(sink event.Sink) Option {
 	return func(km *Keys) { km.events.Set(sink) }
 }
 

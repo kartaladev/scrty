@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 )
 
 //go:generate mockgen -destination=limiter_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
@@ -289,7 +289,7 @@ func sourceThrottled(
 		// share one record. Writing another here would double it, and key it
 		// on the raw address, which an attacker rotating within one IPv6
 		// allocation chooses.
-		emitEvent(ctx, security.Event{Name: security.ExcessRateLimitExceeded, Outcome: security.OutcomeFailure})
+		emitEvent(ctx, event.Event{Name: event.ExcessRateLimitExceeded, Outcome: event.OutcomeFailure})
 
 		return src, err
 

@@ -2073,7 +2073,7 @@ documents, and test it with a certificate forwarded through your deployment.
 ## Security events
 
 `httpsec.EnableSecurityEvents` reports every security outcome the chain decides
-to a sink you supply, as a `security.Event` named from the
+to a sink you supply, as an `event.Event` named from the
 [OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html)
 where it names the outcome, and under a `scrty_` prefix where it does not. It
 is off until you enable it: with no sink, nothing is reported.
@@ -2083,7 +2083,7 @@ logger := slog.Default()
 
 chain, err := httpsec.New(
     httpsec.EnableFormLogin(loginDeps),
-    httpsec.EnableSecurityEvents(func(ctx context.Context, e security.Event) {
+    httpsec.EnableSecurityEvents(func(ctx context.Context, e event.Event) {
         logger.LogAttrs(ctx, slog.LevelInfo, "security event",
             slog.String("event", e.Name),
             slog.String("outcome", e.Outcome),
@@ -2097,8 +2097,8 @@ chain, err := httpsec.New(
 )
 ```
 
-`go doc github.com/kartaladev/scrty/security` lists every name and when it is
-reported; `security.Names()` returns them. Among them: `authn_login_success`,
+`go doc github.com/kartaladev/scrty/event` lists every name and when it is
+reported; `event.Names()` returns them. Among them: `authn_login_success`,
 `authn_login_fail`, `authn_login_fail_max` and `authn_login_lock` (the failure
 that locks an identifier, once per lock; under the default escalating wait, a
 failure after a wait has run out locks the identifier again, for longer, and

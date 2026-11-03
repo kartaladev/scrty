@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -155,8 +155,8 @@ func (l *logout) end(ctx context.Context, s *session.Session) error {
 	// the manager answers with nothing revoked and no error, was ended by
 	// something else, which reported it.
 	if err == nil && n > 0 {
-		emitEvent(ctx, sessionEvent(security.SessionLogout, security.OutcomeSuccess, s))
-		emitEvent(ctx, sessionEvent(security.AuthnTokenRevoked, security.OutcomeSuccess, s))
+		emitEvent(ctx, sessionEvent(event.SessionLogout, event.OutcomeSuccess, s))
+		emitEvent(ctx, sessionEvent(event.AuthnTokenRevoked, event.OutcomeSuccess, s))
 	}
 
 	return nil

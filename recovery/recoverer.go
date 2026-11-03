@@ -10,17 +10,17 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -137,7 +137,7 @@ type Recoverer struct {
 	logger *slog.Logger
 
 	// events is the recoverer's own security-event sink (WithSecurityEvents).
-	events secevent.Own
+	events eventsink.Own
 }
 
 // Enabled reports whether proof kind k is one WithProofs enabled. A caller
@@ -195,7 +195,7 @@ type config struct {
 
 	clock  clock.Clock
 	logger *slog.Logger
-	events secevent.Own
+	events eventsink.Own
 }
 
 // Option configures a Recoverer. Every option names the default it replaces.
@@ -284,14 +284,14 @@ func WithClock(clk clock.Clock) Option {
 // WithSecurityEvents reports the outcomes the recoverer decides outside a
 // chain to sink:
 //
-//   - every Start, as security.RecoveryStarted, for a username that names an
+//   - every Start, as event.RecoveryStarted, for a username that names an
 //     account and one that names none alike, carrying the user only when there
 //     is one. It is reported as the start's last step in both cases, so a sink
 //     that takes time holds every start alike and its latency does not tell
 //     which named an account. A sink should still do no work that depends on
 //     whether the event names a user.
 //   - a Recover or a Finish refused for its proofs (ErrRefused), as
-//     security.RecoveryRefused, naming no user. A dependency failure, and a
+//     event.RecoveryRefused, naming no user. A dependency failure, and a
 //     request whose own context ended before the verdict, are not reported,
 //     including a failure answered as ErrRefused (an issued-code or hold
 //     token store that could not answer, the user limiter, the risk hook):
@@ -306,9 +306,9 @@ func WithClock(clk clock.Clock) Option {
 // from which the caller's cancellation has been removed. A panic in it is
 // recovered and logged through the recoverer's logger (WithLogger) without the
 // event's contents, and the outcome stands; a sink that blocks holds the call
-// (see security.Sink). A nil sink, or the option given twice, is a
+// (see event.Sink). A nil sink, or the option given twice, is a
 // configuration error.
-func WithSecurityEvents(sink security.Sink) Option {
+func WithSecurityEvents(sink event.Sink) Option {
 	return func(c *config) { c.events.Set(sink) }
 }
 

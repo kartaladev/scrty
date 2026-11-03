@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/token/onetime"
@@ -99,7 +99,7 @@ type Chain struct {
 
 	// events delivers the chain's security events, and is nil unless
 	// EnableSecurityEvents gave it a sink. Every request carries it on its
-	// context (secevent), so whatever decides an outcome on the request
+	// context (eventsink), so whatever decides an outcome on the request
 	// reports it there.
 	events *eventEmitter
 }
@@ -218,7 +218,7 @@ func (c *Chain) Assemble(terminal Next) Next {
 		// decides an outcome on it, so every decision below reports through
 		// it (emitEvent) and a request no sink watches carries nothing.
 		if c.events != nil {
-			ex.SetContext(secevent.With(ex.Context(), c.events.emit))
+			ex.SetContext(eventsink.With(ex.Context(), c.events.emit))
 		}
 
 		// Client resolution is not an interceptor: it runs once, here, before

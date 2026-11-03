@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kartaladev/scrty/internal/secevent"
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/eventsink"
 )
 
 // WithSecurityEvents gives the policy a security-event sink of its own, for
@@ -16,7 +16,7 @@ import (
 // nowhere.
 //
 // The failure that takes an identifier to a lock reports
-// security.AuthnLoginFailMax and then security.AuthnLoginLock, once per lock
+// event.AuthnLoginFailMax and then event.AuthnLoginLock, once per lock
 // (see Attempts). On a request a chain built with
 // httpsec.EnableSecurityEvents reports for, the lock is reported through the
 // chain and this sink is not called, so one lock is reported once; a chain
@@ -30,14 +30,14 @@ import (
 //
 // A nil sink, or the option given twice, is a configuration error wrapping
 // policy.ErrConfig from New.
-func WithSecurityEvents(sink security.Sink) Option {
+func WithSecurityEvents(sink event.Sink) Option {
 	return func(p *Policy) { p.events.Set(sink) }
 }
 
 // eventsWatched reports whether a lock decided on ctx would reach a sink: the
 // chain's delivery ctx carries, or the policy's own sink.
 func (p *Policy) eventsWatched(ctx context.Context) bool {
-	return secevent.Enabled(ctx) || p.events.Sink() != nil
+	return eventsink.Enabled(ctx) || p.events.Sink() != nil
 }
 
 // reportLock reports the lock a failure recorded at at decided:
@@ -45,13 +45,13 @@ func (p *Policy) eventsWatched(ctx context.Context) bool {
 // the policy counts identifiers and does not know whether one is an account,
 // and both carry the first factor the request names, if it names one.
 func (p *Policy) reportLock(ctx context.Context, at time.Time) {
-	kind := secevent.FactorOf(ctx)
+	kind := eventsink.FactorOf(ctx)
 
-	for _, name := range []string{security.AuthnLoginFailMax, security.AuthnLoginLock} {
-		p.events.Report(ctx, security.Event{
+	for _, name := range []string{event.AuthnLoginFailMax, event.AuthnLoginLock} {
+		p.events.Report(ctx, event.Event{
 			Name:    name,
 			At:      at,
-			Outcome: security.OutcomeFailure,
+			Outcome: event.OutcomeFailure,
 			Factor:  kind,
 		}, p.logger)
 	}

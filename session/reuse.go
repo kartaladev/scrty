@@ -641,7 +641,7 @@ func WithMaxFamilyLifetime(limit time.Duration) Option {
 // WithReuseObserver sets a function told about each detected reuse (see
 // ErrReused). The default is none: reuse is still refused, the family
 // still revoked, and a warning still logged with a fixed reason and the
-// family identifier. A reuse is also reported as security.AuthnTokenReuse to
+// family identifier. A reuse is also reported as event.AuthnTokenReuse to
 // a security-event sink, the chain's or the manager's own
 // (WithSecurityEvents), with or without an observer.
 //

@@ -7,11 +7,11 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -54,7 +54,7 @@ const (
 // token insert run only for a username that resolves. The non-blocking sender removes the
 // largest part — the delivery — and the rest is stated rather than closed.
 //
-// Every start is reported as security.RecoveryStarted, as its last step, for a
+// Every start is reported as event.RecoveryStarted, as its last step, for a
 // username that names an account and for one that names none alike, carrying
 // the user only when there is one (WithSecurityEvents). A security-event sink
 // is called synchronously, so reporting only the starts that named an account
@@ -68,8 +68,8 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 
 	user := r.start(ctx, username)
 
-	r.events.Report(ctx, security.Event{
-		Name: security.RecoveryStarted, At: r.clock.Now(), Outcome: security.OutcomeSuccess, User: user,
+	r.events.Report(ctx, event.Event{
+		Name: event.RecoveryStarted, At: r.clock.Now(), Outcome: event.OutcomeSuccess, User: user,
 	}, r.logger)
 }
 

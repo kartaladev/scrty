@@ -1,4 +1,4 @@
-package security_test
+package event_test
 
 import (
 	"go/parser"
@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
 )
 
 // packageDoc is the package's documentation, as go doc prints it: the doc
@@ -57,7 +57,7 @@ func TestSecurityEvents_Documented(t *testing.T) {
 		{
 			name: "every name is listed",
 			assert: func(t *testing.T, doc string) {
-				for _, name := range security.Names() {
+				for _, name := range event.Names() {
 					assert.Contains(t, doc, "  - "+name+":", "%s is not in the package's list", name)
 				}
 			},

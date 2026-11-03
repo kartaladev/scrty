@@ -2,7 +2,7 @@ package httpsec
 
 import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -77,8 +77,8 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 	}
 
 	// The rotated session is stored, and its credential is handed out below.
-	emitEvent(ctx, sessionEvent(security.Reauthenticated, security.OutcomeSuccess, rotated))
-	emitEvent(ctx, sessionEvent(security.SessionRenewed, security.OutcomeSuccess, rotated))
+	emitEvent(ctx, sessionEvent(event.Reauthenticated, event.OutcomeSuccess, rotated))
+	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
 
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))

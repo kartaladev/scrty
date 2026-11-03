@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/kartaladev/scrty/internal/secevent"
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/eventsink"
 )
 
 // WithSecurityEvents gives the manager a security-event sink of its own, for
@@ -14,7 +14,7 @@ import (
 // reuse is reported nowhere but the reuse observer (WithReuseObserver) and
 // the warning the manager always logs.
 //
-// A detected reuse (ErrReused) is reported as security.AuthnTokenReuse, once
+// A detected reuse (ErrReused) is reported as event.AuthnTokenReuse, once
 // its family has been revoked, naming the session's user and first factor
 // and the presented session by its digest, never its identifier. On a request
 // a chain built with httpsec.EnableSecurityEvents reports for, the reuse is
@@ -30,19 +30,19 @@ import (
 //
 // A nil sink, or the option given twice, is a configuration error wrapping
 // ErrConfig from New.
-func WithSecurityEvents(sink security.Sink) Option {
+func WithSecurityEvents(sink event.Sink) Option {
 	return func(m *Sessions) { m.events.Set(sink) }
 }
 
 // reportReuse reports the reuse of s, detected at now, after its family was
 // revoked.
 func (m *Sessions) reportReuse(ctx context.Context, s *Session, now time.Time) {
-	m.events.Report(ctx, security.Event{
-		Name:    security.AuthnTokenReuse,
+	m.events.Report(ctx, event.Event{
+		Name:    event.AuthnTokenReuse,
 		At:      now,
-		Outcome: security.OutcomeFailure,
+		Outcome: event.OutcomeFailure,
 		User:    s.UserID,
 		Factor:  s.FirstFactor,
-		Session: secevent.SessionDigest(s.ID),
+		Session: eventsink.SessionDigest(s.ID),
 	}, m.logger)
 }

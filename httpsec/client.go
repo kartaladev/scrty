@@ -6,7 +6,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/kartaladev/scrty/security"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -107,8 +107,8 @@ func (cr *clientResolver) begin(ex *Exchange) error {
 		if errors.Is(err, ErrHostNotAllowed) {
 			// The client the trusted proxies named: the host is refused, not
 			// the client address.
-			emitEvent(ex.Context(), security.Event{
-				Name: security.HostRefused, Outcome: security.OutcomeFailure, ClientIP: res.client.IP,
+			emitEvent(ex.Context(), event.Event{
+				Name: event.HostRefused, Outcome: event.OutcomeFailure, ClientIP: res.client.IP,
 			})
 		}
 

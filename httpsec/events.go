@@ -9,16 +9,16 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/internal/secevent"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
 // EnableSecurityEvents reports every security outcome the chain decides to
-// sink, as a security.Event named from the OWASP Logging Vocabulary or under
-// the scrty_ prefix (security.Names lists them).
+// sink, as an event.Event named from the OWASP Logging Vocabulary or under
+// the scrty_ prefix (event.Names lists them).
 //
 // Default: no sink, and nothing is reported. Once enabled, the chain hands its
 // sink to every component it builds that decides an outcome, and reaches a
@@ -44,7 +44,7 @@ import (
 // cannot change the outcome, the status or the error the chain returns: a
 // panic in it is recovered and logged through the chain's logger
 // (WithLogger) without the event's contents. A sink that blocks holds that
-// request, which is the consumer's to manage (see security.Sink), and a sink
+// request, which is the consumer's to manage (see event.Sink), and a sink
 // should do no work that depends on whether an event names an account: a
 // recovery start is reported alike for a username that names an account and
 // one that names none, so that its latency does not tell them apart.
@@ -64,7 +64,7 @@ import (
 // refusal.
 //
 // A nil sink, or the option given twice, is a configuration error.
-func EnableSecurityEvents(sink security.Sink) Option {
+func EnableSecurityEvents(sink event.Sink) Option {
 	const option = "EnableSecurityEvents"
 
 	return func(c *config) error {
@@ -85,7 +85,7 @@ func EnableSecurityEvents(sink security.Sink) Option {
 
 // eventEmitter is the chain's delivery of its events to the consumer's sink.
 type eventEmitter struct {
-	sink security.Sink
+	sink event.Sink
 	now  func() time.Time
 	log  *slog.Logger
 }
@@ -101,7 +101,7 @@ func newEventEmitter(c *config) *eventEmitter {
 
 // emit fills in what the request knows and the deciding component did not
 // say, the time and the resolved client address, and delivers e.
-func (em *eventEmitter) emit(ctx context.Context, e security.Event) {
+func (em *eventEmitter) emit(ctx context.Context, e event.Event) {
 	if e.At.IsZero() {
 		e.At = em.now()
 	}
@@ -112,19 +112,19 @@ func (em *eventEmitter) emit(ctx context.Context, e security.Event) {
 		}
 	}
 
-	secevent.Deliver(ctx, em.sink, e, em.log)
+	eventsink.Deliver(ctx, em.sink, e, em.log)
 }
 
 // emitEvent reports e on the request ctx belongs to, and does nothing on a
 // request no sink watches.
-func emitEvent(ctx context.Context, e security.Event) {
-	secevent.Send(ctx, e)
+func emitEvent(ctx context.Context, e event.Event) {
+	eventsink.Send(ctx, e)
 }
 
 // sessionEvent is an event named name, with outcome, about the session s: its
 // user, its first factor and its identifier's digest.
-func sessionEvent(name, outcome string, s *session.Session) security.Event {
-	e := security.Event{Name: name, Outcome: outcome}
+func sessionEvent(name, outcome string, s *session.Session) event.Event {
+	e := event.Event{Name: name, Outcome: outcome}
 
 	if s != nil {
 		e.User = s.UserID
@@ -137,7 +137,7 @@ func sessionEvent(name, outcome string, s *session.Session) security.Event {
 
 // callerEvent is sessionEvent for ex's session, naming the caller ex
 // authenticated when it carries no session, as Basic and API keys do not.
-func callerEvent(name, outcome string, ex *Exchange) security.Event {
+func callerEvent(name, outcome string, ex *Exchange) event.Event {
 	e := sessionEvent(name, outcome, ex.Session)
 
 	if e.User == "" && ex.Authentication != nil && ex.Authentication.Principal != nil {
@@ -149,13 +149,13 @@ func callerEvent(name, outcome string, ex *Exchange) security.Event {
 
 // userEvent is an event named name, with outcome, about user and the first
 // factor kind.
-func userEvent(name, outcome string, user identity.UserID, kind factor.Kind) security.Event {
-	return security.Event{Name: name, Outcome: outcome, User: user, Factor: kind}
+func userEvent(name, outcome string, user identity.UserID, kind factor.Kind) event.Event {
+	return event.Event{Name: name, Outcome: outcome, User: user, Factor: kind}
 }
 
 // sessionDigest is the digest an event names a session by
-// (secevent.SessionDigest).
-func sessionDigest(id string) string { return secevent.SessionDigest(id) }
+// (eventsink.SessionDigest).
+func sessionDigest(id string) string { return eventsink.SessionDigest(id) }
 
 // refusalEvents maps the refusals the chain reports wherever they arise to
 // their event, in the order they are matched. Each sentinel is only ever a
@@ -168,10 +168,10 @@ var refusalEvents = []struct {
 	// normal first step, not a refused proof, and also matches
 	// ErrInvalidDPoPProof, so it is matched first and reports nothing.
 	{ErrDPoPNonceRequired, ""},
-	{ErrInvalidDPoPProof, security.DPoPRefused},
-	{ErrCertificateBinding, security.CertificateBindingRefused},
-	{ErrCrossSiteRequest, security.MaliciousCSRF},
-	{ErrChallengeRequired, security.ChallengeRefused},
+	{ErrInvalidDPoPProof, event.DPoPRefused},
+	{ErrCertificateBinding, event.CertificateBindingRefused},
+	{ErrCrossSiteRequest, event.MaliciousCSRF},
+	{ErrChallengeRequired, event.ChallengeRefused},
 }
 
 // emitRefusal reports the refusal err the chain answers ex with, when err is
@@ -191,7 +191,7 @@ var refusalEvents = []struct {
 // them, and the refusal was decided once.
 func emitRefusal(ex *Exchange, err error) {
 	ctx := ex.Context()
-	if ex.refusalReported || !secevent.Enabled(ctx) || hangup.ByCaller(ctx, err) ||
+	if ex.refusalReported || !eventsink.Enabled(ctx) || hangup.ByCaller(ctx, err) ||
 		StatusForError(err) >= http.StatusInternalServerError {
 		return
 	}
@@ -202,7 +202,7 @@ func emitRefusal(ex *Exchange, err error) {
 		}
 
 		if r.name != "" {
-			emitEvent(ctx, callerEvent(r.name, security.OutcomeFailure, ex))
+			emitEvent(ctx, callerEvent(r.name, event.OutcomeFailure, ex))
 			ex.refusalReported = true
 		}
 

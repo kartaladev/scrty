@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -87,7 +87,7 @@ func (w *eventsWorld) basicGuess(t *testing.T) served {
 
 // lockRun is what a row of TestSecurityEvents_LockReportedOnce produced.
 type lockRun struct {
-	events []security.Event
+	events []event.Event
 
 	// withSink and withoutSink are how often pre-authentication ran, in a
 	// world reporting to a sink and in one that does not, for the same
@@ -123,8 +123,8 @@ func TestSecurityEvents_LockReportedOnce(t *testing.T) {
 		return func(t *testing.T, run lockRun) {
 			t.Helper()
 
-			for _, name := range []string{security.AuthnLoginFailMax, security.AuthnLoginLock} {
-				var got []security.Event
+			for _, name := range []string{event.AuthnLoginFailMax, event.AuthnLoginLock} {
+				var got []event.Event
 				for _, e := range run.events {
 					if e.Name == name {
 						got = append(got, e)
@@ -132,7 +132,7 @@ func TestSecurityEvents_LockReportedOnce(t *testing.T) {
 				}
 
 				require.Len(t, got, 1, "%s: events %v", name, namesOf(run.events))
-				assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
 				assert.Equal(t, eventsClient, got[0].ClientIP, "the resolved client address")
 				assert.Equal(t, kind, got[0].Factor)
 				assert.Empty(t, got[0].User, "a lock names no user")
@@ -167,7 +167,7 @@ func TestSecurityEvents_LockReportedOnce(t *testing.T) {
 			},
 			assert: func(t *testing.T, run lockRun) {
 				assert.Equal(t, []string{
-					security.AuthnLoginFail, security.AuthnLoginFail, security.AuthnLoginFail, security.AuthnLoginFail,
+					event.AuthnLoginFail, event.AuthnLoginFail, event.AuthnLoginFail, event.AuthnLoginFail,
 				}, namesOf(run.events))
 			},
 		},
@@ -229,7 +229,7 @@ func TestSecurityEvents_LockReportedOnce(t *testing.T) {
 
 // observerRun is what a row of TestSecurityEvents_Observers produced.
 type observerRun struct {
-	events []security.Event
+	events []event.Event
 
 	locks  []lockout.Report
 	reuses []session.ReuseReport
@@ -274,15 +274,15 @@ func TestSecurityEvents_Observers(t *testing.T) {
 			name: "a lock reports authn_login_lock, and the lockout observer is still told",
 			act:  lock,
 			assert: func(t *testing.T, run observerRun) {
-				var got []security.Event
+				var got []event.Event
 				for _, e := range run.events {
-					if e.Name == security.AuthnLoginLock {
+					if e.Name == event.AuthnLoginLock {
 						got = append(got, e)
 					}
 				}
 
 				require.Len(t, got, 1, "events: %v", namesOf(run.events))
-				assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
 				assert.Equal(t, eventsClient, got[0].ClientIP)
 				assert.Equal(t, factor.Password, got[0].Factor)
 
@@ -294,15 +294,15 @@ func TestSecurityEvents_Observers(t *testing.T) {
 			name: "a reuse reports authn_token_reuse, and the reuse observer is still called",
 			act:  reuse,
 			assert: func(t *testing.T, run observerRun) {
-				var got []security.Event
+				var got []event.Event
 				for _, e := range run.events {
-					if e.Name == security.AuthnTokenReuse {
+					if e.Name == event.AuthnTokenReuse {
 						got = append(got, e)
 					}
 				}
 
 				require.Len(t, got, 1, "events: %v", namesOf(run.events))
-				assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
 				assert.Equal(t, eventsClient, got[0].ClientIP)
 				assert.Equal(t, e2eUser, got[0].User)
 				assert.Equal(t, factor.Password, got[0].Factor)

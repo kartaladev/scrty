@@ -10,13 +10,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/secevent"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/security"
 )
 
 // SessionRevoker ends every session of a user. *session.Sessions and every
@@ -75,7 +75,7 @@ type resetConfig struct {
 
 	// events is the reset's own security-event sink
 	// (WithResetSecurityEvents).
-	events secevent.Own
+	events eventsink.Own
 }
 
 func newResetConfig(opts []ResetOption) resetConfig {
@@ -145,7 +145,7 @@ func WithResetMessage(build func(at time.Time) (subject, body string)) ResetOpti
 }
 
 // WithResetSecurityEvents reports a reset outside a chain to sink: once every
-// removal is done, as security.MFARemoved naming the user, whatever the later
+// removal is done, as event.MFARemoved naming the user, whatever the later
 // steps do, since the removals are never undone. A removal that fails reports
 // nothing.
 //
@@ -158,9 +158,9 @@ func WithResetMessage(build func(at time.Time) (subject, body string)) ResetOpti
 // context from which the caller's cancellation has been removed. A panic in it
 // is recovered and logged through slog.Default, the reset having no logger of
 // its own, without the event's contents, and the reset goes on; a sink that
-// blocks holds the reset (see security.Sink). A nil sink, or the option given
+// blocks holds the reset (see event.Sink). A nil sink, or the option given
 // twice, is an ErrConfig, returned before anything is removed.
-func WithResetSecurityEvents(sink security.Sink) ResetOption {
+func WithResetSecurityEvents(sink event.Sink) ResetOption {
 	return func(c *resetConfig) { c.events.Set(sink) }
 }
 
@@ -241,8 +241,8 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 
 	// Reported once every removal is done, on a request a security-event sink
 	// watches: the removals are never undone, whatever follows.
-	c.events.Report(ctx, security.Event{
-		Name: security.MFARemoved, At: c.clock.Now(), Outcome: security.OutcomeSuccess, User: user,
+	c.events.Report(ctx, event.Event{
+		Name: event.MFARemoved, At: c.clock.Now(), Outcome: event.OutcomeSuccess, User: user,
 	}, slog.Default())
 
 	if c.revokeSessions {

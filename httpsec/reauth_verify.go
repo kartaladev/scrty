@@ -6,12 +6,12 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -94,7 +94,7 @@ func (i *reauthInterceptor) verify(ex *Exchange) error {
 	}
 
 	// Steps 4 to 8.
-	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s, security.ReauthenticationFail); err != nil {
+	if err := checkResponse(ex, i.mfa.throttle, i.challenges, method, s, event.ReauthenticationFail); err != nil {
 		return err
 	}
 

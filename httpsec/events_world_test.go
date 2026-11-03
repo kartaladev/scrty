@@ -21,12 +21,12 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -277,7 +277,7 @@ func (w *eventsWorld) signedIn(t *testing.T) string {
 // emittedRun is what a row of TestSecurityEvents_Emitted produced, and what
 // its event must say.
 type emittedRun struct {
-	events []security.Event
+	events []event.Event
 
 	clientIP string
 	user     identity.UserID
@@ -304,7 +304,7 @@ func emitted(name, outcome string) func(t *testing.T, run emittedRun) {
 	return func(t *testing.T, run emittedRun) {
 		t.Helper()
 
-		var got []security.Event
+		var got []event.Event
 		for _, e := range run.events {
 			if e.Name == name {
 				got = append(got, e)
@@ -342,7 +342,7 @@ func emitted(name, outcome string) func(t *testing.T, run emittedRun) {
 	}
 }
 
-func namesOf(events []security.Event) []string {
+func namesOf(events []event.Event) []string {
 	out := make([]string, 0, len(events))
 	for _, e := range events {
 		out = append(out, e.Name)

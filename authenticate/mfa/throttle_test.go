@@ -16,9 +16,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
-	"github.com/kartaladev/scrty/internal/secevent"
+	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 )
 
 // memoryLimiter builds the limiter the throttle defaults to, so a case that is
@@ -224,8 +224,8 @@ func TestNewVerifyThrottleConfig(t *testing.T) {
 		{
 			name: "the security-event sink given twice",
 			opts: []mfa.ThrottleOption{
-				mfa.WithThrottleSecurityEvents(func(context.Context, security.Event) {}),
-				mfa.WithThrottleSecurityEvents(func(context.Context, security.Event) {}),
+				mfa.WithThrottleSecurityEvents(func(context.Context, event.Event) {}),
+				mfa.WithThrottleSecurityEvents(func(context.Context, event.Event) {}),
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
 				require.ErrorIs(t, err, mfa.ErrConfig)
@@ -658,8 +658,8 @@ func TestSecurityEvents_ThrottleOwnSink(t *testing.T) {
 
 				got := own.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.ExcessRateLimitExceeded, got[0].Name)
-				assert.Equal(t, security.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, event.ExcessRateLimitExceeded, got[0].Name)
+				assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
 				assert.Equal(t, "u-1", string(got[0].User))
 				assert.Equal(t, at, got[0].At, "the throttle's clock")
 			},
@@ -686,7 +686,7 @@ func TestSecurityEvents_ThrottleOwnSink(t *testing.T) {
 			assert: func(t *testing.T, own, _ *ownEvents, err error, logs string) {
 				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
 				require.Len(t, own.all(), 1, "the sink was called")
-				assert.Contains(t, logs, secevent.MsgSinkPanicked)
+				assert.Contains(t, logs, eventsink.MsgSinkPanicked)
 			},
 		},
 		{
@@ -699,7 +699,7 @@ func TestSecurityEvents_ThrottleOwnSink(t *testing.T) {
 
 				got := chain.all()
 				require.Len(t, got, 1)
-				assert.Equal(t, security.ExcessRateLimitExceeded, got[0].Name)
+				assert.Equal(t, event.ExcessRateLimitExceeded, got[0].Name)
 			},
 		},
 	}
@@ -726,7 +726,7 @@ func TestSecurityEvents_ThrottleOwnSink(t *testing.T) {
 
 			ctx := t.Context()
 			if tc.chain != nil {
-				ctx = secevent.With(ctx, tc.chain.sink)
+				ctx = eventsink.With(ctx, tc.chain.sink)
 			}
 
 			err = th.Check(ctx, "u-1")

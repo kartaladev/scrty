@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"reflect"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -225,14 +225,14 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 		// refused, and restating it here would lose that. Only a refusal is
 		// reported: a store the function could not reach decided nothing.
 		if refused(ctx, err) {
-			emitEvent(ctx, sessionEvent(security.AuthnPasswordChangeFail, security.OutcomeFailure, s))
+			emitEvent(ctx, sessionEvent(event.AuthnPasswordChangeFail, event.OutcomeFailure, s))
 		}
 
 		return err
 	}
 
 	// The password is changed by now, whether or not the session then saves.
-	emitEvent(ctx, sessionEvent(security.AuthnPasswordChange, security.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(event.AuthnPasswordChange, event.OutcomeSuccess, s))
 
 	g.clearFailures(ctx, username)
 

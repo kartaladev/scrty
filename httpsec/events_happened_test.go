@@ -23,10 +23,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/token"
 )
 
@@ -113,11 +113,11 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 				sid, ok := strings.CutPrefix(body.AccessToken, recordedTokenPrefix)
 				require.True(t, ok)
 
-				created := rec.named(security.AuthnTokenCreated)
+				created := rec.named(event.AuthnTokenCreated)
 				require.Len(t, created, 1, "one credential was handed out")
 				assert.Equal(t, digestOf(sid), created[0].Session, "the winner's")
 
-				stored := rec.named(security.SessionCreated)
+				stored := rec.named(event.SessionCreated)
 				require.Len(t, stored, 1, "one session was stored")
 				assert.Equal(t, digestOf(sid), stored[0].Session)
 			},
@@ -140,9 +140,9 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
-				assert.Empty(t, rec.named(security.SessionCreated))
-				assert.Empty(t, rec.named(security.AuthnTokenCreated))
-				assert.Empty(t, rec.named(security.AuthnLoginSuccess))
+				assert.Empty(t, rec.named(event.SessionCreated))
+				assert.Empty(t, rec.named(event.AuthnTokenCreated))
+				assert.Empty(t, rec.named(event.AuthnLoginSuccess))
 			},
 		},
 		{
@@ -161,8 +161,8 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
 				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out[0].err))
-				assert.Empty(t, rec.named(security.AuthnLoginFail))
-				assert.Empty(t, rec.named(security.AuthzFail))
+				assert.Empty(t, rec.named(event.AuthnLoginFail))
+				assert.Empty(t, rec.named(event.AuthzFail))
 				assert.Empty(t, rec.all())
 			},
 		},
@@ -189,7 +189,7 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, context.Canceled)
-				assert.Empty(t, rec.named(security.AuthnLoginFail))
+				assert.Empty(t, rec.named(event.AuthnLoginFail))
 				assert.Empty(t, rec.all())
 			},
 		},
@@ -234,7 +234,7 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
-				assert.Empty(t, rec.named(security.AuthzFail))
+				assert.Empty(t, rec.named(event.AuthzFail))
 			},
 		},
 		{
@@ -249,8 +249,8 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
-				assert.Empty(t, rec.named(security.AuthzFail))
-				assert.Empty(t, rec.named(security.SessionExpired))
+				assert.Empty(t, rec.named(event.AuthzFail))
+				assert.Empty(t, rec.named(event.SessionExpired))
 			},
 		},
 		{
@@ -264,8 +264,8 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
-				assert.Empty(t, rec.named(security.AuthnPasswordChangeFail))
-				assert.Empty(t, rec.named(security.AuthnPasswordChange))
+				assert.Empty(t, rec.named(event.AuthnPasswordChangeFail))
+				assert.Empty(t, rec.named(event.AuthnPasswordChange))
 			},
 		},
 		{
@@ -292,8 +292,8 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.NoError(t, out[0].err)
-				assert.Empty(t, rec.named(security.SessionLogout), "the logout ended nothing")
-				assert.Empty(t, rec.named(security.AuthnTokenRevoked))
+				assert.Empty(t, rec.named(event.SessionLogout), "the logout ended nothing")
+				assert.Empty(t, rec.named(event.AuthnTokenRevoked))
 			},
 		},
 		{
@@ -306,7 +306,7 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.NoError(t, out[0].err)
-				assert.Empty(t, rec.named(security.SignInEnded), "no sign-in was ended")
+				assert.Empty(t, rec.named(event.SignInEnded), "no sign-in was ended")
 			},
 		},
 		{
@@ -324,7 +324,7 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, errEventsStoreDown)
-				assert.Empty(t, rec.named(security.MFAVerifyFail))
+				assert.Empty(t, rec.named(event.MFAVerifyFail))
 			},
 		},
 		{
@@ -345,8 +345,8 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, mfa.ErrVerifyThrottled)
-				assert.Len(t, rec.named(security.ExcessRateLimitExceeded), 1)
-				assert.Empty(t, rec.named(security.MFAVerifyFail), "a throttle refusal is not a failed code")
+				assert.Len(t, rec.named(event.ExcessRateLimitExceeded), 1)
+				assert.Empty(t, rec.named(event.MFAVerifyFail), "a throttle refusal is not a failed code")
 			},
 		},
 		{
@@ -372,7 +372,7 @@ func TestSecurityEvents_OnlyWhatHappened(t *testing.T) {
 			},
 			assert: func(t *testing.T, rec *eventRecorder, out []served) {
 				require.ErrorIs(t, out[0].err, context.Canceled)
-				assert.Empty(t, rec.named(security.MFAVerifyFail))
+				assert.Empty(t, rec.named(event.MFAVerifyFail))
 			},
 		},
 	}
@@ -406,11 +406,11 @@ func TestSecurityEvents_GuardDenied(t *testing.T) {
 			assert: func(t *testing.T, rec *eventRecorder, status int) {
 				assert.Equal(t, http.StatusForbidden, status)
 
-				denied := rec.named(security.AuthzFail)
+				denied := rec.named(event.AuthzFail)
 				require.Len(t, denied, 1)
 				assert.Equal(t, e2eUser, denied[0].User)
 				assert.Equal(t, eventsClient, denied[0].ClientIP)
-				assert.Equal(t, security.OutcomeFailure, denied[0].Outcome)
+				assert.Equal(t, event.OutcomeFailure, denied[0].Outcome)
 			},
 		},
 		{
@@ -418,7 +418,7 @@ func TestSecurityEvents_GuardDenied(t *testing.T) {
 			judged: errEventsStoreDown,
 			assert: func(t *testing.T, rec *eventRecorder, status int) {
 				assert.Equal(t, http.StatusInternalServerError, status)
-				assert.Empty(t, rec.named(security.AuthzFail))
+				assert.Empty(t, rec.named(event.AuthzFail))
 			},
 		},
 	}

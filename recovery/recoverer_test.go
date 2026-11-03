@@ -13,12 +13,12 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/recovery"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -84,13 +84,13 @@ func TestNewRecoverer(t *testing.T) {
 		{name: "a nil security-event sink", opts: with(recovery.WithSecurityEvents(nil)), assert: configError},
 		{
 			name: "the security-event sink given twice",
-			opts: with(recovery.WithSecurityEvents(func(context.Context, security.Event) {}),
-				recovery.WithSecurityEvents(func(context.Context, security.Event) {})),
+			opts: with(recovery.WithSecurityEvents(func(context.Context, event.Event) {}),
+				recovery.WithSecurityEvents(func(context.Context, event.Event) {})),
 			assert: configError,
 		},
 		{
 			name:   "a security-event sink",
-			opts:   with(recovery.WithSecurityEvents(func(context.Context, security.Event) {})),
+			opts:   with(recovery.WithSecurityEvents(func(context.Context, event.Event) {})),
 			assert: ok,
 		},
 

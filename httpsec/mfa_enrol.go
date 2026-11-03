@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -20,7 +21,6 @@ import (
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -710,7 +710,7 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 // store was down would lift the limit exactly when something is wrong. That
 // refusal's text is fixed, since a consumer's limiter may quote the bucket key,
 // and with it the user reference, back. Only the limit reached is reported,
-// as security.ExcessRateLimitExceeded: a limiter that could not say decided
+// as event.ExcessRateLimitExceeded: a limiter that could not say decided
 // nothing.
 func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string, s *session.Session) error {
 	exceeded, err := l.Exceeded(ctx, key)
@@ -720,7 +720,7 @@ func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limite
 	}
 
 	if exceeded {
-		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
+		emitEvent(ctx, sessionEvent(event.ExcessRateLimitExceeded, event.OutcomeFailure, s))
 
 		return mfa.ErrEnrolmentThrottled
 	}
@@ -892,7 +892,7 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, metho
 
 	// The binding is written whether or not the session then saves, so it is
 	// reported either way, as the notification is.
-	emitEvent(ctx, sessionEvent(security.MFAEnrolled, security.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(event.MFAEnrolled, event.OutcomeSuccess, s))
 
 	if saveErr != nil {
 		s.MFA = was

@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
-	"github.com/kartaladev/scrty/security"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -139,7 +139,7 @@ func sweepExpired(
 //
 // A response refused at step 3 or 4 is reported on the session as the event
 // named failed (security events); a refused attempt charge is reported as
-// security.ExcessRateLimitExceeded instead, and a dependency that failed and a
+// event.ExcessRateLimitExceeded instead, and a dependency that failed and a
 // request whose own context ended report nothing here.
 func checkResponse(
 	ex *Exchange,
@@ -186,7 +186,7 @@ func checkResponse(
 // emitResponseRefused reports a second-factor response refused with err on
 // the session s. A refused attempt charge (mfa.ErrVerifyAttemptsExhausted) and
 // a plain mfa.ErrVerifyThrottled the method answered are reported as
-// security.ExcessRateLimitExceeded, since nothing else reports them; any other
+// event.ExcessRateLimitExceeded, since nothing else reports them; any other
 // refusal as the event named failed. The built-in throttle's own refusal of a
 // locked-out user returns before a response is judged, so it never reaches
 // here and is reported once, by the throttle. A dependency failure, such as a
@@ -199,9 +199,9 @@ func emitResponseRefused(ctx context.Context, err error, failed string, s *sessi
 
 	switch {
 	case errors.Is(err, mfa.ErrVerifyAttemptsExhausted), errors.Is(err, mfa.ErrVerifyThrottled):
-		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
+		emitEvent(ctx, sessionEvent(event.ExcessRateLimitExceeded, event.OutcomeFailure, s))
 	default:
-		emitEvent(ctx, sessionEvent(failed, security.OutcomeFailure, s))
+		emitEvent(ctx, sessionEvent(failed, event.OutcomeFailure, s))
 	}
 }
 
@@ -265,7 +265,7 @@ func issueChallenge(ex *Exchange, s *session.Session, cm mfa.ChallengeMethod, is
 	case errors.Is(err, onetime.ErrIssueLimitReached):
 		// Decided here, apart from a store that could not decide, so it is
 		// reported as the limit it is.
-		emitEvent(ctx, sessionEvent(security.ExcessRateLimitExceeded, security.OutcomeFailure, s))
+		emitEvent(ctx, sessionEvent(event.ExcessRateLimitExceeded, event.OutcomeFailure, s))
 
 		return mfa.ErrVerifyThrottled
 	case err != nil:
