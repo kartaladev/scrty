@@ -998,6 +998,9 @@ chain, err := httpsec.New(
   - All of its work runs after the sign-in, off the request path, so it never delays the response.
     It runs on a context the request's end does not cancel, bounded by a timeout, and a panic in it
     is recovered.
+  - At most 32 notices are in progress at once. A sign-in that completes while that many are is
+    not notified: its notice is dropped, never queued, and the drop is logged at WARN, sampled,
+    naming no user. The sign-in's response is the same either way.
   - A failure, a timeout or a panic is logged without its text and does not affect the sign-in.
 
 ### Defaults
@@ -1018,6 +1021,7 @@ chain, err := httpsec.New(
 | Notice recipient | the principal's username | `httpsec.WithSignInNoticeRecipient` |
 | Notice text | plain English, no brand | `httpsec.WithSignInNoticeMessage` |
 | Notice work timeout | 30 seconds (`httpsec.DefaultSignInNoticeTimeout`) | `httpsec.WithSignInNoticeTimeout` |
+| Notices in progress at once | 32 (`httpsec.DefaultSignInNoticeConcurrency`); beyond it a notice is dropped and logged | `httpsec.WithSignInNoticeConcurrency` |
 | Notice device text | browser and platform family, never the raw user agent | `httpsec.WithSignInNoticeMessage` (it receives only the family text) |
 | Passkey removal notice | on | `httpsec.WithoutPasskeyRemovalNotification` |
 
