@@ -3,7 +3,7 @@ module github.com/kartaladev/scrty/store/pgxstore
 go 1.27
 
 require (
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/kartaladev/scrty v0.0.0
 	github.com/stretchr/testify v1.12.1
