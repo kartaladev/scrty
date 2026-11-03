@@ -13,18 +13,18 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 2. Ended sign-ins reported by the session manager (D5)
 
-- [ ] 2.1 Add `session.WithEndObserver`, `EndReport{User, Family, Kept, Reason}` and `EndReason`, test-first. Use one table row per call in D5's table:
-  - `Delete` → `logout`, with user and family loaded first only when an observer is set;
-  - `EndSignIn` → `ended`;
-  - reuse detection and `RevokeFamily` → `reuse`;
-  - `DeleteByUser` → `all_ended`;
-  - `DeleteByUserExcept` → `all_ended`, with the kept *session's* family as `Kept`;
-  - `EndOtherSignIns` → `all_ended`, with the current family as `Kept`;
-  - `DeleteByUserAndExternalIssuer` → `provider_logout`;
-  - `DeleteByExternalSession` → nothing.
+- [ ] 2.1 Add `session.EndObserver` with `EndObserverFunc`, the repeatable `session.WithEndObserver`, `EndReport{Cause, User, Family, KeptFamily, ExternalIssuer, ExternalSessionID, At}` and `EndCause`, test-first, extending what `oidc-provider` added if it landed first. A nil observer fails construction. Use one table row per call in D5's table:
+  - `Delete` → `EndDeleted`, with user and family loaded first only when an observer is set;
+  - `EndSignIn` → `EndByHandle`;
+  - reuse detection → `EndReuse`, and `RevokeFamily` → `EndFamilyRevoked`;
+  - `DeleteByUser` → `EndUserSessions`;
+  - `DeleteByUserExcept` → `EndUserSessionsExcept`, with the kept *session's* family as `KeptFamily`;
+  - `EndOtherSignIns` → `EndOtherSignIns`, with the current family as `KeptFamily`;
+  - `DeleteByUserAndExternalIssuer` → `EndUserExternalIssuer`;
+  - `DeleteByExternalSession` → `EndExternalSession`, with the issuer and upstream session and no user or family.
 
   Every row asserts that no session identifier appears. Also include: no observer; a failed write, where nothing is reported; a panicking observer, where the outcome is unchanged; and a caller whose context is cancelled, where the observer is still called. Verify: `go test -run 'TestSessions_EndObserver' -count=1 -race ./session/`.
-- [ ] 2.2 Add `session.EndObservers(...)`, test-first: it calls each observer in order, and the second still runs when the first panics. Also show that sweeping and passing a deadline report nothing. Godoc both, naming the default (no observer). Verify: `go test -run 'TestEndObservers|TestSessions_EndObserver_NotOnExpiry' -count=1 ./session/`.
+- [ ] 2.2 Add `(*Sessions).AddEndObserver`, test-first: a nil observer gives `ErrConfig`, an added observer runs after those given at construction, the first of two observers panicking still calls the second, and adding while reports run is clean under `-race`. Also show that sweeping and passing a deadline report nothing. Godoc all of it, naming the default (no observer). Verify: `go test -run 'TestSessions_AddEndObserver|TestSessions_EndObserver_NotOnExpiry' -count=1 -race ./session/`.
 
 ## 3. Configuration and construction (D2)
 
@@ -38,7 +38,7 @@ Every implementation task is test-first: write the failing test, run it and conf
   - `assurance_lapsed` without re-authentication;
   - a path another endpoint serves;
   - enabled twice;
-  - a session manager that already has an end observer.
+  - a session manager that already has an end observer, which builds, and whose observer is still told.
 
   Verify: `go test -run 'TestSessionSignals_Construction' -count=1 ./httpsec/`.
 - [ ] 3.2 Godoc every field with its default and its range: `AssuranceWindow` names the guards' window it should match, and `OrderSessionSignals` its place after the gates and below `OrderSessionTouch`. Verify: `go doc ./httpsec SessionSignals` names each default, and `go vet ./httpsec/` is clean.

@@ -19,7 +19,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
   Verify: `openspec validate oidc-provider --strict` passes, and `design.md` names the merged commits.
 - [ ] 1.2 Run the OpenID Foundation conformance suite locally once, pinned, and check P9's facts by running it, since they were read from its source: the plan and module lists, that a self-signed `https` OP is accepted by both the server side and HtmlUnit, and the headless runner's options. Correct anything that differs in `design.md`. Verify: P9 states which facts were confirmed by a run, and `openspec validate oidc-provider --strict` passes.
-- [ ] 1.3 Align `session-signals` with R16 through `/opsx:update`: one repeatable `WithEndObserver` over an `EndObserver` interface and func adapter, `EndReport` carrying the upstream issuer and session, `DeleteByExternalSession` reported, and its chain option no longer refusing a manager with an observer. Update its `plans.md` through `/superpowers:writing-plans`. Verify: `openspec validate session-signals --strict`.
+- [x] 1.3 Align `session-signals` with R16 through `/opsx:update`: one repeatable `WithEndObserver` over an `EndObserver` interface and func adapter, `EndReport` carrying the upstream issuer and session, `DeleteByExternalSession` reported, and its chain option no longer refusing a manager with an observer. Update its `plans.md` through `/superpowers:writing-plans`. Verify: `openspec validate session-signals --strict`.
 
 ## 2. Token types and claims (`token`, `token-issuance`)
 

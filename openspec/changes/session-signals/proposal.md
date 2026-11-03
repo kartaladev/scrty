@@ -63,7 +63,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
   - `session`: the end-of-sign-in report.
   - `test/httpsecconformance`: stream scenarios on all three adapters.
 - **API:**
-  - new: `EnableSessionSignals` and `SessionSignals`, the signal names, `PublishSignal` for the consumer's signals, `ReportCredentialChange`, `CloseSessionSignals`, the bus port, and `session.WithEndObserver` with `session.EndObservers`;
+  - new: `EnableSessionSignals` and `SessionSignals`, the signal names, `PublishSignal` for the consumer's signals, `ReportCredentialChange`, `CloseSessionSignals`, the bus port, and `session.WithEndObserver` with `(*Sessions).AddEndObserver`, the option shared with `oidc-provider`;
   - **breaking:** `ResponseWriter.Stream`, with `ErrStreamingUnsupported` and `ErrStreamingStarted`.
 - **Dependencies:** none new. The stream uses net/http's `http.ResponseController`.
   - *Unverified:* fiber v3 streams through fasthttp's body stream writer, a different model from net/http. Its fit is the first thing the design must establish.

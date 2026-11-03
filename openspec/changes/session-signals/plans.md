@@ -50,7 +50,7 @@
 2. **A store blip while thousands of streams are open.** Expected: no `session_ended` and no closed streams, and the first successful reload after the outage ends any stream whose sign-in was ended meanwhile. Task 5.1's store-failure row.
 3. **A rolling deploy.** Expected: streams on the closing replica end without an event, and a new request there gets 200 with only `retry`, so browsers reconnect elsewhere. Task 6.6.
 4. **A consumer signal name built from user input.** Expected: `app.x\nevent: session_ended` is refused by `PublishSignal`, and the writer refuses a raw CR or LF even if a name slips through. Tasks 4.4 and 7.3.
-5. **One user, many sign-ins.** Expected: ending one family leaves the other families' streams open, and an `all_ended` report with `Kept` spares that family's streams. Task 6.1.
+5. **One user, many sign-ins.** Expected: ending one family leaves the other families' streams open, and a user-wide report with `KeptFamily` spares that family's streams. Task 6.1.
 
 ---
 
@@ -119,28 +119,30 @@ var ErrStreamingStarted = errors.New("httpsec: response already started")
 
 **Interfaces produced:**
 ```go
-type EndReason string // EndLogout "logout", EndEnded "ended", EndReuse "reuse", EndAllEnded "all_ended", EndProviderLogout "provider_logout"
-type EndReport struct { User identity.UserID; Family id.ID; Kept id.ID; Reason EndReason }
-type EndObserver func(ctx context.Context, r EndReport)
-func WithEndObserver(o EndObserver) Option
-func EndObservers(os ...EndObserver) EndObserver
-func (m *Sessions) HasEndObserver() bool // read by httpsec at construction (Task 3.1)
+type EndCause uint8 // EndReuse, EndFamilyRevoked, EndDeleted, EndUserSessions, EndUserSessionsExcept, EndExternalSession, EndUserExternalIssuer, EndByHandle, EndOtherSignIns
+type EndReport struct { Cause EndCause; User identity.UserID; Family id.ID; KeptFamily id.ID; ExternalIssuer, ExternalSessionID string; At time.Time }
+type EndObserver interface { SignInsEnded(ctx context.Context, r EndReport) }
+type EndObserverFunc func(ctx context.Context, r EndReport) // implements EndObserver
+func WithEndObserver(o EndObserver) Option                  // repeatable
+func (m *Sessions) AddEndObserver(o EndObserver) error      // called by httpsec at construction (Task 3.1)
 ```
 
+These names are `oidc-provider`'s (its R16). If that change landed first, extend what it added, and add only what is missing.
+
 - [ ] **2.1 Red:** `TestSessions_EndObserver`, one row per line of design D5's table, each asserting the exact `EndReport`:
-  - `Delete` → `{User, Family, logout}`, and with an observer set, the session is loaded first;
-  - `EndSignIn` → `{User, Family, ended}`;
-  - the reuse path → `{User, Family, reuse}`, and `RevokeFamily` → `{Family, reuse}`;
-  - `DeleteByUser` → `{User, all_ended}`;
-  - `DeleteByUserExcept` → `{User, Kept: <the kept session's family>, all_ended}`;
-  - `EndOtherSignIns` → `{User, Kept: <current family>, all_ended}`;
-  - `DeleteByUserAndExternalIssuer` → `{User, provider_logout}`;
-  - `DeleteByExternalSession` → nothing.
+  - `Delete` → `{EndDeleted, User, Family}`, and with an observer set, the session is loaded first;
+  - `EndSignIn` → `{EndByHandle, User, Family}`;
+  - the reuse path → `{EndReuse, User, Family}`, and `RevokeFamily` → `{EndFamilyRevoked, Family}`;
+  - `DeleteByUser` → `{EndUserSessions, User}`;
+  - `DeleteByUserExcept` → `{EndUserSessionsExcept, User, KeptFamily: <the kept session's family>}`;
+  - `EndOtherSignIns` → `{EndOtherSignIns, User, KeptFamily: <current family>}`;
+  - `DeleteByUserAndExternalIssuer` → `{EndUserExternalIssuer, User, ExternalIssuer}`;
+  - `DeleteByExternalSession` → `{EndExternalSession, ExternalIssuer, ExternalSessionID}`, with no user or family.
 
-  Also: with no observer, nothing is reported and `Delete` does no extra load; a store error is not reported; a panicking observer leaves `err == nil`; a cancelled caller context still reports, and the observer's `ctx.Err()` is nil.
+  Also: `WithEndObserver(nil)` fails construction with `ErrConfig`; with no observer, nothing is reported and `Delete` does no extra load; a store error is not reported; a panicking observer leaves `err == nil`; a cancelled caller context still reports, and the observer's `ctx.Err()` is nil.
 
-  **Green:** call the observer after the store call returns nil, with a deferred `recover`, on `context.WithoutCancel(ctx)`, as `WithReuseObserver` does.
-- [ ] **2.2 Red:** `TestEndObservers` checks that both are called in order, and that a panic in the first still calls the second. `TestSessions_EndObserver_NotOnExpiry` checks that `DeleteExpired` and loading past a deadline report nothing. Godoc: the default is no observer.
+  **Green:** call each observer in order after the store call returns nil, each with its own deferred `recover`, on `context.WithoutCancel(ctx)`, as `WithReuseObserver` does.
+- [ ] **2.2 Red:** `TestSessions_AddEndObserver` checks that a nil observer gives `ErrConfig` and changes nothing, that an added observer runs after those given at construction, that a panic in the first still calls the second, and that adding during reports is clean under `-race`. `TestSessions_EndObserver_NotOnExpiry` checks that `DeleteExpired` and loading past a deadline report nothing. **Green:** hold the list in an `atomic.Pointer`, and copy it on add. Godoc: the default is no observer, and `AddEndObserver` is for wiring at construction.
 - [ ] Verify with `go test -race -count=1 ./session/` and the root suite. Commit `feat(session): report ended sign-ins to an optional observer`.
 
 ### Tasks 3.1–3.2, 4.1–4.3: Configuration, endpoint, admission, activity (D2, D3; dispatch C1)
@@ -164,7 +166,7 @@ var ErrSessionSignalsDisabled, ErrInvalidSignal, ErrTooManyStreams error
 
 - [ ] **3.1 Red:** `TestSessionSignals_Construction`, with every row in `tasks.md` 3.1. The refusing rows assert `errors.Is(err, ErrConfig)` and that the message names the field. **Green:**
   - validate after all options have applied, so the idle timeout and re-authentication are known;
-  - install the end observer on the chain's session manager, and refuse when `HasEndObserver()` is already true, naming `session.EndObservers`.
+  - add the hub's observer with `AddEndObserver` to the chain's session manager, and do not refuse a manager that already has one. The row with an existing observer asserts that it builds and that the consumer's observer is still told. The hub maps `EndCause` to the wire reason by D5's table in one function, and drops `EndExternalSession`.
 - [ ] **3.2:** Godoc each field with its default and range. `AssuranceWindow` says to match the guards' window. Verify with `go doc ./httpsec SessionSignals`.
 - [ ] **4.1–4.3 Red, one table per task:**
   - `TestSessionSignals_Endpoint`: status, `Content-Type`, `Cache-Control`, `X-Accel-Buffering`; 405 with `Allow: GET`; the consumer path; 501 from a consumer writer;
