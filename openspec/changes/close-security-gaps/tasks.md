@@ -165,6 +165,12 @@ Each finding was reproduced on `b441110` by a failing test before it was planned
 - [x] 16.5 Run the gate. Verify: `make check` passes.
 - [x] 16.6 Review group 16 against the requirements and scenarios changed in its pass, with a reviewer that did not write the code. Verify: each is listed as met, or a finding is filed.
 
+## 17. Package naming (D13; 2026-11-03)
+
+- [x] 17.1 Rename the public package `security` to `event` (directory `security/` to `event/`, import path `github.com/kartaladev/scrty/event`) and `internal/secevent` to `internal/eventsink`, with gopls, across every module in `go.work`; update the package godoc, the README's security-events section and every godoc reference (`security.Event`, `security.AuthnLoginFail`, ...). No behaviour changes and no test is added: a mechanical rename covered by the existing tests. Verify: `go build ./...` and `go vet ./...` in every module, `go test -count=1 ./...` in the core module and the adapters, and `rg --glob '!.claude/**' --glob '!openspec/**' 'scrty/security\"|secevent|security\\.(Event|Sink|Names|Authn|Outcome)'` finds nothing.
+- [x] 17.2 Run the gate. Verify: `make check` passes.
+- [x] 17.3 Review the rename with a reviewer that did not write it: no stale name in code, godoc or README, no import alias added, the option names unchanged, and no behaviour change in the diff. Verify: each is listed as met, or a finding is filed.
+
 ## Workflow follow-up
 
 - After merge, the cleanups listed under design.md's Open Questions (PR #45 second review): one shared header-token check, one shared base64url check, a typed sign-in column struct.

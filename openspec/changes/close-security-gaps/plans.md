@@ -739,6 +739,28 @@ Each red step starts from a reproduction seen failing on `7ce3d4a`, in `/private
 ### Task 16.6: Review (fresh reviewer)
 - [ ] An Opus reviewer that wrote none of group 16 checks the diff against the requirements and scenarios changed in the second review: `sender-constrained-tokens` (the issuing-endpoint wording, "Proof beside a presented token at a continuing endpoint", "Proof without ath beside a presented token", the nonce sentence, "Refused replay gets no new nonce") and `http-security-chain` (the notice bound, "Burst of sign-ins", "Consumer's bound"), and D8 and D14. Each met, or a finding with a failing test or `UNREPRODUCED`.
 
+## Task group 17: Package naming (lane H, one dispatch, then the main session)
+
+A mechanical rename with no behaviour change, so the existing suites are its test (`golang-tdd.md`: "mechanical renames already covered by existing tests"); there is no red step. One lane, because every importer of the renamed packages changes with them: the call graph does not split. Haiku, in its own worktree from the branch head, using gopls.
+
+### Task 17.1: `security` becomes `event`, `internal/secevent` becomes `internal/eventsink` (D13)
+
+**Files:** Move `security/` to `event/` (`doc.go`, `event.go`, `doc_test.go`, `event_test.go`) and `internal/secevent/` to `internal/eventsink/`; modify every importer across the `go.work` modules (core, `httpsec/fibersec`, `httpsec/ginsec`, `test`), and `README.md`'s security-events section.
+
+**Interfaces produced:** `github.com/kartaladev/scrty/event` with the same identifiers as before (`Event`, `Sink`, the name and outcome constants, `Names`); `internal/eventsink` with the same identifiers as `secevent` (`Emitter`, `Own`, `With`, `Send`, `Deliver`, `Enabled`, `WithFactor`, `FactorOf`, `GuardRefused`, `SessionDigest`, `MsgSinkPanicked`). Option names unchanged: `httpsec.EnableSecurityEvents`, `*.WithSecurityEvents`, `mfa.WithThrottleSecurityEvents`, `mfa.WithResetSecurityEvents`.
+
+- [ ] **Step 1: Baseline.** `go build ./... && go test -count=1 ./...` in the core module passes before any edit; record it.
+- [ ] **Step 2: Rename** with `gopls rename` on each package clause (it moves the directory and rewrites import paths), or `git mv` plus a gopls-checked import rewrite where gopls refuses. External test packages become `event_test` and `eventsink_test`. No import alias anywhere; a local identifier that would shadow `event` is renamed instead.
+- [ ] **Step 3: Godoc and README.** The package comment starts `// Package event`; every `security.X` in comments and the README becomes `event.X`; `go doc github.com/kartaladev/scrty/event` in the README.
+- [ ] **Step 4: Verify.** `go build ./... && go vet ./...` in each module of `go.work`; `go test -count=1 ./...` in the core module, `httpsec/fibersec`, `httpsec/ginsec`; `gofmt -l .` empty; the stale-name search in task 17.1 of `tasks.md` finds nothing outside `openspec/`.
+- [ ] **Step 5: Report** files moved, importer count per module, the suite results; the main session commits `refactor: name the security-event package event`.
+
+### Task 17.2: Gate (main session)
+- [ ] Merge lane H, then `make check`. Expected: exit 0.
+
+### Task 17.3: Review (fresh reviewer)
+- [ ] A Sonnet reviewer that did not write the rename checks the diff: no stale `security` package reference or `secevent` in code, godoc or README; no alias added; option names unchanged; only package clauses, import paths, qualifiers and comments changed (no logic line). Each met, or a finding.
+
 ---
 
 ## Self-review notes
@@ -748,3 +770,4 @@ Each red step starts from a reproduction seen failing on `7ce3d4a`, in `/private
 - Task numbers match `tasks.md` one to one; no step adds scope beyond it.
 - Group 15 (2026-11-03): each of the six changed capabilities maps to one task (`security-headers` 15.1, `security-policy` 15.2, `password-policy` 15.3, `http-security-chain` 15.4, `automation-challenge` 15.5–15.6, `sender-constrained-tokens` 15.7). New names used across tasks: `WithPolicyLogger`, `SourceGuard.HasRecentAggregateFailures`, `ChallengeSignals.SourceAggregateHasFailures`, `challengeFlowsDefault`. The breach-loop optimisation was declined in D10 and has no task beyond its pinning test.
 - Group 16 (2026-11-03, second review): `sender-constrained-tokens` maps to 16.1 and 16.2, the notice bound in `http-security-chain` to 16.3, the replay sharding (D8, no spec change) to 16.4. New names: `Exchange.bearerCredential`, `issuingBinding`'s `tok` parameter, `dpopProof.staleNonce`, `DefaultSignInNoticeConcurrency`, `WithSignInNoticeConcurrency`, `replayShard`. The three cleanups and the unreproduced list-sort claim have no task; they are recorded under design.md's Open Questions.
+- Group 17 (2026-11-03, naming): D13's package-name amendment maps to 17.1; no spec changes, since specs name no package. No new identifiers: the two packages keep every exported name.
