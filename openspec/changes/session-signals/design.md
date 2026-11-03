@@ -202,7 +202,7 @@ err = chain.CloseSessionSignals(ctx)
   | gone with no known reason, or past a deadline | `session_ended` `expired` | closes |
   | a store failure, not "not found" | `:` comment | keeps going, logs with sampling, reloads next heartbeat |
 
-  The reason comes from the latest end report the stream was woken with (D5). A stream that learns of the end only from its heartbeat, with no report (another replica, no shared bus), sends `ended`, or `expired` when a deadline has passed.
+  The reason comes from the latest end report the stream was woken with, through D5's mapping. A stream that learns of the end only from its heartbeat, with no report (another replica, no shared bus), sends `ended`, or `expired` when a deadline has passed.
 - **A store outage keeps the stream open** (user's choice, 2026-11-03). The store has not said the sign-in ended, and the stream grants no access, so closing would only make every client reconnect at once when the store returns. The stream's own timer still ends it at its absolute deadline.
 - **A `session_ended` arriving from the bus triggers the same reload at once.** It is forwarded only if the store agrees, which removes three problems:
   - a spurious end, when a consumer's outer transaction rolls back after `Sessions.Delete` returned;
@@ -242,26 +242,30 @@ err = chain.CloseSessionSignals(ctx)
 ### D5. Where signals come from
 
 - **Ended sign-ins:**
-  - `session.WithEndObserver(func(ctx context.Context, r session.EndReport))` reports `EndReport{User identity.UserID, Family id.ID, Kept id.ID, Reason EndReason}` after each successful end. It carries no session identifier.
-  - The reasons, and the calls that raise them:
+  - **One option, shared with `oidc-provider`** (revised 2026-11-04, that change's R16). Both changes defined `session.WithEndObserver` differently, and neither is built. Whichever lands first adds the option, and the other adds to it.
+  - `session.EndObserver` is an interface with one method, `SignInsEnded(ctx, session.EndReport)`, with an `EndObserverFunc` adapter so a closure still fits. `session.WithEndObserver` is repeatable.
+  - `EndReport{Cause EndCause, User identity.UserID, Family id.ID, KeptFamily id.ID, ExternalIssuer, ExternalSessionID string, At time.Time}` is reported after each successful end. It carries no session identifier.
+  - The causes, the calls that raise them, and the `session_ended` reason this change sends for each. `session` knows only the cause. The wire reason is this change's, and the hub maps it:
 
-    | Reason | Raised by | Report names |
-    |---|---|---|
-    | `logout` | `Delete(id)` | user and family, from a load before the delete, made only when an observer is set |
-    | `ended` | `EndSignIn` | user and family |
-    | `reuse` | reuse detection, after `Store.DeleteFamily` | user and family |
-    | `reuse` | `RevokeFamily(family)` | family only |
-    | `all_ended` | `DeleteByUser` | user, no family |
-    | `all_ended` | `DeleteByUserExcept`, `EndOtherSignIns` | user, no family, `Kept` as the spared family |
-    | `provider_logout` | `DeleteByUserAndExternalIssuer` | user, no family |
-    | (not reported) | `DeleteByExternalSession` | names neither, so the heartbeat ends those streams |
-    | (not reported) | `DeleteExpired`, a deadline passing | a deadline is not an event |
+    | Cause | Raised by | Report names | Wire reason |
+    |---|---|---|---|
+    | `EndDeleted` | `Delete(id)` | user and family, from a load before the delete, made only when an observer is set | `logout` |
+    | `EndByHandle` | `EndSignIn` | user and family | `ended` |
+    | `EndReuse` | reuse detection, after `Store.DeleteFamily` | user and family | `reuse` |
+    | `EndFamilyRevoked` | `RevokeFamily(family)` | family only | `reuse` |
+    | `EndUserSessions` | `DeleteByUser` | user, no family | `all_ended` |
+    | `EndUserSessionsExcept` | `DeleteByUserExcept` | user, no family, the spared family as `KeptFamily` | `all_ended` |
+    | `EndOtherSignIns` | `EndOtherSignIns` | user, no family, the spared family as `KeptFamily` | `all_ended` |
+    | `EndUserExternalIssuer` | `DeleteByUserAndExternalIssuer` | user, issuer, no family | `provider_logout` |
+    | `EndExternalSession` | `DeleteByExternalSession` | issuer and upstream session, neither user nor family | none: the hub drops it, and the heartbeat ends those streams |
+    | (not reported) | `DeleteExpired`, a deadline passing | a deadline is not an event | |
 
   - **A bulk end is one report** (settled while planning, 2026-11-02). Listing the sign-ins first would cost a read per bulk delete and race the delete. The stream reloads anyway (D4), so a report that names only the user is enough to wake every stream of that user.
-  - **`Kept` for `DeleteByUserExcept`** (corrected 2026-11-03). That call keeps a *session*, not a family, and a report carries no session identifier. When an observer is set, the manager loads the kept session first and reports its family. `EndOtherSignIns` already holds the current session, and reads its family without a load.
+  - **`KeptFamily` for `DeleteByUserExcept`** (corrected 2026-11-03). That call keeps a *session*, not a family, and a report carries no session identifier. When an observer is set, the manager loads the kept session first and reports its family. `EndOtherSignIns` already holds the current session, and reads its family without a load.
   - **The observer's context** keeps the caller's values but not its cancellation, as the reuse observer's does, so a client that hangs up cannot drop the report.
-  - Panics are recovered and logged without the report's contents, and the observer has no error to return, as with `WithReuseObserver`.
-  - `EnableSessionSignals` installs it on the session manager the chain uses. It refuses construction if that manager already has an end observer. The consumer then composes the two with `session.EndObservers(a, b)`, which calls each in order and recovers a panic in one without skipping the next.
+  - Panics are recovered and logged without the report's contents, the next observer still runs, and an observer has no error to return, as with `WithReuseObserver`. Observers run synchronously, in the order given, so the hub's never blocks.
+  - `EnableSessionSignals` adds the hub's observer to the session manager the chain uses, beside any the consumer gave. It no longer refuses a manager with an observer, and `session.EndObservers` is gone, since the option is repeatable.
+  - **How it is added** (found while aligning, 2026-11-04). The plan said "install", and no exported call could do that to a built manager from `httpsec`. `(*Sessions).AddEndObserver(EndObserver) error` does, refusing a nil observer with `ErrConfig`. It is for wiring at chain construction, and copies the list on write, so a report running meanwhile is not a data race. *Rejected:* asking the consumer to pass the hub through `WithEndObserver`, which breaks this change's no-wiring default, because the hub does not exist until the chain is built.
 - **`credential_changed`:**
   - raised by the chain's own endpoints, after their write succeeds: password-change resolve (`password`), recovery finish (`password` or `second_factor`, as the recovery replaced), passkey registration and removal (`passkey`), and MFA enrolment confirmation and removal (`second_factor`);
   - for changes the consumer makes outside those endpoints (an admin console, a password reset of its own), `chain.ReportCredentialChange(ctx, userID, kind)` raises the same library signal;
@@ -298,7 +302,7 @@ type SignalBus interface {
 type SignalEnvelope struct {
     User   identity.UserID // empty only for a family-only end report
     Family id.ID           // the zero ID for user-wide signals
-    Kept   id.ID           // for an all_ended report that spared a family
+    Kept   id.ID           // for an all_ended report that spared a family (the report's KeptFamily)
     Name   string
     Reason string          // session_ended only
     Data   json.RawMessage

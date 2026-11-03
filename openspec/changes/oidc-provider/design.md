@@ -1161,7 +1161,7 @@ A `resource` at the token endpoint must be within the code's or grant's resource
   - `ReportsEndsTo` compares by identity, and an incomparable value such as a func is simply not the one asked about;
   - `EndReport` adds the upstream issuer and session to D5's fields, and `DeleteByExternalSession` reports them;
   - from D5: the context keeps the caller's values and not its cancellation, panics are recovered, and the kept family is named. T4 first said "the caller's context", where a hang-up could have dropped a revocation.
-- **Follow-up in another change.** `session-signals`' design and tasks must follow, including no longer refusing a manager that already has an observer. Task 1.3 does that here, because this PR changes only this change's artifacts. Whichever change lands first adds the option, and the other adds to it.
+- **Follow-up in another change.** `session-signals`' design and tasks must follow, including no longer refusing a manager that already has an observer. Task 1.3 did that on 2026-11-04. Whichever change lands first adds the option, and the other adds to it. `session-signals` also adds `(*Sessions).AddEndObserver`, because its chain option wires itself to a built manager; this change needs no such call, since `EnableOIDCProvider` checks the wiring with `ReportsEndsTo`. The wire reasons stay `session-signals`' own, mapped from `EndCause`. Each change carries the shared `sessions` requirements word for word, and the one that lands second drops them from its delta.
 
 ## Risks / Trade-offs
 
