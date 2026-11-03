@@ -107,14 +107,22 @@ The `jti` SHALL be recorded only for a proof that passed every other check, so a
 - **THEN** the `htu` check passes
 
 ### Requirement: Every issuing endpoint binds the token when the request carries a proof
-When a request to an endpoint that issues a credential carries a valid proof without `ath`, the issued access token SHALL carry `cnf.jkt`, the base64url JWK SHA-256 thumbprint of the proof's key, and the session SHALL be built with the binding before its credential is issued. The endpoints that bind are login completion, passkey login, magic-link redemption, OIDC handoff redemption, recovery completion and re-authentication. Second-factor verification and session renewal continue a sign-in already created, so they carry its binding and add none. Every issuing endpoint, those two included, SHALL verify a proof it is given before anything is spent. The issued result SHALL tell the consumer's responder that the token type is `DPoP`, so it can answer `token_type` accordingly.
+When a request to an endpoint that issues a credential carries a valid proof, with `ath` matching the access token the request presents (the credential the chain's bearer authenticated) or without `ath` when it presents none, the issued access token SHALL carry `cnf.jkt`, the base64url JWK SHA-256 thumbprint of the proof's key, and the session SHALL be built with the binding before its credential is issued. The endpoints that bind are login completion, passkey login, magic-link redemption, OIDC handoff redemption, recovery completion and re-authentication. Second-factor verification and session renewal continue a sign-in already created, so they carry its binding and add none. Every issuing endpoint, those two included, SHALL verify a proof it is given before anything is spent. The issued result SHALL tell the consumer's responder that the token type is `DPoP`, so it can answer `token_type` accordingly.
 
 The proof SHALL be verified in the endpoint's checks, before anything is spent or stored: a refused proof SHALL leave a magic link, a handoff code, a pending challenge's attempts and recovery proofs unspent, and SHALL be charged as the endpoint charges a malformed request, not as a failed credential.
 
 A binding SHALL be set when a sign-in is created and SHALL carry over to every successor through rotation and renewal. Renewal SHALL NOT add, change or remove a binding. Re-authentication of an unbound session MAY bind its successor to the proof's key; re-authentication of a bound session SHALL keep the binding.
 
+#### Scenario: Proof beside a presented token at a continuing endpoint
+- **WHEN** an unbound session presented as `Authorization: Bearer <token>` renews, verifies a second factor or re-authenticates with a proof whose `ath` is the hash of `<token>`
+- **THEN** the proof is accepted
+
+#### Scenario: Proof without ath beside a presented token
+- **WHEN** an unbound session presented as `Authorization: Bearer <token>` renews, verifies a second factor or re-authenticates with an otherwise valid proof that carries no `ath`
+- **THEN** the request is refused with the invalid-DPoP-proof error, and nothing is rotated or issued
+
 #### Scenario: Second factor carries the sign-in's binding
-- **WHEN** a sign-in created without a proof completes its second factor with a request carrying a valid proof without `ath`
+- **WHEN** a sign-in created without a proof completes its second factor with a request carrying a valid proof whose `ath` matches the access token the request presents (or no `ath`, when it presents none)
 - **THEN** the issued token carries no `cnf` and the session stays unbound, because the binding is set when the sign-in is created
 
 #### Scenario: Bound login
@@ -195,7 +203,7 @@ Seen `jti` values SHALL be kept in an in-memory store by default, for as long as
 - **THEN** the request fails with an error matching the cancellation, and nothing is recorded at ERROR
 
 ### Requirement: Server nonces are opt-in
-By default the server SHALL issue no DPoP nonces. When the consumer enables them, a proof without a nonce the server still accepts SHALL be refused with 401, `WWW-Authenticate: DPoP error="use_dpop_nonce"`, and the replica's current `DPoP-Nonce`. Responses SHALL carry the next `DPoP-Nonce` when the presented one is past half its lifetime. Every response that carries `DPoP-Nonce` SHALL also carry `Cache-Control: no-store`. A replica SHALL hand the same current nonce to every client until half its lifetime has passed, so the rate of sealing does not depend on traffic. Nonces SHALL be verifiable by every replica that shares the nonce key, without a shared store.
+By default the server SHALL issue no DPoP nonces. When the consumer enables them, a proof without a nonce the server still accepts SHALL be refused with 401, `WWW-Authenticate: DPoP error="use_dpop_nonce"`, and the replica's current `DPoP-Nonce`. Responses to an accepted proof SHALL carry the next `DPoP-Nonce` when the presented one is past half its lifetime; a proof refused for any other reason SHALL NOT be given a new nonce. Every response that carries `DPoP-Nonce` SHALL also carry `Cache-Control: no-store`. A replica SHALL hand the same current nonce to every client until half its lifetime has passed, so the rate of sealing does not depend on traffic. Nonces SHALL be verifiable by every replica that shares the nonce key, without a shared store.
 
 #### Scenario: Nonce required
 - **WHEN** nonces are enabled and a proof carries no nonce
@@ -204,6 +212,10 @@ By default the server SHALL issue no DPoP nonces. When the consumer enables them
 #### Scenario: Expired nonce
 - **WHEN** nonces are enabled and a proof carries a nonce the server issued long enough ago to have expired
 - **THEN** the response is 401 with `error="use_dpop_nonce"`, a `DPoP-Nonce` header carrying a nonce the server accepts, and `Cache-Control: no-store`
+
+#### Scenario: Refused replay gets no new nonce
+- **WHEN** nonces are enabled and a proof whose nonce is past half its lifetime is sent a second time
+- **THEN** the replay is refused with the invalid-DPoP-proof error, carries no `DPoP-Nonce`, and nothing is sealed for it
 
 #### Scenario: One nonce per replica
 - **WHEN** nonces are enabled and many clients ask for one within half a nonce lifetime

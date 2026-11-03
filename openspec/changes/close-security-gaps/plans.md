@@ -44,6 +44,9 @@
 - A chain behind a trusted proxy with DPoP but no `ForwardedHost` allowlist: the host is still the transport's `Host`, so construction must refuse it, not treat "has proxies" as "host declared". Test added to 15.7.
 - A login that verifies, is refused afterwards, and is retried with the right password and allowed: the second request must encode exactly once and write once, with no hash left over from the first request's handle. Test added to 15.4.
 - An IPv4-mapped IPv6 client (`::ffff:203.0.113.7`) behind a guard with an IPv6 aggregate: the aggregate signal must be false, as for IPv4, not computed over the mapped prefix. Test added to 15.6.
+- A client that presents its token as `Authorization: DPoP <token>` on an unbound session at renewal (the DPoP scheme with no binding): it must stay refused by `admitBinding` as today, not be let through because a proof with `ath` now verifies. Test added to 16.1.
+- A request with two `Authorization` headers, or a `Bearer` header with an empty token, beside a proof carrying `ath` at re-authentication: the presented token is whatever the bearer accepted, and a proof hashing anything else is refused. Test added to 16.1.
+- A sign-in notice dropped because the bound is full: the dropped sign-in's response is identical to a notified one's (status, headers, timing within the test's tolerance), so a client cannot tell. Test added to 16.3.
 
 ---
 
@@ -70,6 +73,10 @@ Each lane owns its files; a file not listed is held by the main session for revi
 | F (worktree) | F5: challenge | 15.5 (F5a); 15.6 (F5b) | `httpsec/challenge.go`, `ratelimit/guard.go`, their tests, the README's challenge section | Sonnet for 15.5 (a default set); Opus for 15.6 (a public signal across two packages) |
 | F (worktree) | F6: DPoP host | 15.7 | `httpsec/dpop.go`, every test and conformance scenario that enables DPoP, the README's DPoP section | Sonnet (a stated construction rule, applied across tests) |
 | F, last | main session + reviewer | 15.8–15.9 | none | Opus reviewer (covers refusal and refactor work) |
+| G (worktree) | G1: DPoP proof | 16.1 (G1a); 16.2 (G1b) | `httpsec/mfa_verify.go` (`continuingProof`), `httpsec/dpop.go` (`issuingBinding`, `verify`), `httpsec/dpop_replay.go` (`record` only), `httpsec/dpop_nonce.go`, their tests | Opus for 16.1 (security-critical verification); Sonnet for 16.2 (an ordering the finding states) |
+| G (worktree) | G2: notice bound | 16.3 | `httpsec/signin_notice.go`, its tests, the README's notice paragraph | Opus (concurrency: a non-blocking bound and its release) |
+| G (worktree) | G3: replay shards | 16.4 | `httpsec/dpop_replay.go` (`memoryReplayStore` only), its tests | Opus (concurrency: per-shard locks and sweeps). Shares `dpop_replay.go` with G1: G3 owns the store type, G1 the verifier's `record`; the main session merges |
+| G, last | main session + reviewer | 16.5–16.6 | none | Opus reviewer |
 
 `httpsec/errors.go` is owned by lane R in phase A; afterwards each lane adds its sentinel in its own file and appends its rows to the status table in its worktree; the main session resolves the table merge (a few lines, stated when it happens).
 
@@ -673,6 +680,65 @@ Every task's red step starts from a reproduction test already seen failing on `b
 ### Task 15.9: Review (fresh reviewer)
 - [ ] An Opus reviewer that wrote none of group 15 checks the diff against every requirement and scenario changed on 2026-11-03: `security-headers`, `security-policy`, `password-policy`, `http-security-chain` (rehash), `automation-challenge` and `sender-constrained-tokens`. It lists each as met, or files a finding with a failing test or `UNREPRODUCED`.
 
+
+## Task group 16: PR #45 second review (lanes G1–G3, then the main session)
+
+Each red step starts from a reproduction seen failing on `7ce3d4a`, in `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/13a45b79-fab6-4a2f-a1ae-e86c7bad55b5/scratchpad/repro-g16/<a|b|c>/` and in the worktrees `.claude/worktrees/repro-g16-<a|b|c>`. Move each `*_repro_test.go` into the package's own test file for the behaviour. G1, G2 and G3 run in their own worktrees in parallel; G1's two dispatches run in order.
+
+### Task 16.1: A proof beside a presented token carries its `ath` (D8)
+
+**Files:** Modify `httpsec/mfa_verify.go` (`continuingProof`), `httpsec/dpop.go` (`issuingBinding`, a new helper); test `httpsec/dpop_issuing_test.go` (or a new `dpop_continuing_test.go`).
+
+**Interfaces (revised during 16.1):** the signed-bearer and session-reference interceptors record the credential they authenticated on the `Exchange` through `func (e *Exchange) RecordPresentedToken(tok string)`, set only on success; a consumer's own bearer calls the same method after verifying its credential. `continuingProof` and `issuingBinding` pass it to `v.verify(ctx, r, tok)` in place of `""`; it is `""` where no bearer authenticated the request (login, a cookie session). No second parse of the `Authorization` header.
+
+- [ ] **Step 1: Failing tests.** Move `TestContinuingProof_RequiresAthBesideAccessToken` (12 cases: renewal, MFA verify, re-authentication × unbound, certificate-bound × with, without `ath`). With `ath` over the presented token: accepted. Without: `ErrInvalidDPoPProof`, nothing rotated. Add the Review Focus cases: two `Authorization` headers with a proof hashing either → refused; an unbound session under the `DPoP` scheme at renewal → still refused as today. Keep a cookie-session row: a proof without `ath` is accepted, one with `ath` refused.
+- [ ] **Step 2: Run** `go test -run 'TestContinuingProof_' -count=1 ./httpsec/`. Expected: FAIL, `Received unexpected error: httpsec: invalid DPoP proof` on the six with-`ath` rows, and the without-`ath` rows accepted.
+- [ ] **Step 3: Implement** the recorded credential (`Exchange.bearerCredential`, set by both bearers on success) and a `tok string` parameter on `issuingBinding`, passed at every caller. Update `continuingProof`'s and `reauthBinding`'s comments.
+- [ ] **Step 4: Run** `go test -run 'TestContinuingProof_|TestDPoP|Renew|Reauth|MFAVerify' -count=1 ./httpsec/`. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): a proof beside a presented access token is checked against its ath`.
+
+### Task 16.2: A nonce is refreshed only for an accepted proof (D8), after 16.1
+
+**Files:** Modify `httpsec/dpop.go` (`verify`, the `refreshNonce` call at line ~566), `httpsec/dpop_replay.go` (`dpopVerifier.record`); test `httpsec/dpop_nonce_test.go`.
+
+**Interfaces:** `dpopProof` gains `staleNonce bool`, set by `verify` where it now calls `refreshNonce`. `record` calls `v.refreshNonce(ctx)` after a fresh insert succeeds and only when `p.staleNonce`. Every path that verifies a proof already calls `record` after `verify`; confirm with gopls references that none skips it.
+
+- [ ] **Step 1: Failing test.** Move `TestDPoP_ReplayedProofGetsNoNonceRefreshAndSealsNothing`: two replicas with counting ciphers, one key, one replay store; the replay to either has no `DPoP-Nonce` and B seals 0. Keep the existing "Expired nonce" and "One nonce per replica" scenarios green.
+- [ ] **Step 2: Run** `go test -run 'TestDPoP_ReplayedProof' -count=1 ./httpsec/`. Expected: FAIL, `Should be empty, but was <nonce>` and `expected: 0 actual: 1`.
+- [ ] **Step 3: Implement** the flag and the moved call.
+- [ ] **Step 4: Run** `go test -run 'TestDPoP' -count=1 ./httpsec/`. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): a refused DPoP proof is given no new nonce`.
+
+### Task 16.3: The sign-in notice is bounded (D14)
+
+**Files:** Modify `httpsec/signin_notice.go` (`signInNotice`, `start`, options), `README.md` (notice paragraph); test `httpsec/signin_notice_test.go`.
+
+**Interfaces:** Produces `const DefaultSignInNoticeConcurrency = 32` and `func WithSignInNoticeConcurrency(n int) SignInNoticeOption`; `n < 1` fails construction with `ErrConfig` naming the option. `signInNotice` holds `slots chan struct{}` of that capacity. `start` acquires with a non-blocking send; when full it drops the notice and logs `msgSignInNoticeDropped` at WARN through the package's sampled logger, with no user attribute; the goroutine releases its slot in its deferred function, after the recovered panic.
+
+- [ ] **Step 1: Failing tests.** Move `TestSignInNotice_BoundsConcurrentNoticeWork` (200 concurrent logins, a store that blocks, peak ≤ 32). Add: `WithSignInNoticeConcurrency(4)` → peak ≤ 4; `WithSignInNoticeConcurrency(0)` → `ErrConfig`; a dropped notice leaves one WARN record without the user ID; Review Focus: a dropped sign-in's response has the same status and headers as a notified one's. After the gate opens, every slot is free again (a further login is notified).
+- [ ] **Step 2: Run** `go test -race -run 'SignInNotice' -count=1 ./httpsec/`. Expected: FAIL, `"200" is not less than or equal to "32"`, and the construction case builds.
+- [ ] **Step 3: Implement** the bound, the option, the constant, the log line. Update the godoc of `EnableSignInNotice` and the README.
+- [ ] **Step 4: Run** the same command. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): the sign-in notice runs at most 32 at once`.
+
+### Task 16.4: The default replay store is sharded (D8)
+
+**Files:** Modify `httpsec/dpop_replay.go` (`memoryReplayStore`, `newMemoryReplayStore`, `Record`); test `httpsec/dpop_replay_test.go`.
+
+**Interfaces:** `memoryReplayStore` holds `[64]replayShard`; `replayShard` has its own `sync.Mutex`, `map[string]time.Time` and `nextSweep`. The shard is chosen from the key, which is already a digest (FNV-1a over the key's bytes, modulo 64). `Record`'s signature and its insert-if-absent and `until` rules are unchanged.
+
+- [ ] **Step 1: Failing test** `TestMemoryReplayStore_SweepsOnlyItsShard`: fill the store with expired keys across shards, advance the clock past the sweep interval, call `Record` once, and assert that only the shard that call landed on was emptied (an unexported count per shard, read in the internal test). Keep the existing replay tests unchanged. Move `BenchmarkReplayRecordSweep` and `BenchmarkReplayRecordNormal` beside it.
+- [ ] **Step 2: Run** `go test -run 'TestMemoryReplayStore_' -count=1 ./httpsec/`. Expected: FAIL, the whole store emptied by one sweep (add the shard accessor as a stub first, so the red is an assertion).
+- [ ] **Step 3: Implement** the shards.
+- [ ] **Step 4: Run** `go test -race -run 'Replay' -count=1 ./httpsec/`, then `go test -run '^$' -bench 'ReplayRecord' -benchmem ./httpsec/`. Expected: PASS, and the 600,000-entry sweep about a sixty-fourth of the 4.6 ms and 71 ms measured before; report both.
+- [ ] **Step 5: Commit** `perf(httpsec): the default DPoP replay store is sharded`.
+
+### Task 16.5: Gate (main session)
+- [ ] Merge G1, G2, G3 (G1 and G3 both touch `dpop_replay.go`, different declarations), then `make check`. Expected: exit 0.
+
+### Task 16.6: Review (fresh reviewer)
+- [ ] An Opus reviewer that wrote none of group 16 checks the diff against the requirements and scenarios changed in the second review: `sender-constrained-tokens` (the issuing-endpoint wording, "Proof beside a presented token at a continuing endpoint", "Proof without ath beside a presented token", the nonce sentence, "Refused replay gets no new nonce") and `http-security-chain` (the notice bound, "Burst of sign-ins", "Consumer's bound"), and D8 and D14. Each met, or a finding with a failing test or `UNREPRODUCED`.
+
 ---
 
 ## Self-review notes
@@ -681,3 +747,4 @@ Every task's red step starts from a reproduction test already seen failing on `b
 - Interfaces: names in a group's Interfaces block are the ones later groups use (`Request.Host/Secure`, `ClientFromContext`, `WithClientCertificateHeader`, `config.dpopEnabled`, `session.KeyBinding`, `token.Confirmation`, `TokenType`, `RehashFunc`).
 - Task numbers match `tasks.md` one to one; no step adds scope beyond it.
 - Group 15 (2026-11-03): each of the six changed capabilities maps to one task (`security-headers` 15.1, `security-policy` 15.2, `password-policy` 15.3, `http-security-chain` 15.4, `automation-challenge` 15.5–15.6, `sender-constrained-tokens` 15.7). New names used across tasks: `WithPolicyLogger`, `SourceGuard.HasRecentAggregateFailures`, `ChallengeSignals.SourceAggregateHasFailures`, `challengeFlowsDefault`. The breach-loop optimisation was declined in D10 and has no task beyond its pinning test.
+- Group 16 (2026-11-03, second review): `sender-constrained-tokens` maps to 16.1 and 16.2, the notice bound in `http-security-chain` to 16.3, the replay sharding (D8, no spec change) to 16.4. New names: `Exchange.bearerCredential`, `issuingBinding`'s `tok` parameter, `dpopProof.staleNonce`, `DefaultSignInNoticeConcurrency`, `WithSignInNoticeConcurrency`, `replayShard`. The three cleanups and the unreproduced list-sort claim have no task; they are recorded under design.md's Open Questions.

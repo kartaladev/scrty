@@ -156,7 +156,17 @@ Each finding was reproduced on `b441110` by a failing test before it was planned
 - [x] 15.8 Run the challenge, header and DPoP scenarios on all three adapters, and the whole gate. Verify: `make check` passes.
 - [x] 15.9 Review group 15 against the specs and design decisions it covers, with a reviewer that did not write the code. Verify: the review lists each requirement and scenario changed on 2026-11-03 as met, or files a finding.
 
+## 16. PR #45 second review (D8, D14; 2026-11-03)
+
+- [x] 16.1 Verify a proof given to second-factor verification, re-authentication or renewal against the access token the request presents: `ath` must match it, and must be absent when none is presented; a DPoP-bound session is unchanged. Red step: `TestContinuingProof_RequiresAthBesideAccessToken` (repro `repro-g16/a/`, 12 cases: three endpoints, unbound and certificate-bound, with and without `ath`). Verify: `go test -run 'TestContinuingProof_|TestDPoP|Renew|Reauth|MFAVerify' -count=1 ./httpsec/`.
+- [x] 16.2 Refresh the DPoP nonce only after a proof is recorded and its binding accepted; a `use_dpop_nonce` refusal still carries one. Runs after 16.1 (same file). Red step: `TestDPoP_ReplayedProofGetsNoNonceRefreshAndSealsNothing` (repro `repro-g16/a/`). Verify: `go test -run 'TestDPoP' -count=1 ./httpsec/`.
+- [x] 16.3 Bound the sign-in notice's concurrent work: at most `DefaultSignInNoticeConcurrency` (32) at once, a notice beyond it dropped and logged at WARN (sampled, no user), the response never delayed; add `WithSignInNoticeConcurrency(n)`, n below 1 refused at construction. Red step: `TestSignInNotice_BoundsConcurrentNoticeWork` (repro `repro-g16/b/`), plus the consumer's-bound and the construction cases. Verify: `go test -race -run 'SignInNotice' -count=1 ./httpsec/`.
+- [x] 16.4 Shard the default memory DPoP replay store into 64 shards by the key's digest, each with its own mutex, map and sweep; the record rule is unchanged. Red step: a test that a sweep visits only its own shard's entries (the benchmark alone is not a red step); keep `BenchmarkReplayRecordSweep` (repro `repro-g16/c/`) and report its numbers before and after. Verify: `go test -race -run 'Replay' -count=1 ./httpsec/` and `go test -run '^$' -bench 'ReplayRecord' -benchmem ./httpsec/`.
+- [x] 16.5 Run the gate. Verify: `make check` passes.
+- [x] 16.6 Review group 16 against the requirements and scenarios changed in its pass, with a reviewer that did not write the code. Verify: each is listed as met, or a finding is filed.
+
 ## Workflow follow-up
 
+- After merge, the cleanups listed under design.md's Open Questions (PR #45 second review): one shared header-token check, one shared base64url check, a typed sign-in column struct.
 - Update `CHANGELOG.md`'s first entry through `release-readiness` with this change's breaking items and security additions.
 - Archive `close-security-gaps` after `release-readiness` is updated, then archive or close `trusted-proxy-client-ip` as superseded.

@@ -138,7 +138,7 @@ When the consumer opts in, a successful logout response SHALL carry `Clear-Site-
 - **THEN** the refusal carries no `Clear-Site-Data`
 
 ### Requirement: A sign-in from an unseen device can notify the user
-When the consumer opts in and sign-in metadata recording is on, a completed sign-in whose metadata matches none of the user's other live sign-ins SHALL send the user a notice through the sending port, after the sign-in is stored and without delaying the response. Matching SHALL compare user agents by default and SHALL be replaceable, and the consumer SHALL be able to supply a port of devices seen earlier, which is consulted beside the live sign-ins. A user's first sign-in, with no other live sign-in and nothing in the port, SHALL NOT be notified. The notice SHALL contain the time and coarse device description, never a token, a link secret, a session handle or the full client address. A failure to send SHALL be logged and SHALL NOT affect the sign-in. Construction SHALL fail when the notice is enabled without metadata recording or without a sender.
+When the consumer opts in and sign-in metadata recording is on, a completed sign-in whose metadata matches none of the user's other live sign-ins SHALL send the user a notice through the sending port, after the sign-in is stored and without delaying the response. At most a bounded number of notices SHALL be in progress at once, 32 by default and replaceable; a notice beyond the bound SHALL be dropped and logged, never queued behind the response. Matching SHALL compare user agents by default and SHALL be replaceable, and the consumer SHALL be able to supply a port of devices seen earlier, which is consulted beside the live sign-ins. A user's first sign-in, with no other live sign-in and nothing in the port, SHALL NOT be notified. The notice SHALL contain the time and coarse device description, never a token, a link secret, a session handle or the full client address. A failure to send SHALL be logged and SHALL NOT affect the sign-in. Construction SHALL fail when the notice is enabled without metadata recording or without a sender.
 
 #### Scenario: New browser
 - **WHEN** the notice is on and a user with a live sign-in from `Firefox/140` signs in from `Safari/19`
@@ -155,6 +155,14 @@ When the consumer opts in and sign-in metadata recording is on, a completed sign
 #### Scenario: Sign-in not stored
 - **WHEN** the notice is on and a sign-in fails after its credential was issued but before its session was stored
 - **THEN** no notice is sent
+
+#### Scenario: Burst of sign-ins
+- **WHEN** the notice is on, its store or sender is slow, and more sign-ins complete at once than the notice's concurrency bound (32 by default)
+- **THEN** at most that many notices are in progress, the others are dropped and logged, and no sign-in's response waits for a notice
+
+#### Scenario: Consumer's bound
+- **WHEN** the consumer sets the notice's concurrency bound to 4
+- **THEN** at most 4 notices are in progress at once
 
 #### Scenario: Notice without metadata
 - **WHEN** the consumer enables the notice with metadata recording off
