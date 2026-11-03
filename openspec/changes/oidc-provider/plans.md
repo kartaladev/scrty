@@ -15,7 +15,6 @@
 
 ## Global Constraints
 
-- **Open questions first:** no lane starts until the user has answered design "Open Questions". A declined recommendation changes `tasks.md` first, then this plan.
 - **Go and dependencies:**
   - Go 1.27 floor;
   - the core module adds no dependency;
@@ -108,7 +107,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ## Task group 1: baseline check (main session)
 
 ### Task 1.1: Recheck the merged in-flight changes
-- [ ] After `pre-release-api-fixes` merges (`close-security-gaps` has), rebase this change's branch onto `main`.
+- [ ] Rebase this change's branch onto `main`, which holds `pre-release-api-fixes` and `close-security-gaps`.
 - [ ] Read the merged code with gopls and record in `design.md`:
   - the exact names this plan assumes and leaves open. The placeholders below are `dpop.VerifyIssuingProof`, `httpsec.certThumbprint`, `bindingVerifiers`, the CSRF exemption option, the events sink type, and `token.Generator`'s final shape;
   - each difference from the design, R6's retire rule and key cap included.

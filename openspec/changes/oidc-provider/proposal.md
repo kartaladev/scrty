@@ -8,18 +8,18 @@ It is delivered before `v0.1.0` (decided 2026-11-02), because it changes ports a
 
 ## What Changes
 
-The scope below is the v1 the research supports. Items were decided on 2026-11-02, as design decisions 1 to 5 and P1 to P9, and refreshed on 2026-11-04, as R1 to R16. R1 to R4, and the logout plans in R5, are proposed and await the user (design, "Open Questions"). The user's standing condition is that the provider complies with the standards it implements and follows established security practice; the design maps each requirement to the decision that meets it.
+The scope below is the v1 the research supports. Items were decided on 2026-11-02, as design decisions 1 to 5 and P1 to P9, and refreshed on 2026-11-04, as R1 to R16. The user accepted R1 to R4, and the logout plans in R5, on 2026-11-04. The user's standing condition is that the provider complies with the standards it implements and follows established security practice; the design maps each requirement to the decision that meets it.
 
 - **An embeddable OpenID Provider**, built on scrty's own primitives and jwx v4, with no OpenID Provider library underneath (decided 2026-11-02):
   - **Authorization endpoint:** authorization code flow only, PKCE with `S256` required by default (a confidential client may rely on the nonce, R1), exact `redirect_uri` matching, `state` and `nonce`, `prompt` (`none`, `login`, `consent`) and `max_age`, and `iss` in every authorization response (RFC 9207).
   - **Login and consent handoff** to the consumer's own pages through a pending authorization request under an opaque handle, resumed through the provider; the handle is bound to the browser that started the request (P1). The consumer's pages sign the user in with scrty's existing endpoints: form login, passkeys, magic links, MFA, recovery, and upstream OIDC login.
-  - **A browser session and single sign-on** (R2, proposed): `prompt=none` answers from a small provider-only cookie, because the conformance suite and OIDC Core §15.1 require it. It moves SSO from a follow-up into v1.
+  - **A browser session and single sign-on** (R2): `prompt=none` answers from a small provider-only cookie, because the conformance suite and OIDC Core §15.1 require it. It moves SSO from a follow-up into v1.
   - **Consent, delivered in v1** (decided 2026-11-02): remembered consent per user and client, `prompt=consent`, consent forced for `offline_access`, partial grants, denial, and revocation. Consent is required unless a client is registered as first-party, and `offline_access` asks even then (P2).
   - **Token endpoint:** authorization code and refresh token grants; client authentication by `client_secret_basic`, `client_secret_post`, `private_key_jwt` (the issuer as its only audience by default, after CVE-2025-27370) and `none` for public clients; single-use codes whose reuse revokes what they issued; refresh-token rotation with reuse detection, and grants with idle and absolute lifetimes (P5, P7).
   - **Tokens:** ID tokens with `nonce`, `auth_time`, `acr`, `amr`, `azp` and `sid`; JWT access tokens per RFC 9068 (5 minutes, `at+jwt`, audience-restricted) by default, opaque by option (P4); RS256 ID tokens by default (P8); DPoP and mTLS binding through `close-security-gaps`' machinery (P6).
   - **UserInfo, revocation (RFC 7009) and introspection (RFC 7662).**
   - **Discovery:** OpenID Provider metadata and OAuth authorization server metadata (RFC 8414), beside the existing JWKS endpoint.
-  - **Logout:** RP-initiated logout, which asks the user unless a hint names the browser's own sign-in (R3, proposed), and back-channel logout sent to relying parties.
+  - **Logout:** RP-initiated logout, which asks the user unless a hint names the browser's own sign-in (R3), and back-channel logout sent to relying parties.
   - **A static client registry** the consumer owns: in-memory from configuration by default, durable through the store adapters, with secrets kept only as digests.
 - **Proof of conformance:** the OpenID Foundation conformance suite's Basic OP, Config OP and logout plans run against the provider in CI, and a green run gates `v0.1.0` (P9, R5).
 - **Grants stored apart from sign-ins** (decided 2026-11-02, design decision 5):
@@ -69,7 +69,7 @@ Settled with the specs on 2026-11-02.
 - **New code, core module:** the `oidcprovider` package (design T1), its endpoints in `httpsec`, and their adapters in `ginsec` and `fibersec` through the existing exchange.
 - **Stores:** in-memory defaults, plus `sqlstore`, `pgxstore` and `gormstore` adapters, a security-state migration, and conformance suites in the `test` module.
 - **No new dependency in any published module.** jwx v4 remains the single JOSE stack. The conformance suite (Java and MongoDB, in Docker) runs in CI only.
-- **Order before the tag (decided 2026-11-02):** `close-security-gaps` (archived 2026-11-03), then `pre-release-api-fixes` (#68; the `sub` claim becomes the user identifier, which an OpenID Provider must never reassign), then this change, then `release-readiness`'s gate and tag.
+- **Order before the tag (decided 2026-11-02):** `close-security-gaps` (archived 2026-11-03), then `pre-release-api-fixes` (merged, #68; the `sub` claim becomes the user identifier, which an OpenID Provider must never reassign), then this change, then `release-readiness`'s gate and tag.
 - **Related changes:**
   - `close-security-gaps`: its D8 must count the provider as a DPoP user, so that a chain running only the provider may enable DPoP. It was amended there on 2026-11-02 (design P6). It also provides DPoP, mTLS binding, CORS, security headers, trusted proxies, security events, and the session listing (its D12), which gains a "revoke application access" choice when ending other sessions; `session.Store` itself is unchanged by this change;
   - `session-signals`: defines the same `session.WithEndObserver`; R16 makes it one option, and task 1.3 aligns that change;

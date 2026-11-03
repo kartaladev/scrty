@@ -5,19 +5,19 @@ See `proposal.md` for the motivation. This design was captured from an explorati
 - **Decided:** decisions 1 to 5 and P1 to P9, all chosen by the user on 2026-11-02. Each states its default, how a consumer overrides it, and what was rejected.
 - **Refreshed on 2026-11-04:** the design was rechecked against `pre-release-api-fixes` as it stands in #68 (`501a1a6`), the archived `close-security-gaps`, the OpenID Foundation conformance suite's source, and the standards again. "Decisions from the refresh" (R1 to R16) records the outcome. Where it supersedes an earlier decision, the earlier text says so.
 - **The user's standing condition:** the provider must comply with the standards it implements and follow established security practice. "Standards compliance and security practice" maps each requirement to the decision that meets it.
-- **Open questions:** four, each a choice the refresh proposes that reverses or widens something the user decided. See "Open Questions". The artifacts are written as if each recommendation is accepted, so the change stays coherent, and each says what to undo otherwise. The values and smaller behaviours the specs had to fix are recorded in "Decisions made while writing the specs". The mechanisms the task breakdown had to fix, and the package name, are in "Decisions made while writing the tasks" (T1 to T9).
+- **Open questions:** none. The user accepted the refresh's four recommendations on 2026-11-04 (R1 to R5). The values and smaller behaviours the specs had to fix are recorded in "Decisions made while writing the specs". The mechanisms the task breakdown had to fix, and the package name, are in "Decisions made while writing the tasks" (T1 to T9).
 - **Not yet reproduced:** risks found by reading code are labelled `UNREPRODUCED`. Each becomes a failing test first when its task starts (`defect-claims`).
 
 ### What exists
 
-Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshed on 2026-11-04 against `main` at `39b035c` and #68 at `501a1a6`. #68 was still being worked on that day, so task 1.1 rechecks whatever it finally merges.
+Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshed on 2026-11-04 against `main` at `39b035c` and #68 at `501a1a6`. #68 has since merged as `0080ee2`. Its code matches `501a1a6`; only `pre-release-api-fixes/tasks.md` differs.
 
 - **scrty as a relying party.** `oidc-login`, `identity-linking` and `oidc-logout` log users in through external providers, link identities, and accept back-channel logout tokens. That code verifies ID and logout tokens with jwx v4 and caches remote key sets through the confined outbound client.
 - **Keys and tokens.**
   - `token/signingkey` rotates RS256 (default), ES256 or EdDSA keys and publishes them.
   - `httpsec.EnableJWKSEndpoint` serves the key set at `/.well-known/jwks.json`.
   - `token.Generator.Generate(ctx, id, principal)` signs a fixed claim set: `jti`, `iss`, `sub`, `iat`, `exp`, and an optional audience. It cannot carry `nonce`, `azp`, `auth_time`, `acr`, `amr`, `scope` or `client_id`. In #68 it gains a required `SubjectMode()`, and `sub` defaults to the user identifier.
-  - A token's lifetime is capped at the key lifetime minus the rotation interval (23 hours by default) when the key source reports them. In #68 a signing key retires one reload interval after its tokens can have expired, and leaves the store one grace later.
+  - A token's lifetime is capped at the key lifetime minus the rotation interval (23 hours by default) when the key source reports them. Since #68 a signing key retires one reload interval after its tokens can have expired, and leaves the store one grace later.
   - A test pins the package's use of jwx to a reviewed allow-list.
 - **Sessions** (`session`).
   - **What a session records:** `AuthenticatedAt` (the OIDC `auth_time` meaning), `FirstFactor`, the MFA state, and federated `amr`/`acr`.
@@ -33,8 +33,8 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
   - CORS (D5), security headers (D4), CSRF (D6), trusted proxies with `Request.Host()` and `Request.Secure()` (D2, D7);
   - security events (D13), and session management: `EnableSessionManagement`, `Sessions.ListSignIns`, `EndSignIn` and `EndOtherSignIns` (D12).
 - **In flight.**
-  - `pre-release-api-fixes` (#68, open): `sub` is the user identifier by default, with username options; a chain whose generators disagree with its bearer fails to build; a login whose principal has no identifier fails matching `token.ErrNoSubject`; key retirement and deletion as above. R6 records what follows.
-  - `split-ci-jobs` (#68, open): one CI job per check behind an aggregate `ci-ok`, each calling a `make` target. R5 places the conformance job in that shape.
+  - `pre-release-api-fixes` (merged in #68, archived 2026-11-04): `sub` is the user identifier by default, with username options; a chain whose generators disagree with its bearer fails to build; a login whose principal has no identifier fails matching `token.ErrNoSubject`; key retirement and deletion as above. R6 records what follows.
+  - `split-ci-jobs` (CI shape merged in #68; the change is still active on `main`, with two tasks open): one CI job per check behind an aggregate `ci-ok`, each calling a `make` target. R5 places the conformance job in that shape.
   - `session-signals`: defines its own `session.WithEndObserver`, which collides with T4. R16 resolves it.
   - `bff-resource-server`: the cookie session and the resource-server mode, both still waiting on its open questions. Its exploration notes ask whether scrty or an external IdP is the authority for browser apps. An OpenID Provider in scrty makes scrty an authority, which that change should take into account when it resumes. R2 no longer waits for its cookie session.
 - **The established design** has no OpenID Provider side, so there is no inherited behaviour to follow or depart from here. Every decision below rests on the standards and established practice listed in References.
@@ -111,13 +111,13 @@ The user asked that the provider make the most of the features that exist or are
 | Issuer scheme and host behind a proxy | `close-security-gaps` D2, D7 | built |
 | Audit trail of grants, reuse and revocation | security events, `close-security-gaps` D13 | built |
 | "Apps with access to my account" | session listing, `close-security-gaps` D12 | built |
-| Stable `sub` | `pre-release-api-fixes` decision 3 | in review (#68) |
+| Stable `sub` | `pre-release-api-fixes` decision 3 | merged (#68) |
 | Back-channel logout sent to relying parties | logout-token shape from `oidc-logout`; delivery over `outbound` | partly built |
 | Durable stores | `sqlstore`, `pgxstore`, `gormstore`, conformance suites, migrations, expiry sweeping | built (pattern) |
 
 ### 3. Delivered before `v0.1.0`, after the API fixes (decided 2026-11-02)
 
-- **Order:** `close-security-gaps` (archived 2026-11-03), then `pre-release-api-fixes` (#68), then this change, then `release-readiness`'s gate and tag.
+- **Order:** `close-security-gaps` (archived 2026-11-03), then `pre-release-api-fixes` (merged, #68), then this change, then `release-readiness`'s gate and tag.
 - **Why before the tag.** The provider changes contracts that would break after it:
   - a session or grant store port, and a security-state migration;
   - the claims `token` issues;
@@ -1005,9 +1005,9 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 
 The user asked for this change to be refreshed against #68, reconsidered for scenarios and edge cases it missed, and checked against the standards and security practice, ahead of #68 finishing. Reading the conformance suite's source showed that the design could not meet its own gate. Everything else below came from reading the settled specs, the code at `501a1a6`, and the standards again.
 
-R1, R2, R3 and R4 are **proposed**: they reverse or widen something the user decided on 2026-11-02, and await the user (see "Open Questions"). R5's added plans are proposed too. The rest correct a mismatch with a standard, or with scrty's own code, and take the safe side. Every defect named here is `UNREPRODUCED`, since no provider code exists. Each is the red step of the task that names it.
+R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something the user decided on 2026-11-02. The user accepted each on 2026-11-04 (see "Open Questions"). The rest correct a mismatch with a standard, or with scrty's own code, and take the safe side. Every defect named here is `UNREPRODUCED`, since no provider code exists. Each is the red step of the task that names it.
 
-#### R1. PKCE stays required by default, and a confidential client may rely on the nonce (proposed)
+#### R1. PKCE stays required by default, and a confidential client may rely on the nonce (decided 2026-11-04)
 
 - **The problem.** Every Basic OP module but one, `oidcc-ensure-request-with-valid-pkce-succeeds`, sends no `code_challenge`, and the suite does not adapt. Its own summary says "OpenID Connect does not require servers to support PKCE". An OP refusing such a request fails each module at `CheckIfAuthorizationEndpointError`. So "PKCE for every client, no option" and "the defaults pass Basic OP" cannot both hold.
 - **What the standards allow.** RFC 9700 §2.1.1: public clients MUST use PKCE, it is RECOMMENDED for confidential clients, and "confidential OpenID Connect clients MAY use the nonce parameter". OAuth 2.1 draft-17 §7.5.1.1 agrees: required unless the client is confidential and the server has reasonable assurance of the nonce. ASVS 10.4.6 requires PKCE outright, so using the option gives that level up.
@@ -1024,7 +1024,7 @@ R1, R2, R3 and R4 are **proposed**: they reverse or widen something the user dec
 - *Skipping PKCE in the conformance OP through a test-only hook.* It would test something other than what ships.
 - *Dropping Basic OP from the gate.* It is the only external proof of the protocol (decision 1).
 
-#### R2. The provider keeps a browser session of its own, delivering single sign-on in v1 (proposed)
+#### R2. The provider keeps a browser session of its own, delivering single sign-on in v1 (decided 2026-11-04)
 
 - **The problem.** `oidcc-prompt-none-logged-in` and `oidcc-id-token-hint` send `prompt=none` after a successful login in the same browser, and `CheckIfAuthorizationEndpointError` fails them on `login_required`. `oidcc-max-age-10000` requires the same `auth_time` on the second pass, which a forced fresh login breaks. The suite's browser keeps cookies across the two requests, so a cookie is what they test. OIDC Core §15.1 lists `prompt`, "including none and login", as mandatory for every OP. So "`prompt=none` cannot succeed in v1" fails the gate, and P9's green run could never happen. RP-Initiated Logout's MUST, below, needs the same knowledge.
 - **The decision.** After a login stage resumes, the provider sets a `__Host-` cookie holding a new 256-bit secret, with the digest in a provider table beside the user, the sign-in's family and its authentication facts.
@@ -1038,14 +1038,14 @@ R1, R2, R3 and R4 are **proposed**: they reverse or widen something the user dec
 | Browser session | on | `WithoutBrowserSessions`: every request shows the login page, `prompt=none` always answers `login_required`, every logout asks. The godoc says this fails Basic OP |
 | Lifetime | sign-in's absolute deadline; the manager's idle timeout | none in v1: the sign-in's own timeouts are what the consumer sets |
 
-**This moves a Non-Goal into scope.** Single sign-on was a follow-up waiting on `bff-resource-server`'s cookie session. That change is stalled on open questions, and this session is much smaller than it: one cookie, one table, read only at provider endpoints.
+**This moves a Non-Goal into scope, as the user accepted on 2026-11-04.** Single sign-on was a follow-up waiting on `bff-resource-server`'s cookie session. That change is stalled on open questions, and this session is much smaller than it: one cookie, one table, read only at provider endpoints.
 
 **Rejected:**
 - *Waiting for `bff-resource-server`.* It blocks the tag on a change with open questions.
-- *Expected failures for the three modules.* It keeps v1 small, and it is the fallback if the user declines this. But a provider that never answers `prompt=none` is not meeting §15.1 in spirit, cannot do SSO, and must always ask at logout. If declined: remove this decision and the "browser session" requirements, restore the Non-Goal, and list the three modules as expected failures in R5.
+- *Expected failures for the three modules.* It keeps v1 small. But a provider that never answers `prompt=none` is not meeting §15.1 in spirit, cannot do SSO, and must always ask at logout.
 - *Reading the sign-in from the session store by family.* It would change `session.Store`, which decision 5 keeps unchanged.
 
-#### R3. End-session asks the user unless a hint names the browser's own sign-in (proposed)
+#### R3. End-session asks the user unless a hint names the browser's own sign-in (decided 2026-11-04)
 
 - **The problem.** The spec ended the sign-in on any valid hint, with no question. RP-Initiated Logout §2: the OP "MUST ask the End-User this question if an id_token_hint was not provided or if the supplied ID Token does not belong to the current OP session". The endpoint is also exempt from CSRF, and takes GET, so anyone holding a user's ID token, expired ones included, could end their sign-in and online grants (ASVS 10.6.2's forced-logout denial of service). The first version had no session to compare with. R2 gives it one.
 - **The decision.**
@@ -1057,16 +1057,16 @@ R1, R2, R3 and R4 are **proposed**: they reverse or widen something the user dec
 
 **Rejected:** *Keeping no confirmation.* It breaks a MUST.
 
-#### R4. UserInfo requires the issuer in the audience, and access tokens name their grant (the audience rule is proposed)
+#### R4. UserInfo requires the issuer in the audience, and access tokens name their grant (the audience rule decided 2026-11-04)
 
 - **The audience.** The spec-time table let any audience in. OIDC Core §5.3 is silent, but RFC 9068 §4 says a resource server "MUST validate that the aud claim contains a resource indicator value corresponding to an identifier the resource server expects for itself". UserInfo is one. Under the old rule, any API receiving a token could replay it at UserInfo for the user's claims. The suite does not test this.
   - **Default:** an `openid` token with no `resource` request carries the client's default audience plus the issuer, as Auth0 is known to do (not re-read on this date). An explicit `resource` gets exactly what was asked for, and a client wanting UserInfo may also ask for the issuer. No override, as RFC 9068 §4 is a MUST.
   - **The cost:** a default-audience API can still replay at UserInfo. Sender-constraining closes that (P6). A client with an explicit `resource` and no issuer loses UserInfo, by choice.
 - **The grant reference (correction).** The specs promised a revoked token is refused at UserInfo and inactive at introspection, but a JWT named no grant to check. Access tokens now carry `gid`, the grant's family identifier, which is not a secret. It closes `oidcc-codereuse-30seconds`'s warning too. Offline verifiers are unaffected: P4's 5-minute bound still applies to them.
 
-#### R5. The gate runs the logout plans too, in `split-ci-jobs`' shape (the added plans are proposed)
+#### R5. The gate runs the logout plans too, in `split-ci-jobs`' shape (the added plans decided 2026-11-04)
 
-- **Plans.** Basic OP and Config OP as before, plus RP-initiated logout and back-channel logout, because v1 ships both and the Foundation's suite tests them (the suite's own CI runs them against its reference provider). The added plans are the proposed part: they cost CI time, and they are not needed for Basic or Config.
+- **Plans.** Basic OP and Config OP as before, plus RP-initiated logout and back-channel logout, because v1 ships both and the Foundation's suite tests them (the suite's own CI runs them against its reference provider). The added plans cost CI time, not yet measured, and the user accepted that on 2026-11-04.
 - **The job.** A `make conformance` target and a `conformance` job, in the shape `split-ci-jobs` set (#68): the job calls the target a contributor runs, the target is outside `make check`, and `ci-ok` requires the job. The suite is pinned by digest for `pincheck`.
 - **The server.** `https` on a self-signed certificate, because the Config plan refuses `http`. The loopback `http` issuer stays for unit tests, without the `__Host-` prefix, which needs `Secure` (R9).
 - **The pages.** The conformance OP serves plain server-rendered forms that resume through the provider's Go API, because the suite drives HtmlUnit. It configures `client` and `client2`, both with PKCE-or-nonce (R1), and users holding profile, email, phone and address claims so the scope modules have something to check.
@@ -1176,7 +1176,6 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **[Basic OP passes only with `PKCEOrNonce` and one expected failure]** (R1, R5) → recorded, and the runner fails if the entry goes stale. Official certification may need more, and was not checked.
 - **[A hint older than the key retention cannot be judged]** (R6) → it counts as no hint, so the user is asked at logout. No sign-in ends on a value that cannot be verified.
 - **[Two active changes define one option]** (R16) → task 1.3 aligns `session-signals` before either is implemented.
-- **[#68 is still moving]** → task 1.1 rechecks R6 against what merges.
 - **[A sign-in credential held by the login page's JavaScript]** → it is the credential the page already holds to sign in, kept in memory only. The resume adds no new exposure, and `bff-resource-server`'s cookie session could remove it later (P1).
 - **[A grant without `offline_access` outliving an idle sign-in]** → it ends at logout, family revocation and upstream back-channel logout, and is capped at the sign-in's absolute deadline. Ending it on idle expiry needs a family lookup in `session.Store`, a later additive change (P1).
 - **[Strict `private_key_jwt` audience refusing older clients]** → clients built to Core's token-endpoint audience fail until they send the issuer. The compatibility option exists and is documented as accepting the ambiguity CVE-2025-27370 describes (P7).
@@ -1191,24 +1190,17 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 
 ## Open Questions
 
-These four await the user. Each reverses or widens a decision of 2026-11-02, so the recommendation is written into the artifacts but is not settled. Task 1.1 does not start until they are answered.
+None. The user answered all four refresh questions on 2026-11-04, each as recommended.
 
-1. **PKCE and the conformance gate (R1).** Basic OP cannot pass with PKCE required for every client.
-   - *Recommended:* keep the default, add `PKCEOrNonce` for confidential clients, and accept one recorded expected failure.
-   - *Instead:* make PKCE optional for confidential clients, which passes every module and weakens the option; or keep PKCE unconditional and drop Basic OP from the gate, which removes the only external proof.
-2. **Browser session and single sign-on in v1 (R2).** `prompt=none` failing makes three Basic modules fail, and RP-Initiated Logout's MUST needs it too.
-   - *Recommended:* a small provider-only browser session, which also delivers SSO.
-   - *Instead:* keep the Non-Goal and list the three modules as expected failures; R2 says what to undo. Logout then always asks.
-3. **Logout confirmation (R3).** Follows question 2.
-   - *Recommended:* ask unless a valid hint names the browser's own sign-in, with an option to ask always.
-   - *Instead:* always ask, which needs no session and costs every relying party a click.
-4. **UserInfo's audience (R4) and the logout plans in the gate (R5).**
-   - *Recommended:* require the issuer in the audience, adding it to a default audience for `openid` tokens; and gate on the logout plans.
-   - *Instead:* restore "any audience", which is simpler and against RFC 9068 §4's wording; and leave the logout plans out, which saves CI time and leaves those two features with no external proof.
-
-Settled earlier:
-- **Former open question 1:** whether a green conformance run is a hard precondition for the tag. Decided on 2026-11-02 as recommended: yes (P9). The plans it names now depend on question 4.
+Settled:
+- **PKCE and the conformance gate (R1):** PKCE stays the default, and `PKCEOrNonce` is an opt-in for confidential clients, with one recorded expected failure in Basic OP. Rejected: PKCE optional for confidential clients, and dropping Basic OP from the gate. Whether certification accepts that expected failure is still unverified.
+- **Browser session and single sign-on in v1 (R2):** a small provider-only browser session, which also delivers SSO. This reverses the 2026-11-02 decision to leave SSO as a follow-up. Rejected: keeping the Non-Goal with three expected failures, and waiting for `bff-resource-server`.
+- **Logout confirmation (R3):** ask unless a valid hint names the browser's own sign-in, with `WithLogoutConfirmation` to ask always. Rejected: always asking.
+- **UserInfo's audience (R4):** require the issuer in the audience, adding it to a default audience for `openid` tokens. Rejected: requiring the issuer without adding it, and restoring "any audience".
+- **Logout plans in the gate (R5):** the gate runs both logout plans. Rejected: Basic and Config only.
+- **Former open question 1:** whether a green conformance run is a hard precondition for the tag. Decided on 2026-11-02 as recommended: yes (P9). R5 adds the logout plans to the plans it names.
 - **Former open question 2:** the provider package's name and place. Decided by the user on 2026-11-02: `oidcprovider`, at the module root (T1).
+
 ## References
 
 ### Decision 1: build, not adopt
