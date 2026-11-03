@@ -5,7 +5,7 @@ Binds the tokens scrty issues to a key the legitimate client holds, a DPoP key o
 ## ADDED Requirements
 
 ### Requirement: DPoP is one chain-wide feature, off until enabled
-DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bearer modes, signed tokens and session references, and to every issuing endpoint. Without it, the `DPoP` authorization scheme SHALL be passed through as any unknown scheme, and no endpoint SHALL bind a token. Enabling DPoP SHALL fail construction unless the chain has at least one enabled feature that verifies bound credentials. The signed-bearer and session-reference modes are such features. A consumer's own handler SHALL NOT count as one. Enabling DPoP more than once SHALL fail construction.
+DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bearer modes, signed tokens and session references, and to every issuing endpoint. Without it, the `DPoP` authorization scheme SHALL be passed through as any unknown scheme, and no endpoint SHALL bind a token. Enabling DPoP SHALL fail construction unless the chain has at least one enabled feature that verifies bound credentials. The signed-bearer and session-reference modes are such features. A consumer's own handler SHALL NOT count as one. Enabling DPoP more than once SHALL fail construction. Enabling DPoP SHALL also fail construction unless the host the `htu` check is judged against is declared, by an explicit public base URL or by a trusted-proxy forwarded-host allowlist, because otherwise it would be the request's `Host` header, which the client chooses; the error SHALL name both declarations.
 
 #### Scenario: Not enabled
 - **WHEN** DPoP is not enabled and a request carries `Authorization: DPoP <token>` with a proof
@@ -15,8 +15,20 @@ DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bea
 - **WHEN** DPoP is enabled on a chain with neither bearer mode, and no other feature that verifies bound credentials
 - **THEN** building the chain fails with a configuration error naming DPoP
 
+#### Scenario: Host not declared
+- **WHEN** DPoP is enabled with a bearer mode, no public base URL and no trusted-proxy forwarded-host allowlist
+- **THEN** building the chain fails with a configuration error naming the public base URL and the forwarded-host allowlist
+
+#### Scenario: Host off the allowlist
+- **WHEN** DPoP is enabled with no public base URL and a trusted-proxy forwarded-host allowlist naming `app.example.com`, and a request that carries no allowlisted forwarded host arrives with `Host: evil.example` and a proof whose `htu` is `http://evil.example/api/orders`
+- **THEN** the proof is refused as invalid and the handler does not run
+
+#### Scenario: Proof for an undeclared host
+- **WHEN** DPoP is enabled with the public base URL `https://app.example.com`, and a proof whose `htu` is `https://evil.example/api/orders` is sent with `Host: evil.example`
+- **THEN** the request is refused with the invalid-DPoP-proof error
+
 #### Scenario: Enabled with one bearer mode
-- **WHEN** DPoP is enabled on a chain with only the session-reference mode
+- **WHEN** DPoP is enabled, with a public base URL, on a chain with only the session-reference mode
 - **THEN** the chain is built
 
 ### Requirement: DPoP is accepted beside Bearer once enabled
@@ -91,7 +103,7 @@ The `jti` SHALL be recorded only for a proof that passed every other check, so a
 - **THEN** the request is refused with the invalid-DPoP-proof error
 
 #### Scenario: Behind a trusted proxy
-- **WHEN** a trusted proxy forwards scheme `https` and host `app.example.com`, the app receives `GET http://10.20.1.5:8080/api/orders`, and the proof's `htu` is `https://app.example.com/api/orders`
+- **WHEN** a trusted proxy whose forwarded-host allowlist names `app.example.com` forwards scheme `https` and host `app.example.com`, the app receives `GET http://10.20.1.5:8080/api/orders`, and the proof's `htu` is `https://app.example.com/api/orders`
 - **THEN** the `htu` check passes
 
 ### Requirement: Every issuing endpoint binds the token when the request carries a proof

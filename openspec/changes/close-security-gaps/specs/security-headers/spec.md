@@ -26,7 +26,7 @@ With the layer enabled and no profile matched, a response SHALL carry:
 - `Referrer-Policy: strict-origin-when-cross-origin`;
 - `Cross-Origin-Opener-Policy: same-origin-allow-popups`.
 
-It SHALL NOT send `X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-Policy` or `Origin-Agent-Cluster` unless the consumer configures them. The consumer SHALL be able to replace any header's value, add directives to the policy, or remove a header. A directive the consumer adds under a name the default already uses SHALL replace the default's sources for that directive, not duplicate it. A directive name or source holding a `;`, a `,` or a line break SHALL fail construction.
+It SHALL NOT send `X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-Policy` or `Origin-Agent-Cluster` unless the consumer configures them. The consumer SHALL be able to replace any header's value, add directives to the policy, or remove a header. A directive the consumer adds under a name the default already uses SHALL replace the default's sources for that directive, not duplicate it. A directive name or source holding a `;`, a `,` or a line break SHALL fail construction. A policy with no directive, given as the enforced or the report-only policy of the document profile or of any consumer or API profile, SHALL fail construction with a configuration error naming the option it was given to, so an empty policy never replaces the default; a consumer who wants no policy on a profile removes the header.
 
 #### Scenario: Default document response
 - **WHEN** the layer is enabled with no options and a page is served
@@ -43,6 +43,18 @@ It SHALL NOT send `X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-
 #### Scenario: Header injection in a directive
 - **WHEN** the consumer adds a source `'self'; script-src *`
 - **THEN** building the chain fails with a configuration error naming the policy
+
+#### Scenario: Policy with no directive
+- **WHEN** the consumer gives a policy with no directive as the document profile's policy, as an API profile's policy, or as the report-only policy
+- **THEN** building the chain fails with a configuration error naming the option, and no response carries an empty `Content-Security-Policy` or `Content-Security-Policy-Report-Only`
+
+#### Scenario: Empty policy set as a raw header
+- **WHEN** the consumer sets `Content-Security-Policy` or `Content-Security-Policy-Report-Only` to an empty or blank value with the raw header editor
+- **THEN** building the chain fails with a configuration error that points to removing the header instead
+
+#### Scenario: Policy removed explicitly
+- **WHEN** the consumer removes `Content-Security-Policy` from an API profile
+- **THEN** the chain is built and that profile's responses carry no `Content-Security-Policy`
 
 ### Requirement: API responses get a minimal profile chosen by route
 The consumer SHALL be able to assign a header profile to the routes a matcher selects, by path prefix or by a function of the request. The library SHALL provide an API profile that sets `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, and sets no nonce. The first profile whose matcher selects a request SHALL apply; a request no profile selects SHALL get the document set. The layer SHALL NOT choose a profile by inspecting the response. A path-prefix matcher SHALL match whole path segments, so `/api/` does not select `/apix`.

@@ -88,7 +88,7 @@ The listing SHALL never return session identifiers, only opaque handles valid fo
 - **THEN** the request fails with an error the default mapping answers with 500, and its text is fixed library text
 
 ### Requirement: Login upgrades an outdated password hash when the consumer supplies a write
-When the consumer supplies a rehash write, a password login, Basic authentication or password re-proof whose password verified, and which is not refused afterwards, SHALL ask the current encoder whether the stored hash needs upgrading; when it does, the submitted password SHALL be re-encoded with the current encoder and the write SHALL receive the user, the stored hash it replaces and the new hash, after the outcome is decided and on the same request, so the consumer can replace the hash only while it is still the stored one. A login challenged for a second factor SHALL still upgrade. Neither the re-encoding nor the write SHALL change the outcome: an error from either SHALL be logged without the password or any hash. Without a write, no rehash SHALL happen.
+When the consumer supplies a rehash write, a password login, Basic authentication or password re-proof whose password verified, and which is not refused afterwards, SHALL ask the current encoder whether the stored hash needs upgrading; when it does, the submitted password SHALL be re-encoded with the current encoder, only once the outcome is decided and only for a login not refused, and the write SHALL receive the user, the stored hash it replaces and the new hash, after the outcome is decided and on the same request, so the consumer can replace the hash only while it is still the stored one. A login challenged for a second factor SHALL still upgrade. Neither the re-encoding nor the write SHALL change the outcome: an error from either SHALL be logged without the password or any hash. Without a write, no rehash SHALL happen.
 
 #### Scenario: Raised cost
 - **WHEN** the encoder is Argon2id at 128 MiB, a user's stored hash is Argon2id at 64 MiB, a rehash write is configured, and the user logs in
@@ -101,6 +101,10 @@ When the consumer supplies a rehash write, a password login, Basic authenticatio
 #### Scenario: Wrong password
 - **WHEN** a rehash write is configured and a login with an outdated stored hash fails for a wrong password
 - **THEN** the write is not called
+
+#### Scenario: Refused after the password verified
+- **WHEN** a rehash write is configured, a login's password verifies against an outdated stored hash, and a post-authentication policy then refuses the login
+- **THEN** the password is not re-encoded and the write is not called
 
 #### Scenario: Write fails
 - **WHEN** the rehash write returns an error

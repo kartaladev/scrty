@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> Extended on 2026-11-03 with task group 15, the PR #45 review follow-up: every finding was reproduced by a failing test on `b441110` before it was planned, and each fix is dated 2026-11-03 in D4, D8, D10, D11, D13 or D15.
+
 > Reconciled on 2026-11-02 with `reauthentication` (archived) and `key-port-context` (merged as `9248c66`; task 1.1 found no difference). Task 1.2 settled the CSRF token style: a token stored on the sign-in by default, behind a replaceable port (D6).
 
 **Goal:** Close the thirteen security gaps in `proposal.md` before `v0.1.0`, with every edge case the specs pin.
@@ -10,7 +12,7 @@
 
 **Tech Stack:** Go 1.27, `net/http`, gin, fiber v3, `github.com/lestrrat-go/jwx/v4` (JOSE), testify, `go.uber.org/mock`, testcontainers-go (PostgreSQL 15 and 18).
 
-**Spec:** `openspec/changes/close-security-gaps/` — `proposal.md`, `design.md` (decisions D1–D19), `specs/**/spec.md`, `tasks.md`.
+**Spec:** `openspec/changes/close-security-gaps/` — `proposal.md`, `design.md` (decisions D1–D19, with the 2026-11-03 amendments), `specs/**/spec.md` (including the `security-policy` delta), `tasks.md`.
 
 ## Global Constraints
 
@@ -38,6 +40,10 @@
 - A forwarded header line of 64 KiB from a trusted peer: resolution walks from the right and stops at the client, so it must not split and parse every entry. Test added to 2.5 (a benchmark-free assertion: the parser is handed only the tail it reaches).
 - A trusted proxy that folds a client-sent forwarded-certificate line into its own (`escaped(D), escaped(C)`), or a value with text before the PEM block: the decoder must find no certificate, not bind the first block. Test added to 9.2.
 - An attacker probing recovery start for usernames whose owner signed in since a failed login: the verifier must receive identical signals for a known and an unknown username. Test added to 12.3.
+- A consumer that builds a CSP from a config file and ends with `CSPPolicy{}.With(dirs...)` where `dirs` is empty: it must be refused at construction, not sent as `""`. Test added to 15.1 (the `.With()` case).
+- A chain behind a trusted proxy with DPoP but no `ForwardedHost` allowlist: the host is still the transport's `Host`, so construction must refuse it, not treat "has proxies" as "host declared". Test added to 15.7.
+- A login that verifies, is refused afterwards, and is retried with the right password and allowed: the second request must encode exactly once and write once, with no hash left over from the first request's handle. Test added to 15.4.
+- An IPv4-mapped IPv6 client (`::ffff:203.0.113.7`) behind a guard with an IPv6 aggregate: the aggregate signal must be false, as for IPv4, not computed over the mapped prefix. Test added to 15.6.
 
 ---
 
@@ -57,6 +63,13 @@ Each lane owns its files; a file not listed is held by the main session for revi
 | C, after D | C: automation challenge | 12.1–12.4 | `httpsec/challenge.go` (new) and its call sites in `login.go`, `basic.go`, `magiclink.go`, `passkey_login.go`, `recovery.go` | Opus (refusal ordering before account lookup; outage split) |
 | D | E: security events | 11.1–11.5 | a new `security` package, and every emitting call site | Opus (touches every package; "only what happened" ordering) |
 | D, last | main session + reviewer | 14.1–14.3 | none | Opus reviewer |
+| F (parallel) | F1: CSP | 15.1 | `httpsec/headers.go`, `httpsec/headers_report.go`, their tests | Sonnet (a construction check of a known pattern) |
+| F (parallel) | F2: lockout | 15.2 | `policy/lockout/lockout_observer.go`, its tests | Sonnet (one normalisation, the fix the repro already proved) |
+| F (parallel) | F3: breach | 15.3 | `authenticate/password/breach.go`, `policy.go`, their tests | Sonnet (option plumbing and a log line) |
+| F (parallel) | F4: rehash | 15.4 | `authenticate/password_upgrade.go`, `authenticate/password.go`, `httpsec/rehash.go`, their tests | Opus (behaviour-preserving refactor that holds a plaintext password) |
+| F (worktree) | F5: challenge | 15.5 (F5a); 15.6 (F5b) | `httpsec/challenge.go`, `ratelimit/guard.go`, their tests, the README's challenge section | Sonnet for 15.5 (a default set); Opus for 15.6 (a public signal across two packages) |
+| F (worktree) | F6: DPoP host | 15.7 | `httpsec/dpop.go`, every test and conformance scenario that enables DPoP, the README's DPoP section | Sonnet (a stated construction rule, applied across tests) |
+| F, last | main session + reviewer | 15.8–15.9 | none | Opus reviewer (covers refusal and refactor work) |
 
 `httpsec/errors.go` is owned by lane R in phase A; afterwards each lane adds its sentinel in its own file and appends its rows to the status table in its worktree; the main session resolves the table merge (a few lines, stated when it happens).
 
@@ -525,8 +538,146 @@ Each lane owns its files; a file not listed is held by the main session for revi
 
 ---
 
+## Task group 15: PR #45 review follow-up (lanes F1–F6, then the main session)
+
+Every task's red step starts from a reproduction test already seen failing on `b441110`. Copies are in `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/13a45b79-fab6-4a2f-a1ae-e86c7bad55b5/scratchpad/repro/<lane>/`, and the originals are in the agent worktrees under `.claude/worktrees/`. If neither survives, rebuild the test from the scenario the task names; the assertions below are the contract. Rename `*_repro_test.go` into the package's own test file for the behaviour, and drop anything only the repro needed. F5 and F6 both touch the README, in different sections, so each runs in its own worktree and the main session merges them.
+
+### Task 15.1: An empty CSP policy is refused (D4)
+
+**Files:** Modify `httpsec/headers.go` (`WithCSP`), `httpsec/headers_report.go` (`WithCSPReportOnlyPolicy`); test `httpsec/headers_edit_test.go`.
+
+**Interfaces:** Produces nothing new. Both options return `newConfigError(...)` (wraps `ErrConfig`) when `len(p.directives) == 0`, checked after `p.err`.
+
+- [ ] **Step 1: Failing test.** Move `TestWithCSP_RefusesPolicyWithNoDirectives` and `TestWithCSP_NeverSendsAnEmptyPolicy` from repro `csp/` into `headers_edit_test.go`. Cases: `WithCSP(CSPPolicy{})`, `WithCSP(CSPPolicy{}.With())`, `WithHeaderProfile(APIHeaders(WithCSP(CSPPolicy{})), PathPrefix("/api/"))`, the same through `NewHeaderProfile`, and `WithCSPReportOnlyPolicy(CSPPolicy{})`. Each asserts `require.ErrorIs(err, httpsec.ErrConfig)` with the message containing `WithCSP` (or `WithCSPReportOnlyPolicy`). Controls: `WithCSP(StrictCSP())` builds; `APIHeaders(WithoutHeader("Content-Security-Policy"))` builds and sends no CSP.
+- [ ] **Step 2: Run** `go test -run 'TestWithCSP_' -count=1 ./httpsec/`. Expected: FAIL, "Expected error with \"httpsec: invalid configuration\" in chain but got nil", for the five empty cases only.
+- [ ] **Step 3: Implement** the length check in both options, with messages `"WithCSP was given a policy with no directive; remove the header with WithoutHeader to send none"` and the same naming `WithCSPReportOnlyPolicy`. Update both godocs.
+- [ ] **Step 4: Run** `go test -run 'TestWithCSP_|TestHeaders' -count=1 ./httpsec/`. Expected: PASS.
+- [ ] **Step 4a (amended after the group review): Failing test** `TestWithHeader_RefusesAnEmptyContentSecurityPolicy`, with `""` and `"  "` for both CSP headers, each expecting `ErrConfig` naming `WithoutHeader`, and a non-empty value as the control. Run it and expect FAIL (`got nil`). Then refuse those values in `WithHeader` and re-run Step 4.
+- [ ] **Step 5: Commit** `fix(httpsec): a CSP policy with no directive fails construction`.
+
+### Task 15.2: A zero-time failure is recorded at the policy's clock (D13, `security-policy`)
+
+**Files:** Modify `policy/lockout/lockout_observer.go` (`observedAttempts.RecordFailure`, the `p.streaks != nil && at.IsZero()` guard, and its godoc); test `policy/lockout/lockout_events_test.go` and `lockout_observer_test.go`.
+
+- [ ] **Step 1: Failing tests.** Move `TestAttempts_CountsZeroInstantFailuresAtThePolicyClock` and `TestAttempts_ReportsLockOnceOnTheZeroInstantFailureThatLocks` from repro `lockout/`. Use `WithSliding(3, 15*time.Minute)`, the package's fake clock, and a `MemoryAttemptStore` with 48h retention.
+  - First test: three `Attempts().RecordFailure(ctx, "ada", time.Time{})` calls, without a streak store and with a sink and an observer, then `Evaluate` returns `policy.Deny`. Add a streak-store case (green today, the contrast).
+  - Second test: three failures seeded two hours ago, then three zero-time failures. The sink sees exactly `authn_login_fail_max` and `authn_login_lock` once, on the third, with `At == clock.Now()`.
+  - Add a kept-time case: `RecordFailure` at `now-10m` is counted at `now-10m`, which `FailureCount(since=now-5m)` does not include.
+- [ ] **Step 2: Run** `go test -run 'TestAttempts_' -count=1 ./policy/lockout/`. Expected: FAIL, `expected: 1 actual: 0` (Allow) and `expected: [authn_login_fail_max authn_login_lock] actual: []`.
+- [ ] **Step 3: Implement.** Normalise `at` to `p.clock.Now()` whenever `at.IsZero()`, before the lock is taken, and drop the streak condition. Godoc: "A zero instant is recorded at the policy's clock."
+- [ ] **Step 4: Run** `go test -run 'TestAttempts_|TestLockout' -count=1 ./policy/lockout/`. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(lockout): a failure recorded without a time counts at the policy's clock`.
+
+### Task 15.3: A breach lookup the policy accepts leaves an ERROR record (D10)
+
+**Files:** Modify `authenticate/password/breach.go` (`breachRule.check`, `BreachSource` godoc), `authenticate/password/policy.go` (`policyConfig.logger`, the new option, validation); test `authenticate/password/breach_test.go`, `policy_construction_test.go`.
+
+**Interfaces:** Produces `func WithPolicyLogger(l *slog.Logger) PolicyOption`. Default `slog.Default()`; nil (typed nil included) fails `NewPolicy` with `ErrConfig` naming `WithPolicyLogger`. `breachRule` gains `logger *slog.Logger`, set from the config after the options run.
+
+- [ ] **Step 1: Failing test.** `TestPolicy_BreachedLeavesATraceWhenTheLookupFailsAndAccepts`, reshaped from repro `breach/`. A capturing `slog.Handler` is passed through `WithPolicyLogger`, with `Breached(src, Accept)` and `MockBreachSource.Range` returning `errors.New("dial tcp: refused")`.
+  - Assert exactly one record at `slog.LevelError`, with message `"password: breach lookup failed; the candidate was accepted unchecked"`.
+  - Assert its attributes carry the failure's Go type and do not contain the candidate, its SHA-1 hex, its 5-character prefix, its 35-character suffix, or the text `dial tcp`.
+  - Cases: a hang-up (`ctx` cancelled, source returns `ctx.Err()`) gives no ERROR record and `errors.Is(err, context.Canceled)`; `Refuse` returns `ErrLookupUnavailable` and writes no record.
+  - Construction: `WithPolicyLogger(nil)` gives `ErrConfig`.
+  - Keep `TestPolicy_BreachedMatchesASourceKeyInAnyCase` (lower-case keys refused as breached). Invert it once to see it is sensitive.
+- [ ] **Step 2: Run** `go test -run 'TestPolicy_Breached|TestNewPolicy' -count=1 ./authenticate/password/`. Expected: FAIL, `"[]" should have 1 item(s), but has 0`, and the nil-logger case builds.
+- [ ] **Step 3: Implement** the option, the nil check, and the log call in the `Accept` branch: `r.logger.LogAttrs(ctx, slog.LevelError, msgBreachLookupAccepted, diag.Failure("breach-lookup", err)...)`. Add a sentence to `BreachSource`'s godoc that suffixes are matched without regard to case. Delete the repro benchmark.
+- [ ] **Step 4: Run** the same command. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(password): a breach lookup accepted on failure is logged`.
+
+### Task 15.4: The upgraded hash is encoded only once the outcome is decided (D11)
+
+**Files:** Modify `authenticate/password_upgrade.go` (`PasswordUpgrade`, `prepareUpgrade`, `Result`), `authenticate/password.go` (the `prepareUpgrade` call at line ~409), `httpsec/rehash.go` (the caller of `Result`, line ~54); test `authenticate/password_upgrade_test.go`, `httpsec/login_rehash_test.go`.
+
+**Interfaces:**
+- `PasswordUpgrade` keeps `RequestPasswordUpgrade(ctx) (context.Context, *PasswordUpgrade)` and `Result() (user *identity.Details, replaced, upgraded []byte, ok bool)`.
+- `prepareUpgrade` no longer encodes. It stores `enc password.Encoder`, `logger`, `user`, `replaced` and `presented string`, and marks the handle pending.
+- `Result()` encodes on its first call while pending, under the handle's mutex, then sets `presented = ""` and caches the answer. Later calls return the cached answer and never encode.
+- An Encode error is logged as today and answers `ok == false`.
+- The httpsec login layer calls `Result()` only on the path that runs the write, after the outcome is decided. That is already the case: it must not be called earlier.
+
+- [ ] **Step 1: Failing tests.**
+  - `TestLogin_RehashEncodesOnlyForALoginThatIsNotRefused` (repro `rehash-htu/`). A post-authentication `denyingIn` policy refuses, and the test expects 0 encodes and 0 writes. The allowed case expects 1 encode and 1 write.
+  - The same refused case for Basic (`WithBasicAuthRehash`) and for the password re-proof (`WithReauthenticationRehash`).
+  - `TestPasswordUpgrade_ResultEncodesOnce`: two `Result()` calls give the same `upgraded` bytes and one Encode.
+  - Review Focus: a refused login, then an allowed retry, encodes once and writes once.
+- [ ] **Step 2: Run** `go test -run 'Rehash|PasswordUpgrade' -count=1 ./httpsec/ ./authenticate/`. Expected: FAIL. The refused cases fail with `expected: 0 actual: 1` on "Encode calls the login cost".
+- [ ] **Step 3: Implement** the lazy encode as in Interfaces. The godoc of `RequestPasswordUpgrade` says the extra derivation is spent only for a login whose outcome asks for it, and that the presented password is held in the handle until then, for the request's lifetime.
+- [ ] **Step 4: Run** the same command, then `go test -race ./authenticate/ ./httpsec/`. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(authenticate): rehash encodes only for a login that is not refused`.
+
+### Task 15.5: Basic is challenged only when named (D15), dispatch F5a
+
+**Files:** Modify `httpsec/challenge.go` (`challengeFlowsAll` stays the set of valid names; add `challengeFlowsDefault` without `ChallengeFlowBasicAuth`; `EnableAutomationChallenge` starts from it; the "covers no enabled flow" error names `WithChallengeFlows`), `README.md` (challenge section); test `httpsec/challenge_test.go`.
+
+- [ ] **Step 1: Failing tests.**
+  - `TestEnableAutomationChallenge_BasicRequestFromCleanSourceConsultsNothing` (repro `challenge/`): 5 successful Basic requests under the default selection, with 0 verifier calls, 0 `FailureCount` and 0 `HasRecentFailures`.
+  - A case with `WithChallengeFlows(ChallengeFlowBasicAuth)`: the verifier is called once per request, before `Authenticate`.
+  - Construction: a chain with only Basic and the default selection fails with `ErrConfig` containing `WithChallengeFlows`.
+- [ ] **Step 2: Run** `go test -run 'TestEnableAutomationChallenge|TestChallenge' -count=1 ./httpsec/`. Expected: FAIL, `Should be zero, but was 5` (×3), and the Basic-only chain builds.
+- [ ] **Step 3: Implement** the default set and the error text. Update the godoc of `EnableAutomationChallenge` and `WithChallengeFlows` (the default names four flows; Basic is opt-in, and why). In the README, the sample verifier's flow list says the same.
+- [ ] **Step 4: Run** the same command. Expected: PASS.
+- [ ] **Step 5: Commit** `fix(httpsec): the automation challenge selects Basic only when named`.
+
+### Task 15.6: The IPv6 aggregate is reported apart from the source (D15), dispatch F5b, after F5a
+
+**Files:** Modify `ratelimit/guard.go` (new method), `httpsec/challenge.go` (`ChallengeSignals`, `recentFailureReader`, `signals`); test `ratelimit/guard_test.go`, `httpsec/challenge_test.go`.
+
+**Interfaces:**
+- `func (g *SourceGuard) HasRecentAggregateFailures(ctx context.Context, clientAddr string) bool`:
+  - Returns false when no aggregate is configured, or when the address is IPv4 or IPv4-mapped.
+  - Returns true when the aggregate limiter does not implement `RecentFailureReporter`, when it errors (logged as `reportUnreported` does), or when the address cannot be attributed.
+  - Otherwise returns the limiter's answer for `flow + ":" + <aggregate prefix>`.
+- `HasRecentFailures` is unchanged.
+- `ChallengeSignals.SourceAggregateHasFailures bool`, documented as above.
+- The chain reads it through an optional `recentAggregateFailureReader` interface on the source. A source without that interface reports `false`, because only the library's guard keeps an aggregate.
+
+- [ ] **Step 1: Failing tests.**
+  - `TestSourceGuard_HasRecentAggregateFailures`, reshaped from repro `TestSourceGuard_HasRecentFailures_SeesAggregateFailures`. It uses a /56 aggregate, with 3 failures from three /64s of `2001:db8:1::/56`. Cases:
+    - fresh `2001:db8:1:ff::1` → true;
+    - `2001:db8:2:ff::1` → false;
+    - IPv4 `203.0.113.7` → false;
+    - `::ffff:203.0.113.7` → false;
+    - no aggregate configured → false;
+    - an aggregate limiter that errors → true.
+  - `HasRecentFailures("2001:db8:1:ff::1")` stays false.
+  - Chain test: the verifier sees `SourceHasFailures == false` and `SourceAggregateHasFailures == true` for the fresh /64.
+- [ ] **Step 2: Run** `go test -run 'RecentAggregateFailures|TestChallenge_Signals' -count=1 ./ratelimit/ ./httpsec/`. Expected: FAIL to compile first, which is not the red step. Add the method as `return false` and the field, then re-run. Expected: FAIL, `Should be true` on the fresh-/64 case.
+- [ ] **Step 3: Implement** the method with `g.keyer.keys(clientAddr, g.aggregateBits)`, which yields the aggregate key the check and record paths use. Then fill the field in `signals`.
+- [ ] **Step 4: Run** the same command, then `go test -race ./ratelimit/ ./httpsec/`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat(httpsec): the challenge verifier is told about the source's IPv6 aggregate`.
+
+### Task 15.7: DPoP needs a declared host (D8)
+
+**Files:** Modify `httpsec/dpop.go` (the chain-level check beside the "no feature that verifies bound credentials" rule; `PublicURL` godoc; `EnableDPoP` godoc), `README.md` (DPoP section); tests: `httpsec/dpop_test.go` and every `httpsec` and `test/` file whose chain enables DPoP; `test/httpsecconformance/dpop_scenarios.go`.
+
+**Interfaces:**
+- The check passes when `d.publicURL != nil`, or when `c.proxies != nil && len(c.proxies.allowed) > 0`.
+- Otherwise it fails with `newConfigError("EnableDPoP needs the host its proofs are judged against: set DPoP.PublicURL, or name the allowed hosts with EnableTrustedProxies(..., ForwardedHost(...))")`.
+
+- [ ] **Step 1: Failing tests** in `dpop_test.go`'s construction table:
+  - no `PublicURL` and no proxies → `ErrConfig` containing `PublicURL` and `ForwardedHost`;
+  - trusted proxies without `ForwardedHost` → the same error (Review Focus);
+  - `PublicURL: "https://app.example.com"` → builds;
+  - proxies with `ForwardedHost("app.example.com")` → builds.
+  - Reshape `TestDPoP_HTURefusesHostTheDeploymentDidNotDeclare` (repro `rehash-htu/`) to `PublicURL: "https://app.example.com"`: a proof for `https://evil.example/api/orders` with `Host: evil.example` gives `ErrInvalidDPoPProof`.
+- [ ] **Step 2: Run** `go test -run 'TestDPoP|TestEnableDPoP' -count=1 ./httpsec/`. Expected: FAIL, the first two construction cases build with no error.
+- [ ] **Step 3: Implement** the check. Then give every DPoP chain in tests, conformance and README samples `PublicURL` (or a `ForwardedHost` allowlist where the scenario is behind a proxy, as the trusted-proxy `htu` scenario now states).
+- [ ] **Step 4: Run** `go test -count=1 ./httpsec/...` and, in the `test` module, `go test -run 'DPoP' ./...`. Expected: PASS.
+- [ ] **Step 4a (amended after review): Failing test** `TestDPoP_HTURefusesHostOffTheForwardedHostAllowlist`. The chain has trusted proxies with `ForwardedHost("app.example.com")` and no `PublicURL`. A proof for `http://evil.example/api/orders` is sent with `Host: evil.example`, in two cases: from an untrusted peer, and from a trusted peer that forwards no host. Expect `ErrInvalidDPoPProof` and that the handler does not run. Add a control: a forwarded `app.example.com` passes. Run it and expect FAIL (`got nil`). Then implement: in the proof check, when `PublicURL` is nil, refuse a resolved host that is not in `c.proxies.allowed`, compared as the proxy check compares hosts. Re-run Step 4.
+- [ ] **Step 5: Commit** `fix(httpsec)!: DPoP refuses a chain whose host is not declared`.
+
+### Task 15.8: Adapters and gate (main session)
+- [ ] Merge the F5 and F6 worktrees, then run the challenge, header and DPoP conformance scenarios on net/http, gin and fiber, and `make check`. Expected: all pass, with `gofmt -l`, `go vet` and `govulncheck` clean.
+
+### Task 15.9: Review (fresh reviewer)
+- [ ] An Opus reviewer that wrote none of group 15 checks the diff against every requirement and scenario changed on 2026-11-03: `security-headers`, `security-policy`, `password-policy`, `http-security-chain` (rehash), `automation-challenge` and `sender-constrained-tokens`. It lists each as met, or files a finding with a failing test or `UNREPRODUCED`.
+
+---
+
 ## Self-review notes
 
 - Spec coverage: every requirement in the nine new and ten modified capability deltas maps to a task; `http-error-propagation`'s MODIFIED contract and table rows are spread across 2.7, 5.6, 7.2, 8.10, 9.3, 10.7 and 12.3; `supply-chain` is group 13.
 - Interfaces: names in a group's Interfaces block are the ones later groups use (`Request.Host/Secure`, `ClientFromContext`, `WithClientCertificateHeader`, `config.dpopEnabled`, `session.KeyBinding`, `token.Confirmation`, `TokenType`, `RehashFunc`).
 - Task numbers match `tasks.md` one to one; no step adds scope beyond it.
+- Group 15 (2026-11-03): each of the six changed capabilities maps to one task (`security-headers` 15.1, `security-policy` 15.2, `password-policy` 15.3, `http-security-chain` 15.4, `automation-challenge` 15.5–15.6, `sender-constrained-tokens` 15.7). New names used across tasks: `WithPolicyLogger`, `SourceGuard.HasRecentAggregateFailures`, `ChallengeSignals.SourceAggregateHasFailures`, `challengeFlowsDefault`. The breach-loop optimisation was declined in D10 and has no task beyond its pinning test.
