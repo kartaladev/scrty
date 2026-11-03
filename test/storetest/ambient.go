@@ -40,6 +40,11 @@ type Ambient[S any] struct {
 	// such as onetime.ErrTokenNotFound. It is what tells a refusal apart from
 	// a failed statement, which would abort the caller's transaction.
 	Refusal error
+
+	// Remove makes the store delete record i through ctx. It is the one
+	// optional field: a store sets it where deleting is a write of its port,
+	// and the suite then holds the delete to the caller's transaction as well.
+	Remove func(ctx context.Context, s S, i int) error
 }
 
 // RunAmbientTx holds a durable store to taking part in a transaction its
@@ -53,7 +58,10 @@ type Ambient[S any] struct {
 //     in that transaction, though the context carries none;
 //   - a transaction h.BeginForeign attaches for another backend is ignored:
 //     the store writes through its own handle, and the foreign rollback does
-//     not take the write with it.
+//     not take the write with it;
+//   - where a.Remove is set, each of those holds for a delete too: discarded
+//     by a rollback, kept by a commit, in a resolver's transaction, and outside
+//     another backend's.
 //
 // It fails at once, naming every missing input, when h or a is missing one.
 //
@@ -84,7 +92,7 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 		return s, ctx, rollback
 	}
 
-	runDurableCases(t, []durableCase{
+	cases := []durableCase{
 		{
 			name: "a write inside a rolled back transaction is discarded",
 			assert: func(t *testing.T) {
@@ -149,7 +157,94 @@ func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 				assert.True(t, present(t, 6), "the write was rolled back with another backend's transaction")
 			},
 		},
-	})
+	}
+	if a.Remove != nil {
+		cases = append(cases, ambientRemoveCases(h, a, present, begin, beginResolved)...)
+	} else {
+		cases = append(cases, durableCase{
+			name: "deletes are not covered",
+			assert: func(t *testing.T) {
+				t.Skip("deletes are not covered: Ambient.Remove is not set, so the four delete cases did not run")
+			},
+		})
+	}
+	runDurableCases(t, cases)
+}
+
+// ambientRemoveCases are RunAmbientTx's cases for a delete. Each commits its record
+// first, outside any transaction, through a store of its own.
+func ambientRemoveCases[S any](
+	h DurableHarness[S],
+	a Ambient[S],
+	present func(t *testing.T, i int) bool,
+	begin func(t *testing.T) (context.Context, func() error, func() error),
+	beginResolved func(t *testing.T) (S, context.Context, func() error),
+) []durableCase {
+	committed := func(t *testing.T, i int) {
+		t.Helper()
+		require.NoError(t, a.Write(t.Context(), h.New(t), i))
+		require.True(t, present(t, i), "the record to delete is not committed")
+	}
+
+	return []durableCase{
+		{
+			name: "a delete inside a rolled back transaction is discarded",
+			assert: func(t *testing.T) {
+				committed(t, 7)
+
+				ctx, _, rollback := begin(t)
+				require.NoError(t, a.Remove(ctx, h.New(t), 7))
+				assert.True(t, present(t, 7),
+					"the delete is visible before its transaction ended: the store did not delete in it")
+
+				require.NoError(t, rollback())
+				assert.True(t, present(t, 7), "the delete survived the rollback of its transaction")
+			},
+		},
+		{
+			name: "a delete inside a committed transaction is kept",
+			assert: func(t *testing.T) {
+				committed(t, 8)
+
+				ctx, commit, _ := begin(t)
+				require.NoError(t, a.Remove(ctx, h.New(t), 8))
+				assert.True(t, present(t, 8),
+					"the delete is visible before its transaction ended: the store did not delete in it")
+
+				require.NoError(t, commit())
+				assert.False(t, present(t, 8), "the record is still there after the delete's transaction committed")
+			},
+		},
+		{
+			name: "a configured resolver's transaction is used by a delete",
+			assert: func(t *testing.T) {
+				committed(t, 9)
+
+				s, ctx, rollback := beginResolved(t)
+				require.NoError(t, a.Remove(ctx, s, 9))
+				assert.True(t, present(t, 9),
+					"the delete is visible before the resolver's transaction ended: the store did not delete in it")
+
+				require.NoError(t, rollback())
+				assert.True(t, present(t, 9), "the delete survived the rollback of the resolver's transaction")
+			},
+		},
+		{
+			name: "a transaction attached for another backend is ignored by a delete",
+			assert: func(t *testing.T) {
+				committed(t, 10)
+
+				ctx, rollback := h.BeginForeign(t)
+				t.Cleanup(func() { _ = rollback() })
+				require.NoError(t, a.Remove(ctx, h.New(t), 10))
+				assert.False(t, present(t, 10),
+					"the delete is not visible: the store deleted in another backend's transaction")
+
+				require.NoError(t, rollback())
+				assert.False(t, present(t, 10), "the delete was rolled back with another backend's transaction")
+			},
+		},
+	}
 }
 
 // requireAmbient fails t at once, naming every missing input, when h or a is

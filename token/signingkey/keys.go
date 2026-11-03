@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
 	"slices"
 	"sync"
@@ -38,6 +39,10 @@ type Keys struct {
 	keys    map[string]*keyEntry // by kid
 	order   []string             // kids, in the order they were held
 	current map[Alg]string       // alg -> kid
+	// listed is every key the last successful listing named, in its order. It is
+	// what lets housekeeping judge a held key by a successor it does not hold,
+	// with no store call: see retireTimes.
+	listed []storedKey
 
 	// lifecycleMu guards the fields below it. It is held only to read or change
 	// them, never across a wait, so a Shutdown waiting for the work blocks no
@@ -59,11 +64,17 @@ type Keys struct {
 	housekeepEvery time.Duration
 	reloadEvery    time.Duration
 	sampleWindow   time.Duration
-	store          KeyStore
-	clock          clock.Timed
-	logger         *slog.Logger
-	errorHook      func(error)
-	sampler        *logsample.Sampler
+	keepRetired    bool
+	// retiredGrace is how long past its retire time a key stays stored. graceSet
+	// tells a grace the consumer chose, zero included, from the default, so the
+	// conflict with keepRetired fires only on a choice they made.
+	retiredGrace time.Duration
+	graceSet     bool
+	store        KeyStore
+	clock        clock.Timed
+	logger       *slog.Logger
+	errorHook    func(error)
+	sampler      *logsample.Sampler
 
 	// events is the sink WithSecurityEvents gave, kept so a nil sink or the
 	// option given twice is refused rather than read as none or as the last.
@@ -76,13 +87,14 @@ type Keys struct {
 // within the key lifetime.
 //
 // Construction publishes what reload and housekeeping would: every stored key
-// within the key lifetime, and the newest key of each configured algorithm
-// whatever its age, which becomes current. A key past the lifetime that is not
-// the newest of its algorithm is not published, so a manager that is never
-// started still stops verifying it. The newest key is chosen among those dated
-// no later than the present plus the reload interval, so an algorithm whose
-// stored keys are all dated later than that gets a fresh key; a key dated more
-// than one lifetime ahead is not published at all.
+// that has not passed its retire time (see the package documentation), and the
+// newest key of each configured algorithm whatever its age, which becomes
+// current. A key past its retire time that is not the newest of its algorithm is
+// not published, so a manager that is never started still stops verifying it. The
+// newest key is chosen among those dated no later than the present plus the
+// reload interval, so an algorithm whose stored keys are all dated later than that
+// gets a fresh key; a key dated more than one lifetime ahead is not published at
+// all.
 //
 // It starts no goroutine.
 //
@@ -102,17 +114,19 @@ type Keys struct {
 // (WithAlgs); a 24h key lifetime (WithKeyLifetime); rotation every 1h
 // (WithRotateInterval); housekeeping every 1h (WithHousekeepingInterval);
 // reload every 1m (WithReloadInterval); a 5m failure-log sampling interval
-// (WithLogInterval); an in-memory store that does not survive a restart
+// (WithLogInterval); deleting a key from the store one key lifetime after its
+// retire time (WithRetiredKeyGrace, WithRetiredKeysKept); an in-memory store that does not survive a restart
 // (WithKeyStore); clock.System(), the system clock (WithClock); slog.Default() (WithLogger);
 // and no error hook (WithErrorHook).
 //
 // A configuration that cannot work — an unsupported algorithm, a non-positive
-// interval, a lifetime no longer than the rotation interval, or a reload
-// interval no shorter than it — is an error here, not a surprise at the first
+// interval, a lifetime no longer than the rotation interval, a reload interval no
+// shorter than it, a negative retired-key grace, or a grace beside
+// WithRetiredKeysKept — is an error here, not a surprise at the first
 // rotation.
 //
-// A record of a failed rotation or reload carries a fixed reason and the
-// error's Go type, never the store's own text; a consumer who wants that
+// A record of a failed rotation, reload or housekeeping delete carries a fixed
+// reason and the error's Go type, never the store's own text; a consumer who wants that
 // detail logs it inside their own implementation of KeyStore. The algorithm
 // the failure belongs to is kept.
 func New(ctx context.Context, opts ...Option) (*Keys, error) {
@@ -140,6 +154,11 @@ func New(ctx context.Context, opts ...Option) (*Keys, error) {
 	if err := km.validate(); err != nil {
 		return nil, err
 	}
+	// Read after every option, so the default follows WithKeyLifetime in
+	// whichever order the two were given.
+	if !km.graceSet {
+		km.retiredGrace = km.lifetime
+	}
 	// See WithLogInterval for what the sampler is for; the reporter is
 	// what keeps a count from being dropped rather than written.
 	km.sampler = logsample.New(km.sampleWindow, logsample.WithReporter(km.reportSuppressed))
@@ -158,7 +177,7 @@ func New(ctx context.Context, opts ...Option) (*Keys, error) {
 // decoded fails the load, whether or not it would have been published: it is
 // never skipped, and never replaced by a fresh key.
 //
-// A key past the lifetime is dropped here rather than left for housekeeping,
+// A key past its retire time is dropped here rather than left for housekeeping,
 // because a manager that only verifies may never be started, and would
 // otherwise publish it for as long as the process lived.
 func (km *Keys) loadFromStore(ctx context.Context) error {
@@ -180,16 +199,18 @@ func (km *Keys) loadFromStore(ctx context.Context) error {
 
 	now := km.clock.Now()
 	current := km.pickCurrent(keys, now)
+	retire := km.retireTimes(keys, now)
 
 	km.mu.Lock()
 	defer km.mu.Unlock()
 
 	for _, entry := range entries {
-		if km.publishable(entry.stored(), current[entry.alg] == entry.kid, now) {
+		if km.publishable(entry.stored(), retire[entry.kid], current[entry.alg] == entry.kid, now) {
 			km.holdLocked(entry)
 		}
 	}
 	km.current = current
+	km.listed = keys
 	return nil
 }
 
@@ -206,27 +227,90 @@ func (e *keyEntry) stored() storedKey {
 }
 
 // publishable is the one rule for which keys are published, shared by
-// construction, reload and housekeeping: a key is published while it is within
-// the key lifetime, or while it is the newest key of a configured algorithm,
-// which is the one that signs and is kept however old it is.
+// construction, reload and housekeeping: a key is published until its retire time
+// has passed, as retireTimes computes it, unless it is dated more than one lifetime
+// ahead, or while it is the newest key of a configured algorithm, which is the one
+// that signs and is kept however old it is.
 //
 // There is no option over the rule itself, because it is what makes a retired
-// key stop verifying; WithKeyLifetime moves the line it draws.
-func (km *Keys) publishable(k storedKey, newestOfAlg bool, now time.Time) bool {
-	return newestOfAlg || !km.pastLifetime(k.createdAt, now)
+// key stop verifying; WithKeyLifetime, WithRotateInterval and WithReloadInterval move
+// the line it draws, and a key is published at exactly that line.
+func (km *Keys) publishable(k storedKey, retire time.Time, newestOfAlg bool, now time.Time) bool {
+	if newestOfAlg {
+		return true
+	}
+	return !now.After(retire) && !k.createdAt.After(now.Add(km.lifetime))
+}
+
+// retireTimes is the one computation of when each of keys retires, shared by
+// construction, reload, housekeeping's unpublishing and deletion. A key retires one
+// reload interval after the later of its creation plus the lifetime, and its
+// successor's creation plus the lifetime minus the rotation interval. The second term
+// is the longest a token signed just before the replacement can live, since package
+// token caps a token at that window, so a key that stayed current past its lifetime
+// through a rotation outage stays published while its tokens are live. A key replaced
+// on time has its successor one rotation later, and the two terms agree. The reload
+// interval is for a replica that has not yet reloaded, which signs with the key for
+// up to that much longer.
+//
+// A key's successor is the next newer of keys in its algorithm, a tie going to the
+// key listed later, as pickCurrent breaks one. A key dated later than the present
+// plus the reload interval does not count, as it does not count for pickCurrent,
+// so a far-future date cannot hold every older key back. A key with no successor
+// counts only its creation plus the lifetime.
+//
+// Which keys a caller passes decides what can be a successor, so all of them pass
+// everything they know of. Construction has the listing, and deletion the listing
+// alone, since a delete is about what is stored. Reload and housekeeping have the
+// held keys and the last listing together: a listed key may be undecodable and so
+// never held, and if housekeeping judged by held keys alone it would drop that
+// key's predecessor at every run for the next reload to add it back. A successor
+// stored since the last listing is the one thing housekeeping cannot know of
+// without a store call, which it must not need, and a reload corrects that, once.
+// That only happens where no newer key is known at all, and for a configured
+// algorithm the key concerned is the current key, which the publishing rule keeps
+// regardless.
+//
+// A retirement does not come undone through housekeeping's own deletes. A key is
+// deleted only once its retire time has passed, and that time is no earlier than its
+// successor's second term, so when it goes, the key that becomes its predecessor's
+// successor gives that predecessor a retire time already past. A key removed by
+// hand has no such order, and a key the newest-key guard kept past its retire time
+// gets a later one when a successor appears, as the package documentation states.
+func (km *Keys) retireTimes(keys []storedKey, now time.Time) map[string]time.Time {
+	latest := now.Add(km.reloadEvery)
+	retire := make(map[string]time.Time, len(keys))
+	byAlg := make(map[Alg][]storedKey, len(km.algs))
+	for _, k := range keys {
+		retire[k.kid] = k.createdAt.Add(km.lifetime).Add(km.reloadEvery)
+		if !k.createdAt.After(latest) {
+			byAlg[k.alg] = append(byAlg[k.alg], k)
+		}
+	}
+
+	window := km.lifetime - km.rotateEvery
+	for _, chain := range byAlg {
+		// Stable, so a tie keeps the order keys came in.
+		slices.SortStableFunc(chain, func(a, b storedKey) int { return a.createdAt.Compare(b.createdAt) })
+		for i, k := range chain[:len(chain)-1] {
+			if replaced := chain[i+1].createdAt.Add(window).Add(km.reloadEvery); replaced.After(retire[k.kid]) {
+				retire[k.kid] = replaced
+			}
+		}
+	}
+	return retire
 }
 
 // repickCurrentLocked re-chooses the current key per configured algorithm from
 // the keys held, as pickCurrent describes, breaking a tie by the order
-// listedOrderLocked gives them over recs, the records the reload listed. The
-// order is taken here, under the lock, so a key rotation held after the reload
+// knownKeysLocked gives them. The order is taken here, under the lock, so a key rotation held after the reload
 // read the store is a candidate too. A listed record the manager does not hold
 // is passed over. A reload never leaves a configured algorithm without a
 // current key: where no held key qualifies, as after the clock steps back past
 // the reload interval, the previous current key stays current while it is still
 // held. Callers hold km.mu.
-func (km *Keys) repickCurrentLocked(recs []Record, now time.Time) {
-	keys := slices.DeleteFunc(km.listedOrderLocked(recs), func(k storedKey) bool {
+func (km *Keys) repickCurrentLocked(now time.Time) {
+	keys := slices.DeleteFunc(km.knownKeysLocked(km.listed), func(k storedKey) bool {
 		return km.keys[k.kid] == nil
 	})
 	picked := km.pickCurrent(keys, now)
@@ -257,27 +341,38 @@ func (km *Keys) repickCurrentLocked(recs []Record, now time.Time) {
 // Only configured algorithms get a current key. A store is shared, and the
 // replica on the other side of it may be configured differently, so it holds
 // keys for algorithms this manager was never asked about. Such a key stays
-// published while it is within the lifetime — that is what lets this replica
+// published until it retires — that is what lets this replica
 // verify the other's tokens — but making it current would hand it to Signer
 // for an algorithm SupportedAlgs denies, and would exempt it from housekeeping
 // for as long as the process lived, because the current key of an algorithm is
 // never expired.
 func (km *Keys) pickCurrent(keys []storedKey, now time.Time) map[Alg]string {
-	current := make(map[Alg]string, len(km.algs))
+	current := km.newestByAlg(keys, now)
+	maps.DeleteFunc(current, func(alg Alg, _ string) bool { return !slices.Contains(km.algs, alg) })
+	return current
+}
+
+// newestByAlg chooses, per algorithm in keys whether configured or not, the key
+// created most recently among those created no later than now plus the reload
+// interval, an exact tie going to the key listed later. pickCurrent narrows it to
+// the configured algorithms; housekeeping reads it whole, to decide what it may
+// delete from a store other replicas share.
+func (km *Keys) newestByAlg(keys []storedKey, now time.Time) map[Alg]string {
+	kids := make(map[Alg]string, len(km.algs))
 	newest := make(map[Alg]time.Time, len(km.algs))
 	latest := now.Add(km.reloadEvery)
 
 	for _, k := range keys {
-		if !slices.Contains(km.algs, k.alg) || k.createdAt.After(latest) {
+		if k.createdAt.After(latest) {
 			continue
 		}
 		if best, seen := newest[k.alg]; seen && k.createdAt.Before(best) {
 			continue
 		}
 		newest[k.alg] = k.createdAt
-		current[k.alg] = k.kid
+		kids[k.alg] = k.kid
 	}
-	return current
+	return kids
 }
 
 // mintMissing generates and stores a key for every configured algorithm that
@@ -323,17 +418,6 @@ func (km *Keys) mintAndStore(ctx context.Context, alg Alg) (string, *failure) {
 	km.holdLocked(entry)
 	km.current[alg] = entry.kid
 	return entry.kid, nil
-}
-
-// pastLifetime reports whether a key created at createdAt is more than one key
-// lifetime away from now, in either direction: it has outlived the lifetime, or
-// it is dated more than one lifetime ahead. A key that far ahead is a clock
-// gone wrong or an edited row, and would otherwise never age out at all; one
-// dated a little ahead by the skew between replicas stays within it, so the
-// tokens that replica signs still verify.
-func (km *Keys) pastLifetime(createdAt, now time.Time) bool {
-	age := now.Sub(createdAt)
-	return age > km.lifetime || age < -km.lifetime
 }
 
 // holdLocked holds entry, remembering the order keys were held in. Callers hold
@@ -386,7 +470,7 @@ func (km *Keys) Signer(_ context.Context, alg Alg) (string, crypto.Signer, error
 // not configured with included: a replica sharing the store may have written
 // it, and publishing it is what verifies the tokens it signed. Publishing a
 // key is not signing with it — Signer hands out none of them — and such a
-// key stops being published once it is past the key lifetime, like any other.
+// key stops being published once it is past its retire time, like any other.
 //
 // The error is never non-nil here, because a manager already holds its keys
 // and has nothing left to fail at. It is part of the KeySource contract for
@@ -433,7 +517,7 @@ func (km *Keys) VerificationKeys(_ context.Context) ([]PublicKey, error) {
 // in the same order: a replica sharing the store may have written that key,
 // and publishing it is what verifies the tokens it signed. Publishing a key is
 // not signing with it — Signer hands out none of them — and a key stops
-// being published once it is past the key lifetime, like any other. Nothing
+// being published once it is past its retire time, like any other. Nothing
 // private is rendered: each entry is built from the public half alone, so the
 // document is safe to serve to anyone who asks for it.
 //
@@ -503,21 +587,36 @@ func WithAlgs(algs ...Alg) Option {
 	return func(km *Keys) { km.algs = slices.Clone(algs) }
 }
 
-// WithKeyLifetime sets how long a key stays published after it was created.
-// Default: 24h. It must be longer than the rotation interval, or a key would
+// WithKeyLifetime sets how long a key stays published after it was created, and
+// how long after its replacement less one rotation interval, whichever is later, in
+// each case with one reload interval on top (WithReloadInterval). Default: 24h. It must be longer than the rotation interval, or a key would
 // stop being published while tokens it signed are still valid.
+//
+// Housekeeping judges a stored key by this replica's lifetime, so a replica with a
+// shorter one in time deletes keys a replica with a longer one still publishes:
+// every replica sharing a store sets the same lifetime. The default grace of
+// WithRetiredKeyGrace is this lifetime, and it reduces that harm without removing
+// it.
 func WithKeyLifetime(d time.Duration) Option {
 	return func(km *Keys) { km.lifetime = d }
 }
 
 // WithRotateInterval sets how often a new key is minted for every configured
 // algorithm. Default: 1h.
+//
+// It decides how long a key replaced late stays published, which is the lifetime
+// minus this interval from its replacement, so every replica sharing a store sets the
+// same one: a replica rotating less often than another refuses tokens the other
+// verifies.
 func WithRotateInterval(d time.Duration) Option {
 	return func(km *Keys) { km.rotateEvery = d }
 }
 
-// WithHousekeepingInterval sets how often keys past their lifetime stop being
-// published. Default: 1h.
+// WithHousekeepingInterval sets how often keys past their retire time stop being
+// published and, unless WithRetiredKeysKept is set, those past its grace too are
+// deleted from the store.
+// Default: 1h. Each run that deletes lists the store once, so a
+// shorter interval costs a load per run.
 func WithHousekeepingInterval(d time.Duration) Option {
 	return func(km *Keys) { km.housekeepEvery = d }
 }
@@ -525,12 +624,17 @@ func WithHousekeepingInterval(d time.Duration) Option {
 // WithReloadInterval sets how often the store is reloaded, which is how
 // replicas sharing a store see each other's keys. Default: 1m. It must be
 // shorter than the rotation interval, or a replica would miss a rotation.
+//
+// It is also how long past the rest of its window a key stays published, for a replica
+// still signing with a key another has replaced, so every replica sharing a store sets
+// the same one: a replica reloading less often than another signs for longer than that
+// other allows for.
 func WithReloadInterval(d time.Duration) Option {
 	return func(km *Keys) { km.reloadEvery = d }
 }
 
-// WithLogInterval sets how long one written record about a rotation or
-// reload failure suppresses further records for the same operation and
+// WithLogInterval sets how long one written record about a rotation, reload or
+// housekeeping failure suppresses further records for the same operation and
 // algorithm. Default: 5m.
 //
 // A store outage fails every interval for as long as it lasts, which without
@@ -548,6 +652,46 @@ func WithLogInterval(d time.Duration) Option {
 // which does not survive a restart.
 func WithKeyStore(store KeyStore) Option {
 	return func(km *Keys) { km.store = store }
+}
+
+// WithRetiredKeysKept keeps in the store the keys housekeeping retires for age,
+// for a consumer who audits them or applies a retention policy of their own.
+// Default: housekeeping deletes each through KeyStore.Delete one grace after its
+// retire time (WithRetiredKeyGrace), so the store does not gain a row per
+// algorithm per rotation for as long as it lives.
+//
+// It changes what the store holds, not what is published: a retired key stops
+// being published either way, and a reload or a restart brings it back only as the
+// package documentation states.
+// A manager with this option deletes nothing, but a replica sharing its store
+// without it still does, so every replica sharing a store sets it or none does.
+//
+// Together with WithRetiredKeyGrace it is a configuration error from New, since a
+// key never deleted has no grace to wait out.
+func WithRetiredKeysKept() Option {
+	return func(km *Keys) { km.keepRetired = true }
+}
+
+// WithRetiredKeyGrace sets how long past its retire time a key stays in the store
+// before housekeeping deletes it. Default: one key lifetime, as WithKeyLifetime
+// sets it. Zero deletes a key as soon as its retire time has passed.
+//
+// A key past its retire time is unpublished either way, on this replica and on a
+// restarted one; the grace is not more time for its tokens. It exists because a
+// replica judges a key by its own clock and configuration, and a delete costs every
+// replica sharing the store: a grace gives a skewed clock or a differing lifetime
+// that much room before the loss is permanent. It reduces that harm and does not
+// remove it, so replicas must still keep synchronised clocks. It costs a row per
+// algorithm per rotation for as long as it lasts, all of them read at each reload.
+//
+// Every replica sharing a store sets the same grace, since the shortest in use
+// decides what is deleted. A negative grace, or one beside WithRetiredKeysKept, is
+// a configuration error from New.
+func WithRetiredKeyGrace(d time.Duration) Option {
+	return func(km *Keys) {
+		km.retiredGrace = d
+		km.graceSet = true
+	}
 }
 
 // WithClock sets the time source. Default: clock.System().
@@ -571,8 +715,8 @@ func WithClock(clk clock.Timed) Option {
 	return func(km *Keys) { km.clock = clk }
 }
 
-// WithLogger sets where rotation and reload failures are logged. Default:
-// slog.Default().
+// WithLogger sets where rotation, reload and housekeeping failures are logged.
+// Default: slog.Default().
 //
 // Records are written from the background loops, under the rules
 // WithErrorHook describes: a handler that blocks holds up the loop that is
@@ -582,9 +726,9 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(km *Keys) { km.logger = logger }
 }
 
-// WithErrorHook sets a function called with every rotation and reload failure.
-// Default: none. Use it to surface a store outage that would otherwise leave
-// one key signing indefinitely.
+// WithErrorHook sets a function called with every rotation, reload and
+// housekeeping failure. Default: none. Use it to surface a store outage that
+// would otherwise leave one key signing indefinitely.
 //
 // The error the hook receives carries fixed library text naming the failed
 // stage, never the store's own text; the store's error stays reachable
@@ -710,9 +854,10 @@ func (km *Keys) validate() error {
 			ErrConfig, km.reloadEvery, km.rotateEvery)
 	}
 
-	// Housekeeping is the only thing that stops publishing an expired key:
-	// reload declines to re-add one, but never drops a key already held. So the
-	// lifetime is only honoured to within one housekeeping interval, and an
+	// Housekeeping is what stops publishing an expired key: reload declines to
+	// re-add one, and drops one already held only once the store no longer lists
+	// it, which takes a replica that deletes. So the retire time is only honoured
+	// to within one housekeeping interval, and an
 	// interval longer than the lifetime turns the guarantee into a suggestion —
 	// a 2-hour lifetime swept every 1000 hours publishes keys for hundreds of
 	// times their stated life. Refused rather than quietly relaxed.
@@ -721,6 +866,14 @@ func (km *Keys) validate() error {
 			"%w: housekeeping interval %s must not exceed the lifetime %s, "+
 				"or a key would stay published long past the lifetime it was given",
 			ErrConfig, km.housekeepEvery, km.lifetime)
+	}
+
+	if km.graceSet && km.retiredGrace < 0 {
+		return fmt.Errorf("%w: retired-key grace must not be negative, got %s", ErrConfig, km.retiredGrace)
+	}
+	if km.graceSet && km.keepRetired {
+		return fmt.Errorf("%w: a retired-key grace has no effect beside WithRetiredKeysKept, "+
+			"which deletes nothing", ErrConfig)
 	}
 
 	return nil

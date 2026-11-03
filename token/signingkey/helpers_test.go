@@ -267,6 +267,11 @@ func (s *listingStore) LoadAll(context.Context) ([]signingkey.Record, error) {
 	return s.recs, nil
 }
 
+func (s *listingStore) Delete(_ context.Context, kids ...string) error {
+	s.recs = slices.DeleteFunc(s.recs, func(rec signingkey.Record) bool { return slices.Contains(kids, rec.Kid) })
+	return nil
+}
+
 // realRecordFor returns a genuine record for alg, created at the given time. It
 // is minted by a throwaway manager so the private bytes and the thumbprint are
 // real: only CreatedAt is rewritten. It is how a test stands in for another

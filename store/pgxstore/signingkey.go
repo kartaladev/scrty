@@ -2,7 +2,9 @@ package pgxstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -32,7 +34,8 @@ import (
 // re-sealing off.
 //
 // Store replaces the key already stored under the same kid, as the contract
-// defines. It honours WithTxResolver, WithIDGenerator (default
+// defines, and Delete is one statement that treats a key already gone as
+// deleted. It honours WithTxResolver, WithIDGenerator (default
 // id.NewV7Generator, for the rows' primary keys) and WithResealOnRead
 // (default on), and refuses any other option.
 //
@@ -107,6 +110,27 @@ func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, err
 // it still holds old. Inside a caller's transaction it writes nothing.
 func (s *signingKeyStore) ResealSigningKey(ctx context.Context, kid string, old, resealed []byte) error {
 	return s.c.execOutsideTx(ctx, "re-seal signing key", pgschema.SigningKeyReseal, kid, old, resealed)
+}
+
+// Delete removes the keys with the given kids in one statement. A kid with no
+// key is not an error, and neither is one PostgreSQL text cannot hold, since no
+// key can have been stored under it. With nothing left to delete it runs no
+// statement.
+func (s *signingKeyStore) Delete(ctx context.Context, kids ...string) error {
+	const op = "delete signing keys"
+
+	kids = slices.DeleteFunc(slices.Clone(kids), func(kid string) bool { return !storekit.Storable(kid) })
+	if len(kids) == 0 {
+		return nil
+	}
+	set, err := json.Marshal(kids)
+	if err != nil {
+		return failed(op, err)
+	}
+
+	_, err = s.c.exec(ctx, op, pgschema.SigningKeyDelete, string(set))
+
+	return err
 }
 
 var (

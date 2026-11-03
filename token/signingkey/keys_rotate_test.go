@@ -592,11 +592,13 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 
 	require.Equal(t, held.Kid, currentKid(t, km, signingkey.RS256))
 
-	// Another replica writes one key past the lifetime and one newer than
-	// anything held.
+	// Another replica writes one key past its retire time, the key that replaced
+	// it on time, and one newer than anything held.
 	expired := realRecord(t, epoch.Add(-25*time.Hour))
+	replacement := realRecord(t, epoch.Add(-24*time.Hour))
 	newest := realRecord(t, epoch.Add(5*time.Second))
 	require.NoError(t, store.Store(t.Context(), expired))
+	require.NoError(t, store.Store(t.Context(), replacement))
 	require.NoError(t, store.Store(t.Context(), newest))
 
 	require.NoError(t, km.Start(t.Context()))
@@ -607,12 +609,12 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 		"a reload publishes the stored key and re-picks the latest CreatedAt as current")
 
 	assert.False(t, publishes(t, km, expired.Kid),
-		"a non-current key older than the lifetime is never republished")
+		"a non-current key past its retire time is never republished")
 	assert.True(t, publishes(t, km, held.Kid), "the key it replaced is still published")
 
 	recs, err := store.LoadAll(t.Context())
 	require.NoError(t, err)
-	assert.Len(t, recs, 3, "a reload writes nothing")
+	assert.Len(t, recs, 4, "a reload writes nothing")
 }
 
 // Standalone: its store fails every reload.
@@ -818,14 +820,15 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	store := signingkey.NewMemoryKeyStore()
 
 	// A replica configured for ES256 shares the store: one key already past
-	// the lifetime, one exactly at it, which passes it one second in, and one
-	// well inside it.
+	// its retire time, one exactly at it, replaced on time, which passes it one
+	// second in, and one well inside it.
 	expired := realRecordFor(t, signingkey.ES256, epoch.Add(-25*time.Hour))
-	stale := realRecordFor(t, signingkey.ES256, epoch.Add(-24*time.Hour))
+	stale := realRecordFor(t, signingkey.ES256, epoch.Add(-24*time.Hour-30*time.Minute))
+	replacement := realRecordFor(t, signingkey.ES256, epoch.Add(-18*time.Hour-30*time.Minute))
 	fresh := realRecordFor(t, signingkey.ES256, epoch)
-	require.NoError(t, store.Store(t.Context(), expired))
-	require.NoError(t, store.Store(t.Context(), stale))
-	require.NoError(t, store.Store(t.Context(), fresh))
+	for _, rec := range []signingkey.Record{expired, stale, replacement, fresh} {
+		require.NoError(t, store.Store(t.Context(), rec))
+	}
 
 	// This manager is configured for RS256 only.
 	km, err := signingkey.New(t.Context(),
@@ -855,13 +858,13 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	require.True(t, publishes(t, km, stale.Kid))
 	require.False(t, publishes(t, km, expired.Kid),
 		"a foreign key is never the newest of a configured algorithm, so construction "+
-			"publishes none past its lifetime")
+			"publishes none past its retire time")
 
 	require.NoError(t, km.Start(t.Context()))
 
 	advance(t, clk, time.Second, loopCount)
 	require.False(t, publishes(t, km, stale.Kid),
-		"housekeeping retires a foreign key past its lifetime")
+		"housekeeping retires a foreign key past its retire time")
 	require.True(t, publishes(t, km, fresh.Kid), "the one inside the lifetime is kept")
 
 	// The newest foreign key is the one a current-key exemption would protect
@@ -886,9 +889,10 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 // ran, so a claim about what it kept cannot pass merely because nothing
 // happened.
 //
-// Construction publishes no non-current key already past its lifetime, so the
-// key the case waits on is created exactly one lifetime before the start: still
-// within the lifetime when the manager is built, past it one second later.
+// Construction publishes no non-current key already past its retire time, so the
+// key the case waits on is created one lifetime and one reload interval before the
+// start, and replaced on time: still published when the manager is built, past its retire
+// time one second later. A grace of zero means that run deletes it too.
 // Standalone: each case seeds a key that expires one second in, which the loop waits on.
 func TestHousekeeping(t *testing.T) {
 	type testCase struct {
@@ -905,7 +909,8 @@ func TestHousekeeping(t *testing.T) {
 			name: "a non-current key past its lifetime stops being published",
 			seed: func(t *testing.T) []signingkey.Record {
 				return []signingkey.Record{
-					realRecord(t, epoch.Add(-24*time.Hour)),
+					realRecord(t, epoch.Add(-24*time.Hour-30*time.Minute)),
+					realRecord(t, epoch.Add(-18*time.Hour-30*time.Minute)),
 					realRecord(t, epoch),
 				}
 			},
@@ -915,8 +920,9 @@ func TestHousekeeping(t *testing.T) {
 
 				recs, err := store.LoadAll(t.Context())
 				require.NoError(t, err)
-				assert.Len(t, recs, 2,
-					"housekeeping stops publishing a key; it does not prune the store")
+				kids := recordKids(recs)
+				assert.Len(t, kids, 2, "housekeeping also deletes the key it retired for age")
+				assert.Equal(t, current, kids[1])
 			},
 		},
 		{
@@ -928,8 +934,8 @@ func TestHousekeeping(t *testing.T) {
 				// store lists later; an older non-current key would never be
 				// published at all.
 				return []signingkey.Record{
-					realRecord(t, epoch.Add(-24*time.Hour)),
-					realRecord(t, epoch.Add(-24*time.Hour)),
+					realRecord(t, epoch.Add(-24*time.Hour-30*time.Minute)),
+					realRecord(t, epoch.Add(-24*time.Hour-30*time.Minute)),
 				}
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, current string) {
@@ -957,6 +963,7 @@ func TestHousekeeping(t *testing.T) {
 				signingkey.WithHousekeepingInterval(time.Second),
 				signingkey.WithReloadInterval(30*time.Minute),
 				signingkey.WithRotateInterval(6*time.Hour),
+				signingkey.WithRetiredKeyGrace(0),
 			)
 			require.NoError(t, err)
 			shutdownAndVerify(t, km)
@@ -964,7 +971,7 @@ func TestHousekeeping(t *testing.T) {
 			expired, current := seed[0].Kid, seed[len(seed)-1].Kid
 			require.Equal(t, current, currentKid(t, km, signingkey.RS256))
 			require.True(t, publishes(t, km, expired),
-				"a key exactly one lifetime old is published to begin with")
+				"a key exactly at its retire time is published to begin with")
 
 			require.NoError(t, km.Start(t.Context()))
 
@@ -1014,26 +1021,30 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 }
 
 // TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime pins the boundary
-// itself. A key is published for the lifetime it was given, so one whose age is
-// exactly that lifetime is still published, and one any older is not.
+// itself. A key replaced on time is published for the lifetime it was given and one
+// reload interval, so one whose age is exactly that is still published, and one any
+// older is not.
 //
 // The interval is what makes the boundary reachable: the sweep that runs at
-// epoch+1s is the one that sees boundary at exactly 24 hours old. stale is an
-// hour further on and is the case's proof that the sweep ran at all.
+// epoch+1s is the one that sees boundary at exactly that age. stale is an
+// hour further on and is the case's proof that the sweep ran at all. replacement
+// is what replaced boundary on time: a later successor would keep it longer.
 // Standalone: it seeds a key already past its lifetime, which TestHousekeeping's loop would require published.
 func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	const (
 		lifetime = 24 * time.Hour
+		reload   = 30 * time.Minute
 		sweep    = time.Second
 	)
 
 	clk := newClock()
 	store := signingkey.NewMemoryKeyStore()
 
-	stale := realRecord(t, epoch.Add(sweep-lifetime-time.Hour))
-	boundary := realRecord(t, epoch.Add(sweep-lifetime))
+	stale := realRecord(t, epoch.Add(sweep-lifetime-reload-time.Hour))
+	boundary := realRecord(t, epoch.Add(sweep-lifetime-reload))
+	replacement := realRecord(t, epoch.Add(sweep-lifetime-reload+6*time.Hour))
 	newest := realRecord(t, epoch)
-	for _, rec := range []signingkey.Record{stale, boundary, newest} {
+	for _, rec := range []signingkey.Record{stale, boundary, replacement, newest} {
 		require.NoError(t, store.Store(t.Context(), rec))
 	}
 
@@ -1042,7 +1053,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 		signingkey.WithClock(clk),
 		signingkey.WithKeyLifetime(lifetime),
 		signingkey.WithHousekeepingInterval(sweep),
-		signingkey.WithReloadInterval(30*time.Minute),
+		signingkey.WithReloadInterval(reload),
 		signingkey.WithRotateInterval(6*time.Hour),
 	)
 	require.NoError(t, err)
@@ -1055,7 +1066,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	require.False(t, publishes(t, km, stale.Kid),
 		"the sweep ran: a key an hour past its lifetime stopped being published")
 	assert.True(t, publishes(t, km, boundary.Kid),
-		"a key whose age is exactly the lifetime has not outlived it")
+		"a key whose age is exactly the lifetime and the margin has not outlived them")
 
 	advance(t, clk, sweep, loopCount)
 	assert.False(t, publishes(t, km, boundary.Kid), "and one a sweep older has")

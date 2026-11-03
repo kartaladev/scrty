@@ -377,6 +377,16 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			`SELECT * FROM "signing_keys" ORDER BY created_at, kid`,
 			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`,
 			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`)},
+		{name: "signing key delete", run: with(func(ctx context.Context, s storeSet) error {
+			return s.keys.Delete(ctx, "stmt-kid-delete-1", "stmt-kid-delete-2")
+		}), assert: one(`DELETE FROM signing_keys WHERE kid IN (SELECT jsonb_array_elements_text($1::jsonb))`)},
+		{name: "signing key delete of no keys", run: with(func(ctx context.Context, s storeSet) error {
+			return s.keys.Delete(ctx)
+		}), assert: func(t *testing.T, err error, stmts []string) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Empty(t, stmts)
+		}},
 
 		{name: "MFA begin", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-begin", "TOTP"))

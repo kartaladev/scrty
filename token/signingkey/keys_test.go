@@ -793,6 +793,8 @@ func (s *auditNilStore) LoadAll(context.Context) ([]signingkey.Record, error) {
 	return s.records, nil
 }
 
+func (s *auditNilStore) Delete(context.Context, ...string) error { return nil }
+
 // TestNewKeyManagerWiringMistakes holds the boundary cases of construction's
 // validation. They are not parallel, unlike TestNewKeyManager, so they keep a
 // table of their own.
@@ -918,14 +920,15 @@ func TestStoredRecordCarriesThePublishablePublicKey(t *testing.T) {
 // one batch, so a store that lists a new key twice is enough.
 // Standalone: it lists one record twice, then runs housekeeping on a controlled clock.
 func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
-	// Exactly one lifetime old: construction publishes it, and one second
-	// later it is past the lifetime.
-	dup := realRecord(t, epoch.Add(-24*time.Hour))
+	// Exactly at its retire time, and replaced on time: construction publishes it,
+	// and one second later it is past that.
+	dup := realRecord(t, epoch.Add(-24*time.Hour-30*time.Minute))
+	replacement := realRecord(t, epoch.Add(-18*time.Hour-30*time.Minute))
 	current := realRecord(t, epoch)
 
 	clk := newClock()
 	km, err := signingkey.New(t.Context(),
-		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, current}}),
+		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, replacement, current}}),
 		signingkey.WithClock(clk),
 		signingkey.WithKeyLifetime(24*time.Hour),
 		signingkey.WithHousekeepingInterval(time.Second),
@@ -937,7 +940,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 
 	published, err := km.VerificationKeys(t.Context())
 	require.NoError(t, err)
-	assert.Len(t, published, 2, "a key listed twice is one key")
+	assert.Len(t, published, 3, "a key listed twice is one key")
 	require.Equal(t, current.Kid, currentKid(t, km, signingkey.RS256))
 
 	// Housekeeping walks the order it publishes by and deletes as it goes, so a
@@ -945,7 +948,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 	advance(t, clk, time.Second, loopCount)
 	require.False(t, publishes(t, km, dup.Kid),
-		"the duplicated key stops being published once it is past its lifetime")
+		"the duplicated key stops being published once it is past its retire time")
 	assert.True(t, publishes(t, km, current.Kid), "and the current key is untouched")
 }
 
@@ -968,6 +971,10 @@ func (s *blockingStore) Store(ctx context.Context, rec signingkey.Record) error 
 
 func (s *blockingStore) LoadAll(ctx context.Context) ([]signingkey.Record, error) {
 	return s.inner.LoadAll(ctx)
+}
+
+func (s *blockingStore) Delete(ctx context.Context, kids ...string) error {
+	return s.inner.Delete(ctx, kids...)
 }
 
 // TestSigningStaysAvailableDuringASlowStoreWrite pins the reason the keyring

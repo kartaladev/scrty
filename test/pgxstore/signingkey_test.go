@@ -224,6 +224,35 @@ WHERE kid = 'kid-b'`)
 			},
 		},
 		{
+			name: "A deleted signing key stays deleted",
+			assert: func(t *testing.T, ctx context.Context, db database, keys storefix.Keys) {
+				storedUnderK1(t, ctx, db, keys, "kid-gone")
+
+				gated := storefix.NewGatedCipher(keys.Rotated(t))
+				reader := newSigningKeyStore(t, db.Pool, gated)
+				type load struct {
+					recs []signingkey.Record
+					err  error
+				}
+				done := make(chan load, 1)
+				go func() {
+					recs, err := reader.LoadAll(ctx)
+					done <- load{recs, err}
+				}()
+
+				<-gated.Opening()
+				writer := newSigningKeyStore(t, db.Pool, keys.Rotated(t))
+				require.NoError(t, writer.Delete(ctx, "kid-gone"))
+				gated.Release()
+				got := <-done
+				require.NoError(t, got.err)
+				require.Len(t, got.recs, 1, "the gated read loaded the key before its delete")
+
+				assert.False(t, storefix.ExistsCtx(ctx, t, db.DB, `SELECT EXISTS (SELECT 1 FROM signing_keys)`),
+					"the re-seal stored the deleted key again")
+			},
+		},
+		{
 			name: "a re-seal does not replace material a concurrent store wrote under the same kid",
 			assert: func(t *testing.T, ctx context.Context, db database, keys storefix.Keys) {
 				storedUnderK1(t, ctx, db, keys, "kid-race")
@@ -278,6 +307,51 @@ WHERE kid = 'kid-b'`)
 				ctx = tc.ctx(ctx)
 			}
 			tc.assert(t, ctx, db, storefix.NewKeys(t))
+		})
+	}
+}
+
+// TestSigningKeyStore_DeleteTouchesNoDatabaseWithNothingToDelete runs on a handle
+// to a server that is not there, so any statement fails.
+func TestSigningKeyStore_DeleteTouchesNoDatabaseWithNothingToDelete(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		kids   []string
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "no key ids run no statement",
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "key ids no database could hold run no statement",
+			kids: []string{"kid\x00nul", "kid\xffutf8"},
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "a key id runs one, whose failure is returned",
+			kids: []string{"kid-a"},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err, "the handle reaches no server, so this proves the others ran nothing")
+				assert.ErrorContains(t, err, "seal: the inner store could not delete the signing keys")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newSigningKeyStore(t, unreachablePool(t), storefix.TestCipher(t))
+			tc.assert(t, s.Delete(t.Context(), tc.kids...))
 		})
 	}
 }

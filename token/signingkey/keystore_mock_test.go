@@ -41,6 +41,49 @@ func (m *MockKeyStore) EXPECT() *MockKeyStoreMockRecorder {
 	return m.recorder
 }
 
+// Delete mocks base method.
+func (m *MockKeyStore) Delete(ctx context.Context, kids ...string) error {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx}
+	for _, a := range kids {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "Delete", varargs...)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Delete indicates an expected call of Delete.
+func (mr *MockKeyStoreMockRecorder) Delete(ctx any, kids ...any) *MockKeyStoreDeleteCall {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx}, kids...)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockKeyStore)(nil).Delete), varargs...)
+	return &MockKeyStoreDeleteCall{Call: call}
+}
+
+// MockKeyStoreDeleteCall wrap *gomock.Call
+type MockKeyStoreDeleteCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockKeyStoreDeleteCall) Return(arg0 error) *MockKeyStoreDeleteCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockKeyStoreDeleteCall) Do(f func(context.Context, ...string) error) *MockKeyStoreDeleteCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockKeyStoreDeleteCall) DoAndReturn(f func(context.Context, ...string) error) *MockKeyStoreDeleteCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // LoadAll mocks base method.
 func (m *MockKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, error) {
 	m.ctrl.T.Helper()

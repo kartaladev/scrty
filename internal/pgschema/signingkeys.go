@@ -20,4 +20,10 @@ ORDER BY created_at, kid`
 	// SigningKeyReseal replaces kid $1's private material with $3 only while
 	// it still equals $2.
 	SigningKeyReseal = `UPDATE signing_keys SET private_key = $3 WHERE kid = $1 AND private_key = $2`
+
+	// SigningKeyDelete deletes every key whose kid is in $1, a JSON array of
+	// strings. A key already gone matches nothing. JSON rather than a PostgreSQL
+	// array, because the handle may be any database/sql driver, and only some of
+	// them bind a Go slice.
+	SigningKeyDelete = `DELETE FROM signing_keys WHERE kid IN (SELECT jsonb_array_elements_text($1::jsonb))`
 )

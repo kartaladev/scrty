@@ -40,6 +40,16 @@ type Record struct {
 // not survive a restart. A consumer replaces it with any implementation through
 // WithKeyStore, such as a durable one, or one that seals Record.Private.
 //
+// A key retires, and stops being published, one reload interval after the later of
+// its creation plus the key lifetime and its successor's creation plus the key
+// lifetime minus the rotation interval. The key manager deletes it once that time has passed by longer than the
+// grace, one key lifetime unless WithRetiredKeyGrace says otherwise. So a store
+// holds the keys still in use, the retired keys waiting out their grace, the ones
+// whose delete has yet to succeed, and any key dated far ahead, which housekeeping
+// unpublishes and leaves in place, since that date may come from another replica's
+// clock. WithRetiredKeysKept turns the deleting off, for a consumer who audits
+// retired keys.
+//
 //go:generate mockgen -source=record.go -package=signingkey_test -destination=keystore_mock_test.go -typed
 type KeyStore interface {
 	// Store inserts rec, replacing any record with the same Kid.
@@ -47,6 +57,14 @@ type KeyStore interface {
 
 	// LoadAll returns every stored record, oldest first by CreatedAt.
 	LoadAll(ctx context.Context) ([]Record, error)
+
+	// Delete removes the records with the given kids. It is idempotent: a kid
+	// with no record, which replicas sharing a store deleting one key will
+	// produce, is not an error, and does not stop the others being removed. A
+	// store that cannot hold a kid, as PostgreSQL text cannot one with a NUL byte
+	// or invalid UTF-8, treats it as a kid with no record.
+	// With no kids it does nothing and reports nothing.
+	Delete(ctx context.Context, kids ...string) error
 }
 
 // MemoryKeyStore is the default KeyStore: it keeps records in process memory,
@@ -121,4 +139,22 @@ func (s *MemoryKeyStore) LoadAll(_ context.Context) ([]Record, error) {
 	}
 	slices.SortStableFunc(out, func(a, b Record) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out, nil
+}
+
+// Delete removes the records with the given kids, ignoring a kid with no record.
+// A kid stored again later takes a new place among records created at the same
+// instant. It never fails.
+func (s *MemoryKeyStore) Delete(_ context.Context, kids ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, kid := range kids {
+		delete(s.records, kid)
+	}
+	s.order = slices.DeleteFunc(s.order, func(kid string) bool {
+		_, kept := s.records[kid]
+		return !kept
+	})
+
+	return nil
 }
