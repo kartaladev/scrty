@@ -2,6 +2,50 @@
 
 ## MODIFIED Requirements
 
+### Requirement: HTTP Basic authentication is stateless
+When enabled, Basic authentication SHALL handle requests whose `Authorization` header starts with `Basic `, and SHALL pass other requests through unchanged. It SHALL:
+1. refuse a header whose value is not valid base64 or has no `:` separator with the authentication failure error;
+2. check the request's source against the password-login guard, and refuse a throttled or unattributable source;
+3. evaluate the pre-authentication phase before checking credentials;
+4. on a failed authentication, record a failed attempt, set a `WWW-Authenticate` Basic challenge header naming the realm (default `Restricted`), and refuse with the authentication failure error;
+5. when the authenticator returns no error and either no authentication or an authentication with no principal, fail with a server-side failure identifiable as the token error for no subject, write a sampled ERROR record of fixed text, and clear nothing;
+6. on success, clear the username's failures through its attempt store, as form login does, logging a failure to clear without changing the outcome; then evaluate the stateless-authentication policy phase, and continue with the principal in the context.
+
+Every refusal answered 401 SHALL carry the `WWW-Authenticate` challenge header. It SHALL NOT create a session or issue a token. A challenge from the stateless-authentication phase SHALL refuse with a challenge error carrying no session and no token. The consumer SHALL be able to set the realm.
+
+#### Scenario: Valid credentials
+- **WHEN** a request carries correct Basic credentials
+- **THEN** the handler runs with the principal in the context and no session is created
+
+#### Scenario: Invalid credentials
+- **WHEN** a request carries an incorrect Basic password
+- **THEN** it is refused with the authentication failure error and the response carries a `WWW-Authenticate` header for the realm
+
+#### Scenario: Consumer realm
+- **WHEN** the consumer sets the realm to `internal-api` and credentials are refused
+- **THEN** the `WWW-Authenticate` header names `internal-api`
+
+#### Scenario: Stateless request needing a second factor
+- **WHEN** the stateless-authentication phase requires a second factor for the user
+- **THEN** the request is refused with that phase's reason, or with a challenge error carrying no session and no token
+
+#### Scenario: Throttled source still challenged
+- **WHEN** a Basic request arrives from a source the password-login guard throttles
+- **THEN** it is refused with the throttled error and the response carries a `WWW-Authenticate` header for the realm
+
+#### Scenario: Success clears failures
+- **WHEN** `ada` has four failures in the window, and a Basic request with `ada`'s correct password succeeds
+- **THEN** `ada` has no failures in the window
+
+#### Scenario: Failure to clear does not refuse
+- **WHEN** a Basic request with correct credentials succeeds, and the attempt store fails to clear the username's failures
+- **THEN** the handler runs with the principal in the context, and one error record names the failed clearing
+
+#### Scenario: Provider returning no authentication to Basic
+- **WHEN** a consumer's authentication provider, given directly to Basic authentication, returns no error and either no authentication or an authentication with no principal, and `ada` has four failures in the window
+- **THEN** the request fails with status 500, the error is identifiable as the token error for no subject, and an ERROR record of fixed text is written
+- **AND** it does not panic, the handler does not run, the response carries no challenge header, and `ada` still has four failures in the window
+
 ### Requirement: Bearer tokens authenticate against a live session and a live user
 When enabled, bearer token authentication SHALL handle requests whose `Authorization` header uses the configured scheme, `Bearer` by default, matched without regard to case. When the consumer opts in, it SHALL also accept a bare token with no scheme. Other requests SHALL pass through unchanged.
 
@@ -119,6 +163,7 @@ The subject mode SHALL default to the user identifier, matching the token genera
 #### Scenario: Provider returning no authentication
 - **WHEN** a consumer's authentication provider returns no authentication and no error
 - **THEN** the login fails as for a principal with no identifier, and does not panic
+- **AND** the username's recorded failures are not cleared
 
 #### Scenario: Expired session
 - **WHEN** a request carries a correctly signed token whose session has expired

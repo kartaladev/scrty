@@ -50,6 +50,18 @@ Plan task N.M is `tasks.md` task N.M.
    - Expected: refused, nothing changed. A condition that only checks a live code would pass the other scenarios and bypass the mailbox proof.
    - Test: in task 4.4, "Confirmation refused when the emailed code has expired or run out of attempts", and the broken variant "Store honouring only a live emailed code".
 
+Added for group 6:
+
+6. **A key removed from the store by hand or by a backup restore, with no reload since.**
+   - Expected: housekeeping judges from a fresh listing, so the newest key still stored stays.
+   - Test: in task 6.4, "Key removed from the store since the last reload".
+7. **A provider's own store error that matches `context.Canceled` while the work is running.**
+   - Expected: reported as a failure. Only the background work's own context ending silences it.
+   - Test: in task 6.3, "Store failure before shutdown".
+8. **A typed-nil generator given to `NewJWTAuthenticator`.**
+   - Expected: the existing configuration error, and no panic from reading its mode.
+   - Test: in task 6.2, a row with a nil `*` generator.
+
 ---
 
 ## Dispatch map (main session)
@@ -66,6 +78,14 @@ Plan task N.M is `tasks.md` task N.M.
 | 2 (after P3b) | P3c | 3.4 | `token/signingkey/` only | Opus: ordering across replicas and clocks, where a mistake can pass the tests and still lose keys |
 | 3 (after P3c's review) | P3d | 3.5 | `token/signingkey/`, `token/config.go` comment | Opus: the same lane's rule, under the same risk |
 | 4 | main | 5.1, 5.2 | — | Opus reviewer for 5.1 |
+| 5 (parallel) | P6a | 6.1 | `httpsec/basic.go`, `httpsec/login.go` and their tests | Sonnet: the refusal is stated by decision 3, and form login is the pattern |
+| 5 (parallel) | P6b | 6.2 | `authenticate/jwt.go`, `authenticate/jwt_test.go` | Sonnet: the bearer's check is the pattern |
+| 5 (parallel) | P6c | 6.3, 6.4 | `token/signingkey/` | Opus: ordering at shutdown, and what deletes keys, where a mistake can pass the tests |
+| 5 (parallel) | P6d | 6.6 | `internal/storekit/`, `store/{sqlstore,pgxstore,gormstore}/signingkey.go` | Sonnet: one helper against an existing suite |
+| 6 (after P6c) | P6c2 | 6.4 | `token/signingkey/` | Sonnet: edits the dropped version back, keeping 6.3 |
+| 6 (after P6c2's review) | P6e | 6.5 | `token/signingkey/` | Sonnet: a benchmark and one early return |
+| 6 (after P6a's review) | P6f | 6.7 | `httpsec/` (production and tests), `test/httpsecconformance/` if a fixture needs it | Opus: a refactor on the authentication path that must keep behaviour |
+| 7 | main | 6.8 | — | Opus reviewer |
 
 P4b follows P3b only because both change `test/gormstore/statements_test.go`, and P3c follows P3b as the next dispatch of its lane; P3c and P4b share no file and may run together. Each dispatch gets a fresh reviewer that edits nothing: Opus for P2b, P3b, P3c and P4b, and Sonnet for P1c, whose review also covers the unreviewed fold-in of 1.1 and 1.2. Each brief also gives the Go guidance path, since the plugin may not load: `~/.claude/plugins/cache/samber/cc-skills-golang/2.0.1/skills/` (`golang-concurrency`, `golang-database`, `golang-error-handling`, `golang-security`).
 
@@ -208,3 +228,76 @@ Implemented and reviewed. **Commit:** `refactor(passkey)!: drop the unused Delet
 
 - [ ] **5.1:** rebase on `origin/main`, then dispatch a fresh Opus reviewer that edits nothing. It gets the ten spec deltas, decisions 1–6, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
 - [ ] **5.2:** run `make check` on a quiet tree and `openspec validate pre-release-api-fixes --strict`, and keep the outputs. Re-check the intermittent failures in Global Constraints, and the `test` package failure seen once during concurrent edits.
+
+---
+
+## Group 6: the review of #68
+
+Every claim here is UNREPRODUCED until its red step. A red step that does not fail stops the task: report it, with the output, and the main session removes the claim's text. Each dispatch gets a fresh reviewer that edits nothing: Opus for P6c and P6f, Sonnet for the rest.
+
+### Task 6.1: A provider returning nothing to Basic (decision 3; dispatch P6a)
+
+**Files:** `httpsec/basic.go`, `httpsec/login.go`, `httpsec/no_identifier_test.go`.
+
+- [ ] **Step 1 (red):** `TestBasic_ProviderReturningNoAuthentication`, a table with rows `(nil, nil)` and `(&authenticate.Authentication{}, nil)`, a provider given directly, and `ada` holding four failures. Assert: status 500, `errors.Is(err, token.ErrNoSubject)`, handler not run, no `WWW-Authenticate` header, four failures remain, one ERROR record of fixed text. Add a row to the form login test asserting the four failures remain.
+- [ ] **Step 2:** `go test -run 'TestBasic_ProviderReturningNoAuthentication' -count=1 ./httpsec/`. Expected: the `(nil, nil)` row panics with a nil dereference at `basic.go:251`. Record what the other rows do.
+- [ ] **Step 3 (green):** in `basic.go`, straight after the error check, refuse `auth == nil || auth.Principal == nil`, using the sampled record form login's tail uses. In `login.go`, make `resetFailures` conditional on an authentication with a principal; `hadRecentFailures` and the nil replacement keep their behaviour.
+- [ ] **Step 4:** `go test -race -count=1 ./httpsec/...`, and the `ginsec` and `fibersec` modules. Expected: PASS.
+
+### Task 6.2: The JWT authenticator checks a generator verifier (decision 3; dispatch P6b)
+
+**Files:** `authenticate/jwt.go`, `authenticate/jwt_test.go`.
+
+- [ ] **Step 1 (red):** `TestNewJWTAuthenticator_SubjectModeAgreement`, a table: generator by username with a default provider, default generator with a username provider (both `errors.Is(err, authenticate.ErrConfig)`); agreeing pairs in each mode (build); a verifier that is not a generator (builds); a typed-nil generator (the existing configuration error, no panic). Run it. Expected: the two disagreeing rows fail on a nil error.
+- [ ] **Step 2 (green):** in `NewJWTAuthenticator`, after the nil check, `if g, ok := a.verifier.(token.Generator); ok && g.SubjectMode() != a.subject`, return a wrapped `ErrConfig` naming both options.
+- [ ] **Step 3:** rewrite `WithJWTUsernameSubject`'s last paragraph per decision 3, and add the check to `NewJWTAuthenticator`'s godoc.
+- [ ] **Step 4:** `go test -race -count=1 ./authenticate/...`. Expected: PASS.
+
+### Task 6.3–6.4: Shutdown, and the listing housekeeping uses (decision 4; dispatches P6c, P6c2)
+
+Steps 1 and 2 are implemented, and stay. Steps 3 to 6 were implemented as first written, and dropped by decision 4 once they REPRODUCED a stale listing deleting the newest stored key. Dispatch P6c2 does Steps 3 to 5 below.
+
+**Files:** `token/signingkey/keys_rotate.go`, `keys.go`, `doc.go` and their tests.
+
+- [ ] **Step 1 (red, 6.3):** `TestShutdown_StoreCallIsNotReported`, a table with rows for rotation, reload and housekeeping, over a store that blocks until its context ends and returns `ctx.Err()`. Assert no error-hook call, no ERROR record, and `Shutdown` returns nil. Add "Store failure before shutdown": a store returning `context.Canceled` on a live context is reported. Run them. Expected: the three shutdown rows fail on a hook call; report any that does not.
+- [ ] **Step 2 (green, 6.3):** `km.report` returns at once when its `ctx.Err() != nil`. The context it is given ends only at `Shutdown`, since `Start` builds it with `context.WithoutCancel`. Confirm with gopls that no other caller passes a different context.
+- [ ] **Step 3 (6.4):** `deleteRetired` lists the store with `km.store.LoadAll`, and a failed listing reports `signingkey: list retired keys` with `reasonStore` and returns. The rule stays: `newestByAlg`, `retireTimes`, the current and newest guards, and the grace. `km.report`'s shutdown check stays.
+- [ ] **Step 4 (6.4):** tests. Remove "A housekeeping run that deletes a key loads nothing from the store". Restore "Store cannot list during housekeeping" per its scenario, and the load counts in `TestLifecycleLoopsRunOnTheClock`. Rename the row on a key the store has lost to the scenario's name, "Key removed from the store since the last reload". Keep the corrected seed of "A held key the store no longer lists…", and "Rotation since the listing leaves the key it replaced in the store" only if it still proves something against a fresh listing. Correct `deleteRetired`'s godoc, `doc.go` and `keys.go` to the store's own listing.
+- [ ] **Step 5:** a temporary mutation that decides from `km.listed` fails "Key removed from the store since the last reload" and "Deletion judges a key's successor from the listing alone". Edit it back.
+- [ ] **Step 6:** the verification of task 3.3's Step 8. Expected: PASS.
+
+### Task 6.5: A reload with nothing to drop (decision 4; dispatch P6e)
+
+**Files:** `token/signingkey/keys_rotate.go`, a new `token/signingkey/keys_bench_test.go`.
+
+- [ ] **Step 1:** `BenchmarkReload_RetiredKeysKept` over 50, 1000 and 10000 listed keys. Run with `-benchmem -count=10`, and save the output.
+- [ ] **Step 2:** `dropUnlistedLocked` returns before calling `dropLocked` when every held key is in the listing.
+- [ ] **Step 3:** run the benchmark again and compare with `benchstat`. If 1000 keys shows no gain, edit the change back and report it.
+- [ ] **Step 4:** a temporary mutation that always returns early fails `TestHousekeeping_Replicas`, row "Deleted key not republished on reload". Edit it back. `go test -race -count=1 ./token/signingkey/...` passes.
+
+### Task 6.6: One helper for `Delete` (decision 4; dispatch P6d)
+
+**Interfaces:** `func storekit.StorableSet(values []string) (set string, ok bool)`: the JSON array of the values PostgreSQL text can hold, and false when none can. It keeps the input unchanged.
+
+- [ ] **Step 1 (red):** `TestStorableSet`, a table: none, all storable, NUL, invalid UTF-8, a mix, and the input slice unchanged. Add a stub so it compiles, and see it fail.
+- [ ] **Step 2 (green):** implement it in `internal/storekit/storekit.go`. Marshalling a `[]string` cannot fail, so it returns no error.
+- [ ] **Step 3:** the three `Delete`s call it and return nil on false. The duplicate filter and the `json.Marshal` error branch go.
+- [ ] **Step 4:** `go test -race -count=1 ./internal/storekit/...`, the `store/*` modules, and in `test`, `./storetest/ ./sqlstore/ ./pgxstore/ ./gormstore/` with Docker. Expected: PASS.
+
+### Task 6.7: The admit step returns what it loaded (decision 3; dispatch P6f)
+
+**Interfaces:**
+- `resolver.admit` and `Exchange.admitRenewal` become `func(ex *Exchange, s *session.Session) (*identity.Details, error)`. A nil record means the caller loads the user by the session's reference, as under the default.
+- The `resolver.admitted` field goes.
+
+- [ ] **Step 1 (red):** in `TestBearer_SubjectIsTheSessionUser`, assert the late-renewal row under usernames loads the user once. Run it. Expected: it fails with two loads, by username and then by user identifier.
+- [ ] **Step 2 (green):** change the signature, `resolve.go:155`, and `session_renewal.go:334`, which keeps the record for its own load and every check that follows.
+- [ ] **Step 3:** `requireUserIdentifier` moves out of `prepareLogin` into `redemption.go`, before its call at `:410`. `completeLogin` keeps its own call before any side effect. Correct the comment at `complete.go:530`.
+- [ ] **Step 4:** temporary mutations, edited back: skipping the identifier comparison fails the late-renewal row, and removing the call in `redemption.go` fails `TestMagicLink_NoIdentifier` and `TestOIDCHandoff_NoIdentifierRefusedInsideTheChecks`.
+- [ ] **Step 5:** the verification of Task 2.3–2.4's Step 7. Expected: PASS.
+
+### Task 6.8: Group 6's gate (main session)
+
+- [ ] **Step 1:** a fresh Opus reviewer, who edits nothing, checks group 6's diff against the scenarios it covers and decisions 3 and 4. Findings are labelled `REPRODUCED` or `UNREPRODUCED`.
+- [ ] **Step 2:** `make check` on a clean worktree, and `openspec validate pre-release-api-fixes --strict`. Keep the outputs.
+- [ ] **Step 3: commits,** one per fix, staging exact paths, each carrying its test.

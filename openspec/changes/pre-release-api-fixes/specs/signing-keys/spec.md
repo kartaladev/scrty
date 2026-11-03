@@ -75,7 +75,7 @@ Once started, the key manager SHALL reload every key from the store each reload 
 ### Requirement: Housekeeping removes old keys but never the current one
 Once started, the key manager SHALL run housekeeping each housekeeping interval, which is 1 hour by default and configurable. Housekeeping SHALL stop publishing every key that has passed its retire time, and every key dated more than one key lifetime after the present time, except the current key of each algorithm. A key lifetime not longer than the rotation interval SHALL fail at construction.
 
-By default, housekeeping SHALL also delete from the key store every stored key whose retire time passed longer ago than the retired-key grace, which is one key lifetime by default and configurable, except a current key of this manager and the newest stored key of each algorithm, whether or not this manager is configured for that algorithm. It SHALL find these keys in the store's own listing at each run, so a key this manager never held, or whose delete failed before a restart, is still deleted. It SHALL NOT delete a key it stops publishing because it is dated in the future, since that date may come from another replica's clock. A failed listing or a failed delete SHALL be reported to the configured logger and error hook, SHALL leave the key unpublished, and SHALL be attempted again at the next housekeeping run. The consumer SHALL be able to keep retired keys in the store instead. A negative grace, or a grace together with keeping retired keys, SHALL fail at construction.
+By default, housekeeping SHALL also delete from the key store every stored key whose retire time passed longer ago than the retired-key grace, which is one key lifetime by default and configurable, except a current key of this manager and the newest stored key of each algorithm, whether or not this manager is configured for that algorithm. It SHALL find these keys in the store's own listing at each run, so a key this manager never held, or whose delete failed before a restart, is still deleted. It SHALL NOT delete a key it stops publishing because it is dated in the future, since that date may come from another replica's clock. A failed listing or a failed delete SHALL be reported to the configured logger and error hook, SHALL leave the key unpublished, and SHALL be attempted again at the next housekeeping run. A failure once shutdown has ended the background work SHALL NOT be reported, whether it arose in rotation, reload or housekeeping. The consumer SHALL be able to keep retired keys in the store instead. A negative grace, or a grace together with keeping retired keys, SHALL fail at construction.
 
 Replicas sharing a store SHALL be configured alike, in key lifetime, rotation interval, reload interval, retired-key grace and whether retired keys are kept, and keep synchronised clocks. A replica judges a key's age by its own clock and configuration, so the grace reduces the harm of a skewed clock and does not remove it. The key manager's documentation SHALL state this.
 
@@ -132,6 +132,18 @@ Replicas sharing a store SHALL be configured alike, in key lifetime, rotation in
 #### Scenario: Store cannot list during housekeeping
 - **WHEN** housekeeping runs over a retired key and the key store's load fails
 - **THEN** the key stops being published, the failure is reported to the logger and the error hook, nothing is deleted, and the next run tries again
+
+#### Scenario: Key removed from the store since the last reload
+- **WHEN** a key is removed from the store outside the manager, no reload has happened since, and housekeeping runs over an older key that is now the newest stored
+- **THEN** that older key stays in the store
+
+#### Scenario: Shutdown during a store call
+- **WHEN** shutdown ends the background work while a rotation, a reload or a housekeeping run is inside a store call, and the store returns its context's error
+- **THEN** neither the logger nor the error hook receives a failure for it, and shutdown returns no error
+
+#### Scenario: Store failure before shutdown
+- **WHEN** a store call fails with an error matching a cancelled context while the background work is still running
+- **THEN** the failure is reported to the logger and the error hook
 
 #### Scenario: Replicas delete the same retired key
 - **WHEN** two key managers sharing a store both run housekeeping over a key created 50 hours ago and replaced on time that is not current
