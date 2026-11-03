@@ -798,10 +798,11 @@ The maximum assertion lifetime is fixed in the specs.
 
 **Default and override:** not consumer-facing.
 
-**Verified 2026-11-04,** from the suite's source at commit `a5b9635` (nothing was built or run; task 1.2 confirms by running it). R1, R2 and R5 follow from these:
-- **Plans:** `oidcc-basic-certification-test-plan` and `oidcc-config-certification-test-plan`. The logout plans are `oidcc-rp-initiated-logout-certification-test-plan` and `oidcc-backchannel-rp-initiated-logout-certification-test-plan`.
-- **TLS:** the Config plan fails on plain `http`: it requires every endpoint and the issuer to be `https`. The suite's server-side calls trust any certificate, and its own CI runs a self-signed provider, so a self-signed certificate should work. That the browser engine accepts it too is inferred, not verified.
-- **Runner:** `scripts/run-test-plan.py` is in the upstream repository. It exits non-zero on unexpected failures, warnings or skips, and on an expected result that does not occur.
+**Verified 2026-11-04,** from the suite's source at commit `a5b9635`, and then by building and running it at `475e8bf` (task 1.2), against a throwaway stand-in rather than a real OP. Each line says which facts a run confirmed. R1, R2 and R5 follow from these:
+- **Plans (confirmed by a run):** `oidcc-basic-certification-test-plan` (35 modules, including every module R1, R2 and R5 name) and `oidcc-config-certification-test-plan` (one module, `oidcc-discovery-endpoint-verification`). The logout plans are `oidcc-rp-initiated-logout-certification-test-plan` (11 modules) and `oidcc-backchannel-rp-initiated-logout-certification-test-plan` (2 modules).
+- **TLS (confirmed by a run):** the Config plan fails on plain `http`: the discovery URL, the issuer and every endpoint must be `https`. A self-signed certificate is accepted on both sides: the server side fetched discovery and JWKS with it, and the scripted browser loaded `/authorize` from it with no certificate error.
+- **Runner:** `scripts/run-test-plan.py [--export-dir D] [--expected-failures-file F] [--expected-skips-file F] <plan[variant]> <config.json>` (options confirmed by a run). `--export-dir` must already exist. From its source, not yet exercised: it exits non-zero on unexpected failures, warnings or skips, and on an expected result that does not occur. An expected failure is an entry with `test-name`, `variant`, `configuration-filename`, `current-block`, `condition`, `expected-result` and `comment`.
+- **The suite is built from source (read from its compose files).** Its compose files build the server from a Maven jar, and pin only their `mongo` and `maven` images. Whether a published image exists was not checked. R5's pin follows from this.
 - **Browser:** HtmlUnit, not a real browser. Its comment says it "barfs at a lot of modern javascript". Whether `fetch` works there is unverified, so the conformance OP's pages are plain server-rendered forms (R5).
 - **Clients:** the Basic plan needs `client` and `client2`, each with a secret, and `oidcc-refresh-token` presents one's refresh token as the other.
 **Cross-change:** `release-readiness`'s gate must name the conformance job, which is a change to that change's tasks when this one is planned.
@@ -1083,7 +1084,7 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 #### R5. The gate runs the logout plans too, in `split-ci-jobs`' shape (the added plans decided 2026-11-04)
 
 - **Plans.** Basic OP and Config OP as before, plus RP-initiated logout and back-channel logout, because v1 ships both and the Foundation's suite tests them (the suite's own CI runs them against its reference provider). The added plans cost CI time, not yet measured, and the user accepted that on 2026-11-04.
-- **The job.** A `make conformance` target and a `conformance` job, in the shape `split-ci-jobs` set (#68): the job calls the target a contributor runs, the target is outside `make check`, and `ci-ok` requires the job. The suite is pinned by digest for `pincheck`.
+- **The job.** A `make conformance` target and a `conformance` job, in the shape `split-ci-jobs` set (#68): the job calls the target a contributor runs, the target is outside `make check`, and `ci-ok` requires the job. The suite is pinned to a full commit hash, because it is built from source, and the images the job names are pinned by digest for `pincheck`. This corrects the first wording, which assumed a suite image.
 - **The server.** `https` on a self-signed certificate, because the Config plan refuses `http`. The loopback `http` issuer stays for unit tests, without the `__Host-` prefix, which needs `Secure` (R9).
 - **The pages.** The conformance OP serves plain server-rendered forms that resume through the provider's Go API, because the suite drives HtmlUnit. It configures `client` and `client2`, both with PKCE-or-nonce (R1), and users holding profile, email, phone and address claims so the scope modules have something to check.
 - **Expected results.** The expected-failures file holds one entry, `oidcc-ensure-request-without-nonce-succeeds-for-code-flow` (R1). The runner fails if it stops failing, so it cannot go stale. Anything else found by task 14.3 is fixed or brought back as a decision, never added silently.
@@ -1197,7 +1198,7 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **[Strict `private_key_jwt` audience refusing older clients]** → clients built to Core's token-endpoint audience fail until they send the issuer. The compatibility option exists and is documented as accepting the ambiguity CVE-2025-27370 describes (P7).
 - **[Clickjacking on the consumer's login and consent pages]** → RFC 9700 §4.16 puts it on the authorization server, but the pages are the consumer's. D4's headers cover pages served through the chain; the README states the requirement for any other page.
 - **[`close-security-gaps` D8 refusing a provider-only chain with DPoP]** → amended there on 2026-11-02: DPoP is refused only when no enabled feature verifies bound credentials (P6).
-- **[Conformance facts come from reading the suite's source, not running it]** → task 1.2 runs it once, and corrects anything recorded here before the gate relies on it.
+- **[Conformance modules have not yet met a real OP]** → task 1.2 ran the suite against a stand-in, which confirms plans, modules and TLS but not how each module judges a provider. R1 and R2's module results stay read from source until 14.1 and 14.2 run them.
 
 ## Migration Plan
 
@@ -1304,7 +1305,7 @@ Also reasoned from `close-security-gaps` D8 and D9.
 **Researched (accessed 2026-11-02):**
 - [OpenID Connect OP conformance profiles](https://openid.net/certification/connect_op_testing/): what Basic OP and Config OP cover and the clients they need. The exact test lists are in a profile PDF that could not be read, so they are unverified.
 - [Conformance suite repository](https://gitlab.com/openid/conformance-suite) and [its build-and-run wiki](https://gitlab.com/openid/conformance-suite/-/wikis/Developers/Build-&-Run): running the suite locally with Docker.
-- Conformance suite source at commit `a5b9635`, read 2026-11-04 and not run: `OIDCCBasicTestPlan`, `OIDCCConfigTestPlan`, `AbstractOIDCCServerTest`, `OIDCCEnsureRequestWithValidPkceSucceeds`, `AbstractOIDCCSameAuthTwiceServerTest`, `CheckDiscEndpointAllEndpointsAreHttps`, `BrowserControl`, `scripts/run-test-plan.py`. It replaces the profile PDF that could not be read.
+- Conformance suite: run at `475e8bf` on 2026-11-04 against a stand-in (P9 says which facts), and its source at commit `a5b9635`, read the same day: `OIDCCBasicTestPlan`, `OIDCCConfigTestPlan`, `AbstractOIDCCServerTest`, `OIDCCEnsureRequestWithValidPkceSucceeds`, `AbstractOIDCCSameAuthTwiceServerTest`, `CheckDiscEndpointAllEndpointsAreHttps`, `BrowserControl`, `scripts/run-test-plan.py`. It replaces the profile PDF that could not be read.
 
 The decision that a green run gates the tag (P9) is reasoned from decision 1: no certified library sits underneath.
 

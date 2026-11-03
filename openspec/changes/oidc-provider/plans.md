@@ -1124,7 +1124,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 14.2: `make conformance` and the CI job
 **Files:** Modify `Makefile`, and the CI workflow `split-ci-jobs` leaves
 - [ ] Add `make conformance`, outside `make check`, which brings up the compose file and runs `scripts/run-test-plan.py --expected-failures-file test/conformance/expected-failures.json` over `oidcc-basic-certification-test-plan`, `oidcc-config-certification-test-plan`, `oidcc-rp-initiated-logout-certification-test-plan` and `oidcc-backchannel-rp-initiated-logout-certification-test-plan`. The runner already fails on an unexpected result, and on an expected one that stops occurring.
-- [ ] Pin the suite's image by digest, so `pincheck` passes.
+- [ ] Pin the suite to a full commit hash, at `475e8bf` or newer, since it builds from source, and pin every image the job names by digest, so `pincheck` passes. The target creates the export directory before calling `run-test-plan.py --export-dir`, which requires it to exist.
 - [ ] Add the job `conformance`, which calls that target, runs on pull requests and on `main`, uploads the logs with `actions/upload-artifact` pinned by SHA, and is in `ci-ok`'s `needs`.
 - [ ] Verify: the job appears on the PR and reports all four plans, and a deliberately failing module fails `ci-ok`.
 
