@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -288,6 +289,8 @@ func sourceThrottled(
 		// share one record. Writing another here would double it, and key it
 		// on the raw address, which an attacker rotating within one IPv6
 		// allocation chooses.
+		emitEvent(ctx, event.Event{Name: event.ExcessRateLimitExceeded, Outcome: event.OutcomeFailure})
+
 		return src, err
 
 	case endedBeforeTheAnswer(ctx, err):

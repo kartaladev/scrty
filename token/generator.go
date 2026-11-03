@@ -175,6 +175,16 @@ func (g *JWTGenerator) Verify(ctx context.Context, raw string) (*Claims, error) 
 // Generate signs a token for p, identified by id, with the key source's current
 // signing key. See Generator.
 func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Principal) (string, error) {
+	return g.GenerateWith(ctx, id, p)
+}
+
+// GenerateWith is Generate with per-token options: WithConfirmation binds the
+// token to a key the client holds. With no options it issues exactly what
+// Generate issues. An option that cannot be honoured fails it with ErrConfig,
+// and nothing is issued.
+func (g *JWTGenerator) GenerateWith(
+	ctx context.Context, id string, p *identity.Principal, opts ...IssueOption,
+) (string, error) {
 	// Never ErrInvalid: that is the verdict on a token a caller
 	// presented, and there is no token here. A consumer mapping
 	// ErrInvalid to "credential refused" must not see this.
@@ -191,6 +201,19 @@ func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Prin
 	}
 	if id == "" {
 		return "", fmt.Errorf("token: generate: %w", ErrNoTokenID)
+	}
+
+	var per issue
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&per)
+		}
+	}
+	// Before the key source is asked for anything: a binding that cannot be
+	// issued is the caller's mistake, and no token is signed for it.
+	cnf, err := per.cnf.claim()
+	if err != nil {
+		return "", fmt.Errorf("token: generate: %w", err)
 	}
 
 	cfg := g.cfg
@@ -225,6 +248,9 @@ func (g *JWTGenerator) Generate(ctx context.Context, id string, p *identity.Prin
 	}
 	if cfg.hasAudience {
 		builder = builder.Audience([]string{cfg.audience})
+	}
+	if cnf != nil {
+		builder = builder.Claim(confirmationClaim, cnf)
 	}
 
 	claims, err := builder.Build()

@@ -119,7 +119,7 @@ func (m *Passkeys) Rename(ctx context.Context, user identity.UserID, cid id.ID, 
 //
 // A cid that names no passkey of the user — another user's, or none — is
 // ErrNotFound, and nothing changes. A notice that cannot be queued is logged
-// and does not undo the removal.
+// and does not undo the removal; WithoutRemovalNotice queues none.
 //
 // By default, a removal also ends every other session of the user: every
 // session but s, which stays as it is, neither rotated nor marked.
@@ -153,7 +153,8 @@ func (m *Passkeys) Remove(
 		return err
 	}
 
-	end := m.endsOtherSessions(opts)
+	rmc := resolveRemoval(opts)
+	end := m.endsOtherSessions(rmc)
 	if end && nilcheck.IsNil(m.sessions) {
 		return fmt.Errorf("%w: a session revoker is required to end the user's other sessions", ErrConfig)
 	}
@@ -177,7 +178,9 @@ func (m *Passkeys) Remove(
 		m.endOtherSessionsAgain(ctx, s, cid)
 	}
 
-	m.notify(ctx, noticeRemoved, c, nil, end)
+	if !rmc.silent {
+		m.notify(ctx, noticeRemoved, c, nil, end)
+	}
 
 	return nil
 }
@@ -260,6 +263,7 @@ type RemoveOption func(*removeConfig)
 // removeConfig is what a removal's options chose.
 type removeConfig struct {
 	choice removeChoice
+	silent bool // WithoutRemovalNotice: queue no Removed notice
 }
 
 // removeChoice is a removal's choice about the user's other sessions.
@@ -283,9 +287,8 @@ func EndOtherSessions() RemoveOption {
 	return func(c *removeConfig) { c.choice = removeEnd }
 }
 
-// endsOtherSessions resolves a removal's options against the manager's
-// default: the last option given wins, and a nil option is skipped.
-func (m *Passkeys) endsOtherSessions(opts []RemoveOption) bool {
+// resolveRemoval applies a removal's options, skipping a nil one.
+func resolveRemoval(opts []RemoveOption) removeConfig {
 	var c removeConfig
 
 	for _, o := range opts {
@@ -294,6 +297,12 @@ func (m *Passkeys) endsOtherSessions(opts []RemoveOption) bool {
 		}
 	}
 
+	return c
+}
+
+// endsOtherSessions resolves a removal's choice against the manager's
+// default: the last choice given wins.
+func (m *Passkeys) endsOtherSessions(c removeConfig) bool {
 	switch c.choice {
 	case removeEnd:
 		return true
@@ -302,4 +311,13 @@ func (m *Passkeys) endsOtherSessions(opts []RemoveOption) bool {
 	default:
 		return !m.keepOnRemoval
 	}
+}
+
+// WithoutRemovalNotice sends no Removed notice for this removal, for a
+// consumer who tells the user some other way. It does not combine with the
+// other options' last-one-wins rule: given anywhere, it holds.
+//
+// Default: a removal that succeeds queues the Removed notice.
+func WithoutRemovalNotice() RemoveOption {
+	return func(c *removeConfig) { c.silent = true }
 }

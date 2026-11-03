@@ -94,6 +94,14 @@ func DefaultConfig() Config {
 	}
 }
 
+// Limiter is what Wrap returns: a ratelimit.Limiter that also answers
+// ratelimit.RecentFailureReporter, whatever the backend does. A backend that
+// cannot report is answered for by the decorator, as a key that has failures.
+type Limiter interface {
+	ratelimit.Limiter
+	ratelimit.RecentFailureReporter
+}
+
 // Wrap returns backend decorated with the unavailable handling cfg describes,
 // for one namespace's limit and window. The limit and window are the ones the
 // backend counts with; the fall-back mode counts locally with the same pair, and
@@ -106,7 +114,10 @@ func DefaultConfig() Config {
 // A nil backend (typed nil included), an empty namespace, a non-positive limit,
 // window, timeout or probe interval, an unknown mode, or a nil clock or logger
 // is an error wrapping ratelimit.ErrConfig.
-func Wrap(backend ratelimit.Limiter, namespace string, limit int, window time.Duration, cfg Config) (ratelimit.Limiter, error) {
+//
+// The result answers ratelimit.RecentFailureReporter by forwarding to the
+// backend when it implements that interface (HasRecentFailures).
+func Wrap(backend ratelimit.Limiter, namespace string, limit int, window time.Duration, cfg Config) (Limiter, error) {
 	if err := validate(backend, namespace, limit, window, cfg); err != nil {
 		return nil, err
 	}
@@ -275,6 +286,97 @@ func (l *limiter) checkBackend(ctx context.Context, key string, adm admission) (
 	returned = true
 
 	return exceeded, err
+}
+
+// errNoReport is the answer of a backend that does not implement
+// ratelimit.RecentFailureReporter, so the decorator cannot say.
+var errNoReport = errors.New("ratelimit: the backend limiter does not report recent failures")
+
+// HasRecentFailures asks the backend whether key has a failure in the window,
+// under the operation timeout, and reports true whenever the decorator cannot
+// say the key is clean. It records nothing and implements
+// ratelimit.RecentFailureReporter.
+//
+// The answer is true with an error when the caller's context has ended; when
+// the backend does not implement ratelimit.RecentFailureReporter; in refuse
+// mode, when a failure for key could not be recorded within the last window
+// (a failure this instance holds against it); while the breaker is open,
+// which keeps the decorator from calling the backend, in every mode; and when
+// the backend fails, which is reported to the breaker as a failed check is,
+// with an error wrapping ratelimit.ErrBackendUnavailable. The backend's own
+// answer is forwarded otherwise; in fall-back mode a key is also reported on
+// the failures this instance counted locally while it could not record them.
+func (l *limiter) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return true, fmt.Errorf("ratelimit: check abandoned: %w", err)
+	}
+
+	reporter, ok := l.backend.(ratelimit.RecentFailureReporter)
+	if !ok {
+		return true, errNoReport
+	}
+
+	if l.mode == ratelimit.UnavailableRefuse && l.hold.held(key) {
+		return true, errHeld
+	}
+
+	adm, pass := l.breaker.allow()
+	if !pass {
+		return true, ratelimit.ErrBackendUnavailable
+	}
+
+	has, err := l.recentBackend(ctx, reporter, key, adm)
+	switch {
+	case err == nil:
+		l.succeeded(ctx, adm)
+		return l.healthyRecent(ctx, key, has)
+	case ctx.Err() != nil:
+		l.breaker.abandon(adm)
+		return true, diag.Wrap(err, "ratelimit: check abandoned: the caller's context ended")
+	default:
+		l.failed(ctx, adm, err)
+		return true, unavailableError(err)
+	}
+}
+
+// recentBackend asks the backend under the operation timeout. A backend call
+// that panics abandons adm before the panic continues, as in checkBackend.
+func (l *limiter) recentBackend(ctx context.Context, reporter ratelimit.RecentFailureReporter, key string, adm admission) (has bool, err error) {
+	callCtx, cancel := context.WithTimeout(ctx, l.timeout)
+	defer cancel()
+
+	returned := false
+	defer func() {
+		if !returned {
+			l.breaker.abandon(adm)
+		}
+	}()
+
+	has, err = reporter.HasRecentFailures(callCtx, key)
+	returned = true
+
+	return has, err
+}
+
+// healthyRecent is the answer when the backend answered. In fall-back mode a
+// key has failures also when this instance counted one locally while it could
+// not record it. A local count that an outage filled holds no failure for the
+// keys it does not hold, so the backend's answer stands for them, as in
+// healthyExceeded.
+func (l *limiter) healthyRecent(ctx context.Context, key string, shared bool) (bool, error) {
+	if shared || l.local == nil {
+		return shared, nil
+	}
+
+	local, err := l.local.HasRecentFailures(ctx, key)
+	switch {
+	case errors.Is(err, ratelimit.ErrLimiterFull):
+		return false, nil
+	case err != nil:
+		return true, diag.Wrap(err, "ratelimit: check abandoned: the caller's context ended")
+	}
+
+	return local, nil
 }
 
 // RecordFailure records through the backend under the operation timeout alone,
@@ -635,4 +737,7 @@ func (l *limiter) refundBackend(ctx context.Context, r ratelimit.Receipt, adm ad
 	return err
 }
 
-var _ ratelimit.Limiter = (*limiter)(nil)
+var (
+	_ ratelimit.Limiter               = (*limiter)(nil)
+	_ ratelimit.RecentFailureReporter = (*limiter)(nil)
+)

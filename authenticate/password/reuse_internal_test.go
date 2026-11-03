@@ -11,7 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 )
 
-// emptyHistory is a History with nothing in it; these tests only build guards.
+// emptyHistory is a History with nothing in it; these tests only build policies.
 type emptyHistory struct{}
 
 func (emptyHistory) RecentPasswords(context.Context, identity.UserID, int) ([][]byte, error) {
@@ -46,7 +46,7 @@ func countOfType(matchers []Encoder, enc Encoder) int {
 	return n
 }
 
-func TestNewReuseGuard_DerivesOncePerStoredHash(t *testing.T) {
+func TestPolicy_NoReuse_DerivesOncePerStoredHash(t *testing.T) {
 	t.Parallel()
 
 	mustEnc := func(enc Encoder, err error) Encoder {
@@ -63,46 +63,46 @@ func TestNewReuseGuard_DerivesOncePerStoredHash(t *testing.T) {
 		name   string
 		enc    Encoder
 		opts   []ReuseOption
-		assert func(t *testing.T, g *ReuseGuard)
+		assert func(t *testing.T, g *Policy)
 	}
 
-	// onlyOwn asserts the guard's own algorithm is derived by exactly one
+	// onlyOwn asserts the policy's own algorithm is derived by exactly one
 	// matcher, and that the other built-in algorithms are still matched.
-	onlyOwn := func(total int) func(t *testing.T, g *ReuseGuard) {
-		return func(t *testing.T, g *ReuseGuard) {
-			assert.Same(t, g.enc, g.matchers[0], "the guard's own encoder comes first")
-			assert.Equalf(t, 1, countOfType(g.matchers, g.enc),
-				"a stored hash of the guard's own algorithm is derived by %d matchers, want 1",
-				countOfType(g.matchers, g.enc))
+	onlyOwn := func(total int) func(t *testing.T, g *Policy) {
+		return func(t *testing.T, g *Policy) {
+			assert.Same(t, g.enc, g.reuse.matchers[0], "the policy's own encoder comes first")
+			assert.Equalf(t, 1, countOfType(g.reuse.matchers, g.enc),
+				"a stored hash of the policy's own algorithm is derived by %d matchers, want 1",
+				countOfType(g.reuse.matchers, g.enc))
 
 			for _, builtin := range []Encoder{argon, bc, sc} {
-				assert.Positivef(t, countOfType(g.matchers, builtin), "no matcher for %T", builtin)
+				assert.Positivef(t, countOfType(g.reuse.matchers, builtin), "no matcher for %T", builtin)
 			}
 
-			assert.Len(t, g.matchers, total)
+			assert.Len(t, g.reuse.matchers, total)
 		}
 	}
 
 	cases := []testCase{
-		{name: "an Argon2id guard", enc: argon, assert: onlyOwn(3)},
-		{name: "a bcrypt guard", enc: bc, assert: onlyOwn(3)},
-		{name: "a scrypt guard", enc: sc, assert: onlyOwn(3)},
-		{name: "a consumer encoder guard keeps every built-in", enc: consumer, assert: onlyOwn(4)},
+		{name: "an Argon2id policy", enc: argon, assert: onlyOwn(3)},
+		{name: "a bcrypt policy", enc: bc, assert: onlyOwn(3)},
+		{name: "a scrypt policy", enc: sc, assert: onlyOwn(3)},
+		{name: "a consumer encoder policy keeps every built-in", enc: consumer, assert: onlyOwn(4)},
 		{
-			name: "consumer-supplied matchers of the guard's type are never left out",
+			name: "consumer-supplied matchers of the policy's type are never left out",
 			enc:  consumer,
 			opts: []ReuseOption{WithReuseMatchers(&pepperedEncoder{pepper: "b"}, argon)},
-			assert: func(t *testing.T, g *ReuseGuard) {
-				assert.Equal(t, 2, countOfType(g.matchers, consumer))
-				assert.Len(t, g.matchers, 3)
+			assert: func(t *testing.T, g *Policy) {
+				assert.Equal(t, 2, countOfType(g.reuse.matchers, consumer))
+				assert.Len(t, g.reuse.matchers, 3)
 			},
 		},
 		{
-			name: "a consumer-supplied built-in of the guard's type is kept",
+			name: "a consumer-supplied built-in of the policy's type is kept",
 			enc:  argon,
 			opts: []ReuseOption{WithReuseMatchers(argon)},
-			assert: func(t *testing.T, g *ReuseGuard) {
-				assert.Equal(t, 2, countOfType(g.matchers, argon))
+			assert: func(t *testing.T, g *Policy) {
+				assert.Equal(t, 2, countOfType(g.reuse.matchers, argon))
 			},
 		},
 	}
@@ -111,7 +111,7 @@ func TestNewReuseGuard_DerivesOncePerStoredHash(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			g, err := NewReuseGuard(emptyHistory{}, tc.enc, 3, tc.opts...)
+			g, err := NewPolicy(WithEncoder(tc.enc), NoReuse(emptyHistory{}, 3, tc.opts...))
 			require.NoError(t, err)
 
 			tc.assert(t, g)
@@ -119,22 +119,22 @@ func TestNewReuseGuard_DerivesOncePerStoredHash(t *testing.T) {
 	}
 }
 
-// BenchmarkReuseGuard_CheckOwnAlgorithmMiss is a check against one stored hash
-// of the guard's own algorithm that does not match, at default Argon2id
+// BenchmarkPolicy_NoReuse_CheckOwnAlgorithmMiss is a check against one stored hash
+// of the policy's own algorithm that does not match, at default Argon2id
 // parameters: it costs one derivation, not one per matcher of that algorithm.
-func BenchmarkReuseGuard_CheckOwnAlgorithmMiss(b *testing.B) {
+func BenchmarkPolicy_NoReuse_CheckOwnAlgorithmMiss(b *testing.B) {
 	enc, err := NewArgon2idEncoder()
 	require.NoError(b, err)
 
 	stored, err := enc.Encode("current")
 	require.NoError(b, err)
 
-	g, err := NewReuseGuard(emptyHistory{}, enc, 1)
+	g, err := NewPolicy(WithEncoder(enc), NoReuse(emptyHistory{}, 1))
 	require.NoError(b, err)
 
 	user := &identity.Details{ID: "u-1", Password: stored}
 
 	for b.Loop() {
-		_ = g.Check(b.Context(), user, "candidate")
+		_ = g.Check(b.Context(), user, "candidate-not-the-current-one")
 	}
 }

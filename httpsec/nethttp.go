@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"bytes"
+	"crypto/x509"
 	"io"
 	"math"
 	"mime"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 )
 
 // NewHTTPRequest adapts a net/http request.
@@ -41,8 +43,29 @@ func (h *httpRequest) Path() string           { return h.r.URL.Path }
 func (h *httpRequest) Header(n string) string { return h.r.Header.Get(n) }
 func (h *httpRequest) Query(n string) string  { return h.r.URL.Query().Get(n) }
 
+// EscapedPath is the path as the client sent it: net/http keeps the sent
+// spelling in URL.RawPath whenever it differs from the default encoding.
+func (h *httpRequest) EscapedPath() string { return h.r.URL.EscapedPath() }
+
 // QueryValues returns every value of the parameter, in the order sent.
 func (h *httpRequest) QueryValues(n string) []string { return h.r.URL.Query()[n] }
+
+// HeaderValues returns every line of the header, in the order received, so the
+// chain's trusted-proxy resolution joins repeated forwarded headers rather
+// than reading the first line alone. The slice is the caller's own copy.
+func (h *httpRequest) HeaderValues(n string) []string { return slices.Clone(h.r.Header.Values(n)) }
+
+// DelHeaders removes every header whose name match reports true from the
+// request itself, so the handler behind the chain does not read it either.
+// The chain calls it to remove the forwarded headers it consumed
+// (EnableTrustedProxies).
+func (h *httpRequest) DelHeaders(match func(name string) bool) {
+	for name := range h.r.Header {
+		if match(name) {
+			delete(h.r.Header, name)
+		}
+	}
+}
 
 // Cookie reports absence separately from an empty value, so an interceptor can
 // tell a cookie that was never sent from one deliberately cleared.
@@ -292,16 +315,37 @@ func (h *httpRequest) Body(limit int64) ([]byte, error) {
 // ClientIP is the host part of the transport peer, and "" when the peer
 // address is not in host and port form.
 //
-// No forwarding header is read: net/http holds no trusted-proxy configuration
-// to decide from, so honouring one here would let a client choose the bucket
-// its own failures are counted under. Forwarded-header resolution belongs to
-// an integration whose framework knows which proxies it trusts.
+// No forwarding header is read here: the request holds no trusted-proxy
+// configuration to decide from, so honouring one would let a client choose the
+// bucket its own failures are counted under. Forwarded-header resolution is the
+// chain's: with EnableTrustedProxies it resolves the client address from the
+// proxies the consumer names, and the chain reads the result from
+// ClientFromContext.
 func (h *httpRequest) ClientIP() string {
 	host, _, err := net.SplitHostPort(h.r.RemoteAddr)
 	if err != nil {
 		return ""
 	}
 	return host
+}
+
+// Host is r.Host: the Host header, or the host of an absolute request target,
+// as net/http resolved it. No forwarded header is read.
+func (h *httpRequest) Host() string { return h.r.Host }
+
+// Secure reports whether the request arrived over TLS, which net/http records
+// as a non-nil r.TLS. No forwarded header is read.
+func (h *httpRequest) Secure() bool { return h.r.TLS != nil }
+
+// ClientCertificate is the leaf of r.TLS.PeerCertificates, the first
+// certificate the client sent, and nil when the request did not arrive over
+// TLS or the client sent none. No header is read.
+func (h *httpRequest) ClientCertificate() *x509.Certificate {
+	if h.r.TLS == nil || len(h.r.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+
+	return h.r.TLS.PeerCertificates[0]
 }
 
 // NewHTTPResponseWriter adapts a net/http response writer.
@@ -318,6 +362,7 @@ type httpResponseWriter struct {
 }
 
 func (h *httpResponseWriter) SetHeader(n, v string) { h.w.Header().Set(n, v) }
+func (h *httpResponseWriter) AddHeader(n, v string) { h.w.Header().Add(n, v) }
 func (h *httpResponseWriter) SetCookie(c *Cookie)   { http.SetCookie(h.w, c) }
 
 // WriteHeader sends the status, and ignores a second call. An interceptor that

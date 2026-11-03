@@ -160,6 +160,18 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionSuccessorGoneAsUsed, "successor deleted reads as unused"),
 	sessionVariant(sessionSuccessorReadsStaleRecord, "a record past its retention deadline is not stored, swept or not"),
 	sessionVariant(sessionSuccessorIgnoresStaleness, "a successor past its own deadlines, unswept, reads as unused"),
+	sessionVariant(sessionListFoldsCase, "listing returns only the user's own sessions, matching the reference exactly"),
+	sessionVariant(sessionSaveWritesBinding, "a save keeps the key binding"),
+	sessionVariant(sessionListIgnoresUser,
+		"listing returns only the user's own sessions, matching the reference exactly"),
+	sessionVariant(sessionListIncludesSuperseded,
+		"listing returns one live head per family, without superseded or expired members"),
+	sessionVariant(sessionListIncludesExpired,
+		"listing judges expiry by the time the caller passes, not the store's clock"),
+	sessionVariant(sessionSaveWritesMetadata, "a save keeps the sign-in metadata and the CSRF token"),
+	sessionVariant(sessionSaveWritesCSRFToken, "a save keeps the sign-in metadata and the CSRF token"),
+	sessionVariant(sessionSupersedeDropsSignInState,
+		"a supersession inserts its successor with the successor's sign-in state"),
 	{
 		name: "session-" + string(sessionCreateRefusesEchoing),
 		run: func(t *testing.T) {

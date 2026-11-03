@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -857,6 +858,188 @@ func TestOIDCRPInitiatedLogout(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, oh.provider, serve(t, chain, logoutFormRequest(t.Context(), url.Values{})))
+		})
+	}
+}
+
+// TestLogout_ClearSiteData pins when a logout tells the browser to clear what
+// it stored: only when the consumer asked, only on a secure request, and only
+// when the logout succeeded.
+func TestLogout_ClearSiteData(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		opts      []httpsec.LogoutOption
+		secure    bool
+		stateful  bool
+		anonymous bool
+		request   func(ctx context.Context) *http.Request
+		assert    func(t *testing.T, s served)
+	}
+
+	post := func(ctx context.Context) *http.Request {
+		return logoutRequest(ctx, http.MethodPost, httpsec.DefaultLogoutPath, true)
+	}
+
+	unauthenticated := func(ctx context.Context) *http.Request {
+		return logoutRequest(ctx, http.MethodGet, httpsec.DefaultLogoutPath, true)
+	}
+
+	sent := func(want string) func(*testing.T, served) {
+		return func(t *testing.T, s served) {
+			t.Helper()
+
+			require.NoError(t, s.err)
+			assert.Equal(t, http.StatusOK, s.rec.Code)
+			assert.Equal(t, []string{want}, s.rec.Header().Values("Clear-Site-Data"))
+		}
+	}
+
+	notSent := func(t *testing.T, s served) {
+		t.Helper()
+
+		assert.Empty(t, s.rec.Header().Values("Clear-Site-Data"))
+	}
+
+	cases := []testCase{
+		{
+			name:    "cache and storage over HTTPS are sent as quoted directives",
+			opts:    []httpsec.LogoutOption{httpsec.WithLogoutClearSiteData("cache", "storage")},
+			secure:  true,
+			request: post,
+			assert:  sent(`"cache", "storage"`),
+		},
+		{
+			name:     "a session logout over HTTPS sends them too",
+			opts:     []httpsec.LogoutOption{httpsec.WithLogoutClearSiteData("cookies")},
+			secure:   true,
+			stateful: true,
+			request:  post,
+			assert:   sent(`"cookies"`),
+		},
+		{
+			name:    "every allowed directive is accepted",
+			opts:    []httpsec.LogoutOption{httpsec.WithLogoutClearSiteData("cache", "cookies", "storage")},
+			secure:  true,
+			request: post,
+			assert:  sent(`"cache", "cookies", "storage"`),
+		},
+		{
+			name:    "over plain HTTP nothing is sent",
+			opts:    []httpsec.LogoutOption{httpsec.WithLogoutClearSiteData("cache")},
+			request: post,
+			assert: func(t *testing.T, s served) {
+				require.NoError(t, s.err)
+				notSent(t, s)
+			},
+		},
+		{
+			name:    "a logout that was not asked to clear sends nothing",
+			secure:  true,
+			request: post,
+			assert: func(t *testing.T, s served) {
+				require.NoError(t, s.err)
+				notSent(t, s)
+			},
+		},
+		{
+			name:      "a refused logout sends nothing",
+			opts:      []httpsec.LogoutOption{httpsec.WithLogoutClearSiteData("cache")},
+			secure:    true,
+			anonymous: true,
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodPost, httpsec.DefaultLogoutPath, nil)
+			},
+			assert: func(t *testing.T, s served) {
+				require.Error(t, s.err)
+				notSent(t, s)
+			},
+		},
+		{
+			name:    "a request the logout does not answer sends nothing",
+			opts:    []httpsec.LogoutOption{httpsec.WithLogoutClearSiteData("cache")},
+			secure:  true,
+			request: unauthenticated,
+			assert: func(t *testing.T, s served) {
+				require.NoError(t, s.err)
+				assert.True(t, s.handlerRan)
+				notSent(t, s)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+
+			opts := []httpsec.Option{
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, tc.opts...),
+			}
+
+			if tc.stateful {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil).Times(1)
+
+				opts = append(opts, httpsec.EnableBearerToken(h.bearerTokenDeps()))
+			} else if !tc.anonymous {
+				opts = append(opts, statelessAuthentication())
+			}
+
+			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			req := tc.request(t.Context())
+			if tc.secure {
+				req.TLS = &tls.ConnectionState{}
+			}
+
+			tc.assert(t, serve(t, chain, req))
+		})
+	}
+}
+
+func TestLogout_ClearSiteDataConstruction(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		directives []string
+		assert     func(t *testing.T, err error)
+	}
+
+	refused := func(t *testing.T, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, httpsec.ErrConfig)
+		assert.Contains(t, err.Error(), "WithLogoutClearSiteData")
+	}
+
+	cases := []testCase{
+		{name: "no directive", directives: nil, assert: refused},
+		{name: "an unknown directive", directives: []string{"cache", "executionContexts"}, assert: refused},
+		{name: "clientHints is not allowed", directives: []string{"clientHints"}, assert: refused},
+		{name: "the wildcard is not allowed", directives: []string{"*"}, assert: refused},
+		{name: "a directive with a quote", directives: []string{`"cache"`}, assert: refused},
+		{name: "a directive in the wrong case", directives: []string{"Cache"}, assert: refused},
+		{name: "a repeated directive", directives: []string{"cache", "cache"}, assert: refused},
+		{name: "a known directive builds", directives: []string{"storage"}, assert: func(t *testing.T, err error) {
+			require.NoError(t, err)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+			_, err := httpsec.New(httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions},
+				httpsec.WithLogoutClearSiteData(tc.directives...)))
+			tc.assert(t, err)
 		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -31,6 +32,10 @@ type MFAResult struct {
 
 	// Session is the session, carrying its new handle.
 	Session *session.Session
+
+	// TokenType is how Token is presented: TokenTypeDPoP when the session is
+	// bound to a DPoP key, TokenTypeBearer otherwise.
+	TokenType TokenType
 }
 
 // MFAResponder writes the response to a successful second factor.
@@ -264,7 +269,11 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     behind fixed text, never read as "not enrolled".
 //  5. The throttle, before the response is read, so guessing costs attempts
 //     rather than time, and a locked-out user learns nothing from a body the
-//     endpoint cannot read. It counts per user across every method.
+//     endpoint cannot read. It counts per user across every method. Before
+//     it, a DPoP proof the request carries beside the Bearer credential of an
+//     unbound or certificate-bound session is verified and recorded
+//     (continuingProof): a refused one
+//     is ErrInvalidDPoPProof, counted nowhere and spending no challenge.
 //  6. The response, read the way the method's format declares and never from
 //     the URL. A response that cannot be read is ErrCredentialsMissing and one
 //     over the method's limit is ErrRequestTooLarge; neither is counted,
@@ -302,8 +311,14 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
+	// A proof given beside the session's credential, before the throttle
+	// counts anything or a challenge is spent.
+	if err := continuingProof(ex, s); err != nil {
+		return err
+	}
+
 	// Steps 5 to 8.
-	if err := checkResponse(ex, i.throttle, i.challenges, method, s); err != nil {
+	if err := checkResponse(ex, i.throttle, i.challenges, method, s, event.MFAVerifyFail); err != nil {
 		return err
 	}
 
@@ -314,6 +329,43 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	}
 
 	return i.resolve(ex, s, raised)
+}
+
+// continuingProof verifies the DPoP proof a request continuing the sign-in s
+// carries, at an endpoint that issues a credential for a sign-in already
+// created (second-factor verification, session renewal and
+// re-authentication) and so adds no binding: the sign-in keeps the one it was
+// created with.
+//
+// A DPoP-bound sign-in reaches here only under the DPoP scheme, with a proof
+// from its own key that the bearer verified and recorded, so nothing more is
+// read. Any other sign-in is presented under the Bearer scheme, whose
+// credential the bearer judges without a proof: an unbound one, and one bound
+// to a certificate, whose binding stays the certificate. A proof the request
+// carries beside such a credential is verified here, and its jti recorded,
+// before the endpoint spends anything. Its ath is judged against the
+// credential the chain's bearer authenticated (Exchange.RecordPresentedToken),
+// as RFC 9449 section 4.2 requires of a proof used with an access token: it
+// must hash that credential, under whatever scheme the bearer read it, and be
+// absent when no bearer authenticated one, as for a sign-in carried by a
+// cookie. A refusal is ErrInvalidDPoPProof.
+//
+// A request carrying no proof, and a chain without DPoP, check nothing: the
+// sign-in's binding rules are the bearer's, unchanged.
+func continuingProof(ex *Exchange, s *session.Session) error {
+	v := ex.dpop()
+	if v == nil || s.KeyBinding.JKT != "" || len(ex.Request.HeaderValues(dpopHeader)) == 0 {
+		return nil
+	}
+
+	ctx := ex.Context()
+
+	p, err := v.verify(ctx, ex.Request, ex.bearerCredential)
+	if err != nil {
+		return err
+	}
+
+	return v.record(ctx, p)
 }
 
 // behindSecondFactor judges the post-authentication phase again for s, whose
@@ -550,6 +602,11 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 		return rotationRefusal(err)
 	}
 
+	// The rotated session is stored, and its credential is handed out below,
+	// with the challenge error when one is still raised.
+	emitEvent(ctx, sessionEvent(event.MFAVerified, event.OutcomeSuccess, rotated))
+	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, rotated))
+
 	// Published on the exchange and on the context, so a consumer's error
 	// handling and their responder read the handle the caller is to present
 	// from now on rather than the one the rotation has just superseded.
@@ -563,7 +620,7 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session, raised policy
 		return &ChallengeError{Kind: raised, Session: rotated, Token: tok}
 	}
 
-	return i.respond(ex, MFAResult{Token: tok, Session: rotated})
+	return i.respond(ex, MFAResult{Token: tok, Session: rotated, TokenType: tokenTypeOf(rotated)})
 }
 
 // rotationRefusal is what a failed strict rotation is refused with at the
@@ -599,7 +656,7 @@ func rotationRefusal(err error) error {
 // this, and the empty refresh token field carries the same forward-
 // compatibility promise it does there.
 func writeMFAResult(ex *Exchange, result MFAResult) error {
-	body := loginDocument{AccessToken: result.Token}
+	body := loginDocument{AccessToken: result.Token, TokenType: result.TokenType}
 	if result.Session != nil {
 		body.ValidUntil = result.Session.IdleExpiresAt
 	}

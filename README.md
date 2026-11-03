@@ -940,14 +940,1263 @@ if errors.Is(err, httpsec.ErrReauthenticationRequired) ||
 | Begin response | the method's data, `Cache-Control: no-store` | `httpsec.WithReauthenticationBeginResponder` |
 | Method listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithReauthenticationMethodsResponder` |
 
+## Session management
+
+Users can see where they are signed in and sign out other devices. A sign-in is a session family:
+renewals do not show as extra devices, and a sign-in's handle is its family identifier, which is not
+a secret and never a session identifier.
+
+```go
+sessions, err := session.New(session.WithSessionMetadata()) // record address and user agent
+
+chain, err := httpsec.New(
+	httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+	httpsec.EnableSessionManagement(),
+	httpsec.EnableSignInNotice(queuedSender), // optional: tell the user about a new device
+	// ...
+)
+```
+
+### Endpoints
+
+| Request | Answer |
+|---|---|
+| `GET /sessions` | 200 `{"sessions":[{"handle","created_at","last_used_at","first_factor","pending","current","client_ip","user_agent"}]}` |
+| `DELETE /sessions/{handle}` | 204; ends that sign-in's whole family. The current sign-in's own handle ends it, as a logout does |
+| `DELETE /sessions` | 204; ends every sign-in but the current one, keeping a successor a racing renewal inserts |
+
+- Only a full session reaches them. A session owing a second factor, an enrolment, a recovery step
+  or a password change is refused with the challenge it owes, as on any other route.
+- Ending needs a recent authentication, judged as the recency guard judges it (`httpsec.ErrReauthenticationRequired`,
+  403). Listing does not.
+- The request's own sign-in is marked `current`, also when it presents a predecessor still inside
+  its renewal grace window. A sign-in owing a second factor or a recovery step is listed with
+  `pending` set, because an unknown pending sign-in is what a user most needs to see.
+- A malformed, unknown or foreign handle is `httpsec.ErrSessionHandleNotFound` (404), and nothing
+  is revoked.
+- Every response to a request under the prefix carries `Cache-Control: no-store`, including a
+  refusal from an earlier layer, such as a bearer refusing a revoked session reference.
+- A store failure is 500 with fixed text (`session.ErrListUnavailable` for the listing). A request
+  whose own context ended fails with the context's error.
+- `client_ip` and `user_agent` are empty unless the manager records sign-in metadata, which is off
+  by default because both are personal data.
+
+### Notices
+
+- **Passkey removal** notifies the user by default, naming the passkey and the time, never its
+  credential ID. `httpsec.WithoutPasskeyRemovalNotification` turns it off for the removal endpoint
+  (`passkey.WithoutRemovalNotice` for a single `Remove` call). A refused removal sends nothing, and
+  a failure to send keeps the removal.
+- **Sign-in from an unseen device** is opt-in (`httpsec.EnableSignInNotice`). After a login stores
+  a sign-in, it is compared with the user's other live sign-ins. When none matches, and the
+  consumer's `httpsec.SeenDevices` port (if any) has not seen the device either, the user is sent a
+  notice with the time and the device's browser and platform family ("Firefox on Linux", or "an
+  unrecognised device"). It never carries a token, a handle, the client address or the raw user
+  agent.
+  - A user's first sign-in is not notified.
+  - A sign-in whose session was never stored is not notified.
+  - All of its work runs after the sign-in, off the request path, so it never delays the response.
+    It runs on a context the request's end does not cancel, bounded by a timeout, and a panic in it
+    is recovered.
+  - At most 32 notices are in progress at once. A sign-in that completes while that many are is
+    not notified: its notice is dropped, never queued, and the drop is logged at WARN, sampled,
+    naming no user. The sign-in's response is the same either way.
+  - A failure, a timeout or a panic is logged without its text and does not affect the sign-in.
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Endpoints | off | `httpsec.EnableSessionManagement` |
+| Prefix | `/sessions` (`httpsec.DefaultSessionManagementPrefix`) | `httpsec.WithSessionManagementPrefix` |
+| Recency to end a sign-in | 15 minutes (`httpsec.DefaultRecentAuthenticationWindow`) | `httpsec.WithSessionManagementRecency` |
+| Session manager | the chain's (`httpsec.WithSessions`, or the first built-in's); none fails `New` | `httpsec.WithSessions` |
+| Listing response | the JSON above, `Cache-Control: no-store` | `httpsec.WithSignInListResponder` |
+| End response | 204, `Cache-Control: no-store` | `httpsec.WithSignInEndResponder` |
+| Caching under the prefix | `Cache-Control: no-store` on every response | none: a listing of sign-ins is never cacheable |
+| Sign-in metadata | not recorded | `session.WithSessionMetadata` |
+| Unseen-device notice | off; needs metadata recording and a sender, or `New` fails | `httpsec.EnableSignInNotice` |
+| Same device | equal user agents | `httpsec.WithSignInMatcher` |
+| Device history beyond live sign-ins | none | `httpsec.WithSeenDevices` |
+| Notice recipient | the principal's username | `httpsec.WithSignInNoticeRecipient` |
+| Notice text | plain English, no brand | `httpsec.WithSignInNoticeMessage` |
+| Notice work timeout | 30 seconds (`httpsec.DefaultSignInNoticeTimeout`) | `httpsec.WithSignInNoticeTimeout` |
+| Notices in progress at once | 32 (`httpsec.DefaultSignInNoticeConcurrency`); beyond it a notice is dropped and logged | `httpsec.WithSignInNoticeConcurrency` |
+| Notice device text | browser and platform family, never the raw user agent | `httpsec.WithSignInNoticeMessage` (it receives only the family text) |
+| Passkey removal notice | on | `httpsec.WithoutPasskeyRemovalNotification` |
+
+## Behind a reverse proxy
+
+By default the chain attributes a request to its TCP peer, judges it secure only over TLS, and takes
+its host from the `Host` header. Forwarded headers are neither read nor removed. That is the safe
+answer when nothing sits in front of the application, and the wrong one behind a proxy: every client
+shares the proxy's rate-limit bucket.
+
+`httpsec.EnableTrustedProxies` names the proxies whose forwarded headers are believed, the one header
+family they write, and the fields of it to trust:
+
+```go
+chain, err := httpsec.New(
+	httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")}, // the proxies, never 0.0.0.0/0
+		Headers: httpsec.XForwarded(
+			httpsec.ForwardedFor,
+			httpsec.ForwardedProto,
+			httpsec.ForwardedHost("app.example.com"), // the allowlist is required
+		),
+		MaxHops: 1, // the default: only the peer is a trusted hop
+	}),
+	// ...
+)
+```
+
+The same configuration answers the client, the scheme and the host on net/http, gin and fiber. The
+adapters hand the chain the raw peer and headers; gin's `SetTrustedProxies` and fiber's
+`TrustProxy`/`ProxyHeader` have no effect on it. A handler reads the resolved values with
+`httpsec.ClientFromContext`.
+
+Two limits to know. A custom adapter that does not remove the consumed headers hides them from the
+chain's interceptors, but not from its framework's own handlers, which still see what the client
+and proxy sent. And a proxy connected over a Unix socket has no IP address, so no prefix can trust
+it: its forwarded headers are ignored, and there is no override today.
+
+### Defaults
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Forwarded headers | ignored | `EnableTrustedProxies` |
+| Trusted hops skipped | 1 | `TrustedProxies.MaxHops` |
+| A catch-all prefix (`0.0.0.0/0`, `::/0`) | refused at construction | `TrustAllProxies()` |
+| A forwarded host outside the allowlist | refused 400 (`ErrHostNotAllowed`), before any interceptor | none: name the host in `ForwardedHost` |
+| Consumed headers (`Forwarded`, `X-Forwarded-*`, the certificate header) | removed from every request | `KeepForwardedHeaders()` |
+| TLS ending upstream with no forwarded headers | requests are plain HTTP | `WithHTTPSDeployment()` (not with trusted proxies) |
+
+### nginx
+
+```nginx
+location / {
+    proxy_pass http://app:8080;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+}
+```
+
+`$proxy_add_x_forwarded_for` appends the peer nginx saw to whatever the client sent. The chain reads
+the list from the right, so a client's own entries are never reached. `proxy_set_header` replaces
+the client's `X-Forwarded-Proto` and `X-Forwarded-Host`; a header nginx does not set is passed
+through as the client sent it, which is why each field is trusted only when named.
+
+### Traefik
+
+```yaml
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      insecure: false   # do not pass through forwarded headers from untrusted clients
+      # trustedIPs: ["10.30.0.0/16"]  # only when another proxy sits in front of Traefik
+```
+
+Traefik writes `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` itself. Whether it
+replaces a `X-Forwarded-Proto` or `X-Forwarded-Host` the client sent in every configuration and
+version is **not verified** here. Before trusting `ForwardedHost` or `ForwardedProto` behind Traefik,
+send a request with forged `X-Forwarded-Host: evil.example` and `X-Forwarded-Proto: https` through
+your deployment and check that the chain refuses the host and sees the scheme Traefik terminated.
+Until then, trust `ForwardedFor` alone.
+
+## Passwords
+
+`password.NewPolicy()` decides whether a new password may be set. With no options it requires 15 to
+128 characters (counted in code points, never trimmed or normalised) and refuses the bundled list of
+common passwords; it is safe to use as it stands. Each option adds or replaces one rule and leaves
+the others alone.
+
+| Behaviour | Default | Override |
+|-----------|---------|----------|
+| Length | 15 to 128 code points | `password.MinLength`, `password.MaxLength` (floors 8 and 64) |
+| Common passwords | the bundled list, case-insensitive | `password.CommonPasswords`, `password.WithoutCommonPasswords` |
+| Words tied to the user or the service | none | `password.ContextWords` |
+| Breached passwords | no check | `password.Breached(password.PwnedPasswords(client), password.Refuse)` |
+| Reuse | no history | `password.NoReuse(history, depth)` |
+| Encoder for a change | Argon2id at its defaults | `password.WithEncoder` |
+
+Rules run cheapest first and the first refusal ends the check, so a short or common candidate never
+causes a breach lookup or a history read. A refusal matches `password.ErrPasswordRejected` (422) and
+names its rule; its text never carries the candidate, a hash or a context word.
+
+An encoder with a byte limit, as bcrypt's 72 bytes, has a longer candidate refused as too long by
+the check, so a check and a change agree. The built-in bcrypt encoder states its limit through the
+optional `password.InputLimiter` method `MaxInputBytes() int`; your own encoder implements it the
+same way to get the same answer from the check. An encoder that states none gets no byte check, and
+`Policy.Change` answers its `password.ErrTooLong` as a too-long refusal (422), never as a failure.
+
+### The breach check says what a failed lookup means
+
+The breach check is opt-in, and it has no default failure mode, because the safe answer and the
+convenient one differ and the choice is yours. Only the first five characters of the password's
+SHA-1 leave the process, through the confined outbound client.
+
+- `password.Refuse` fails the check with `password.ErrLookupUnavailable` (500) while the corpus
+  cannot be asked: no password is set during an outage.
+- `password.Accept` lets the candidate through that rule and the next rule runs: an outage never
+  stops a password change.
+  It is not silent: each such candidate writes one ERROR record with fixed text and the failure's
+  Go type, never the candidate, its hash or the error's text. The record goes to `slog.Default()`
+  as it is when the policy is built; `password.WithPolicyLogger(l)` replaces it with your logger.
+
+Either way, a caller who cancelled the request gets the context's own error, not a lookup failure.
+
+### Upgrading outdated hashes at login
+
+The built-in encoders implement `password.Upgrader`, so they can say a stored hash was made with
+weaker parameters: any one parameter below the encoder's (Argon2id memory, iterations, threads,
+salt or key length; scrypt N, r, p, salt or key length; bcrypt cost) is enough, even if another is
+above, and the new hash has exactly the encoder's parameters. By default nothing is rehashed. Give
+form login (`httpsec.WithLoginRehash`), Basic (`httpsec.WithBasicAuthRehash`) or the password
+re-proof (`httpsec.WithReauthenticationRehash`) a write, and a request whose password verified asks
+the current encoder; when it says so, the password is encoded again (one more key derivation on
+that request) and the write receives the user, the hash it replaces and the new hash. A login
+challenged for a second factor still upgrades; one refused after the password verified does not.
+The write's error is logged, without any hash, and never changes the outcome.
+
+Rehashing does not move users between algorithms. The upgrade is reached only once the password
+verified, and a built-in encoder does not verify another algorithm's hash, so moving users from,
+say, bcrypt to Argon2id at login needs a consumer encoder that verifies both and encodes with the
+new one.
+
+Write the new hash only while the replaced one is still stored, or a password change that landed
+meanwhile is undone. `password.ConditionalProvisionerRehash(store)` does that for the library's
+identity stores:
+
+```go
+rehash, err := password.ConditionalProvisionerRehash(identityStore) // a nil store is an error here
+if err != nil {
+	return err
+}
+
+httpsec.EnableFormLogin(deps, httpsec.WithLoginRehash(rehash))
+```
+
+It is one call to the store: an update conditional on the replaced hash
+(`identity.WithUserPasswordIf`), which the store decides in the `UPDATE`'s own `WHERE`. When the
+stored hash changed meanwhile, nothing is written, the store reports `identity.ErrNotUpdated`, and
+the write treats that as done: the newer password stays, and the next login upgrades it. The
+password's age is not moved, because a rehash is not a password change. A consumer store must
+honour the condition too; the identity conformance suite (`test/identity`) checks it.
+
+## Security headers
+
+`httpsec.EnableSecurityHeaders` is off until you enable it. Once enabled, with no
+options, every response the chain produces, its own refusals included, carries:
+
+- `Content-Security-Policy` with a fresh per-response nonce, `'strict-dynamic'`,
+  `object-src 'none'`, `base-uri 'none'` and `frame-ancestors 'none'`;
+- `X-Content-Type-Options: nosniff`;
+- `Referrer-Policy: strict-origin-when-cross-origin`;
+- `Cross-Origin-Opener-Policy: same-origin-allow-popups`, so a popup-based OIDC
+  login keeps working;
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`, only on a
+  request the chain judges secure (TLS, `WithHTTPSDeployment`, or a trusted
+  proxy's forwarded scheme).
+
+`X-XSS-Protection`, `X-Frame-Options`, `Cross-Origin-Embedder-Policy` and
+`Origin-Agent-Cluster` are never sent unless you add them with `WithHeader`.
+The layer does not wrap the response writer, so a handler's own value for a
+header wins and flushing and hijacking work as without it.
+
+The layer is outside every built-in interceptor. A consumer interceptor you
+register ahead of it (`httpsec.Before(httpsec.OrderSecurityHeaders)`) runs outside
+it, and a response that interceptor writes carries no security headers; register
+yours at or after the layer's slot to have its responses marked.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSecurityHeaders(
+        httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("img-src", "'self'", "data:"))),
+        httpsec.WithHeaderProfile(httpsec.APIHeaders(), httpsec.PathPrefix("/api/")),
+    ),
+)
+```
+
+Every profile is editable with the same editors (`WithHeader`, `WithoutHeader`,
+`WithCSP`): `APIHeaders(opts...)` edits the API profile, and
+`NewHeaderProfile(opts...)` starts a profile of your own from nothing. The first
+profile whose matcher selects a request applies. `WithHSTS`, `WithCSPReportOnly`
+and the reporting options belong to the layer, not to a profile, and a profile
+given one fails construction.
+
+A policy with no directive is refused at construction, whether it is the zero
+`CSPPolicy` given to `WithCSP` or an empty (or blank) value given to
+`WithHeader("Content-Security-Policy", "")`. The same holds for
+`Content-Security-Policy-Report-Only`. To send no policy, use
+`WithoutHeader("Content-Security-Policy")`. This is a breaking change before the
+first tag: an empty policy used to be sent as it was.
+
+### Rolling a policy out
+
+`WithCSPReportOnly()` sends the policy as `Content-Security-Policy-Report-Only`,
+so browsers report what it would block and block nothing.
+`WithCSPReportOnlyPolicy(p)` sends a stricter candidate beside the enforced
+policy, with the same nonce. `WithReportingEndpoint("csp", "https://reports.example.com/csp")`
+adds `Reporting-Endpoints`, `report-to` and `report-uri`; the endpoint must be an
+absolute `https` URL, and receiving the reports is up to you.
+
+### A static page: hashes instead of a nonce
+
+A page that is cached cannot carry a per-response nonce. `HashCSP("sha256-...")`
+lists the script hashes you supply, which your build computes, and generates no
+nonce. `HashCSP(...).With(httpsec.CSPDirective(...))` adds directives.
+
+### Giving the nonce to a page
+
+The handler reads the nonce with `httpsec.CSPNonce(r.Context())`. It finds none
+on a route a profile without a nonce serves.
+
+**`html/template`.** Pass the nonce as data and put it on each script you own;
+do not inject it into every tag a template or a proxy can find (OWASP's advice).
+
+```go
+nonce, _ := httpsec.CSPNonce(r.Context())
+err := page.Execute(w, struct{ Nonce string }{nonce})
+```
+
+```html
+<script nonce="{{.Nonce}}" src="/app.js"></script>
+```
+
+**Vite.** Vite's `html.cspNonce` option adds a `nonce` attribute to the `<script>`
+and `<style>` tags it emits, and a placeholder
+`<meta property="csp-nonce" nonce="PLACEHOLDER" />` whose nonce Vite uses when
+it needs one, in development and in the build. Vite's documentation says the
+placeholder must be replaced with a unique value for each request. Serve the
+built `index.html` through a handler that does so (the placeholder text is
+whatever you set `html.cspNonce` to):
+
+```go
+nonce, _ := httpsec.CSPNonce(r.Context())
+w.Header().Set("Content-Type", "text/html; charset=utf-8")
+_, _ = io.WriteString(w, strings.ReplaceAll(indexHTML, "PLACEHOLDER", nonce))
+```
+
+**Next.js.** The Next.js guide has its own proxy generate the nonce, put it in
+the request's `Content-Security-Policy` header and an `x-nonce` request header,
+and has Next.js read the nonce from the `'nonce-{value}'` in that header while
+rendering. It requires dynamic rendering for nonces. So a Next.js application
+owns its own policy: where a route's pages are rendered by Next.js, give that
+route a profile that sends no `Content-Security-Policy`, so the two policies do
+not meet, and keep the other headers:
+
+```go
+httpsec.WithHeaderProfile(
+    httpsec.NewHeaderProfile(
+        httpsec.WithHeader("X-Content-Type-Options", "nosniff"),
+        httpsec.WithHeader("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ),
+    httpsec.PathPrefix("/app/"),
+)
+```
+
+Sources: the [OWASP CSP Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html),
+[web.dev: Strict CSP](https://web.dev/articles/strict-csp),
+[Vite's CSP section](https://vite.dev/guide/features#content-security-policy-csp) and
+[Next.js's CSP guide](https://nextjs.org/docs/app/guides/content-security-policy).
+
+## CORS
+
+`httpsec.EnableCORS` is off until you enable it, and then needs an explicit list
+of origins. It runs inside the chain, in `OrderCORS`, so it behaves the same on
+net/http, gin and fiber, and answers a preflight before any authentication or
+the authorizer could refuse it.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableSecurityHeaders(),
+    httpsec.EnableCORS(httpsec.CORSPolicy{
+        AllowedOrigins: []string{"https://app.example.com"},
+        AllowedHeaders: []string{"Authorization", "Content-Type"},
+        ExposedHeaders: []string{"WWW-Authenticate"},
+    }, httpsec.WithOriginPattern("https://*.preview.example.com")),
+)
+```
+
+Once enabled:
+
+- an origin is allowed only when it equals one on the list, after both are
+  lower-cased and stripped of a default port, or matches a `WithOriginPattern`
+  pattern, whose `*` is one whole host label followed by at least two more;
+- `*` alone allows every origin without credentials: any request carrying an
+  `Origin`, `null` included, gets `Access-Control-Allow-Origin: *`, and no
+  origin is ever reflected;
+- every response the layer or an interceptor behind it answers carries
+  `Vary: Origin`, allowed or not. `Origin` is added to any `Vary` your
+  middleware or an earlier interceptor set, never in place of it. A consumer
+  interceptor you register ahead of the layer (`httpsec.Before(httpsec.OrderCORS)`)
+  runs outside it, and a response that interceptor writes carries no
+  `Vary: Origin` unless it adds one; register yours at or after the layer's
+  slot to have its responses marked;
+- an allowed origin gets `Access-Control-Allow-Origin` with its own origin and,
+  on actual responses, the exposed headers, also on the chain's own refusals,
+  so a page can read a 401's `WWW-Authenticate`;
+- a preflight gets 204: with the allow headers when its origin, method (default
+  `GET`, `HEAD`, `POST`) and every requested header are allowed, and with no
+  CORS header otherwise. `Access-Control-Max-Age` defaults to 600 seconds;
+  `WithoutPreflightCaching()` sends `0` instead;
+- with DPoP enabled, `DPoP` is allowed and `DPoP-Nonce` and `WWW-Authenticate`
+  are exposed; with CSRF protection reading a token header, that header is
+  allowed. `WithoutAutomaticCORSHeaders()` turns these additions off.
+
+Construction refuses no origins, `null`, a scheme other than http or https, an
+origin with a path, query, fragment or userinfo, `*` with `AllowCredentials` or
+beside other origins, a wildcard outside `WithOriginPattern`, a pattern with
+fewer than two labels after its wildcard (`https://*.com`), and a `MaxAge`
+below one second or set beside `WithoutPreflightCaching()`. scrty holds no
+public-suffix list, so `https://*.co.uk` is accepted like
+`https://*.example.com`; do not name a pattern under a public suffix.
+
+`ResponseWriter` requires `AddHeader(name, value)`, which keeps the values
+already set (net/http's `Header().Add`). An adapter of your own must implement
+it; the CORS layer uses it to extend `Vary`.
+
+## CSRF protection
+
+`httpsec.EnableCSRFProtection` refuses state-changing requests another site
+makes the user's browser send. It is off until you enable it, and required as
+soon as an interceptor authenticates by a cookie: `New` fails unless you give
+`EnableCSRFProtection` or say plainly that you opt out with
+`WithoutCSRFProtection()`.
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableCORS(httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example.com"}}),
+    httpsec.EnableCSRFProtection(
+        httpsec.WithCSRFExemption(http.MethodPost, "/webhooks/payments"),
+    ),
+)
+```
+
+Every request whose method is not exactly `GET`, `HEAD` or `OPTIONS` is judged
+in `OrderCSRF`, before any authentication:
+
+- `Sec-Fetch-Site: same-origin` or `none` passes; any other value is refused
+  unless the `Origin` is trusted;
+- without `Sec-Fetch-Site`, an `Origin` that differs in scheme, host or port
+  from the request's own is refused unless it is trusted, and `Origin: null`
+  never matches;
+- a request with neither header is not a browser's, and passes.
+
+Trusted origins are every origin `EnableCORS` lists or matches by a pattern (a
+CORS `*` trusts none), plus those `WithCSRFTrustedOrigins` adds;
+`WithoutCORSOriginsTrustedForCSRF()` stops trusting the CORS ones. The refusal
+is `httpsec.ErrCrossSiteRequest`, answered 403.
+
+**Behind a proxy that ends TLS**, the request's own origin is the one the chain
+resolves. Without `EnableTrustedProxies` or `WithHTTPSDeployment()`, the chain
+sees a plain-HTTP request for the proxy's upstream address, so an older browser
+that sends no Fetch Metadata, only `Origin: https://app.example.com`, is refused.
+Configure one of them.
+
+### The token
+
+A request authenticated by a cookie must also carry its sign-in's token, in the
+`X-CSRF-Token` header or the `csrf_token` field of a URL-encoded form
+(`WithCSRFTokenNames` renames both). A request authenticated only by an
+`Authorization` header needs none. The page reads the token from the request it
+was served on:
+
+```go
+func page(w http.ResponseWriter, r *http.Request) {
+    token, ok := httpsec.CSRFToken(r.Context())
+    // render token into a <meta> tag or a hidden csrf_token field
+}
+```
+
+- By default the token is 32 random bytes made when the sign-in is created and
+  stored on it. It survives renewal and rotation, and a new
+  sign-in gets a new one. It is compared in constant time.
+- A sign-in made before CSRF protection was enabled holds no token, and its
+  unsafe cookie requests are refused until the user signs in again.
+- The header is read first, then the form field of an
+  `application/x-www-form-urlencoded` body of at most 1 MiB, never the query
+  string. A multipart form must send the token in the header. A body over
+  1 MiB that carries the token only in the field is refused (403).
+- `WithCSRFTokens` replaces the source, for example with an HMAC over the
+  sign-in's family under your own key. `CSRFToken` and the check then both read
+  through it, and sign-ins no longer store a token.
+
+An interceptor of your own that authenticates by a cookie implements
+`httpsec.CookieAuthenticator` and calls `httpsec.CheckCSRFToken(ex, session)`
+before handing the session on. A check that passes also makes that sign-in the
+one `CSRFToken` reads, so your page gets its token with nothing more to
+publish.
+
+- Register it **after** `OrderCSRF` (at `OrderBearerToken`, for example). With
+  `EnableCSRFProtection`, `New` refuses a cookie authenticator at or before
+  `OrderCSRF`: it would run before the request was judged, and its token would
+  go unchecked. There is no override.
+- `CheckCSRFToken` fails closed when CSRF protection never judged the request,
+  for example when it is called outside the chain: the error wraps
+  `httpsec.ErrConfig`, is answered 500, and your interceptor publishes no
+  session. On a chain built with `WithoutCSRFProtection()` it passes.
+- On a `GET`, `HEAD` or `OPTIONS`, and on an exempt route, it checks no token
+  and passes.
+
+### Exemptions
+
+`WithCSRFExemption(method, path)` exempts one route, such as a provider's
+webhook, from both checks. Every other protection still applies to it.
+
+- The method and the path are matched exactly, against the path as the client
+  sent it (`Request.EscapedPath`), neither decoded nor cleaned. Write the
+  pattern as clients send it. `/webhooks/payments/`, `/Webhooks/payments`,
+  `/webhooks/payments/../../settings` and any other encoding, such as
+  `/webhooks%2Fpayments` or `/webhooks/p%61yments`, are other routes and are
+  judged, whatever your framework's router decodes them to.
+- A `*` segment matches exactly one path segment that, decoded, is not empty,
+  `.` or `..` and holds no `/`: `/webhooks/*/events` matches
+  `/webhooks/stripe/events`, not `/webhooks/a/b/events` or
+  `/webhooks/a%2Fb/events`.
+- Construction refuses an exemption with no method, of `GET`, `HEAD` or
+  `OPTIONS`, of `/` alone, with an empty pattern, a relative path, dot or empty
+  segments, a `*` inside a segment, or no segment but wildcards. No option
+  exempts every route; that is `WithoutCSRFProtection()`.
+- Construction also refuses a fixed segment that is a malformed percent-encoding
+  (`%zz`), decodes to `.`, `..` or something holding `/` (`%2e%2e`, `%2E`,
+  `a%2Fb`), or holds a character a request always escapes, such as a space or
+  `é` (`/webhooks/café`): it could never match, so write it in its escaped form
+  (`/webhooks/caf%C3%A9`, `/webhooks/a%20b`). An escaped segment is kept and
+  matches only that escaped form.
+- With OIDC login, `POST` to the back-channel logout endpoint (the
+  `WithOIDCBackchannelLogoutPath` prefix followed by one provider name) is
+  exempt by default, because the provider calls it server to server. The
+  prefix is matched as a literal, never as a pattern, so a `*` in it widens
+  nothing. A prefix that cannot be exempt as written (one holding a
+  percent-encoding, a character a request escapes such as `/idp/déconnexion`,
+  or an empty or dot segment) fails construction; fix the
+  path or give `WithoutBackchannelLogoutExemption()`, which removes the
+  exemption.
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Protection | off; required with a cookie authenticator | `httpsec.EnableCSRFProtection`, or `httpsec.WithoutCSRFProtection` |
+| Trusted origins | the CORS layer's, never `*` | `httpsec.WithCSRFTrustedOrigins`, `httpsec.WithoutCORSOriginsTrustedForCSRF` |
+| Token names | header `X-CSRF-Token`, field `csrf_token` | `httpsec.WithCSRFTokenNames` |
+| Token source | 32 random bytes stored on the sign-in | `httpsec.WithCSRFTokens` |
+| Exempt routes | the OIDC back-channel logout endpoint only | `httpsec.WithCSRFExemption`, `httpsec.WithoutBackchannelLogoutExemption` |
+
+## DPoP
+
+`httpsec.EnableDPoP` binds the tokens the chain issues to a key the client
+holds (RFC 9449). The client signs a short proof for every request, so a token
+copied out of a log, a proxy or a browser extension is of no use without the
+private key. It needs a feature that verifies bound credentials (today
+`EnableBearerToken` or `EnableSessionBearer`; your own handler that checks
+proofs does not count), and is off until you enable it. It also needs the host
+your proofs name, declared by you: `PublicURL`, or trusted proxies that name
+their allowed hosts with `ForwardedHost`. The chain never takes it from the
+request's own `Host` header, which the client chooses, so a chain with neither
+is a construction error:
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableBearerToken(bearerDeps), // or EnableSessionBearer
+    httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://app.example.com"}),
+)
+```
+
+Behind a reverse proxy, you may declare the host through the proxy instead:
+`EnableTrustedProxies` with `ForwardedHost("app.example.com")`. Trusted
+proxies without `ForwardedHost` do not count.
+
+Once enabled:
+
+- both bearer modes accept `Authorization: DPoP <token>` with one `DPoP` proof
+  header; unbound tokens still work as `Bearer`, unless `Require` is set;
+- every issuing endpoint (login, second factor, passkey login, magic link, OIDC
+  handoff, recovery, re-authentication, renewal) checks a request's proof
+  before it spends anything, and binds the sign-in and the token to the
+  proof's key (`cnf.jkt`). The token response says `"token_type": "DPoP"`;
+- a bound token presented as `Bearer`, or with a proof from another key, is
+  refused (401, `ErrInvalidDPoPProof`) with
+  `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`. A request
+  with no token gets a `DPoP` and a `Bearer` challenge, or only the `DPoP` one
+  when DPoP is required. The challenge is always on with `EnableDPoP`; to
+  change it, remove or replace the header in a `WithErrorHandler` (or a
+  guard's `WithGuardErrorHandler`);
+- a sign-in's binding is fixed when it is created: a second factor and a
+  renewal keep it, and a re-authentication may bind a sign-in that was not.
+
+### Defaults
+
+| Field | Default |
+|---|---|
+| `Require` | `false`: accepted, not required |
+| `ProofMaxAge` | 60 seconds either side of the chain's clock |
+| `Algorithms` | `ES256` only; `none` and HMAC are refused at construction |
+| `MaxProofSize` | 8 KiB, refused before anything is parsed |
+| `Replay` | in memory, per process |
+| `Nonce` | off |
+| `NonceLifetime` | 5 minutes, when nonces are on; the floor is 10 seconds (`MinDPoPNonceLifetime`) |
+| `PublicURL` | none, and none is refused at construction unless trusted proxies name their allowed hosts (`ForwardedHost`; see "Behind a reverse proxy") |
+
+With more than one replica, give `Replay` a store they share, or a proof can be
+replayed once on each replica within its lifetime.
+
+### Server nonces
+
+Nonces are off by default: the 60-second lifetime and the replay store already
+bound replay, and a nonce costs the client a round trip whenever it has none.
+When you turn them on, they are sealed with your key material, so every
+replica accepts a nonce any of them issued without a shared store. The chain
+holds no key of its own, so `NonceCipher` is required (a construction error
+without it). The cipher your sessions already seal with serves, and nonces are
+sealed with their own additional data, so a nonce never opens as anything else;
+a keyring kept for nonces alone is better, so rotating it touches nothing else:
+
+```go
+kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("2026-11", key))
+// ...
+c, err := seal.NewAEADCipher(kr)
+// ...
+httpsec.EnableDPoP(httpsec.DPoP{
+    PublicURL:   "https://app.example.com",
+    Nonce:       true,
+    NonceCipher: seal.SessionCipher(c),
+})
+```
+
+A proof without a current nonce is refused (401, `ErrDPoPNonceRequired`, which
+also matches `ErrInvalidDPoPProof`) with `error="use_dpop_nonce"` and a fresh
+nonce in `DPoP-Nonce`. The client signs a new proof with it and retries. A
+response to a proof whose nonce is past half its lifetime carries the next
+one. Every response that hands out a nonce is `Cache-Control: no-store`, and
+each replica issues one nonce at a time, shared by its requests. With
+`EnableCORS`, `DPoP` is allowed and `DPoP-Nonce` and
+`WWW-Authenticate` are exposed for you.
+
+A client with `Nonce: true` keeps the last `DPoP-Nonce` it saw, from the
+`use_dpop_nonce` 401 and from later responses, puts it in the next proof's
+`nonce` claim, and retries once on that 401:
+
+```js
+let nonce; // the last DPoP-Nonce seen; headersFor signs a proof with it and sets Authorization and DPoP
+let res = await fetch(url, { headers: await headersFor(url, nonce) });
+nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+if (res.status === 401 && res.headers.get("WWW-Authenticate")?.includes("use_dpop_nonce")) {
+  res = await fetch(url, { headers: await headersFor(url, nonce) }); // a new proof, nonce set
+  nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+}
+```
+
+### In the browser
+
+The browser's WebCrypto makes the key pair and signs the proofs. The private
+key is generated non-extractable, so no script can read it out; keep the
+`CryptoKeyPair` in IndexedDB so the same key signs every request of the
+sign-in it is bound to. A key that is lost leaves its token unusable, and the
+user signs in again.
+
+```ts
+// dpop.ts
+const encoder = new TextEncoder();
+
+function base64url(bytes: ArrayBuffer | Uint8Array): string {
+  let binary = "";
+  for (const b of new Uint8Array(bytes)) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function createDPoPKey(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+}
+
+export interface ProofOptions {
+  accessToken?: string; // the token sent as "Authorization: DPoP"; none at sign-in
+  nonce?: string;       // the last DPoP-Nonce the server sent
+}
+
+export async function dpopProof(
+  keys: CryptoKeyPair,
+  method: string,
+  url: string,
+  options: ProofOptions = {},
+): Promise<string> {
+  const { kty, crv, x, y } = await crypto.subtle.exportKey("jwk", keys.publicKey);
+  const target = new URL(url, globalThis.location?.href);
+
+  const header = { typ: "dpop+jwt", alg: "ES256", jwk: { kty, crv, x, y } };
+  const claims: Record<string, unknown> = {
+    jti: crypto.randomUUID(),
+    htm: method.toUpperCase(),
+    htu: target.origin + target.pathname,
+    iat: Math.floor(Date.now() / 1000),
+  };
+  if (options.accessToken) {
+    claims.ath = base64url(await crypto.subtle.digest("SHA-256", encoder.encode(options.accessToken)));
+  }
+  if (options.nonce) {
+    claims.nonce = options.nonce;
+  }
+
+  const input = `${base64url(encoder.encode(JSON.stringify(header)))}.${base64url(encoder.encode(JSON.stringify(claims)))}`;
+  // WebCrypto's ECDSA signature is r || s, the encoding JWS uses for ES256.
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, encoder.encode(input));
+
+  return `${input}.${base64url(signature)}`;
+}
+```
+
+`htu` is the URL as the browser sends it, without query or fragment, and the
+chain compares the path as sent, percent-encoding intact. When the page calls
+the API through another host, such as a frontend server's rewrite, set
+`PublicURL` to the origin the browser sees.
+
+The test module signs in with a proof this file produced
+(`test/testdata/dpop/`), so a change on either side that breaks the other
+fails there.
+
+#### React
+
+One fetch wrapper signs every request and retries once when the server asks
+for a nonce:
+
+```ts
+// dpopFetch.ts
+import { createDPoPKey, dpopProof } from "./dpop";
+
+let keys: Promise<CryptoKeyPair> | undefined; // load from IndexedDB in a real app
+let nonce: string | undefined;
+
+export async function dpopFetch(url: string, init: RequestInit = {}, accessToken?: string): Promise<Response> {
+  keys ??= createDPoPKey();
+  const method = init.method ?? "GET";
+
+  const send = async () => {
+    const headers = new Headers(init.headers);
+    headers.set("DPoP", await dpopProof(await keys!, method, url, { accessToken, nonce }));
+    if (accessToken) headers.set("Authorization", `DPoP ${accessToken}`);
+    return fetch(url, { ...init, headers });
+  };
+
+  let res = await send();
+  nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+  if (res.status === 401 && res.headers.get("WWW-Authenticate")?.includes('error="use_dpop_nonce"')) {
+    res = await send(); // a new proof, with the nonce just received
+    nonce = res.headers.get("DPoP-Nonce") ?? nonce;
+  }
+  return res;
+}
+```
+
+```tsx
+import { useEffect, useState } from "react";
+import { dpopFetch } from "./dpopFetch";
+
+export function Orders({ accessToken }: { accessToken: string }) {
+  const [orders, setOrders] = useState<{ id: string }[]>([]);
+
+  useEffect(() => {
+    dpopFetch("/api/orders", {}, accessToken).then((r) => r.json()).then(setOrders);
+  }, [accessToken]);
+
+  return <ul>{orders.map((o) => <li key={o.id}>{o.id}</li>)}</ul>;
+}
+
+// Sign-in: the response's token_type is "DPoP".
+export async function signIn(username: string, password: string): Promise<string> {
+  const res = await dpopFetch("/login", { method: "POST", body: new URLSearchParams({ username, password }) });
+  return (await res.json()).access_token;
+}
+```
+
+A retry sends the body again, so pass one that can be read twice, such as a
+string or `URLSearchParams`, not a stream.
+
+#### Next.js
+
+The private key lives in the browser, so proofs are signed in client
+components; a Server Component or a route handler holds no key and cannot sign
+one. Use the same `dpopFetch` from a component marked `"use client"`:
+
+```tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { dpopFetch } from "@/lib/dpopFetch";
+
+export default function Orders({ accessToken }: { accessToken: string }) {
+  const [orders, setOrders] = useState<{ id: string }[]>([]);
+
+  useEffect(() => {
+    dpopFetch(`${process.env.NEXT_PUBLIC_API_ORIGIN}/api/orders`, {}, accessToken)
+      .then((r) => r.json())
+      .then(setOrders);
+  }, [accessToken]);
+
+  return <ul>{orders.map((o) => <li key={o.id}>{o.id}</li>)}</ul>;
+}
+```
+
+Calling the API's own origin keeps `htu` equal to the URL the chain sees. If
+requests go through a Next.js rewrite instead, the browser signs the frontend's
+URL, and the chain needs `PublicURL` set to that origin.
+
+#### htmx
+
+This sample assumes server nonces are off; with `Nonce: true`, add the nonce
+the client last saw to the proof, as in "Server nonces".
+
+A proof is signed asynchronously, and `htmx:configRequest`, where headers are
+set, is not. `htmx:confirm` fires before every request and can hold it:
+`preventDefault()` stops it, and `detail.issueRequest()` sends it later, so the
+proof is made there and added in `htmx:configRequest`:
+
+```js
+import { createDPoPKey, dpopProof } from "./dpop.js";
+
+const keys = createDPoPKey(); // load from IndexedDB in a real app
+const proofs = new WeakMap();
+let accessToken; // set after sign-in
+
+document.body.addEventListener("htmx:confirm", (evt) => {
+  if (!accessToken || proofs.has(evt.detail.elt)) return;
+
+  evt.preventDefault();
+  keys
+    .then((k) => dpopProof(k, evt.detail.verb, evt.detail.path, { accessToken }))
+    .then((proof) => {
+      proofs.set(evt.detail.elt, proof);
+      evt.detail.issueRequest(true); // true skips hx-confirm's window.confirm()
+    });
+});
+
+document.body.addEventListener("htmx:configRequest", (evt) => {
+  const proof = proofs.get(evt.detail.elt);
+  if (!proof) return;
+
+  proofs.delete(evt.detail.elt);
+  evt.detail.headers["Authorization"] = `DPoP ${accessToken}`;
+  evt.detail.headers["DPoP"] = proof;
+});
+```
+
+`issueRequest(true)` skips the `window.confirm()` of `hx-confirm`; on an element
+that has one, ask the question in the `htmx:confirm` handler first. Each
+request gets a new proof, because a proof is accepted once.
+
+## Automation challenge
+
+`httpsec.EnableAutomationChallenge` puts a challenge of your choosing, a
+CAPTCHA, a managed challenge or a proof of work, in front of the chain's
+unauthenticated flows, so credential stuffing and enumeration cost more. scrty
+bundles no vendor: you implement `httpsec.ChallengeVerifier` over the service
+you use, and the chain asks it. Nothing asks for a challenge until you enable
+it.
+
+```go
+// stubVerifier shows the shape of a verifier. It is a stub, not an
+// integration: a real one sends the response token to your challenge
+// service, with your secret, and reads its verdict.
+type stubVerifier struct {
+    check func(ctx context.Context, token string) (bool, error)
+}
+
+func (v stubVerifier) Verify(
+    ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals,
+) (httpsec.ChallengeDecision, error) {
+    // Ordinary traffic is not asked; a source with recent failures is, and so
+    // is a fresh IPv6 /64 inside an aggregate others failed from. The
+    // identifier signal is not a reason to challenge on its own: it can tell
+    // a known account from an unknown one (see the stated limits below), so
+    // read it only together with other evidence of automation.
+    if !s.SourceHasFailures && !s.SourceAggregateHasFailures {
+        return httpsec.ChallengeNotNeeded, nil
+    }
+
+    token := r.Header("X-Challenge-Response") // wherever your page puts it
+    if token == "" {
+        return httpsec.ChallengeRefuse, nil
+    }
+
+    ok, err := v.check(ctx, token)
+    if err != nil {
+        return 0, err // an outage, not a refusal: answered 500
+    }
+    if !ok {
+        return httpsec.ChallengeRefuse, nil
+    }
+
+    return httpsec.ChallengePass, nil
+}
+
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableAutomationChallenge(stubVerifier{check: myService.Check}),
+)
+```
+
+Once enabled:
+
+- form login, the magic-link request, the passwordless passkey begin and the
+  recovery start ask the verifier, after their source limit and before their
+  own work and any account lookup. Basic is not in that default: it carries
+  credentials on every request, so a challenge would be consulted on every API
+  call. Name it to challenge it, as in
+  `WithChallengeFlows(httpsec.ChallengeFlowBasicAuth, httpsec.ChallengeFlowFormLogin)`;
+  the option replaces the default selection with the flows it names, and may
+  name only flows the chain enables. A flow it does not enable, or the default
+  selection over a chain that enables none of the four default flows (a chain
+  with only Basic, say), fails `New` with `ErrConfig` naming `WithChallengeFlows`
+  or the flow, because the verifier would never be asked and the chain would
+  look protected when it is not;
+- `ChallengePass` and `ChallengeNotNeeded` let the request through;
+  `ChallengeRefuse` refuses it with `ErrChallengeRequired` (403). The refusal
+  counts against the flow's source limit like a failed attempt, never against
+  the username's lockout; `WithoutChallengeRefusalCounting()` stops the count.
+  The magic-link request has no source limit, so a refusal there is counted
+  nowhere;
+- a verifier error is a dependency failure: `ErrChallengeUnavailable` (500)
+  with fixed text, the verifier's error reachable through `errors.Is` and
+  `errors.As` but never in the text or a log record, charged to nothing. A
+  client that hangs up while the verifier runs fails with its context's error;
+- the verifier is told (`ChallengeSignals`):
+  - `SourceHasFailures`: whether the source has recent failures;
+  - `SourceAggregateHasFailures`: whether the IPv6 aggregate holding the source
+    (`WithIPv6Aggregate`, a /56 by default) has recent failures, from any
+    source inside it. A client rotating through the /64s of its allocation
+    arrives at each one clean, so this is what shows it. It is reported apart
+    from the source's own signal, which keeps its meaning, and is false for
+    IPv4 (IPv4-mapped addresses included) and for a guard with no aggregate
+    (`WithoutIPv6Aggregate`);
+  - `IdentifierHasFailures`, at form login and Basic (when named) only: whether
+    the username has failures within the failure window of the chain's lockout
+    policy (`lockout.WithFailureWindow`), so the challenge and the lockout
+    agree on what "recent" means.
+
+  Whatever cannot answer, a limiter or attempt store that fails, or a limiter
+  that does not implement `ratelimit.RecentFailureReporter`, reads as having
+  failures, so the verifier asks.
+
+### Defaults
+
+| Setting | Default |
+|---|---|
+| Verifier | none: the seam is off |
+| Flows | form login, magic-link request, passwordless begin and recovery start; Basic only when named (`WithChallengeFlows`) |
+| Refusal | counted against the source limit (`WithoutChallengeRefusalCounting`) |
+| Aggregate signal | the source's IPv6 aggregate, the chain's `WithIPv6Aggregate` prefix (/56); false for IPv4 and with `WithoutIPv6Aggregate` |
+| Identifier signal | form login and Basic only: a failed login for the username within the lockout policy's failure window (24 hours when the chain's engine holds no lockout policy; `lockout.WithFailureWindow`). Always false at the other three flows |
+
+### Stated limits
+
+- The in-memory limiter and the shared limiters of `redisstore`, `sqlstore` and
+  `pgxstore` all report recent failures (`ratelimit.RecentFailureReporter`). A
+  limiter you write yourself reports them by implementing that one optional
+  method; without it, every source reads as having failures, which can only
+  make the verifier ask more. A shared limiter that cannot reach its store, or
+  that is answering for an outage, reports failures too.
+- The magic-link request has no source limit, so a refusal there is counted
+  nowhere. Adding one to that endpoint is outside this seam.
+- The identifier signal is withheld at the recovery start, the magic-link request
+  and the passwordless begin. A sign-in by an account's owner clears its recorded
+  failures and nobody clears an unknown name's, so at a flow that answers alike
+  for both, the signal would let a verifier answer whether an account exists. At
+  form login and Basic it stays, with that residual: after one failed attempt
+  each, an unknown username reports failures and a known one whose owner has since
+  signed in does not. The lockout reset already lifts a known account's lockout
+  and not an unknown name's, so the signal tells a client no more than that.
+  Do not refuse on the identifier signal alone.
+- The passwordless begin's limiter counts every begin, so there
+  `SourceHasFailures` means the source has begun before in the window.
+
+## Certificate-bound tokens (mTLS)
+
+`httpsec.EnableCertificateBinding` binds the tokens the chain issues to the
+TLS client certificate the client signed in with (RFC 8705). It suits
+service-to-service callers that already hold a certificate and no browser key:
+a token copied out of a log is of no use without the certificate's private
+key. Like DPoP, it needs a feature that verifies bound credentials
+(`EnableBearerToken` or `EnableSessionBearer`), and it is off until you enable
+it:
+
+```go
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableBearerToken(bearerDeps), // or EnableSessionBearer
+    httpsec.EnableCertificateBinding(),
+)
+
+srv := &http.Server{
+    Handler: chain.Middleware()(app),
+    TLSConfig: &tls.Config{
+        ClientAuth: tls.RequireAndVerifyClientCert, // the TLS server judges the certificate
+        ClientCAs:  clientCAs,
+        MinVersion: tls.VersionTLS12,
+    },
+}
+```
+
+Once enabled:
+
+- every issuing endpoint (login, second factor, passkey login, magic link, OIDC
+  handoff, recovery, re-authentication of an unbound sign-in) whose request
+  presents a client certificate binds the sign-in and the token to the
+  certificate's thumbprint, `cnf.x5t#S256`: base64url of the SHA-256 of its
+  DER encoding. A request without a certificate gets an unbound token. The
+  token is still presented as `Bearer`, and the token response says
+  `"token_type": "Bearer"`;
+- a certificate-bound token, or session reference, is accepted only on a
+  request presenting the same certificate. Another certificate, or none, is
+  refused with `ErrCertificateBinding` (401). The request's certificate is read
+  once, in the `OrderMTLS` slot;
+- with DPoP enabled too, a sign-in that carries a valid proof is bound to the
+  DPoP key only, whether or not it also presents a certificate. A token carries
+  one confirmation, and a DPoP key survives proxies that do not forward
+  certificates;
+- a token carrying `cnf.x5t#S256` presented while certificate binding is off
+  is refused with `ErrCertificateBinding`, never accepted as a plain bearer
+  token, by `EnableBearerToken` and `EnableSessionBearer` alike and whatever
+  scheme (`Bearer` or `DPoP`) carried it;
+- `EnableCertificateBinding` together with `EnableDPoP(httpsec.DPoP{Require:
+  true})` is refused by `New` with an error wrapping `httpsec.ErrConfig` that
+  names both options: with a proof required, every issuing request would carry
+  one and be bound to its key, so no certificate binding could be made.
+
+**The library compares thumbprints and nothing else.** It does not check the
+certificate's chain, dates, key usage or revocation; that is the TLS server's
+job (`tls.Config.ClientAuth` and `ClientCAs` above) or the job of the proxy
+that terminates TLS. A server that asks for a certificate without verifying it
+still binds soundly, since only the holder of the private key can present the
+certificate again, but then any self-signed certificate can sign in.
+
+### Behind a proxy that terminates TLS
+
+The application then never sees the client's TLS connection. Name the header
+the proxy forwards the certificate in, on the trusted-proxy configuration:
+
+```go
+httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+    Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+    Headers:  httpsec.XForwarded(httpsec.ForwardedFor),
+}, httpsec.WithClientCertificateHeader("X-Client-Cert", nil)) // nil: URL-encoded PEM
+```
+
+- The header is read only from a trusted proxy, and only when it is sent once;
+  on two lines it is ignored, and the request has no certificate. A peer that
+  is not a trusted proxy has its header ignored, and its own TLS connection's
+  certificate, if any, is used. A trusted proxy's own connection certificate is
+  never taken for the client's.
+- The header is removed with the other forwarded headers before the first
+  interceptor (unless `KeepForwardedHeaders()`). Its value is kept, from a
+  trusted proxy only, and decoded once: `Request.ClientCertificate()` answers
+  the forwarded certificate to every interceptor, whether or not certificate
+  binding is enabled, so an interceptor of your own that judges the client by
+  its certificate sees the same answer the binding does.
+- **Whichever proxy you run, it must overwrite or strip the header on every
+  request**, a request that arrives without a client certificate included. A
+  proxy that sets the header only when it has a certificate passes on a copy
+  the client sent itself, and the library cannot tell it from the proxy's own.
+  The client could then present anybody's certificate, which is public, as its
+  own, and a token bound to that certificate would be accepted from it.
+- The default decoder reads URL-encoded PEM, as nginx's
+  `$ssl_client_escaped_cert` writes it. The decoded text must be exactly one
+  `CERTIFICATE` PEM block, with nothing but whitespace before and after it.
+  Several blocks, text before or after the block, or a block that does not
+  parse mean the request has no certificate, so a certificate-bound token on
+  it is refused. A value that does not decode means the same.
+- A proxy that forwards another format needs a decoder of your own, handed the
+  header's value as received:
+
+```go
+// The proxy forwards the DER certificate, base64-encoded.
+decodeDER := func(v string) (*x509.Certificate, error) {
+    der, err := base64.StdEncoding.DecodeString(v)
+    if err != nil {
+        return nil, err
+    }
+    return x509.ParseCertificate(der)
+}
+
+httpsec.WithClientCertificateHeader("X-Client-Cert", decodeDER)
+```
+
+#### nginx
+
+```nginx
+server {
+    listen 443 ssl;
+    # ssl_certificate and ssl_certificate_key as usual.
+
+    ssl_client_certificate /etc/nginx/client-ca.pem; # the CAs client certificates are verified against
+    ssl_verify_client      optional;                 # or on, to refuse clients without one
+
+    location / {
+        proxy_pass http://app:8080;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Client-Cert   $ssl_client_escaped_cert;
+    }
+}
+```
+
+`$ssl_client_escaped_cert` is the client certificate as URL-encoded PEM, which
+the default decoder reads. `proxy_set_header` redefines the header, so an
+`X-Client-Cert` the client sent itself is not passed on, and a field whose
+value is empty is not passed at all; that meets the rule above for requests
+with and without a certificate. nginx verifies the certificate against
+`ssl_client_certificate`; the outcome is in `$ssl_client_verify`. With
+`ssl_verify_client optional_no_ca`, nginx asks for a certificate but does not
+require it to be signed by a trusted CA, and verification is left to another
+service: the library does none, so choose it only when that service exists.
+Do not forward the deprecated `$ssl_client_cert`, whose lines are joined with
+tabs; the default decoder does not read it.
+
+Other proxies are not listed here because their forwarded format has not been
+checked against their documentation. Write a decoder for the format yours
+documents, and test it with a certificate forwarded through your deployment.
+
+### Defaults
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Certificate binding | off; a certificate-bound token is refused | `EnableCertificateBinding()` |
+| Where the certificate comes from | the TLS connection | `WithClientCertificateHeader` behind a trusted proxy |
+| Forwarded certificate format | URL-encoded PEM | the decoder given to `WithClientCertificateHeader` |
+| Certificate validation | none in the library | the TLS server's `ClientAuth`/`ClientCAs`, or the proxy |
+| A sign-in with a DPoP proof and a certificate | bound to the DPoP key | none: a token carries one confirmation |
+| `DPoP{Require: true}` beside certificate binding | refused at construction (`ErrConfig`) | none: no certificate binding could be made |
+| Forwarded certificate header sent on two lines, or a value that is not exactly one PEM certificate | no certificate | none |
+
+## Security events
+
+`httpsec.EnableSecurityEvents` reports every security outcome the chain decides
+to a sink you supply, as an `event.Event` named from the
+[OWASP Logging Vocabulary](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Vocabulary_Cheat_Sheet.html)
+where it names the outcome, and under a `scrty_` prefix where it does not. It
+is off until you enable it: with no sink, nothing is reported.
+
+```go
+logger := slog.Default()
+
+chain, err := httpsec.New(
+    httpsec.EnableFormLogin(loginDeps),
+    httpsec.EnableSecurityEvents(func(ctx context.Context, e event.Event) {
+        logger.LogAttrs(ctx, slog.LevelInfo, "security event",
+            slog.String("event", e.Name),
+            slog.String("outcome", e.Outcome),
+            slog.String("user", string(e.User)),
+            slog.String("client_ip", e.ClientIP),
+            slog.String("factor", string(e.Factor)),
+            slog.String("session", e.Session),
+            slog.Time("at", e.At),
+        )
+    }),
+)
+```
+
+`go doc github.com/kartaladev/scrty/event` lists every name and when it is
+reported; `event.Names()` returns them. Among them: `authn_login_success`,
+`authn_login_fail`, `authn_login_fail_max` and `authn_login_lock` (the failure
+that locks an identifier, once per lock; under the default escalating wait, a
+failure after a wait has run out locks the identifier again, for longer, and
+is reported again), `authn_token_created`,
+`authn_token_reuse` (a superseded session presented again), `session_created`,
+`session_renewed`, `session_logout`, `authz_fail`, `excess_rate_limit_exceeded`,
+`malicious_csrf`, and the `scrty_` names for second factors, passkeys,
+recovery, re-authentication, session management, host, DPoP, certificate-binding
+and automation-challenge refusals, and signing-key rotation.
+
+The lockout observer (`lockout.WithObserver`) and the session-reuse observer
+(`session.WithReuseObserver`) keep working; their outcomes also reach the sink,
+as `authn_login_lock` and `authn_token_reuse`. A lock is reported by the
+lockout policy's view, so give form login and Basic `lockout.Policy.Attempts()`
+as their `Attempts`.
+
+A component you also call outside a chain takes a sink of its own, which
+defaults to none: `apikey.WithSecurityEvents`, `lockout.WithSecurityEvents`,
+`mfa.WithThrottleSecurityEvents`, `mfa.WithResetSecurityEvents`,
+`recovery.WithSecurityEvents`, `session.WithSecurityEvents` and
+`signingkey.WithSecurityEvents`. On a request a chain reports for, the
+component reports through the chain and its own sink is not called, so one
+outcome is reported once.
+
+### The sink's contract
+
+- It is called synchronously, on the request that decided the outcome, with a
+  context from which the request's cancellation has been removed, so a client
+  that hangs up does not cut the delivery short.
+- It cannot change the outcome, the status or the error. It returns nothing,
+  and a panic in it is recovered and logged without the event's contents.
+- **A sink that blocks holds the request, and that is yours to manage.** A
+  sink that does slow work, such as a network write, hands the event to its
+  own queue and returns. The library keeps no queue: bounding memory or losing
+  events is your trade-off to make.
+- It should do no work that depends on whether an account exists. A recovery
+  start is reported alike for a username that names an account and one that
+  names none, so its latency does not tell them apart; a sink that looks the
+  user up only when an event names one would tell them apart again.
+- It may be called concurrently, from every request at once.
+
+### What an event carries, and what it never does
+
+An event carries its name, its time from the deciding component's clock, its
+outcome, the user when one is known, the client address the chain resolved
+(through trusted proxies when they are configured), the first factor where one
+applies, and `Session`, the SHA-256 digest of the session's identifier, never
+the identifier. No event carries a password, token, code, link secret, key,
+DPoP proof, certificate, CSRF token or stored hash. Only what happened is
+reported: a credential issued and then discarded reports no creation, and a
+dependency that failed or a client that hung up before a verdict reports no
+failure.
+
+### Stated limits
+
+- A magic-link redemption and an OIDC handoff answer a refusal and an outage
+  with one error, by design, so their failures are not reported.
+- A second factor's refusal is reported only when the method's error wraps one
+  of `mfa`'s refusal sentinels (`ErrInvalidCode`, `ErrVerifyThrottled`,
+  `ErrAuthenticatorRefused`, `ErrSameChannel`); any other error is taken for an
+  outage and reports nothing.
+- `Session` is a digest. To correlate it with a session, digest the identifier
+  the same way; the event never names the session itself.
+- A lock is reported once within one process. With an attempt store several
+  replicas share, failures on different replicas at the same moment may each
+  report it. A failure for which the attempt store could not say whether the
+  identifier was already locked loses its event, which the lockout policy
+  logs; the failure itself is recorded and counts.
+
+### Defaults
+
+| Behaviour | Default | Override |
+|---|---|---|
+| Security events | off; nothing is reported | `httpsec.EnableSecurityEvents(sink)` |
+| A component's own sink, outside a chain | none | the component's `WithSecurityEvents` option |
+| A nil sink, or an option given twice | refused at construction | none |
+| Delivery | synchronous, on the deciding request | your sink hands events to its own queue |
+
 ## Development
 
 ```sh
 make tools   # install pinned golangci-lint, mockgen and govulncheck into ./.bin
-make check   # gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
+make check   # pin check, tools tests, gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
 ```
 
 `make check` is what continuous integration runs.
+
+### Supply chain
+
+`make vuln` runs `govulncheck` over every published module with the workspace off, so each module is
+scanned against the versions its own `go.mod` requires, as a consumer gets them. `make pincheck`
+fails a workflow that references an action by anything but a full commit SHA, and `make sbom` writes
+a CycloneDX SBOM per module.
+
+`.github/dependabot.yml` configures Dependabot **version** updates for each module. Security updates
+are a separate repository setting that no file can enable: the repository requires **Dependabot
+security updates** to be enabled (Settings, Advanced Security) so that a published advisory opens a
+pull request without waiting for the weekly schedule.
 
 ## License
 

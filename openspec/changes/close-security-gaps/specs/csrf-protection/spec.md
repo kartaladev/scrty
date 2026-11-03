@@ -69,7 +69,7 @@ Every origin the CORS policy lists exactly, or matches by an explicit pattern, S
 - **THEN** it is refused with the cross-site-request error
 
 ### Requirement: Cookie-authenticated unsafe requests need a token bound to the sign-in
-An unsafe request authenticated by a cookie SHALL carry a CSRF token, in a header or form field whose names are replaceable, `X-CSRF-Token` and `csrf_token` by default. The token SHALL be issued for the request's sign-in, and SHALL be refused when it is missing, malformed, or issued for another sign-in. It SHALL stay valid across the renewals and rotations of that sign-in, and SHALL NOT be accepted for a new sign-in after logout or a fresh login. It SHALL be compared in constant time. The token SHALL be readable by the consumer's page through a documented accessor. A request authenticated only by an `Authorization` header SHALL NOT need a token.
+An unsafe request authenticated by a cookie SHALL carry a CSRF token, in a header or form field whose names are replaceable, `X-CSRF-Token` and `csrf_token` by default. The token SHALL be issued for the request's sign-in, and SHALL be refused when it is missing, malformed, or issued for another sign-in. It SHALL stay valid across the renewals and rotations of that sign-in, and SHALL NOT be accepted for a new sign-in after logout or a fresh login. It SHALL be compared in constant time. The token SHALL be readable by the consumer's page through a documented accessor. A request authenticated only by an `Authorization` header SHALL NOT need a token. By default the token SHALL be at least 32 random bytes made when the sign-in's session is built and stored on the sign-in, and a sign-in that holds no token SHALL be refused on unsafe cookie-authenticated requests. The consumer SHALL be able to replace the token source, and the accessor and the check SHALL then use the consumer's source.
 
 #### Scenario: Missing token
 - **WHEN** a cookie-authenticated `POST` passes the Fetch Metadata check but carries no CSRF token
@@ -91,6 +91,14 @@ An unsafe request authenticated by a cookie SHALL carry a CSRF token, in a heade
 - **WHEN** a `POST` authenticated by `Authorization: Bearer` carries no CSRF token
 - **THEN** the token check does not refuse it
 
+#### Scenario: Sign-in without a token
+- **WHEN** a cookie-authenticated `POST` arrives for a sign-in made before CSRF protection was enabled, so it holds no token
+- **THEN** it is refused with the cross-site-request error
+
+#### Scenario: Consumer's token source
+- **WHEN** the consumer replaces the token source with one that derives the token from the sign-in's handle under their own key
+- **THEN** the accessor returns that source's token, a cookie-authenticated `POST` carrying it passes, and one carrying the default source's token is refused
+
 ### Requirement: Cookie authentication cannot be enabled without CSRF protection
 Building a chain SHALL fail with a configuration error when it enables any interceptor that authenticates requests by a cookie and CSRF protection is not enabled, unless the consumer opts out explicitly with an option whose name states that CSRF protection is off.
 
@@ -102,8 +110,16 @@ Building a chain SHALL fail with a configuration error when it enables any inter
 - **WHEN** a chain enables cookie-authenticated sessions with the explicit opt-out
 - **THEN** the chain builds
 
+#### Scenario: Cookie authenticator ahead of the CSRF check
+- **WHEN** a chain with CSRF protection registers a cookie-authenticating interceptor in a slot at or before the one where CSRF protection judges requests
+- **THEN** building the chain fails with a configuration error naming CSRF protection
+
+#### Scenario: Token check where CSRF protection never ran
+- **WHEN** a cookie authenticator asks for the token check on a request CSRF protection never judged, on a chain that did not opt out
+- **THEN** the check fails with a configuration error, answered 500, and no session is published
+
 ### Requirement: Exemptions are explicit and narrow
-The consumer SHALL be able to exempt specific routes, each named by an exact method and an exact path or a path pattern whose wildcard matches one path segment, from CSRF protection. Matching SHALL use the path the chain routes by, and SHALL NOT match another path that a redirect, a trailing slash, a case change or a different encoding would lead to. There SHALL be no option that exempts every route, and an exemption naming no method or the path `/` alone SHALL fail construction. An exempted route SHALL still carry every other protection the chain applies.
+The consumer SHALL be able to exempt specific routes, each named by an exact method and an exact path or a path pattern whose wildcard matches one path segment, from CSRF protection. Matching SHALL use the path as the client sent it, still percent-encoded, and SHALL NOT match another path that a redirect, a trailing slash, a case change or a different encoding would lead to. There SHALL be no option that exempts every route, and an exemption naming no method or the path `/` alone SHALL fail construction. An exempted route SHALL still carry every other protection the chain applies.
 
 #### Scenario: Webhook route
 - **WHEN** the consumer exempts `POST /webhooks/payments` and a provider posts to it cross-site with no token

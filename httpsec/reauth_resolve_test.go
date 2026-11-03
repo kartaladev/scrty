@@ -755,7 +755,7 @@ func TestReauthResolve(t *testing.T) {
 
 				var doc map[string]any
 				require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc))
-				assert.ElementsMatch(t, []string{"access_token", "refresh_token", "valid_until"}, keysOf(doc))
+				assert.ElementsMatch(t, []string{"access_token", "refresh_token", "valid_until", "token_type"}, keysOf(doc))
 			},
 		},
 		{

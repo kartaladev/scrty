@@ -1269,3 +1269,74 @@ func chainWithoutSessionPort(t *testing.T, h *passkeyHarness, s *session.Session
 
 	return c
 }
+
+// TestPasskey_RemovalNotice drives the removal endpoint's notice: sent by
+// default, and not sent once the consumer turns it off, the removal standing
+// either way.
+func TestPasskey_RemovalNotice(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []httpsec.PasskeyOption
+		setup  func(h *passkeyHarness)
+		assert func(t *testing.T, h *passkeyHarness, own *passkey.Credential, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "on by default, the user is notified of the removal",
+			assert: func(t *testing.T, h *passkeyHarness, own *passkey.Credential, out served) {
+				t.Helper()
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusNoContent, out.rec.Code)
+				assert.False(t, stillHeld(t, h, testMFAUser, own.ID))
+				assert.Equal(t, 1, h.notices.count())
+			},
+		},
+		{
+			name: "WithoutPasskeyRemovalNotification removes the passkey and sends nothing",
+			opts: []httpsec.PasskeyOption{httpsec.WithoutPasskeyRemovalNotification()},
+			assert: func(t *testing.T, h *passkeyHarness, own *passkey.Credential, out served) {
+				t.Helper()
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusNoContent, out.rec.Code)
+				assert.False(t, stillHeld(t, h, testMFAUser, own.ID))
+				assert.Zero(t, h.notices.count())
+			},
+		},
+		{
+			name: "a removal refused outside the freshness window sends nothing",
+			setup: func(h *passkeyHarness) {
+				h.pkOpts = append(h.pkOpts, passkey.WithClock(clockwork.NewFakeClockAt(time.Now().Add(20*time.Minute))))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, own *passkey.Credential, out served) {
+				t.Helper()
+				require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+				assert.True(t, stillHeld(t, h, testMFAUser, own.ID), "the passkey still exists")
+				assert.Zero(t, h.notices.count())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newPasskeyHarness(t)
+			h.passkeyOpts = append(h.passkeyOpts, tc.opts...)
+
+			if tc.setup != nil {
+				tc.setup(h)
+			}
+
+			own := seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive)
+			carry := h.sessionIn(t, factor.Password, session.MFANone)
+			chain := h.build(t, carry)
+
+			req := post(t.Context(), passkeyRemovePath, "id="+own.ID.String())
+
+			tc.assert(t, h, own, serve(t, chain, req))
+		})
+	}
+}

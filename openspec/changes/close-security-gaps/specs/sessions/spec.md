@@ -24,7 +24,7 @@ The session manager SHALL list a user's live sign-ins, one entry per session fam
 - **THEN** the listing has one entry, `u-1`'s
 
 ### Requirement: Sign-in metadata is recorded only when the consumer opts in
-By default a session SHALL record no client metadata. When the consumer opts in, a new session SHALL record the client address and the user agent the chain resolved at sign-in, the user agent truncated to 512 bytes at a UTF-8 character boundary, and every successor in its family SHALL keep them. An unattributable client address SHALL be recorded as absent. The metadata SHALL be returned unchanged by the listing, and SHALL never be written to a log by the library.
+By default a session SHALL record no client metadata. When the consumer opts in, a new session SHALL record the client address and the user agent the chain resolved at sign-in, the user agent truncated to 512 bytes at a UTF-8 character boundary, and every successor in its family SHALL keep them. An unattributable client address SHALL be recorded as absent. The metadata SHALL be returned by the listing as recorded, and SHALL never be written to a log by the library. Before it is recorded, a user agent's invalid UTF-8 SHALL be replaced with U+FFFD and its NUL bytes removed, because a durable store's text column refuses both.
 
 #### Scenario: Off by default
 - **WHEN** metadata recording is off and a user signs in
@@ -60,6 +60,25 @@ A session SHALL be able to carry a key binding, either a DPoP key thumbprint or 
 #### Scenario: Re-authentication cannot rebind
 - **WHEN** a session bound to `K` is rotated by a re-authentication that asks for binding `K2`
 - **THEN** the rotation fails with a configuration error and nothing is stored
+
+### Requirement: A sign-in carries its CSRF token through every rotation
+A session SHALL be able to carry a CSRF token, made from at least 32 bytes of a cryptographic random source when the session is built and only when the caller asks for one. Every successor created by rotation, renewal or re-authentication SHALL carry the same token, already set on the successor handed to the caller's issuing step. Saving a session SHALL NOT change its token, and a built session whose token changed between building and storing SHALL NOT be stored. A new sign-in SHALL get a new token.
+
+#### Scenario: Renewal keeps the token
+- **WHEN** a session built with CSRF token `T` is renewed
+- **THEN** the successor carries `T`
+
+#### Scenario: New sign-in, new token
+- **WHEN** the same user signs in twice, each sign-in asking for a token
+- **THEN** the two sign-ins carry different tokens
+
+#### Scenario: No token unless asked
+- **WHEN** a session is built without asking for a CSRF token
+- **THEN** it carries none
+
+#### Scenario: Save cannot change the token
+- **WHEN** a copy of a session with token `T`, its token cleared in memory, is saved
+- **THEN** the stored session still carries `T`
 
 ### Requirement: A user's sign-in is ended by its handle, only by its owner
 Ending a sign-in by handle SHALL revoke every session of that family, and SHALL do nothing and report not found when the handle is malformed, names no family, or names a family that does not belong to the named user. Ending every sign-in of a user except the current one SHALL revoke every other family of that user and keep the current family's live members, including a successor a racing renewal inserted. Ending the current sign-in by its own handle SHALL revoke it as a logout does.

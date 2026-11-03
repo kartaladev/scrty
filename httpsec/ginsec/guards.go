@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -145,7 +146,10 @@ func WithChainAuthorizer() GuardOption {
 // every other error; this option is for a guard used without one.
 //
 // A handler set here receives gin's context and the refusal, and owns the whole
-// answer, including its status — nothing else is written for it. The refusal is
+// answer, including its status — nothing else is written for it, beyond the
+// challenge the chain in front answers its own refusals with, which is already
+// on the response as it is for the chain's refusals: with DPoP on, a refusal
+// for want of a caller carries WWW-Authenticate. The refusal is
 // still registered on gin's error channel first, so middleware that only logs
 // errors still sees it, and the remaining gin handlers are still stopped, so
 // the route never runs whoever writes the answer. A handler that writes nothing
@@ -158,7 +162,15 @@ func WithGuardErrorHandler(fn func(gc *gin.Context, err error)) GuardOption {
 }
 
 // refuse answers a refusal and never calls the route.
+//
+// The challenge the chain in front answers its own refusals with, such as
+// DPoP's WWW-Authenticate, is set first, so a guard's refusal carries it
+// too, whoever renders the answer.
 func (g *Guards) refuse(gc *gin.Context, err error) {
+	eventsink.GuardRefused(gc.Request.Context(), err)
+
+	err = guardauth.Challenge(gc.Request.Context(), httpsec.NewHTTPResponseWriter(gc.Writer), err)
+
 	if g.onError != nil {
 		// Registered first, so a consumer who renders here still has the
 		// refusal on the channel their logging middleware reads.

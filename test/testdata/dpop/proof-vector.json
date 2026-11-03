@@ -1,0 +1,8 @@
+{
+  "recorded_with": "dpop.ts under Node.js v26.9.0 WebCrypto",
+  "method": "POST",
+  "url": "http://example.com/login",
+  "iat": 1793597699,
+  "jkt": "PrhzsvrtvdjdQ4cMfISRP_1WBZdmLFpSEK5Wf0CYSzs",
+  "proof": "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwiY3J2IjoiUC0yNTYiLCJ4IjoiQ2ZjNFpwb0FSMVhjcm5kNXE2U25zMTh1RExXb0xSWExEWktrTTJIbGd5VSIsInkiOiJTVTRNRVBmYmliVmNMTkN1aEhnblAwLUh2a2wyQkdzTV84NlNwR3VfRmQwIn19.eyJqdGkiOiJjNmVkZWY5ZS1jOTBiLTQyMTUtOGM0MC1kYTA2ZGQ3N2M3ZGMiLCJodG0iOiJQT1NUIiwiaHR1IjoiaHR0cDovL2V4YW1wbGUuY29tL2xvZ2luIiwiaWF0IjoxNzkzNTk3Njk5fQ.rRgmr4YZEn2wGjpbvIjy6RQQRPG6oAjzT2tZKV4Dyu5RsIv9tNUI9NRXBPo7oVnIWJ4eqtmpdD6yMH9DLyOl6g"
+}

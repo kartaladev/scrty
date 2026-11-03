@@ -1,15 +1,21 @@
 package test_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/netip"
+	"strconv"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/fibersec"
@@ -17,12 +23,11 @@ import (
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 )
 
-// inMemoryPeer is what fiber's in-memory test transport reports as the peer: an
-// unspecified address, which the chain refuses rather than pooling every caller
-// behind it into one rate-limit bucket. Every row that needs an attributable
-// address therefore trusts that peer as a proxy and forwards the address the
-// scenario asked for.
-const inMemoryPeer = "0.0.0.0"
+// unattributedPeer is the transport peer a row that asks for no client
+// address is served from: the unspecified address, which is what fiber's
+// in-memory test transport reports and which the chain refuses to attribute a
+// request to.
+const unattributedPeer = "0.0.0.0:0"
 
 // fiberAdapter runs the conformance table on the fiber integration.
 //
@@ -43,7 +48,7 @@ func (fiberAdapter) Serve(
 
 	var res httpsecconformance.Result
 
-	app := fiber.New(fiber.Config{
+	cfg := fiber.Config{
 		ErrorHandler: func(fc fiber.Ctx, err error) error {
 			res.Refusal = err
 
@@ -53,15 +58,18 @@ func (fiberAdapter) Serve(
 		// Above the 32 MiB form cap, so the oversized-upload scenario reaches
 		// the chain instead of fiber's default 4 MiB refusal.
 		BodyLimit: 64 << 20,
+	}
 
-		// The four settings fiber needs before a forwarded address may be
-		// believed. The in-memory transport's peer is the trusted proxy, which
-		// is the same shape as a proxy reaching the app over a Unix socket.
-		TrustProxy:         true,
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
-		ProxyHeader:        fiber.HeaderXForwardedFor,
-		EnableIPValidation: true,
-	})
+	if spec.FrameworkTrustsProxies {
+		// fiber's own trust in every peer, so c.IP() would read the
+		// forwarding header: the chain must not care.
+		cfg.TrustProxy = true
+		cfg.TrustProxyConfig = fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0/0", "::/0"}}
+		cfg.ProxyHeader = fiber.HeaderXForwardedFor
+		cfg.EnableIPValidation = true
+	}
+
+	app := fiber.New(cfg)
 
 	if spec.Upstream {
 		app.Use(fiberUpstream())
@@ -112,6 +120,12 @@ func fiberRoute(
 
 	return append(handlers, func(fc fiber.Ctx) error {
 		res.RouteRan = true
+		res.RouteHeader = http.Header{}
+
+		for k, v := range fc.Request().Header.All() {
+			res.RouteHeader.Add(string(k), string(v))
+		}
+
 		httpsecconformance.ReadContext(fc.Context(), res)
 
 		if route.Status != 0 {
@@ -166,17 +180,10 @@ func fiberUpstream() fiber.Handler {
 	}
 }
 
-// fiberRead sends the scenario's request over fiber's in-memory transport and
-// reads the response out in full.
-//
-// The address the scenario asked for is forwarded rather than set as the peer,
-// because the in-memory transport names the peer itself. A row that asked for
-// no address forwards none, and fiber reports the unspecified peer — which is
-// exactly the unattributable address that row is about.
-//
-// The timeout is disabled: a row that deadlocks is better reported by the test
-// framework's own timeout, with every goroutine's stack, than by fiber
-// returning a timeout error that hides where the request stopped.
+// fiberRead sends the scenario's request to fiber from the transport peer the
+// scenario asked for, and reads the response out in full. A row that asked for
+// no address is served from the unspecified address, which is exactly the
+// unattributable address that row is about.
 func fiberRead(
 	t *testing.T,
 	app *fiber.App,
@@ -185,22 +192,54 @@ func fiberRead(
 ) {
 	t.Helper()
 
-	req := nethttpRequest(t, spec)
-	req.RemoteAddr = ""
-
+	peer := unattributedPeer
 	if spec.ClientAddress != "" {
-		req.Header.Set(fiber.HeaderXForwardedFor, spec.ClientAddress)
+		peer = net.JoinHostPort(spec.ClientAddress, "54321")
 	}
 
-	out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+	res.Status, res.Header, res.Body = fiberServeFrom(t, app, nethttpRequest(t, spec), peer)
+}
+
+// fiberServeFrom runs req through app as if it arrived over TCP from peer, an
+// address and port.
+//
+// fiber's in-memory transport (app.Test) always reports the unspecified
+// address as the peer, and the adapters hand the chain the transport peer and
+// nothing else, so the request is handed to fiber's fasthttp handler on a
+// request context initialised with the peer instead.
+func fiberServeFrom(t *testing.T, app *fiber.App, req *http.Request, peer string) (int, http.Header, string) {
+	t.Helper()
+
+	addr, err := netip.ParseAddrPort(peer)
 	require.NoError(t, err)
 
-	defer func() { require.NoError(t, out.Body.Close()) }()
+	req.RequestURI = ""
+	if req.ContentLength > 0 && req.Header.Get("Content-Length") == "" {
+		req.Header.Set("Content-Length", strconv.FormatInt(req.ContentLength, 10))
+	}
 
-	body, err := io.ReadAll(out.Body)
+	dump, err := httputil.DumpRequest(req, true)
 	require.NoError(t, err)
 
-	res.Status, res.Header, res.Body = out.StatusCode, out.Header, string(body)
+	// The body is read without pre-parsing a multipart form, which would
+	// consume it into a form the request context's copy does not carry.
+	var freq fasthttp.Request
+
+	br := bufio.NewReader(bytes.NewReader(dump))
+	require.NoError(t, freq.Header.Read(br))
+	require.NoError(t, freq.ContinueReadBody(br, 0, false))
+
+	var ctx fasthttp.RequestCtx
+	ctx.Init(&freq, net.TCPAddrFromAddrPort(addr), nil)
+
+	app.Handler()(&ctx)
+
+	header := http.Header{}
+	for k, v := range ctx.Response.Header.All() {
+		header.Add(string(k), string(v))
+	}
+
+	return ctx.Response.StatusCode(), header, string(ctx.Response.Body())
 }
 
 // TestConformanceFiber runs the reference table on fiber. A row that fails here
@@ -210,6 +249,15 @@ func TestConformanceFiber(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, fiberAdapter{})
+}
+
+// TestChallengeFiber runs the automation-challenge rows on fiber, which
+// TestConformanceFiber leaves out so that each runs once, and so they can be
+// run by name.
+func TestChallengeFiber(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunScenarios(t, fiberAdapter{}, httpsecconformance.ChallengeScenarios())
 }
 
 // The adapters are held to the one interface the table is written against, so a
@@ -263,15 +311,7 @@ func TestSessionBearerFiber(t *testing.T) {
 
 			var seen string
 
-			// The throttle needs an attributable client address, which the
-			// in-memory transport only has through a trusted forwarding header.
-			app := fiber.New(fiber.Config{
-				ErrorHandler:       fibersec.ErrorHandler,
-				TrustProxy:         true,
-				TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
-				ProxyHeader:        fiber.HeaderXForwardedFor,
-				EnableIPValidation: true,
-			})
+			app := fiber.New(fiber.Config{ErrorHandler: fibersec.ErrorHandler})
 			app.Use(fibersec.Middleware(f.chain))
 			app.Get("/orders", func(fc fiber.Ctx) error {
 				if s, ok := httpsec.SessionFromContext(fc.Context()); ok {
@@ -281,16 +321,14 @@ func TestSessionBearerFiber(t *testing.T) {
 				return fc.SendStatus(http.StatusOK)
 			})
 
+			// The throttle needs an attributable client address, so the
+			// request comes from a real transport peer.
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
-			req.RemoteAddr = ""
-			req.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.7")
 			req.Header.Set("Authorization", "Bearer "+tc.reference(f))
 
-			out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
-			require.NoError(t, err)
-			require.NoError(t, out.Body.Close())
+			status, _, _ := fiberServeFrom(t, app, req, "203.0.113.7:51000")
 
-			tc.assert(t, f, out.StatusCode, seen)
+			tc.assert(t, f, status, seen)
 		})
 	}
 }
@@ -303,27 +341,17 @@ func TestSessionBearerFloodedSourceFiber(t *testing.T) {
 
 	f := newSessionReferenceFixture(t)
 
-	app := fiber.New(fiber.Config{
-		ErrorHandler:       fibersec.ErrorHandler,
-		TrustProxy:         true,
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
-		ProxyHeader:        fiber.HeaderXForwardedFor,
-		EnableIPValidation: true,
-	})
+	app := fiber.New(fiber.Config{ErrorHandler: fibersec.ErrorHandler})
 	app.Use(fibersec.Middleware(f.chain))
 	app.Get("/orders", func(fc fiber.Ctx) error { return fc.SendStatus(http.StatusOK) })
 
 	send := func(source, reference string) int {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
-		req.RemoteAddr = ""
-		req.Header.Set(fiber.HeaderXForwardedFor, source)
 		req.Header.Set("Authorization", "Bearer "+reference)
 
-		out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
-		require.NoError(t, err)
-		require.NoError(t, out.Body.Close())
+		status, _, _ := fiberServeFrom(t, app, req, source+":51000")
 
-		return out.StatusCode
+		return status
 	}
 
 	for i := range 100 {
@@ -332,4 +360,12 @@ func TestSessionBearerFloodedSourceFiber(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
 	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
+}
+
+// TestCertificateBindingFiber runs the certificate-binding scenarios on
+// fiber, through a trusted proxy that forwards the client's certificate.
+func TestCertificateBindingFiber(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunCertificateBinding(t, fiberAdapter{})
 }

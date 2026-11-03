@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -221,9 +222,17 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 
 	if err := g.change(ex); err != nil {
 		// The consumer's error is the refusal, unchanged: they know why they
-		// refused, and restating it here would lose that.
+		// refused, and restating it here would lose that. Only a refusal is
+		// reported: a store the function could not reach decided nothing.
+		if refused(ctx, err) {
+			emitEvent(ctx, sessionEvent(event.AuthnPasswordChangeFail, event.OutcomeFailure, s))
+		}
+
 		return err
 	}
+
+	// The password is changed by now, whether or not the session then saves.
+	emitEvent(ctx, sessionEvent(event.AuthnPasswordChange, event.OutcomeSuccess, s))
 
 	g.clearFailures(ctx, username)
 

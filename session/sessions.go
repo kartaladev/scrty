@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -72,6 +73,10 @@ type Sessions struct {
 	reuseObserver         ReuseObserver
 	reuseObserverSupplied bool
 
+	// events is the sink WithSecurityEvents gave the manager, for the reuse
+	// it detects outside a chain.
+	events eventsink.Own
+
 	// unusedSuccessorRecovery is WithUnusedSuccessorRecovery: a superseded
 	// identifier past its window may be renewed while its successor is
 	// unused, and an ordinary request with it is refused without revoking.
@@ -80,6 +85,10 @@ type Sessions struct {
 	// familiesSupplied records that WithFamilyIDGenerator was given, so a nil
 	// generator is told apart from the default.
 	familiesSupplied bool
+
+	// metadata is WithSessionMetadata: a new session records the client
+	// metadata its creating call supplied (WithClientMetadata).
+	metadata bool
 
 	// storeSupplied records that WithStore replaced the default, so the
 	// per-process warning below is written only where it is true.
@@ -206,6 +215,9 @@ func New(opts ...Option) (*Sessions, error) {
 	if m.maxFamilyLifetime < m.maxLifetime {
 		return nil, fmt.Errorf("%w: maximum family lifetime %s is below the maximum absolute lifetime %s",
 			ErrConfig, m.maxFamilyLifetime, m.maxLifetime)
+	}
+	if err := m.events.Err("WithSecurityEvents"); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	if m.reuseObserverSupplied && m.reuseObserver == nil {
 		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)
@@ -640,8 +652,15 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // that change must not still answer requests after it. Everything except the
 // identifier is carried over: the user, the first factor, both deadlines, the
 // challenge state (including MFAAtFirstFactor), the family (FamilyID and
-// FamilyCreatedAt), the federated assurance and
-// the consumer's own data.
+// FamilyCreatedAt), the federated assurance and the consumer's own data. The
+// family and the sign-in state fixed when the sign-in was built (KeyBinding,
+// CSRFToken, ClientIP and UserAgent) are taken from the stored record, never
+// from s, so a copy with them cleared or changed cannot move them; they are
+// already set on the successor handed to RotateIssuing's issuing step.
+//
+// Rotate takes one RotateOption, WithReauthenticationBinding, which may bind
+// an unbound session and never rebinds a bound one. WithSuccessorLifetime is
+// refused with ErrConfig, since a strict rotation never extends a session.
 //
 // The old entry is superseded by the new one in one write, through the
 // store's conditional Store.Supersede, marked as rotated without grace
@@ -706,8 +725,8 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // storing it; RotateIssuing is the same rotation with one.
 //
 // s is not modified. The returned session is the one to use.
-func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
-	rotated, _, err := m.RotateIssuing(ctx, s, nil)
+func (m *Sessions) Rotate(ctx context.Context, s *Session, opts ...RotateOption) (*Session, error) {
+	rotated, _, err := m.RotateIssuing(ctx, s, nil, opts...)
 
 	return rotated, err
 }
@@ -766,9 +785,17 @@ func (m *Sessions) RotateIssuing(
 	ctx context.Context,
 	s *Session,
 	issue func(successor *Session) (string, error),
+	opts ...RotateOption,
 ) (*Session, string, error) {
 	if s == nil {
 		return nil, "", fmt.Errorf("session: rotate was given no session")
+	}
+	r := rotationOf(opts)
+	if r.lifetimeSet {
+		return nil, "", fmt.Errorf("%w: a strict rotation never extends a session, so it takes no new lifetime", ErrConfig)
+	}
+	if r.binding.both() {
+		return nil, "", fmt.Errorf("%w: a key binding names either a DPoP key or a certificate, not both", ErrConfig)
 	}
 
 	unlock := m.rotating.lock(s.ID)
@@ -806,6 +833,12 @@ func (m *Sessions) RotateIssuing(
 	// with the family cleared or altered must not move the successor out of
 	// the family the store holds.
 	rotated.FamilyID, rotated.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
+	// So is what the sign-in fixed when it was built, apart from the binding
+	// a re-authentication may give an unbound session.
+	keepSignInState(rotated, stored)
+	if err := checkReauthenticationBinding(r, stored, rotated); err != nil {
+		return nil, "", err
+	}
 	// The successor is a record written now, so its creation time is now.
 	// AuthenticatedAt stays as s carries it: that is the sign-in's, or the
 	// refresh second-factor verification wrote onto s before rotating.

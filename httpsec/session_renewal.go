@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -89,6 +90,11 @@ type RenewalResult struct {
 	// Kind is the kind of renewal performed: a fresh rotation, a re-rotation
 	// inside the grace window, or a recovery while the successor was unused.
 	Kind session.RenewalKind
+
+	// TokenType is how Credential is presented: TokenTypeDPoP when the
+	// session is bound to a DPoP key, TokenTypeBearer otherwise. A renewal
+	// never changes it.
+	TokenType TokenType
 }
 
 // RenewalResponder writes the response to a successful renewal.
@@ -154,6 +160,12 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
+	// A proof given beside the session's credential is verified before the
+	// limit is asked and anything is rotated.
+	if err := continuingProof(ex, s); err != nil {
+		return err
+	}
+
 	// The user is reloaded before anything is rotated, so a removed user is
 	// refused without a successor being written.
 	details, principal, err := r.user(ctx, s)
@@ -194,7 +206,12 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		return rotationFailure(err, issueErr)
 	}
 
-	return r.respond(ex, RenewalResult{Credential: credential, Session: successor, User: details, Kind: kind})
+	// The successor is stored by now, and its credential is handed out below.
+	emitEvent(ctx, sessionEvent(event.SessionRenewed, event.OutcomeSuccess, successor))
+
+	return r.respond(ex, RenewalResult{
+		Credential: credential, Session: successor, User: details, Kind: kind, TokenType: tokenTypeOf(successor),
+	})
 }
 
 // rotationFailure is the error a failed rotation answers with, given the
@@ -232,6 +249,8 @@ func (r *sessionRenewal) admit(ctx context.Context, key string) error {
 	}
 
 	if exceeded {
+		emitEvent(ctx, event.Event{Name: event.ExcessRateLimitExceeded, Outcome: event.OutcomeFailure})
+
 		return ErrRenewalThrottled
 	}
 
@@ -304,6 +323,21 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 		}
 
 		return nil, refusal
+	}
+
+	// The bearer judged the credential's binding and the proof only as far
+	// as it could without the session; the rest is judged on the session
+	// loaded here, before anything is rotated. A refusal that reads as a
+	// missing session, a sender holding a valid credential it may not use,
+	// is charged as a refused load is.
+	if ex.admitRenewal != nil {
+		if err := ex.admitRenewal(ex, s); err != nil {
+			if ex.chargeRenewal != nil && errors.Is(err, ErrAuthenticationRequired) {
+				ex.chargeRenewal(ctx)
+			}
+
+			return nil, err
+		}
 	}
 
 	return s, nil
@@ -411,7 +445,7 @@ func refusedRenewal(err error) error {
 func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 	ex.Writer.SetHeader("Cache-Control", "no-store")
 
-	return writeLoginResult(ex, LoginResult{Token: r.Credential, Session: r.Session})
+	return writeLoginResult(ex, LoginResult{Token: r.Credential, Session: r.Session, TokenType: r.TokenType})
 }
 
 // EnableSessionRenewal answers session renewals: a POST on
@@ -433,7 +467,11 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // For a renewal it:
 //
 //  1. refuses a request with no authentication result or no session with
-//     ErrAuthenticationRequired;
+//     ErrAuthenticationRequired, and, with EnableDPoP on, refuses with
+//     ErrInvalidDPoPProof a DPoP proof the request carries beside an unbound
+//     session's Bearer credential that does not verify, recording the jti of
+//     one that does: a renewal adds no binding, but a proof it is given is
+//     checked before anything is counted or rotated;
 //  2. reloads the session's user with LoadByUserID, refusing with
 //     ErrAuthenticationRequired a user who no longer exists
 //     (identity.ErrUserNotFound), is not the user the session records, or is

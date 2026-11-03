@@ -39,9 +39,13 @@ jobs:
       SCRTY_TEST_POSTGRES_IMAGE: ${{ matrix.postgres }}
       SCRTY_TEST_REDIS_IMAGE: ${{ matrix.redis }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ matrix.go }}
+      # Fails fast, before the long gates, when a workflow references an action
+      # by a tag, a branch or a short SHA. Also part of `make check`.
+      - name: Check action pins
+        run: make pincheck
       - name: Run gates
         run: make check

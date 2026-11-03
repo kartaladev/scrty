@@ -250,6 +250,40 @@ type Session struct {
 	// Store.Supersede sets it. Library-owned.
 	SuccessorDigest []byte
 
+	// ClientIP is the client address the sign-in came from, recorded only when
+	// the manager records sign-in metadata (WithSessionMetadata) and the
+	// creating call supplied it (WithClientMetadata). The empty string means
+	// none was recorded: metadata is off, or the address could not be
+	// attributed. It is personal data, so it is off by default and the
+	// library never writes it to a log.
+	//
+	// Written by Create, and carried by every successor in the family from
+	// the stored record. Library-owned: Save keeps the stored value, so
+	// changing it here and saving changes nothing, and Prepared.Commit
+	// refuses a built session whose value was changed.
+	ClientIP string
+
+	// UserAgent is the client's user agent at sign-in, at most
+	// MaxUserAgentBytes long, cut at a UTF-8 character boundary. Recorded,
+	// carried and protected exactly like ClientIP.
+	UserAgent string
+
+	// KeyBinding is the key the sign-in is bound to, the zero value when it
+	// is unbound. Written by Create, and carried by every successor in the
+	// family from the stored record; see KeyBinding for the one way a
+	// re-authentication may set it on an unbound session. Library-owned: Save
+	// keeps the stored value, and Prepared.Commit refuses a built session
+	// whose value was changed.
+	KeyBinding KeyBinding
+
+	// CSRFToken is the sign-in's CSRF token, made when the session is built
+	// and only when the creating call asks for one (WithCSRFToken); the empty
+	// string means none. It is a secret: the library never writes it to a log
+	// or an error. Written by Create, carried and protected exactly like
+	// KeyBinding, so it survives every renewal, and a new sign-in gets a new
+	// one.
+	CSRFToken string
+
 	// ExternalProvider names the identity provider a federated login came
 	// from, as the consumer configured it.
 	ExternalProvider string
@@ -279,6 +313,11 @@ type Session struct {
 	// "returned unchanged" has to survive a durable store, where a number
 	// comes back a float and "0042" comes back 42.
 	Data map[string]string
+
+	// csrfRequested is WithCSRFToken's request, which Prepare answers by
+	// drawing the token from the manager's random source and clears. It is
+	// never set on a session Prepare has returned.
+	csrfRequested bool
 }
 
 // AuthenticatedWithin reports whether s authenticated no longer than window

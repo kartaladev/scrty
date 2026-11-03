@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -101,7 +102,26 @@ type pwFixture struct {
 	// loginIssued is the last credential issued before the request under
 	// test, by a login a case ran first.
 	loginIssued any
+
+	// outdated makes the encoder report every stored hash as needing an
+	// upgrade, and encodes counts the passwords it was asked to encode (the
+	// reference hash at construction is not counted).
+	outdated atomic.Bool
+	encodes  atomic.Int32
+
+	// rehash records what a re-proof's rehash write was handed.
+	rehash *rehashRecorder
 }
+
+// upgradingEncoder is the fixture's encoder as an Upgrader, whose verdict a
+// case sets through pwFixture.outdated.
+type upgradingFixtureEncoder struct {
+	password.Encoder
+
+	outdated *atomic.Bool
+}
+
+func (u upgradingFixtureEncoder) NeedsUpgrade([]byte) bool { return u.outdated.Load() }
 
 func newPwFixture(t *testing.T) *pwFixture {
 	t.Helper()
@@ -119,7 +139,14 @@ func newPwFixtureOn(t *testing.T, h *reauthHarness) *pwFixture {
 	f := &pwFixture{reauthHarness: h, logs: &capturingHandler{}}
 
 	enc := NewMockEncoder(ctrl)
-	enc.EXPECT().Encode(gomock.Any()).Return(reauthReferenceHash, nil).AnyTimes()
+	constructed := false
+	enc.EXPECT().Encode(gomock.Any()).AnyTimes().DoAndReturn(func(string) ([]byte, error) {
+		if constructed {
+			f.encodes.Add(1)
+		}
+
+		return reauthReferenceHash, nil
+	})
 	enc.EXPECT().Match(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(input string, encoded []byte) bool {
 			switch {
@@ -162,10 +189,11 @@ func newPwFixtureOn(t *testing.T, h *reauthHarness) *pwFixture {
 		})
 
 	authn, err := authenticate.NewUsernamePasswordAuthenticator(users,
-		authenticate.WithPasswordEncoder(enc),
+		authenticate.WithPasswordEncoder(upgradingFixtureEncoder{Encoder: enc, outdated: &f.outdated}),
 		authenticate.WithPasswordLogger(slog.New(f.logs)))
 	require.NoError(t, err)
 
+	constructed = true
 	f.password = authn
 	f.chainOpts = append(f.chainOpts, httpsec.WithLogger(slog.New(f.logs)))
 
@@ -496,6 +524,90 @@ func TestReauthPassword(t *testing.T) {
 			},
 			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
 				passwordReproved(t, f.reauthHarness, s, out)
+			},
+		},
+		{
+			name: "an outdated hash is upgraded by a re-proof that verified, when a write is configured",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.outdated.Store(true)
+				f.rehash = &rehashRecorder{}
+				f.reauthOpts = append(f.reauthOpts, httpsec.WithReauthenticationRehash(f.rehash.write))
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+
+				calls := f.rehash.recorded()
+				require.Len(t, calls, 1)
+				assert.Equal(t, reauthAdaHash, calls[0].replaced)
+				assert.Equal(t, reauthReferenceHash, calls[0].renewed, "the encoder's own output is what is stored")
+				assert.Equal(t, mfaUsername, calls[0].user.Username)
+			},
+		},
+		{
+			name: "an outdated hash is upgraded by a re-proof challenged for a second factor",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.outdated.Store(true)
+				f.rehash = &rehashRecorder{}
+				f.reauthOpts = append(f.reauthOpts, httpsec.WithReauthenticationRehash(f.rehash.write))
+				f.chainOpts = append(f.chainOpts,
+					httpsec.EnableGateForTest(policy.ChallengeMFA),
+					httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, _ *session.Session, out served) {
+				var ce *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ce, "the re-proof was challenged")
+				assert.Equal(t, policy.ChallengeMFA, ce.Kind)
+
+				calls := f.rehash.recorded()
+				require.Len(t, calls, 1, "a re-proof challenged for a second factor still upgrades the hash")
+				assert.Equal(t, reauthAdaHash, calls[0].replaced)
+			},
+		},
+		{
+			name: "a re-proof denied after the password verified does not upgrade",
+			wire: func(t *testing.T, f *pwFixture) {
+				f.outdated.Store(true)
+				f.rehash = &rehashRecorder{}
+				f.reauthOpts = append(f.reauthOpts, httpsec.WithReauthenticationRehash(f.rehash.write))
+				f.chainOpts = append(f.chainOpts,
+					httpsec.WithPolicyEngine(denyingIn(t, policy.PostAuthentication, errReauthPostDenied)))
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(errReauthPostDenied)(t, f, s, out)
+				assert.Equal(t, int32(1), f.adaMatches.Load(), "the password was proved first")
+				assert.Empty(t, f.rehash.recorded(), "a denied re-proof must not upgrade the hash")
+				assert.Zero(t, f.encodes.Load(), "a denied re-proof encoded the password again")
+			},
+		},
+		{
+			name: "no rehash write, no encoding, whatever the encoder says",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.outdated.Store(true)
+				f.resets()
+			},
+			request: passwordOf(reauthAdaPassword),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				passwordReproved(t, f.reauthHarness, s, out)
+				assert.Zero(t, f.encodes.Load(), "a password was encoded although no write was configured")
+			},
+		},
+		{
+			name: "a wrong password never reaches the rehash write",
+			wire: func(_ *testing.T, f *pwFixture) {
+				f.outdated.Store(true)
+				f.rehash = &rehashRecorder{}
+				f.reauthOpts = append(f.reauthOpts, httpsec.WithReauthenticationRehash(f.rehash.write))
+				f.recordsAttempt()
+			},
+			request: passwordOf("not-the-password"),
+			assert: func(t *testing.T, f *pwFixture, s *session.Session, out served) {
+				refusedWith(authenticate.ErrAuthenticationFailed)(t, f, s, out)
+				assert.Empty(t, f.rehash.recorded())
+				assert.Zero(t, f.encodes.Load())
 			},
 		},
 		{

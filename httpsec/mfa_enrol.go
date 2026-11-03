@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -627,7 +628,7 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session, method mf
 	ctx := ex.Context()
 	key := EnrolmentBeginThrottleKey(s.UserID)
 
-	if err := i.throttled(ctx, i.beginLimiter, key); err != nil {
+	if err := i.throttled(ctx, i.beginLimiter, key, s); err != nil {
 		return err
 	}
 
@@ -704,12 +705,14 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 	return nil
 }
 
-// throttled refuses a user at their limit on l, and refuses when l cannot say:
-// a limiter that answered "under the limit" whenever its store was down would
-// lift the limit exactly when something is wrong. That refusal's text is fixed,
-// since a consumer's limiter may quote the bucket key, and with it the user
-// reference, back.
-func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string) error {
+// throttled refuses the user of session s at their limit on l, and refuses
+// when l cannot say: a limiter that answered "under the limit" whenever its
+// store was down would lift the limit exactly when something is wrong. That
+// refusal's text is fixed, since a consumer's limiter may quote the bucket key,
+// and with it the user reference, back. Only the limit reached is reported,
+// as event.ExcessRateLimitExceeded: a limiter that could not say decided
+// nothing.
+func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string, s *session.Session) error {
 	exceeded, err := l.Exceeded(ctx, key)
 	if err != nil {
 		return newEnrolmentFault(reasonLimiterUnavailable, msgLimiterUndecided, err,
@@ -717,6 +720,8 @@ func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limite
 	}
 
 	if exceeded {
+		emitEvent(ctx, sessionEvent(event.ExcessRateLimitExceeded, event.OutcomeFailure, s))
+
 		return mfa.ErrEnrolmentThrottled
 	}
 
@@ -781,7 +786,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method 
 	ctx := ex.Context()
 	key := EnrolmentConfirmThrottleKey(s.UserID)
 
-	if err := i.throttled(ctx, i.confirmLimiter, key); err != nil {
+	if err := i.throttled(ctx, i.confirmLimiter, key, s); err != nil {
 		return err
 	}
 
@@ -884,6 +889,10 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, metho
 	saveErr := i.sessions.Save(ctx, s)
 
 	i.notifyBound(ctx, s.UserID, method.Name())
+
+	// The binding is written whether or not the session then saves, so it is
+	// reported either way, as the notification is.
+	emitEvent(ctx, sessionEvent(event.MFAEnrolled, event.OutcomeSuccess, s))
 
 	if saveErr != nil {
 		s.MFA = was
@@ -1070,7 +1079,7 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session,
 	ctx := ex.Context()
 	key := EnrolmentConfirmThrottleKey(s.UserID)
 
-	if err := i.throttled(ctx, i.confirmLimiter, key); err != nil {
+	if err := i.throttled(ctx, i.confirmLimiter, key, s); err != nil {
 		return err
 	}
 

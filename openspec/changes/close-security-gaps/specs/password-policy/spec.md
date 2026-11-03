@@ -25,7 +25,7 @@ The library SHALL provide one password policy that checks a candidate password f
 - **THEN** no lookup is made
 
 ### Requirement: Length is counted in characters and long passwords are accepted
-Length SHALL be counted in Unicode code points of the candidate as given: the policy SHALL NOT trim, normalise or truncate it, and SHALL NOT impose composition rules such as a required digit, case or symbol. An empty candidate SHALL be refused as too short. The minimum SHALL be replaceable, and a minimum below 8 SHALL fail construction. The maximum SHALL be replaceable but no lower than 64, and no lower than the minimum. When the policy's encoder has a byte limit, as bcrypt's 72 bytes, a candidate over it SHALL be refused as too long by the check, so a check and a change agree.
+Length SHALL be counted in Unicode code points of the candidate as given: the policy SHALL NOT trim, normalise or truncate it, and SHALL NOT impose composition rules such as a required digit, case or symbol. An empty candidate SHALL be refused as too short. The minimum SHALL be replaceable, and a minimum below 8 SHALL fail construction. The maximum SHALL be replaceable but no lower than 64, and no lower than the minimum. When the policy's encoder has a byte limit, as bcrypt's 72 bytes, a candidate over it SHALL be refused as too long by the check, so a check and a change agree. A consumer's encoder states its limit through an optional method; a change that its encoder still refuses as too long SHALL be refused as too long, never answered as a failure.
 
 #### Scenario: Multi-byte characters
 - **WHEN** a policy with a minimum of 15 checks a 15-character password whose characters each take 3 bytes
@@ -67,7 +67,7 @@ The policy SHALL refuse a candidate that equals, compared case-insensitively, an
 - **THEN** the context-word rule accepts it
 
 ### Requirement: The breach check is opt-in and its failure mode is the consumer's choice
-When the consumer enables the breach check, the policy SHALL refuse a candidate found in the breach corpus. It SHALL send only the first five hexadecimal characters of the candidate's SHA-1 hash, with response padding requested, through the confined outbound client, and SHALL match the rest locally, ignoring entries whose count is zero, which are padding. Enabling the check SHALL require the consumer to choose whether a failed lookup refuses or accepts the candidate; construction SHALL fail without that choice. A failed lookup SHALL include a timeout, a non-success status, and a body that does not parse. The lookup source SHALL be replaceable, so an offline copy of the corpus can be used. When the request's own context ends during the lookup, the check SHALL fail with an error matching the context's error, whichever failure mode was chosen.
+When the consumer enables the breach check, the policy SHALL refuse a candidate found in the breach corpus. It SHALL send only the first five hexadecimal characters of the candidate's SHA-1 hash, with response padding requested, through the confined outbound client, and SHALL match the rest locally, ignoring entries whose count is zero, which are padding. Enabling the check SHALL require the consumer to choose whether a failed lookup refuses or accepts the candidate; construction SHALL fail without that choice. A failed lookup SHALL include a timeout, a non-success status, and a body that does not parse. The lookup source SHALL be replaceable, so an offline copy of the corpus can be used. When the request's own context ends during the lookup, the check SHALL fail with an error matching the context's error, whichever failure mode was chosen. A lookup failure the policy accepts SHALL be logged at error level, with fixed text and the failure's type, never the candidate, its hash, its prefix or the failure's text, so a screen that has stopped screening is visible; the logger SHALL default to the process's default logger and be replaceable, and a nil logger SHALL fail construction. A hang-up SHALL log nothing at error level. The local match SHALL compare hash suffixes without regard to case, so a source that lists them in lower case is still matched.
 
 #### Scenario: Breached password
 - **WHEN** the breach check is enabled and the corpus lists the candidate's hash with a count of 3
@@ -83,7 +83,15 @@ When the consumer enables the breach check, the policy SHALL refuse a candidate 
 
 #### Scenario: Lookup outage, accept
 - **WHEN** the breach check is enabled with failures accepting and the lookup answers 429
-- **THEN** the breach rule accepts the candidate and the next rule runs
+- **THEN** the breach rule accepts the candidate, the next rule runs, and one error-level record names the failed breach lookup without the candidate, its hash or its prefix
+
+#### Scenario: Consumer logger
+- **WHEN** the breach check accepts on failure, the consumer supplies its own logger, and the lookup fails
+- **THEN** the record goes to the consumer's logger and not to the default one
+
+#### Scenario: Lower-case source
+- **WHEN** the breach check uses a consumer source that lists the candidate's hash suffix in lower case with a count of 3
+- **THEN** the candidate is refused as breached
 
 #### Scenario: Malformed response
 - **WHEN** the breach check is enabled with failures refusing and the range response is not lines of suffix and count
@@ -119,8 +127,8 @@ The policy SHALL NOT check or record password history unless the consumer adds t
 - **WHEN** a policy with the reuse rule checks a candidate for a user with no stored password and no history
 - **THEN** the reuse rule accepts it
 
-### Requirement: A change through the policy checks, retires, encodes and writes in order
-A change SHALL run, stopping at the first failure: every rule's check; with the reuse rule, retiring the current hash and keeping only the newest N−1 retired hashes; encoding the candidate; and handing the user record, the new hash and the change time, read from the policy's replaceable clock, to the consumer's write. Retiring a hash identical to the newest retired hash SHALL add nothing. The library SHALL provide a ready-made write over any user provisioner that records the hash and the change time together.
+### Requirement: A change through the policy checks, encodes, retires and writes in order
+A change SHALL run, stopping at the first failure: every rule's check; encoding the candidate; with the reuse rule, retiring the current hash and keeping only the newest N−1 retired hashes; and handing the user record, the new hash and the change time, read from the policy's replaceable clock, to the consumer's write. Retiring a hash identical to the newest retired hash SHALL add nothing. The library SHALL provide a ready-made write over any user provisioner that records the hash and the change time together.
 
 #### Scenario: Retry after a failed write does not double-count
 - **WHEN** a reuse rule of depth 3 is used, a user with current password `p2` and history `p1` changes to `p3`, the consumer's write fails, and the change is retried and succeeds
@@ -142,11 +150,19 @@ A history read or retire failure SHALL refuse the change with the history-unavai
 - **THEN** the change is refused with the history-unavailable error and the consumer's write is not called
 
 ### Requirement: Policy wiring mistakes fail at construction
-Building a policy SHALL fail with a configuration error naming the mistake when given: a reuse rule without a history port (including a typed-nil one), or with a depth below one; no encoder for a change; an absent matcher or clock; a breach check without a lookup source or a failure mode; a minimum length below 8; a maximum below 64 or below the minimum; a replaced common-password list that is empty. A check or change given no user record, or a change given no write, SHALL fail with a configuration error and SHALL read and write nothing.
+Building a policy SHALL fail with a configuration error naming the mistake when given: a reuse rule without a history port (including a typed-nil one), or with a depth below one; a nil encoder (including a typed-nil one); an absent matcher or clock; a breach check without a lookup source or a failure mode; a minimum length below 8; a maximum below 64 or below the minimum; a replaced common-password list that is empty. A check or change given no user record, or a change given no write, SHALL fail with a configuration error and SHALL read and write nothing.
 
 #### Scenario: Reuse depth zero
 - **WHEN** a policy is built with the reuse rule at depth 0
 - **THEN** construction fails with a configuration error naming the reuse depth
+
+#### Scenario: No encoder named
+- **WHEN** a policy is built without naming an encoder and changes a password
+- **THEN** the new hash is an Argon2id hash at the built-in encoder's defaults
+
+#### Scenario: Nil encoder
+- **WHEN** a policy is built with a nil encoder
+- **THEN** construction fails with a configuration error naming the encoder
 
 #### Scenario: Empty replacement list
 - **WHEN** a policy is built with the common-password list replaced by an empty list

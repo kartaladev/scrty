@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -170,11 +171,15 @@ func (g *Guards) guard(judge judgement) fiber.Handler {
 
 		az, ok := g.authorizerFor(ctx)
 		if !ok {
-			return newRefusal(fmt.Errorf(
-				"%w: no authorizer was wired for this route", authorize.ErrAccessDenied))
+			err := fmt.Errorf("%w: no authorizer was wired for this route", authorize.ErrAccessDenied)
+			eventsink.GuardRefused(ctx, err)
+
+			return newRefusal(err)
 		}
 
 		if err := judge(ctx, request{c: fc}, az); err != nil {
+			eventsink.GuardRefused(ctx, err)
+
 			// Wrapped, not rewritten. The extractor's error says the record
 			// could not be identified and the authorizer's says what it decided
 			// or what it could not reach, and either is still reachable through

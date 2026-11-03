@@ -7,10 +7,13 @@ package mfa
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -69,6 +72,10 @@ type resetConfig struct {
 	// messageUnset records a WithResetMessage given a nil builder, which is
 	// refused as ErrConfig rather than read as the default.
 	messageUnset bool
+
+	// events is the reset's own security-event sink
+	// (WithResetSecurityEvents).
+	events eventsink.Own
 }
 
 func newResetConfig(opts []ResetOption) resetConfig {
@@ -137,6 +144,26 @@ func WithResetMessage(build func(at time.Time) (subject, body string)) ResetOpti
 	}
 }
 
+// WithResetSecurityEvents reports a reset outside a chain to sink: once every
+// removal is done, as event.MFARemoved naming the user, whatever the later
+// steps do, since the removals are never undone. A removal that fails reports
+// nothing.
+//
+// Default: no sink, and nothing is reported outside a chain. On a request an
+// httpsec chain reports events for (httpsec.EnableSecurityEvents), the chain's
+// sink receives the outcome and this one is not called, so one outcome is
+// reported once.
+//
+// The sink is called synchronously, before the sessions are ended, with a
+// context from which the caller's cancellation has been removed. A panic in it
+// is recovered and logged through slog.Default, the reset having no logger of
+// its own, without the event's contents, and the reset goes on; a sink that
+// blocks holds the reset (see event.Sink). A nil sink, or the option given
+// twice, is an ErrConfig, returned before anything is removed.
+func WithResetSecurityEvents(sink event.Sink) ResetOption {
+	return func(c *resetConfig) { c.events.Set(sink) }
+}
+
 // The notification a reset sends. It names when the reset happened and
 // nothing else about the account: no code, secret, provisioning URI or user
 // reference.
@@ -186,8 +213,8 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 //
 // Every dependency and option is checked before anything is written: an empty
 // list of removers, an absent remover, a missing dependency that a step needs,
-// or a nil WithResetMessage builder, is an ErrConfig and every enrolment stays
-// in place.
+// a nil WithResetMessage builder, or a WithResetSecurityEvents given nil or
+// twice, is an ErrConfig and every enrolment stays in place.
 //
 // The sender is used as given: it need not be non-blocking. Unlike a sign-in
 // flow, a reset is named by an operator, so its response time reveals nothing
@@ -211,6 +238,12 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 			return diag.Wrap(err, "mfa: reset could not remove the enrolment")
 		}
 	}
+
+	// Reported once every removal is done, on a request a security-event sink
+	// watches: the removals are never undone, whatever follows.
+	c.events.Report(ctx, event.Event{
+		Name: event.MFARemoved, At: c.clock.Now(), Outcome: event.OutcomeSuccess, User: user,
+	}, slog.Default())
 
 	if c.revokeSessions {
 		if err := deps.Sessions.DeleteByUser(ctx, user); err != nil {
@@ -243,6 +276,10 @@ func (d ResetDeps) check(c resetConfig) error {
 
 	if c.messageUnset {
 		return fmt.Errorf("%w: reset message builder must not be nil", ErrConfig)
+	}
+
+	if err := c.events.Err("WithResetSecurityEvents"); err != nil {
+		return fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 
 	if c.notify && (nilcheck.IsNil(d.Sender) || nilcheck.IsNil(d.Users)) {

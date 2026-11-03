@@ -135,9 +135,9 @@ type Report struct {
 type Observer func(ctx context.Context, r Report)
 
 // WithObserver supplies an observer told of lockout transitions (see
-// Observer). The default is none: nothing is reported, and the policy's
-// view is the store itself, so recording costs nothing beyond the store's
-// write.
+// Observer). The default is none: nothing is reported to an observer, and
+// recording through the policy's view costs nothing beyond the store's write
+// unless a security-event sink watches (see Attempts).
 //
 // With an observer, recording a failure also counts the identifier's failures
 // in the window, and a reset counts them before clearing, which is one extra
@@ -179,29 +179,77 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // Attempts returns the policy's view of its attempt store, which records into
-// the store the policy reads and reports lockout transitions to the observer
-// given by WithObserver. It is the store to hand to
-// httpsec.FormLoginDeps.Attempts and httpsec.BasicAuthDeps.Attempts, so that
-// failures recorded by the library's login endpoints are reported.
+// the store the policy reads, reports lockout transitions to the observer
+// given by WithObserver, and reports the locks it decides as security events.
+// It is the store to hand to httpsec.FormLoginDeps.Attempts and
+// httpsec.BasicAuthDeps.Attempts, so that failures recorded by the library's
+// login endpoints are reported.
 //
 // It returns the same value on every call, so a consumer that hands it to
 // several endpoints hands them one store, and anything that deduplicates
-// stores sees one. Without an observer or a failure-streak limit it is the store itself. A
+// stores sees one. With no observer, no failure-streak limit and no sink
+// watching, it forwards each call to the store and does nothing else. A
 // failure recorded straight into the store, rather than through this view, is
-// not reported.
+// neither told to the observer nor reported as an event.
 //
-// With a failure-streak limit (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
+// A lock is reported where it is decided. On a failure a sink watches, the
+// chain's (httpsec.EnableSecurityEvents) or the policy's own
+// (WithSecurityEvents), the view reads, before it records the failure,
+// whether the identifier is locked by the rule Evaluate judges by, and the
+// failure that takes it from allowed to locked, or under the escalating wait
+// takes its count to the window failure limit, or that sets a hold, reports
+// event.AuthnLoginFailMax and then event.AuthnLoginLock. Under the
+// escalating wait an identifier is allowed again once its wait has run out,
+// so the failure after that locks it again, for longer, and reports again.
+// The failures that find it still locked lock nothing new and report no
+// further lock; the observer is still told of each as before. Within one
+// process the failures of one identifier are recorded one at a time while a
+// sink watches, so concurrent failures that lock it together report one
+// lock. With a store several processes share, failures on different
+// processes at the same moment may each report it: a lock is reported at
+// least once, and once within a process.
+//
+// Deciding it costs store reads, paid only while a sink watches. Under a
+// failure-streak limit the first is the identifier's streak, since a held
+// identifier is locked whatever its window holds, and a failure for one
+// reports no further lock, however its window stands. An identifier not
+// held, or any under no such limit, has the window's count read before the
+// failure and, under the escalating wait for a count between the threshold
+// and the window failure limit, whether any failure is more recent than the
+// wait that count owes, since the count alone cannot tell a wait still
+// running from one that has run out. The count after the failure is read too,
+// and shared with the observer when there is one.
+//
+// So a failure a sink watches reads the window two or three times besides its
+// write, with or without an observer, and the streak once more under a
+// failure-streak limit. Some read less. One that sets a hold, or
+// whose write to the failure log failed, reads no count after the write, so
+// the window one or two times. One for an identifier already held reads the
+// streak and counts the window only after the write. A failure with only an
+// observer reads the window once, after the write, and none when it sets a
+// hold or its write failed; one with neither, none. A store that cannot
+// answer a read before the write loses the event, which the policy logs
+// through WithLogger, and never the failure.
+//
+// A zero instant given to the view's RecordFailure is recorded at the
+// policy's clock, always, whatever the policy is configured with; an instant
+// that is given is kept as it is. With a failure-streak limit
+// (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
 // consecutive-failure streak and then the failure log, and always attempts the
-// log even when the streak write failed; it returns both errors joined. A zero
-// instant is recorded at the policy's clock, for both writes.
+// log even when the streak write failed; it returns both errors joined.
 func (p *Policy) Attempts() policy.AttemptStore { return p.attempts }
 
-// observedAttempts is the view Attempts hands out when the policy has an
-// observer or a failure-streak limit: it forwards every call to the policy's store, advances
-// the identifier's consecutive-failure streak when there is a failure-streak limit, and
-// reports the transitions its writes cause when there is an observer.
+// observedAttempts is the view Attempts hands out: it forwards every call to
+// the policy's store, advances the identifier's consecutive-failure streak
+// when there is a failure-streak limit, reports the transitions its writes
+// cause when there is an observer, and reports a lock its write decides when
+// a sink watches.
 type observedAttempts struct {
 	p *Policy
+
+	// locks serializes one identifier's failures while a sink watches, so
+	// one lock is reported once in this process.
+	locks identifierLocks
 }
 
 // msgReportLost is the record for a failure that was recorded but could not
@@ -211,11 +259,64 @@ const msgReportLost = "lockout: a lockout report was lost: the attempt store rec
 func (o *observedAttempts) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	p := o.p
 
-	// A view under a failure-streak limit records a zero instant at the policy's clock, for the
-	// streak and the log alike: a hold set at the zero instant would read as no
-	// hold at all.
-	if p.streaks != nil && at.IsZero() {
+	// A zero instant is recorded at the policy's clock, for the streak and the
+	// log alike: Evaluate reads a zero instant as now, and a failure stored at
+	// the zero instant falls outside every window, so it would never count and
+	// a hold set at it would read as no hold at all.
+	if at.IsZero() {
 		at = p.clock.Now()
+	}
+
+	// A lock is reported where it is decided, by reading whether the
+	// identifier was locked before this failure and counting the window after
+	// it, and only on a failure some sink watches. The identifier's failures
+	// in this process are recorded one at a time meanwhile, so one of them
+	// sees the transition; the observer and the sink are told after the lock
+	// is released, so neither holds the next failure.
+	watched := p.eventsWatched(ctx)
+	unlock := func() {}
+	if watched {
+		unlock = o.locks.lock(username)
+	}
+
+	// The release is deferred, so a store that panics leaves the identifier
+	// free for its next failure rather than held for good.
+	out := func() recorded {
+		defer unlock()
+
+		return o.record(ctx, username, at, watched)
+	}()
+
+	if out.report != nil {
+		p.report(ctx, *out.report)
+	}
+	if out.locked {
+		p.reportLock(ctx, at)
+	}
+
+	return out.err
+}
+
+// recorded is what recording one failure decided: the error to return, the
+// report to tell the observer, if any, and whether the failure locked its
+// identifier, for the security events.
+type recorded struct {
+	err    error
+	report *Report
+	locked bool
+}
+
+// record writes one failure and decides what it reports. watched is whether a
+// sink watches, so whether the identifier was locked is read before the write
+// as well as the window counted after.
+func (o *observedAttempts) record(ctx context.Context, username string, at time.Time, watched bool) recorded {
+	p := o.p
+
+	// Whether the identifier was locked before this failure, by the policy's
+	// own rule, read only while a sink watches.
+	var lockedBefore lockState
+	if watched {
+		lockedBefore = p.lockedAt(ctx, username, at)
 	}
 
 	// The streak goes first: it is the record that cannot be rebuilt from the
@@ -237,34 +338,57 @@ func (o *observedAttempts) RecordFailure(ctx context.Context, username string, a
 	// became of the log: no later write sets it again, so a report lost here
 	// would be lost for good. That write is reported as the hold and not also
 	// by the window.
-	if setHold && p.observer != nil {
-		p.report(ctx, Report{Identifier: username, Kind: ReportHeld, Failures: streak.Failures, At: at})
+	if setHold {
+		out := recorded{err: joinWriteErrors(streakErr, logErr), locked: watched}
+		if p.observer != nil {
+			out.report = &Report{Identifier: username, Kind: ReportHeld, Failures: streak.Failures, At: at}
+		}
 
-		return joinWriteErrors(streakErr, logErr)
+		return out
 	}
 	if logErr != nil {
-		return joinWriteErrors(streakErr, logErr)
+		return recorded{err: joinWriteErrors(streakErr, logErr)}
 	}
-	if p.observer == nil {
-		return streakErr
+	if p.observer == nil && !watched {
+		return recorded{err: streakErr}
 	}
 
 	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
 	if err != nil {
 		p.logger.LogAttrs(ctx, slog.LevelError, msgReportLost, diag.Failure("attempt-store", err)...)
 
-		return streakErr
+		return recorded{err: streakErr}
 	}
 
-	switch {
-	case !p.sliding && count >= p.ceiling:
-		p.report(ctx, Report{Identifier: username, Kind: ReportAtWindowFailureLimit, Failures: count, At: at})
-	case count >= p.threshold:
-		p.report(ctx, Report{Identifier: username, Kind: ReportLocked, Failures: count, At: at})
+	out := recorded{err: streakErr}
+
+	if p.observer != nil {
+		switch {
+		case !p.sliding && count >= p.ceiling:
+			out.report = &Report{Identifier: username, Kind: ReportAtWindowFailureLimit, Failures: count, At: at}
+		case count >= p.threshold:
+			out.report = &Report{Identifier: username, Kind: ReportLocked, Failures: count, At: at}
+		}
 	}
 
-	return streakErr
+	if watched {
+		switch {
+		case lockedBefore.err != nil:
+			p.logger.LogAttrs(ctx, slog.LevelError, msgEventLost, diag.Failure("attempt-store", lockedBefore.err)...)
+		case p.locks(lockedBefore, count):
+			out.locked = true
+		}
+	}
+
+	return out
 }
+
+// msgEventLost is the record for a failure whose lock event could not be
+// decided because the store could not answer one of the reads that say,
+// before the failure was recorded, whether the identifier was already locked:
+// its failure streak, the window's count, or the recency of its newest
+// failure. The failure is recorded and counts, and only its event is gone.
+const msgEventLost = "lockout: a lock event was lost: the attempt store could not answer a read made before the failure was recorded"
 
 // joinWriteErrors returns the one error that is set as itself, so a caller
 // that compares the store's error by identity still can, and joins the two

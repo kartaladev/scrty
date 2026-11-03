@@ -2,12 +2,14 @@ package httpsec
 
 import (
 	"context"
+	"errors"
 	"mime"
 	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
@@ -44,18 +46,43 @@ func policyDenyReason(d policy.Decision) error { return d.Reason }
 type credentialIssuer func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error)
 
 // signedTokens issues a token from g naming s through its jti, which is how a
-// later signed bearer request finds the session. The generator is the
-// consumer's, so its error comes back behind fixed text, marked as an issuing
-// failure (issuingFailure).
+// later signed bearer request finds the session. A token for a bound session
+// carries the session's binding as its cnf claim, so the two never differ.
+// The generator is the consumer's, so its error comes back behind fixed text,
+// marked as an issuing failure (issuingFailure).
 func signedTokens(g token.Generator) credentialIssuer {
 	return func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error) {
-		tok, err := g.Generate(ctx, s.ID, p)
+		tok, err := generateFor(ctx, g, s, p)
 		if err != nil {
 			return "", issuingFailure(err, msgTokenNotIssued)
 		}
 
 		return tok, nil
 	}
+}
+
+// errBindingNotIssuable is the cause of a token that could not be issued for
+// a bound session because the generator cannot bind: it would otherwise be
+// issued unbound for a session bound to a key. Chain assembly refuses such a
+// generator while a binding feature is on, so it is reached only by a session
+// bound while one was.
+var errBindingNotIssuable = errors.New("httpsec: the token generator cannot bind a token to the session's key")
+
+// generateFor issues g's token for s, held by p: bound to s's key when s is
+// bound (token.WithConfirmation), and through Generate when it is not.
+func generateFor(ctx context.Context, g token.Generator, s *session.Session, p *identity.Principal) (string, error) {
+	if s.KeyBinding.IsZero() {
+		return g.Generate(ctx, s.ID, p)
+	}
+
+	binding, ok := g.(token.ConfirmingGenerator)
+	if !ok {
+		return "", errBindingNotIssuable
+	}
+
+	return binding.GenerateWith(ctx, s.ID, p, token.WithConfirmation(token.Confirmation{
+		JKT: s.KeyBinding.JKT, X5TS256: s.KeyBinding.X5TS256,
+	}))
 }
 
 // issueFailure marks a failure of the chain's credential issuer. It is a
@@ -146,6 +173,23 @@ type loginTailDeps struct {
 	// calls it before anything else, ahead of the policy phase; a redemption
 	// calls it once its credential is spent (see completeLogin).
 	cancelHeld heldRecoveryCanceller
+
+	// binding is the key the sign-in is bound to, from the DPoP proof the
+	// request carried (issuingBinding), and the zero value for an unbound
+	// one. The session is built with it, so its credential carries it too.
+	binding session.KeyBinding
+
+	// csrfToken is whether the sign-in is created holding a CSRF token
+	// (session.WithCSRFToken): CSRF protection is enabled, a cookie
+	// authenticator is registered and the default token source is in use. It
+	// is decided when the chain is built, never read from the request's
+	// context, which a redeemer may not have passed on.
+	csrfToken bool
+
+	// afterFailures is whether the login's identifier had recent failed
+	// attempts, so its success is reported as
+	// event.AuthnLoginSuccessAfterFail. Only form login knows it.
+	afterFailures bool
 }
 
 // heldRecoveryCanceller cancels every pending recovery of a user: the
@@ -410,6 +454,9 @@ type preparedLogin struct {
 
 	prepared *session.Prepared
 	token    string
+
+	// afterFailures is loginTailDeps.afterFailures, for the success event.
+	afterFailures bool
 }
 
 // prepareLogin is the first half of completeLogin: it decides the
@@ -477,8 +524,23 @@ func prepareLogin(
 	// them can undo it, and before any challenge mark: a challenge the phase
 	// still raises, such as a password change, is marked on the satisfied
 	// session and refused as for any login.
-	create := make([]session.CreateOption, 0, len(opts)+3)
+	//
+	// The sign-in's client address and user agent come first, so a caller's
+	// option may still replace them; the manager records them only when it
+	// records sign-in metadata (session.WithSessionMetadata).
+	create := make([]session.CreateOption, 0, len(opts)+5)
+	create = append(create, signInMetadata(ctx))
 	create = append(create, opts...)
+	if !deps.binding.IsZero() {
+		// After the caller's options, so none of them can unbind a sign-in
+		// whose proof the endpoint verified.
+		create = append(create, session.WithKeyBinding(deps.binding))
+	}
+	// A sign-in a cookie may carry gets the CSRF token its unsafe requests
+	// must present, in the same creating write.
+	if deps.csrfToken {
+		create = append(create, session.WithCSRFToken())
+	}
 	if ev := in.FederatedAssurance; ev.Asserted() {
 		create = append(create, session.WithFederatedAssurance(ev.AMR(), ev.ACR()))
 	}
@@ -516,7 +578,10 @@ func prepareLogin(
 		return nil, err
 	}
 
-	return &preparedLogin{in: in, decision: d, methods: methods, prepared: p, token: tok}, nil
+	return &preparedLogin{
+		in: in, decision: d, methods: methods, prepared: p, token: tok,
+		afterFailures: deps.afterFailures,
+	}, nil
 }
 
 // session is the login's session as built and marked, not yet stored. A
@@ -547,11 +612,38 @@ func (l *preparedLogin) commit(ex *Exchange) (string, error) {
 	ex.Session = s
 	ex.SetContext(withSession(WithCaller(ctx, ex.Authentication), s))
 
+	// The sign-in is stored: a sign-in notice watching the request may now
+	// judge it (EnableSignInNotice). One never stored is never seen.
+	var principal *identity.Principal
+	if ex.Authentication != nil {
+		principal = ex.Authentication.Principal
+	}
+	observeSignIn(ctx, s, principal)
+
+	// Reported only now, with the session stored and its credential about to
+	// be handed out: a credential issued for a session whose write failed, or
+	// dropped by a redemption that lost its consume, never reaches here.
+	emitSignIn(ctx, s, l.afterFailures)
+
 	if l.decision.Outcome == policy.Challenge {
 		return l.token, &ChallengeError{Kind: l.decision.Challenge, Session: s, Token: l.token, Methods: l.methods}
 	}
 
 	return l.token, nil
+}
+
+// emitSignIn reports a stored sign-in: its session, its credential, and the
+// login that created it, under its user and first factor.
+func emitSignIn(ctx context.Context, s *session.Session, afterFailures bool) {
+	emitEvent(ctx, sessionEvent(event.SessionCreated, event.OutcomeSuccess, s))
+	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, s))
+
+	name := event.AuthnLoginSuccess
+	if afterFailures {
+		name = event.AuthnLoginSuccessAfterFail
+	}
+
+	emitEvent(ctx, sessionEvent(name, event.OutcomeSuccess, s))
 }
 
 // declaresJSON reports whether a content type names JSON, ignoring parameters

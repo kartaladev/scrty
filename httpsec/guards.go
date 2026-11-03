@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/guardauth"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
@@ -147,12 +148,24 @@ func WithChainAuthorizer() GuardOption {
 // guard built from these Guards, and the default response is not written. Pass
 // the same function to WithErrorHandler so a chain refusal and a guard refusal
 // are rendered alike.
+//
+// Either way, the challenge the chain in front answers its own refusals with
+// is already on the response, as it is when the chain's error handler runs:
+// with DPoP on, a refusal for want of a caller carries WWW-Authenticate.
 func WithGuardErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err error)) GuardOption {
 	return func(g *Guards) { g.onError = fn }
 }
 
 // refuse answers a refusal and never calls the route.
+//
+// The challenge the chain in front answers its own refusals with, such as
+// DPoP's WWW-Authenticate, is set first, so a guard's refusal carries it
+// too, whoever renders the answer.
 func (g *Guards) refuse(w http.ResponseWriter, r *http.Request, err error) {
+	eventsink.GuardRefused(r.Context(), err)
+
+	err = guardauth.Challenge(r.Context(), NewHTTPResponseWriter(w), err)
+
 	if g.onError != nil {
 		g.onError(w, r, err)
 

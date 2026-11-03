@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
 
@@ -18,10 +19,41 @@ import (
 //
 // The library supplies an implementation over net/http through NewHTTPRequest,
 // which is what a consumer gets when they wire nothing of their own.
+//
+// An integration whose request also has a method
+// DelHeaders(match func(name string) bool), removing every header match
+// reports true for from the request its framework hands on, lets the chain
+// remove the forwarded headers EnableTrustedProxies consumed from that request
+// too. Every integration the library provides has it. Without it the removed
+// headers are still hidden from every interceptor, but not from the
+// framework's own handlers.
 type Request interface {
 	Method() string
 	Path() string
+
+	// EscapedPath is the request path as the client sent it, percent-encoding
+	// intact: "/api/ord%65rs" stays "/api/ord%65rs", where Path decodes it to
+	// "/api/orders". An integration reads it from the request line itself,
+	// never decoded and re-encoded.
+	//
+	// DPoP (EnableDPoP) compares a proof's htu against it, so a proof made for
+	// one spelling of a path is not accepted for another that decodes to the
+	// same path.
+	EscapedPath() string
+
+	// Header returns the value of the header name: its first line when the
+	// request carries it more than once.
 	Header(name string) string
+
+	// HeaderValues returns every line of the header name, in the order
+	// received, and nil when the request carries none.
+	//
+	// The chain's trusted-proxy resolution (EnableTrustedProxies) reads
+	// forwarded headers through it, because the line a trusted proxy appended
+	// is the last one: reading the first line alone would read a line the
+	// client sent in place of the proxy's.
+	HeaderValues(name string) []string
+
 	Query(name string) string
 
 	// QueryValues returns every value of the query parameter name, in the
@@ -66,9 +98,45 @@ type Request interface {
 	Body(limit int64) ([]byte, error)
 
 	// ClientIP is the address the request is attributed to, or "" when the
-	// integration cannot tell. It is never read from a forwarding header
-	// unless that integration's own trusted-proxy configuration says so.
+	// integration cannot tell. The chain's trusted-proxy resolution reads it
+	// as the transport peer. Inside the chain it is the resolved address: a
+	// trusted proxy's forwarded client when EnableTrustedProxies trusts that
+	// field.
 	ClientIP() string
+
+	// Host is the host the client asked for: the request's Host header, or
+	// the host of an absolute request target, port included when one was
+	// sent. An integration reads it from the request itself, never from a
+	// framework helper that consults a forwarded header. Inside the chain it
+	// is the resolved host: a trusted proxy's forwarded host when
+	// EnableTrustedProxies trusts that field.
+	Host() string
+
+	// Secure reports whether the request reached the application over TLS. An
+	// integration reads it from the connection, never from a framework helper
+	// that consults a forwarded header. Inside the chain it is the resolved
+	// answer: true for every request under WithHTTPSDeployment, or a trusted
+	// proxy's forwarded scheme when EnableTrustedProxies trusts that field.
+	Secure() bool
+
+	// ClientCertificate is the certificate the client presented on the TLS
+	// connection the request arrived on: the leaf, the first certificate the
+	// client sent, or nil when the connection is not TLS or the client sent
+	// none. An integration reads it from the connection itself, never from a
+	// header.
+	//
+	// Inside the chain it is the resolved answer, given to every interceptor
+	// whether or not certificate binding (EnableCertificateBinding) is
+	// enabled, and the one that binding judges: from a peer that is not a
+	// trusted proxy, the connection's certificate; from a trusted proxy, the
+	// certificate it forwarded in the WithClientCertificateHeader header,
+	// decoded once, or nil when no header is named or its value does not
+	// decode. A trusted proxy's own connection certificate is never taken for
+	// the client's.
+	//
+	// The certificate is reported, not judged: whether its chain and dates are
+	// valid is for the TLS server or the proxy that accepted it to decide.
+	ClientCertificate() *x509.Certificate
 }
 
 // Cookie is a cookie an interceptor sets. It mirrors http.Cookie so the
@@ -81,7 +149,15 @@ type Cookie = http.Cookie
 // NewHTTPResponseWriter, which is what a consumer gets when they wire nothing
 // of their own.
 type ResponseWriter interface {
+	// SetHeader replaces every value of the response header name with value.
 	SetHeader(name, value string)
+
+	// AddHeader adds value to the response header name, keeping the values
+	// already set, as net/http's Header.Add does. It is how a list header
+	// such as Vary is extended without dropping what an outer layer or an
+	// earlier interceptor put there.
+	AddHeader(name, value string)
+
 	SetCookie(c *Cookie)
 	WriteHeader(status int)
 	Write(b []byte) (int, error)
@@ -118,6 +194,16 @@ type Exchange struct {
 	// exchange runs through, and nil on one run through none.
 	perRequest *perRequestPhase
 
+	// csrfOptOut is whether the chain this exchange runs through was built
+	// with WithoutCSRFProtection, which CheckCSRFToken reads when no CSRF
+	// layer judged the request.
+	csrfOptOut bool
+
+	// refusalReported is whether a chain this exchange ran through has
+	// already reported the refusal it was answered with (emitRefusal), so a
+	// chain assembled inside another's does not have it reported twice.
+	refusalReported bool
+
 	// renewal is the identifier of a session the resolution core let through
 	// to the renewal endpoint without publishing it: one presented after its
 	// grace window under unused-successor recovery, on a request that is the
@@ -130,6 +216,27 @@ type Exchange struct {
 	// bearer alone. The signed-token bearer has no source guard, so it leaves
 	// it nil and nothing is charged.
 	chargeRenewal func(ctx context.Context)
+
+	// admitRenewal judges the session a late renewal loads, as the bearer
+	// that let it through would have judged a session it loaded: its key
+	// binding against the credential and the proof presented, the proof then
+	// recorded. It is set with renewal by the resolution core, and nil when
+	// the bearer has nothing to judge.
+	admitRenewal func(ex *Exchange, s *session.Session) error
+
+	// certificateThumb is the thumbprint of the client certificate the
+	// request presents, "" for none, once certificateRead says it has been
+	// read (presentedThumbprint). Certificate binding reads it once, at
+	// OrderMTLS, so every interceptor inside judges one answer.
+	certificateThumb string
+	certificateRead  bool
+
+	// bearerCredential is the credential the chain's bearer authenticated on
+	// this request, as it was presented: a signed token or a session
+	// reference, under whatever scheme the bearer reads. It is set only once
+	// the bearer has resolved it, and "" on a request no bearer
+	// authenticated. A DPoP proof beside it carries ath over it.
+	bearerCredential string
 
 	ctx context.Context
 }
@@ -225,8 +332,10 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 //
 // The default is unused: the built-ins call it, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor, normally at
-// OrderBearerToken, after verifying the credential that names s. It is itself
-// the consumer's extension point, so it has no override.
+// OrderBearerToken, after verifying the credential that names s. Such an
+// interceptor also calls RecordPresentedToken with that credential, so a DPoP
+// proof beside it is judged for its ath. PublishSession is itself the
+// consumer's extension point, so it has no override.
 func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Session) error {
 	if s != nil && s.FamilyID == id.Nil {
 		return errors.New("httpsec: a session with no family cannot be published; every stored session belongs to one")
@@ -290,4 +399,22 @@ func (e *Exchange) EvaluatePerRequest(s *session.Session, p *identity.Principal)
 	}
 
 	return e.evaluatePerRequest(ph, s, p, e.Authentication.PasswordChangedAt, ph.now())
+}
+
+// RecordPresentedToken records tok as the access token the request presented,
+// as the caller verified it, under whatever scheme the caller reads. A DPoP
+// proof the request carries beside it must then carry ath over tok (RFC 9449
+// section 4.2), at the endpoints that issue or continue a sign-in.
+//
+// A consumer's own bearer interceptor, registered with RegisterInterceptor at
+// OrderBearerToken, calls it after verifying the credential and before next.
+// The built-in bearers (EnableBearerToken, EnableSessionBearer) call it for
+// the credential they authenticate. Call it only for a credential that was
+// verified: the proof is judged against it as given.
+//
+// The default is that nothing is recorded: the request is judged as presenting
+// no access token, so a proof with ath is refused and one without is accepted.
+// It has no override, being the consumer's own extension point.
+func (e *Exchange) RecordPresentedToken(tok string) {
+	e.bearerCredential = tok
 }

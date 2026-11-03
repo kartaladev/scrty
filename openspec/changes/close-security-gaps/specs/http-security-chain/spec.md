@@ -33,7 +33,7 @@ Every request an interceptor judges SHALL expose its host and whether it arrived
 - **THEN** an interceptor sees a secure request and the `Host` header's host
 
 ### Requirement: Browser-hardening layers run outside every authentication interceptor
-The library SHALL publish three named slots ahead of every existing slot, in this order: security headers, then CORS, then CSRF protection. Each SHALL be empty unless its layer is enabled. Client resolution through trusted proxies SHALL happen before the first interceptor runs, and a host-not-allowed refusal SHALL still pass through the security-headers slot. Every response the chain produces, including a CORS preflight answer and a CSRF refusal, SHALL pass through the security-headers slot.
+The library SHALL publish three named slots ahead of every existing slot, in this order: security headers, then CORS, then CSRF protection. Each SHALL be empty unless its layer is enabled. Client resolution through trusted proxies SHALL happen before the first interceptor runs, and a host-not-allowed refusal, which no interceptor sees, SHALL still carry the headers the security-headers layer would set for that request. Every response the chain produces, including a CORS preflight answer and a CSRF refusal, SHALL pass through the security-headers slot.
 
 #### Scenario: Preflight carries the headers
 - **WHEN** security headers and CORS are enabled and an allowed preflight is answered
@@ -88,7 +88,7 @@ The listing SHALL never return session identifiers, only opaque handles valid fo
 - **THEN** the request fails with an error the default mapping answers with 500, and its text is fixed library text
 
 ### Requirement: Login upgrades an outdated password hash when the consumer supplies a write
-When the consumer supplies a rehash write, a password login, Basic authentication or password re-proof whose password verified, and which is not refused afterwards, SHALL ask the current encoder whether the stored hash needs upgrading; when it does, the submitted password SHALL be re-encoded with the current encoder and the write SHALL receive the user, the stored hash it replaces and the new hash, after the outcome is decided and on the same request, so the consumer can replace the hash only while it is still the stored one. A login challenged for a second factor SHALL still upgrade. Neither the re-encoding nor the write SHALL change the outcome: an error from either SHALL be logged without the password or any hash. Without a write, no rehash SHALL happen.
+When the consumer supplies a rehash write, a password login, Basic authentication or password re-proof whose password verified, and which is not refused afterwards, SHALL ask the current encoder whether the stored hash needs upgrading; when it does, the submitted password SHALL be re-encoded with the current encoder, only once the outcome is decided and only for a login not refused, and the write SHALL receive the user, the stored hash it replaces and the new hash, after the outcome is decided and on the same request, so the consumer can replace the hash only while it is still the stored one. A form login or password re-proof challenged for a second factor SHALL still upgrade. Basic authentication is stateless, so a challenge ends it: the request is refused, and it SHALL NOT upgrade. Neither the re-encoding nor the write SHALL change the outcome: an error from either SHALL be logged without the password or any hash. Without a write, no rehash SHALL happen.
 
 #### Scenario: Raised cost
 - **WHEN** the encoder is Argon2id at 128 MiB, a user's stored hash is Argon2id at 64 MiB, a rehash write is configured, and the user logs in
@@ -102,6 +102,10 @@ When the consumer supplies a rehash write, a password login, Basic authenticatio
 - **WHEN** a rehash write is configured and a login with an outdated stored hash fails for a wrong password
 - **THEN** the write is not called
 
+#### Scenario: Refused after the password verified
+- **WHEN** a rehash write is configured, a login's password verifies against an outdated stored hash, and a post-authentication policy then refuses the login
+- **THEN** the password is not re-encoded and the write is not called
+
 #### Scenario: Write fails
 - **WHEN** the rehash write returns an error
 - **THEN** the login still succeeds, and the error is logged without any hash
@@ -110,9 +114,17 @@ When the consumer supplies a rehash write, a password login, Basic authenticatio
 - **WHEN** a login with the old password verifies the old 64 MiB hash while a password change stores a new hash, and the rehash write then runs
 - **THEN** the write receives the old 64 MiB hash as the one it replaces, so a conditional write leaves the new password in place
 
+#### Scenario: Ready-made write is atomic
+- **WHEN** the consumer uses the library's ready-made rehash write over a shipped identity store, and a password change commits between the login's verification and the write
+- **THEN** the store decides the condition in the write itself, the new password stays, and the login still succeeds
+
 #### Scenario: Challenged for a second factor
-- **WHEN** a rehash write is configured and a login with an outdated stored hash is challenged for a second factor
+- **WHEN** a rehash write is configured and a form login with an outdated stored hash is challenged for a second factor
 - **THEN** the write receives the upgraded hash
+
+#### Scenario: Basic challenged for a second factor
+- **WHEN** a Basic rehash write is configured and Basic authentication with an outdated stored hash is challenged for a second factor
+- **THEN** the request is refused with the challenge and the write is not called
 
 ### Requirement: Logout can clear the browser's site data
 When the consumer opts in, a successful logout response SHALL carry `Clear-Site-Data` with the directives the consumer chooses from `"cache"`, `"cookies"` and `"storage"`. It SHALL be sent only on a secure request. By default no `Clear-Site-Data` header SHALL be sent. Opting in with no directive, or with another directive, SHALL fail construction.
@@ -130,7 +142,7 @@ When the consumer opts in, a successful logout response SHALL carry `Clear-Site-
 - **THEN** the refusal carries no `Clear-Site-Data`
 
 ### Requirement: A sign-in from an unseen device can notify the user
-When the consumer opts in and sign-in metadata recording is on, a completed sign-in whose metadata matches none of the user's other live sign-ins SHALL send the user a notice through the sending port, after the sign-in is stored and without delaying the response. Matching SHALL compare user agents by default and SHALL be replaceable, and the consumer SHALL be able to supply a port of devices seen earlier, which is consulted beside the live sign-ins. A user's first sign-in, with no other live sign-in and nothing in the port, SHALL NOT be notified. The notice SHALL contain the time and coarse device description, never a token, a link secret, a session handle or the full client address. A failure to send SHALL be logged and SHALL NOT affect the sign-in. Construction SHALL fail when the notice is enabled without metadata recording or without a sender.
+When the consumer opts in and sign-in metadata recording is on, a completed sign-in whose metadata matches none of the user's other live sign-ins SHALL send the user a notice through the sending port, after the sign-in is stored and without delaying the response. At most a bounded number of notices SHALL be in progress at once, 32 by default and replaceable; a notice beyond the bound SHALL be dropped and logged, never queued behind the response. Matching SHALL compare user agents by default and SHALL be replaceable, and the consumer SHALL be able to supply a port of devices seen earlier, which is consulted beside the live sign-ins. A user's first sign-in, with no other live sign-in and nothing in the port, SHALL NOT be notified. The notice SHALL contain the time and coarse device description, never a token, a link secret, a session handle or the full client address. A failure to send SHALL be logged and SHALL NOT affect the sign-in. Construction SHALL fail when the notice is enabled without metadata recording or without a sender.
 
 #### Scenario: New browser
 - **WHEN** the notice is on and a user with a live sign-in from `Firefox/140` signs in from `Safari/19`
@@ -147,6 +159,14 @@ When the consumer opts in and sign-in metadata recording is on, a completed sign
 #### Scenario: Sign-in not stored
 - **WHEN** the notice is on and a sign-in fails after its credential was issued but before its session was stored
 - **THEN** no notice is sent
+
+#### Scenario: Burst of sign-ins
+- **WHEN** the notice is on, its store or sender is slow, and more sign-ins complete at once than the notice's concurrency bound (32 by default)
+- **THEN** at most that many notices are in progress, the others are dropped and logged, and no sign-in's response waits for a notice
+
+#### Scenario: Consumer's bound
+- **WHEN** the consumer sets the notice's concurrency bound to 4
+- **THEN** at most 4 notices are in progress at once
 
 #### Scenario: Notice without metadata
 - **WHEN** the consumer enables the notice with metadata recording off

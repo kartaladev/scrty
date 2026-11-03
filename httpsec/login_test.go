@@ -1893,7 +1893,7 @@ func TestFormLoginResponse(t *testing.T) {
 				var members map[string]json.RawMessage
 				require.NoError(t, json.Unmarshal(s.rec.Body.Bytes(), &members))
 				assert.ElementsMatch(t,
-					[]string{"access_token", "refresh_token", "valid_until"},
+					[]string{"access_token", "refresh_token", "valid_until", "token_type"},
 					slices.Collect(maps.Keys(members)),
 					"the member names are the documented contract of the default")
 			},
@@ -2087,7 +2087,7 @@ func expectCancelThenFail(h *authHarness, cancel context.CancelFunc) *context.Co
 // serveOn runs req through chain on an exchange built from ctx, because the
 // exchange's context, not the request's, is what the interceptors act on.
 func serveOn(ctx context.Context, chain *httpsec.Chain, req *http.Request) {
-	run := chain.Assemble(func(*httpsec.Exchange) error { return nil })
+	run := chain.Assemble(func(*httpsec.Exchange) error { return nil }) //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 	ex := httpsec.NewExchange(ctx,
 		httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(httptest.NewRecorder()))
 	_ = run(ex)

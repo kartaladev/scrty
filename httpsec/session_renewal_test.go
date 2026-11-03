@@ -1594,6 +1594,33 @@ func TestSessionRenewalThrottle_ConsumerLimiter(t *testing.T) {
 			},
 		},
 		{
+			// The proof is checked before the limit is asked, so a refused
+			// proof charges no renewal.
+			name: "a bad proof beside the session's Bearer credential is neither asked nor charged",
+			setup: func(*testing.T) renewalSetup {
+				return renewalSetup{interceptors: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})}}
+			},
+			drive: func(t *testing.T, f *renewalFixture) served {
+				t.Helper()
+
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+				req.Header.Set("Authorization", "Bearer "+f.old)
+				req.Header.Set("DPoP", "not-a-proof")
+
+				return serve(t, f.chain, req)
+			},
+			assert: func(t *testing.T, f *renewalFixture, out served, keys []string) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+				assert.Empty(t, keys)
+
+				s, err := f.sessions.LoadForRenewal(t.Context(), f.old)
+				require.NoError(t, err)
+				assert.True(t, s.SupersededAt.IsZero(), "nothing was rotated")
+			},
+		},
+		{
 			name: "a late renewal the per-request policy denies is neither asked nor charged",
 			setup: func(t *testing.T) renewalSetup {
 				t.Helper()

@@ -66,7 +66,7 @@ func TestFormLogin_KeySourceFailureAnswerCarriesNoKeySourceText(t *testing.T) {
 	deps.Tokens = gen
 
 	h.expectAuthenticated(testPrincipal())
-	h.attempts.EXPECT().Reset(t.Context(), "ada").Return(nil).AnyTimes()
+	h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil).AnyTimes()
 
 	chain, err := httpsec.New(
 		httpsec.WithLogger(h.logger()),

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -104,7 +105,30 @@ type recoveryInterceptor struct {
 	log         *slog.Logger
 	sampler     *logsample.Sampler
 
+	// automation is the automation-challenge gate when it was selected for the
+	// start, settled at assembly, and nil otherwise.
+	automation *challengeGate
+
+	// csrfToken is whether the sign-ins a recovery makes carry a CSRF token,
+	// as every first factor's do, settled at assembly (csrfTokensAtLogin).
+	csrfToken bool
+
 	now func() time.Time
+}
+
+// signInOptions are the attributes a recovery's sign-in is created with, as
+// every first factor's sign-in is (prepareLogin): the client address and user
+// agent the chain resolved for ctx, which the session manager records only
+// when it records sign-in metadata (signInMetadata), and the CSRF token its
+// unsafe cookie requests must present when the chain issues one. The recovery
+// core applies its own attributes after them.
+func (i *recoveryInterceptor) signInOptions(ctx context.Context) []session.CreateOption {
+	opts := []session.CreateOption{signInMetadata(ctx)}
+	if i.csrfToken {
+		opts = append(opts, session.WithCSRFToken())
+	}
+
+	return opts
 }
 
 // check reports the wiring faults only the assembled configuration can see:
@@ -135,7 +159,7 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 			"EnableFormLogin, whose generator it uses by default", option)
 	}
 
-	return nil
+	return checkBindingGenerator(c, option, "WithRecoveryTokens", i.tokens)
 }
 
 // endpointPaths are every path the recovery endpoints answer, named for a
@@ -414,7 +438,15 @@ func (i *recoveryInterceptor) complete(ex *Exchange) error {
 		return err
 	}
 
+	// The proof is judged before any recovery proof is looked at, so a bad
+	// one spends none and is counted nowhere, as a malformed request is.
+	req.KeyBinding, err = issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	if err != nil {
+		return err
+	}
+
 	req.Source = src.Addr()
+	req.SessionOptions = i.signInOptions(ctx)
 
 	res, err := i.recoverer.Recover(ctx, req)
 	if err != nil {
@@ -454,7 +486,16 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	ex.Session = res.Session
 	ex.SetContext(withSession(ex.Context(), res.Session))
 
-	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res})
+	// The core stored the recovery-pending session before answering, and its
+	// credential is handed out below.
+	// A completed recovery is a sign-in as well, of the recovery factor.
+	ctx := ex.Context()
+	emitEvent(ctx, sessionEvent(event.RecoveryCompleted, event.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.SessionCreated, event.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, res.Session))
+	emitEvent(ctx, sessionEvent(event.AuthnLoginSuccess, event.OutcomeSuccess, res.Session))
+
+	return i.respond(ex, RecoveryResult{Token: res.Credential, Recovery: res, TokenType: tokenTypeOf(res.Session)})
 }
 
 // issueRecovered is the credential issuer the chain gives the recovery core
@@ -588,13 +629,14 @@ func readRecoveryForm(r Request) (url.Values, error) {
 // writeRecoveryResult is the response a completed recovery succeeds with when
 // the consumer supplies no responder.
 //
-// It carries the access token, the session's idle expiry, the new saved codes
+// It carries the access token and its token_type, the session's idle expiry,
+// the new saved codes
 // or null, and how many saved codes the user holds and whether that is low,
 // as the core counted them (recovery.Result.Remaining): after a reissue, the
 // new set. It is never cached: it carries a credential and, possibly, codes
 // shown only once.
 func writeRecoveryResult(ex *Exchange, result RecoveryResult) error {
-	body := recoveryDocument{AccessToken: result.Token}
+	body := recoveryDocument{AccessToken: result.Token, TokenType: result.TokenType}
 
 	if s := recoverySession(result.Recovery); s != nil {
 		body.ExpiresAt = s.IdleExpiresAt
@@ -620,6 +662,7 @@ type recoveryDocument struct {
 	RecoveryCodes []string  `json:"recovery_codes"`
 	Remaining     int       `json:"remaining"`
 	Low           bool      `json:"low"`
+	TokenType     TokenType `json:"token_type,omitempty"`
 }
 
 // writeRecoveryHold is the response a held recovery is answered with when the
@@ -658,7 +701,12 @@ type recoveryHoldDocument struct {
 // disabled username, a lookup that failed, a reached issuance limit, a token
 // store or sender that failed, a body that could not be read, and a source
 // that is throttled or cannot be attributed. The core logs each cause
-// server-side; nothing here tells them apart.
+// server-side; nothing here tells them apart. The one exception is an
+// automation challenge (EnableAutomationChallenge) that refuses or fails: it
+// is answered before the username is looked up, and the verifier is told
+// nothing about the account (ChallengeSignals.IdentifierHasFailures is false
+// here whatever the username), so neither its refusal nor its decision can say
+// whether the account exists.
 //
 // Every start is counted against its source, whatever it did, because what
 // the guard bounds is how often one source asks for mail to be sent. A source
@@ -669,11 +717,32 @@ func (i *recoveryInterceptor) start(ex *Exchange) error {
 	src, err := sourceThrottled(ctx, i.startGuard, ex.Request.ClientIP(), recoveryStartFlow,
 		i.sampler, i.log, i.now())
 	if err == nil {
+		username := readRecoveryStart(ex.Request)
+
+		// After the source limit and before the start is counted or the
+		// username is looked up. Its refusal is the one answer that differs
+		// from the uniform 202, and it depends on nothing about the account:
+		// the verifier is told no identifier, because an owner's sign-in clears
+		// an account's login failures and an unknown name has none to clear,
+		// so the signal would tell the two apart where this flow answers
+		// alike.
+		//
+		// The source signal reads the completion guard, which counts refused
+		// recoveries, since the start guard counts every start.
+		if err := i.automation.ask(ctx, ex.Request, challengeQuery{
+			flow:     ChallengeFlowRecoveryStart,
+			source:   i.guard,
+			clientIP: ex.Request.ClientIP(),
+			charge:   func() { recordSourceFailure(ctx, i.startGuard, src) },
+		}); err != nil {
+			return err
+		}
+
 		recordSourceFailure(ctx, i.startGuard, src)
 
 		// An empty username names no account, so there is nothing to start:
 		// a body that could not be read is not a question about one.
-		if username := readRecoveryStart(ex.Request); username != "" {
+		if username != "" {
 			i.recoverer.Start(ctx, username)
 		}
 	}
@@ -755,7 +824,14 @@ func (i *recoveryInterceptor) finish(ex *Exchange) error {
 		return recovery.ErrMalformed
 	}
 
-	res, err := i.recoverer.Finish(ex.Context(), token)
+	// Before the held record is completed, so a bad proof completes nothing.
+	binding, err := issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	if err != nil {
+		return err
+	}
+
+	res, err := i.recoverer.Finish(ex.Context(), token,
+		recovery.WithFinishKeyBinding(binding), recovery.WithFinishSessionOptions(i.signInOptions(ex.Context())...))
 	if err != nil {
 		return err
 	}

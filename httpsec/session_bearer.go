@@ -68,6 +68,10 @@ type sessionBearer struct {
 	guard   sourceGuard
 	sampler *logsample.Sampler
 	log     *slog.Logger
+
+	// dpop is the chain's DPoP verifier, handed over at assembly, and nil
+	// while DPoP is off.
+	dpop *dpopVerifier
 }
 
 // wireSessionBearer settles the limiter and the source guard against the
@@ -129,7 +133,7 @@ func (b *sessionBearer) wire(c *Chain) {
 // extraction is the resolution core the signed bearer also runs, so the two
 // modes refuse identically.
 func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
-	presented, ok := presentedCredential(ex.Request.Header("Authorization"), b.scheme, false)
+	presented, underDPoP, ok := presentedBearer(ex.Request.Header("Authorization"), b.scheme, false, b.dpop)
 	if !ok {
 		return next(ex)
 	}
@@ -148,7 +152,26 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		return ErrAuthenticationRequired
 	}
 
-	if err := b.resolver.resolve(ex, presented, lookupBySessionUser()); err != nil {
+	// The proof is checked before the session is loaded, its ath over the
+	// reference, so a bad proof costs no store read. Its key is judged
+	// against the session's binding once the session is loaded (admit).
+	proof, err := presentedProof(ctx, b.dpop, ex.Request, underDPoP, presented)
+	if err != nil {
+		return err
+	}
+
+	resolver := b.resolver
+	resolver.admit = func(ex *Exchange, s *session.Session) error {
+		ctx := ex.Context()
+		if err := admitBinding(ex, b.dpop, proof,
+			keyBinding{jkt: s.KeyBinding.JKT, x5tS256: s.KeyBinding.X5TS256}); err != nil {
+			return refusedReference(err)
+		}
+
+		return recordProof(ctx, b.dpop, proof)
+	}
+
+	if err := resolver.resolve(ex, presented, lookupBySessionUser()); err != nil {
 		// Only a refusal of the reference itself is a failed guess. Once the
 		// session and its user are resolved the caller is published, so an
 		// error after that point is a policy decision about a valid session,
@@ -168,6 +191,8 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		// the credential.
 		ex.chargeRenewal = func(ctx context.Context) { recordSourceFailure(ctx, b.guard, src) }
 	}
+
+	ex.RecordPresentedToken(presented)
 
 	return next(ex)
 }
@@ -261,6 +286,7 @@ func EnableSessionBearer(d SessionBearerDeps, opts ...SessionBearerOption) Optio
 		}
 
 		c.sessionBearer = true
+		c.bindingVerifiers = append(c.bindingVerifiers, option)
 
 		c.enable(option, func() error {
 			if err := eachInterceptor(c, func(*bearerToken) error {
@@ -281,6 +307,8 @@ func EnableSessionBearer(d SessionBearerDeps, opts ...SessionBearerOption) Optio
 		// The renewal endpoint may be enabled after this option, so it is
 		// handed to the core once every option has been applied.
 		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
+		// EnableDPoP may come after this option too.
+		c.wire(func(*Chain) { b.dpop = c.dpop })
 		c.register(b, OrderBearerToken)
 
 		return nil
@@ -315,12 +343,17 @@ func WithSessionBearerScheme(scheme string) SessionBearerOption {
 // checkTokenGenerator checks the token generator a credential-issuing endpoint
 // was given against the chain's bearer mode. In the signed-token mode the
 // generator is required, since it mints the only credential that mode
-// accepts. In the session-reference mode it is refused, since a token it
+// accepts, and with EnableDPoP or EnableCertificateBinding on it must be able to bind the token it mints
+// (checkBindingGenerator). In the session-reference mode it is refused, since a token it
 // minted would not be accepted by this chain: the endpoint issues the
 // session's identifier instead. field names where the generator was given.
 func checkTokenGenerator(c *config, option, field string, g token.Generator) error {
 	if !c.sessionBearer {
-		return requireDep(option, "token generator", g)
+		if err := requireDep(option, "token generator", g); err != nil {
+			return err
+		}
+
+		return checkBindingGenerator(c, option, field, g)
 	}
 
 	if !nilcheck.IsNil(g) {
@@ -370,4 +403,17 @@ func WithSessionBearerLimiter(l ratelimit.Limiter) SessionBearerOption {
 
 		return nil
 	}
+}
+
+// refusedReference is a binding refusal of a session reference that loaded:
+// a valid credential presented by the wrong sender (as Bearer when it is
+// bound, or with another key's proof). It also matches
+// ErrAuthenticationRequired, so it is charged to the source as any refused
+// reference is, and cannot be told apart from a missing session.
+func refusedReference(err error) error {
+	if errors.Is(err, ErrAuthenticationRequired) {
+		return err
+	}
+
+	return errors.Join(ErrAuthenticationRequired, err)
 }

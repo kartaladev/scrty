@@ -13,11 +13,15 @@ import (
 	"github.com/kartaladev/scrty/store/sqlstore"
 )
 
-// TestIdentityReuse_GuardOverStore runs the reuse guard end to end over the
-// database/sql store, which backs both the user and the history: a change
+// newPassword is the password a change moves to: long and uncommon enough
+// that only the reuse rule could refuse it.
+const newPassword = "p2-plum-orchard-river" //nolint:gosec // G101: a test fixture password, not a credential
+
+// TestIdentityReuse_PolicyOverStore runs the password policy's reuse rule end
+// to end over the database/sql store, which backs both the user and the history: a change
 // made inside one caller's transaction stores the new password, the retired
 // hash and the change time together, or none of them.
-func TestIdentityReuse_GuardOverStore(t *testing.T) {
+func TestIdentityReuse_PolicyOverStore(t *testing.T) {
 	t.Parallel()
 
 	conn := migratedIdentityDB(t)
@@ -28,8 +32,10 @@ func TestIdentityReuse_GuardOverStore(t *testing.T) {
 
 	// PostgreSQL keeps microseconds, so the fixed time is one it stores as is.
 	now := time.Date(2033, 4, 5, 6, 7, 8, 123456000, time.UTC)
-	guard, err := password.NewReuseGuard(store, enc, 3,
-		password.WithReuseClock(clockwork.NewFakeClockAt(now)))
+	policy, err := password.NewPolicy(
+		password.WithEncoder(enc),
+		password.NoReuse(store, 3),
+		password.WithClock(clockwork.NewFakeClockAt(now)))
 	require.NoError(t, err)
 
 	write, err := password.ProvisionerWrite(store)
@@ -48,7 +54,7 @@ func TestIdentityReuse_GuardOverStore(t *testing.T) {
 			username: "reuse-rolled-back",
 			assert: func(t *testing.T, _, after *identity.Details, history [][]byte) {
 				assert.True(t, enc.Match("p1", after.Password), "the password is still p1")
-				assert.False(t, enc.Match("p2", after.Password))
+				assert.False(t, enc.Match(newPassword, after.Password))
 				assert.Empty(t, history, "the retired hash rolled back with the change")
 				assert.True(t, after.PasswordChangedAt.IsZero(), "the time rolled back with the change")
 			},
@@ -58,10 +64,10 @@ func TestIdentityReuse_GuardOverStore(t *testing.T) {
 			username: "reuse-committed",
 			commit:   true,
 			assert: func(t *testing.T, before, after *identity.Details, history [][]byte) {
-				assert.True(t, enc.Match("p2", after.Password), "the password is now p2")
+				assert.True(t, enc.Match(newPassword, after.Password), "the password is now p2")
 				assert.Equal(t, [][]byte{before.Password}, history, "the history holds p1's hash")
 				assert.True(t, now.Equal(after.PasswordChangedAt),
-					"the time is the guard clock's: want %v, got %v", now, after.PasswordChangedAt)
+					"the time is the policy clock's: want %v, got %v", now, after.PasswordChangedAt)
 			},
 		},
 	}
@@ -83,7 +89,7 @@ func TestIdentityReuse_GuardOverStore(t *testing.T) {
 			require.NoError(t, err)
 			defer func() { _ = tx.Rollback() }()
 
-			require.NoError(t, guard.Change(sqlstore.WithTx(ctx, tx), before, "p2", write))
+			require.NoError(t, policy.Change(sqlstore.WithTx(ctx, tx), before, newPassword, write))
 			if tc.commit {
 				require.NoError(t, tx.Commit())
 			} else {

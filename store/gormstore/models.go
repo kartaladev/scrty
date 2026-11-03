@@ -83,6 +83,16 @@ type sessionRow struct {
 	// supersession. It is read-only here ("->"): the supersession statement
 	// alone writes it, and the insert leaves the column to its default, false.
 	RotatedStrictly bool `gorm:"column:rotated_strictly;type:boolean;->"`
+	// The sign-in columns are written by the insert only; the update omits
+	// them. ClientIP is the client address, UserAgent the user agent,
+	// BindingKind and BindingThumbprint the key binding, and CSRFToken the
+	// token as the caller handed it (sealed, behind the session package's
+	// decorator). Each is NULL for none.
+	ClientIP          *string `gorm:"column:client_ip;type:text"`
+	UserAgent         *string `gorm:"column:user_agent;type:text"`
+	BindingKind       *string `gorm:"column:binding_kind;type:text"`
+	BindingThumbprint *string `gorm:"column:binding_thumbprint;type:text"`
+	CSRFToken         *string `gorm:"column:csrf_token;type:text"`
 }
 
 // TableName is the table the migration creates for sessions.

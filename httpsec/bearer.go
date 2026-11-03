@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -43,6 +44,10 @@ type bearerToken struct {
 
 	scheme           string
 	allowEmptyScheme bool
+
+	// dpop is the chain's DPoP verifier, handed over at assembly, and nil
+	// while DPoP is off.
+	dpop *dpopVerifier
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -67,9 +72,10 @@ func (b *bearerToken) wire(c *Chain) {
 // Intercept authenticates a bearer token against a live session and a live
 // user.
 //
-// It sets no WWW-Authenticate header. What a refusal looks like on the wire is
-// the consumer's error handling to decide, and a header written here would be
-// one the consumer cannot take back.
+// It writes no WWW-Authenticate header itself. With EnableDPoP the chain's
+// challenge interceptor adds the DPoP and Bearer challenges to the refusals
+// that come back through it; a consumer's WithErrorHandler can remove them
+// from the response headers.
 //
 // A token the verifier rejects is recorded at debug with the verifier's own
 // text, kept on purpose: it names the check the token failed (expired, wrong
@@ -84,7 +90,8 @@ func (b *bearerToken) wire(c *Chain) {
 // errors.As. A consumer who wants a store's full error logs it inside their
 // own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
-	presented, ok := b.presented(ex.Request.Header("Authorization"))
+	presented, underDPoP, ok := presentedBearer(ex.Request.Header("Authorization"),
+		b.scheme, b.allowEmptyScheme, b.dpop)
 	if !ok {
 		return next(ex)
 	}
@@ -96,12 +103,43 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 		return b.notVerified(ex, err)
 	}
 
+	// The token's binding is judged before its session is looked up, so a
+	// stolen bound token costs no store read, and a token whose binding the
+	// chain cannot honour is never taken for a plain bearer token.
+	cnf := claims.Confirmation()
+	proof, err := b.admitBinding(ex, underDPoP, presented, cnf)
+	if err != nil {
+		return err
+	}
+
+	// The session's own binding must be the token's, so a token reported
+	// without its cnf (a consumer's Verifier, NewClaims) does not unbind a
+	// bound sign-in. The proof is recorded only then, last.
+	resolver := b.resolver
+	resolver.admit = func(ex *Exchange, s *session.Session) error {
+		if s.KeyBinding.JKT != cnf.JKT {
+			if b.dpop == nil {
+				return ErrInvalidDPoPProof
+			}
+
+			return b.dpop.refuse(ex.Context(), reasonProofBinding)
+		}
+
+		if s.KeyBinding.X5TS256 != cnf.X5TS256 {
+			return ErrCertificateBinding
+		}
+
+		return recordProof(ex.Context(), b.dpop, proof)
+	}
+
 	// The session identifier is the token's jti, which is how a token issued at
 	// login finds the session it was issued for. The token's subject is the
 	// username, which is what the user loader is keyed on.
-	if err := b.resolver.resolve(ex, claims.ID(), lookupByUsername(claims.Subject())); err != nil {
+	if err := resolver.resolve(ex, claims.ID(), lookupByUsername(claims.Subject())); err != nil {
 		return err
 	}
+
+	ex.RecordPresentedToken(presented)
 
 	return next(ex)
 }
@@ -112,12 +150,19 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 // authenticate.ErrAuthenticationFailed joined rather than wrapped: an
 // operator's log records which check the token failed, while a caller still
 // matches the one uniform failure. The cause reaches the record, never the
-// client.
+// client. The refusal is reported as event.AuthnLoginFail on a request a
+// sink watches.
+//
+// A verdict wins over a hang-up: a rejection is classified first, so an err
+// that matches token.ErrInvalid is a refusal, answered and reported as one,
+// even when the request's own context ended beside it and err carries that
+// context's error too.
 //
 // A request whose own context ended while its token was verified, and whose
 // err is that context's error or the cause it was cancelled with
-// (hangup.ByCaller), is a hang-up: neither a refusal, since no verdict was
-// reached, nor an outage, since nothing failed.
+// (hangup.ByCaller) with no rejection, is a hang-up: neither a refusal, since
+// no verdict was reached, nor an outage, since nothing failed, and nothing is
+// reported.
 // It is returned behind fixed text of its own, or as the context's error
 // itself when the verifier returns it bare, matching the context's error
 // either way, and recorded at debug with no error text. It is told by the
@@ -139,6 +184,11 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerNotVerified,
 			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
 
+		// A verdict wins over a hang-up: the token was refused, so the
+		// refusal is reported even when the request's own context ended
+		// beside it.
+		emitEvent(ctx, event.Event{Name: event.AuthnLoginFail, Outcome: event.OutcomeFailure})
+
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
 	}
 
@@ -155,10 +205,33 @@ func (b *bearerToken) notVerified(ex *Exchange, err error) error {
 	return diag.Wrap(err, textVerificationKeysUnavailable)
 }
 
-// presented reports the token an Authorization header carries, and whether this
-// interceptor claims the header at all.
-func (b *bearerToken) presented(header string) (string, bool) {
-	return presentedCredential(header, b.scheme, b.allowEmptyScheme)
+// admitBinding judges a verified token's confirmation claim: a binding the
+// chain cannot honour is refused, a certificate binding is judged against the
+// request's certificate, and with DPoP on, the proof presented with it is
+// verified, its ath over the token, and must come from the bound key
+// (admitBinding). It returns the verified proof, which is recorded once the
+// session's own binding has been judged.
+//
+// A token bound to a certificate is judged without verifying a proof: with
+// certificate binding on, one presented under the DPoP scheme is refused for
+// that alone, since it is not bound to a DPoP key. With certificate binding off
+// it is refused for its binding (ErrCertificateBinding) whatever the scheme.
+func (b *bearerToken) admitBinding(ex *Exchange, underDPoP bool, tok string, cnf token.Confirmation) (*dpopProof, error) {
+	if cnf.X5TS256 != "" || len(cnf.Other) > 0 {
+		if underDPoP && ex.certBinding() != nil && cnf.JKT == "" && len(cnf.Other) == 0 {
+			return nil, b.dpop.refuse(ex.Context(), reasonProofBinding)
+		}
+
+		return nil, admitBinding(ex, b.dpop, nil,
+			keyBinding{jkt: cnf.JKT, x5tS256: cnf.X5TS256, other: len(cnf.Other) > 0})
+	}
+
+	proof, err := presentedProof(ex.Context(), b.dpop, ex.Request, underDPoP, tok)
+	if err != nil {
+		return nil, err
+	}
+
+	return proof, admitBinding(ex, b.dpop, proof, keyBinding{jkt: cnf.JKT})
 }
 
 // presentedCredential reports the credential an Authorization header carries
@@ -303,6 +376,8 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 			}
 		}
 
+		c.bindingVerifiers = append(c.bindingVerifiers, option)
+
 		c.enable(option, func() error {
 			if err := requireDep(option, "token verifier", d.Verifier); err != nil {
 				return err
@@ -319,6 +394,8 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 		// The renewal endpoint may be enabled after this option, so it is
 		// handed to the core once every option has been applied.
 		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
+		// EnableDPoP may come after this option too.
+		c.wire(func(*Chain) { b.dpop = c.dpop })
 		c.register(b, OrderBearerToken)
 
 		return nil

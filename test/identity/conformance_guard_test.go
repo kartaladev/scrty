@@ -1,6 +1,7 @@
 package identitytest_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -159,7 +160,21 @@ const (
 	// deciding from the value instead of IsSet would, so an organization can
 	// never be cleared.
 	defectKeepsOrganizationOnNamedNil defect = "keeps-organization-on-named-nil"
+	// Update ignores a password condition and writes whatever the stored hash
+	// is, as a consumer store unaware of identity.WithUserPasswordIf would.
+	defectIgnoresPasswordCondition defect = "ignores-password-condition"
+	// Update decides a password condition by a read released before its write,
+	// so two updates expecting the same hash both pass it.
+	defectPreflightPasswordCondition defect = "preflight-password-condition"
 )
+
+// namedCheck is, for a defect whose catch must be attributable, the part of
+// the suite that must report it: a consumer whose store carries it learns
+// which contract it broke from the name of the failing check.
+var namedCheck = map[defect]string{ //nolint:gosec // G101: names of conformance checks, not credentials
+	defectIgnoresPasswordCondition:   "--- FAIL: TestBrokenStoreConformance/Provisioner/ConditionalPassword/",
+	defectPreflightPasswordCondition: "--- FAIL: TestBrokenStoreConformance/Provisioner/ConcurrentConditionalPassword",
+}
 
 // variantOtherLocation is not a defect: a store that returns every stored
 // time as the same instant in another location, as a database session in
@@ -226,6 +241,8 @@ var everyDefect = []defect{
 	defectPlaceholderPassword,
 	defectProvisionGrantsWindow,
 	defectKeepsOrganizationOnNamedNil,
+	defectIgnoresPasswordCondition,
+	defectPreflightPasswordCondition,
 }
 
 // brokenStore implements every identity port over process memory, carrying
@@ -677,6 +694,15 @@ func (s *brokenStore) Update(
 		return s.lostUpdate(username, u)
 	}
 
+	expected, conditional := u.ExpectedPassword()
+	if s.d == defectIgnoresPasswordCondition {
+		conditional = false
+	}
+
+	if conditional && s.d == defectPreflightPasswordCondition {
+		return s.preflightConditionalUpdate(username, u, expected)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -689,6 +715,10 @@ func (s *brokenStore) Update(
 		return nil, identity.ErrUserNotFound
 	}
 
+	if conditional && !bytes.Equal(d.Password, expected) {
+		return nil, identity.ErrNotUpdated
+	}
+
 	s.write(d, u)
 
 	if s.d == defectAliasingWrite {
@@ -698,6 +728,35 @@ func (s *brokenStore) Update(
 	if s.d == defectAmendedFieldsOnly {
 		return s.amendedOnlyLocked(d, u), nil
 	}
+
+	return s.recordLocked(d), nil
+}
+
+// preflightConditionalUpdate checks the password condition, releases the
+// lock, and only then writes: two callers expecting the same hash both pass the
+// check before either writes.
+func (s *brokenStore) preflightConditionalUpdate(
+	username string, u *identity.UserChange, expected []byte,
+) (*identity.Details, error) {
+	s.mu.Lock()
+	d, ok := s.byName[s.key(username)]
+	matches := ok && bytes.Equal(d.Password, expected)
+	s.mu.Unlock()
+
+	if !ok {
+		return nil, identity.ErrUserNotFound
+	}
+
+	if !matches {
+		return nil, identity.ErrNotUpdated
+	}
+
+	s.meet(2)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.write(d, u)
 
 	return s.recordLocked(d), nil
 }
@@ -1154,6 +1213,10 @@ func TestConformanceSuiteIsLoadBearing(t *testing.T) {
 						"catch it:\n%s", d, output)
 				assert.Contains(t, output, "--- FAIL: TestBrokenStoreConformance/",
 					"no case of the suite failed by assertion for the %s defect:\n%s", d, output)
+				if check, ok := namedCheck[d]; ok {
+					assert.Contains(t, output, check,
+						"the %s defect was not reported by the check written for it:\n%s", d, output)
+				}
 			},
 		})
 	}

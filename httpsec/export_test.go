@@ -1,9 +1,18 @@
 package httpsec
 
 import (
+	"context"
+	"io"
 	"log/slog"
+	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -199,5 +208,245 @@ func LoginTailDepsWithEnrolmentForTest(
 	return loginTailDeps{
 		engine: engine, sessions: sessions, tokens: tokens,
 		enrolmentLifetime: enrolmentLifetime, enforced: everyBuiltInEnforced(),
+	}
+}
+
+// ResolveClient validates tp and opts as EnableTrustedProxies does and
+// resolves r's client through them, returning the client and how many
+// forwarded entries the resolution parsed. It is how a test proves the walk
+// parses only the entries it reaches.
+func ResolveClient(r Request, tp TrustedProxies, opts ...ProxyOption) (Client, int, error) {
+	p, err := newTrustedProxies(tp, applyProxyOptions(opts))
+	if err != nil {
+		return Client{}, 0, err
+	}
+
+	res, err := p.resolve(r)
+
+	return res.client, res.parsed, err
+}
+
+// DPoPSettings applies opts to a fresh configuration and reports the DPoP
+// configuration EnableDPoP resolved, defaults filled, and whether it was
+// enabled at all.
+func DPoPSettings(opts ...Option) (DPoP, bool, error) {
+	var c config
+	for _, opt := range opts {
+		if err := opt(&c); err != nil {
+			return DPoP{}, false, err
+		}
+	}
+
+	if c.dpop == nil {
+		return DPoP{}, false, nil
+	}
+
+	return c.dpop.cfg, true, nil
+}
+
+// DPoPChecker runs the chain's DPoP proof verification on its own, counting
+// the signatures it verifies, so a test can pin each check and prove an
+// oversized proof costs no signature check.
+type DPoPChecker struct {
+	v          *dpopVerifier
+	signatures atomic.Int64
+}
+
+// NewDPoPChecker builds the verifier EnableDPoP would build for d, reading
+// time from now and logging through log. allowedHosts is the trusted proxies'
+// ForwardedHost allowlist EnableDPoP copies onto the verifier when d names no
+// PublicURL.
+func NewDPoPChecker(d DPoP, now func() time.Time, log *slog.Logger, allowedHosts ...string) (*DPoPChecker, error) {
+	v, err := newDPoPVerifier(d, now)
+	if err != nil {
+		return nil, err
+	}
+
+	v.log = log
+	v.allowedHosts = allowedHosts
+
+	c := &DPoPChecker{v: v}
+	verify := v.verifySignature
+	v.verifySignature = func(alg jwa.SignatureAlgorithm, key jwk.Key, compact []byte) error {
+		c.signatures.Add(1)
+
+		return verify(alg, key, compact)
+	}
+
+	return c, nil
+}
+
+// Verify verifies the proof r carries, for token (empty for none), without
+// recording it, and returns its key's thumbprint.
+func (c *DPoPChecker) Verify(ctx context.Context, r Request, token string) (string, error) {
+	p, err := c.v.verify(ctx, r, token)
+
+	return p.jkt, err
+}
+
+// Check verifies the proof r carries and then records it, as the chain does
+// once every other check has passed.
+func (c *DPoPChecker) Check(ctx context.Context, r Request, token string) (string, error) {
+	p, err := c.v.verify(ctx, r, token)
+	if err != nil {
+		return "", err
+	}
+
+	if err := c.v.record(ctx, p); err != nil {
+		return "", err
+	}
+
+	return p.jkt, nil
+}
+
+// Signatures reports how many proof signatures were verified.
+func (c *DPoPChecker) Signatures() int64 { return c.signatures.Load() }
+
+// ProofKeyThumbprint is the thumbprint the chain computes for a proof's key,
+// the value a bound token's cnf.jkt must equal.
+func ProofKeyThumbprint(key jwk.Key) (string, error) { return keyThumbprint(key) }
+
+// NewMemoryReplayStoreForTest is the in-memory replay store EnableDPoP uses by
+// default, reading time from now.
+func NewMemoryReplayStoreForTest(now func() time.Time) ReplayStore { return newMemoryReplayStore(now) }
+
+// SecurityHeadersRandom replaces the security-headers layer's random source,
+// so a test can make the nonce's randomness fail or repeat.
+func SecurityHeadersRandom(r io.Reader) HeaderOption {
+	return func(l *securityHeaders) error {
+		l.random = r
+
+		return nil
+	}
+}
+
+// WithSignInNoticeTracker counts the sign-in notice's work in flight on wg, so
+// a test can wait for the background work to finish.
+func WithSignInNoticeTracker(wg *sync.WaitGroup) SignInNoticeOption {
+	return withSignInNoticeTracker(wg)
+}
+
+// SignInDeviceDescription is the device text a sign-in notice carries for a
+// user agent.
+var SignInDeviceDescription = deviceDescription
+
+// DeclareDPoPForTest records on the configuration that DPoP is enabled, as the
+// DPoP option does, so the CORS layer's additions can be pinned before that
+// option exists.
+func DeclareDPoPForTest() Option {
+	return func(c *config) error {
+		c.dpopEnabled = true
+		return nil
+	}
+}
+
+// DeclareCSRFTokenHeaderForTest records on the configuration the request
+// header CSRF protection reads its token from, as the CSRF option does.
+func DeclareCSRFTokenHeaderForTest(name string) Option {
+	return func(c *config) error {
+		c.csrfTokenHeader = name
+		return nil
+	}
+}
+
+// CORSOrigins applies opts to a fresh configuration and reports the CORS
+// layer's exact origins, and whether origin matches one of its patterns, as
+// CSRF protection reads them.
+func CORSOrigins(origin string, opts ...Option) (exact []string, matchesPattern bool, err error) {
+	var c config
+	for _, opt := range opts {
+		if err := opt(&c); err != nil {
+			return nil, false, err
+		}
+	}
+
+	exact, patterns := c.corsOrigins()
+
+	scheme, host, port, perr := parseOrigin(origin)
+	for _, p := range patterns {
+		if perr == nil && p.matches(scheme, host, port) {
+			return exact, true, nil
+		}
+	}
+
+	return exact, false, nil
+}
+
+// testCookieAuthenticator authenticates a request by the session identifier a
+// cookie carries. No built-in authenticates by cookie yet, so it is the shape
+// one will have: it carries the cookie-authenticator marker, and has CSRF
+// protection check the request's token for the session before publishing it.
+type testCookieAuthenticator struct {
+	sessions *session.Sessions
+	cookie   string
+}
+
+func (testCookieAuthenticator) AuthenticatesByCookie() {}
+
+// Intercept loads the cookie's session, checks the CSRF token for it, and
+// publishes it. A request without the cookie continues unauthenticated.
+func (a testCookieAuthenticator) Intercept(ex *Exchange, next Next) error {
+	id, ok := ex.Request.Cookie(a.cookie)
+	if !ok {
+		return next(ex)
+	}
+
+	s, err := a.sessions.Load(ex.Context(), id)
+	if err != nil {
+		return ErrAuthenticationRequired
+	}
+
+	if err := CheckCSRFToken(ex, s); err != nil {
+		return err
+	}
+
+	ex.Session = s
+	ex.SetContext(withSession(ex.Context(), s))
+
+	return next(ex)
+}
+
+// NewTestCookieAuthenticator is a cookie-authenticating interceptor reading
+// the session named by cookie through sessions.
+func NewTestCookieAuthenticator(sessions *session.Sessions, cookie string) Interceptor {
+	return testCookieAuthenticator{sessions: sessions, cookie: cookie}
+}
+
+// SessionCSRFTokensComparingWith is the default token source with its
+// comparison replaced by compare, so a test can see that the comparison the
+// default makes is the constant-time one it is handed.
+func SessionCSRFTokensComparingWith(compare func(x, y []byte) int) CSRFTokens {
+	return sessionCSRFTokens{compare: compare}
+}
+
+// CaptureUpgrades records every password-upgrade handle the login layers
+// obtain from now until the test ends, and returns the reader of them. It swaps
+// a package variable, so the calling test must not run in parallel.
+func CaptureUpgrades(t testing.TB) func() []*authenticate.PasswordUpgrade {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		seen []*authenticate.PasswordUpgrade
+	)
+
+	orig := requestUpgrade
+	requestUpgrade = func(ctx context.Context) (context.Context, *authenticate.PasswordUpgrade) {
+		ctx, u := orig(ctx)
+
+		mu.Lock()
+		seen = append(seen, u)
+		mu.Unlock()
+
+		return ctx, u
+	}
+
+	t.Cleanup(func() { requestUpgrade = orig })
+
+	return func() []*authenticate.PasswordUpgrade {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return append([]*authenticate.PasswordUpgrade(nil), seen...)
 	}
 }

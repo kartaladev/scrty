@@ -113,6 +113,19 @@ func TestSessionStore_SealedColumns(t *testing.T) {
 				return newSessionStore(t, db, c)
 			}))
 	})
+
+	t.Run("gorm csrf token", func(t *testing.T) {
+		storetest.RunSealedColumns(t, h, storefix.SealedSessionCSRFTokens(d.db,
+			func(t *testing.T, db *gormdb.DB, c seal.Cipher) session.Store {
+				return newSessionStore(t, db, c)
+			}))
+	})
+
+	t.Run("gorm csrf token successor", func(t *testing.T) {
+		storefix.RunSessionCSRFSuccessor(t, h.Raw, func(t *testing.T, c seal.Cipher) session.Store {
+			return newSessionStore(t, d.db, c)
+		})
+	})
 }
 
 // storedSession is the stored row of session sid as JSON, or "" when there is

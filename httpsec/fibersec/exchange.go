@@ -2,8 +2,10 @@ package fibersec
 
 import (
 	"bytes"
+	"crypto/x509"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 
@@ -49,6 +51,10 @@ func (r request) Path() string {
 
 	return decoded
 }
+
+// EscapedPath returns the path as the client sent it, percent-encoding intact:
+// fasthttp's original path, read from the request line and never decoded.
+func (r request) EscapedPath() string { return string(r.c.Request().URI().PathOriginal()) }
 
 // QueryValues returns every value of the parameter, in the order sent, and nil
 // when it is absent. Each value is copied, because fasthttp's are views into a
@@ -219,14 +225,95 @@ func (r request) Body(limit int64) ([]byte, error) {
 	return bytes.Clone(b), nil
 }
 
-// ClientIP is fiber's own client address.
+// ClientIP is the connection's own peer address: the host part of a TCP
+// peer, and "" for a peer that is not in host and port form.
 //
-// That is the transport peer unless the consumer enabled fiber's proxy trust,
-// which is the only configuration that knows which proxies may name an address
-// for a client. The package documentation gives the configuration in full, and
-// the chain's own refusal of an empty, malformed or unspecified address applies
-// to whatever this returns.
-func (r request) ClientIP() string { return r.c.IP() }
+// It never calls fiber's IP or IPs, which follow a forwarded header once
+// fiber's proxy trust is enabled: which proxies may name a client is the
+// chain's decision (httpsec.EnableTrustedProxies), made the same way on every
+// adapter. fiber's in-memory test transport reports the unspecified address,
+// which the chain refuses to attribute a request to.
+func (r request) ClientIP() string {
+	switch addr := r.c.RequestCtx().RemoteAddr().(type) {
+	case *net.TCPAddr:
+		return addr.IP.String()
+	case nil:
+		return ""
+	default:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return ""
+		}
+
+		return host
+	}
+}
+
+// DelHeaders removes every header whose name match reports true from the
+// request fiber hands to the handlers after the chain. The chain calls it to
+// remove the forwarded headers it consumed (httpsec.EnableTrustedProxies).
+// The names are collected before any is removed, because fasthttp's header
+// iteration must not see the headers change under it.
+func (r request) DelHeaders(match func(name string) bool) {
+	h := &r.c.Request().Header
+
+	var names []string
+
+	for k := range h.All() {
+		if name := string(k); match(name) {
+			names = append(names, name)
+		}
+	}
+
+	for _, name := range names {
+		h.Del(name)
+	}
+}
+
+// HeaderValues returns every line of the header, in the order received, so the
+// chain's trusted-proxy resolution joins repeated forwarded headers rather
+// than reading the first line alone. Each value is copied out of fasthttp's
+// reused buffer.
+func (r request) HeaderValues(name string) []string {
+	raw := r.c.Request().Header.PeekAll(name)
+	if len(raw) == 0 {
+		return nil
+	}
+
+	out := make([]string, len(raw))
+	for i, v := range raw {
+		out[i] = string(v)
+	}
+
+	return out
+}
+
+// Host is the host the client asked for: the request's Host header, or the
+// host of an absolute request target, as fasthttp parsed it.
+//
+// It never calls fiber's Host, Hostname or Scheme, which follow a forwarded
+// header once fiber's proxy trust is enabled: which proxies may name a host is
+// the chain's decision (httpsec.EnableTrustedProxies), made the same way on
+// every adapter. The result is copied out of fasthttp's reused buffer.
+func (r request) Host() string { return string(r.c.Request().Host()) }
+
+// Secure reports whether the connection the request arrived on is TLS.
+//
+// It never calls fiber's Secure or Scheme, which believe a forwarded scheme
+// once fiber's proxy trust is enabled.
+func (r request) Secure() bool { return r.c.RequestCtx().IsTLS() }
+
+// ClientCertificate is the leaf certificate the client sent on the TLS connection
+// the request arrived on, read from fasthttp's connection state, and nil when the
+// connection is not TLS or the client sent none. No header is read.
+func (r request) ClientCertificate() *x509.Certificate {
+	state := r.c.RequestCtx().TLSConnectionState()
+	if state == nil || len(state.PeerCertificates) == 0 {
+		return nil
+	}
+
+	return state.PeerCertificates[0]
+}
 
 // responseWriter implements httpsec.ResponseWriter over fiber's context.
 //
@@ -241,6 +328,12 @@ type responseWriter struct {
 }
 
 func (w *responseWriter) SetHeader(name, value string) { w.c.Set(name, value) }
+
+// AddHeader appends a header line, keeping the lines already set. It does not
+// use fiber's Append, which folds the value into one comma-joined line and
+// drops a value already listed, so a list header would read differently from
+// net/http's.
+func (w *responseWriter) AddHeader(name, value string) { w.c.Response().Header.Add(name, value) }
 
 func (w *responseWriter) WriteHeader(status int) {
 	if w.wrote {

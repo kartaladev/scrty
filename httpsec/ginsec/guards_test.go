@@ -872,3 +872,86 @@ func TestGin_RequireAuthenticationWithinFailsAtWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestGin_GuardsDPoPChallenge pins that a gin guard behind a chain with DPoP
+// on refuses a caller nothing authenticated with the challenge the chain's
+// own refusal carries, and that without DPoP it answers as it always did.
+//
+// It stands on its own: a whole chain with DPoP configured in front of the
+// guard, which no other gin guard test has.
+func TestGin_GuardsDPoPChallenge(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		dpop   []httpsec.Option
+		opts   func(seen *http.Header) []ginsec.GuardOption
+		assert func(t *testing.T, rec *httptest.ResponseRecorder, seen http.Header)
+	}
+
+	challenged := func(challenges ...string) func(*testing.T, *httptest.ResponseRecorder, http.Header) {
+		return func(t *testing.T, rec *httptest.ResponseRecorder, _ http.Header) {
+			t.Helper()
+
+			assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			assert.Equal(t, challenges, rec.Header().Values("WWW-Authenticate"))
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "DPoP optional: the DPoP and Bearer challenges",
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
+			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
+		},
+		{
+			name:   "DPoP required: the DPoP challenge alone",
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com", Require: true})},
+			assert: challenged(`DPoP algs="ES256"`),
+		},
+		{
+			name:   "DPoP off: no challenge, as before",
+			assert: challenged(),
+		},
+		{
+			name: "a consumer's error handler finds the challenge set",
+			dpop: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
+			opts: func(seen *http.Header) []ginsec.GuardOption {
+				return []ginsec.GuardOption{ginsec.WithGuardErrorHandler(func(gc *gin.Context, err error) {
+					*seen = gc.Writer.Header().Clone()
+
+					gc.Status(httpsec.StatusForError(err))
+				})}
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, seen http.Header) {
+				challenged(`DPoP algs="ES256"`, "Bearer")(t, rec, seen)
+				assert.Equal(t, []string{`DPoP algs="ES256"`, "Bearer"}, seen.Values("WWW-Authenticate"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts, _ := authenticated(t)
+
+			var seen http.Header
+
+			var guardOpts []ginsec.GuardOption
+			if tc.opts != nil {
+				guardOpts = tc.opts(&seen)
+			}
+
+			g := mustGuards(t, deciding(t, nil), guardOpts...)
+
+			eng := gin.New()
+			eng.Use(ginsec.Middleware(newChain(t, append(opts, tc.dpop...)...)))
+			eng.GET("/api/orders", g.RequireAuthenticated(), func(*gin.Context) { t.Error("the route must not run") })
+
+			rec := serve(eng, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/api/orders", nil))
+
+			tc.assert(t, rec, seen)
+		})
+	}
+}

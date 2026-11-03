@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
@@ -211,6 +212,10 @@ type Policy struct {
 	setObserver bool
 	logger      *slog.Logger
 
+	// events is the sink WithSecurityEvents gave the policy, for the locks it
+	// decides outside a chain.
+	events eventsink.Own
+
 	// capLimit and capRetention are WithFailureStreakLimit's limit and
 	// WithFailureStreakRetention's retention; the set flags record which of them
 	// a consumer passed, so a retention without a limit is refused. streaks is
@@ -222,7 +227,7 @@ type Policy struct {
 	streaks                 FailureStreakStore
 
 	// attempts is the view Attempts hands out, and the one RecordFailure and
-	// Reset go through: the store itself when there is no observer.
+	// Reset go through.
 	attempts policy.AttemptStore
 }
 
@@ -234,8 +239,9 @@ type Policy struct {
 // (WithWait); a limit of 100 failures in the window
 // (WithWindowFailureLimit); a bounded in-memory store (WithAttemptStore), which
 // keeps failures only as long as this policy needs them (the window, or the
-// failure-streak retention when longer), and the system clock (WithClock); no lockout observer (WithObserver), and
-// slog.Default for its records (WithLogger). WithSliding replaces
+// failure-streak retention when longer), and the system clock (WithClock); no lockout observer (WithObserver),
+// no security-event sink of its own (WithSecurityEvents), and slog.Default
+// for its records (WithLogger). WithSliding replaces
 // the escalating wait with a sliding lock.
 //
 // Every misconfiguration is an error wrapping policy.ErrConfig, rather than something
@@ -249,7 +255,8 @@ type Policy struct {
 // can report that before any traffic arrives, which is the difference between
 // a line of wiring being wrong and a login page being down. A nil lockout
 // observer is refused too: a consumer who passed one meant to be told, and
-// would hear nothing.
+// would hear nothing; so is a nil security-event sink, or WithSecurityEvents
+// given twice.
 func New(opts ...Option) (*Policy, error) {
 	store, err := NewMemoryAttemptStore()
 	if err != nil {
@@ -332,6 +339,10 @@ func New(opts ...Option) (*Policy, error) {
 		}
 	}
 
+	if err := p.events.Err("WithSecurityEvents"); err != nil {
+		return nil, fmt.Errorf("%w: lockout: %w", policy.ErrConfig, err)
+	}
+
 	if p.setObserver && p.observer == nil {
 		return nil, fmt.Errorf("%w: lockout observer must not be nil: a consumer who passed "+
 			"one meant to be told, and would hear nothing", policy.ErrConfig)
@@ -345,10 +356,7 @@ func New(opts ...Option) (*Policy, error) {
 		mem.retainFor(retention, p.clock)
 	}
 
-	p.attempts = p.store
-	if p.observer != nil || p.streaks != nil {
-		p.attempts = &observedAttempts{p: p}
-	}
+	p.attempts = &observedAttempts{p: p}
 
 	return p, nil
 }
@@ -589,7 +597,8 @@ func lockedDecision(failures int, window, wait time.Duration) policy.Decision {
 // reachable through errors.Is and errors.As, but its text never is.
 //
 // It records through Attempts, so a failure that leaves username locked is
-// reported to the observer given by WithObserver.
+// reported to the observer given by WithObserver, and a failure that locks it
+// is reported as a security event (see Attempts).
 func (p *Policy) RecordFailure(ctx context.Context, username string) error {
 	if err := p.attempts.RecordFailure(ctx, username, p.clock.Now()); err != nil {
 		return diag.Wrap(err, "lockout: record a failed attempt")

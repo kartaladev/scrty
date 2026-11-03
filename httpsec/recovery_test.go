@@ -991,7 +991,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
-			name: "the default document carries exactly its five members",
+			name: "the default document carries exactly its six members",
 			act: func(t *testing.T, h *recoveryHarness) served {
 				return h.complete(t, recoveryForm(
 					httpsec.RecoverySavedCodeParam, h.saved(t),
@@ -1009,7 +1009,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 					keys = append(keys, k)
 				}
 				assert.ElementsMatch(t,
-					[]string{"access_token", "expires_at", "recovery_codes", "remaining", "low"}, keys)
+					[]string{"access_token", "expires_at", "recovery_codes", "remaining", "low", "token_type"}, keys)
 			},
 		},
 		{
@@ -3029,6 +3029,124 @@ func TestRecoveryHold_OIDCLogin(t *testing.T) {
 
 			out := serve(t, chain, handoffRequest(t.Context(), oidcTestSource, h.issueHandoff(t, "")))
 			tc.assert(t, h, out, records, held, other)
+		})
+	}
+}
+
+// recoveredSignIn recovers the harness's user through the chain and returns
+// the recovery-pending session it signed in: at once through the complete
+// endpoint, or, with finish, by holding the recovery (the harness must have
+// withHold) and finishing it once the hold has passed. decorate shapes the
+// request that creates the session, the complete or the finish, when it is
+// not nil.
+func recoveredSignIn(t *testing.T, h *recoveryHarness, finish bool, decorate func(*http.Request)) *session.Session {
+	t.Helper()
+
+	send := func(path string, values url.Values) served {
+		req := postValues(t.Context(), path, e2eSource, values)
+		if decorate != nil {
+			decorate(req)
+		}
+
+		return serve(t, h.chain, req)
+	}
+
+	if !finish {
+		return h.sessionIssued(t, send(httpsec.DefaultRecoveryCompletePath, recoveryForm(
+			httpsec.RecoverySavedCodeParam, h.saved(t),
+			httpsec.RecoveryIssuedCodeParam, h.issued(t))))
+	}
+
+	held := h.hold(t)
+	h.clock.Advance(recoveryHoldDelay)
+
+	return h.sessionIssued(t, send(httpsec.DefaultRecoveryFinishPath,
+		url.Values{httpsec.RecoveryCompletionTokenParam: {held.completion}}))
+}
+
+// TestRecovery_SignInMetadata pins that a recovery's sign-in, completed at
+// once or finished after a hold, records the client address the chain
+// resolved and the request's user agent when the session manager records
+// sign-in metadata, as every other first factor's does, and records neither
+// when it does not.
+//
+// Its own table: the recovery harness, whose session manager each case
+// rebuilds, and not TestSignInMetadata_RecordedWithoutNotice's shared one.
+func TestRecovery_SignInMetadata(t *testing.T) {
+	t.Parallel()
+
+	const (
+		userAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
+		proxyPeer = "10.20.0.5:51000"
+	)
+
+	type testCase struct {
+		name string
+		// metadata is whether the session manager records sign-in metadata.
+		metadata bool
+		// proxied sends the request through a trusted proxy that forwards
+		// the client's address.
+		proxied bool
+		// finish recovers through a hold and its finish.
+		finish bool
+		assert func(t *testing.T, s *session.Session)
+	}
+
+	recorded := func(t *testing.T, s *session.Session) {
+		t.Helper()
+
+		assert.Equal(t, e2eSource, s.ClientIP, "the client address the chain resolved")
+		assert.Equal(t, userAgent, s.UserAgent)
+	}
+	none := func(t *testing.T, s *session.Session) {
+		t.Helper()
+
+		assert.Empty(t, s.ClientIP)
+		assert.Empty(t, s.UserAgent)
+	}
+
+	cases := []testCase{
+		{name: "a completed recovery records the metadata when opted in", metadata: true, assert: recorded},
+		{name: "a completed recovery behind a trusted proxy records the forwarded address", metadata: true, proxied: true, assert: recorded},
+		{name: "a completed recovery records nothing when not opted in", assert: none},
+		{name: "a finished recovery records the metadata when opted in", metadata: true, finish: true, assert: recorded},
+		{name: "a finished recovery behind a trusted proxy records the forwarded address", metadata: true, proxied: true, finish: true, assert: recorded},
+		{name: "a finished recovery records nothing when not opted in", finish: true, assert: none},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newRecoveryHarness(t)
+
+			sessionOpts := []session.Option{
+				session.WithClock(h.clock),
+				session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(h.clock)))),
+			}
+			if tc.metadata {
+				sessionOpts = append(sessionOpts, session.WithSessionMetadata())
+			}
+			h.sessions = must.Must(session.New(sessionOpts...))
+
+			if tc.proxied {
+				h.chainOpts = append(h.chainOpts, httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+					Prefixes: proxyNet, Headers: httpsec.XForwarded(httpsec.ForwardedFor),
+				}))
+			}
+			if tc.finish {
+				h.withHold()
+			}
+			h.build(t)
+
+			s := recoveredSignIn(t, h, tc.finish, func(req *http.Request) {
+				req.Header.Set("User-Agent", userAgent)
+				if tc.proxied {
+					req.RemoteAddr = proxyPeer
+					req.Header.Set("X-Forwarded-For", e2eSource)
+				}
+			})
+			tc.assert(t, s)
 		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -95,6 +96,9 @@ type config struct {
 	// capture a setting a later option was about to replace.
 	wiring []func(*Chain)
 
+	// events is the sink EnableSecurityEvents was given, and nil without one.
+	events event.Sink
+
 	engine *policy.Engine
 	logger *slog.Logger
 
@@ -142,6 +146,15 @@ type config struct {
 	// issues the session's identifier and none may be given a token
 	// generator.
 	sessionBearer bool
+
+	// bindingVerifiers names the enabled features that verify bound
+	// credentials: the option names of the built-ins that check a token's
+	// binding to a DPoP key or a client certificate. EnableDPoP's and
+	// EnableCertificateBinding's construction checks read it once
+	// every option has applied, so the order of options does not matter. It is
+	// internal on purpose: every feature that can join it is a built-in option
+	// of this package.
+	bindingVerifiers []string
 
 	// renewal is the renewal endpoint EnableSessionRenewal registered, and nil
 	// while it is off. The bearers' resolution core reads it to let a late
@@ -198,6 +211,39 @@ type config struct {
 	// discloseLocks answers a locked account's login with the lock itself
 	// (WithLockDisclosure), rather than as a wrong password.
 	discloseLocks bool
+
+	// proxies is the validated configuration EnableTrustedProxies was given,
+	// and nil without it.
+	proxies *trustedProxies
+
+	// httpsDeployment is WithHTTPSDeployment's declaration.
+	httpsDeployment bool
+
+	// dpop is the proof verifier EnableDPoP built, and nil without it. Both
+	// bearer modes and every issuing endpoint read it.
+	dpop *dpopVerifier
+
+	// dpopEnabled is set by the option that switches on DPoP-bound tokens. The
+	// CORS layer reads it when the chain is built, to allow the DPoP request
+	// header and expose DPoP-Nonce and WWW-Authenticate.
+	dpopEnabled bool
+
+	// certBinding is the certificate binding EnableCertificateBinding built,
+	// and nil without it. Both bearer modes and every issuing endpoint read
+	// it.
+	certBinding *certBinding
+
+	// csrfTokenHeader is the request header CSRF protection reads its token
+	// from, and "" when it reads none. The CORS layer reads it when the chain
+	// is built, to allow that header.
+	csrfTokenHeader string
+
+	// csrfOptOut is set by WithoutCSRFProtection.
+	csrfOptOut bool
+
+	// challenge is the automation-challenge gate EnableAutomationChallenge
+	// configured, and nil without it.
+	challenge *challengeGate
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the
@@ -328,6 +374,10 @@ func (c *config) validate() error {
 		if err := e.check(); err != nil {
 			return err
 		}
+	}
+
+	if err := c.refuseCookiesWithoutCSRF(); err != nil {
+		return err
 	}
 
 	return c.checkExplicitSessions()
@@ -517,6 +567,20 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// The challenge verifier stands in front of the flows it was selected for,
+	// whichever order their options and EnableAutomationChallenge came in.
+	if err := c.wireChallenge(); err != nil {
+		return nil, err
+	}
+
+	// CSRF protection reads the CORS origins, the OIDC back-channel path and
+	// the cookie authenticators, any of which an option applied after
+	// EnableCSRFProtection may have set, and hands each first factor whether
+	// its sign-ins carry a token.
+	if err := c.wireCSRF(); err != nil {
+		return nil, err
+	}
+
 	// Activity is recorded for every chain, with no option to enable: a session
 	// whose idle deadline stops moving while its owner is using it is logged
 	// out mid-work, and that is not a behaviour worth being able to switch off.
@@ -556,6 +620,9 @@ func (c *config) build() (*Chain, error) {
 		refusalInterval:   c.refusalInterval,
 		refusalReporter:   c.refusalReporter,
 		reportRefusals:    c.refusalLogReporter(),
+		clients:           newClientResolver(c),
+		csrfOptOut:        c.csrfOptOut,
+		events:            newEventEmitter(c),
 	}
 
 	// The sampler is built here rather than by the option, because the default
@@ -569,6 +636,8 @@ func (c *config) build() (*Chain, error) {
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          chain.enforced,
 		now:               c.now,
+		dpop:              c.dpop,
+		certBinding:       c.certBinding,
 	}
 
 	// The built-ins are wired last, because each of them reads settings — the

@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -78,6 +80,10 @@ type VerifyThrottle struct {
 	// limiterSet.
 	factory    ratelimit.LimiterFactory
 	factorySet bool
+
+	// events is the throttle's own security-event sink
+	// (WithThrottleSecurityEvents).
+	events eventsink.Own
 }
 
 // NewVerifyThrottle builds the throttle.
@@ -111,6 +117,10 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 
 	if nilcheck.IsNil(t.clock) {
 		return nil, fmt.Errorf("%w: verification throttle clock must not be nil", ErrConfig)
+	}
+
+	if err := t.events.Err("WithThrottleSecurityEvents"); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 
 	if err := t.resolveLimiter(); err != nil {
@@ -176,6 +186,12 @@ func (t *VerifyThrottle) Check(ctx context.Context, user identity.UserID) error 
 
 	if exceeded {
 		t.sampled(ctx, slog.LevelWarn, msgThrottled, reasonThrottled)
+
+		// Only an exceeded limit is reported: a limiter that could not answer
+		// refuses with the same error, and decided nothing.
+		t.events.Report(ctx, event.Event{
+			Name: event.ExcessRateLimitExceeded, At: t.clock.Now(), Outcome: event.OutcomeFailure, User: user,
+		}, t.logger)
 
 		return ErrVerifyThrottled
 	}
@@ -321,6 +337,26 @@ func WithThrottleLimiterFactory(f ratelimit.LimiterFactory) ThrottleOption {
 // guessed at cannot drown out or silence anything else.
 func WithThrottleLogInterval(d time.Duration) ThrottleOption {
 	return func(t *VerifyThrottle) { t.logInterval = d }
+}
+
+// WithThrottleSecurityEvents reports the outcomes the throttle decides
+// outside a chain to sink: a user over the limit, refused by Check, as
+// event.ExcessRateLimitExceeded naming the user. A limiter that could not
+// answer refuses too and is not reported: it decided nothing.
+//
+// Default: no sink, and nothing is reported outside a chain. On a request an
+// httpsec chain reports events for (httpsec.EnableSecurityEvents), the chain's
+// sink receives the outcome and this one is not called, so one outcome is
+// reported once.
+//
+// The sink is called synchronously, on Check's goroutine, with a context from
+// which the caller's cancellation has been removed. A panic in it is recovered
+// and logged through the throttle's logger (WithThrottleLogger) without the
+// event's contents, and the refusal stands; a sink that blocks holds the
+// check (see event.Sink). A nil sink, or the option given twice, is a
+// configuration error.
+func WithThrottleSecurityEvents(sink event.Sink) ThrottleOption {
+	return func(t *VerifyThrottle) { t.events.Set(sink) }
 }
 
 // WithThrottleLogger replaces slog.Default as the destination for throttle

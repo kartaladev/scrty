@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -38,6 +39,11 @@ type sessionResolver struct {
 	// nil while it is off. A late session the manager says must be renewed is
 	// let through to it, and to nothing else.
 	renewal *sessionRenewal
+
+	// admit, when set, judges the loaded session before its user is reloaded
+	// or anything is published; an error it returns is the request's answer.
+	// The session-reference bearer judges the session's key binding here.
+	admit func(ex *Exchange, s *session.Session) error
 }
 
 // userLookup says how the core reloads the session's user.
@@ -129,12 +135,24 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 		// is refused as for any ended session.
 		if errors.Is(err, session.ErrRenewalRequired) &&
 			r.renewal != nil && r.renewal.answers(ex.Request) {
+			// The session is judged once the endpoint loads it, as admit
+			// judges one loaded here, so a late credential presented by the
+			// wrong sender is refused there and its proof recorded.
 			ex.renewal = id
+			ex.admitRenewal = r.admit
 
 			return nil
 		}
 
+		emitLoadRefusal(ctx, err)
+
 		return classifyLoad(ctx, err)
+	}
+
+	if r.admit != nil {
+		if err := r.admit(ex, s); err != nil {
+			return err
+		}
 	}
 
 	// Reloaded rather than taken from the credential, so a role revoked a
@@ -251,6 +269,15 @@ type perRequestPhase struct {
 	enforced map[policy.ChallengeKind]bool
 
 	now func() time.Time
+
+	// dpop is the chain's DPoP verifier, which every issuing endpoint
+	// verifies a sign-in's proof with, and nil while DPoP is off.
+	dpop *dpopVerifier
+
+	// certBinding is the chain's certificate binding, which every issuing
+	// endpoint binds a sign-in to a client certificate through, and nil while
+	// it is off.
+	certBinding *certBinding
 }
 
 // evaluatePerRequest runs the per-request phase for s and p on ex under ph,
@@ -279,7 +306,10 @@ func (ex *Exchange) evaluatePerRequest(
 
 	switch d.Outcome {
 	case policy.Deny:
-		return policyDenyReason(d)
+		err := policyDenyReason(d)
+		emitPerRequestDenial(ctx, err, s)
+
+		return err
 	case policy.Challenge:
 		// A kind nothing on the chain enforces is refused before anything is
 		// marked, whatever state the session is in; see refuseUnenforced.
@@ -376,3 +406,31 @@ func sessionFederatedAssurance(s *session.Session) policy.FederatedAssurance {
 // msgSessionUnreadable reports a session that could not be decrypted. It is
 // at error because it is an outage of the deployment's own keys.
 const msgSessionUnreadable = "httpsec: a session could not be decrypted"
+
+// emitLoadRefusal reports a presented session the manager refused to load:
+// one past its lifetime as event.SessionUseAfterExpire, and one it does
+// not hold as event.AuthnLoginFail. A store that failed, a session that
+// could not be decrypted, and a load the request's own context ended report
+// nothing, and a superseded session presented again is the reuse observer's
+// to report.
+func emitLoadRefusal(ctx context.Context, err error) {
+	switch {
+	case errors.Is(err, session.ErrReused):
+	case errors.Is(err, session.ErrExpired):
+		emitEvent(ctx, event.Event{Name: event.SessionUseAfterExpire, Outcome: event.OutcomeFailure})
+	case errors.Is(err, session.ErrNotFound):
+		emitEvent(ctx, event.Event{Name: event.AuthnLoginFail, Outcome: event.OutcomeFailure})
+	}
+}
+
+// emitPerRequestDenial reports a per-request policy's denial of s: an idle
+// session as event.SessionExpired, and any other refusal as
+// event.AuthzFail.
+func emitPerRequestDenial(ctx context.Context, err error, s *session.Session) {
+	switch {
+	case errors.Is(err, policy.ErrSessionIdle):
+		emitEvent(ctx, sessionEvent(event.SessionExpired, event.OutcomeFailure, s))
+	case refused(ctx, err):
+		emitEvent(ctx, sessionEvent(event.AuthzFail, event.OutcomeFailure, s))
+	}
+}

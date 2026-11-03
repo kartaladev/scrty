@@ -54,6 +54,10 @@ type ReauthenticationResult struct {
 	// Session is the re-authenticated session, carrying its new handle and its
 	// refreshed authentication time.
 	Session *session.Session
+
+	// TokenType is how Token is presented: TokenTypeDPoP when the session is
+	// bound to a DPoP key, TokenTypeBearer otherwise.
+	TokenType TokenType
 }
 
 // ReauthenticationResponder writes the response to a successful re-proof, at
@@ -141,6 +145,10 @@ type reauthInterceptor struct {
 	// secondFactorOnly refuses the password to every user
 	// (RequireSecondFactorForReauthentication).
 	secondFactorOnly bool
+
+	// rehash stores a password hash upgraded by a re-proof, and nil upgrades
+	// nothing.
+	rehash RehashFunc
 
 	// mfa and login are the chain's MFA slot and form login, nil when the
 	// chain has none, found once every option has been applied (settle).
@@ -354,7 +362,7 @@ func writeReauthMethods(ex *Exchange, m ReauthenticationMethods) error {
 // answer with, carrying the rotated session's credential and validity, marked
 // Cache-Control: no-store.
 func writeReauthResult(ex *Exchange, r ReauthenticationResult) error {
-	body := loginDocument{AccessToken: r.Token}
+	body := loginDocument{AccessToken: r.Token, TokenType: r.TokenType}
 	if r.Session != nil {
 		body.ValidUntil = r.Session.IdleExpiresAt
 	}

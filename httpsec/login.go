@@ -11,9 +11,12 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -80,12 +83,18 @@ type LoginResult struct {
 
 	// Session is the session the login opened.
 	Session *session.Session
+
+	// TokenType is how Token is presented: TokenTypeDPoP when the login
+	// carried a DPoP proof and Token is bound to its key, TokenTypeBearer
+	// otherwise. A responder writes it as its token response's token_type.
+	TokenType TokenType
 }
 
 // LoginResponder writes the response to a successful login.
 //
 // With none supplied, the library writes a JSON document carrying the access
-// token, an empty refresh token field and the session's idle expiry; a
+// token, its token_type, an empty refresh token field and the session's idle
+// expiry; a
 // consumer replaces that whole response with WithLoginResponder.
 //
 // It is called instead of the downstream handler, because a login is the
@@ -126,6 +135,10 @@ type formLogin struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// csrfToken is whether the sign-ins this first factor makes carry a CSRF
+	// token, decided when the chain is built (config.wireCSRF).
+	csrfToken bool
+
 	// limiter is the consumer's own (WithLoginLimiter), and nil means the
 	// password-login limiter the chain shares with Basic.
 	limiter ratelimit.Limiter
@@ -154,6 +167,13 @@ type formLogin struct {
 	// lifetime chooses the session's absolute lifetime, and nil keeps the
 	// manager's absolute timeout.
 	lifetime func(*Exchange, LoginFields) time.Duration
+
+	// rehash stores an upgraded password hash, and nil upgrades nothing.
+	rehash RehashFunc
+
+	// automation is the automation-challenge gate when it was selected for
+	// form login, settled at assembly, and nil otherwise.
+	automation *challengeGate
 }
 
 // wire takes the settings the chain resolved. It runs once, after every option
@@ -325,10 +345,42 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 	now := l.now()
 
-	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, now)
+	// The proof is judged before the password, so a bad one is refused as a
+	// malformed request is, counted nowhere, and never as a failed password:
+	// it cannot lock the account. With DPoP required, a login without one is
+	// refused before any account is looked up.
+	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
 	if err != nil {
 		return err
 	}
+
+	verifyCtx, upgrade := requestRehash(ctx, l.rehash)
+
+	// Ends the handle on every outcome, after any Result, so the presented
+	// password does not outlive the request.
+	defer upgrade.Discard()
+
+	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
+		func(ctx context.Context) {
+			emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Password))
+		},
+		func(ctx context.Context, src ratelimit.Source) error {
+			return l.automation.ask(ctx, ex.Request, challengeQuery{
+				flow:       ChallengeFlowFormLogin,
+				source:     l.guard,
+				clientIP:   ex.Request.ClientIP(),
+				identifier: username,
+				attempts:   l.attempts,
+				charge:     func() { recordSourceFailure(ctx, l.guard, src) },
+			})
+		})
+	if err != nil {
+		return err
+	}
+
+	// Read before the failures are cleared, and only on a request a sink
+	// watches: it decides nothing, and names the success's event.
+	afterFailures := l.hadRecentFailures(ctx, username, now)
 
 	l.resetFailures(ctx, username)
 
@@ -351,8 +403,19 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		enforced:          l.enforced,
 		challengeMethods:  l.challengeMethods,
 		cancelHeld:        l.cancelHeld,
+		csrfToken:         l.csrfToken,
+		binding:           binding,
+		afterFailures:     afterFailures,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
+
+	// The password verified, so a login that is answered, or is challenged for a
+	// second factor the user can still present, upgrades an outdated hash. Any
+	// other refusal does not: the request was not accepted.
+	if err == nil || isChallenge(err) {
+		runRehash(ctx, l.log, l.rehash, upgrade)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -360,7 +423,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// A login is answered here, not by the application's handler: the handler
 	// behind the chain serves the application, and there is no application
 	// route for the library's own endpoint.
-	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session})
+	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session, TokenType: tokenTypeOf(ex.Session)})
 }
 
 // attemptPassword is the password order a login and a password re-proof both
@@ -388,15 +451,23 @@ func (l *formLogin) attemptPassword(
 	clientIP, username string,
 	password []byte,
 	now time.Time,
+	refused func(ctx context.Context),
+	challenge func(ctx context.Context, src ratelimit.Source) error,
 ) (*authenticate.Authentication, error) {
 	src, err := sourceThrottled(ctx, l.guard, clientIP, l.flow, l.sampler, l.log, now)
 	if err != nil {
 		return nil, err
 	}
 
+	if challenge != nil {
+		if err := challenge(ctx, src); err != nil {
+			return nil, err
+		}
+	}
+
 	return l.judgePassword(ctx, username, password, now, func() {
 		recordSourceFailure(ctx, l.guard, src)
-	})
+	}, refused)
 }
 
 // authenticatePassword judges a password the way a login does: the
@@ -426,18 +497,25 @@ func (l *formLogin) authenticatePassword(
 	password []byte,
 	now time.Time,
 ) (*authenticate.Authentication, error) {
-	return l.judgePassword(ctx, username, password, now, func() {})
+	return l.judgePassword(ctx, username, password, now, func() {}, nil)
 }
 
 // judgePassword is the pre-authentication phase, a lock refused as a login
 // refuses it, then the password check, calling charge for a lock and for
 // every refused password check, and for nothing else.
+//
+// refused, when not nil, is called for a lock and for a credential the
+// authenticator refused, and never for a user store that could not answer or
+// a load the request's own hang-up ended: it is where the caller reports the
+// refusal it decided (security events), and a dependency failure or a hang-up
+// decided nothing.
 func (l *formLogin) judgePassword(
 	ctx context.Context,
 	username string,
 	password []byte,
 	now time.Time,
 	charge func(),
+	refused func(ctx context.Context),
 ) (*authenticate.Authentication, error) {
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
 		if !errors.Is(err, lockout.ErrAccountLocked) {
@@ -445,6 +523,7 @@ func (l *formLogin) judgePassword(
 		}
 
 		charge()
+		reportRefused(ctx, refused)
 
 		return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
 			identity.NewUsernamePassword(username, password), err)
@@ -453,6 +532,10 @@ func (l *formLogin) judgePassword(
 	auth, err := l.verifyPassword(ctx, username, password, now)
 	if err != nil {
 		charge()
+
+		if credentialRefused(ctx, err) {
+			reportRefused(ctx, refused)
+		}
 
 		return nil, err
 	}
@@ -489,7 +572,7 @@ func (l *formLogin) verifyPassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
-	if errors.Is(err, authenticate.ErrUnavailable) || loadEndedByCaller(ctx, err) {
+	if err != nil && !credentialRefused(ctx, err) {
 		return nil, err
 	}
 	if err != nil {
@@ -499,6 +582,21 @@ func (l *formLogin) verifyPassword(
 	}
 
 	return auth, nil
+}
+
+// credentialRefused reports whether err, an authenticator's failure, is a
+// credential it judged and refused: neither a user store that could not
+// answer (authenticate.ErrUnavailable) nor a load the request's own context
+// ended (loadEndedByCaller).
+func credentialRefused(ctx context.Context, err error) bool {
+	return !errors.Is(err, authenticate.ErrUnavailable) && !loadEndedByCaller(ctx, err)
+}
+
+// reportRefused calls refused, when there is one.
+func reportRefused(ctx context.Context, refused func(ctx context.Context)) {
+	if refused != nil {
+		refused(ctx)
+	}
 }
 
 // loadEndedByCaller reports whether err is the authenticator's uniform failure
@@ -624,6 +722,21 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 	return fields, nil
 }
 
+// hadRecentFailures reports whether username has failed attempts within the
+// lockout's failure window (identifierWindow), so its success is reported as
+// event.AuthnLoginSuccessAfterFail. It reads the attempt store only on a
+// request a sink watches, and a store that cannot answer reads as none: the
+// answer names an event and decides nothing.
+func (l *formLogin) hadRecentFailures(ctx context.Context, username string, now time.Time) bool {
+	if !eventsink.Enabled(ctx) || nilcheck.IsNil(l.attempts) {
+		return false
+	}
+
+	n, err := l.attempts.FailureCount(ctx, username, now.Add(-identifierWindow(l.engine)))
+
+	return err == nil && n > 0
+}
+
 // recordFailure counts one failed attempt, logging a store that could not.
 //
 // Bookkeeping, not the decision: a store that cannot record must not turn a
@@ -637,8 +750,10 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 func (l *formLogin) recordFailure(ctx context.Context, username string, now time.Time) {
 	// The client's cancellation is not passed on: a client that hangs up after
 	// sending its guess must still be charged for it, and an attempt store that
-	// honours cancellation would otherwise drop the failure.
-	if err := l.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); err != nil {
+	// honours cancellation would otherwise drop the failure. The context names
+	// the password factor, which the lockout's view reports a lock with.
+	recordCtx := eventsink.WithFactor(context.WithoutCancel(ctx), factor.Password)
+	if err := l.attempts.RecordFailure(recordCtx, username, now); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 			diag.Failure("attempt-store", err)...)
 	}
@@ -753,14 +868,14 @@ func judgeBehindSecondFactor(
 }
 
 // writeLoginResult is the response a login succeeds with when the consumer
-// supplies none: a JSON document carrying the access token, an empty refresh
-// token field and the session's idle expiry.
+// supplies none: a JSON document carrying the access token, its token_type,
+// an empty refresh token field and the session's idle expiry.
 //
 // The refresh token field is present and empty rather than absent, so a client
 // written against this document does not have to be changed when a capability
 // that issues refresh tokens starts filling it.
 func writeLoginResult(ex *Exchange, result LoginResult) error {
-	body := loginDocument{AccessToken: result.Token}
+	body := loginDocument{AccessToken: result.Token, TokenType: result.TokenType}
 	if result.Session != nil {
 		body.ValidUntil = result.Session.IdleExpiresAt
 	}
@@ -799,6 +914,10 @@ type loginDocument struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
 	ValidUntil   time.Time `json:"valid_until"`
+
+	// TokenType is the access token's type, DPoP or Bearer (RFC 9449
+	// section 5), left out when the writer did not know it.
+	TokenType TokenType `json:"token_type,omitempty"`
 }
 
 // LoginFields are the fields a login request carried, as WithLoginLifetime's
@@ -817,3 +936,11 @@ type LoginFields struct{ values map[string]any }
 // password parameter is never carried. The result must be treated as
 // read-only.
 func (f LoginFields) Value(name string) (any, bool) { v, ok := f.values[name]; return v, ok }
+
+// isChallenge reports whether err asks the caller for a second factor rather
+// than refusing the request.
+func isChallenge(err error) bool {
+	var ch *ChallengeError
+
+	return errors.As(err, &ch)
+}

@@ -13,9 +13,11 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/ascii"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -144,7 +146,7 @@ func (r *Recoverer) validateHolds(c *config) error {
 // tokens that live for ttl.
 func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
 	m, err := onetime.New(purpose,
-		onetime.WithStore(r.holdStore), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
+		onetime.WithStore(depfault.Store(r.holdStore)), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
 	}
@@ -318,7 +320,29 @@ func (r *Recoverer) cancelURL(token string) string {
 // A token past the completion window, or of another purpose, is ErrRefused.
 // Everything from the conditional write on runs detached from ctx's
 // cancellation; the issuer runs before it, on ctx itself.
-func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result, error) {
+//
+// opts change the session the finish creates: WithFinishKeyBinding binds it.
+// With none it is unbound.
+//
+// A refusal (ErrRefused) is reported as event.RecoveryRefused
+// (WithSecurityEvents), as Recover's is; a hold token store that could not
+// answer is answered as ErrRefused too and reported as nothing.
+func (r *Recoverer) Finish(ctx context.Context, completionToken string, opts ...FinishOption) (*Result, error) {
+	res, err := r.finish(ctx, completionToken, opts...)
+	r.reportRefused(ctx, err)
+
+	return res, err
+}
+
+// finish is Finish's work.
+func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...FinishOption) (*Result, error) {
+	var o finishOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+
 	if r.finishTokens == nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgFinishRefused, slog.String("reason", "no-hold-configured"))
 
@@ -363,7 +387,7 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 
 	// Issued before the record is completed, so a credential that cannot be
 	// issued leaves the record pending and the token usable.
-	issued, err := r.issueSession(ctx, details, now)
+	issued, err := r.issueSession(ctx, details, now, o.binding, o.sessionOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -396,11 +420,13 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 // returned behind fixed text. refused is the message a refusal is logged
 // under.
 func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Tokens, token, refused string) (onetime.Checked, *Record, error) {
-	checked, err := m.Check(ctx, token, "")
+	wctx, watch := depfault.Watching(ctx)
+
+	checked, err := m.Check(wctx, token, "")
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, refused, slog.String("reason", "token"), slog.String("purpose", m.Purpose()))
 
-		return onetime.Checked{}, nil, ErrRefused
+		return onetime.Checked{}, nil, refusedByStore(watch)
 	}
 
 	rid, err := id.Parse(checked.Token().Subject)
@@ -516,4 +542,38 @@ func (r *Recoverer) CancelPending(ctx context.Context, user identity.UserID) err
 	}
 
 	return nil
+}
+
+// FinishOption changes the session a finish creates.
+type FinishOption func(*finishOptions)
+
+// finishOptions is what the FinishOptions given to one finish chose.
+type finishOptions struct {
+	binding     session.KeyBinding
+	sessionOpts []session.CreateOption
+}
+
+// WithFinishKeyBinding binds the recovery-pending session a finish creates,
+// and the credential issued for it, to b (session.WithKeyBinding). The
+// default, with no option, is an unbound session. A b naming both a DPoP key
+// and a certificate fails the finish with session.ErrConfig before anything
+// is completed or spent.
+func WithFinishKeyBinding(b session.KeyBinding) FinishOption {
+	return func(o *finishOptions) { o.binding = b }
+}
+
+// WithFinishSessionOptions adds opts to the caller's own attributes for the
+// recovery-pending session a finish creates, such as the sign-in's CSRF token
+// (session.WithCSRFToken) and its client address and user agent
+// (session.WithClientMetadata), applied in the one write that creates it.
+// Given more than once, the options add up, in order. The default, with no
+// option, creates the session with neither.
+//
+// The recovery's own attributes are applied after them, as for
+// Request.SessionOptions, so none of them can replace those: the first
+// factor, the binding WithFinishKeyBinding names unless it is the zero
+// value, the recovered user, and the recovery-pending state with no second
+// factor met.
+func WithFinishSessionOptions(opts ...session.CreateOption) FinishOption {
+	return func(o *finishOptions) { o.sessionOpts = append(o.sessionOpts, opts...) }
 }

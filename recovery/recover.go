@@ -15,8 +15,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -73,6 +75,28 @@ type Request struct {
 	Lost []string
 	// Source is the request's canonical client source, for the risk hook.
 	Source string
+	// KeyBinding binds the recovery-pending session a recovery completing at
+	// once creates, and the credential issued for it, to a key the client
+	// proved it holds (session.WithKeyBinding). The zero value, the default,
+	// creates an unbound session. A held recovery creates its session at its
+	// finish, which takes its own binding (WithFinishKeyBinding).
+	KeyBinding session.KeyBinding
+	// SessionOptions are the caller's own attributes for the
+	// recovery-pending session a recovery completing at once creates, such
+	// as the sign-in's CSRF token (session.WithCSRFToken) and its client
+	// address and user agent (session.WithClientMetadata), applied in the one
+	// write that creates it. The default, none, creates the session with
+	// neither. A held recovery creates its session at its finish, which takes
+	// its own (WithFinishSessionOptions).
+	//
+	// The recovery's own attributes are applied after them, so none of them
+	// can replace those, however a hand-written option sets the session: the
+	// first factor, factor.Recovery; the binding KeyBinding names, unless it
+	// is the zero value; the recovered user; and the recovery-pending state,
+	// confined to the pending lifetime from the deadline the session holds
+	// and with no second factor met, whatever an option such as
+	// session.WithSecondFactorAtLogin recorded.
+	SessionOptions []session.CreateOption
 }
 
 // PasswordCheck checks a password proof for the username a recovery names. It
@@ -405,7 +429,7 @@ func (r *Recoverer) checkUserLimit(ctx context.Context, user identity.UserID) er
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgUserLimiterError, diag.Failure("limiter", err)...)
 
-		return ErrRefused
+		return depfault.Refusal(err, ErrRefused)
 	}
 	if exceeded {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgUserThrottled)
@@ -429,7 +453,15 @@ func (r *Recoverer) checkCodes(ctx context.Context, v *verified, req Request) er
 		case errors.Is(err, ErrCodeThrottled):
 			r.logger.LogAttrs(ctx, slog.LevelDebug, msgCodeThrottled)
 
-			return r.refuse(ctx, v.user, ErrRefused, false)
+			refusal := ErrRefused
+			// A limiter that could not charge throttled nobody: its own
+			// failure is carried beneath the refusal, as a user limiter's is.
+			var failed *limiterFailure
+			if errors.As(err, &failed) {
+				refusal = depfault.Refusal(failed.cause, ErrRefused)
+			}
+
+			return r.refuse(ctx, v.user, refusal, false)
 		case errors.Is(err, ErrRefused):
 			return r.refuse(ctx, v.user, ErrRefused, false)
 		default:
@@ -451,11 +483,14 @@ func (r *Recoverer) checkCodes(ctx context.Context, v *verified, req Request) er
 
 // checkIssued is the write-free check of an issued code presented for user.
 // A code that is not good, and one minted for another user, are both
-// ErrRefused.
+// ErrRefused, and so is a store that could not answer, with the store's
+// failure kept beneath it so that no refusal event is reported for it.
 func (r *Recoverer) checkIssued(ctx context.Context, user identity.UserID, presented string) (onetime.Checked, error) {
-	checked, err := r.issued.Check(ctx, presented, "")
+	wctx, watch := depfault.Watching(ctx)
+
+	checked, err := r.issued.Check(wctx, presented, "")
 	if err != nil {
-		return onetime.Checked{}, ErrRefused
+		return onetime.Checked{}, refusedByStore(watch)
 	}
 
 	if identity.UserID(checked.Token().Subject) != user {
@@ -465,6 +500,17 @@ func (r *Recoverer) checkIssued(ctx context.Context, user identity.UserID, prese
 	}
 
 	return checked, nil
+}
+
+// refusedByStore is ErrRefused for a token the one-time manager refused. When
+// watch saw its store fail, the refusal answers that failure instead: the same
+// error and text, with the failure kept beneath it (see depfault.Refusal).
+func refusedByStore(watch *depfault.Watch) error {
+	if cause := watch.Failure(); cause != nil {
+		return depfault.Refusal(cause, ErrRefused)
+	}
+
+	return ErrRefused
 }
 
 // checkRest runs the side-effect-free checks, in order: the MFA method's
@@ -500,7 +546,7 @@ func (r *Recoverer) checkRest(ctx context.Context, v *verified, req Request) err
 		if err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgRiskFailed, diag.Failure("risk", err)...)
 
-			return r.refuse(ctx, v.user, diag.Wrap(err, errTextRisk, ErrRefused), true)
+			return r.refuse(ctx, v.user, diag.Wrap(err, errTextRisk, ErrRefused, depfault.ErrFailed), true)
 		}
 
 		v.hold = max(hold, 0)
@@ -530,13 +576,14 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 
 	if v.mfa != nil {
 		if err := v.mfa.Verify(ctx, v.user, v.mfaCode); err != nil {
-			return r.spendFailed(ctx, v.user, "mfa-verify", err)
+			return r.spendRefused(ctx, v.user, "mfa-verify", err, mfaRefusal(err))
 		}
 	}
 
 	if v.has(ProofIssued) {
-		if err := r.issued.Consume(ctx, v.issued); err != nil {
-			return r.spendFailed(ctx, v.user, "token-consume", err)
+		cctx, watch := depfault.Watching(ctx)
+		if err := r.issued.Consume(cctx, v.issued); err != nil {
+			return r.spendRefused(ctx, v.user, "token-consume", err, refusedByStore(watch))
 		}
 	}
 
@@ -560,13 +607,44 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 	return nil
 }
 
+// mfaRefusals are the refusals an MFA method's Verify documents: a code it
+// refused, a throttled or exhausted attempt budget, an authenticator it
+// refused and a channel it cannot serve. Any other error is the method's
+// dependency failing.
+var mfaRefusals = []error{
+	mfa.ErrInvalidCode,
+	mfa.ErrVerifyThrottled,
+	mfa.ErrAuthenticatorRefused,
+	mfa.ErrSameChannel,
+}
+
+// mfaRefusal answers a failed MFA verification as ErrRefused: a refusal the
+// method documents is reported as one, and any other error is a dependency
+// that failed, answered the same way and carried beneath it, so no refusal
+// event is reported for it.
+func mfaRefusal(err error) error {
+	for _, kind := range mfaRefusals {
+		if errors.Is(err, kind) {
+			return ErrRefused
+		}
+	}
+
+	return depfault.Refusal(err, ErrRefused)
+}
+
 // spendFailed logs a failed spend at debug level — the usual cause is a wrong
 // MFA code or a racing recovery, not an outage, and each store logs its own
 // outage — and refuses.
 func (r *Recoverer) spendFailed(ctx context.Context, user identity.UserID, reason string, err error) error {
+	return r.spendRefused(ctx, user, reason, err, ErrRefused)
+}
+
+// spendRefused is spendFailed answering with refusal, which names the store
+// failure a spend of an issued code met, if it met one.
+func (r *Recoverer) spendRefused(ctx context.Context, user identity.UserID, reason string, err, refusal error) error {
 	r.logger.LogAttrs(ctx, slog.LevelDebug, msgSpendFailed, diag.Failure(reason, err)...)
 
-	return r.refuse(ctx, user, ErrRefused, true)
+	return r.refuse(ctx, user, refusal, true)
 }
 
 // refuse records a failure for user and returns err, marked when the recovery

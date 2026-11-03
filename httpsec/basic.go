@@ -13,8 +13,10 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
@@ -66,6 +68,13 @@ type basicAuth struct {
 	now func() time.Time
 
 	realm string
+
+	// rehash stores an upgraded password hash, and nil upgrades nothing.
+	rehash RehashFunc
+
+	// automation is the automation-challenge gate when it was selected for
+	// Basic, settled at assembly, and nil otherwise.
+	automation *challengeGate
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -148,6 +157,18 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, err
 	}
 
+	// After the source limit and before anything about the account is read.
+	if err := b.automation.ask(ctx, ex.Request, challengeQuery{
+		flow:       ChallengeFlowBasicAuth,
+		source:     b.guard,
+		clientIP:   ex.Request.ClientIP(),
+		identifier: username,
+		attempts:   b.attempts,
+		charge:     func() { recordSourceFailure(ctx, b.guard, src) },
+	}); err != nil {
+		return nil, err
+	}
+
 	// Before the credential is checked, for the same reason as at the login
 	// form: a locked account must not answer differently for a right guess.
 	pre := evaluatePhase(ctx, b.engine, policy.PreAuthentication, &policy.Input{
@@ -161,6 +182,7 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 
 		// A source hammering a locked account spends its own allowance.
 		recordSourceFailure(ctx, b.guard, src)
+		emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Basic))
 
 		// Concealed, the lock is a 401 and challenged; disclosed, a 429,
 		// which is not.
@@ -168,7 +190,13 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 			identity.NewUsernamePassword(username, password), err)
 	}
 
-	auth, err := b.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	verifyCtx, upgrade := requestRehash(ctx, b.rehash)
+
+	// Ends the handle on every outcome, after any Result, so the presented
+	// password does not outlive the request.
+	defer upgrade.Discard()
+
+	auth, err := b.authn.Authenticate(verifyCtx, identity.NewUsernamePassword(username, password))
 	if err != nil {
 		// A user store that could not answer judged no credential, and a load
 		// the request's own context ended compared no password, so neither is
@@ -189,8 +217,13 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		// an attempt store that honours cancellation would otherwise drop the
 		// failure. Reset is different, and stays on the request's context:
 		// nobody is owed a clearing the client did not wait for.
-		if !errors.Is(err, authenticate.ErrUnavailable) && !loadEndedByCaller(ctx, err) {
-			if recErr := b.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); recErr != nil {
+		if credentialRefused(ctx, err) {
+			emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Basic))
+
+			// The lockout's view reports a lock this failure decides, with the
+			// factor the context names.
+			recordCtx := eventsink.WithFactor(context.WithoutCancel(ctx), factor.Basic)
+			if recErr := b.attempts.RecordFailure(recordCtx, username, now); recErr != nil {
 				b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 					diag.Failure("attempt-store", recErr)...)
 			}
@@ -224,6 +257,8 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, &ChallengeError{Kind: d.Challenge}
 	case policy.Allow:
 	}
+
+	runRehash(ctx, b.log, b.rehash, upgrade)
 
 	return auth, nil
 }
@@ -267,8 +302,9 @@ type BasicAuthDeps struct {
 	// Attempts is where a refused credential is recorded. Supply the
 	// account-lockout policy's own view, [lockout.Policy.Attempts]: it records
 	// into the store the policy reads, and it is what reports lockout transitions
-	// to an observer the policy was given. A bare store the policy also reads
-	// locks just the same, but nothing recorded through it is reported. A password
+	// to an observer the policy was given and a lock as the security events
+	// authn_login_fail_max and authn_login_lock. A bare store the policy also
+	// reads locks just the same, but nothing recorded through it is reported. A password
 	// guessed at over Basic counts towards the same lockout as one guessed at over
 	// the login form. A successful authentication clears the username's failures
 	// through it, as form login does.
@@ -439,4 +475,27 @@ func WithBasicAuthLimiter(l ratelimit.Limiter) BasicAuthOption {
 // unquotableInRealm reports a rune that must not reach a quoted header value.
 func unquotableInRealm(r rune) bool {
 	return r == '"' || r == '\\' || r < ' ' || r == 0x7f
+}
+
+// WithBasicAuthRehash upgrades an outdated password hash when Basic
+// authentication verifies the password.
+//
+// Default: none, and without a write nothing is encoded or stored. With fn, a
+// request whose password verified and which the chain did not refuse afterwards
+// asks the current encoder whether the stored hash needs upgrading
+// (password.Upgrader). When it does, the password is encoded again with that
+// encoder, at the cost of one more key derivation on that request, and fn
+// receives the user, the hash it replaces and the new hash. fn's error is
+// logged and never changes the outcome; see [RehashFunc] for writing it safely.
+// A nil fn is refused.
+func WithBasicAuthRehash(fn RehashFunc) BasicAuthOption {
+	return func(b *basicAuth) error {
+		if fn == nil {
+			return newConfigError("WithBasicAuthRehash was given no write; omit the option to rehash nothing")
+		}
+
+		b.rehash = fn
+
+		return nil
+	}
 }

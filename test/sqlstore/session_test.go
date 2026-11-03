@@ -58,6 +58,19 @@ func TestSessionStore_SealedColumns(t *testing.T) {
 				return newSessionStore(t, db, c)
 			}))
 	})
+
+	t.Run("sqlstore csrf token", func(t *testing.T) {
+		storetest.RunSealedColumns(t, h, storefix.SealedSessionCSRFTokens(conn.DB,
+			func(t *testing.T, db *sql.DB, c seal.Cipher) session.Store {
+				return newSessionStore(t, db, c)
+			}))
+	})
+
+	t.Run("sqlstore csrf token successor", func(t *testing.T) {
+		storefix.RunSessionCSRFSuccessor(t, h.Raw, func(t *testing.T, c seal.Cipher) session.Store {
+			return newSessionStore(t, conn.DB, c)
+		})
+	})
 }
 
 func TestNewSessionStore(t *testing.T) {

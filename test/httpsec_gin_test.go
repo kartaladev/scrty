@@ -54,6 +54,12 @@ func (ginAdapter) Serve(
 
 	engine := gin.New()
 
+	if spec.FrameworkTrustsProxies {
+		// gin's own trust in every peer, so c.ClientIP() would read the
+		// forwarding header: the chain must not care.
+		require.NoError(t, engine.SetTrustedProxies([]string{"0.0.0.0/0", "::/0"}))
+	}
+
 	if spec.Upstream {
 		engine.Use(ginUpstream())
 	}
@@ -98,6 +104,7 @@ func ginRoute(
 
 	return append(handlers, func(gc *gin.Context) {
 		res.RouteRan = true
+		res.RouteHeader = gc.Request.Header.Clone()
 		httpsecconformance.ReadContext(gc.Request.Context(), res)
 
 		if route.Status != 0 {
@@ -170,6 +177,15 @@ func TestConformanceGin(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, ginAdapter{})
+}
+
+// TestChallengeGin runs the automation-challenge rows on gin, which
+// TestConformanceGin leaves out so that each runs once, and so they can be run
+// by name.
+func TestChallengeGin(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunScenarios(t, ginAdapter{}, httpsecconformance.ChallengeScenarios())
 }
 
 // sessionReferenceFixture is a chain in the session-reference bearer mode over
@@ -324,4 +340,12 @@ func TestSessionBearerFloodedSourceGin(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
 	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
+}
+
+// TestCertificateBindingGin runs the certificate-binding scenarios on
+// gin, through a trusted proxy that forwards the client's certificate.
+func TestCertificateBindingGin(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunCertificateBinding(t, ginAdapter{})
 }

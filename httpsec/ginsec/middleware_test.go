@@ -2,10 +2,13 @@ package ginsec_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -531,20 +534,26 @@ func TestGinSelfAnswered(t *testing.T) {
 }
 
 // TestGinClientIP pins the one thing the adapter decides about attribution:
-// which address it hands the chain. What the chain then does with an address it
-// cannot attribute is the chain's own rule, applied identically behind every
-// framework, so nothing here reimplements it.
+// it hands the chain the transport peer, whatever gin's own proxy settings
+// say. What the chain then does with it — trusted proxies, or refusing an
+// address it cannot attribute — is the chain's own rule, applied identically
+// behind every framework, so nothing here reimplements it.
 //
 // It stands apart from TestGinRefusal: its cases set gin's trusted proxies and
 // the request's peer and forwarding header.
 func TestGinClientIP(t *testing.T) {
 	t.Parallel()
 
+	chainTrusts := httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.2/32")},
+		Headers:  httpsec.XForwarded(httpsec.ForwardedFor),
+	})
+
 	type testCase struct {
 		name string
 
-		// opts are the adapter options under test.
-		opts []ginsec.Option
+		// chainOpts are the chain's own options beside the observer.
+		chainOpts []httpsec.Option
 
 		// trustedProxies is what the consumer told gin to trust, and nil means
 		// the consumer told it nothing — which is gin's trust-every-proxy
@@ -570,19 +579,8 @@ func TestGinClientIP(t *testing.T) {
 			},
 		},
 		{
-			name:           "the opt-in takes the address gin's trusted proxy forwarded",
-			opts:           []ginsec.Option{ginsec.WithForwardedClientIP()},
-			trustedProxies: []string{"10.0.0.2"},
-			peer:           "10.0.0.2:41000",
-			forwarded:      "198.51.100.7",
-			assert: func(t *testing.T, addr string) {
-				assert.Equal(t, "198.51.100.7", addr)
-			},
-		},
-		{
-			name:           "the opt-in still ignores a header from a peer gin does not trust",
-			opts:           []ginsec.Option{ginsec.WithForwardedClientIP()},
-			trustedProxies: []string{"10.0.0.2"},
+			name:           "gin's own trusted proxies do not change the chain",
+			trustedProxies: []string{"0.0.0.0/0", "::/0"},
 			peer:           "198.51.100.7:51234",
 			forwarded:      "203.0.113.9",
 			assert: func(t *testing.T, addr string) {
@@ -590,32 +588,29 @@ func TestGinClientIP(t *testing.T) {
 			},
 		},
 		{
-			// The hazard the option's godoc names, pinned rather than described:
-			// with gin told to trust nothing in particular, it trusts every
-			// proxy, so the client's own header decides.
-			name:      "the opt-in before trusted proxies are set lets the client choose",
-			opts:      []ginsec.Option{ginsec.WithForwardedClientIP()},
-			peer:      "198.51.100.7:51234",
-			forwarded: "203.0.113.9",
+			name:      "the chain's trusted proxy names the client, with no gin option involved",
+			chainOpts: []httpsec.Option{chainTrusts},
+			peer:      "10.0.0.2:41000",
+			forwarded: "198.51.100.7",
 			assert: func(t *testing.T, addr string) {
-				assert.Equal(t, "203.0.113.9", addr,
-					"set the trusted proxy list before enabling the option")
+				assert.Equal(t, "198.51.100.7", addr)
 			},
 		},
 		{
-			name: "an address gin cannot attribute is passed on as none",
-			opts: []ginsec.Option{ginsec.WithForwardedClientIP()},
-			peer: "@",
+			name:           "gin trusting a proxy the chain does not trust changes nothing",
+			trustedProxies: []string{"10.0.0.2"},
+			peer:           "10.0.0.2:41000",
+			forwarded:      "198.51.100.7",
 			assert: func(t *testing.T, addr string) {
-				assert.Empty(t, addr,
-					"nothing is invented here: refusing an unattributable address is the chain's rule")
+				assert.Equal(t, "10.0.0.2", addr)
 			},
 		},
 		{
 			name: "the default reports no address for a peer that is not a network client",
 			peer: "@",
 			assert: func(t *testing.T, addr string) {
-				assert.Empty(t, addr)
+				assert.Empty(t, addr,
+					"nothing is invented here: refusing an unattributable address is the chain's rule")
 			},
 		},
 	}
@@ -631,9 +626,8 @@ func TestGinClientIP(t *testing.T) {
 				require.NoError(t, eng.SetTrustedProxies(tc.trustedProxies))
 			}
 
-			eng.Use(ginsec.Middleware(
-				newChain(t, httpsec.RegisterInterceptor(observing(out), httpsec.OrderJWKS)),
-				tc.opts...))
+			eng.Use(ginsec.Middleware(newChain(t, append(tc.chainOpts,
+				httpsec.RegisterInterceptor(observing(out), httpsec.OrderJWKS))...)))
 			eng.GET("/reports", out.route())
 
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/reports", nil)
@@ -647,6 +641,144 @@ func TestGinClientIP(t *testing.T) {
 
 			require.True(t, out.routeRan, "the chain passed the request through")
 			tc.assert(t, out.clientAddr)
+		})
+	}
+}
+
+// TestRequest_HostAndSecure pins that the gin adapter reads the host and the
+// transport security from the request itself: gin trusts every proxy until
+// configured, and its proxy settings must not make a request secure or change
+// the host the chain sees.
+func TestRequest_HostAndSecure(t *testing.T) {
+	t.Parallel()
+
+	type observed struct {
+		host   string
+		secure bool
+	}
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) *http.Request
+		assert func(t *testing.T, got observed)
+	}
+
+	cases := []testCase{
+		{
+			name: "a TLS request is secure and keeps its Host",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/r", nil)
+				req.Host = "app.example.com"
+				req.TLS = &tls.ConnectionState{}
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, observed{host: "app.example.com", secure: true}, got)
+			},
+		},
+		{
+			name: "gin's proxy settings do not make a request secure",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/r", nil)
+				req.Host = "app.example.com"
+				req.RemoteAddr = "10.20.0.2:51234"
+				req.Header.Set("X-Forwarded-Proto", "https")
+				req.Header.Set("X-Forwarded-Host", "evil.example")
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, observed{host: "app.example.com", secure: false}, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got observed
+
+			chain := newChain(t, httpsec.RegisterInterceptor(
+				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					got = observed{host: ex.Request.Host(), secure: ex.Request.Secure()}
+
+					return next(ex)
+				}), httpsec.OrderJWKS))
+
+			// gin.New trusts every proxy, which is the configuration under test.
+			eng := gin.New()
+			eng.Use(ginsec.Middleware(chain))
+			eng.GET("/r", func(*gin.Context) {})
+
+			rec := serve(eng, tc.build(t))
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			tc.assert(t, got)
+		})
+	}
+}
+
+// TestRequest_ClientCertificate pins that the gin adapter answers the leaf
+// certificate of the request's own TLS connection, and never one a header
+// carries.
+func TestRequest_ClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	leaf := &x509.Certificate{Raw: []byte("leaf")}
+	issuer := &x509.Certificate{Raw: []byte("issuer")}
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) *http.Request
+		assert func(t *testing.T, got *x509.Certificate)
+	}
+
+	cases := []testCase{
+		{
+			name: "a TLS request answers the leaf the client sent first",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/r", nil)
+				req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf, issuer}}
+				return req
+			},
+			assert: func(t *testing.T, got *x509.Certificate) {
+				assert.Same(t, leaf, got)
+			},
+		},
+		{
+			name: "a plain request answers nil, whatever its headers carry",
+			build: func(t *testing.T) *http.Request {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/r", nil)
+				req.Header.Set("X-Client-Cert", "-----BEGIN%20CERTIFICATE-----")
+				return req
+			},
+			assert: func(t *testing.T, got *x509.Certificate) {
+				assert.Nil(t, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got *x509.Certificate
+
+			chain := newChain(t, httpsec.RegisterInterceptor(
+				httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					got = ex.Request.ClientCertificate()
+
+					return next(ex)
+				}), httpsec.OrderJWKS))
+
+			eng := gin.New()
+			eng.Use(ginsec.Middleware(chain))
+			eng.GET("/r", func(*gin.Context) {})
+
+			rec := serve(eng, tc.build(t))
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			tc.assert(t, got)
 		})
 	}
 }

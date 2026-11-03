@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -66,11 +67,21 @@ type stubRequest struct {
 	form         map[string]string
 	body         []byte
 	clientIP     string
+	host         string
+	secure       bool
+	cert         *x509.Certificate
 }
 
-func (r stubRequest) Method() string            { return r.method }
-func (r stubRequest) Path() string              { return r.path }
-func (r stubRequest) Header(n string) string    { return r.headers[n] }
+func (r stubRequest) Method() string         { return r.method }
+func (r stubRequest) Path() string           { return r.path }
+func (r stubRequest) Header(n string) string { return r.headers[n] }
+func (r stubRequest) HeaderValues(n string) []string {
+	if v, ok := r.headers[n]; ok {
+		return []string{v}
+	}
+
+	return nil
+}
 func (r stubRequest) Query(n string) string     { return r.query[n] }
 func (r stubRequest) FormValue(n string) string { return r.form[n] }
 
@@ -84,6 +95,16 @@ func (r stubRequest) QueryValues(n string) []string {
 	return []string{v}
 }
 func (r stubRequest) ClientIP() string { return r.clientIP }
+func (r stubRequest) Host() string     { return r.host }
+func (r stubRequest) Secure() bool     { return r.secure }
+
+// ClientCertificate is the stub's connection certificate, nil unless a test sets
+// one.
+func (r stubRequest) ClientCertificate() *x509.Certificate { return r.cert }
+
+// EscapedPath is the stub's path in its default encoding: a stub spells its
+// path once.
+func (r stubRequest) EscapedPath() string { return (&url.URL{Path: r.path}).EscapedPath() }
 
 func (r stubRequest) Cookie(n string) (string, bool) {
 	v, ok := r.cookies[n]
@@ -109,6 +130,13 @@ func (w *stubWriter) SetHeader(n, v string) {
 		w.header = http.Header{}
 	}
 	w.header.Set(n, v)
+}
+
+func (w *stubWriter) AddHeader(n, v string) {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	w.header.Add(n, v)
 }
 
 func (w *stubWriter) SetCookie(c *httpsec.Cookie) { w.cookie = append(w.cookie, c) }
@@ -2072,7 +2100,7 @@ func serveIn(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *http.
 	t.Helper()
 
 	out := served{rec: httptest.NewRecorder()}
-	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
 		out.handled = ex
 

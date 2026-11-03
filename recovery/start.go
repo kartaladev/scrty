@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
@@ -52,6 +53,12 @@ const (
 // A small timing difference remains: the address resolution and the bounded
 // token insert run only for a username that resolves. The non-blocking sender removes the
 // largest part — the delivery — and the rest is stated rather than closed.
+//
+// Every start is reported as event.RecoveryStarted, as its last step, for a
+// username that names an account and for one that names none alike, carrying
+// the user only when there is one (WithSecurityEvents). A security-event sink
+// is called synchronously, so reporting only the starts that named an account
+// would let a slow sink's latency tell them apart.
 func (r *Recoverer) Start(ctx context.Context, username string) {
 	if r.issued == nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgStartDisabled)
@@ -59,9 +66,20 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 		return
 	}
 
+	user := r.start(ctx, username)
+
+	r.events.Report(ctx, event.Event{
+		Name: event.RecoveryStarted, At: r.clock.Now(), Outcome: event.OutcomeSuccess, User: user,
+	}, r.logger)
+}
+
+// start is Start's work, and returns the user the username resolved to, or
+// the empty reference when it resolved to none. Whatever happens after the
+// username resolved, the user is returned: the start was made for them.
+func (r *Recoverer) start(ctx context.Context, username string) identity.UserID {
 	details, ok := r.resolveForStart(ctx, username)
 	if !ok {
-		return
+		return ""
 	}
 
 	subject := string(details.ID)
@@ -70,12 +88,12 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartContactFailed, diag.Failure("contact-resolver", err)...)
 
-		return
+		return details.ID
 	}
 	if address == "" {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartContactFailed, slog.String("reason", "contact-resolver"))
 
-		return
+		return details.ID
 	}
 
 	// One bounded issue, not a count and then an issue: of a burst of starts
@@ -87,11 +105,11 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 	case errors.Is(err, onetime.ErrIssueLimitReached):
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgStartLimitReached, slog.Int("limit", r.issuedLimit))
 
-		return
+		return details.ID
 	case err != nil:
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartIssueFailed, diag.Failure("token-issue", err)...)
 
-		return
+		return details.ID
 	}
 
 	subjectLine, body := r.messages.IssuedCode(code, tok.ExpiresAt)
@@ -104,6 +122,8 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 	if err := r.sender.Send(ctx, msg); err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartSendFailed, diag.Failure("sender", err)...)
 	}
+
+	return details.ID
 }
 
 // resolveForStart turns a submitted username into an active user's details,

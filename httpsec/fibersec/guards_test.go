@@ -947,3 +947,77 @@ func TestFiber_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
 		})
 	}
 }
+
+// TestFiber_GuardsDPoPChallenge pins that a fiber guard behind a chain with
+// DPoP on refuses a caller nothing authenticated with the challenge the
+// chain's own refusal carries, and that without DPoP it answers as it always
+// did.
+//
+// It stands on its own: a whole chain with DPoP configured in front of the
+// guard, which no other fiber guard test has.
+func TestFiber_GuardsDPoPChallenge(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		dpop   []httpsec.Option
+		config fiber.Config
+		assert func(t *testing.T, res response)
+	}
+
+	challenged := func(challenges ...string) func(*testing.T, response) {
+		return func(t *testing.T, res response) {
+			t.Helper()
+
+			assert.Equal(t, http.StatusUnauthorized, res.status)
+			assert.Equal(t, challenges, res.header.Values("WWW-Authenticate"))
+		}
+	}
+
+	withErrorHandler := fiber.Config{ErrorHandler: fibersec.ErrorHandler}
+
+	cases := []testCase{
+		{
+			name:   "DPoP optional: the DPoP and Bearer challenges",
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
+			config: withErrorHandler,
+			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
+		},
+		{
+			name:   "DPoP required: the DPoP challenge alone",
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com", Require: true})},
+			config: withErrorHandler,
+			assert: challenged(`DPoP algs="ES256"`),
+		},
+		{
+			name:   "DPoP off: no challenge, as before",
+			config: withErrorHandler,
+			assert: challenged(),
+		},
+		{
+			name:   "fiber's own error handler keeps the challenge",
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
+			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts, _ := authenticated(t)
+			g := mustGuards(t, permittingAuthorizer(t))
+
+			app := fiber.New(tc.config)
+			app.Use(fibersec.Middleware(newChain(t, append(opts, tc.dpop...)...)))
+			app.Get("/api/orders", g.RequireAuthenticated(), func(fiber.Ctx) error {
+				t.Error("the route must not run")
+
+				return nil
+			})
+
+			tc.assert(t, serve(t, app,
+				httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/api/orders", nil)))
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -86,6 +87,20 @@ func WithPasskeyRemoveResponder(fn PasskeyChangeResponder) PasskeyOption {
 		}
 
 		p.respondRemove = fn
+
+		return nil
+	}
+}
+
+// WithoutPasskeyRemovalNotification sends the user no notice when a passkey
+// is removed through the removal endpoint, for a consumer who tells the user
+// some other way. It passes passkey.WithoutRemovalNotice to every removal.
+//
+// Default: every removal that succeeds queues the manager's Removed notice,
+// naming the passkey's label and the time, never its credential ID.
+func WithoutPasskeyRemovalNotification() PasskeyOption {
+	return func(p *passkeyInterceptor) error {
+		p.silentRemoval = true
 
 		return nil
 	}
@@ -194,9 +209,15 @@ func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
 		return err
 	}
 
+	if p.silentRemoval {
+		opts = append(opts, passkey.WithoutRemovalNotice())
+	}
+
 	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid, p.registrationContext(s), opts...); err != nil {
 		return err
 	}
+
+	emitEvent(ex.Context(), sessionEvent(event.PasskeyRemoved, event.OutcomeSuccess, s))
 
 	return p.respondRemove(ex, cid)
 }

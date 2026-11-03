@@ -243,6 +243,32 @@ const (
 	// not been swept as used, as a query that does not judge the successor
 	// as Load does would.
 	sessionSuccessorIgnoresStaleness sessionDefect = "successor-ignores-staleness"
+	// ListByUser matches the user reference case-insensitively, as a lookup
+	// through a lower-cased column would, so one user's listing returns
+	// another user's sessions.
+	sessionListFoldsCase sessionDefect = "list-folds-case"
+	// Save writes the caller's key binding rather than keeping the stored
+	// one, as a column left in the UPDATE would.
+	sessionSaveWritesBinding sessionDefect = "save-writes-binding"
+	// ListByUser ignores the user and lists every live session it holds, as
+	// a query that lost its WHERE clause would.
+	sessionListIgnoresUser sessionDefect = "list-ignores-user"
+	// ListByUser also lists superseded members, as a query that does not
+	// filter on supersession would.
+	sessionListIncludesSuperseded sessionDefect = "list-includes-superseded"
+	// ListByUser also lists sessions past a deadline, as a query that does
+	// not judge expiry would.
+	sessionListIncludesExpired sessionDefect = "list-includes-expired"
+	// Save writes the caller's sign-in metadata rather than keeping the
+	// stored one, as columns left in the UPDATE would.
+	sessionSaveWritesMetadata sessionDefect = "save-writes-metadata"
+	// Save writes the caller's CSRF token rather than keeping the stored
+	// one, as a column left in the UPDATE would.
+	sessionSaveWritesCSRFToken sessionDefect = "save-writes-csrf-token" //nolint:gosec // G101: the name of a seeded defect, not a credential
+	// Supersede inserts its successor without the sign-in state (metadata,
+	// key binding, CSRF token), as an INSERT naming only the older columns
+	// would.
+	sessionSupersedeDropsSignInState sessionDefect = "supersede-drops-sign-in-state"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -327,13 +353,15 @@ func cloneSession(sess *session.Session) *session.Session {
 	return &out
 }
 
-// keepLibraryState copies onto sess the authentication time and the family,
-// supersession (retention and the strict mark included) and presentation
-// fields stored holds,
-// which only Create, Supersede and MarkPresented write, and both deadlines of
-// a superseded record.
+// keepLibraryState copies onto sess the authentication time, the sign-in
+// state (key binding, CSRF token, metadata) and the family, supersession
+// (retention and the strict mark included) and presentation fields stored
+// holds, which only Create, Supersede and MarkPresented write, and both
+// deadlines of a superseded record.
 func keepLibraryState(sess, stored *session.Session) {
 	sess.AuthenticatedAt = stored.AuthenticatedAt
+	sess.KeyBinding, sess.CSRFToken = stored.KeyBinding, stored.CSRFToken
+	sess.ClientIP, sess.UserAgent = stored.ClientIP, stored.UserAgent
 	sess.FamilyID, sess.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
 	sess.SupersededAt, sess.AcceptUntil = stored.SupersededAt, stored.AcceptUntil
 	sess.RetainUntil = stored.RetainUntil
@@ -415,6 +443,15 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	kept := cloneSession(sess)
 	kept.MFAAtFirstFactor = marker
 	keepLibraryState(kept, stored)
+	if s.defect == sessionSaveWritesBinding {
+		kept.KeyBinding = sess.KeyBinding
+	}
+	if s.defect == sessionSaveWritesMetadata {
+		kept.ClientIP, kept.UserAgent = sess.ClientIP, sess.UserAgent
+	}
+	if s.defect == sessionSaveWritesCSRFToken {
+		kept.CSRFToken = sess.CSRFToken
+	}
 	if s.defect == sessionSaveMovesAuthenticatedAt {
 		kept.AuthenticatedAt = sess.AuthenticatedAt
 	}
@@ -623,6 +660,28 @@ func (s *sessionStore) DeleteByUserExcept(_ context.Context, user identity.UserI
 	return n, nil
 }
 
+func (s *sessionStore) ListByUser(_ context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	listed := []*session.Session{}
+	for _, sess := range s.records {
+		match := sess.UserID == user
+		switch s.defect {
+		case sessionListFoldsCase:
+			match = strings.EqualFold(string(sess.UserID), string(user))
+		case sessionListIgnoresUser:
+			match = true
+		}
+		live := sess.SupersededAt.IsZero() || s.defect == sessionListIncludesSuperseded
+		unexpired := !expiredSession(sess, now) || s.defect == sessionListIncludesExpired
+		if match && live && unexpired {
+			listed = append(listed, cloneSession(sess))
+		}
+	}
+	return listed, nil
+}
+
 func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -772,6 +831,10 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	s.retain(old, op)
 	successor := cloneSession(op.Successor)
 	successor.RotatedStrictly = successor.RotatedStrictly && s.defect == sessionCreateWritesStrictMark
+	if s.defect == sessionSupersedeDropsSignInState {
+		successor.ClientIP, successor.UserAgent = "", ""
+		successor.KeyBinding, successor.CSRFToken = session.KeyBinding{}, ""
+	}
 	s.records[op.Successor.ID] = successor
 	return nil
 }

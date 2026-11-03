@@ -3014,6 +3014,7 @@ func TestEnrolmentOutagesCarryNoAddress(t *testing.T) {
 type brokenWriter struct{}
 
 func (brokenWriter) SetHeader(string, string)  {}
+func (brokenWriter) AddHeader(string, string)  {}
 func (brokenWriter) SetCookie(*httpsec.Cookie) {}
 func (brokenWriter) WriteHeader(int)           {}
 func (brokenWriter) Write([]byte) (int, error) { return 0, errTransportReset }
@@ -3023,7 +3024,7 @@ func serveThrough(t *testing.T, chain *httpsec.Chain, req *http.Request, w https
 	t.Helper()
 
 	out := served{rec: httptest.NewRecorder()}
-	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries the request context, and begin reads it through ex.Context()
 		out.handlerRan = true
 		out.handled = ex
 

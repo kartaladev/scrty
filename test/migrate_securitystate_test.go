@@ -185,6 +185,11 @@ var securityStateColumns = map[string][]column{
 		optional("retain_until", colTimestamptz),
 		defaulted("authenticated_at", colTimestamptz, "now()"),
 		defaulted("rotated_strictly", colBoolean, "false"),
+		optional("client_ip", colText),
+		optional("user_agent", colText),
+		optional("binding_kind", colText),
+		optional("binding_thumbprint", colText),
+		optional("csrf_token", colText),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -675,12 +680,13 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 
 // securityStateMigrationCount is how many migration files the security-state
 // set holds.
-const securityStateMigrationCount = 3
+const securityStateMigrationCount = 4
 
 // Versions of the security-state migrations the family tests address.
 const (
 	versionSecurityState   int64 = 20260926000000
 	versionSessionFamilies int64 = 20261021000000
+	versionStrictRotation  int64 = 20261101000000
 )
 
 // sessionColumnsAndIndexes describes the sessions table as sorted column and
@@ -968,7 +974,7 @@ func TestSecurityStateMigrations_SessionStrictRotation(t *testing.T) {
 				require.NoError(t, err)
 				before := sessionColumnsAndIndexes(t, db)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionStrictRotation)
 				require.NoError(t, err)
 				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db), "the migration changed the sessions table")
 
@@ -1508,6 +1514,159 @@ func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
 			assert.True(t, got.FamilyCreatedAt.Equal(got.CreatedAt),
 				"the family was created when the row was: %s, want %s", got.FamilyCreatedAt, got.CreatedAt)
 			assert.True(t, got.RetainUntil.IsZero(), "a row from before the column has no retention deadline")
+		})
+	}
+}
+
+// TestSecurityStateMigrations_SessionSignIns pins the sign-in state
+// migration: five nullable text columns (the sign-in metadata, the key
+// binding's kind and thumbprint, and the sealed CSRF token) and no index, a
+// row from before it that reads back with all five null, an insert by a
+// writer from before it that still succeeds, and a rollback that restores the
+// previous shape.
+func TestSecurityStateMigrations_SessionSignIns(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+	columns := []string{"client_ip", "user_agent", "binding_kind", "binding_thumbprint", "csrf_token"}
+
+	type testCase struct {
+		name string
+		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
+	}
+
+	cases := []testCase{
+		{
+			name: "adds five nullable text columns and no index",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionStrictRotation)
+				require.NoError(t, err)
+				before := sessionColumnsAndIndexes(t, db)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+				after := sessionColumnsAndIndexes(t, db)
+
+				for _, c := range columns {
+					assert.Contains(t, after, "col "+c+" text NULL")
+				}
+				var added []string
+				for _, line := range after {
+					if !slices.Contains(before, line) {
+						added = append(added, line)
+					}
+				}
+				assert.Len(t, added, len(columns), "only the five columns are added, no index: %v", added)
+			},
+		},
+		{
+			name: "a populated row from before the migration reads back with every new column null",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionStrictRotation)
+				require.NoError(t, err)
+
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
+					 external_id_token, data)
+					VALUES ('0192f000-0000-7000-8000-0000000000d1', '\x01', 'u', now(), now(), now(), now(),
+					        'sealed', '{"k":"v"}')`)
+				require.NoError(t, err)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				var nulls int
+				require.NoError(t, db.QueryRowContext(t.Context(), `SELECT
+					(client_ip IS NULL)::int + (user_agent IS NULL)::int + (binding_kind IS NULL)::int
+					+ (binding_thumbprint IS NULL)::int + (csrf_token IS NULL)::int
+					FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000d1'`).Scan(&nulls))
+				assert.Equal(t, len(columns), nulls, "an existing row has no metadata, no binding and no token")
+			},
+		},
+		{
+			name: "an older writer's insert still succeeds",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000d2', '\x02', 'u', now(), now(), now(), now())`)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "rollback restores the previous columns and indexes",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionStrictRotation)
+				require.NoError(t, err)
+				before := sessionColumnsAndIndexes(t, db)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db), "the migration changed the sessions table")
+
+				_, err = p.Down(t.Context())
+				require.NoError(t, err)
+
+				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
+				assert.Equal(t, 3, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, p := freshSecurityState(t, set)
+			tc.run(t, db, p)
+		})
+	}
+}
+
+// A session written before the sign-in state migration reads back through
+// each durable store unbound, with no sign-in metadata and no CSRF token, and
+// its sealed ID token still opens.
+func TestSecurityStateMigrations_SignInStateReadsBackEmpty(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	for _, tc := range sessionStoreOpeners() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := RunTestPostgres(t)
+			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
+			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
+
+			_, err := p.UpTo(t.Context(), versionStrictRotation)
+			require.NoError(t, err)
+
+			const sessionID = "a-session-from-before-the-sign-in-state"
+			digest := sha256.Sum256([]byte(sessionID))
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+				VALUES ('0192f000-0000-7000-8000-0000000000d3', $1, 'u', '2026-09-01', '2026-09-01',
+				        '2099-01-01', '2099-01-01')`, digest[:])
+			require.NoError(t, err)
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+
+			store := tc.open(t, conn, storefix.TestCipher(t))
+			got, err := store.Load(t.Context(), sessionID)
+			require.NoError(t, err)
+			assert.True(t, got.KeyBinding.IsZero(), "an existing row is unbound")
+			assert.Empty(t, got.ClientIP)
+			assert.Empty(t, got.UserAgent)
+			assert.Empty(t, got.CSRFToken, "an existing row has no token")
+
+			listed, err := store.ListByUser(t.Context(), "u", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+			require.NoError(t, err)
+			require.Len(t, listed, 1, "an existing row is listed")
+			assert.Empty(t, listed[0].CSRFToken)
 		})
 	}
 }

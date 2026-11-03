@@ -5,6 +5,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -75,6 +76,13 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 		return err
 	}
 
+	// Before the password is checked, so a bad proof is never a failed
+	// password and spends nothing.
+	binding, err := reauthBinding(ex, s)
+	if err != nil {
+		return err
+	}
+
 	principal := ex.Authentication.Principal
 	if principal.ID != s.UserID {
 		return authenticate.ErrAuthenticationFailed
@@ -87,7 +95,18 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	now := i.now()
 
-	auth, err := l.attemptPassword(ctx, ex.Request.ClientIP(), username, password, now)
+	verifyCtx, upgrade := requestRehash(ctx, i.rehash)
+
+	// Ends the handle on every outcome, after any Result, so the presented
+	// password does not outlive the request.
+	defer upgrade.Discard()
+
+	// A re-proof is made from a signed-in session, so no automation challenge
+	// stands in front of it.
+	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
+		func(ctx context.Context) {
+			emitEvent(ctx, sessionEvent(event.ReauthenticationFail, event.OutcomeFailure, s))
+		}, nil)
 	if err != nil {
 		return err
 	}
@@ -109,13 +128,21 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 	in := postAuthenticationInput(auth.Principal, factor.Password, username, auth.PasswordChangedAt, now)
 	in.Reauthenticating = true
 
-	if err := postAuthenticate(ctx, l, in); err != nil {
+	err = postAuthenticate(ctx, l, in)
+
+	// As at login, a re-proof that is accepted, or challenged for a second
+	// factor, upgrades an outdated hash; any other refusal does not.
+	if err == nil || isChallenge(err) {
+		runRehash(ctx, i.log, i.rehash, upgrade)
+	}
+
+	if err != nil {
 		return err
 	}
 
 	l.resetFailures(ctx, username)
 
-	return i.resolve(ex, s, nil)
+	return i.resolve(ex, s, nil, binding)
 }
 
 // postAuthenticate applies the post-authentication phase to a proved

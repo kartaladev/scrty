@@ -116,6 +116,12 @@ var (
 	// re-proof. Nothing was checked or counted. It maps to 403.
 	// Its text names no method, session or user.
 	ErrReauthenticationMethodNotUsable = errors.New("httpsec: reauthentication method not usable")
+
+	// ErrHostNotAllowed refuses a request whose host a trusted proxy forwarded
+	// (EnableTrustedProxies with ForwardedHost) and which is on none of the
+	// allowed hosts. The chain refuses it before any interceptor runs. It maps
+	// to 400. Its text never names the host.
+	ErrHostNotAllowed = errors.New("httpsec: host not allowed")
 )
 
 // ReauthenticationRequiredError is the recency guard's refusal. It carries the
@@ -230,6 +236,18 @@ var statusTable = []statusRow{
 	// asked to authenticate again.
 	{magiclink.ErrInvalidLink, http.StatusUnauthorized},
 
+	// A DPoP proof that is missing, does not verify or does not fit its
+	// token: the client is asked to present a credential with a valid proof.
+	// A proof without a current server nonce is one of them, and is asked to
+	// retry with the nonce the response carries.
+	{ErrDPoPNonceRequired, http.StatusUnauthorized},
+	{ErrInvalidDPoPProof, http.StatusUnauthorized},
+
+	// A certificate-bound credential on a request that does not present its
+	// certificate (RFC 8705): the client is asked to present the credential
+	// over a connection with the certificate it was bound to.
+	{ErrCertificateBinding, http.StatusUnauthorized},
+
 	// A refused recovery (recovery.ErrRefused) and a throttled saved-code
 	// presentation (recovery.ErrCodeThrottled) need no rows: they wrap
 	// authenticate.ErrAuthenticationFailed and ratelimit.ErrThrottled, so the
@@ -237,6 +255,14 @@ var statusTable = []statusRow{
 
 	{ErrCredentialsMissing, http.StatusBadRequest},
 	{ErrMalformedRequest, http.StatusBadRequest},
+	{ErrHostNotAllowed, http.StatusBadRequest},
+	{ErrCrossSiteRequest, http.StatusForbidden},
+
+	// A request the automation-challenge verifier refused: the client must
+	// pass the challenge, not present other credentials. A verifier that
+	// could not answer (ErrChallengeUnavailable) is not here: it is answered
+	// 500 before this table is read.
+	{ErrChallengeRequired, http.StatusForbidden},
 
 	// A passkey ceremony response the verifier could not read. The chain's
 	// endpoints answer it as ErrCredentialsMissing, wrapping it; this row
@@ -251,7 +277,13 @@ var statusTable = []statusRow{
 	// that could not be read or recorded is a dependency failure, not a
 	// refusal of the caller's input, and carries no row here: it falls through
 	// to the unrecognised-error 500 below, like any other unrecognised error.
+	//
+	// Every other refusal of a password policy ([password.ErrPasswordRejected],
+	// which [password.ErrReused] also matches) answers the same way. A breach
+	// lookup that could not answer ([password.ErrLookupUnavailable]) is a
+	// dependency failure and falls through to the 500 below.
 	{password.ErrReused, http.StatusUnprocessableEntity},
+	{password.ErrPasswordRejected, http.StatusUnprocessableEntity},
 
 	// An account lock is a client that has sent too many failed attempts in a
 	// span (RFC 6585 §4), not a locked WebDAV resource (RFC 4918 §11.3), so it
@@ -303,6 +335,12 @@ var statusTable = []statusRow{
 	// An API key identifier naming no key of the caller: another owner's and
 	// none at all are the same refusal, as for a passkey.
 	{apikey.ErrKeyNotFound, http.StatusNotFound},
+
+	// A sign-in handle naming no live sign-in of the session's user: a
+	// malformed handle, an unknown one and another user's are the same
+	// refusal. A store failure while listing or ending sign-ins has no row: it
+	// is a dependency failure answered 500 with fixed text.
+	{ErrSessionHandleNotFound, http.StatusNotFound},
 
 	{authorize.ErrAccessDenied, http.StatusForbidden},
 	{policy.ErrDenied, http.StatusForbidden},
@@ -358,7 +396,10 @@ var statusTable = []statusRow{
 // sentinel below that is answered 401 still does not send the client back to
 // log in. It is 500 as well when a refusal is joined beside the issuing
 // failure, not only when its cause wraps one: the failure decides. The
-// generator's error stays reachable for a consumer's own handler.
+// generator's error stays reachable for a consumer's own handler. An
+// automation-challenge verifier that could not answer (ErrChallengeUnavailable)
+// is 500 in the same way, whatever its own error wraps, while a request the
+// verifier refused (ErrChallengeRequired) is 403.
 //
 // A challenge is checked next, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
@@ -394,6 +435,12 @@ func StatusForError(err error) int {
 	// so it is answered before the challenge and the refusal table are read.
 	var issuing *issueFailure
 	if errors.As(err, &issuing) {
+		return http.StatusInternalServerError
+	}
+
+	// So is a challenge verifier that could not answer, whatever its own
+	// error wraps: an outage never reads to the client as a refusal.
+	if errors.Is(err, ErrChallengeUnavailable) {
 		return http.StatusInternalServerError
 	}
 

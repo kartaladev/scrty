@@ -200,6 +200,61 @@ func TestRecoverer_Complete(t *testing.T) {
 			},
 		},
 		{
+			name: "the caller's session options are written with the session, and the recovery's own attributes win",
+			req: func(e *completeEnv) recovery.Request {
+				req := savedAndIssuedReq(e)
+				req.KeyBinding = session.KeyBinding{JKT: provedJKT}
+				req.SessionOptions = callerSessionOptions()
+
+				return req
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				callerOptionsUnderRecoveryOwn(t, s)
+			},
+		},
+		{
+			name: "a raw session option cannot set the recovery session's user",
+			opts: func(*completeEnv) []recovery.Option {
+				return []recovery.Option{recovery.WithCredentialIssuer(userBlindIssuer)}
+			},
+			req: func(e *completeEnv) recovery.Request {
+				req := savedAndIssuedReq(e)
+				req.SessionOptions = []session.CreateOption{rawUserOption}
+
+				return req
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				userIsRecovered(t, s)
+			},
+		},
+		{
+			name: "a raw session option cannot preset the confinement marker past the maximum lifetime",
+			req: func(e *completeEnv) recovery.Request {
+				req := savedAndIssuedReq(e)
+				req.SessionOptions = []session.CreateOption{rawConfinementOption}
+
+				return req
+			},
+			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, res.Session)
+
+				s, err := e.sessions.Load(t.Context(), res.Session.ID)
+				require.NoError(t, err)
+				e.deadlineIsOwn(t, s)
+			},
+		},
+		{
 			name: "the recovery session expires after the default 15 minutes",
 			req:  savedAndIssuedReq,
 			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
@@ -722,4 +777,82 @@ func TestRecoverer_IssueFailureSpendsAndEndsNothing(t *testing.T) {
 			assert.Equal(t, issuedForPrefix+again.Session.ID, again.Credential)
 		})
 	}
+}
+
+// provedJKT is the key a recovery's caller proved the client holds, and
+// claimedJKT another one a caller's own session option names.
+const (
+	provedJKT  = "jkt-proved"
+	claimedJKT = "jkt-claimed"
+)
+
+// callerSessionOptions are a caller's own attributes for a recovery session:
+// a CSRF token it may set, and a first factor, a second factor met at login
+// and a key binding the recovery's own attributes must win over.
+func callerSessionOptions() []session.CreateOption {
+	return []session.CreateOption{
+		session.WithCSRFToken(),
+		session.WithFirstFactor(factor.Password),
+		session.WithSecondFactorAtLogin(),
+		session.WithKeyBinding(session.KeyBinding{JKT: claimedJKT}),
+	}
+}
+
+// callerOptionsUnderRecoveryOwn asserts s, stored by a recovery given
+// callerSessionOptions and bound to provedJKT, holds the caller's CSRF token
+// and the recovery's own first factor, binding and recovery-pending state.
+func callerOptionsUnderRecoveryOwn(t *testing.T, s *session.Session) {
+	t.Helper()
+
+	assert.NotEmpty(t, s.CSRFToken, "the caller's CSRF token is written with the session")
+	assert.Equal(t, factor.Recovery, s.FirstFactor, "the recovery's first factor wins")
+	assert.Equal(t, session.KeyBinding{JKT: provedJKT}, s.KeyBinding, "the recovery's binding wins")
+	assert.Equal(t, session.MFARecoveryPending, s.MFA)
+	assert.False(t, s.MFAAtFirstFactor, "no second factor was met at the first")
+	assert.True(t, s.MFASatisfiedAt.IsZero(), "no second factor was met")
+}
+
+// otherUser is a user a caller's raw session option names in place of the one
+// the recovery is for.
+const otherUser = identity.UserID("u-other")
+
+// userBlindIssuer is a credential issuer that names the session and never
+// compares its user with the recovered one, as a consumer's may not.
+func userBlindIssuer(_ context.Context, s *session.Session, _ *identity.Details) (string, error) {
+	return issuedForPrefix + s.ID, nil
+}
+
+// rawUserOption is a hand-written create option, which session.CreateOption
+// being a plain func allows, setting the session's user to otherUser.
+func rawUserOption(s *session.Session) { s.UserID = otherUser }
+
+// rawConfinementOption is a hand-written create option presetting the
+// confinement marker to ten years past the recovery.
+func rawConfinementOption(s *session.Session) {
+	s.EnrolmentOriginDeadline = monday1000.Add(10 * 365 * 24 * time.Hour)
+}
+
+// userIsRecovered asserts s, stored by a recovery of anaID that was given
+// rawUserOption, belongs to anaID.
+func userIsRecovered(t *testing.T, s *session.Session) {
+	t.Helper()
+
+	assert.Equal(t, anaID, s.UserID, "the recovery session is the recovered user's, whatever an option set")
+}
+
+// deadlineIsOwn asserts s, stored by a recovery that was given
+// rawConfinementOption, records the deadline it held before it was confined,
+// the manager's own, and gives exactly that back when it is restored.
+func (e *completeEnv) deadlineIsOwn(t *testing.T, s *session.Session) {
+	t.Helper()
+
+	own, err := e.sessions.Prepare(anaID)
+	require.NoError(t, err)
+
+	assert.True(t, s.EnrolmentOriginDeadline.Equal(own.Session().AbsoluteExpiresAt),
+		"the marker is the deadline the session held before it was confined, not %s", s.EnrolmentOriginDeadline)
+
+	require.NoError(t, e.sessions.RestoreEnrolmentDeadlines(s))
+	assert.False(t, s.AbsoluteExpiresAt.After(own.Session().AbsoluteExpiresAt),
+		"restored, the session does not outlive the manager's maximum lifetime, %s", s.AbsoluteExpiresAt)
 }

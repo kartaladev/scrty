@@ -54,10 +54,25 @@
 //
 // # Client addresses
 //
-// A request is attributed to its transport peer, which is the one address a
-// client cannot choose for itself. WithForwardedClientIP opts into gin's own
-// proxy-aware address instead; read its documentation before enabling it, since
-// gin trusts every proxy until the consumer calls engine.SetTrustedProxies.
+// The adapter hands the chain the raw transport peer, the Host header, the
+// connection's TLS state and the headers as received. A request is therefore
+// attributed to its transport peer, the one address a client cannot choose for
+// itself, unless the chain's own httpsec.EnableTrustedProxies trusts a proxy
+// in front of it, which resolves the client, scheme and host the same way on
+// every adapter.
+//
+// gin's own proxy settings have no effect on the chain: engine.SetTrustedProxies,
+// c.ClientIP() and gin's forwarded-header options are never consulted. gin
+// trusts every proxy until configured, so its client address is one a client
+// can choose. A handler that wants the address the chain resolved reads
+// httpsec.ClientFromContext(c.Request.Context()).
+//
+// A transport that is not a TCP connection, such as an in-memory test
+// transport or a Unix socket, reports an unspecified peer: one that is not in
+// host and port form, and the chain attributes such a request to no address.
+// The chain's refusal of an empty, malformed or unspecified address applies to
+// it, and a proxy on a Unix socket cannot be trusted by EnableTrustedProxies,
+// which matches prefixes of addresses.
 //
 // # Per-endpoint authorization
 //

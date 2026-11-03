@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -90,6 +93,14 @@ type passwordlessInterceptor struct {
 	// cancelHeld cancels the user's held account recoveries at login, set at
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
+
+	// automation is the automation-challenge gate when it was selected for the
+	// begin, settled at assembly, and nil otherwise.
+	automation *challengeGate
+
+	// csrfToken is whether the sign-ins this first factor makes carry a CSRF
+	// token, decided when the chain is built (config.wireCSRF).
+	csrfToken bool
 
 	now func() time.Time
 }
@@ -363,6 +374,10 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 			return newConfigError("%s's passwordless login needs a token generator: give "+
 				"PasswordlessTokens, or enable form login, whose generator it then uses", option)
 		}
+
+		if err := checkBindingGenerator(c, option, "PasswordlessTokens", i.tokens); err != nil {
+			return err
+		}
 	}
 
 	i.issue = c.credentialIssuer(i.tokens)
@@ -462,6 +477,19 @@ func (i *passwordlessInterceptor) begin(ex *Exchange) error {
 		return err
 	}
 
+	// After the source limit and before the begin is recorded or anything is
+	// issued.
+	// The begin reads no identifier. Its guard counts every begin, so the
+	// source signal says whether the source has begun before in the window.
+	if err := i.automation.ask(ctx, ex.Request, challengeQuery{
+		flow:     ChallengeFlowPasswordlessBegin,
+		source:   i.guard,
+		clientIP: ex.Request.ClientIP(),
+		charge:   func() { recordSourceFailure(ctx, i.guard, src) },
+	}); err != nil {
+		return err
+	}
+
 	recordSourceFailure(ctx, i.guard, src)
 
 	raw := make([]byte, passwordlessBindingSize)
@@ -520,17 +548,29 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 
 	ctx := ex.Context()
 
+	// The proof is judged before the assertion, so a bad one leaves the
+	// ceremony's challenge unspent and is refused as a malformed response
+	// is, counted nowhere.
+	keyBinding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
+	if err != nil {
+		return err
+	}
+
 	res, err := i.manager.Authenticate(ctx, body, binding)
 	if errors.Is(err, passkey.ErrMalformedResponse) {
 		return refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
 	}
 
 	if err != nil {
+		emitPasskeyRefused(ctx, err)
+
 		return err
 	}
 
 	details, err := i.loadUser(ex, res.User)
 	if err != nil {
+		emitPasskeyRefused(ctx, err)
+
 		return err
 	}
 
@@ -551,12 +591,32 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
+		csrfToken:         i.csrfToken,
+		binding:           keyBinding,
 	}, in)
 	if err != nil {
 		return err
 	}
 
-	return i.respond(ex, LoginResult{Token: tok, Session: ex.Session})
+	return i.respond(ex, LoginResult{Token: tok, Session: ex.Session, TokenType: tokenTypeOf(ex.Session)})
+}
+
+// emitPasskeyRefused reports err, a passwordless login's failure, as
+// event.AuthnLoginFail when it is a refusal of the presented credential:
+// the uniform authenticate.ErrAuthenticationFailed, or a pending or suspended
+// credential, which only the key's holder is told. A credential store or user
+// loader that failed, a challenge store that failed (answered as the uniform
+// failure, with its cause kept beneath it), a consumer login check's own
+// error, and a request whose own context ended before the verdict report
+// nothing.
+func emitPasskeyRefused(ctx context.Context, err error) {
+	refusal := errors.Is(err, authenticate.ErrAuthenticationFailed) ||
+		errors.Is(err, passkey.ErrPending) || errors.Is(err, passkey.ErrSuspended)
+	if !refusal || depfault.Silent(ctx, err) {
+		return
+	}
+
+	emitEvent(ctx, userEvent(event.AuthnLoginFail, event.OutcomeFailure, "", factor.Passkey))
 }
 
 // loadUser loads the credential's user, refusing an unknown, disabled or

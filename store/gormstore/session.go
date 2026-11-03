@@ -185,9 +185,10 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 	return nil
 }
 
-// newRow returns sess as a row under a primary key minted from the store's id
-// generator, or the refusal of a session this store cannot hold without
-// altering it.
+// newRow returns sess as a row, its sign-in columns included, under a primary
+// key minted from the store's id generator, or the refusal of a session this
+// store cannot hold without altering it. Only the insert writes the sign-in
+// columns: Save omits them.
 func (s *sessionStore) newRow(op string, sess *session.Session) (sessionRow, error) {
 	row, err := sessionRecord(op, sess)
 	if err != nil {
@@ -196,6 +197,24 @@ func (s *sessionStore) newRow(op string, sess *session.Session) (sessionRow, err
 	if row.ID, err = s.c.ids.NewID(); err != nil {
 		return sessionRow{}, failed(op, err)
 	}
+	args, err := pgschema.SessionSignInArgs(sess)
+	if err != nil {
+		return sessionRow{}, failed(op, err)
+	}
+	// text is one of SessionSignInArgs's values as a nullable column: it
+	// returns nil (NULL) or a string.
+	text := func(v any) *string {
+		t, ok := v.(string)
+		if !ok {
+			return nil
+		}
+		return &t
+	}
+	row.ClientIP = text(args[0])
+	row.UserAgent = text(args[1])
+	row.BindingKind = text(args[2])
+	row.BindingThumbprint = text(args[3])
+	row.CSRFToken = text(args[4])
 
 	return row, nil
 }
@@ -214,16 +233,18 @@ func insertSession(q *gorm.DB, op string, row *sessionRow) (bool, error) {
 // savedColumnsOmitted are the columns a save never writes: the keys, the marker
 // (MFAAtFirstFactor, written on Create only), and the family, supersession
 // and presentation columns (written on Create, Supersede and MarkPresented
-// only).
+// only), and the sign-in columns (written on Create and Supersede only).
 var savedColumnsOmitted = []string{
 	"id", "id_digest", "mfa_at_first_factor",
 	"family_id", "family_created_at", "superseded_at", "accept_until", "successor_digest", "first_presented_at",
 	"retain_until", "authenticated_at",
+	"client_ip", "user_agent", "binding_kind", "binding_thumbprint", "csrf_token",
 }
 
 // Save replaces the stored session whole, and never inserts: one UPDATE of
 // every column but the keys, the marker (MFAAtFirstFactor, written on Create
-// only) and the family, supersession (retain_until included) and
+// only), the sign-in columns (ClientIP, UserAgent, KeyBinding and CSRFToken,
+// written on Create and Supersede only) and the family, supersession (retain_until included) and
 // presentation columns, whose zero rows affected is
 // session.ErrNotFound. A superseded session keeps both of its own
 // deadlines: the UPDATE writes each only while superseded_at is NULL.
@@ -303,8 +324,20 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, session.ErrExpired
 	}
 
+	sess, err := row.session()
+	if err != nil {
+		return nil, failed(op, err)
+	}
+	sess.ID = sessionID
+
+	return sess, nil
+}
+
+// session is the row as a session, with no identifier: the row does not
+// hold one. A column that will not decode is an error naming no stored value.
+func (r *sessionRow) session() (*session.Session, error) {
+	row := r
 	sess := session.Session{
-		ID:                      sessionID,
 		UserID:                  identity.UserID(row.UserID),
 		CreatedAt:               row.CreatedAt.UTC(),
 		LastAccessedAt:          row.LastAccessedAt.UTC(),
@@ -330,19 +363,36 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		RetainUntil:             fromNull(row.RetainUntil),
 		AuthenticatedAt:         row.AuthenticatedAt.UTC(),
 		RotatedStrictly:         row.RotatedStrictly,
+		FederatedACR:            row.FederatedACR,
+		ClientIP:                orNone(r.ClientIP),
+		UserAgent:               orNone(r.UserAgent),
+		CSRFToken:               orNone(r.CSRFToken),
 	}
 	if row.EnrolmentGeneration != nil {
 		sess.EnrolmentGeneration = *row.EnrolmentGeneration
 	}
+
+	var err error
 	if sess.FederatedAMR, err = storekit.DecodeAMR([]byte(row.FederatedAMR)); err != nil {
-		return nil, failed(op, err)
+		return nil, err
 	}
-	sess.FederatedACR = row.FederatedACR
 	if sess.Data, err = storekit.DecodeSessionData([]byte(row.Data)); err != nil {
-		return nil, failed(op, err)
+		return nil, err
+	}
+	if sess.KeyBinding, err = pgschema.ParseSessionBinding(orNone(r.BindingKind), orNone(r.BindingThumbprint)); err != nil {
+		return nil, err
 	}
 
 	return &sess, nil
+}
+
+// orNone is a nullable text column's value, empty for NULL.
+func orNone(v *string) string {
+	if v == nil {
+		return ""
+	}
+
+	return *v
 }
 
 // Delete removes the session with this identifier; one not there is not an
@@ -449,16 +499,55 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	return int(n), nil
 }
 
-// stale reports whether row is past what Load returns at now: a superseded
+// stale reports whether r is past what Load returns at now: a superseded
 // row with a retention deadline once that deadline is not after now, any
 // other once either of its own deadlines is not. It is the condition
 // SessionDeleteExpired deletes by, judged in Go.
-func (row *sessionRow) stale(now time.Time) bool {
-	if row.SupersededAt != nil && row.RetainUntil != nil {
-		return !now.Before(*row.RetainUntil)
+func (r *sessionRow) stale(now time.Time) bool {
+	if r.SupersededAt != nil && r.RetainUntil != nil {
+		return !now.Before(*r.RetainUntil)
 	}
 
-	return !now.Before(row.IdleExpiresAt) || !now.Before(row.AbsoluteExpiresAt)
+	return !now.Before(r.IdleExpiresAt) || !now.Before(r.AbsoluteExpiresAt)
+}
+
+// ListByUser returns user's sessions that are not superseded and are before
+// both of their own deadlines at now, the caller's time, in one query over
+// the sessions_user index, on SessionListByUser's condition. The reference is
+// matched exactly; one PostgreSQL text cannot hold matches nothing. A listed
+// session carries no identifier, which is never stored, and neither sealed
+// token: the listing reads neither column. A row that will not decode fails
+// the whole call.
+func (s *sessionStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	const op = "list user's sessions"
+
+	if !storekit.Storable(string(user)) {
+		return []*session.Session{}, nil
+	}
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return nil, failed(op, err)
+	}
+	at := storekit.Time(now)
+	var rows []sessionRow
+	err = q.Omit("external_id_token", "csrf_token").
+		Where("user_id = ? AND superseded_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?",
+			string(user), at, at).
+		Find(&rows).Error
+	if err != nil {
+		return nil, failed(op, err)
+	}
+
+	listed := make([]*session.Session, 0, len(rows))
+	for i := range rows {
+		sess, err := rows[i].session()
+		if err != nil {
+			return nil, failed(op, err)
+		}
+		listed = append(listed, sess)
+	}
+
+	return listed, nil
 }
 
 // DeleteExpired removes every session Load would no longer return by the

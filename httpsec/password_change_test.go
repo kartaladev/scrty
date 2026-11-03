@@ -268,7 +268,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 			},
 		},
 		{
-			name: "a reused password is refused through the reuse guard, and the debt survives",
+			name: "a reused password is refused through the policy's reuse rule, and the debt survives",
 			change: func(t *testing.T, ran *bool) httpsec.ChangePasswordFunc {
 				t.Helper()
 
@@ -280,7 +280,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				})
 				history := newPasswordReuseHistory()
 
-				// The candidate equals the current password, so a depth-1 guard —
+				// The candidate equals the current password, so a depth-1 reuse rule —
 				// which compares only against user.Password — refuses it without
 				// any history seeded.
 				return func(ex *httpsec.Exchange) error {
@@ -291,7 +291,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 						return err
 					}
 
-					guard, err := password.NewReuseGuard(history, enc, 1)
+					passwordPolicy, err := password.NewPolicy(password.WithEncoder(enc), password.NoReuse(history, 1))
 					if err != nil {
 						return err
 					}
@@ -301,7 +301,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 						return err
 					}
 
-					return guard.Change(ex.Context(), details, ex.Request.FormValue("password"), write)
+					return passwordPolicy.Change(ex.Context(), details, ex.Request.FormValue("password"), write)
 				}
 			},
 			wire: resolvingSession,
@@ -322,7 +322,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 			},
 		},
 		{
-			name: "an endpoint with no reuse guard accepts the current password and clears the marker",
+			name: "an endpoint with no reuse rule accepts the current password and clears the marker",
 			change: func(t *testing.T, ran *bool) httpsec.ChangePasswordFunc {
 				t.Helper()
 

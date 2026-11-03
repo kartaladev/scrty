@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto/x509"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -73,7 +74,19 @@ func (r *miniRequest) Path() string {
 	return path
 }
 
+// EscapedPath is the path as the target spells it, which is also what Path
+// returns: this framework never decodes it.
+func (r *miniRequest) EscapedPath() string { return r.Path() }
+
 func (r *miniRequest) Header(name string) string { return r.ex.header[http.CanonicalHeaderKey(name)] }
+
+func (r *miniRequest) HeaderValues(name string) []string {
+	if v, ok := r.ex.header[http.CanonicalHeaderKey(name)]; ok {
+		return []string{v}
+	}
+
+	return nil
+}
 
 func (r *miniRequest) Query(name string) string {
 	if r.ex.query == nil {
@@ -130,6 +143,13 @@ func (r *miniRequest) Body(limit int64) ([]byte, error) {
 
 func (r *miniRequest) ClientIP() string { return r.ex.peer }
 
+func (r *miniRequest) Host() string { return r.ex.header["Host"] }
+
+func (r *miniRequest) Secure() bool { return false }
+
+// ClientCertificate is nil: this framework serves plain HTTP alone.
+func (r *miniRequest) ClientCertificate() *x509.Certificate { return nil }
+
 // miniWriter writes the consumer's framework through the library's port.
 type miniWriter struct{ ex *miniExchange }
 
@@ -139,6 +159,14 @@ func (w *miniWriter) SetHeader(name, value string) {
 	}
 
 	w.ex.outHeader.Set(name, value)
+}
+
+func (w *miniWriter) AddHeader(name, value string) {
+	if w.ex.outHeader == nil {
+		w.ex.outHeader = http.Header{}
+	}
+
+	w.ex.outHeader.Add(name, value)
 }
 
 func (w *miniWriter) SetCookie(c *httpsec.Cookie) { w.ex.cookies = append(w.ex.cookies, c) }

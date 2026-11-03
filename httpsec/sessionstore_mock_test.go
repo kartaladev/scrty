@@ -392,6 +392,45 @@ func (c *MockStoreDeleteFamilyCall) DoAndReturn(f func(context.Context, id.ID) (
 	return c
 }
 
+// ListByUser mocks base method.
+func (m *MockStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListByUser", ctx, user, now)
+	ret0, _ := ret[0].([]*session.Session)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListByUser indicates an expected call of ListByUser.
+func (mr *MockStoreMockRecorder) ListByUser(ctx, user, now any) *MockStoreListByUserCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByUser", reflect.TypeOf((*MockStore)(nil).ListByUser), ctx, user, now)
+	return &MockStoreListByUserCall{Call: call}
+}
+
+// MockStoreListByUserCall wrap *gomock.Call
+type MockStoreListByUserCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreListByUserCall) Return(arg0 []*session.Session, arg1 error) *MockStoreListByUserCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreListByUserCall) Do(f func(context.Context, identity.UserID, time.Time) ([]*session.Session, error)) *MockStoreListByUserCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreListByUserCall) DoAndReturn(f func(context.Context, identity.UserID, time.Time) ([]*session.Session, error)) *MockStoreListByUserCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Load mocks base method.
 func (m *MockStore) Load(ctx context.Context, arg1 string) (*session.Session, error) {
 	m.ctrl.T.Helper()

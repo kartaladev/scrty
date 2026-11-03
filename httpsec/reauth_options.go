@@ -284,7 +284,7 @@ func (i *reauthInterceptor) settle(c *config, option string) error {
 			"the response has to hand back one naming the rotated session", option)
 	}
 
-	return nil
+	return checkBindingGenerator(c, option, "WithReauthenticationTokens", i.tokens)
 }
 
 // buildChallenges builds one re-proof challenge manager per challenge method
@@ -689,6 +689,31 @@ func WithReauthenticationChallengeStore(s onetime.Store) ReauthenticationOption 
 func RequireSecondFactorForReauthentication() ReauthenticationOption {
 	return func(i *reauthInterceptor) error {
 		i.secondFactorOnly = true
+
+		return nil
+	}
+}
+
+// WithReauthenticationRehash upgrades an outdated password hash when a password
+// re-proof verifies the password.
+//
+// Default: none, and without a write nothing is encoded or stored; a form
+// login's own write (WithLoginRehash) does not extend to re-proofs. With fn, a
+// re-proof whose password verified and which was not refused afterwards, one
+// challenged for a second factor included, asks the current encoder whether the
+// stored hash needs upgrading (password.Upgrader). When it does, the password
+// is encoded again with that encoder, at the cost of one more key derivation,
+// and fn receives the user, the hash it replaces and the new hash. fn's error
+// is logged and never changes the outcome; see [RehashFunc] for writing it
+// safely. A nil fn is refused.
+func WithReauthenticationRehash(fn RehashFunc) ReauthenticationOption {
+	return func(i *reauthInterceptor) error {
+		if fn == nil {
+			return newConfigError("WithReauthenticationRehash was given no write; omit the option " +
+				"to rehash nothing")
+		}
+
+		i.rehash = fn
 
 		return nil
 	}

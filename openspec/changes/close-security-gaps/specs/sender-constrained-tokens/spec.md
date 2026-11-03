@@ -5,15 +5,31 @@ Binds the tokens scrty issues to a key the legitimate client holds, a DPoP key o
 ## ADDED Requirements
 
 ### Requirement: DPoP is one chain-wide feature, off until enabled
-DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bearer modes, signed tokens and session references, and to every issuing endpoint. Without it, the `DPoP` authorization scheme SHALL be passed through as any unknown scheme, and no endpoint SHALL bind a token. Enabling DPoP without either bearer mode, or more than once, SHALL fail construction.
+DPoP SHALL be enabled once for the whole chain, and then SHALL apply to both bearer modes, signed tokens and session references, and to every issuing endpoint. Without it, the `DPoP` authorization scheme SHALL be passed through as any unknown scheme, and no endpoint SHALL bind a token. Enabling DPoP SHALL fail construction unless the chain has at least one enabled feature that verifies bound credentials. The signed-bearer and session-reference modes are such features. A consumer's own handler SHALL NOT count as one. Enabling DPoP more than once SHALL fail construction. Enabling DPoP SHALL also fail construction unless the host the `htu` check is judged against is declared, by an explicit public base URL or by a trusted-proxy forwarded-host allowlist, because otherwise it would be the request's `Host` header, which the client chooses; the error SHALL name both declarations.
 
 #### Scenario: Not enabled
 - **WHEN** DPoP is not enabled and a request carries `Authorization: DPoP <token>` with a proof
 - **THEN** no bearer interceptor authenticates it, and a protected route refuses it as unauthenticated
 
-#### Scenario: Enabled without a bearer
-- **WHEN** DPoP is enabled on a chain with neither bearer mode
+#### Scenario: Enabled with nothing that verifies a binding
+- **WHEN** DPoP is enabled on a chain with neither bearer mode, and no other feature that verifies bound credentials
 - **THEN** building the chain fails with a configuration error naming DPoP
+
+#### Scenario: Host not declared
+- **WHEN** DPoP is enabled with a bearer mode, no public base URL and no trusted-proxy forwarded-host allowlist
+- **THEN** building the chain fails with a configuration error naming the public base URL and the forwarded-host allowlist
+
+#### Scenario: Host off the allowlist
+- **WHEN** DPoP is enabled with no public base URL and a trusted-proxy forwarded-host allowlist naming `app.example.com`, and a request that carries no allowlisted forwarded host arrives with `Host: evil.example` and a proof whose `htu` is `http://evil.example/api/orders`
+- **THEN** the proof is refused as invalid and the handler does not run
+
+#### Scenario: Proof for an undeclared host
+- **WHEN** DPoP is enabled with the public base URL `https://app.example.com`, and a proof whose `htu` is `https://evil.example/api/orders` is sent with `Host: evil.example`
+- **THEN** the request is refused with the invalid-DPoP-proof error
+
+#### Scenario: Enabled with one bearer mode
+- **WHEN** DPoP is enabled, with a public base URL, on a chain with only the session-reference mode
+- **THEN** the chain is built
 
 ### Requirement: DPoP is accepted beside Bearer once enabled
 With DPoP enabled, both bearer modes SHALL accept the `DPoP` authorization scheme, matched without regard to case, together with exactly one `DPoP` request header carrying a proof. Plain `Bearer` tokens SHALL still be accepted unless the consumer requires DPoP or the token is bound. A `DPoP` header longer than a bound, 8 KiB by default, SHALL be refused without being parsed.
@@ -87,15 +103,27 @@ The `jti` SHALL be recorded only for a proof that passed every other check, so a
 - **THEN** the request is refused with the invalid-DPoP-proof error
 
 #### Scenario: Behind a trusted proxy
-- **WHEN** a trusted proxy forwards scheme `https` and host `app.example.com`, the app receives `GET http://10.20.1.5:8080/api/orders`, and the proof's `htu` is `https://app.example.com/api/orders`
+- **WHEN** a trusted proxy whose forwarded-host allowlist names `app.example.com` forwards scheme `https` and host `app.example.com`, the app receives `GET http://10.20.1.5:8080/api/orders`, and the proof's `htu` is `https://app.example.com/api/orders`
 - **THEN** the `htu` check passes
 
 ### Requirement: Every issuing endpoint binds the token when the request carries a proof
-When a request to an endpoint that issues a credential carries a valid proof without `ath`, the issued access token SHALL carry `cnf.jkt`, the base64url JWK SHA-256 thumbprint of the proof's key, and the session SHALL be built with the binding before its credential is issued. The endpoints are login completion, second-factor verification, passkey login, magic-link redemption, OIDC handoff redemption, recovery completion, re-authentication and session renewal. The issued result SHALL tell the consumer's responder that the token type is `DPoP`, so it can answer `token_type` accordingly.
+When a request to an endpoint that issues a credential carries a valid proof, with `ath` matching the access token the request presents (the credential the chain's bearer authenticated) or without `ath` when it presents none, the issued access token SHALL carry `cnf.jkt`, the base64url JWK SHA-256 thumbprint of the proof's key, and the session SHALL be built with the binding before its credential is issued. The endpoints that bind are login completion, passkey login, magic-link redemption, OIDC handoff redemption, recovery completion and re-authentication. Second-factor verification and session renewal continue a sign-in already created, so they carry its binding and add none. Every issuing endpoint, those two included, SHALL verify a proof it is given before anything is spent. The issued result SHALL tell the consumer's responder that the token type is `DPoP`, so it can answer `token_type` accordingly.
 
 The proof SHALL be verified in the endpoint's checks, before anything is spent or stored: a refused proof SHALL leave a magic link, a handoff code, a pending challenge's attempts and recovery proofs unspent, and SHALL be charged as the endpoint charges a malformed request, not as a failed credential.
 
 A binding SHALL be set when a sign-in is created and SHALL carry over to every successor through rotation and renewal. Renewal SHALL NOT add, change or remove a binding. Re-authentication of an unbound session MAY bind its successor to the proof's key; re-authentication of a bound session SHALL keep the binding.
+
+#### Scenario: Proof beside a presented token at a continuing endpoint
+- **WHEN** an unbound session presented as `Authorization: Bearer <token>` renews, verifies a second factor or re-authenticates with a proof whose `ath` is the hash of `<token>`
+- **THEN** the proof is accepted
+
+#### Scenario: Proof without ath beside a presented token
+- **WHEN** an unbound session presented as `Authorization: Bearer <token>` renews, verifies a second factor or re-authenticates with an otherwise valid proof that carries no `ath`
+- **THEN** the request is refused with the invalid-DPoP-proof error, and nothing is rotated or issued
+
+#### Scenario: Second factor carries the sign-in's binding
+- **WHEN** a sign-in created without a proof completes its second factor with a request carrying a valid proof whose `ath` matches the access token the request presents (or no `ath`, when it presents none)
+- **THEN** the issued token carries no `cnf` and the session stays unbound, because the binding is set when the sign-in is created
 
 #### Scenario: Bound login
 - **WHEN** a client posts its credentials to `/login` with a valid proof
@@ -160,7 +188,7 @@ When the consumer requires DPoP, an unbound token SHALL be refused, and every is
 - **THEN** the request is refused with the invalid-DPoP-proof error
 
 ### Requirement: Replay protection is replaceable and fails closed
-Seen `jti` values SHALL be kept in an in-memory store by default, for the proof lifetime, keyed by a digest of the `jti` and the proof's key thumbprint, and the consumer SHALL be able to supply a shared store. Recording a `jti` SHALL be one atomic insert-if-absent. A store that cannot record or check a `jti` SHALL fail the request as a dependency failure, with fixed library text, not charged to any throttle. When the request's own context ends while the store answers, the request SHALL fail with an error matching the context's error, and SHALL NOT be logged as a dependency failure.
+Seen `jti` values SHALL be kept in an in-memory store by default, for as long as a proof could still be accepted (its issue time plus twice the proof lifetime, covering the allowed clock skew), keyed by a digest of the `jti` and the proof's key thumbprint, and the consumer SHALL be able to supply a shared store. Recording a `jti` SHALL be one atomic insert-if-absent. A store that cannot record or check a `jti` SHALL fail the request as a dependency failure, with fixed library text, not charged to any throttle. When the request's own context ends while the store answers, the request SHALL fail with an error matching the context's error, and SHALL NOT be logged as a dependency failure.
 
 #### Scenario: Store failure
 - **WHEN** the replay store returns an error while checking a proof
@@ -175,7 +203,7 @@ Seen `jti` values SHALL be kept in an in-memory store by default, for the proof 
 - **THEN** the request fails with an error matching the cancellation, and nothing is recorded at ERROR
 
 ### Requirement: Server nonces are opt-in
-By default the server SHALL issue no DPoP nonces. When the consumer enables them, a proof without a current server nonce SHALL be refused with 401, `WWW-Authenticate: DPoP error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header; responses SHALL carry a fresh `DPoP-Nonce` when the current one is about to expire. Nonces SHALL be verifiable by every replica that shares the chain's key material, without a shared store.
+By default the server SHALL issue no DPoP nonces. When the consumer enables them, a proof without a nonce the server still accepts SHALL be refused with 401, `WWW-Authenticate: DPoP error="use_dpop_nonce"`, and the replica's current `DPoP-Nonce`. Responses to an accepted proof SHALL carry the next `DPoP-Nonce` when the presented one is past half its lifetime; a proof refused for any other reason SHALL NOT be given a new nonce. Every response that carries `DPoP-Nonce` SHALL also carry `Cache-Control: no-store`. A replica SHALL hand the same current nonce to every client until half its lifetime has passed, so the rate of sealing does not depend on traffic. Nonces SHALL be verifiable by every replica that shares the nonce key, without a shared store.
 
 #### Scenario: Nonce required
 - **WHEN** nonces are enabled and a proof carries no nonce
@@ -183,7 +211,15 @@ By default the server SHALL issue no DPoP nonces. When the consumer enables them
 
 #### Scenario: Expired nonce
 - **WHEN** nonces are enabled and a proof carries a nonce the server issued long enough ago to have expired
-- **THEN** the response is 401 with `error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header
+- **THEN** the response is 401 with `error="use_dpop_nonce"`, a `DPoP-Nonce` header carrying a nonce the server accepts, and `Cache-Control: no-store`
+
+#### Scenario: Refused replay gets no new nonce
+- **WHEN** nonces are enabled and a proof whose nonce is past half its lifetime is sent a second time
+- **THEN** the replay is refused with the invalid-DPoP-proof error, carries no `DPoP-Nonce`, and nothing is sealed for it
+
+#### Scenario: One nonce per replica
+- **WHEN** nonces are enabled and many clients ask for one within half a nonce lifetime
+- **THEN** every client is handed the same nonce, and the replica seals once
 
 ### Requirement: DPoP refusals tell the client which scheme to use
 A refusal for a missing or invalid proof SHALL carry `WWW-Authenticate: DPoP` with an `error` parameter, `invalid_dpop_proof` or `use_dpop_nonce`, and the accepted algorithms, and SHALL carry no detail about which check failed. When DPoP is not required, a refusal for a missing token SHALL carry both the `DPoP` and the `Bearer` challenge.
@@ -193,7 +229,7 @@ A refusal for a missing or invalid proof SHALL carry `WWW-Authenticate: DPoP` wi
 - **THEN** the response is 401 with `WWW-Authenticate: DPoP error="invalid_dpop_proof", algs="ES256"`
 
 #### Scenario: No token at all
-- **WHEN** DPoP is enabled but not required, and a request to a protected route carries no `Authorization` header
+- **WHEN** DPoP is enabled but not required, and a request to a protected route carries no `Authorization` header, whether the route is protected by the chain's authorization rules or by a per-route guard
 - **THEN** the 401 response carries a `DPoP` challenge and a `Bearer` challenge
 
 ### Requirement: Tokens can be bound to a TLS client certificate

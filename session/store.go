@@ -217,6 +217,13 @@ type Store interface {
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
 	// whatever the session handed to it says, so no later save can set or
 	// clear the marker. A SQL store leaves its column out of the UPDATE.
+	//
+	// The sign-in state fixed when the sign-in was built (KeyBinding,
+	// CSRFToken, ClientIP and UserAgent) is written by Create and by a
+	// supersession's successor only: Save keeps the stored values whatever the
+	// session handed to it says, so a save can neither unbind a session nor
+	// change its token or metadata. A SQL store leaves their columns out of
+	// the UPDATE.
 	Save(ctx context.Context, s *Session) error
 
 	// Load returns the session with this identifier, ErrNotFound when
@@ -407,6 +414,30 @@ type Store interface {
 	// superseded session is excluded too, whether or not its grace window has
 	// ended: the sign-in it belonged to is counted once, by its current head.
 	CountActiveByUser(ctx context.Context, user identity.UserID) (int, error)
+
+	// ListByUser returns this user's live sessions that are not superseded:
+	// one per family that still has a live head, judged at now, the time the
+	// caller passes, as CountActiveByUser judges liveness. A session past either
+	// of its own deadlines at now is left out, and so is every superseded
+	// session, whether or not its grace window has ended: a sign-in is listed
+	// once, by its current head. The reference is matched exactly as the
+	// consumer supplied it, so "Alice" and "alice" are two users, and no other
+	// user's session is ever returned. No match is an empty result, not an
+	// error.
+	//
+	// The order is unspecified. The sessions returned belong to the caller,
+	// as Load's do. A durable store answers it with one query over its user
+	// index, never one per family.
+	//
+	// A listing needs no sealed field, so a store, and the sealing decorator
+	// over it, lists sign-ins without opening the sealed ID token or CSRF
+	// token. A store that cannot read a row's listed fields fails the whole
+	// call rather than skipping the row, and the manager then answers
+	// ErrListUnavailable.
+	//
+	// A listed session's ID may be empty: a store that keeps only a digest of
+	// the identifier cannot return it, and a sign-in is named by its FamilyID.
+	ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error)
 
 	// DeleteExpired removes every expired session and reports how many went:
 	// one that is not superseded once either of its deadlines has passed, and

@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -61,6 +62,12 @@ const (
 // credential's counter, flags and last use are left as they were. A consumer
 // can use it to refuse device-bound passkeys for some users only. A nil check
 // is a configuration error.
+//
+// Security events report a refusal only when its error says it is one: wrap
+// authenticate.ErrAuthenticationFailed (at a passwordless login) or
+// mfa.ErrAuthenticatorRefused (as a second factor, which account recovery
+// spends) for the refusal to be reported; any other error is taken for a
+// failed dependency and reported as nothing.
 func WithLoginCheck(fn func(ctx context.Context, f LoginFacts) error) Option {
 	return func(m *Passkeys) {
 		m.loginCheck = fn
@@ -235,7 +242,10 @@ func (m *Passkeys) Authenticate(ctx context.Context, body []byte, binding string
 
 // spendLogin checks and spends the passwordless challenge presented, as
 // clientDataJSON carries it, against binding, and returns its token string.
-// Every refusal is authenticate.ErrAuthenticationFailed.
+// Every refusal is authenticate.ErrAuthenticationFailed, a challenge store
+// that could not answer included. That one keeps the store's failure beneath
+// the refusal, so the status and text are the refusal's own and the HTTP
+// layer reports no failed login for it.
 func (m *Passkeys) spendLogin(ctx context.Context, presented, binding string) (string, error) {
 	if binding == "" {
 		return "", m.refused(ctx, "binding", id.Nil)
@@ -246,13 +256,15 @@ func (m *Passkeys) spendLogin(ctx context.Context, presented, binding string) (s
 		return "", m.refused(ctx, "challenge", id.Nil)
 	}
 
-	checked, err := m.login.Check(ctx, challenge, binding)
+	wctx, watch := depfault.Watching(ctx)
+
+	checked, err := m.login.Check(wctx, challenge, binding)
 	if err != nil {
-		return "", m.refused(ctx, "challenge", id.Nil)
+		return "", m.refusedByStore(ctx, watch)
 	}
 
-	if err := m.login.Consume(ctx, checked); err != nil {
-		return "", m.refused(ctx, "challenge", id.Nil)
+	if err := m.login.Consume(wctx, checked); err != nil {
+		return "", m.refusedByStore(ctx, watch)
 	}
 
 	if checked.Token().Subject != loginSubject {
@@ -260,6 +272,19 @@ func (m *Passkeys) spendLogin(ctx context.Context, presented, binding string) (s
 	}
 
 	return challenge, nil
+}
+
+// refusedByStore is the refusal of a challenge the one-time manager refused.
+// When watch saw the challenge store fail, the refusal answers that failure
+// instead: the same error and text, with the failure kept beneath it (see
+// depfault.Refusal).
+func (m *Passkeys) refusedByStore(ctx context.Context, watch *depfault.Watch) error {
+	err := m.refused(ctx, "challenge", id.Nil)
+	if cause := watch.Failure(); cause != nil {
+		return depfault.Refusal(cause, err)
+	}
+
+	return err
 }
 
 // matchHandle requires handle to be the one mapped to c's user. A missing,

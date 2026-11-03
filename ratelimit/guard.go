@@ -41,6 +41,7 @@ const keySeparator = ":"
 const (
 	sampleThrottled       = "throttled"
 	sampleLimiterFailure  = "limiter"
+	sampleUnreported      = "unreported"
 	sampleLimiterFull     = "full"
 	sampleUnattributable  = "unattributable"
 	msgThrottled          = "ratelimit: refusing an attempt from a source over its limit"
@@ -54,6 +55,9 @@ const (
 	msgNotRecorded        = "ratelimit: a failed attempt was not counted"
 	msgNoSource           = "ratelimit: not recording a failure for a source that did not come from Check"
 	msgSuppressed         = "ratelimit: refusal records suppressed"
+	msgUnreported         = "ratelimit: the limiter could not say whether a source has recent failures; " +
+		"reporting that it has"
+	msgUnreportedEnded = "ratelimit: the context ended before the limiter said whether a source has recent failures"
 )
 
 // SourceGuard checks a source before a guarded flow runs and counts the flow's
@@ -488,6 +492,113 @@ func (g *SourceGuard) reportNotRecorded(ctx context.Context, err error, s Source
 	}
 	g.sampled(ctx, slog.LevelWarn, msgNotRecorded,
 		sampleKey(sampleLimiterFailure, g.flow, ""), append(attrs, diag.Failure("limiter", err)...)...)
+}
+
+// HasRecentFailures reports whether the source clientAddr names has at least
+// one failure counted in the guard's limiter, under the key Check reads,
+// however far below its limit. It records nothing and refuses nothing.
+//
+// It answers true whenever it cannot say the source is clean: an address that
+// cannot be attributed to one source, a limiter that does not implement
+// RecentFailureReporter, and a limiter that returns an error. A caller using
+// the answer to decide whether to ask a source for more proof then asks. A
+// limiter's error is recorded as a check's is: at debug when the caller's own
+// context ended, and otherwise at warning level, sampled per flow, by a fixed
+// reason and the error's Go type, never its text.
+//
+// The IPv6 aggregate is not asked: the answer is about the source, not about
+// the allocation it shares with others.
+func (g *SourceGuard) HasRecentFailures(ctx context.Context, clientAddr string) bool {
+	addr, _, err := g.keyer.keys(clientAddr, 0)
+	if err != nil {
+		return true
+	}
+
+	r, ok := g.limiter.(RecentFailureReporter)
+	if !ok {
+		return true
+	}
+
+	src := Source{key: g.flow + keySeparator + addr, addr: addr}
+
+	has, err := r.HasRecentFailures(ctx, src.key)
+	if err != nil {
+		g.reportUnreported(ctx, src, err)
+
+		return true
+	}
+
+	return has
+}
+
+// HasRecentAggregateFailures reports whether the IPv6 aggregate holding the
+// source clientAddr names has at least one failure counted in the aggregate's
+// limiter (WithSourceGuardIPv6Aggregate), under the key Check reads, however
+// far below its limit. It records nothing and refuses nothing.
+//
+// It answers false for a guard with no aggregate and for an IPv4 source,
+// IPv4-mapped IPv6 addresses included, since neither has an aggregate. Beyond
+// those, it answers true whenever it cannot say the aggregate is clean, as
+// HasRecentFailures does for the source: an address that cannot be attributed
+// to one source, an aggregate limiter that does not implement
+// RecentFailureReporter, and one that returns an error, recorded as
+// HasRecentFailures records it.
+//
+// The answer is about the allocation the source shares with others, and says
+// nothing about the source itself, which HasRecentFailures answers.
+func (g *SourceGuard) HasRecentAggregateFailures(ctx context.Context, clientAddr string) bool {
+	if !g.aggregateSet {
+		return false
+	}
+
+	addr, aggregate, err := g.keyer.keys(clientAddr, g.aggregateBits)
+	if err != nil {
+		return true
+	}
+
+	if aggregate == "" {
+		return false
+	}
+
+	r, ok := g.aggregate.(RecentFailureReporter)
+	if !ok {
+		return true
+	}
+
+	src := Source{
+		key: g.flow + keySeparator + addr, addr: addr,
+		aggregateKey: g.flow + keySeparator + aggregate, aggregateAddr: aggregate,
+	}
+
+	has, err := r.HasRecentFailures(ctx, src.aggregateKey)
+	if err != nil {
+		g.reportUnreported(ctx, src, err)
+
+		return true
+	}
+
+	return has
+}
+
+// reportUnreported writes about a limiter that could not say whether a source
+// has recent failures, as reportUnconsultableLimiter writes about a check: a
+// hang-up at debug, anything else sampled per flow at warning level. A Source
+// carrying an aggregate address is the aggregate's limiter, and the record
+// names the aggregate too.
+func (g *SourceGuard) reportUnreported(ctx context.Context, s Source, err error) {
+	attrs := []slog.Attr{slog.String("source", s.addr)}
+	if s.aggregateAddr != "" {
+		attrs = append(attrs, slog.String("aggregate", s.aggregateAddr))
+	}
+	attrs = append(attrs, diag.Failure("limiter", err)...)
+
+	if contextCaused(ctx, err) {
+		g.logger.LogAttrs(ctx, slog.LevelDebug, msgUnreportedEnded, append(attrs, slog.String("flow", g.flow))...)
+
+		return
+	}
+
+	g.sampled(ctx, slog.LevelWarn, msgUnreported, sampleKey(sampleUnreported, g.flow, ""), attrs...)
 }
 
 // Flush reports every suppressed refusal count the guard is still holding, for

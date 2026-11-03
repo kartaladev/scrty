@@ -357,6 +357,13 @@ type ChainSpec struct {
 	// publishes UpstreamValue under UpstreamKey, so a scenario can prove the
 	// chain derived from the incoming context rather than replacing it.
 	Upstream bool
+
+	// FrameworkTrustsProxies asks the adapter to switch on its framework's own
+	// proxy trust for every peer, reading X-Forwarded-For (gin's trusted
+	// proxies, fiber's TrustProxy and ProxyHeader), so a scenario can prove
+	// those settings have no effect on the chain. An adapter whose framework
+	// has no such setting, such as net/http, ignores it.
+	FrameworkTrustsProxies bool
 }
 
 // NewChain builds the scenario's chain, plus whatever options the adapter adds
@@ -410,6 +417,15 @@ type Result struct {
 	// fiber's handler was given.
 	Refusal error
 
+	// RouteHeader is the request header a route behind the chain read from
+	// its framework's own request, and nil when no route ran.
+	RouteHeader http.Header
+
+	// Client is what a route behind the chain read with
+	// httpsec.ClientFromContext, and ClientKnown whether it was there.
+	Client      httpsec.Client
+	ClientKnown bool
+
 	// Principal, Session and Upstream are what a route behind the chain read
 	// through its framework's own request context.
 	Principal      *identity.Principal
@@ -431,6 +447,7 @@ type Result struct {
 // published rather than in how the suite looked.
 func ReadContext(ctx context.Context, res *Result) {
 	res.Principal, res.PrincipalKnown = identity.PrincipalFromContext(ctx)
+	res.Client, res.ClientKnown = httpsec.ClientFromContext(ctx)
 
 	if s, ok := httpsec.SessionFromContext(ctx); ok {
 		res.SessionID, res.SessionKnown = s.ID, true
@@ -489,6 +506,9 @@ type Adapter interface {
 // rather than on whichever one its author had in mind. The list is the one the
 // framework adapters specification gives, plus the two this change earned — a
 // credential in the query string, and a key set body nothing appended to.
+//
+// It leaves out ChallengeScenarios, which each adapter's suite runs on its own
+// by name (TestChallenge*), so that no row runs twice.
 func Scenarios() []Scenario {
 	return append([]Scenario{
 		loginSucceeds(),
@@ -507,7 +527,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

@@ -1582,6 +1582,9 @@ type e2eDeployment struct {
 	pathOpts  []policy.EnrolmentPathOption
 	enrolOpts []httpsec.EnrolmentOption
 
+	// extra are further chain options, applied last.
+	extra []httpsec.Option
+
 	chain *httpsec.Chain
 }
 
@@ -1686,7 +1689,7 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 		authenticate.WithPasswordEncoder(e2eEncoder(t)))
 	require.NoError(t, err)
 
-	d.chain, err = httpsec.New(
+	d.chain, err = httpsec.New(append([]httpsec.Option{
 		httpsec.WithPolicyEngine(engineOf(t, challenge, requirement)),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: authn,
@@ -1702,7 +1705,7 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 		httpsec.EnableMFA([]mfa.Method{d.totp}, httpsec.WithMFATokens(d.tokens)),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: d.users, Sender: d.sender}, d.enrolOpts...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
-	)
+	}, d.extra...)...)
 	require.NoError(t, err)
 
 	return d

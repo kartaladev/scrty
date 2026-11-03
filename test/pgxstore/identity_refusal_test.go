@@ -151,6 +151,57 @@ func TestIdentityStore_Refusals(t *testing.T) {
 		}
 	})
 
+	t.Run("password condition named where it means nothing", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+		_, err := s.Provision(ctx, "condition-target", identity.WithUserPassword([]byte("H1")))
+		require.NoError(t, err)
+
+		type testCase struct {
+			name   string
+			call   func(ctx context.Context) error
+			assert func(t *testing.T, err error)
+		}
+
+		cases := []testCase{
+			{
+				name: "a provision cannot be conditional on a stored hash",
+				call: func(ctx context.Context) error {
+					_, err := s.Provision(ctx, "condition-new",
+						identity.WithUserPasswordIf([]byte("H1")), identity.WithUserPassword([]byte("H2")))
+					return err
+				},
+				assert: func(t *testing.T, err error) {
+					require.Error(t, err)
+					assert.NotErrorIs(t, err, identity.ErrNotUpdated)
+					assert.Zero(t, userRowCount(t.Context(), t, db.Pool, "condition-new"))
+				},
+			},
+			{
+				name: "an update conditional on the hash must name a new password",
+				call: func(ctx context.Context) error {
+					_, err := s.Update(ctx, "condition-target",
+						identity.WithUserPasswordIf([]byte("H1")), identity.WithUserName("After"))
+					return err
+				},
+				assert: func(t *testing.T, err error) {
+					require.Error(t, err)
+					assert.NotErrorIs(t, err, identity.ErrNotUpdated)
+					d, err := s.LoadByUsername(t.Context(), "condition-target")
+					require.NoError(t, err)
+					assert.Empty(t, d.Name, "a refused update writes nothing")
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				tc.assert(t, tc.call(t.Context()))
+			})
+		}
+	})
+
 	t.Run("organization reference that is not a canonical UUID", func(t *testing.T) {
 		t.Parallel()
 

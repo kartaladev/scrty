@@ -88,6 +88,7 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
 - `password-encoding`: the reuse-guard requirements move to `password-policy`; encoders can report that a hash needs upgrading.
 - `token-issuance`: issued tokens can carry a confirmation claim.
 - `passkey-authentication`: removing a passkey notifies the user by default.
+- `security-policy`: the lockout records a failure given without a time at its own clock, so such a failure counts and its lock is reported (PR #45 review).
 
 ## Impact
 
@@ -96,6 +97,7 @@ Several of these become breaking changes once `v0.1.0` is tagged, so all thirtee
   - `authenticate/password`: the policy, the absorbed reuse guard and the upgrade signal;
   - `session`: listing, metadata and binding;
   - `token`: the confirmation claim;
+  - `policy/lockout`: a failure recorded without a time is recorded at the policy's clock;
   - the store packages and a new security-state migration;
   - `notify`: new notices;
   - a new security-events package.

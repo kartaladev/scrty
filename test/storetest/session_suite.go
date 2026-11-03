@@ -247,6 +247,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
 	assert.Equal(t, want.ExternalIDToken, got.ExternalIDToken)
+	assertSignInState(t, want, got)
 	if len(want.Data) == 0 {
 		assert.Empty(t, got.Data, "a session stored with no data must load with no data")
 	} else {
@@ -307,8 +308,12 @@ const (
 // and a superseded session by its retention deadline instead (by its own
 // deadlines when it has none), with its own deadlines returned as stored; a supersession changes no deadline and never
 // lowers a retention deadline; the
-// active count and every deletion are exact; and the federation deletions
-// match nothing on an empty issuer or provider session identifier.
+// active count and every deletion are exact; the federation deletions
+// match nothing on an empty issuer or provider session identifier; a listing
+// returns the user's live heads, one per family, judged at the time the caller
+// passes and matching the user reference exactly; and the sign-in state
+// (metadata, key binding, CSRF token) round-trips, a save keeps it, and a
+// supersession inserts it with the successor.
 //
 // newStore is called once per case and must return an empty store that reads
 // time from clk. The suite advances clk itself and never waits.
@@ -1121,6 +1126,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 
 	cases = append(cases, sessionActivityCases()...)
 	cases = append(cases, sessionFamilyCases()...)
+	cases = append(cases, sessionSignInCases()...)
 	cases = append(cases, sessionSuccessorPresentedCases()...)
 	cases = append(cases, sessionStrictRotationCases()...)
 

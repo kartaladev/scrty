@@ -43,8 +43,9 @@ type FormLoginDeps struct {
 	// what came before. Supply the account-lockout policy's own view,
 	// [github.com/kartaladev/scrty/policy/lockout.Policy.Attempts]: it records
 	// into the store the policy reads, and it is what reports lockout transitions
-	// to an observer the policy was given. A bare store the policy also reads
-	// locks just the same, but nothing recorded through it is reported. A failure
+	// to an observer the policy was given and a lock as the security events
+	// authn_login_fail_max and authn_login_lock. A bare store the policy also
+	// reads locks just the same, but nothing recorded through it is reported. A failure
 	// recorded in one store and counted in another locks nothing.
 	//
 	// When the policy has a consecutive-failure cap (lockout.WithFailureStreakLimit),
@@ -71,8 +72,8 @@ type LoginOption func(*formLogin) error
 // DefaultLoginPasswordParam from the form and then, when the form yields
 // neither and the request declares a JSON content type, from the JSON body;
 // at most DefaultLoginBodyLimit bytes of it; answering a success with a JSON
-// document carrying the access token, an empty refresh token and the session's
-// idle expiry. Every one of those is replaced by the option that names it.
+// document carrying the access token, its token type, an empty refresh token
+// and the session's idle expiry. Every one of those is replaced by the option that names it.
 //
 // Every other request passes through untouched, so enabling form login costs
 // the rest of the application nothing.
@@ -88,6 +89,9 @@ type LoginOption func(*formLogin) error
 //     client address as a failed authentication, before any policy or
 //     password work. The guard is shared with EnableBasicAuth and counts
 //     failures per source, 50 per 15 minutes by default (WithLoginLimiter).
+//     With EnableAutomationChallenge selecting form login, the challenge
+//     verifier is asked next, before any policy or password work; its refusal
+//     is ErrChallengeRequired.
 //  3. Run the pre-authentication policy phase. A deny refuses with its
 //     reason, except a locked account, which by default is refused as a
 //     wrong password after a decoy password verification (WithLockDisclosure)
@@ -248,8 +252,9 @@ func WithLoginBodyLimit(n int64) LoginOption {
 
 // WithLoginResponder writes the success response through fn.
 //
-// Default: a JSON document carrying the access token, an empty refresh token
-// field and the session's idle expiry. fn is called instead of the downstream
+// Default: a JSON document carrying the access token, its token type
+// (LoginResult.TokenType), an empty refresh token field and the session's idle
+// expiry. fn is called instead of the downstream
 // handler, because a login is this library's own endpoint.
 //
 // A nil responder is refused: a login that succeeded and wrote nothing answers
@@ -329,6 +334,30 @@ func WithLoginLifetime(fn func(*Exchange, LoginFields) time.Duration) LoginOptio
 		}
 
 		l.lifetime = fn
+
+		return nil
+	}
+}
+
+// WithLoginRehash upgrades an outdated password hash when a login verifies the
+// password.
+//
+// Default: none, and without a write nothing is encoded or stored. With fn, a
+// login whose password verified and which the chain did not refuse afterwards,
+// one challenged for a second factor included, asks the current encoder whether
+// the stored hash needs upgrading (password.Upgrader). When it does, the
+// submitted password is encoded again with that encoder, at the cost of one more
+// key derivation on that request, and fn receives the user, the hash it
+// replaces and the new hash, after the outcome is decided. fn's error is logged
+// and never changes the outcome; see [RehashFunc] for writing it safely.
+// A nil fn is refused.
+func WithLoginRehash(fn RehashFunc) LoginOption {
+	return func(l *formLogin) error {
+		if fn == nil {
+			return newConfigError("WithLoginRehash was given no write; omit the option to rehash nothing")
+		}
+
+		l.rehash = fn
 
 		return nil
 	}

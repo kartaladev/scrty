@@ -72,6 +72,178 @@ SET external_id_token = (SELECT external_id_token FROM sessions WHERE id_digest 
 	}
 }
 
+// SealedSessionCSRFTokens is the sealed-column suite's view of the session
+// store's CSRF token, built by newWith over handle and a cipher. Put creates
+// owner's session (DurableSession) with the suite's secret as its CSRF token,
+// and the column is csrf_token. Its sessions are named csrfOwner(owner), so
+// it runs on the database SealedSessions runs on without either view finding
+// the other's sessions. Like the provider ID token, the token is never
+// re-sealed on read. A copy into another session's row must not open, since
+// each token is bound to its own session's identifier.
+func SealedSessionCSRFTokens[H any](
+	handle H, newWith func(t *testing.T, handle H, c seal.Cipher) session.Store,
+) storetest.Sealed[session.Store] {
+	return storetest.Sealed[session.Store]{
+		Encoding:       storetest.SealedBase64URL,
+		Rotation:       storetest.UnchangedOnRead,
+		NewWithKeyring: storeOver(handle, newWith),
+		Put: func(ctx context.Context, s session.Store, owner string, secret []byte) error {
+			sess := DurableSession(csrfOwner(owner), time.Now())
+			sess.CSRFToken = string(secret)
+			return s.Create(ctx, sess)
+		},
+		Get: func(ctx context.Context, s session.Store, owner string) ([]byte, bool, error) {
+			sess, err := s.Load(ctx, csrfOwner(owner))
+			if errors.Is(err, session.ErrNotFound) {
+				return nil, false, nil
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			return []byte(sess.CSRFToken), true, nil
+		},
+		RawColumn: func(t *testing.T, raw *sql.DB, owner string) []byte {
+			return []byte(csrfTokenColumn(t, raw, csrfOwner(owner)).String)
+		},
+		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
+			copyCSRFToken(t, raw, csrfOwner(from), csrfOwner(to))
+		},
+	}
+}
+
+// csrfOwner is the session identifier SealedSessionCSRFTokens keeps owner's
+// token under.
+func csrfOwner(owner string) string { return "csrf-" + owner }
+
+// csrfTokenColumn is session sid's csrf_token column as stored, read out of
+// band.
+func csrfTokenColumn(t *testing.T, raw *sql.DB, sid string) sql.NullString {
+	t.Helper()
+
+	var col sql.NullString
+	require.NoError(t, raw.QueryRowContext(t.Context(),
+		`SELECT csrf_token FROM sessions WHERE id_digest = $1`, Digest(sid)).Scan(&col))
+
+	return col
+}
+
+// copyCSRFToken copies session from's csrf_token column, as stored, over to's,
+// out of band.
+func copyCSRFToken(t *testing.T, raw *sql.DB, from, to string) {
+	t.Helper()
+
+	_, err := raw.ExecContext(t.Context(), `UPDATE sessions
+SET csrf_token = (SELECT csrf_token FROM sessions WHERE id_digest = $1) WHERE id_digest = $2`,
+		Digest(from), Digest(to))
+	require.NoError(t, err)
+}
+
+// RunSessionCSRFSuccessor holds the session store's CSRF token to the
+// supersession the sealed-column suite does not reach, reading the column out
+// of band through raw. newStore builds the store under test over a cipher;
+// every store it builds must share raw's database. It checks that:
+//   - a successor's copy of the token is sealed again for the successor's own
+//     identifier: its stored column differs from the superseded session's,
+//     neither column equals or contains the token, and the successor loads
+//     with the token;
+//   - the superseded session's sealed token, copied into the successor's row,
+//     does not open there: the load fails with session.ErrUnreadable and
+//     seal.ErrDecryptionFailed, and returns no session, so the token is never
+//     handed back.
+func RunSessionCSRFSuccessor(t *testing.T, raw *sql.DB, newStore func(t *testing.T, c seal.Cipher) session.Store) {
+	t.Helper()
+
+	key := make([]byte, seal.KeySize)
+	_, err := rand.Read(key)
+	require.NoError(t, err)
+	kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("k1", key))
+	require.NoError(t, err)
+	c, err := seal.NewAEADCipher(kr)
+	require.NoError(t, err)
+	s := newStore(t, c)
+
+	const token = "SENTINEL-CSRF-TOKEN-of-the-sign-in" //nolint:gosec // G101: a test fixture marker, not a credential
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// supersede creates oldID's session with the token, supersedes it by
+	// newID's, which carries the token as every successor does, and returns
+	// nothing: both rows are then read out of band.
+	supersede := func(t *testing.T, oldID, newID string) {
+		t.Helper()
+
+		old := DurableSession(oldID, now)
+		old.CSRFToken = token
+		require.NoError(t, s.Create(t.Context(), old))
+
+		successor := DurableSession(newID, now)
+		successor.UserID, successor.FamilyID, successor.FamilyCreatedAt = old.UserID, old.FamilyID, old.FamilyCreatedAt
+		successor.CSRFToken = token
+		require.NoError(t, s.Supersede(t.Context(), session.Supersession{
+			Old: oldID, AcceptUntil: now.Add(30 * time.Second), RetainUntil: now.Add(time.Minute),
+			Successor: successor, Now: now,
+		}))
+	}
+
+	t.Run("a successor's copy of the token is sealed again for the successor and opens", func(t *testing.T) {
+		supersede(t, "csrf-resealed-old", "csrf-resealed-new")
+
+		oldCol := csrfTokenColumn(t, raw, "csrf-resealed-old")
+		newCol := csrfTokenColumn(t, raw, "csrf-resealed-new")
+		for name, col := range map[string]sql.NullString{"superseded": oldCol, "successor": newCol} {
+			require.True(t, col.Valid, "the %s session stored no token", name)
+			assert.NotEqual(t, token, col.String, "the %s session's token is stored in the clear", name)
+			assert.NotContains(t, col.String, token, "the %s session's stored token holds the token", name)
+		}
+		assert.NotEqual(t, oldCol.String, newCol.String,
+			"the successor holds the superseded session's envelope, not one sealed for itself")
+
+		got, err := s.Load(t.Context(), "csrf-resealed-new")
+		require.NoError(t, err)
+		assert.Equal(t, token, got.CSRFToken, "the successor's token did not open as the sign-in's token")
+	})
+
+	t.Run("the superseded session's token copied into the successor's row does not open", func(t *testing.T) {
+		supersede(t, "csrf-moved-old", "csrf-moved-new")
+		copyCSRFToken(t, raw, "csrf-moved-old", "csrf-moved-new")
+
+		got, err := s.Load(t.Context(), "csrf-moved-new")
+		require.ErrorIs(t, err, session.ErrUnreadable)
+		require.ErrorIs(t, err, seal.ErrDecryptionFailed)
+		assert.Nil(t, got, "a session whose token will not open was returned")
+	})
+
+	// One row carries both sealed fields, each bound to its own field as well
+	// as to the session, so an envelope moved between the two columns of the
+	// same row opens as neither.
+	crossColumn := []struct {
+		name, sid, from, to string
+	}{
+		{"the CSRF token copied into the same row's ID-token column does not open",
+			"csrf-into-id-token", "csrf_token", "external_id_token"},
+		{"the ID token copied into the same row's CSRF-token column does not open",
+			"id-token-into-csrf", "external_id_token", "csrf_token"},
+	}
+	for _, tc := range crossColumn {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := DurableSession(tc.sid, now)
+			sess.CSRFToken = token
+			sess.ExternalIDToken = "SENTINEL-ID-TOKEN-of-the-sign-in"
+			require.NoError(t, s.Create(t.Context(), sess))
+
+			// The column names are this table's, not input: they are fixed
+			// above.
+			_, err := raw.ExecContext(t.Context(), //nolint:gosec // G202: fixed column names
+				`UPDATE sessions SET `+tc.to+` = `+tc.from+` WHERE id_digest = $1`, Digest(tc.sid))
+			require.NoError(t, err)
+
+			got, err := s.Load(t.Context(), tc.sid)
+			require.ErrorIs(t, err, session.ErrUnreadable)
+			require.ErrorIs(t, err, seal.ErrDecryptionFailed)
+			assert.Nil(t, got, "a session whose sealed field will not open was returned")
+		})
+	}
+}
+
 // SealedEnrolments is the sealed-column suite's view of the MFA store, built
 // by newWith over handle and a cipher.
 func SealedEnrolments[H any](

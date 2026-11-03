@@ -221,7 +221,14 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 		return nil, classify(err)
 	}
 
-	return &Claims{tok: tok}, nil
+	// Read once, here, so a malformed binding is a refusal of the token
+	// rather than a binding that silently reads as none.
+	cnf, err := readConfirmation(tok.Field(confirmationClaim))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+
+	return &Claims{tok: tok, cnf: cnf}, nil
 }
 
 // keySet renders the keys a source supplied as the set the JOSE stack selects

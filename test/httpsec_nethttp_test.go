@@ -79,6 +79,7 @@ func nethttpRoute(
 ) http.Handler {
 	var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		res.RouteRan = true
+		res.RouteHeader = r.Header.Clone()
 		httpsecconformance.ReadContext(r.Context(), res)
 
 		if route.Status != 0 {
@@ -178,4 +179,21 @@ func TestConformanceNetHTTP(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, nethttpAdapter{})
+}
+
+// TestChallengeNetHTTP runs the automation-challenge rows, which
+// TestConformanceNetHTTP leaves out so that each runs once, and so they can be
+// run by name.
+func TestChallengeNetHTTP(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunScenarios(t, nethttpAdapter{}, httpsecconformance.ChallengeScenarios())
+}
+
+// TestCertificateBindingNetHTTP runs the certificate-binding scenarios on
+// net/http, through a trusted proxy that forwards the client's certificate.
+func TestCertificateBindingNetHTTP(t *testing.T) {
+	t.Parallel()
+
+	httpsecconformance.RunCertificateBinding(t, nethttpAdapter{})
 }

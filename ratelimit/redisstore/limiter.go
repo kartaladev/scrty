@@ -32,7 +32,7 @@ const maxRawKeyLen = 512
 // so a flow that charges first holds its limit under any concurrency
 // (Charge). It is safe for concurrent use.
 type Limiter struct {
-	limiter ratelimit.Limiter
+	limiter unavailable.Limiter
 	check   serverCheck
 
 	// limit and window are the policy NewLimiter was given, kept so Policy can
@@ -42,8 +42,9 @@ type Limiter struct {
 }
 
 var (
-	_ ratelimit.Limiter        = (*Limiter)(nil)
-	_ ratelimit.PolicyReporter = (*Limiter)(nil)
+	_ ratelimit.Limiter               = (*Limiter)(nil)
+	_ ratelimit.PolicyReporter        = (*Limiter)(nil)
+	_ ratelimit.RecentFailureReporter = (*Limiter)(nil)
 )
 
 // NewLimiter returns a Limiter counting up to limit failures per key within
@@ -198,6 +199,23 @@ func (l *Limiter) Exceeded(ctx context.Context, key string) (bool, error) {
 	return l.limiter.Exceeded(ctx, key)
 }
 
+// HasRecentFailures reports whether key has at least one failure counted
+// within the window, however far below the limit. It writes nothing, and
+// leaves the key's lifetime as it is. It implements
+// ratelimit.RecentFailureReporter.
+//
+// It cannot decide whenever the check cannot: an ended context answers true
+// with its error before any I/O, and while the server cannot be reached,
+// or the replica is not calling it, the answer is true with an error wrapping
+// ratelimit.ErrBackendUnavailable, whatever the unavailable mode
+// (WithOnUnavailable) is. A failure this replica could not record, held
+// against its key by that mode, counts as a recent failure. A caller reading
+// only the bool therefore treats a key it could not check as one that has
+// failures.
+func (l *Limiter) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	return l.limiter.HasRecentFailures(ctx, key)
+}
+
 // RecordFailure counts one failure for key, and keeps the key at least one
 // window from now. The caller's cancellation is ignored, because a caller that
 // hangs up must still be charged for its attempt; the call is bounded by the
@@ -278,6 +296,16 @@ func (b *backend) Exceeded(ctx context.Context, key string) (bool, error) {
 		return true, err
 	}
 	return n >= b.limitN, nil
+}
+
+// HasRecentFailures runs the read-only window count Exceeded runs, and reports
+// whether it found any stamp. A failed read answers true with the error.
+func (b *backend) HasRecentFailures(ctx context.Context, key string) (bool, error) {
+	n, err := exceededScript.RunRO(ctx, b.client, []string{b.key(key)}, b.now(), b.windowUS).Int64()
+	if err != nil {
+		return true, err
+	}
+	return n > 0, nil
 }
 
 func (b *backend) RecordFailure(ctx context.Context, key string) error {

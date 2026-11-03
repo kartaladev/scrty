@@ -20,7 +20,7 @@ Every third-party action and reusable workflow used by the repository's CI workf
 - **THEN** the pinning check passes for that reference
 
 ### Requirement: Dependency updates are proposed automatically
-The repository SHALL configure automated update proposals for Go modules in every published module, nested modules included, and for GitHub Actions, on at least a weekly schedule. Security updates SHALL be proposed as soon as they are published.
+The repository SHALL configure automated update proposals for Go modules in every module in the workspace, nested modules included, and in the tools module, and for GitHub Actions, on at least a weekly schedule. A repository check SHALL fail when a workspace module has no update entry. Once the repository's Dependabot security-updates setting is enabled, which no configuration file can enable and the README SHALL say so, security updates SHALL be proposed as soon as they are published. Every proposal SHALL be a pull request left open for a maintainer to review and merge: no workflow in the repository SHALL approve or merge one automatically, and the repository check SHALL fail when one does.
 
 #### Scenario: New action release
 - **WHEN** a pinned action publishes a new release
@@ -30,12 +30,28 @@ The repository SHALL configure automated update proposals for Go modules in ever
 - **WHEN** a dependency of the gin adapter module publishes a new release
 - **THEN** an update is proposed for that module
 
-### Requirement: Every release carries a software bill of materials
-Every release SHALL publish, for each published module, a software bill of materials listing the module's dependencies and their versions in a standard format. The release gate SHALL fail when one cannot be produced.
+#### Scenario: Every module covered
+- **WHEN** a module is added to `go.work` without an update entry
+- **THEN** the repository check fails, naming the module
 
-#### Scenario: Release
-- **WHEN** a release is tagged
-- **THEN** a bill of materials for each published module is attached to the release
+#### Scenario: Never merged automatically
+- **WHEN** an update is proposed
+- **THEN** it is opened as a pull request and stays open until a maintainer merges it
+
+#### Scenario: Auto-merge workflow refused
+- **WHEN** a workflow change approves or enables auto-merge for a pull request
+- **THEN** the repository check fails, naming the workflow
+
+### Requirement: The release gate produces a software bill of materials for each published module
+The release gate SHALL produce, for each published module, a software bill of materials listing the module's dependencies and their versions in a standard format, and SHALL fail when one cannot be produced. Attaching them to a published release is the release workflow's requirement, not this one.
+
+#### Scenario: Release gate run
+- **WHEN** the release gate runs
+- **THEN** a bill of materials is written for each published module
+
+#### Scenario: Bill of materials cannot be produced
+- **WHEN** the bill of materials for a published module cannot be produced
+- **THEN** the release gate fails, naming the module
 
 ### Requirement: Known vulnerabilities block a release
 The release gate SHALL run the Go vulnerability check against every published module and SHALL fail when a reachable vulnerability is reported.

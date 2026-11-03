@@ -418,6 +418,114 @@ func TestLimiter_ScriptCalls(t *testing.T) {
 	}
 }
 
+// TestLimiter_HasRecentFailures pins what HasRecentFailures sends, and what it
+// answers, without a server: the read-only window count Exceeded sends, where
+// any failure in the window, however few, means true, and a server that cannot
+// answer means true with an error.
+func TestLimiter_HasRecentFailures(t *testing.T) {
+	t.Parallel()
+
+	at := time.Unix(1_700_000_000, 123_456_000)
+
+	type testCase struct {
+		name   string
+		reply  int64
+		fail   error
+		opts   []redisstore.Option
+		ctx    func(ctx context.Context) context.Context // nil means identity
+		assert func(t *testing.T, cmds [][]any, has bool, err error)
+	}
+
+	clean := func(t *testing.T, cmds [][]any, has bool, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.False(t, has)
+		assert.Len(t, cmds, 1)
+	}
+
+	cases := []testCase{
+		{name: "a clean key", reply: 0, assert: clean},
+		{
+			name: "one failure, below the limit", reply: 1,
+			assert: func(t *testing.T, cmds [][]any, has bool, err error) {
+				require.NoError(t, err)
+				assert.True(t, has, "one failure in the window is a recent failure, however far below the limit")
+				require.Len(t, cmds, 1)
+			},
+		},
+		{
+			name: "the read is the read-only window count, writing nothing", reply: 0,
+			assert: func(t *testing.T, cmds [][]any, _ bool, err error) {
+				require.NoError(t, err)
+				require.Len(t, cmds, 1)
+				assert.Equal(t, "evalsha_ro", strings.ToLower(cmds[0][0].(string)))
+				assert.Equal(t, []any{"scrty:ratelimit:api-key:k"}, cmds[0][3:4])
+				assert.Equal(t, []any{"", "60000000"}, cmds[0][4:])
+			},
+		},
+		{
+			name: "application clock", reply: 0,
+			opts: []redisstore.Option{redisstore.WithClock(clockwork.NewFakeClockAt(at))},
+			assert: func(t *testing.T, cmds [][]any, _ bool, err error) {
+				require.NoError(t, err)
+				require.Len(t, cmds, 1)
+				assert.Equal(t, []any{strconv.FormatInt(at.UnixMicro(), 10), "60000000"}, cmds[0][4:])
+			},
+		},
+		{
+			name: "a server that fails the read answers true with an unavailable error", fail: errors.New("connection reset"),
+			assert: func(t *testing.T, _ [][]any, has bool, err error) {
+				require.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
+				assert.True(t, has)
+				assert.NotContains(t, err.Error(), "connection reset", "the server's text must not reach the caller")
+			},
+		},
+		{
+			name: "an ended context answers true with its error, sending nothing", reply: 0,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return cctx
+			},
+			assert: func(t *testing.T, cmds [][]any, has bool, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.True(t, has)
+				assert.Empty(t, cmds)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				client *redis.Client
+				rec    *recorder
+			)
+			if tc.fail != nil {
+				client, rec = failingClient(t, tc.fail)
+			} else {
+				client, rec = recordingClient(t, tc.reply)
+			}
+			opts := append([]redisstore.Option{redisstore.WithLogger(quietLogger())}, tc.opts...)
+			l, err := redisstore.NewLimiter(client, "api-key", 3, time.Minute, opts...)
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+			var r ratelimit.Limiter = l
+			reporter, ok := r.(ratelimit.RecentFailureReporter)
+			require.True(t, ok, "the limiter does not implement ratelimit.RecentFailureReporter")
+
+			has, err := reporter.HasRecentFailures(ctx, "k")
+			tc.assert(t, rec.commands(), has, err)
+		})
+	}
+}
+
 // failingHook answers every command with err once the hooks it wraps have
 // seen it, as a server that rejects the script would.
 type failingHook struct{ err error }

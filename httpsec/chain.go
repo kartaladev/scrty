@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/expiry"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
@@ -57,6 +58,10 @@ type Chain struct {
 	// once, at construction.
 	perRequest *perRequestPhase
 
+	// csrfOptOut is whether the chain was built with WithoutCSRFProtection,
+	// handed to every exchange it runs (CheckCSRFToken).
+	csrfOptOut bool
+
 	// mfa is the MFA interceptor EnableMFA registered, and nil without one.
 	// Every second-factor challenge the chain returns carries the methods it
 	// looks up (challengeMethods).
@@ -76,6 +81,27 @@ type Chain struct {
 	// sampler bounds the chain's own refusal records. It is built once, at
 	// construction, so every request of every flow shares one set of windows.
 	sampler *logsample.Sampler
+
+	// clients resolves each request's client address, host and transport
+	// security before the first interceptor runs (clientResolver.begin).
+	clients *clientResolver
+
+	// headers is the security-headers layer, and nil unless EnableSecurityHeaders
+	// enabled it. The chain applies its header step to a refusal written outside
+	// the layer's slot (see Assemble).
+	headers *securityHeaders
+
+	// refusalSteps are the steps features run on a refusal written outside
+	// every interceptor's slot (see Assemble), after the security headers'.
+	// A feature that marks its own responses registers one with the wiring
+	// hook, so its refusals are marked too.
+	refusalSteps []func(*Exchange)
+
+	// events delivers the chain's security events, and is nil unless
+	// EnableSecurityEvents gave it a sink. Every request carries it on its
+	// context (eventsink), so whatever decides an outcome on the request
+	// reports it there.
+	events *eventEmitter
 }
 
 // refusalLogFlusher is implemented by an interceptor that holds a component
@@ -186,8 +212,44 @@ func (c *Chain) Assemble(terminal Next) Next {
 
 	return func(ex *Exchange) error {
 		ex.perRequest = c.perRequest
+		ex.csrfOptOut = c.csrfOptOut
 
-		return chain(ex)
+		// The request carries the chain's event delivery before anything
+		// decides an outcome on it, so every decision below reports through
+		// it (emitEvent) and a request no sink watches carries nothing.
+		if c.events != nil {
+			ex.SetContext(eventsink.With(ex.Context(), c.events.emit))
+		}
+
+		// Client resolution is not an interceptor: it runs once, here, before
+		// the first interceptor, so every interceptor and the handler read the
+		// one resolved answer, and a forwarded host on none of the allowed
+		// hosts is refused before any of them runs.
+		if err := c.clients.begin(ex); err != nil {
+			// The one response written outside the security-headers slot: no
+			// interceptor runs for it, so the layer's headers are set here,
+			// on the exchange's writer and before a consumer's error handler
+			// sees the refusal.
+			if c.headers != nil {
+				c.headers.applyHeaders(ex.Writer, ex.Request)
+			}
+
+			for _, step := range c.refusalSteps {
+				step(ex)
+			}
+
+			return err
+		}
+
+		// The refusals that can arise anywhere in the chain, a cross-site
+		// request or an invalid proof among them, are reported once, here,
+		// as the request leaves it (emitRefusal).
+		err := chain(ex)
+		if err != nil {
+			emitRefusal(ex, err)
+		}
+
+		return err
 	}
 }
 

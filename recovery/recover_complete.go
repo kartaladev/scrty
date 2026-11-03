@@ -2,13 +2,16 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -174,7 +177,21 @@ type issuedSession struct {
 // so a client that hangs up cannot leave a recovery half done. The issuer
 // runs before that, on ctx itself, so a client that hangs up while it issues
 // spends nothing.
+//
+// A refusal (ErrRefused) is reported as event.RecoveryRefused
+// (WithSecurityEvents); a dependency failure, and a request whose own context
+// ended before the verdict, are not, even when the failure is answered as
+// ErrRefused (an issued-code store, the user limiter or the risk hook that
+// failed): the error is still ErrRefused, with the failure beneath it.
 func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
+	res, err := r.recover(ctx, req)
+	r.reportRefused(ctx, err)
+
+	return res, err
+}
+
+// recover is Recover's work.
+func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 	v, err := r.verify(ctx, req)
 	if err != nil {
 		return nil, err
@@ -187,7 +204,7 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 	// spent; a held one creates no session until its finish.
 	var issued *issuedSession
 	if hold <= 0 {
-		if issued, err = r.issueSession(ctx, v.details, now); err != nil {
+		if issued, err = r.issueSession(ctx, v.details, now, req.KeyBinding, req.SessionOptions); err != nil {
 			return nil, err
 		}
 	}
@@ -234,15 +251,31 @@ func (r *Recoverer) Recover(ctx context.Context, req Request) (*Result, error) {
 }
 
 // issueSession builds the recovery-pending session for the recovered user,
-// recovered at now, and issues its credential through the issuer. Nothing is
-// stored: the session loads nothing until complete commits it. ctx is the
-// caller's own, so an issuer bound to it fails when the client has left, and
-// that failure spends nothing either.
+// recovered at now, with the caller's own attributes callerOpts and bound to
+// binding unless it is the zero value, and issues its credential through the
+// issuer. Nothing is stored: the session loads nothing until complete commits
+// it. ctx is the caller's own, so an issuer bound to it fails when the client
+// has left, and that failure spends nothing either.
+//
+// The recovery's own attributes are applied after callerOpts, so none of them
+// can replace those: the first factor, the binding, the recovered user, no
+// second factor met and no confinement marker (recoveryOwn), before the
+// session is marked recovery-pending.
 //
 // An issuing failure is logged and returned behind fixed text, a dependency
 // failure: at ERROR, or at DEBUG when ctx's own end cut it short.
-func (r *Recoverer) issueSession(ctx context.Context, details *identity.Details, now time.Time) (*issuedSession, error) {
-	p, err := r.sessions.Prepare(details.ID, session.WithFirstFactor(factor.Recovery))
+func (r *Recoverer) issueSession(
+	ctx context.Context, details *identity.Details, now time.Time,
+	binding session.KeyBinding, callerOpts []session.CreateOption,
+) (*issuedSession, error) {
+	opts := make([]session.CreateOption, 0, len(callerOpts)+3)
+	opts = append(opts, callerOpts...)
+	if !binding.IsZero() {
+		opts = append(opts, session.WithKeyBinding(binding))
+	}
+	opts = append(opts, session.WithFirstFactor(factor.Recovery), recoveryOwn(details.ID))
+
+	p, err := r.sessions.Prepare(details.ID, opts...)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgSessionFailed, diag.Failure("session-build", err)...)
 
@@ -270,6 +303,25 @@ func (r *Recoverer) issueSession(ctx context.Context, details *identity.Details,
 	}
 
 	return &issuedSession{prepared: p, credential: credential}, nil
+}
+
+// recoveryOwn is the create option the recovery applies last, for user, the
+// recovered one. A create option is a plain func a consumer may write by hand,
+// so it also sets what none of the session's own options may decide:
+//
+//   - the user, which is the recovered user whatever a caller's option set;
+//   - no second factor met, clearing one a caller's option recorded
+//     (session.WithSecondFactorAtLogin): a recovery session becomes a full
+//     session only by binding a new authenticator;
+//   - no confinement marker, so MarkRecoveryPending records the deadline the
+//     session holds now, and one a caller preset cannot be restored past the
+//     manager's maximum lifetime when the session leaves its pending state.
+func recoveryOwn(user identity.UserID) session.CreateOption {
+	return func(s *session.Session) {
+		s.UserID = user
+		s.MFASatisfiedAt, s.MFAAtFirstFactor = time.Time{}, false
+		s.EnrolmentOriginDeadline = time.Time{}
+	}
 }
 
 // complete runs the completion sequence from the reset on: reset, revoke,
@@ -412,4 +464,19 @@ func (r *Recoverer) validateCompletion(c *config) error {
 	}
 
 	return nil
+}
+
+// reportRefused reports err as event.RecoveryRefused when it is a refusal of
+// the presented proofs (ErrRefused). A refusal that answers a dependency's
+// failure (a store, the user limiter or the risk hook), and one the caller's
+// own context cut short, report nothing. It names no user, as a failed login
+// does not.
+func (r *Recoverer) reportRefused(ctx context.Context, err error) {
+	if !errors.Is(err, ErrRefused) || depfault.Silent(ctx, err) {
+		return
+	}
+
+	r.events.Report(ctx, event.Event{
+		Name: event.RecoveryRefused, At: r.clock.Now(), Outcome: event.OutcomeFailure,
+	}, r.logger)
 }

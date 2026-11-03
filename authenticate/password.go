@@ -46,6 +46,10 @@ type PasswordOption func(*UsernamePasswordAuthenticator)
 // other hash is handed to the encoder as it stands. The built-in encoders
 // implement it.
 //
+// An encoder that also implements password.Upgrader can have a stored hash
+// replaced at login, when the caller asks with RequestPasswordUpgrade; without
+// the request, or without the interface, nothing is ever re-encoded.
+//
 // A nil encoder is a configuration error rather than a silent return to the
 // default: a caller passing one meant to supply an encoder, and hashing under
 // an algorithm they did not choose would fail to verify every credential their
@@ -401,6 +405,8 @@ func (a *UsernamePasswordAuthenticator) Authenticate(ctx context.Context, c iden
 	if err := creds.Cleanup(); err != nil {
 		return nil, fmt.Errorf("authenticate: wiping the presented password: %w", err)
 	}
+
+	a.prepareUpgrade(ctx, details, presented)
 
 	return &Authentication{
 		ID:                eventID,

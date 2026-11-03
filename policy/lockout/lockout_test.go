@@ -1617,14 +1617,14 @@ func TestLockoutCapView(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "without a cap the view is the store and never touches the streak",
+			name: "without a cap the view only records, and never touches the streak",
 			expect: func(s *streakAttemptStore) {
 				s.MockAttemptStore.EXPECT().RecordFailure(gomock.Any(), "ada", lockoutNow).Return(nil)
 			},
 			act: recordAda,
-			assert: func(t *testing.T, p *lockout.Policy, s *streakAttemptStore, err error) {
+			assert: func(t *testing.T, p *lockout.Policy, _ *streakAttemptStore, err error) {
 				require.NoError(t, err)
-				assert.Same(t, s, p.Attempts(), "a policy without a cap or observer wrapped its store")
+				assert.Same(t, p.Attempts(), p.Attempts(), "the view is one value")
 			},
 		},
 		{

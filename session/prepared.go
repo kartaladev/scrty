@@ -89,6 +89,22 @@ func (m *Sessions) Prepare(user identity.UserID, opts ...CreateOption) (*Prepare
 		}
 	}
 
+	if s.KeyBinding.both() {
+		return nil, fmt.Errorf("%w: a key binding names either a DPoP key or a certificate, not both", ErrConfig)
+	}
+	if s.csrfRequested {
+		s.csrfRequested = false
+		if s.CSRFToken, err = m.newCSRFToken(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Sign-in metadata is personal data, recorded only when the manager was
+	// told to record it, whatever the creating call supplied.
+	if !m.metadata {
+		s.ClientIP, s.UserAgent = "", ""
+	}
+
 	// The lifetime is read back from the deadline the options left, so a
 	// WithAbsoluteLifetime and any consumer option that sets the deadline are
 	// judged the same way, before anything is stored.
@@ -118,8 +134,9 @@ func (m *Sessions) checkLifetime(s *Session) error {
 // identifier to issue a credential for it. Changes made after Commit are not
 // stored by it; persist them with Sessions.Save.
 //
-// The identifier, the user, the family and its start, and the creation and
-// authentication times must not be changed: the credential the caller issues
+// The identifier, the user, the family and its start, the creation and
+// authentication times, the key binding, the CSRF token and the sign-in
+// metadata must not be changed: the credential the caller issues
 // names them, and a session stored under other values is not the one that
 // credential was issued for. The idle and absolute deadlines may only be
 // shortened, as Sessions.MarkEnrolmentPending and
@@ -146,8 +163,10 @@ func (p *Prepared) Session() *Session { return p.s }
 // again.
 //
 // Commit also refuses, with ErrConfig and nothing written, a session whose
-// identifier, user, family, family start, creation time or authentication
-// time differs from the one Prepare built, or whose idle or absolute deadline
+// identifier, user, family, family start, creation time, authentication
+// time, key binding, CSRF token, client address or user agent differs from
+// the one Prepare built (the error names the field, never its value), or
+// whose idle or absolute deadline
 // is later than the one Prepare built. Shortening a deadline, as the marks
 // do, is allowed. Like the deadline checks above, such a refusal is not a
 // commit.
@@ -201,6 +220,14 @@ func (p *Prepared) checkBuilt() error {
 		return fmt.Errorf("%w: the prepared session's creation time was changed", ErrConfig)
 	case !s.AuthenticatedAt.Equal(b.AuthenticatedAt):
 		return fmt.Errorf("%w: the prepared session's authentication time was changed", ErrConfig)
+	case s.KeyBinding != b.KeyBinding:
+		return fmt.Errorf("%w: the prepared session's key binding was changed", ErrConfig)
+	case s.CSRFToken != b.CSRFToken:
+		return fmt.Errorf("%w: the prepared session's CSRF token was changed", ErrConfig)
+	case s.ClientIP != b.ClientIP:
+		return fmt.Errorf("%w: the prepared session's client address was changed", ErrConfig)
+	case s.UserAgent != b.UserAgent:
+		return fmt.Errorf("%w: the prepared session's user agent was changed", ErrConfig)
 	case s.IdleExpiresAt.After(b.IdleExpiresAt):
 		return fmt.Errorf("%w: the prepared session's idle deadline was lengthened", ErrConfig)
 	case s.AbsoluteExpiresAt.After(b.AbsoluteExpiresAt):

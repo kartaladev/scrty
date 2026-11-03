@@ -10,9 +10,12 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/depfault"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -132,6 +135,9 @@ type Recoverer struct {
 
 	clock  clock.Clock
 	logger *slog.Logger
+
+	// events is the recoverer's own security-event sink (WithSecurityEvents).
+	events eventsink.Own
 }
 
 // Enabled reports whether proof kind k is one WithProofs enabled. A caller
@@ -189,6 +195,7 @@ type config struct {
 
 	clock  clock.Clock
 	logger *slog.Logger
+	events eventsink.Own
 }
 
 // Option configures a Recoverer. Every option names the default it replaces.
@@ -272,6 +279,37 @@ func WithSynchronousDelivery() Option {
 // clock is a configuration error.
 func WithClock(clk clock.Clock) Option {
 	return func(c *config) { c.clock = clk }
+}
+
+// WithSecurityEvents reports the outcomes the recoverer decides outside a
+// chain to sink:
+//
+//   - every Start, as event.RecoveryStarted, for a username that names an
+//     account and one that names none alike, carrying the user only when there
+//     is one. It is reported as the start's last step in both cases, so a sink
+//     that takes time holds every start alike and its latency does not tell
+//     which named an account. A sink should still do no work that depends on
+//     whether the event names a user.
+//   - a Recover or a Finish refused for its proofs (ErrRefused), as
+//     event.RecoveryRefused, naming no user. A dependency failure, and a
+//     request whose own context ended before the verdict, are not reported,
+//     including a failure answered as ErrRefused (an issued-code or hold
+//     token store that could not answer, the user limiter, the risk hook):
+//     the caller still sees ErrRefused, and the failure stays beneath it.
+//
+// Default: no sink, and nothing is reported outside a chain. On a request an
+// httpsec chain reports events for (httpsec.EnableSecurityEvents), the chain's
+// sink receives these outcomes and this one is not called, so one outcome is
+// reported once.
+//
+// The sink is called synchronously, on the caller's goroutine, with a context
+// from which the caller's cancellation has been removed. A panic in it is
+// recovered and logged through the recoverer's logger (WithLogger) without the
+// event's contents, and the outcome stands; a sink that blocks holds the call
+// (see event.Sink). A nil sink, or the option given twice, is a
+// configuration error.
+func WithSecurityEvents(sink event.Sink) Option {
+	return func(c *config) { c.events.Set(sink) }
 }
 
 // WithLogger replaces the logger. The default is slog.Default(). A nil logger
@@ -402,7 +440,11 @@ func WithResetPolicy(policy ResetPolicy) Option {
 //
 // It runs after every proof has been checked and before anything is spent. An
 // error refuses the recovery behind fixed library text, and nothing is spent.
-// A negative duration is taken as none. A nil hook is a configuration error.
+// The hook is a dependency, so an error from it is answered as a refusal but
+// is reported as no event: a failed hook refused no proof. A hook that means to
+// refuse a recovery, and wants the refusal reported, belongs in WithChecks,
+// whose errors are reported. A negative duration is taken as none. A nil hook
+// is a configuration error.
 func WithRisk(fn func(ctx context.Context, in RiskInput) (time.Duration, error)) Option {
 	return func(c *config) { c.risk, c.riskSet = fn, true }
 }
@@ -465,6 +507,7 @@ func NewRecoverer(deps Deps, opts ...Option) (*Recoverer, error) {
 
 		clock:  c.clock,
 		logger: c.logger,
+		events: c.events,
 	}
 
 	if !nilcheck.IsNil(deps.Sender) {
@@ -516,6 +559,9 @@ func (r *Recoverer) validateDeps(c *config) error {
 	}
 	if nilcheck.IsNil(c.messages) {
 		return fmt.Errorf("%w: WithMessages was given no message builder", ErrConfig)
+	}
+	if err := c.events.Err("WithSecurityEvents"); err != nil {
+		return fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 
 	return nil
@@ -592,7 +638,7 @@ func (r *Recoverer) validateIssued(c *config) error {
 
 	topts := []onetime.Option{onetime.WithTokenTTL(c.issuedTTL), onetime.WithClock(c.clock), onetime.WithLogger(c.logger)}
 	if c.issuedStoreSet {
-		topts = append(topts, onetime.WithStore(c.issuedStore))
+		topts = append(topts, onetime.WithStore(depfault.Store(c.issuedStore)))
 	}
 
 	m, err := onetime.New(IssuedCodePurpose, topts...)

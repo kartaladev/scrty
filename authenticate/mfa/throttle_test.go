@@ -16,6 +16,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -210,6 +212,25 @@ func TestNewVerifyThrottleConfig(t *testing.T) {
 			name:   "a nil logger",
 			opts:   []mfa.ThrottleOption{mfa.WithThrottleLogger(nil)},
 			assert: configError,
+		},
+		{
+			name: "a nil security-event sink",
+			opts: []mfa.ThrottleOption{mfa.WithThrottleSecurityEvents(nil)},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.ErrorIs(t, err, mfa.ErrConfig)
+				assert.Nil(t, th)
+			},
+		},
+		{
+			name: "the security-event sink given twice",
+			opts: []mfa.ThrottleOption{
+				mfa.WithThrottleSecurityEvents(func(context.Context, event.Event) {}),
+				mfa.WithThrottleSecurityEvents(func(context.Context, event.Event) {}),
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.ErrorIs(t, err, mfa.ErrConfig)
+				assert.Nil(t, th)
+			},
 		},
 	}
 
@@ -597,6 +618,119 @@ func TestWithVerifyClock(t *testing.T) {
 			opts := append(tc.opts(fc), mfa.WithThrottleLogger(slog.New(slog.DiscardHandler)))
 			th, err := mfa.NewVerifyThrottle(opts...)
 			tc.assert(t, fc, th, err)
+		})
+	}
+}
+
+// TestSecurityEvents_ThrottleOwnSink pins the throttle's own sink
+// (WithThrottleSecurityEvents): outside a chain a user over the limit is
+// reported to it at the throttle's clock, and a panic in it is recovered and
+// logged while the refusal stands; a limiter that could not answer reports
+// nothing; and on a request a chain delivers events for, only the chain's
+// delivery is called.
+func TestSecurityEvents_ThrottleOwnSink(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+
+	type testCase struct {
+		name string
+
+		// exceeded and fault are the limiter's answer.
+		exceeded bool
+		fault    error
+
+		// panics makes the own sink panic after recording.
+		panics bool
+
+		// chain, when set, is the delivery the request carries.
+		chain *ownEvents
+
+		assert func(t *testing.T, own, chain *ownEvents, err error, logs string)
+	}
+
+	cases := []testCase{
+		{
+			name:     "outside a chain a user over the limit is reported to the own sink",
+			exceeded: true,
+			assert: func(t *testing.T, own, _ *ownEvents, err error, _ string) {
+				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
+
+				got := own.all()
+				require.Len(t, got, 1)
+				assert.Equal(t, event.ExcessRateLimitExceeded, got[0].Name)
+				assert.Equal(t, event.OutcomeFailure, got[0].Outcome)
+				assert.Equal(t, "u-1", string(got[0].User))
+				assert.Equal(t, at, got[0].At, "the throttle's clock")
+			},
+		},
+		{
+			name: "a user under the limit reports nothing",
+			assert: func(t *testing.T, own, _ *ownEvents, err error, _ string) {
+				require.NoError(t, err)
+				assert.Empty(t, own.all())
+			},
+		},
+		{
+			name:  "a limiter that could not answer refuses and reports nothing",
+			fault: errMFAFixture,
+			assert: func(t *testing.T, own, _ *ownEvents, err error, _ string) {
+				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
+				assert.Empty(t, own.all())
+			},
+		},
+		{
+			name:     "a panicking own sink: the refusal stands and the panic is logged",
+			exceeded: true,
+			panics:   true,
+			assert: func(t *testing.T, own, _ *ownEvents, err error, logs string) {
+				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
+				require.Len(t, own.all(), 1, "the sink was called")
+				assert.Contains(t, logs, eventsink.MsgSinkPanicked)
+			},
+		},
+		{
+			name:     "on a request a chain delivers for, only the chain's delivery is called",
+			exceeded: true,
+			chain:    &ownEvents{},
+			assert: func(t *testing.T, own, chain *ownEvents, err error, _ string) {
+				require.ErrorIs(t, err, mfa.ErrVerifyThrottled)
+				assert.Empty(t, own.all(), "one outcome is reported once")
+
+				got := chain.all()
+				require.Len(t, got, 1)
+				assert.Equal(t, event.ExcessRateLimitExceeded, got[0].Name)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			own := &ownEvents{}
+			sink := own.sink
+			if tc.panics {
+				sink = own.panicking
+			}
+
+			l := NewMockLimiter(gomock.NewController(t))
+			l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(tc.exceeded, tc.fault)
+
+			var logs bytes.Buffer
+			th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(l),
+				mfa.WithThrottleClock(clockwork.NewFakeClockAt(at)),
+				mfa.WithThrottleLogger(slog.New(slog.NewTextHandler(&lockedWriter{w: &logs}, nil))),
+				mfa.WithThrottleSecurityEvents(sink))
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.chain != nil {
+				ctx = eventsink.With(ctx, tc.chain.sink)
+			}
+
+			err = th.Check(ctx, "u-1")
+			tc.assert(t, own, tc.chain, err, logs.String())
 		})
 	}
 }
