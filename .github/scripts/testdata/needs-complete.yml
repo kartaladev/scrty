@@ -1,0 +1,20 @@
+# Fixture for ci-needs-check.sh: `ok` needs every job.
+name: fixture
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+  ok:
+    needs: [a, b, c]
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"

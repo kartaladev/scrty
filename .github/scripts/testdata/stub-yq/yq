@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fixture: a yq that exits 0 and prints nothing.
+exit 0

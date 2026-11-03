@@ -11,14 +11,161 @@ on:
 permissions:
   contents: read
 
+env:
+  # The Go release the static jobs run on: the newest release the test matrix
+  # below covers. Move it to the newest `go` entry there when one is added.
+  GO_VERSION: "1.27.x"
+
 jobs:
-  check:
-    name: make check (Go ${{ matrix.go }}, ${{ matrix.postgres }}, ${{ matrix.redis }})
+  format:
+    name: format
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: make fmt-check
+        run: make fmt-check
+
+  vet:
+    name: vet
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      - name: make vet
+        run: make vet
+
+  lint:
+    name: lint
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      - name: make lint
+        run: make lint
+
+  generate:
+    name: generate
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      - name: make generate-check
+        run: make generate-check
+
+  vuln:
+    name: vuln
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      - name: make vuln
+        run: make vuln
+
+  pincheck:
+    name: pincheck
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      - name: make pincheck
+        run: make pincheck
+
+  tools-check:
+    name: tools-check
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      - name: make tools-check
+        run: make tools-check
+
+  test:
+    name: test (Go ${{ matrix.go }}, ${{ matrix.postgres }}, ${{ matrix.redis }})
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        # Keep the workflow-level GO_VERSION on the newest entry here.
         go: ["1.27.x"]
         # The oldest and newest community-supported PostgreSQL majors, pinned
         # to exact minors. The test helper defaults to the newest.
@@ -43,9 +190,95 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
-      # Fails fast, before the long gates, when a workflow references an action
-      # by a tag, a branch or a short SHA. Also part of `make check`.
-      - name: Check action pins
-        run: make pincheck
-      - name: Run gates
-        run: make check
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ runner.os }}-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ matrix.go }}-
+      - name: make test
+        run: make test
+      - name: make test-isolated
+        run: make test-isolated
+
+  codeql:
+    name: codeql (${{ matrix.language }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - if: matrix.language == 'go'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ github.job }}-${{ matrix.language }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            go-${{ github.job }}-${{ matrix.language }}-${{ runner.os }}-${{ env.GO_VERSION }}-
+      # With build-mode autobuild the action builds the code itself: no build
+      # step belongs between init and analyze.
+      - uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  openspec:
+    name: openspec
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # make spec-check fetches the OpenSpec CLI through npx.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+      - name: make spec-check
+        env:
+          # Empty or all zeros on some events; the target then falls back to
+          # the merge base with origin/main.
+          SPEC_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: make spec-check SPEC_BASE="$SPEC_BASE"
+
+  # The one check a ruleset requires. It runs whatever the other jobs did, and
+  # fails unless every one of them succeeded: a cancelled or skipped job is not
+  # a pass. It also fails when its own needs list omits a job in this file.
+  ci-ok:
+    name: ci-ok
+    if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    needs: [format, vet, lint, generate, vuln, pincheck, tools-check, test, codeql, openspec]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: needs lists every job
+        run: .github/scripts/ci-needs-check.sh .github/workflows/ci.yml ci-ok
+      - name: every dependency succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e 'to_entries | map(select(.value.result != "success")) | if length == 0 then true else (map("ci-ok: \(.key) \(.value.result)\n") | .[] | stderr) | false end' <<<"$NEEDS"
