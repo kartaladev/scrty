@@ -169,10 +169,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a `Lifetime` past a `LifetimeReporter`'s window gives `ErrConfig`;
   - `Claims: {"iss": "x"}` gives `ErrConfig` and an empty string, and so do `sub`, `iat`, `exp` and `jti`;
   - an issuer built for `signingkey.ES256` over a key source holding it signs ES256.
-- [ ] FAIL; implement. Add `TestJWXAllowList` entries only for new jwx calls. PASS. Commit.
+- [ ] FAIL; implement. Extend the allow-list in `token/integration_test.go`, which `TestProductionSourceGuards` and `TestJOSEAllowListIsHonest` read, only for new jwx calls. PASS. Commit.
 
 ### Task 2.4: Chain refusal and docs
-**Files:** Test `httpsec/bearer_tokentype_test.go`; Modify godoc in `token/doc.go`
+**Files:** Test `httpsec/bearer_tokentype_test.go`; Modify the package godoc in `token/claims.go`
 - [ ] Red `TestBearer_RefusesOtherTokenTypes`. `EnableBearerToken` gets an ID token (`typ` `JWT`) and an access token (`at+jwt`), both from a `token.Issuer` over the chain's own keys and issuer. Each answers 401 and reaches the error handler as the uniform authentication failure.
 - [ ] Run it. If it passes before 2.2's code, it is not testing the change, so drop 2.2's check temporarily to see it fail. Green comes from 2.2. Godoc names the default type. Run `go doc ./token WithTokenType`. Commit.
 
@@ -802,6 +802,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - two provider paths equal;
   - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`;
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
+  - `EnableJWKSEndpoint` given a key provider for which `(*Provider).SignsWith` answers false on a comparable value → `ErrConfig`, and a wrapped provider, which it cannot compare, → built, as the godoc says;
   - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (`httpsec/options.go`).
 - [ ] FAIL; implement; PASS; commit.
 - [ ] Red rows on `TestOIDCProvider_Construction` (R2, R11): browser sessions on without CSRF protection refused; `WithoutBrowserSessions` without it built; no security headers refused; `WithOIDCPagesCarryFrameAncestors` without them built. FAIL; implement; PASS; commit.

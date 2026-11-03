@@ -390,7 +390,7 @@ Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
 - **H4, an orphaned grant row.** Reuse revocation deletes the lineage but not the grant row. The `ReuseObserver` marks it revoked, and the sweeper removes it. The observer is not called when the revocation itself fails, so the refresh path must treat a missing lineage as revoked. *Reads* as revoked, refusing the request and writing nothing: R8.
 - **H5 and H6:** added by the refresh, in R7 and R8.
 - **Access tokens outlive revocation (C7).** A JWT access token stays valid until its expiry whatever the grant storage. P4 answers this with a short lifetime and an opaque option.
-- **Token-type confusion (C10).** `token`'s verifier checks no `typ` today, and P4 signs access tokens over the same key source as first-party tokens. Each token type must validate only as itself.
+- **Token-type confusion (C10), `REPRODUCED` 2026-11-04.** `token`'s verifier checked no `typ`, and P4 signs access tokens over the same key source as first-party tokens, so an `at+jwt` token passed a default verifier (`TestVerifier_TokenType`, failing before the fix with `Expected error with "token: invalid" in chain but got nil`). jwx also wrote `typ: JWT` on first-party tokens by itself. Each token type now validates only as itself.
 
 #### Sub-decisions that follow (decided 2026-11-02, as recommended)
 
@@ -1105,6 +1105,12 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **A sign-in with no identifier.** #68 makes a login with one fail matching `token.ErrNoSubject`. The resume does the same, for a session stored before that or by a consumer's own path, and issues no code.
 - **A session only a late renewal may recover** is not a sign-in that can resume. #68's `admit` passes such a session on for the renewal endpoint only.
 - **Cross-check.** A JWKS provider that is the same manager as the key source can be checked at construction. A wrapped one cannot, and the godoc says so, as #68 does for wrapped verifiers.
+- **What `token.Issuer` settled while being built (2026-11-04).**
+  - **It issues everything but the first-party type.** `Issue.Type` equal to `TypeFirstParty` is refused, so an issuer cannot stand in for a generator with its subject mode.
+  - **Options.** `NewIssuer` takes `WithTokenLifetime` and `WithClock`, with the generator's 15-minute default, and refuses every other `Option`, since a generator's alg, subject mode or type would mean nothing there.
+  - **Further refusals.** `aud` as a further claim, because it would silently override `Issue.Audience`, an empty `Issue.ID`, and a `cnf` that `WithConfirmation` would refuse, because it would mint a token `Verify` refuses.
+  - **Comparison.** `typ` folds ASCII letters only, so `applİcatİon/scrty+jwt` is refused.
+  - **Tokens issued before this change** carry `typ: JWT` and are refused. Nothing is tagged yet, so this needs no migration.
 - **Background work.** #68's `signingkey` treats a store call cut off by `Shutdown` as no failure, and `notify` replaces a worker whose delivery ends its goroutine. Back-channel delivery follows both (R14).
 
 #### R7. An outstanding code does not outlive the sign-in or the user's grants (H5)
@@ -1157,6 +1163,14 @@ The user confirmed on 2026-11-04 that DPoP support is required. P6 stands, and D
 #### R13. Clients over time
 
 - **A consumer's registry cannot be checked at construction.** "Wiring mistakes fail at construction" held only for configured clients. A client read from a durable registry passes the same validation when read. A failure counts as an unknown client and is logged with the setting.
+- **What the client layer settled while being built (2026-11-04).**
+  - **Secrets do not print.** `Client.Secret` and `ClientSecret.Digest` are `SecretBytes`, which renders `[REDACTED]` under every format verb and in JSON, and still assigns from `[]byte`.
+  - **`JWKS` holds public keys only.** An `oct` key, or any key with `d`, is a configuration error at construction and on a registry read. `private_key_jwt` takes exactly one of `JWKS` and `JWKSURI`.
+  - **Logout pages are required.** `Deps.LogoutURL` and `Deps.LoggedOutURL` are both required at `New`, so a forgotten URL cannot silently turn a mandatory feature off.
+  - **Registry reads.** A client read back is validated in full, and one that fails, answers with another client's ID, or holds a raw `Secret`, is treated as unknown and logged. That includes a key algorithm the provider cannot sign, as R6 says.
+  - **Rotation.** `NewClientSecret(secret, expiresAt)` builds a digest entry, and `(*MemoryRegistry).PutRegistered` registers up to two. A durable registry returns `RegisteredClient` values built with `NewClientSecret`, so `ClientStore` gains no rotation method.
+  - **The JWKS cross-check.** `(*Provider).SignsWith(keys any) bool` compares by identity, and an incomparable value answers false. `EnableOIDCProvider` calls it (task 8.1).
+  - **Refused schemes need no list.** `javascript:`, `data:`, `vbscript:` and `file:` hold no period, so they already fail R11's private-use rule for a native client and the `https` rule for any other. A separate list changed no outcome.
 - **Secret rotation.** One digest per client forces downtime to rotate. A client may hold a second, and a secret may carry an expiry. Keycloak's rotation policy has an old-secret expiry in the same way. Default: one secret, no expiry.
 - **Client key rotation.** An unknown `kid` refetches `jwks_uri`, at most once per cooldown, 30 s by default, as the relying party's key-set cache already does (`oidc.DefaultJWKSRefetchCooldown`).
 - **Assertion typing.** `draft-ietf-oauth-rfc7523bis` says a client assertion SHOULD be typed `client-authentication+jwt`, and that rejecting an untyped one is NOT RECOMMENDED. That is accepted, and a token of another type is refused, so an access token cannot authenticate a client.

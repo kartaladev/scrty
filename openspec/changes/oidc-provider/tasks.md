@@ -23,10 +23,10 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 2. Token types and claims (`token`, `token-issuance`)
 
-- [ ] 2.1 Issue every first-party token with header `typ` `scrty+jwt`, replaceable by an option. Refuse at construction a replacement equal to `at+jwt`, `JWT` or `logout+jwt`, test-first. Verify: `go test -run 'TestGenerator_TokenType' -count=1 ./token/`.
-- [ ] 2.2 Enforce `typ` at verification: a verifier accepts only its declared type (the first-party type by default), compared case-insensitively with an `application/` prefix ignored. A missing or other type is refused as `ErrInvalid`, and no option accepts any type. Test-first, including the red test for the token-type confusion risk: an `at+jwt` token signed by the same keys, with the same issuer and audience, refused by a default verifier. Verify: `go test -run 'TestVerifier_TokenType' -count=1 ./token/`.
-- [ ] 2.3 Add `token.Issuer`, built from a key source, an algorithm and an issuer identifier, leaving `Generator` unchanged (R6). It issues a token of a declared type for a named subject, with further claims (`client_id`, `scope`, `nonce`, `auth_time`, `acr`, `amr`, `azp`, `sid`, `gid`, `events`, `cnf`) and a per-token audience of one or more values, test-first. A further claim naming `iss`, `sub`, `iat`, `exp` or `jti` fails as a configuration error and issues nothing, an empty subject matches `ErrNoSubject`, and a lifetime past the key cap is refused. Extend the jwx allow-list test only for calls this task adds. Verify: `go test -run 'TestIssuer|TestJWXAllowList' -count=1 ./token/`.
-- [ ] 2.4 Prove at the chain that an ID token and an access token presented to `EnableBearerToken` are refused as unauthenticated, test-first. Godoc the type option and the typed issue with their defaults. Verify: `go test -run 'TestBearer_RefusesOtherTokenTypes' -count=1 ./httpsec/`, and `go doc ./token` names the default type.
+- [x] 2.1 Issue every first-party token with header `typ` `scrty+jwt`, replaceable by an option. Refuse at construction a replacement equal to `at+jwt`, `JWT` or `logout+jwt`, test-first. Verify: `go test -run 'TestGenerator_TokenType' -count=1 ./token/`.
+- [x] 2.2 Enforce `typ` at verification: a verifier accepts only its declared type (the first-party type by default), compared case-insensitively with an `application/` prefix ignored. A missing or other type is refused as `ErrInvalid`, and no option accepts any type. Test-first, including the red test for the token-type confusion risk: an `at+jwt` token signed by the same keys, with the same issuer and audience, refused by a default verifier. Verify: `go test -run 'TestVerifier_TokenType' -count=1 ./token/`.
+- [x] 2.3 Add `token.Issuer`, built from a key source, an algorithm and an issuer identifier, leaving `Generator` unchanged (R6). It issues a token of a declared type for a named subject, with further claims (`client_id`, `scope`, `nonce`, `auth_time`, `acr`, `amr`, `azp`, `sid`, `gid`, `events`, `cnf`) and a per-token audience of one or more values, test-first. A further claim naming `iss`, `sub`, `iat`, `exp` or `jti` fails as a configuration error and issues nothing, an empty subject matches `ErrNoSubject`, and a lifetime past the key cap is refused. Extend the jwx allow-list test only for calls this task adds. Verify: `go test -run 'TestIssuer|TestNewIssuer|TestProductionSourceGuards|TestJOSEAllowListIsHonest' -count=1 ./token/`.
+- [x] 2.4 Prove at the chain that an ID token and an access token presented to `EnableBearerToken` are refused as unauthenticated, test-first. Godoc the type option and the typed issue with their defaults. Verify: `go test -run 'TestBearer_RefusesOtherTokenTypes' -count=1 ./httpsec/`, and `go doc ./token` names the default type.
 
 ## 3. Session end observers (`session`, `sessions`, design T4)
 
@@ -36,7 +36,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 4. Provider construction and clients (`oidcprovider`, `oidc-provider-clients`, design T1)
 
-- [ ] 4.1 Create the `oidcprovider` package with `New`, test-first, one construction table:
+- [x] 4.1 Create the `oidcprovider` package with `New`, test-first, one construction table:
   - issuer `https` with no query or fragment, and the loopback-only `http` option;
   - the key source required (`Deps.Keys`, R6), and a JWKS provider that is the same manager checked where it can be seen;
   - login and consent URLs required, absolute and on the issuer's origin (R9);
@@ -47,7 +47,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - the logged-out page and the logout page required when logout is enabled, on the issuer's origin.
 
   Verify: `go test -run 'TestNew_Construction' -count=1 ./oidcprovider/`.
-- [ ] 4.2 Validate client registration at construction, test-first, one table, each failure naming the client and setting:
+- [x] 4.2 Validate client registration at construction, test-first, one table, each failure naming the client and setting:
   - client type: confidential or public; application type web (default) or native;
   - authentication method: one per client, `client_secret_basic` by default, `client_secret_jwt` refused, a secret method on a public client refused, `none` on a confidential client refused;
   - redirect URIs: required when the client uses the authorization endpoint; absolute, without fragment, wildcard or user information; `https` for web; `https`, a private-use scheme containing a period, or loopback `http` for native; `javascript`, `data`, `vbscript` and `file` refused. Post-logout URIs follow the same rules, and a back-channel logout URI must be `https`;
@@ -59,8 +59,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - defaults: first-party off, grant types `authorization_code`, a public web client tied to its sign-in (R13).
 
   Verify: `go test -run 'TestClient_Validation' -count=1 ./oidcprovider/`.
-- [ ] 4.3 Match redirect URIs by exact string, except that a native client's loopback IP redirect URI may differ in port only, test-first, with the four `oidc-provider-clients` scenarios as the table. Verify: `go test -run 'TestClient_MatchRedirectURI' -count=1 ./oidcprovider/`.
-- [ ] 4.4 Add the client registry port and its in-memory default built from configuration, test-first, covering:
+- [x] 4.3 Match redirect URIs by exact string, except that a native client's loopback IP redirect URI may differ in port only, test-first, with the four `oidc-provider-clients` scenarios as the table. Verify: `go test -run 'TestClient_MatchRedirectURI' -count=1 ./oidcprovider/`.
+- [x] 4.4 Add the client registry port and its in-memory default built from configuration, test-first, covering:
   - a consumer registry replacing the default;
   - generated secrets: 256 bits, returned once, stored as a digest;
   - supplied secrets: at least 32 bytes;
