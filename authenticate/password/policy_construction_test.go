@@ -1,6 +1,7 @@
 package password_test
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 
@@ -104,6 +105,16 @@ func TestPolicy_Construction(t *testing.T) {
 			name:   "a typed-nil reuse matcher",
 			opts:   reuse(consumerHistory, 5, password.WithReuseMatchers(plainEncoder{}, (*plainEncoder)(nil))),
 			assert: refused("matcher"),
+		},
+		{
+			name:   "a nil logger",
+			opts:   with(password.WithPolicyLogger(nil)),
+			assert: refused("WithPolicyLogger"),
+		},
+		{
+			name:   "a typed-nil logger is the same nil",
+			opts:   with(password.WithPolicyLogger((*slog.Logger)(nil))),
+			assert: refused("WithPolicyLogger"),
 		},
 		{
 			name:   "a nil clock",

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,6 +37,8 @@ type BreachSource interface {
 	// Range returns the corpus entries whose SHA-1 hash starts with prefix,
 	// five upper-case hexadecimal characters: each entry maps the remaining
 	// 35 hexadecimal characters to the number of times the password was seen.
+	// The policy matches a suffix without regard to case, so a source may key
+	// its entries in either.
 	// An entry with a count of zero is padding and matches nothing. A lookup
 	// that could not be answered is an error, never an empty map.
 	Range(ctx context.Context, prefix string) (map[string]int, error)
@@ -57,6 +60,7 @@ const (
 type breachRule struct {
 	src       BreachSource
 	onFailure LookupFailure
+	logger    *slog.Logger // set by NewPolicy from WithPolicyLogger
 }
 
 // Breached adds the breach check: a candidate found in src with a count above
@@ -101,6 +105,8 @@ func (r *breachRule) check(ctx context.Context, candidate string) error {
 		}
 
 		if r.onFailure == Accept {
+			r.logger.LogAttrs(ctx, slog.LevelError, breachLookupAcceptedMsg, diag.Failure("breach-lookup", err)...)
+
 			return nil
 		}
 
@@ -115,6 +121,10 @@ func (r *breachRule) check(ctx context.Context, candidate string) error {
 
 	return nil
 }
+
+// breachLookupAcceptedMsg is the fixed message of the ERROR record a failed
+// lookup leaves when the policy accepts the candidate unchecked.
+const breachLookupAcceptedMsg = "password: breach lookup failed; the candidate was accepted unchecked"
 
 // lookupUnavailableText is ErrLookupUnavailable's text, the fixed text of the
 // error a failed lookup returns.

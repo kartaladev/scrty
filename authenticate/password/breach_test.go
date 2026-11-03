@@ -5,7 +5,9 @@ import (
 	"crypto/sha1" //nolint:gosec // the range API is keyed by SHA-1; nothing here protects a secret with it
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -471,6 +473,207 @@ func TestPolicy_BreachedConstruction(t *testing.T) {
 
 			p, err := password.NewPolicy(tc.opt(gomock.NewController(t)))
 			tc.assert(t, p, err)
+		})
+	}
+}
+
+// recordingHandler keeps every slog record it is given, at every level, with
+// the message and attributes flattened for leak checks.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []recordedLog
+}
+
+type recordedLog struct {
+	level   slog.Level
+	message string
+	attrs   string
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	var b strings.Builder
+
+	r.Attrs(func(a slog.Attr) bool {
+		fmt.Fprintf(&b, " %s=%v", a.Key, a.Value.Resolve().Any())
+
+		return true
+	})
+
+	h.mu.Lock()
+	h.records = append(h.records, recordedLog{level: r.Level, message: r.Message, attrs: b.String()})
+	h.mu.Unlock()
+
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingHandler) all() []recordedLog {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return append([]recordedLog(nil), h.records...)
+}
+
+// TestPolicy_BreachedLeavesATraceWhenTheLookupFailsAndAccepts pins that a
+// lookup failure the policy accepts is not silent: one ERROR record says the
+// candidate went through unchecked, without the candidate, its hash, its
+// prefix or the source's error text. A caller's hang-up and Refuse log nothing.
+func TestPolicy_BreachedLeavesATraceWhenTheLookupFailsAndAccepts(t *testing.T) {
+	t.Parallel()
+
+	prefix, suffix := sha1Hex(breachCandidate)
+	errSource := errors.New("dial tcp: refused")
+
+	cancelled := func(ctx context.Context) context.Context {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		return cctx
+	}
+
+	type testCase struct {
+		name      string
+		onFailure password.LookupFailure
+		ctx       func(ctx context.Context) context.Context
+		result    func(ctx context.Context) error
+		assert    func(t *testing.T, err error, records []recordedLog)
+	}
+
+	cases := []testCase{
+		{
+			name:      "accept lets the candidate through and leaves one error that does not leak it",
+			onFailure: password.Accept,
+			result:    func(context.Context) error { return errSource },
+			assert: func(t *testing.T, err error, records []recordedLog) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.Len(t, records, 1)
+				assert.Equal(t, slog.LevelError, records[0].level)
+				assert.Equal(t, "password: breach lookup failed; the candidate was accepted unchecked", records[0].message)
+				assert.Contains(t, records[0].attrs, "*errors.errorString", "the failure's Go type")
+
+				text := strings.ToUpper(records[0].message + records[0].attrs)
+				for _, secret := range []string{breachCandidate, prefix, suffix, prefix + suffix, "dial tcp"} {
+					assert.NotContains(t, text, strings.ToUpper(secret), "the record must not carry %q", secret)
+				}
+			},
+		},
+		{
+			name:      "accept with a caller who hung up logs nothing at error",
+			onFailure: password.Accept,
+			ctx:       cancelled,
+			result:    func(ctx context.Context) error { return ctx.Err() },
+			assert: func(t *testing.T, err error, records []recordedLog) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.Canceled)
+
+				for _, r := range records {
+					assert.Less(t, r.level, slog.LevelError, "unexpected record %+v", r)
+				}
+			},
+		},
+		{
+			name:      "refuse fails with ErrLookupUnavailable and writes no record",
+			onFailure: password.Refuse,
+			result:    func(context.Context) error { return errSource },
+			assert: func(t *testing.T, err error, records []recordedLog) {
+				t.Helper()
+
+				require.ErrorIs(t, err, password.ErrLookupUnavailable)
+				assert.Empty(t, records)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &recordingHandler{}
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			src := NewMockBreachSource(gomock.NewController(t))
+			src.EXPECT().Range(gomock.Any(), prefix).Return(nil, tc.result(ctx))
+
+			p, err := password.NewPolicy(
+				password.WithPolicyLogger(slog.New(h)),
+				password.Breached(src, tc.onFailure))
+			require.NoError(t, err)
+
+			err = p.Check(ctx, checkUser(), breachCandidate)
+			tc.assert(t, err, h.all())
+		})
+	}
+}
+
+// TestPolicy_BreachedLogsToTheDefaultLogger pins the default: with no
+// WithPolicyLogger, the record goes to slog.Default() as it is when the policy
+// is built. It replaces the default logger, so it does not run in parallel.
+func TestPolicy_BreachedLogsToTheDefaultLogger(t *testing.T) {
+	h := &recordingHandler{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	prefix, _ := sha1Hex(breachCandidate)
+	src := NewMockBreachSource(gomock.NewController(t))
+	src.EXPECT().Range(gomock.Any(), prefix).Return(nil, errors.New("down"))
+
+	p, err := password.NewPolicy(password.Breached(src, password.Accept))
+	require.NoError(t, err)
+	require.NoError(t, p.Check(t.Context(), checkUser(), breachCandidate))
+
+	records := h.all()
+	require.Len(t, records, 1)
+	assert.Equal(t, slog.LevelError, records[0].level)
+}
+
+// lowerKeySource answers with its own keys, whatever their case: the
+// BreachSource contract says only "35 hexadecimal characters".
+type lowerKeySource struct{ entries map[string]int }
+
+func (s lowerKeySource) Range(context.Context, string) (map[string]int, error) {
+	return s.entries, nil
+}
+
+// TestPolicy_BreachedMatchesASourceKeyInAnyCase pins that a suffix matches
+// whatever the key's case: a custom source with lower-case keys must not make
+// the breach screen fail open.
+func TestPolicy_BreachedMatchesASourceKeyInAnyCase(t *testing.T) {
+	t.Parallel()
+
+	_, suffix := sha1Hex(breachCandidate)
+
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{name: "upper-case key", key: strings.ToUpper(suffix)},
+		{name: "lower-case key", key: strings.ToLower(suffix)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p, err := password.NewPolicy(password.Breached(
+				lowerKeySource{entries: map[string]int{tc.key: 7}}, password.Refuse))
+			require.NoError(t, err)
+
+			err = p.Check(t.Context(), checkUser(), breachCandidate)
+
+			var rejected password.RejectedError
+			require.ErrorAs(t, err, &rejected)
+			assert.Equal(t, password.RuleBreached, rejected.Rule)
 		})
 	}
 }

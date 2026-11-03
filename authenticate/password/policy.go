@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"unicode/utf8"
 
@@ -113,6 +114,8 @@ type policyConfig struct {
 	words    ContextWordsFunc
 	wordsSet bool // ContextWords was applied
 
+	logger *slog.Logger
+
 	breach *breachRule
 	reuse  *reuseSpec
 }
@@ -133,7 +136,9 @@ type policyConfig struct {
 //   - no reuse rule ([NoReuse] adds it);
 //   - the Argon2id encoder at its defaults, which encodes a change and is the
 //     first matcher of the reuse rule ([WithEncoder] replaces it); and
-//   - the system clock ([WithClock] replaces it).
+//   - the system clock ([WithClock] replaces it); and
+//   - slog.Default() as the logger of what the policy accepts without a
+//     check ([WithPolicyLogger] replaces it).
 //
 // Every option replaces or adds only what it names. The same encoder's
 // [Upgrader] decides, at a login, whether a stored hash is outdated: see
@@ -146,6 +151,7 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		minLength: DefaultMinLength,
 		maxLength: DefaultMaxLength,
 		clock:     clock.System(),
+		logger:    slog.Default(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -165,7 +171,13 @@ func NewPolicy(opts ...PolicyOption) (*Policy, error) {
 		return nil, fmt.Errorf("%w: the clock is nil", ErrConfig)
 	}
 
+	if nilcheck.IsNil(cfg.logger) {
+		return nil, fmt.Errorf("%w: the logger is nil; WithPolicyLogger needs a logger", ErrConfig)
+	}
+
 	if cfg.breach != nil {
+		cfg.breach.logger = cfg.logger
+
 		if err := cfg.breach.validate(); err != nil {
 			return nil, err
 		}
@@ -317,6 +329,17 @@ func WithEncoder(e Encoder) PolicyOption {
 // construction.
 func WithClock(c clock.Clock) PolicyOption {
 	return func(cfg *policyConfig) { cfg.clock = c }
+}
+
+// WithPolicyLogger replaces the logger the policy writes to when it accepts a
+// candidate without a check it was configured to make: today, a breach lookup
+// that failed under [Accept]. The record is at ERROR, carries fixed text and
+// the failure's Go type, and never the candidate, its hash or the error's text.
+//
+// Default: slog.Default(), read when [NewPolicy] runs. A nil logger, typed nil
+// included, fails construction.
+func WithPolicyLogger(l *slog.Logger) PolicyOption {
+	return func(c *policyConfig) { c.logger = l }
 }
 
 // Check refuses candidate for user with a [RejectedError] naming the first
