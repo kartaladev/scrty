@@ -7,6 +7,7 @@ package notify_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -466,22 +467,29 @@ func (d *deliveredSet) has(subject string) bool {
 }
 
 // TestQueuedSender_SendsRacingShutdown pins the accept-then-deliver promise
-// under contention: a send that returned nil has a message the drain
-// delivers, and every other send was refused with the shut-down error. Run it
-// under -race.
+// under contention: a send that returned nil has a message the drain delivers,
+// and once Shutdown has returned every send is refused with the shut-down error.
+//
+// Each sender keeps sending until it is refused, so Shutdown always lands in the
+// middle of a stream of sends and every sender ends in a refusal, however the
+// goroutines are scheduled. A full queue is neither outcome: Send never waits
+// for space, so the sender tries again. Run it under -race.
 func TestQueuedSender_SendsRacingShutdown(t *testing.T) {
 	t.Parallel()
 
 	const (
-		senders = 100
-		perSend = 10
+		senders   = 100
+		queueSize = 1000
 	)
 
 	inner := &deliveredSet{seen: map[string]bool{}}
 
+	// A sender that outruns the workers fills the queue, and Send logs each
+	// drop at error. That is expected here, so the records are discarded.
 	s, err := notify.NewQueuedSender(inner,
 		notify.WithQueueWorkers(4),
-		notify.WithQueueMaxMessages(senders*perSend),
+		notify.WithQueueMaxMessages(queueSize),
+		notify.WithQueueLogger(slog.New(slog.DiscardHandler)),
 	)
 	require.NoError(t, err)
 
@@ -500,6 +508,11 @@ func TestQueuedSender_SendsRacingShutdown(t *testing.T) {
 
 	release := make(chan struct{})
 
+	// stopped closes once Shutdown has returned. A sender that sees it makes one
+	// last send and stops whatever the answer, so a Send that wrongly goes on
+	// accepting fails the assertions below instead of hanging the test.
+	stopped := make(chan struct{})
+
 	for g := range senders {
 		wg.Go(func() {
 			defer func() {
@@ -510,19 +523,31 @@ func TestQueuedSender_SendsRacingShutdown(t *testing.T) {
 
 			<-release
 
-			// Each sender keeps going until it is refused, so the refusal
-			// path is always exercised alongside the accepting one.
-			for i := range perSend {
+			for i := 0; ; i++ {
+				last := false
+
+				select {
+				case <-stopped:
+					last = true
+				default:
+				}
+
 				msg := testMessage()
 				msg.Subject = fmt.Sprintf("message %d-%d", g, i)
 
 				err := s.Send(t.Context(), msg)
 
+				if errors.Is(err, notify.ErrQueueFull) && !last {
+					runtime.Gosched()
+
+					continue
+				}
+
 				mu.Lock()
 				outcomes = append(outcomes, outcome{subject: msg.Subject, err: err})
 				mu.Unlock()
 
-				if err != nil {
+				if err != nil || last {
 					return
 				}
 
@@ -535,11 +560,15 @@ func TestQueuedSender_SendsRacingShutdown(t *testing.T) {
 	shutdown := make(chan error, 1)
 
 	go func() {
+		defer close(stopped)
+
 		<-release
 
 		// Shut down mid-stream: once some sends have been accepted, while
-		// others are still arriving.
-		for accepted.Load() < senders/2 {
+		// others are still arriving. The deadline only matters if Send stops
+		// accepting altogether, which the accepted assertion below then reports.
+		deadline := time.Now().Add(30 * time.Second)
+		for accepted.Load() < senders/2 && time.Now().Before(deadline) {
 			runtime.Gosched()
 		}
 
@@ -569,7 +598,7 @@ func TestQueuedSender_SendsRacingShutdown(t *testing.T) {
 		assert.ErrorIs(t, o.err, notify.ErrAlreadyShutdown, "%s was refused with the wrong error", o.subject)
 	}
 
-	assert.Positive(t, refused, "some sends raced past the shutdown and were refused")
+	assert.Equal(t, senders, refused, "every sender ends in a refusal")
 	assert.GreaterOrEqual(t, accepted.Load(), int64(senders/2), "some sends were accepted before it")
 }
 
