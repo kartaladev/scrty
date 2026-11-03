@@ -144,8 +144,8 @@ const replaySweepInterval = time.Minute
 // replayShardCount is how many shards the memory store splits its records into.
 const replayShardCount = 64
 
-// replayShardIndex returns the index of the shard key is recorded in: FNV-1a over its bytes,
-// modulo replayShardCount.
+// replayShardIndex returns the index of the shard key is recorded in:
+// FNV-1a over its bytes, modulo replayShardCount.
 func replayShardIndex(key string) int {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key)) // a hash.Hash never fails
