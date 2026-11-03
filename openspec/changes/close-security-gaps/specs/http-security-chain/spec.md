@@ -88,7 +88,7 @@ The listing SHALL never return session identifiers, only opaque handles valid fo
 - **THEN** the request fails with an error the default mapping answers with 500, and its text is fixed library text
 
 ### Requirement: Login upgrades an outdated password hash when the consumer supplies a write
-When the consumer supplies a rehash write, a password login, Basic authentication or password re-proof whose password verified, and which is not refused afterwards, SHALL ask the current encoder whether the stored hash needs upgrading; when it does, the submitted password SHALL be re-encoded with the current encoder, only once the outcome is decided and only for a login not refused, and the write SHALL receive the user, the stored hash it replaces and the new hash, after the outcome is decided and on the same request, so the consumer can replace the hash only while it is still the stored one. A login challenged for a second factor SHALL still upgrade. Neither the re-encoding nor the write SHALL change the outcome: an error from either SHALL be logged without the password or any hash. Without a write, no rehash SHALL happen.
+When the consumer supplies a rehash write, a password login, Basic authentication or password re-proof whose password verified, and which is not refused afterwards, SHALL ask the current encoder whether the stored hash needs upgrading; when it does, the submitted password SHALL be re-encoded with the current encoder, only once the outcome is decided and only for a login not refused, and the write SHALL receive the user, the stored hash it replaces and the new hash, after the outcome is decided and on the same request, so the consumer can replace the hash only while it is still the stored one. A form login or password re-proof challenged for a second factor SHALL still upgrade. Basic authentication is stateless, so a challenge ends it: the request is refused, and it SHALL NOT upgrade. Neither the re-encoding nor the write SHALL change the outcome: an error from either SHALL be logged without the password or any hash. Without a write, no rehash SHALL happen.
 
 #### Scenario: Raised cost
 - **WHEN** the encoder is Argon2id at 128 MiB, a user's stored hash is Argon2id at 64 MiB, a rehash write is configured, and the user logs in
@@ -119,8 +119,12 @@ When the consumer supplies a rehash write, a password login, Basic authenticatio
 - **THEN** the store decides the condition in the write itself, the new password stays, and the login still succeeds
 
 #### Scenario: Challenged for a second factor
-- **WHEN** a rehash write is configured and a login with an outdated stored hash is challenged for a second factor
+- **WHEN** a rehash write is configured and a form login with an outdated stored hash is challenged for a second factor
 - **THEN** the write receives the upgraded hash
+
+#### Scenario: Basic challenged for a second factor
+- **WHEN** a Basic rehash write is configured and Basic authentication with an outdated stored hash is challenged for a second factor
+- **THEN** the request is refused with the challenge and the write is not called
 
 ### Requirement: Logout can clear the browser's site data
 When the consumer opts in, a successful logout response SHALL carry `Clear-Site-Data` with the directives the consumer chooses from `"cache"`, `"cookies"` and `"storage"`. It SHALL be sent only on a secure request. By default no `Clear-Site-Data` header SHALL be sent. Opting in with no directive, or with another directive, SHALL fail construction.

@@ -171,8 +171,17 @@ Each finding was reproduced on `b441110` by a failing test before it was planned
 - [x] 17.2 Run the gate. Verify: `make check` passes.
 - [x] 17.3 Review the rename with a reviewer that did not write it: no stale name in code, godoc or README, no import alias added, the option names unchanged, and no behaviour change in the diff. Verify: each is listed as met, or a finding is filed.
 
+## 18. Verification follow-up (D11, D16; 2026-11-03)
+
+- [ ] 18.1 Correct the `password.Policy` godoc (`authenticate/password/policy.go:84`): the policy never logs a candidate, hash or context word; its one record is a breach-lookup failure accepted under `Accept`, at ERROR, through the logger `WithPolicyLogger` sets. Godoc only. Verify: `go doc ./authenticate/password Policy` shows it; `go vet ./authenticate/password/`.
+- [ ] 18.2 Test the password-reuse "Depth 3" scenario as the spec gives it (p1 provisioned, p2, p3, p4; then p4, p3, p2 refused as reused, p1 accepted), and "Listing across replicas" in the sign-in store suite (`NewReplica`, two replicas sharing one PostgreSQL store, each lists both sign-ins). Red step: break the behaviour temporarily and see each fail for that reason, then restore it. Verify: `go test -count=1 -run 'Reuse' ./authenticate/password/` and `cd test && go test -count=1 -run 'Session' ./sqlstore/ ./pgxstore/ ./gormstore/`.
+- [ ] 18.3 Add a repository check in the `tools` module: every `go.work` module and `tools` has a weekly `gomod` entry in `.github/dependabot.yml`, `github-actions` has one, and no workflow under `.github/workflows` approves or enables auto-merge for a pull request. Red step: run it against fixtures with a module missing and with an auto-merge step, and see each fail naming the module or the workflow. Verify: `cd tools && GOWORK=off go test -count=1 ./...`.
+- [ ] 18.4 Run the gate. Verify: `make check` passes.
+- [ ] 18.5 Review group 18 against the requirements and scenarios changed in its pass, with a reviewer that did not write it. Verify: each is listed as met, or a finding is filed.
+
 ## Workflow follow-up
 
 - After merge, the cleanups listed under design.md's Open Questions (PR #45 second review): one shared header-token check, one shared base64url check, a typed sign-in column struct.
+- Attach each published module's SBOM to the release in `release-readiness`'s release workflow (D16); the `supply-chain` requirement here covers producing them only.
 - Update `CHANGELOG.md`'s first entry through `release-readiness` with this change's breaking items and security additions.
 - Archive `close-security-gaps` after `release-readiness` is updated, then archive or close `trusted-proxy-client-ip` as superseded.

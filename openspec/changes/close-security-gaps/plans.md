@@ -761,6 +761,44 @@ A mechanical rename with no behaviour change, so the existing suites are its tes
 ### Task 17.3: Review (fresh reviewer)
 - [ ] A Sonnet reviewer that did not write the rename checks the diff: no stale `security` package reference or `secevent` in code, godoc or README; no alias added; option names unchanged; only package clauses, import paths, qualifiers and comments changed (no logic line). Each met, or a finding.
 
+## Task group 18: Verification follow-up (lanes I1–I3 in parallel, then the main session)
+
+From the `/opsx:verify` report of 2026-11-03. Each lane runs in its own worktree from the branch head; no file is shared. The new tests pin behaviour the code already has, so each red step breaks that behaviour temporarily, shows the test failing for that reason, and edits it back (`golang-tdd.md`). The two framework-adapters scenarios the report listed are already covered by the conformance rows `trustedProxyNamesTheClientOnEveryAdapter` and `unattributableClientAddress`, which run on net/http, gin and fiber; they get no task. The Basic rehash scenario (D11) is already pinned by `login_rehash_test.go` ("challenged after the password verified").
+
+### Task 18.1: The policy's godoc states its one log record (lane I1, Haiku: exact text)
+
+**Files:** Modify `authenticate/password/policy.go:84-85` (the `Policy` type comment).
+
+- [ ] **Step 1:** Replace "The policy writes no log record, and does not keep the candidate after a call returns." with: "The policy never logs a candidate, a hash or a context word, and does not keep the candidate after a call returns. Its one log record is a breach-lookup failure accepted under Accept, written at ERROR with fixed text to the logger WithPolicyLogger sets (default slog.Default())."
+- [ ] **Step 2:** `gofmt -l authenticate/password` empty; `go vet ./authenticate/password/`; `go doc ./authenticate/password Policy` shows the text.
+
+### Task 18.2: Depth 3 and listing across replicas (lane I2, Sonnet)
+
+**Files:** Test `authenticate/password/reuse_test.go` (new row or test `TestPolicy_ReuseDepthThreeSequence`); `test/storetest/session_signins_suite.go` (new case "listing across replicas").
+
+- [ ] **Step 1: Depth 3.** A policy with the reuse rule at depth 3 over an in-memory history; provision `p1`; change to `p2`, `p3`, `p4` through the policy, each succeeding. Then: changing to `p4`, `p3`, `p2` each fails with `errors.Is(err, password.ErrReused)`; changing to `p1` succeeds. Red step: set the depth to 2 temporarily and see the `p2` row fail ("expected ErrReused"), then restore.
+- [ ] **Step 2: Replicas.** In the sign-in suite, a case that creates a sign-in for user U through the harness store and another through `h.NewReplica(t)`, then lists U on each: both listings return both families (compare with `assertListed`). Red step: list on the replica with a different user temporarily and see it return one, then restore. Skip the case where the harness has no replica, as the ambient suite does.
+- [ ] **Step 3: Verify.** `go test -count=1 -run 'Reuse' ./authenticate/password/`; `cd test && go test -count=1 -run 'Session' ./sqlstore/ ./pgxstore/ ./gormstore/` (Docker).
+
+### Task 18.3: Repository check for Dependabot coverage and no auto-merge (lane I3, Sonnet)
+
+**Files:** Create `tools/repocheck/repocheck.go` (package `repocheck`, doc comment stating both rules) and `tools/repocheck/repocheck_test.go`; `tools/go.mod` (promote `golang.org/x/mod` to a direct requirement for `modfile.ParseWork`).
+
+**Interfaces produced:**
+- `func MissingUpdateEntries(dependabot []byte, modules []string) ([]string, error)` returns each directory in `modules` (go.work `use` paths, plus `tools`) with no `package-ecosystem: gomod` entry whose `schedule.interval` is `daily` or `weekly`, and `"github-actions"` when that ecosystem has no such entry.
+- `func AutoMergeSteps(workflows map[string][]byte) []string` returns `file: reason` for every workflow that approves or merges a pull request: a `run` containing `gh pr merge` or `gh pr review` with `--approve`; a `uses` of `peter-evans/enable-pull-request-automerge`, `pascalgn/automerge-action`, `hmarr/auto-approve-action` or `ahmadnassri/action-dependabot-auto-merge`; or any text containing `enablePullRequestAutoMerge`, `mergePullRequest` or `addPullRequestReview`.
+
+- [ ] **Step 1: Failing tests.** `TestMissingUpdateEntries` (table: every module covered → none; `httpsec/ginsec` missing → `["httpsec/ginsec"]`; monthly schedule → listed; no github-actions → `["github-actions"]`). `TestAutoMergeSteps` (table: plain CI → none; `gh pr merge --auto --squash` → named; `hmarr/auto-approve-action@<sha>` → named; `gh pr review --approve` → named). `TestRepository_DependabotAndWorkflows` reads `../../go.work`, `../../.github/dependabot.yml` and `../../.github/workflows/*.y*ml` and asserts both functions return nothing.
+- [ ] **Step 2: Run** `cd tools && GOWORK=off go test -count=1 ./repocheck/`. Expected: FAIL, undefined functions are a compile error and not the red step, so first add the two functions returning nil, then see the fixture rows fail on their assertions.
+- [ ] **Step 3: Implement** with `gopkg.in/yaml.v3` (already required) and `modfile.ParseWork`. Paths are compared cleaned and without a leading `./` or `/`.
+- [ ] **Step 4: Verify** `cd tools && GOWORK=off go vet ./... && GOWORK=off go test -race -count=1 ./...`; `make tools-check`.
+
+### Task 18.4: Gate (main session)
+- [ ] Merge I1–I3, then `make check`. Expected: exit 0.
+
+### Task 18.5: Review (fresh reviewer)
+- [ ] A Sonnet reviewer that wrote none of group 18 checks the diff against the changed scenarios: `password-policy` "Depth 3", `security-state-stores` "Listing across replicas", `supply-chain` "Every module covered", "Never merged automatically" and "Auto-merge workflow refused", and the policy godoc against D10. Each met, or a finding.
+
 ---
 
 ## Self-review notes
@@ -771,3 +809,5 @@ A mechanical rename with no behaviour change, so the existing suites are its tes
 - Group 15 (2026-11-03): each of the six changed capabilities maps to one task (`security-headers` 15.1, `security-policy` 15.2, `password-policy` 15.3, `http-security-chain` 15.4, `automation-challenge` 15.5–15.6, `sender-constrained-tokens` 15.7). New names used across tasks: `WithPolicyLogger`, `SourceGuard.HasRecentAggregateFailures`, `ChallengeSignals.SourceAggregateHasFailures`, `challengeFlowsDefault`. The breach-loop optimisation was declined in D10 and has no task beyond its pinning test.
 - Group 16 (2026-11-03, second review): `sender-constrained-tokens` maps to 16.1 and 16.2, the notice bound in `http-security-chain` to 16.3, the replay sharding (D8, no spec change) to 16.4. New names: `Exchange.bearerCredential`, `issuingBinding`'s `tok` parameter, `dpopProof.staleNonce`, `DefaultSignInNoticeConcurrency`, `WithSignInNoticeConcurrency`, `replayShard`. The three cleanups and the unreproduced list-sort claim have no task; they are recorded under design.md's Open Questions.
 - Group 17 (2026-11-03, naming): D13's package-name amendment maps to 17.1; no spec changes, since specs name no package. No new identifiers: the two packages keep every exported name.
+
+- Group 18 (2026-11-03, verification follow-up): the reworded `supply-chain` requirements map to 18.3 (the SBOM requirement needs no new code: `make sbom` already fails when one cannot be made); the Basic rehash clarification and the two framework-adapters scenarios are covered by existing tests, named in the group's preamble. New names: `repocheck.MissingUpdateEntries`, `repocheck.AutoMergeSteps`.
