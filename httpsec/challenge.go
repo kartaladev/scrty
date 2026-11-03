@@ -145,7 +145,19 @@ const (
 	ChallengeFlowRecoveryStart ChallengeFlow = "recovery-start"
 )
 
-// challengeFlowsAll is every flow the seam covers, the default selection.
+// challengeFlowsDefault is the default selection: every flow the seam covers
+// except Basic authentication, which is opt-in (WithChallengeFlows), because
+// it carries credentials on every request and a challenge would be consulted
+// on every API call.
+var challengeFlowsDefault = []ChallengeFlow{
+	ChallengeFlowFormLogin,
+	ChallengeFlowMagicLinkRequest,
+	ChallengeFlowPasswordlessBegin,
+	ChallengeFlowRecoveryStart,
+}
+
+// challengeFlowsAll is every flow the seam covers, the set of valid names for
+// WithChallengeFlows.
 var challengeFlowsAll = []ChallengeFlow{
 	ChallengeFlowFormLogin,
 	ChallengeFlowBasicAuth,
@@ -195,7 +207,7 @@ type challengeGate struct {
 	flows    map[ChallengeFlow]bool
 
 	// selected is whether WithChallengeFlows named the flows, as opposed to
-	// the default selection of all five.
+	// the default selection of four (challengeFlowsDefault).
 	selected bool
 
 	// countRefusals charges a refusal to the flow's source limit
@@ -236,8 +248,13 @@ type challengeGate struct {
 //   - the account-recovery start (ChallengeFlowRecoveryStart), after its
 //     source limit and before the start is counted or the username looked up.
 //
-// All five are selected by default; WithChallengeFlows narrows them. A source
-// the source limit refuses never reaches v.
+// The default selection is form login, the magic-link request, the
+// passwordless begin and the recovery start. Basic authentication is opt-in:
+// it carries credentials on every request, so a challenge would be consulted
+// on every API call, and a script or service client has no way to answer one.
+// Name it with WithChallengeFlows(ChallengeFlowBasicAuth, ...) to challenge it;
+// WithChallengeFlows replaces the default selection with the flows it names.
+// A source the source limit refuses never reaches v.
 //
 // v answers each request with a ChallengeDecision:
 //
@@ -269,8 +286,10 @@ type challengeGate struct {
 // interface holding a nil pointer, naming the verifier; for a second
 // EnableAutomationChallenge; for a selection (WithChallengeFlows) naming a flow
 // the chain does not enable, naming the flow; and for the default selection over
-// a chain that enables none of the five flows. A verifier that would never be
-// asked reads as protection the chain does not have.
+// a chain that enables none of its four flows, such as one with only Basic
+// authentication; the error says to name Basic through WithChallengeFlows. A
+// verifier that would never be asked reads as protection the chain does not
+// have.
 func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option {
 	const option = "EnableAutomationChallenge"
 
@@ -281,7 +300,7 @@ func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Opt
 
 		g := &challengeGate{
 			verifier:      v,
-			flows:         flowSet(challengeFlowsAll),
+			flows:         flowSet(challengeFlowsDefault),
 			countRefusals: true,
 			now:           c.now,
 		}
@@ -309,18 +328,21 @@ func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Opt
 
 // WithChallengeFlows asks the verifier in the given flows only.
 //
-// Default: every flow, ChallengeFlowFormLogin, ChallengeFlowBasicAuth,
-// ChallengeFlowMagicLinkRequest, ChallengeFlowPasswordlessBegin and
-// ChallengeFlowRecoveryStart. Selecting no flow, a value that names none of
+// Default: ChallengeFlowFormLogin, ChallengeFlowMagicLinkRequest,
+// ChallengeFlowPasswordlessBegin and ChallengeFlowRecoveryStart. Basic
+// authentication is left out unless named here
+// (WithChallengeFlows(ChallengeFlowBasicAuth, ...)): it carries credentials on
+// every request, so a challenge would be consulted on every API call. The
+// selection replaces the default, so name every flow to challenge. Selecting no flow, a value that names none of
 // the five, or a flow the chain does not enable (no EnableBasicAuth for
 // ChallengeFlowBasicAuth, say) is a configuration error from New, naming the
 // flow: a verifier no flow asks would read as protection the chain does not
-// have. So is the default selection over a chain that enables none of the five.
+// have. So is the default selection over a chain that enables none of its four flows.
 func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption {
 	return func(g *challengeGate) error {
 		if len(flows) == 0 {
 			return newConfigError("WithChallengeFlows selected no flow, so the verifier would never be asked; " +
-				"leave the option out to select every flow")
+				"leave the option out to select the default flows")
 		}
 
 		for _, f := range flows {
@@ -429,7 +451,7 @@ func (c *config) wireChallenge() error {
 // refuseUnguarded is a configuration error when the verifier would stand in
 // front of a flow the chain does not enable: any flow WithChallengeFlows named
 // that is missing, or, for the default selection, the chain enabling none of
-// the five. Flows are checked in their declared order, so the error names the
+// its four flows. Flows are checked in their declared order, so the error names the
 // first.
 func (g *challengeGate) refuseUnguarded(enabled map[ChallengeFlow]bool) error {
 	if g.selected {
@@ -443,13 +465,21 @@ func (g *challengeGate) refuseUnguarded(enabled map[ChallengeFlow]bool) error {
 		return nil
 	}
 
-	if len(enabled) == 0 {
-		return newConfigError("EnableAutomationChallenge stands in front of no flow: the chain enables none of " +
-			"form login, Basic authentication, magic links, passwordless login or account recovery, " +
-			"so the verifier would never be asked")
+	for _, f := range challengeFlowsDefault {
+		if enabled[f] {
+			return nil
+		}
 	}
 
-	return nil
+	if enabled[ChallengeFlowBasicAuth] {
+		return newConfigError("EnableAutomationChallenge stands in front of no flow: the chain enables only Basic " +
+			"authentication, which the default selection leaves out because it carries credentials on every " +
+			"request; name it with WithChallengeFlows(ChallengeFlowBasicAuth) to challenge it")
+	}
+
+	return newConfigError("EnableAutomationChallenge stands in front of no flow: the chain enables none of " +
+		"form login, magic links, passwordless login or account recovery, so the verifier would never be asked; " +
+		"Basic authentication is challenged only when named through WithChallengeFlows")
 }
 
 // What a verifier that failed is recorded and returned with. The text is

@@ -1814,13 +1814,18 @@ chain, err := httpsec.New(
 
 Once enabled:
 
-- form login, Basic, the magic-link request, the passwordless passkey begin and
-  the recovery start ask the verifier, after their source limit and before
-  their own work and any account lookup. `WithChallengeFlows(...)` narrows
-  them, and may name only flows the chain enables: a flow it does not enable,
-  or the default selection over a chain that enables none of the five, fails
-  `New` with `ErrConfig` naming the flow, because the verifier would never be
-  asked and the chain would look protected when it is not;
+- form login, the magic-link request, the passwordless passkey begin and the
+  recovery start ask the verifier, after their source limit and before their
+  own work and any account lookup. Basic is not in that default: it carries
+  credentials on every request, so a challenge would be consulted on every API
+  call. Name it to challenge it, as in
+  `WithChallengeFlows(httpsec.ChallengeFlowBasicAuth, httpsec.ChallengeFlowFormLogin)`;
+  the option replaces the default selection with the flows it names, and may
+  name only flows the chain enables. A flow it does not enable, or the default
+  selection over a chain that enables none of the four default flows (a chain
+  with only Basic, say), fails `New` with `ErrConfig` naming `WithChallengeFlows`
+  or the flow, because the verifier would never be asked and the chain would
+  look protected when it is not;
 - `ChallengePass` and `ChallengeNotNeeded` let the request through;
   `ChallengeRefuse` refuses it with `ErrChallengeRequired` (403). The refusal
   counts against the flow's source limit like a failed attempt, never against
@@ -1832,7 +1837,7 @@ Once enabled:
   `errors.As` but never in the text or a log record, charged to nothing. A
   client that hangs up while the verifier runs fails with its context's error;
 - the verifier is told whether the source has recent failures and, at form login
-  and Basic only, whether the username has (`ChallengeSignals`). The username's
+  and Basic (when named) only, whether the username has (`ChallengeSignals`). The username's
   failures count within the failure window of the chain's lockout policy
   (`lockout.WithFailureWindow`), so the challenge and the lockout agree on what
   "recent" means. Whatever cannot answer, a limiter or attempt store that
@@ -1844,7 +1849,7 @@ Once enabled:
 | Setting | Default |
 |---|---|
 | Verifier | none: the seam is off |
-| Flows | all five (`WithChallengeFlows`) |
+| Flows | form login, magic-link request, passwordless begin and recovery start; Basic only when named (`WithChallengeFlows`) |
 | Refusal | counted against the source limit (`WithoutChallengeRefusalCounting`) |
 | Identifier signal | form login and Basic only: a failed login for the username within the lockout policy's failure window (24 hours when the chain's engine holds no lockout policy; `lockout.WithFailureWindow`). Always false at the other three flows |
 
