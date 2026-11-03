@@ -58,6 +58,13 @@ This SHALL hold for first-party clients too. Consent to other scopes SHALL never
 - **WHEN** the consent page grants `openid` and not `offline_access`
 - **THEN** the grant has no `offline_access`, and its refresh tokens end with the sign-in
 
+### Requirement: Consent given to one client never counts for another
+Consent given to one client SHALL never count for another.
+
+#### Scenario: Another client asks
+- **WHEN** a user consented to `openid profile` for `billing-web`, and `crm-web` asks for `openid profile`
+- **THEN** the consent stage is shown
+
 ### Requirement: A native first-party client can be pre-authorized for offline access
 A consumer MAY pre-authorize a first-party client of application type native for offline access. Its requests for `offline_access` SHALL then be honoured without `prompt=consent` and without the consent stage. Pre-authorizing a web client, or a client that is not first-party, SHALL fail construction.
 
@@ -70,7 +77,7 @@ A consumer MAY pre-authorize a first-party client of application type native for
 - **THEN** construction fails with a configuration error
 
 ### Requirement: The consent page answers with the scopes granted or a denial
-The consent stage SHALL be resumed through the resume endpoint, with the same handle, flow cookie and sign-in rules as the login stage, by a sign-in of the same user as the login stage. The answer SHALL either grant a set of scopes or deny. A grant SHALL issue a code bound to the scopes granted, not those requested. A denial SHALL answer `redirect_to` with `error=access_denied`, `state` and `iss`, and SHALL record no consent.
+The consent stage SHALL be resumed through the resume endpoint, with the same handle, flow cookie and sign-in rules as the login stage, by a sign-in of the same user as the login stage, or by that user's browser session. The answer SHALL either grant a set of scopes or deny. A grant SHALL issue a code bound to the scopes granted, not those requested. A denial SHALL answer `redirect_to` with `error=access_denied`, `state` and `iss`, and SHALL record no consent.
 
 #### Scenario: Partial grant
 - **WHEN** a request asked for `openid profile email`, and the consent page grants `openid profile`

@@ -43,12 +43,26 @@ A verifier SHALL accept a token only when its `typ` header equals the type the v
 - **THEN** verification succeeds
 
 ### Requirement: A token can be issued with a declared type and further claims
-A generator SHALL be able to issue a token of a declared type with further claims, such as `client_id`, `scope`, `nonce`, `auth_time`, `acr`, `amr`, `azp`, `sid` and `events`, and with an audience of one or more values for that token alone. Further claims SHALL NOT replace `iss`, `iat`, `exp` or `jti`. A request that tries SHALL fail with a configuration error, and no token SHALL be issued.
+The library SHALL provide an issuer, built from a key source, an algorithm and an issuer identifier, separate from the first-party `Generator` so that `Generator`'s interface and subject modes are unchanged. It SHALL issue a token of a declared type for a subject named by the caller, with further claims, such as `client_id`, `scope`, `nonce`, `auth_time`, `acr`, `amr`, `azp`, `sid`, `gid` and `events`, and with an audience of one or more values for that token alone.
 
 #### Scenario: Access token claims
 - **WHEN** a token of type `at+jwt` is issued with `client_id` `billing-web`, `scope` `openid profile` and audience `https://api.example.com`
 - **THEN** the token carries those claims and that audience, with the generator's `iss` and its own `iat`, `exp` and `jti`
 
+### Requirement: Further claims cannot replace the token's own
+Further claims SHALL NOT replace `iss`, `sub`, `iat`, `exp` or `jti`. A request that tries SHALL fail with a configuration error, and no token SHALL be issued.
+
 #### Scenario: Further claim replaces the issuer
 - **WHEN** a token is requested with a further claim `iss`
 - **THEN** issuing fails with a configuration error, and no token is returned
+
+### Requirement: An issued token names a subject and respects the key cap
+A token's lifetime SHALL NOT exceed the cap the key source reports, as for a generator. An empty subject SHALL fail with `ErrNoSubject`.
+
+#### Scenario: Empty subject
+- **WHEN** a token is requested for an empty subject
+- **THEN** issuing fails matching `ErrNoSubject`, and no token is returned
+
+#### Scenario: Lifetime past the key cap
+- **WHEN** an issuer over a key source that reports a 23-hour window is asked for a token of 24 hours
+- **THEN** issuing fails with a configuration error

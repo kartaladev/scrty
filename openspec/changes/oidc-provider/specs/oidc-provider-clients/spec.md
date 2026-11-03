@@ -21,6 +21,13 @@ The provider SHALL take its clients from a client registry. By default the regis
 - **WHEN** the consumer supplies a durable registry holding client `billing-ios`
 - **THEN** the provider uses it, and the in-memory default is not used
 
+### Requirement: A consumer's client is validated when it is read
+A client read from a consumer's registry SHALL pass the same validation as a configured one when it is read, because it could not be checked at construction. One that fails SHALL be treated as an unknown client, and logged with the setting it fails on.
+
+#### Scenario: Durable registry returns an invalid client
+- **WHEN** a consumer's registry returns a client with the redirect URI `https://*.example.com/cb`
+- **THEN** that client is treated as unknown, and the log names the setting
+
 ### Requirement: A client is confidential or public, and web or native
 Every client SHALL be registered as either confidential or public, and with an application type of web or native, web by default. A public client SHALL authenticate with no secret and SHALL be refused any client authentication method that needs one. A confidential client SHALL declare a method that proves possession of a credential.
 
@@ -52,7 +59,7 @@ A request's redirect URI SHALL be compared with the client's registered ones by 
 - **THEN** the redirect URI does not match
 
 ### Requirement: Redirect URIs are registered in full
-Every client that uses the authorization endpoint SHALL register at least one redirect URI. Each SHALL be an absolute URI without a fragment or wildcard. A web client's redirect URIs SHALL use `https`. A native client's SHALL use `https`, a private-use scheme, or `http` to a loopback IP literal.
+Every client that uses the authorization endpoint SHALL register at least one redirect URI. Each SHALL be an absolute URI without a fragment or wildcard. A web client's redirect URIs SHALL use `https`. A native client's SHALL use `https`, a private-use scheme containing a period, or `http` to a loopback IP literal, `127.0.0.1` or `[::1]`. None SHALL carry user information, and the schemes `javascript`, `data`, `vbscript` and `file` SHALL be refused for every client.
 
 #### Scenario: Wildcard refused
 - **WHEN** a client registers `https://*.example.com/cb`
@@ -64,6 +71,14 @@ Every client that uses the authorization endpoint SHALL register at least one re
 
 #### Scenario: Plain http for a web client refused
 - **WHEN** a web client registers `http://rp.example.com/cb`
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Private-use scheme without a period
+- **WHEN** a native client registers `myapp:/cb`
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Script scheme refused
+- **WHEN** a native client registers `javascript:alert(1)`
 - **THEN** construction fails with a configuration error
 
 #### Scenario: Native loopback accepted
@@ -78,7 +93,7 @@ A client MAY register post-logout redirect URIs. They SHALL follow the rules for
 - **THEN** construction fails with a configuration error
 
 ### Requirement: Each client declares exactly one authentication method
-Each client SHALL declare exactly one token endpoint authentication method, from `client_secret_basic`, `client_secret_post`, `private_key_jwt` and `none`. The default for a confidential client SHALL be `client_secret_basic`. A request authenticating with any other method, or with more than one method at once, SHALL be refused as `invalid_client`. `client_secret_jwt` SHALL NOT be supported.
+Each client SHALL declare exactly one token endpoint authentication method, from `client_secret_basic`, `client_secret_post`, `private_key_jwt` and `none`. A confidential client's default SHALL be `client_secret_basic`. A request authenticating with any other method SHALL be refused as `invalid_client`. A request using more than one method at once, or naming one `client_id` in the header and another in the body, SHALL be refused as `invalid_request`. `client_secret_jwt` SHALL NOT be supported.
 
 #### Scenario: Default method
 - **WHEN** a confidential client is registered without a method
@@ -90,7 +105,11 @@ Each client SHALL declare exactly one token endpoint authentication method, from
 
 #### Scenario: Two methods at once
 - **WHEN** a request carries both an `Authorization: Basic` header and a `client_assertion`
-- **THEN** the request is refused as `invalid_client`
+- **THEN** the request is refused as `invalid_request`
+
+#### Scenario: Two identifiers
+- **WHEN** a request's `Authorization: Basic` header names `billing-web`, and its body names `client_id=crm-web`
+- **THEN** the request is refused as `invalid_request`
 
 #### Scenario: Symmetric assertion method refused
 - **WHEN** a client is registered with `client_secret_jwt`
@@ -111,6 +130,17 @@ A secret the provider generates SHALL carry 256 bits from a cryptographically se
 - **WHEN** a client authenticates with a secret whose digest does not match
 - **THEN** the request is refused as `invalid_client`
 
+### Requirement: A client secret can be rotated without downtime
+A client MAY hold a second secret during a rotation, and a secret MAY carry an expiry. Either live secret SHALL authenticate, and an expired one SHALL NOT.
+
+#### Scenario: Rotation with two secrets
+- **WHEN** a client holds an old secret expiring tomorrow and a new one, and authenticates with either
+- **THEN** the client is authenticated
+
+#### Scenario: Rotated secret expired
+- **WHEN** a client authenticates with a secret whose expiry has passed
+- **THEN** the request is refused as `invalid_client`
+
 ### Requirement: Basic client credentials are decoded as the standard requires
 For `client_secret_basic`, the provider SHALL URL-decode the client identifier and secret after Base64-decoding the `Authorization` header. A header that does not decode SHALL be refused as `invalid_client`.
 
@@ -124,7 +154,8 @@ For `private_key_jwt`, the provider SHALL accept an assertion only when:
 - its `iss` and `sub` both equal the `client_id`;
 - its `aud` is the provider's issuer identifier, and nothing else;
 - its `exp` is present, in the future, and within the lifetime bound;
-- its `jti` has not been seen before for that client.
+- its `jti` has not been seen before for that client;
+- its `typ` header, when present, is `client-authentication+jwt` or `JWT`.
 
 #### Scenario: Valid assertion
 - **WHEN** a client sends an assertion meeting every condition
@@ -136,6 +167,10 @@ For `private_key_jwt`, the provider SHALL accept an assertion only when:
 
 #### Scenario: Audience array with another value
 - **WHEN** an assertion's `aud` is an array holding the issuer and another value
+- **THEN** the request is refused as `invalid_client`
+
+#### Scenario: Access token offered as an assertion
+- **WHEN** a client sends a JWT with `typ` `at+jwt` as its assertion
 - **THEN** the request is refused as `invalid_client`
 
 #### Scenario: Replayed assertion
@@ -154,7 +189,15 @@ An assertion's `exp` SHALL lie no more than 5 minutes ahead by default. A consum
 - **THEN** the request is refused as `invalid_client`
 
 ### Requirement: Client key sets are fetched through the confined outbound client
-A client's key-set URL SHALL be fetched through the provider's outbound HTTP client, under the same confinement as other outbound calls, and cached. A key-set fetch failure SHALL be reported as a dependency failure, not as a client authentication failure.
+A client's key-set URL SHALL be fetched through the provider's outbound HTTP client, under the same confinement as other outbound calls, and cached. An assertion naming a `kid` the cache does not hold SHALL refetch the set, at most once per cooldown, 30 seconds by default and replaceable by the consumer. A key-set fetch failure SHALL be reported as a dependency failure, not as a client authentication failure.
+
+#### Scenario: Client rotates its key
+- **WHEN** a client's new key is published at its key-set URL, and its assertion names that `kid`
+- **THEN** the set is refetched, and the client is authenticated
+
+#### Scenario: Unknown kid repeated
+- **WHEN** one client sends many assertions naming an unknown `kid` within the cooldown
+- **THEN** the set is fetched at most once, and those requests are refused as `invalid_client`
 
 #### Scenario: Key set unavailable
 - **WHEN** a client's key-set URL cannot be fetched while verifying its assertion
@@ -180,6 +223,7 @@ Building the provider SHALL fail with a configuration error naming the client an
 - a client needs redirect URIs and has none;
 - a client names an ID token signing algorithm the provider's keys cannot produce;
 - a client requires sender-constrained tokens while neither DPoP nor certificate binding is enabled;
+- a token lifetime exceeds what the signing keys allow;
 - a setting reserved for another client type is given.
 
 #### Scenario: Duplicate identifier

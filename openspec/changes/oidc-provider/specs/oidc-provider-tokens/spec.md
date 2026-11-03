@@ -7,19 +7,29 @@ Defines the provider's token endpoint and the grants behind it: exchanging an au
 ## ADDED Requirements
 
 ### Requirement: The token endpoint accepts two grant types by form POST
-The token endpoint SHALL accept only POST requests with a form-encoded body, and SHALL support the `authorization_code` and `refresh_token` grant types. Any other grant type SHALL be answered with `unsupported_grant_type`, and no option SHALL enable the password grant. A client SHALL use only the grant types it is registered for, `authorization_code` by default, or be answered with `unauthorized_client`. A repeated parameter SHALL make the request invalid.
+The token endpoint SHALL accept only POST requests with a form-encoded body, and SHALL support the `authorization_code` and `refresh_token` grant types. Any other grant type SHALL be answered with `unsupported_grant_type`, and no option SHALL enable the password grant. A repeated parameter SHALL make the request invalid, and a parameter without a value SHALL be treated as omitted.
 
 #### Scenario: Password grant
 - **WHEN** a client sends `grant_type=password`
 - **THEN** the response is 400 with `{"error":"unsupported_grant_type"}`
 
+#### Scenario: GET request
+- **WHEN** a client sends a token request by GET
+- **THEN** the request is refused and no token is issued
+
+### Requirement: A client uses only the grant types it is registered for
+A client SHALL use only the grant types it is registered for, `authorization_code` by default, or be answered with `unauthorized_client`.
+
 #### Scenario: Refresh not registered
 - **WHEN** a client registered only for `authorization_code` sends `grant_type=refresh_token`
 - **THEN** the response is 400 with `{"error":"unauthorized_client"}`
 
-#### Scenario: GET request
-- **WHEN** a client sends a token request by GET
-- **THEN** the request is refused and no token is issued
+### Requirement: Token requests carry no credential in the query, and need TLS
+A client credential in the request's query SHALL NOT be read, and the request SHALL be refused with `invalid_request`. A request not made over TLS, as the chain reports the connection, SHALL be refused, unless the provider was built with the loopback issuer.
+
+#### Scenario: Secret in the query
+- **WHEN** a client sends `client_secret` in the query of a POST
+- **THEN** the response is 400 with `{"error":"invalid_request"}`, and no token is issued
 
 ### Requirement: Every token request authenticates the client first
 The token endpoint SHALL authenticate the client by its registered method (`oidc-provider-clients`) before it reads the grant. A failure SHALL be answered with `invalid_client`, and the grant SHALL be left as it was: a code SHALL stay unspent, and a refresh token SHALL not be rotated.
@@ -33,9 +43,9 @@ A code exchange SHALL succeed only when:
 - the code is known, unexpired and unspent;
 - it was issued to the authenticated client;
 - the request's `redirect_uri` equals the one the code was issued for;
-- the SHA-256 of `code_verifier`, base64url-encoded, equals the code's challenge.
+- the SHA-256 of `code_verifier`, base64url-encoded, equals the code's challenge, and `code_verifier` is 43 to 128 characters from the unreserved set.
 
-Any failure SHALL be answered with `invalid_grant`. A failure before the code's single use SHALL leave it unspent, except that a code presented by another client SHALL count as used.
+Any failure SHALL be answered with `invalid_grant`.
 
 #### Scenario: Wrong verifier
 - **WHEN** a client exchanges its code with a `code_verifier` that does not match
@@ -45,13 +55,34 @@ Any failure SHALL be answered with `invalid_grant`. A failure before the code's 
 - **WHEN** a client exchanges its code without `code_verifier`
 - **THEN** the response is `invalid_grant`
 
+#### Scenario: Verifier too short
+- **WHEN** a client exchanges its code with a 16-character `code_verifier`, whose hash matches the challenge
+- **THEN** the response is `invalid_grant`
+
 #### Scenario: Different redirect URI
 - **WHEN** a client exchanges its code with a `redirect_uri` other than the one in the authorization request
 - **THEN** the response is `invalid_grant`
 
+### Requirement: A refused code stays unspent unless another client presented it
+A failure before the code's single use SHALL leave it unspent, except that a code presented by another client SHALL count as used.
+
 #### Scenario: Another client's code
 - **WHEN** client `b` exchanges a code issued to client `a`
 - **THEN** the response is `invalid_grant`, and the code can no longer be exchanged by `a`
+
+### Requirement: PKCE cannot be downgraded at the exchange
+A code issued without a challenge SHALL refuse any request carrying `code_verifier`, and a code issued with one SHALL refuse a request without it, each with `invalid_grant`.
+
+#### Scenario: PKCE downgrade
+- **WHEN** a client registered as PKCE-or-nonce exchanges a code issued without a challenge, and sends `code_verifier`
+- **THEN** the response is `invalid_grant`
+
+### Requirement: A code is refused once its user, grant or sign-in has ended
+A code exchange SHALL be answered with `invalid_grant` when the code's user no longer exists or is disabled, when its grant has been revoked, or when its sign-in has ended and the code does not hold `offline_access`.
+
+#### Scenario: User disabled before the exchange
+- **WHEN** a user is disabled after a code was issued, and the code is then exchanged
+- **THEN** the response is `invalid_grant`
 
 ### Requirement: A code is used once, and its replay revokes what it issued
 A code SHALL be exchanged at most once, also under concurrent requests. A code presented again after its exchange SHALL be answered with `invalid_grant`, and SHALL revoke the grant the first exchange created, with its refresh tokens and opaque access tokens. When the replay arrives while the first exchange is still being completed, the grant SHALL still end revoked, and no refresh token from it SHALL work afterwards.
@@ -107,7 +138,7 @@ An ID token SHALL be signed with the client's registered algorithm, RS256 by def
 - **THEN** its ID tokens are signed with ES256
 
 ### Requirement: Access tokens are JWTs for a named audience
-By default an access token SHALL be a signed JWT with header `typ` `at+jwt`, carrying `iss`, `sub`, `aud`, `client_id`, `scope`, `iat`, `jti`, and `exp` 5 minutes after `iat`. It SHALL carry `auth_time`, `acr` and `amr` from the grant when known, and a confirmation claim when bound. Its audience SHALL be the `resource` values of the request when given, otherwise the client's default audience, otherwise the issuer. A consumer MAY set the lifetime per client.
+By default an access token SHALL be a signed JWT with header `typ` `at+jwt`, carrying `iss`, `sub`, `aud`, `client_id`, `scope`, `iat`, `jti`, `exp` 5 minutes after `iat`, and `gid`, the non-secret identifier of its grant. It SHALL carry `auth_time`, `acr` and `amr` from the grant when known, and a confirmation claim when bound. Its audience SHALL be the `resource` values of the request when given, otherwise the client's default audience, otherwise the issuer.
 
 #### Scenario: Default audience
 - **WHEN** a client whose default audience is `https://api.example.com` exchanges a code without `resource`
@@ -125,12 +156,37 @@ By default an access token SHALL be a signed JWT with header `typ` `at+jwt`, car
 - **WHEN** a client with no default audience and no allowed resources exchanges a code
 - **THEN** the access token's `aud` is the issuer, and it is accepted only at the provider's own endpoints
 
+### Requirement: A default audience stays usable at UserInfo
+When no `resource` was given and the token's scope holds `openid`, the issuer SHALL be added to a default audience.
+
+#### Scenario: Default audience with openid
+- **WHEN** a client whose default audience is `https://api.example.com` exchanges a code granted `openid`, without `resource`
+- **THEN** the access token's `aud` holds `https://api.example.com` and the issuer
+
+### Requirement: An access token's lifetime is bounded by the signing keys
+A consumer MAY set the lifetime per client, up to the cap the signing keys allow. A longer lifetime SHALL fail construction.
+
+#### Scenario: Lifetime past the key cap
+- **WHEN** a client's access token lifetime is longer than the signing keys' lifetime minus their rotation interval
+- **THEN** construction fails with a configuration error naming the client
+
 #### Scenario: Consumer lengthens the lifetime
 - **WHEN** the consumer sets a client's access token lifetime to 15 minutes
 - **THEN** that client's access tokens expire 15 minutes after issue
 
+### Requirement: Token-endpoint resources stay within the grant
+`resource` values at the token endpoint SHALL be a subset of those granted at the authorization request, when any were. A refresh token SHALL stay bound to the whole original grant, whichever subset one request narrowed to.
+
+#### Scenario: Narrower resource at the token endpoint
+- **WHEN** a code was granted `https://orders.example.com` and `https://billing.example.com`, and the exchange sends `resource=https://billing.example.com`
+- **THEN** the access token's `aud` is `https://billing.example.com`, and a later refresh may ask for `https://orders.example.com`
+
+#### Scenario: Resource outside the grant
+- **WHEN** a code was granted only `https://orders.example.com`, and the exchange sends another resource the client is allowed
+- **THEN** the response is 400 with `{"error":"invalid_target"}`
+
 ### Requirement: Opaque access tokens are available per client
-A consumer MAY register a client for opaque access tokens. They SHALL carry at least 128 bits from a cryptographically secure source, SHALL be stored only as digests, SHALL be verified by looking them up, and SHALL stop working as soon as their grant is revoked. Their format SHALL differ from refresh tokens and from every sign-in credential.
+A consumer MAY register a client for opaque access tokens. They SHALL carry at least 128 bits from a cryptographically secure source, SHALL be stored only as digests, SHALL be verified by looking them up and then reading their grant, and SHALL stop working as soon as their grant is revoked, including a token written after the revocation. Their format SHALL differ from refresh tokens and from every sign-in credential.
 
 #### Scenario: Revoked at once
 - **WHEN** a client registered for opaque access tokens has its grant revoked
@@ -155,6 +211,13 @@ A refresh token SHALL carry at least 128 bits from a cryptographically secure so
 - **WHEN** a refresh token is presented to the chain as a session-reference bearer or a session renewal
 - **THEN** it is refused as an unknown credential
 
+### Requirement: A forged refresh-token secret changes nothing
+A refresh token whose secret matches no record of its grant SHALL be answered with `invalid_grant`, and SHALL change nothing, because the family identifier it carries is not a secret.
+
+#### Scenario: Forged secret under a real family
+- **WHEN** a client presents `rt.<family>.<secret>` with its own grant's family and a secret never issued
+- **THEN** the response is `invalid_grant`, and the grant's real refresh token keeps working
+
 ### Requirement: Refresh-token reuse revokes the whole grant
 A superseded refresh token presented after its grace window SHALL be answered with `invalid_grant`, and SHALL revoke the whole grant: every refresh token of it, including the newest, and its opaque access tokens. No option SHALL weaken this. A grace window above 5 minutes SHALL fail construction.
 
@@ -167,7 +230,7 @@ A superseded refresh token presented after its grace window SHALL be answered wi
 - **THEN** construction fails with a configuration error
 
 ### Requirement: A refresh stays within its grant
-A refresh SHALL succeed only when the refresh token's grant exists, is not revoked or expired, and was issued to the authenticated client, and its user still exists and is enabled. Otherwise it SHALL be answered with `invalid_grant`, and a missing or disabled user SHALL also revoke the grant. A refresh MAY narrow `scope` to a subset of the grant's. A scope outside it SHALL be answered with `invalid_scope`.
+A refresh SHALL succeed only when the refresh token's grant exists, is not revoked or expired, and was issued to the authenticated client, and its user still exists and is enabled. Otherwise it SHALL be answered with `invalid_grant`, and a missing or disabled user SHALL also revoke the grant. A refresh MAY narrow `scope` to a subset of the grant's, and an omitted `scope` SHALL mean the grant's own. A scope outside it SHALL be answered with `invalid_scope`.
 
 #### Scenario: Another client's refresh token
 - **WHEN** client `b` presents a refresh token issued to client `a`
@@ -181,9 +244,20 @@ A refresh SHALL succeed only when the refresh token's grant exists, is not revok
 - **WHEN** a grant holds `openid profile email`, and a refresh asks for `scope=openid profile`
 - **THEN** the new access token carries `openid profile`
 
+#### Scenario: Client removed from the registry
+- **WHEN** the consumer removes a client, and a request presents that client's refresh token
+- **THEN** the request is refused as `invalid_client`, and the grant is left for its deadlines and the sweep
+
 #### Scenario: Widened scope
 - **WHEN** a grant holds `openid profile`, and a refresh asks for `scope=openid admin`
 - **THEN** the response is `invalid_scope`
+
+### Requirement: A client's shrunken scopes narrow its refreshes
+Scopes the client is no longer allowed SHALL be left out of the tokens, and the response's `scope` SHALL say so. A later refresh MAY return to any scope of the grant the client is still allowed.
+
+#### Scenario: Client's allowed scopes shrink
+- **WHEN** a grant holds `openid profile email`, the consumer removes `email` from the client's allowed scopes, and the client refreshes without `scope`
+- **THEN** the new access token and the response's `scope` carry `openid profile`
 
 ### Requirement: Refreshed tokens keep the grant's authentication facts
 Tokens issued by a refresh SHALL carry the grant's `auth_time`, `acr` and `amr`, and an ID token issued by a refresh SHALL carry no `nonce`.
@@ -227,7 +301,7 @@ A consumer MAY turn rotation off for a confidential client that is required to u
 - **THEN** the response carries no new refresh token, and the same refresh token works again
 
 ### Requirement: Logout ends the grants of the sign-in without offline access
-When a sign-in ends by logout, by revocation of its session family, or by a back-channel logout from an upstream provider, the provider SHALL revoke the grants created from that sign-in that do not hold `offline_access`. Grants holding `offline_access` SHALL survive. A consumer MAY register a client so that all its grants end with their sign-in, `offline_access` included.
+When a sign-in ends by logout, by revocation of its session family, or by a back-channel logout from an upstream provider, the provider SHALL revoke the grants created from that sign-in that do not hold `offline_access`. Grants holding `offline_access` SHALL survive. A consumer MAY register a client so that all its grants end with their sign-in, `offline_access` included. A public client of application type web SHALL be so registered by default, and a consumer MAY turn this off per client.
 
 #### Scenario: Logout with an online grant
 - **WHEN** a user logs out of the sign-in a grant without `offline_access` came from
@@ -236,6 +310,10 @@ When a sign-in ends by logout, by revocation of its session family, or by a back
 #### Scenario: Logout with an offline grant
 - **WHEN** a user logs out of the sign-in a grant holding `offline_access` came from
 - **THEN** that grant's refresh token keeps working
+
+#### Scenario: Browser-based public client
+- **WHEN** a public web client under the default holds a grant with `offline_access`, and the user logs out of its sign-in
+- **THEN** that grant's refresh token is refused with `invalid_grant`
 
 #### Scenario: Consumer ties offline grants to the sign-in
 - **WHEN** a client is registered to end its grants with the sign-in, and the user logs out
@@ -273,11 +351,18 @@ A grant bound to a key SHALL be refreshed only with proof of that key. A refresh
 - **THEN** the refresh is refused, and the presented refresh token still works with a proof from `k1`
 
 ### Requirement: The revocation endpoint ends tokens for their client
-The revocation endpoint SHALL accept a form POST with `token` and an optional `token_type_hint`, which only orders the lookup, from an authenticated client. Revoking a refresh token SHALL revoke its whole grant, and revoking an opaque access token SHALL revoke that token. A JWT access token, an unknown token or an expired token SHALL be answered 200 with nothing revoked. A token issued to another client SHALL be answered with `invalid_grant`, revoking nothing.
+The revocation endpoint SHALL accept a form POST with `token` and an optional `token_type_hint`, which only orders the lookup, from an authenticated client, or from a public client naming its `client_id`. Revoking a refresh token SHALL revoke its whole grant, and revoking an opaque access token SHALL revoke that token.
 
 #### Scenario: Refresh token revoked
 - **WHEN** a client revokes its refresh token
 - **THEN** the response is 200, and every refresh token of that grant is refused afterwards
+
+#### Scenario: Public client revokes its own token
+- **WHEN** a public client sends its `client_id` and its refresh token
+- **THEN** the response is 200, and every refresh token of that grant is refused afterwards
+
+### Requirement: Revocation answers success for what it cannot revoke, and refuses another client
+A JWT access token, an unknown token or an expired token SHALL be answered 200 with nothing revoked. A token issued to another client SHALL be answered with `invalid_grant`, revoking nothing.
 
 #### Scenario: Unknown token
 - **WHEN** a client revokes a value that is no token
@@ -287,8 +372,30 @@ The revocation endpoint SHALL accept a form POST with `token` and an optional `t
 - **WHEN** client `b` revokes a refresh token issued to client `a`
 - **THEN** the response is 400 with `{"error":"invalid_grant"}`, and `a`'s token keeps working
 
+### Requirement: Revocation checks the refresh token's secret
+A refresh token SHALL count only when its secret matches a record of its grant, a superseded one included, and presenting it here SHALL NOT count as a reuse.
+
+#### Scenario: Forged secret at revocation
+- **WHEN** a client revokes `rt.<family>.<secret>` with a real family and a secret never issued
+- **THEN** the response is 200, and nothing is revoked
+
 ### Requirement: The introspection endpoint answers only for tokens a client may see
-The introspection endpoint SHALL accept a form POST with `token` and an optional `token_type_hint`, from an authenticated client. It SHALL answer `{"active": false}` alone for an unknown, expired or revoked token, and for a token the client may not see. A client SHALL see a token issued to it, and an access token whose audience includes its registered resource identifier. Responses SHALL carry `Cache-Control: no-store`.
+The introspection endpoint SHALL accept a form POST with `token` and an optional `token_type_hint`, from an authenticated client. A public client SHALL be refused with `invalid_client`. It SHALL answer `{"active": false}` alone for an unknown, expired or revoked token, a JWT access token whose grant is revoked included, and for a token the client may not see. Responses SHALL carry `Cache-Control: no-store`.
+
+#### Scenario: JWT whose grant is revoked
+- **WHEN** a client introspects an unexpired JWT access token of a grant since revoked
+- **THEN** the answer is `{"active": false}`
+
+#### Scenario: Public client introspects
+- **WHEN** a public client names its `client_id` at the introspection endpoint
+- **THEN** it is refused with `invalid_client`
+
+#### Scenario: Unauthenticated introspection
+- **WHEN** a request to the introspection endpoint carries no client authentication
+- **THEN** it is refused with `invalid_client`
+
+### Requirement: A client sees only its own tokens and those for its resource
+A client SHALL see a token issued to it, and an access token whose audience includes its registered resource identifier.
 
 #### Scenario: Another client's token
 - **WHEN** client `b`, which is not in the token's audience, introspects client `a`'s access token
@@ -298,9 +405,12 @@ The introspection endpoint SHALL accept a form POST with `token` and an optional
 - **WHEN** a client registered with resource identifier `https://api.example.com` introspects an access token whose audience is `https://api.example.com`
 - **THEN** the answer holds `active` true
 
-#### Scenario: Unauthenticated introspection
-- **WHEN** a request to the introspection endpoint carries no client authentication
-- **THEN** it is refused with `invalid_client`
+### Requirement: Introspection has no side effect
+Introspecting a refresh token SHALL change nothing, and SHALL NOT count as a reuse.
+
+#### Scenario: Superseded refresh token introspected
+- **WHEN** a client introspects its superseded refresh token after the grace window
+- **THEN** the answer is `{"active": false}`, and the grant is not revoked
 
 ### Requirement: An active introspection answer describes the token
 For an active token the introspection answer SHALL hold `active`, `scope`, `client_id`, `sub`, `exp`, `iat`, `iss`, `aud`, `token_type`, and the confirmation claim when bound.
@@ -322,3 +432,25 @@ No code, handle, refresh token, access token, ID token, client secret or client 
 #### Scenario: Refused refresh logged
 - **WHEN** a refresh is refused and the refusal is logged
 - **THEN** the log holds the client and the reason, and not the refresh token
+
+### Requirement: The subject of every provider token is the user's identifier
+`sub` SHALL be the grant's user identifier in every token the provider issues, whatever subject mode the chain's first-party tokens use. The provider SHALL build its issuers from the key source it was given, and SHALL NOT take a first-party token generator.
+
+#### Scenario: Chain reads usernames
+- **WHEN** the chain's signed bearer and generators use the username subject, and user `u-1` named `ada` completes an authorization
+- **THEN** the ID token's and access token's `sub` are `u-1`
+
+#### Scenario: Username reassigned
+- **WHEN** `ada` is renamed, and the name is given to another user, and the first user's grant is refreshed
+- **THEN** the new ID token's `sub` is unchanged
+
+### Requirement: Every code exchange records a grant
+A code exchange SHALL record a grant, also for a client not registered for the refresh grant. Such a grant SHALL hold no refresh-token lineage, SHALL NOT be treated as orphaned, and SHALL expire at the deadline of the sign-in it came from. Its access tokens name it, so replay and revocation reach them at the provider's own endpoints, and back-channel logout can find its client.
+
+#### Scenario: Client without the refresh grant
+- **WHEN** a client registered only for `authorization_code` exchanges a code, and the sweep's orphan pass then runs
+- **THEN** the grant is kept until its sign-in's deadline
+
+#### Scenario: Back-channel logout without a refresh token
+- **WHEN** that client registered a back-channel logout URI, and the user logs out of the sign-in
+- **THEN** the client receives a logout token

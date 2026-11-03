@@ -6,7 +6,7 @@
 When enabled, the provider SHALL answer on the chain under a prefix, `/oauth2` by default, with these paths:
 - authorization `/authorize` and resume `/authorize/resume`;
 - token `/token`, UserInfo `/userinfo`, revocation `/revoke`, introspection `/introspect`;
-- end-session `/logout`, and the user's consents `/consents`.
+- end-session `/logout`, its confirmation `/logout/confirm`, and the user's consents `/consents`.
 
 A request on any other path SHALL pass through.
 
@@ -45,6 +45,21 @@ Building a chain with the provider SHALL fail with a configuration error naming 
 - **WHEN** the consumer sets the provider's end-session path to the chain's logout path
 - **THEN** construction fails with a configuration error
 
+### Requirement: The provider requires the protections its pages rest on
+The provider also requires two protections its pages rest on. CSRF protection SHALL be enabled while browser sessions are on, because the consent stage and the logout confirmation then rest on a cookie. Security headers SHALL be enabled, unless the consumer states that its login and consent pages carry `frame-ancestors` themselves. Otherwise construction SHALL fail with a configuration error naming the provider.
+
+#### Scenario: Browser sessions without CSRF protection
+- **WHEN** the provider is enabled with its default browser sessions on a chain without CSRF protection
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: Security headers missing
+- **WHEN** the provider is enabled on a chain without security headers, and the consumer has not stated that its pages carry `frame-ancestors`
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: Consumer states its pages protect themselves
+- **WHEN** the consumer states that its pages carry `frame-ancestors`, on a chain without security headers
+- **THEN** the chain is built
+
 ### Requirement: Chain logout ends the sign-in's provider grants first
 When the provider is in use, logout SHALL end the sign-in through the provider before it deletes the sessions. Grants without `offline_access` created from that sign-in SHALL be revoked, and the relying parties holding them SHALL be told. A failure to revoke the grants SHALL fail the logout as a dependency failure, and SHALL leave the session in place, so the logout can be retried. A failure to notify a relying party SHALL NOT fail the logout.
 
@@ -59,7 +74,7 @@ When the provider is in use, logout SHALL end the sign-in through the provider b
 ### Requirement: Every explicit end of a sign-in reaches the provider
 When the provider is in use, each of these SHALL end the affected sign-ins through the provider, as a logout does:
 - revocation of a session family because a superseded identifier was presented after its window;
-- ending a user's other sessions;
+- ending one sign-in by its handle, and ending a user's other sessions;
 - ending other sessions when a passkey is removed;
 - deleting a user's sessions through the session manager.
 

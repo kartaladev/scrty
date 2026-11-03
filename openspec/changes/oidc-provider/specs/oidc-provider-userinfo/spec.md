@@ -7,7 +7,7 @@ Defines the provider's UserInfo endpoint: which access tokens it accepts, which 
 ## ADDED Requirements
 
 ### Requirement: UserInfo accepts only the provider's access tokens for an OpenID grant
-The UserInfo endpoint SHALL accept GET and POST, taking the access token from the `Authorization` header, or from a POST's form body, never from the query. It SHALL accept only a valid, unexpired access token this provider issued whose scopes include `openid`, whatever its audience. A first-party token, an ID token, a refresh token or a sign-in credential SHALL be refused.
+The UserInfo endpoint SHALL accept GET and POST, taking the access token from the `Authorization` header, or from a POST's form body, never from the query. It SHALL accept only a valid, unexpired access token this provider issued, whose grant is not revoked, whose scopes include `openid`, and whose audience includes the issuer. A first-party token, an ID token, a refresh token or a sign-in credential SHALL be refused.
 
 #### Scenario: Valid token
 - **WHEN** a client calls UserInfo with an access token for `openid profile`
@@ -21,9 +21,24 @@ The UserInfo endpoint SHALL accept GET and POST, taking the access token from th
 - **WHEN** a client presents an ID token as the access token
 - **THEN** the request is refused with `invalid_token`
 
+#### Scenario: Token for another resource
+- **WHEN** a client presents an unexpired `openid` access token whose audience is `https://api.example.com` alone
+- **THEN** the request is refused with `invalid_token`
+
+#### Scenario: Grant revoked
+- **WHEN** a client presents an unexpired JWT access token of a grant since revoked
+- **THEN** the request is refused with `invalid_token`
+
 #### Scenario: Access token without openid
 - **WHEN** a client presents an access token whose scopes lack `openid`
 - **THEN** the request is refused with `insufficient_scope`
+
+### Requirement: UserInfo requires TLS
+A request not made over TLS, as the chain reports the connection, SHALL be refused, unless the provider was built with the loopback issuer.
+
+#### Scenario: Plain http request
+- **WHEN** a UserInfo request arrives over plain http, and the provider was not built with the loopback issuer
+- **THEN** it is refused
 
 ### Requirement: UserInfo refusals are bearer challenges
 A refused UserInfo request SHALL be answered with 401 and a `WWW-Authenticate` challenge naming the error: `invalid_token` for a bad, expired or revoked token, `invalid_request` for a malformed request, and no error code when no token was sent. A token without the needed scope SHALL be answered 403 with `insufficient_scope`. The challenge SHALL use the `DPoP` scheme for a bound token. By default no `error_description` SHALL be sent.

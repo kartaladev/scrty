@@ -7,7 +7,7 @@ Defines the metadata the provider publishes so relying parties can discover its 
 ## ADDED Requirements
 
 ### Requirement: The issuer is an https URL without query or fragment
-The provider SHALL be built with an issuer identifier that is an `https` URL with no query and no fragment. Any other value SHALL fail construction. A consumer MAY allow an `http` issuer for loopback hosts only, for local testing, and the option SHALL say it is not for production.
+The provider SHALL be built with an issuer identifier that is an `https` URL with no query and no fragment. Any other value SHALL fail construction. A consumer MAY allow an `http` issuer for loopback hosts only, for local testing, and the option SHALL say it is not for production, and that the OpenID Foundation's Config OP plan refuses it.
 
 #### Scenario: Issuer with a query
 - **WHEN** the provider is built with issuer `https://id.example.com?x=1`
@@ -37,6 +37,13 @@ The configuration SHALL carry:
 #### Scenario: Features listed
 - **WHEN** a relying party fetches the configuration of a provider with defaults
 - **THEN** `response_types_supported` is `["code"]`, `request_uri_parameter_supported` is false, and `id_token_signing_alg_values_supported` includes `RS256`
+
+### Requirement: The configuration names its logout and client authentication details
+`end_session_endpoint` SHALL be listed when logout is enabled, and `revocation_endpoint_auth_methods_supported` and `introspection_endpoint_auth_methods_supported` always, the latter without `none`. `token_endpoint_auth_signing_alg_values_supported`, and the revocation and introspection equivalents, SHALL name the assertion algorithms accepted, never `none`, when `private_key_jwt` is listed there. `offline_access` SHALL be in `scopes_supported` when any client may ask for it.
+
+#### Scenario: Assertion algorithms listed
+- **WHEN** a client may use `private_key_jwt`, and the provider accepts RS256 and ES256 assertions
+- **THEN** `token_endpoint_auth_signing_alg_values_supported` is `["RS256","ES256"]`, without `none`
 
 ### Requirement: The configuration states what the provider refuses and how it logs out
 The configuration SHALL carry `authorization_response_iss_parameter_supported` true; `request_parameter_supported`, `request_uri_parameter_supported` and `claims_parameter_supported` false; and `backchannel_logout_supported` and `backchannel_logout_session_supported` true.
