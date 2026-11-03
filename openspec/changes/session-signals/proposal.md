@@ -13,6 +13,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
 - **An opt-in session-signal stream.** `httpsec.EnableSessionSignals(...)` adds an authenticated `GET` endpoint that streams server-sent events (`text/event-stream`) about the signed-in user's own session.
   - It is off by default.
   - It authenticates through whatever the chain already uses: a cookie session works with the browser's `EventSource`; a bearer or session-reference client reads the same stream with `fetch()`, which can send `Authorization`. A credential is never accepted in the query string.
+  - A page on another site cannot open a stream: the stream judges `Sec-Fetch-Site` and `Origin` as unsafe requests are judged, so only origins CORS allows with credentials get one.
 - **A closed set of library signals, chosen by allowlist.**
   - `session_ended`: this sign-in ended, by logout elsewhere, an ended sign-in, family revocation, a password change or an identity-provider logout.
   - `session_expiring`: an idle or absolute deadline is near.
@@ -62,8 +63,8 @@ This change gives the front end a feed of its own: few signals, typed, and only 
   - `session`: the end-of-sign-in report.
   - `test/httpsecconformance`: stream scenarios on all three adapters.
 - **API:**
-  - new: `EnableSessionSignals`, the signal names, a publish function for the consumer's signals, and the bus port;
-  - **breaking:** `ResponseWriter.Stream`.
+  - new: `EnableSessionSignals` and `SessionSignals`, the signal names, `PublishSignal` for the consumer's signals, `ReportCredentialChange`, `CloseSessionSignals`, the bus port, and `session.WithEndObserver` with `session.EndObservers`;
+  - **breaking:** `ResponseWriter.Stream`, with `ErrStreamingUnsupported` and `ErrStreamingStarted`.
 - **Dependencies:** none new. The stream uses net/http's `http.ResponseController`.
   - *Unverified:* fiber v3 streams through fasthttp's body stream writer, a different model from net/http. Its fit is the first thing the design must establish.
 - **Order:** after `close-security-gaps`, whose security-event emission points (D13) and session-management endpoints this change raises signals beside; before `release-readiness` tags `v0.1.0`. `bff-resource-server` is not required. Its cookie session will work with the stream when it lands.
@@ -90,6 +91,9 @@ This change gives the front end a feed of its own: few signals, typed, and only 
 
 ### Which signals (accessed 2026-11-02)
 - [OpenID Continuous Access Evaluation Profile 1.0](https://openid.net/specs/openid-caep-1_0-final.html) (published 29 August 2025): the session and credential event vocabulary (`session-revoked`, `credential-change`, `assurance-level-change`, `token-claims-change`), which this change's signal names follow. CAEP itself is exchanged between cooperating transmitters and receivers over the Shared Signals Framework, not with browsers. So scrty borrows its vocabulary, not its protocol.
+
+### Security review (accessed 2026-11-03)
+- Each decision was checked against RFC 6750, RFC 9111, RFC 9113, WHATWG server-sent events, OWASP (Session Management, CSRF, HTML5, WebSocket, Authentication and DoS cheat sheets; ASVS 5.0 V7), NIST SP 800-63B-4, web.dev's Fetch Metadata guidance, and OpenID SSF 1.0 and CAEP 1.0. `design.md`'s "Security review against standards" gives each verdict, and its References list each source.
 
 ### Separate from the audit feed
 - Reasoned from scrty's own settled specs and the established design: `close-security-gaps` D13 (security events for the operator), D14 (sign-in notices) and D12 (session-management endpoints).
