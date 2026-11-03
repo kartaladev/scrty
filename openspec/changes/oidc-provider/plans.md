@@ -802,7 +802,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - two provider paths equal;
   - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`;
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
-  - `EnableJWKSEndpoint` given a key provider for which `(*Provider).SignsWith` answers false on a comparable value → `ErrConfig`, and a wrapped provider, which it cannot compare, → built, as the godoc says;
+  - `EnableJWKSEndpoint` given a `*signingkey.Keys` for which `(*Provider).SignsWith` answers false → `ErrConfig`, and a consumer's wrapped provider of any other type, which cannot be compared → built, as the godoc says;
   - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (`httpsec/options.go`).
 - [ ] FAIL; implement; PASS; commit.
 - [ ] Red rows on `TestOIDCProvider_Construction` (R2, R11): browser sessions on without CSRF protection refused; `WithoutBrowserSessions` without it built; no security headers refused; `WithOIDCPagesCarryFrameAncestors` without them built. FAIL; implement; PASS; commit.

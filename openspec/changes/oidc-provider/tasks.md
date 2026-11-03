@@ -267,6 +267,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 - [ ] 8.1 Add `EnableOIDCProvider` with its construction rules, test-first, one table:
   - a bearer mode is required, and so is the JWKS endpoint;
+  - a JWKS endpoint serving a different signing-key manager from the provider's key source is refused, while a wrapped provider, which cannot be compared, builds (R6);
   - enabling it twice is refused, and so are path collisions;
   - every session manager on the chain must report to the provider (T4);
   - a client requiring DPoP while DPoP is not enabled is refused;
