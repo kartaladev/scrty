@@ -719,6 +719,33 @@ func TestPolicy_Change(t *testing.T) {
 	}
 }
 
+// TestPolicy_ReuseDepthThreeSequence pins the depth-3 contract end to end: after
+// p1 to p2 to p3 to p4 the current password and the two before it are refused
+// as reused, and the one before those is free again.
+func TestPolicy_ReuseDepthThreeSequence(t *testing.T) {
+	t.Parallel()
+
+	fast := fastArgon2id(t)
+	g, err := reusePolicy(fast, newMemHistory(), 3, nil)
+	require.NoError(t, err)
+
+	user := &identity.Details{ID: "u-seq", Password: mustEncode(t, fast, p1)}
+	for _, p := range []string{p2, p3, p4} {
+		changeTo(t, g, user, p)
+	}
+
+	for _, reused := range []string{p4, p3, p2} {
+		w := &recordingWrite{}
+		err := g.Change(t.Context(), user, reused, w.write)
+		require.ErrorIs(t, err, password.ErrReused, "%q is within the depth and must be refused", reused)
+		assert.Zero(t, w.calls, "a refused change writes nothing")
+	}
+
+	w := &recordingWrite{}
+	require.NoError(t, g.Change(t.Context(), user, p1, w.write), "p1 has aged out of the depth")
+	assert.Equal(t, 1, w.calls)
+}
+
 // Standalone: it drives a mock History in a set order, where TestPolicy_Change uses a real one.
 func TestPolicy_Change_FailsClosed(t *testing.T) {
 	t.Parallel()

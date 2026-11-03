@@ -315,6 +315,17 @@ func TestSessionPresentationRace(t *testing.T) {
 	t.Run("gorm", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
 }
 
+func TestSessionListAcrossReplicas(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionListAcrossReplicas(t, h) })
+}
+
 func TestSessionSupersessionLockOrder(t *testing.T) {
 	t.Parallel()
 
