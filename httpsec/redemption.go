@@ -389,6 +389,9 @@ func newRedemptionLogin(deps loginTailDeps, out *policyOutcome) *redemptionLogin
 // for is answered nil without issuing a second time, and one that calls it
 // for any other login is refused with policy.ErrDenied.
 //
+// A principal with no user identifier then fails it, as an issuing failure
+// (requireUserIdentifier), before anything is built or spent.
+//
 // A failure to build or issue is recorded on the outcome (policyOutcome.
 // issueErr), until a later issue for the redemption succeeds and clears it,
 // and returned as it is, a dependency failure behind fixed text; the
@@ -405,6 +408,12 @@ func (r *redemptionLogin) issue(ctx context.Context, in *policy.Input) error {
 		}
 
 		return policy.ErrDenied
+	}
+
+	if err := requireUserIdentifier(ctx, r.deps, in); err != nil {
+		r.out.issueErr = err
+
+		return err
 	}
 
 	login, err := prepareLogin(ctx, r.deps, in)

@@ -128,31 +128,34 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	// resolution returns early for it and hands this step on to the renewal
 	// endpoint (session_renewal.go), so a token naming another user could
 	// otherwise renew that session. That holds in either subject mode, so under
-	// usernames the user is loaded here, and the record handed to resolution.
+	// usernames the user is loaded here, and the record returned for whichever
+	// of the two carries on.
 	subject := claims.Subject()
 
 	resolver := b.resolver
-	resolver.admit = func(ex *Exchange, s *session.Session) error {
+	resolver.admit = func(ex *Exchange, s *session.Session) (*identity.Details, error) {
 		if s.KeyBinding.JKT != cnf.JKT {
 			if b.dpop == nil {
-				return ErrInvalidDPoPProof
+				return nil, ErrInvalidDPoPProof
 			}
 
-			return b.dpop.refuse(ex.Context(), reasonProofBinding)
+			return nil, b.dpop.refuse(ex.Context(), reasonProofBinding)
 		}
 
 		if s.KeyBinding.X5TS256 != cnf.X5TS256 {
-			return ErrCertificateBinding
+			return nil, ErrCertificateBinding
 		}
 
-		admitted, err := b.admitSubject(ex.Context(), subject, s)
+		details, err := b.admitSubject(ex.Context(), subject, s)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		resolver.admitted = admitted
+		if err := recordProof(ex.Context(), b.dpop, proof); err != nil {
+			return nil, err
+		}
 
-		return recordProof(ex.Context(), b.dpop, proof)
+		return details, nil
 	}
 
 	// The session identifier is the token's jti, which is how a token issued at
@@ -174,9 +177,8 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 //
 // Under WithBearerUsernameSubject the subject is a username, which only the user
 // store can resolve. It is loaded here and must be the user s records. The record
-// is returned, so resolution does not load it a second time; a late renewal, whose
-// endpoint reloads by the session's reference, does. A load that fails is answered
-// as resolution answers one (classifyReload).
+// is returned, so neither resolution nor a late renewal's endpoint loads it a second
+// time. A load that fails is answered as resolution answers one (classifyReload).
 //
 // The refusal is ErrAuthenticationRequired and revokes nothing: nothing has been
 // recorded on s, and the session's own user can still use it.
@@ -579,8 +581,10 @@ func WithBearerAllowEmptyScheme() BearerTokenOption {
 // in again; that is the cost the default avoids. A token with no subject is refused
 // here too, and a user with no identifier owns no session.
 //
-// A request loads the user once, as under the default, and a late renewal twice:
-// by this username, and by the session's reference.
+// A request loads the user once, as under the default, and so does a late
+// renewal: the record loaded by this username is the one the renewal uses. Every
+// other renewal loads twice, in every mode: once to resolve the request, and once
+// at the renewal endpoint.
 func WithBearerUsernameSubject() BearerTokenOption {
 	return func(b *bearerToken) error {
 		b.subject = token.SubjectUsername

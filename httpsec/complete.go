@@ -136,15 +136,16 @@ func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
 	return signedTokens(g)
 }
 
-// errNoUserIdentifier is the cause of a login whose principal has no user
-// identifier. It wraps token.ErrNoSubject in every mode, so a consumer matches one
+// errNoUserIdentifier is the cause of an authentication whose principal has no
+// user identifier. It wraps token.ErrNoSubject in every mode, so a consumer matches one
 // error whichever way their chain reads a credential.
 var errNoUserIdentifier = fmt.Errorf("%s: %w", textNoUserIdentifier, token.ErrNoSubject)
 
-// textNoUserIdentifier is the fixed text such a login fails with.
-const textNoUserIdentifier = "httpsec: the login's principal has no user identifier"
+// textNoUserIdentifier is the fixed text such an authentication fails with.
+const textNoUserIdentifier = "httpsec: the authentication's principal has no user identifier"
 
-// requireUserIdentifier fails a login whose principal has no user identifier.
+// requireUserIdentifier fails a login whose principal has no user identifier,
+// and Basic authentication reuses it for a provider that names no principal.
 //
 // A session records its user by that identifier, and an empty one names no one
 // (ownsSession), so storing it would leave a session no request can use and no
@@ -180,7 +181,7 @@ const (
 	reasonNoUserIdentifier = "no-user-identifier"
 
 	// msgLoginNoUserIdentifier is that record's fixed text.
-	msgLoginNoUserIdentifier = "httpsec: a login's principal carries no user identifier; " +
+	msgLoginNoUserIdentifier = "httpsec: an authentication's principal carries no user identifier; " +
 		"the authentication provider must return one"
 )
 
@@ -526,13 +527,15 @@ type preparedLogin struct {
 	afterFailures bool
 }
 
-// prepareLogin is the first half of completeLogin: it fails a principal with no
-// user identifier (requireUserIdentifier), decides the
+// prepareLogin is the first half of completeLogin: it decides the
 // post-authentication phase for in (or acts on deps.decided), refuses a deny,
 // an unenforced challenge and a failed methods lookup, builds the session with
 // opts and the tail's own attributes, marks any challenge on it, and issues
 // its credential. It stores nothing and spends nothing, so a redemption runs
 // it inside its redeemer's refusal checks, before the consume.
+//
+// Each of its callers has already failed a principal with no user identifier
+// (requireUserIdentifier): completeLogin, and a redemption's issue.
 //
 // Its errors are completeLogin's for the same steps: a policy's reason as
 // itself, a configuration error for an unenforced challenge, and a dependency
@@ -544,10 +547,6 @@ func prepareLogin(
 	in *policy.Input,
 	opts ...session.CreateOption,
 ) (*preparedLogin, error) {
-	if err := requireUserIdentifier(ctx, deps, in); err != nil {
-		return nil, err
-	}
-
 	d := policy.Decision{Outcome: policy.Allow}
 
 	switch {

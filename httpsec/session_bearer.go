@@ -161,14 +161,14 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 	}
 
 	resolver := b.resolver
-	resolver.admit = func(ex *Exchange, s *session.Session) error {
+	resolver.admit = func(ex *Exchange, s *session.Session) (*identity.Details, error) {
 		ctx := ex.Context()
 		if err := admitBinding(ex, b.dpop, proof,
 			keyBinding{jkt: s.KeyBinding.JKT, x5tS256: s.KeyBinding.X5TS256}); err != nil {
-			return refusedReference(err)
+			return nil, refusedReference(err)
 		}
 
-		return recordProof(ctx, b.dpop, proof)
+		return nil, recordProof(ctx, b.dpop, proof)
 	}
 
 	if err := resolver.resolve(ex, presented); err != nil {

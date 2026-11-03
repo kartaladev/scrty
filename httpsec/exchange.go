@@ -221,8 +221,11 @@ type Exchange struct {
 	// that let it through would have judged a session it loaded: its key
 	// binding against the credential and the proof presented, a signed token's
 	// subject against its user, the proof then recorded. It is set with renewal
-	// by the resolution core, and nil when the bearer has nothing to judge.
-	admitRenewal func(ex *Exchange, s *session.Session) error
+	// by the resolution core, and nil when the bearer has nothing to judge. The
+	// record it returns is the user it loaded, which the endpoint uses rather
+	// than loading again; nil means the endpoint loads the user by the reference
+	// the session records.
+	admitRenewal func(ex *Exchange, s *session.Session) (*identity.Details, error)
 
 	// certificateThumb is the thumbprint of the client certificate the
 	// request presents, "" for none, once certificateRead says it has been

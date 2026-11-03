@@ -44,13 +44,12 @@ type sessionResolver struct {
 	// or anything is published; an error it returns is the request's answer.
 	// Both bearers judge the session's key binding here, and the signed bearer
 	// its token's subject. A late renewal runs it too, at the endpoint.
-	admit func(ex *Exchange, s *session.Session) error
-
-	// admitted is the user admit has already loaded, which the reload reuses
-	// rather than loading again, and nil when it loaded none. Only a signed
-	// bearer under WithBearerUsernameSubject sets it, on its per-request copy of
-	// the resolver.
-	admitted *identity.Details
+	//
+	// The record it returns is the user it loaded for this request, which the
+	// caller uses rather than loading again. Nil means it loaded none, and the
+	// caller loads the user by the reference the session records. Only a signed
+	// bearer under WithBearerUsernameSubject returns one.
+	admit func(ex *Exchange, s *session.Session) (*identity.Details, error)
 }
 
 // ownsSession reports whether details is the user s records. A loader that
@@ -94,8 +93,8 @@ func ownActiveUser(s *session.Session, details *identity.Details) error {
 // username: a username is a reusable handle, and one reissued to another person
 // would otherwise authenticate them on the first one's session. Only a signed
 // bearer configured with WithBearerUsernameSubject loads by the username its
-// token names, and it does so in its admit step (admitSubject), handing the
-// record on through admitted.
+// token names, and it does so in its admit step (admitSubject), which returns
+// the record.
 //
 // It returns nil when the request may go on. Otherwise it returns a refusal,
 // which matches ErrAuthenticationRequired unless the per-request phase refused
@@ -143,8 +142,11 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 		return classifyLoad(ctx, err)
 	}
 
+	var details *identity.Details
+
 	if r.admit != nil {
-		if err := r.admit(ex, s); err != nil {
+		details, err = r.admit(ex, s)
+		if err != nil {
 			return err
 		}
 	}
@@ -152,7 +154,6 @@ func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 	// Reloaded rather than taken from the credential, so a role revoked a
 	// minute ago is not honoured for the rest of the credential's life. A user
 	// admit loaded for this request has just been read, so it is not read again.
-	details := r.admitted
 	if details == nil {
 		details, err = r.users.LoadByUserID(ctx, s.UserID)
 		if err != nil {

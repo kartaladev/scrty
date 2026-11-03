@@ -382,7 +382,11 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// watches: it decides nothing, and names the success's event.
 	afterFailures := l.hadRecentFailures(ctx, username, now)
 
-	l.resetFailures(ctx, username)
+	// Only a login that named a principal supersedes the failures: one the
+	// tail is about to refuse for want of one proved no one.
+	if auth != nil && auth.Principal != nil {
+		l.resetFailures(ctx, username)
+	}
 
 	// A provider that answers neither an authentication nor an error has
 	// named no principal, which the login tail refuses as it does any other.

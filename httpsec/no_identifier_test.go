@@ -364,81 +364,38 @@ func TestLogin_NoIdentifierLeavesARecord(t *testing.T) {
 // TestCompleteLogin_NoIdentifier pins where the login tail refuses a principal
 // with no identifier: ahead of everything it does, so no held recovery is
 // cancelled, no policy runs, nothing is issued and nothing is stored. The spies
-// fail a row on any call to the generator or the store.
+// fail the test on any call to the generator or the store. A redemption makes the
+// same check for itself, inside its checks (TestMagicLink_NoIdentifier and
+// TestOIDCHandoff_NoIdentifierRefusedInsideTheChecks).
 func TestCompleteLogin_NoIdentifier(t *testing.T) {
 	t.Parallel()
 
-	// tailResult is what a row's run left behind.
-	type tailResult struct {
-		ex        *httpsec.Exchange
-		token     string
-		err       error
-		cancelled int32
-	}
+	spies := newLoginSpies(t)
 
-	type testCase struct {
-		name   string
-		run    func(ex *httpsec.Exchange, deps httpsec.LoginTailDeps, in *policy.Input) (string, error)
-		assert func(t *testing.T, res tailResult)
-	}
+	phase := NewMockPolicy(gomock.NewController(t))
+	phase.EXPECT().Name().Return("test: no evaluation expected").AnyTimes()
+	phase.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
 
-	refused := func(t *testing.T, res tailResult) {
-		t.Helper()
+	var cancelled atomic.Int32
 
-		noIdentifierFailure(t, res.err)
-		assert.Empty(t, res.token)
-		assert.Nil(t, res.ex.Session, "no session is published")
-		assert.Zero(t, res.cancelled, "no held recovery of an empty user is cancelled")
-	}
+	ex := newExchange(t)
+	in := httpsec.PostAuthenticationInputForTest(
+		&identity.Principal{Username: "ada"}, factor.Password, "ada", time.Time{}, time.Now())
 
-	cases := []testCase{
-		{
-			name: "the whole tail, as form login and passkey login run it",
-			run: func(ex *httpsec.Exchange, deps httpsec.LoginTailDeps, in *policy.Input) (string, error) {
-				return httpsec.CompleteLoginForTest(ex, deps, in)
-			},
-			assert: refused,
-		},
-		{
-			name: "its first half, as a redemption runs it inside its checks",
-			run: func(ex *httpsec.Exchange, deps httpsec.LoginTailDeps, in *policy.Input) (string, error) {
-				_, err := httpsec.PrepareLoginForTest(ex.Context(), deps, in)
+	deps := httpsec.LoginTailDepsCancellingForTest(
+		httpsec.LoginTailDepsForTest(engineOf(t, phase), spies.sessions, spies.tokens),
+		func(context.Context, identity.UserID) error {
+			cancelled.Add(1)
 
-				return "", err
-			},
-			assert: refused,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			spies := newLoginSpies(t)
-
-			phase := NewMockPolicy(gomock.NewController(t))
-			phase.EXPECT().Name().Return("test: no evaluation expected").AnyTimes()
-			phase.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
-
-			var cancelled atomic.Int32
-
-			ex := newExchange(t)
-			in := httpsec.PostAuthenticationInputForTest(
-				&identity.Principal{Username: "ada"}, factor.Password, "ada", time.Time{}, time.Now())
-
-			deps := httpsec.LoginTailDepsCancellingForTest(
-				httpsec.LoginTailDepsForTest(engineOf(t, phase), spies.sessions, spies.tokens),
-				func(context.Context, identity.UserID) error {
-					cancelled.Add(1)
-
-					return nil
-				})
-
-			tok, err := tc.run(ex, deps, in)
-
-			tc.assert(t, tailResult{ex: ex, token: tok, err: err, cancelled: cancelled.Load()})
+			return nil
 		})
-	}
+
+	tok, err := httpsec.CompleteLoginForTest(ex, deps, in)
+
+	noIdentifierFailure(t, err)
+	assert.Empty(t, tok)
+	assert.Nil(t, ex.Session, "no session is published")
+	assert.Zero(t, cancelled.Load(), "no held recovery of an empty user is cancelled")
 }
 
 // switchableIdentifier is a loader whose one user's identifier a row can change
@@ -914,6 +871,148 @@ func TestBearer_EmptyUserReferenceMatchesNoUser(t *testing.T) {
 			f := newNoIdentifierChain(t, tc.mode)
 
 			tc.assert(t, tc.act(t, f, credential(t, f)))
+		})
+	}
+}
+
+// emptyAuthentication is a consumer's authentication provider that returns an
+// authentication carrying no principal.
+type emptyAuthentication struct{}
+
+func (emptyAuthentication) Authenticate(context.Context, identity.Credentials) (*authenticate.Authentication, error) {
+	return &authenticate.Authentication{}, nil
+}
+
+// failuresOf seeds four failures for ada and returns the store with a reader of
+// how many remain.
+func failuresOf(t *testing.T) (policy.AttemptStore, func() int) {
+	t.Helper()
+
+	store := must.Must(lockout.NewMemoryAttemptStore())
+	for range 4 {
+		require.NoError(t, store.RecordFailure(t.Context(), "ada", time.Now()))
+	}
+
+	return store, func() int {
+		n, err := store.FailureCount(t.Context(), "ada", time.Now().Add(-time.Hour))
+		require.NoError(t, err)
+
+		return n
+	}
+}
+
+// TestBasic_ProviderReturningNoAuthentication pins spec http-security-chain
+// "Provider returning no authentication to Basic": a provider answering no
+// principal fails the request as a wiring fault, a 500 with no challenge, and
+// the account's failures stay.
+func TestBasic_ProviderReturningNoAuthentication(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		provider authenticate.Authenticator
+		assert   func(t *testing.T, out served, logs string, failures int)
+	}
+
+	wiringFault := func(t *testing.T, out served, logs string, failures int) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, token.ErrNoSubject)
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+		assert.False(t, out.handlerRan)
+		assert.Empty(t, out.rec.Header().Values("WWW-Authenticate"), "a 500 carries no challenge")
+		assert.Equal(t, 4, failures, "nothing is cleared")
+		oneNoIdentifierRecord(t, logs, "ada", "s3cret")
+	}
+
+	cases := []testCase{
+		{name: "nil and no error", provider: noAuthentication{}, assert: wiringFault},
+		{name: "an authentication with no principal", provider: emptyAuthentication{}, assert: wiringFault},
+		{
+			name:     "a principal with no user identifier is allowed",
+			provider: unidentifiedProvider{principal: &identity.Principal{Username: "ada"}},
+			assert: func(t *testing.T, out served, _ string, failures int) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan)
+				assert.Zero(t, failures, "a proven password clears the account's failures")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs syncBuffer
+
+			attempts, failures := failuresOf(t)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: tc.provider, Attempts: attempts}),
+			)
+			require.NoError(t, err)
+
+			out := serve(t, chain, basicRequest(t.Context(), "ada", "s3cret"))
+
+			tc.assert(t, out, logs.String(), failures())
+		})
+	}
+}
+
+// TestLogin_ProviderReturningNoAuthentication pins spec http-security-chain
+// "Provider returning no authentication": the login fails as for any principal
+// with no identifier, and the account's failures stay.
+func TestLogin_ProviderReturningNoAuthentication(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		provider authenticate.Authenticator
+		assert   func(t *testing.T, out served, failures int)
+	}
+
+	failsAsNoIdentifier := func(t *testing.T, out served, failures int) {
+		t.Helper()
+
+		noIdentifierFailure(t, out.err)
+		noCredential(t, out)
+		assert.Equal(t, 4, failures, "nothing is cleared")
+	}
+
+	cases := []testCase{
+		{name: "nil and no error", provider: noAuthentication{}, assert: failsAsNoIdentifier},
+		{name: "an authentication with no principal", provider: emptyAuthentication{}, assert: failsAsNoIdentifier},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys := must.Must(signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore())))
+			sessions := must.Must(session.New(session.WithStore(must.Must(session.NewMemoryStore()))))
+			gen := defaultSubjectMode.generator(keys)
+			attempts, failures := failuresOf(t)
+
+			chain, err := httpsec.New(
+				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+					Authenticator: tc.provider,
+					Sessions:      sessions,
+					Tokens:        gen,
+					Attempts:      attempts,
+				}),
+				defaultSubjectMode.bearer(gen, sessions, NewMockUserLoader(gomock.NewController(t))),
+			)
+			require.NoError(t, err)
+
+			out := serve(t, chain, postValues(t.Context(), httpsec.DefaultLoginPath, e2eSource, url.Values{
+				httpsec.DefaultLoginUsernameParam: {"ada"},
+				httpsec.DefaultLoginPasswordParam: {"pw"},
+			}))
+
+			tc.assert(t, out, failures())
 		})
 	}
 }

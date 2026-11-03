@@ -236,6 +236,16 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, err
 	}
 
+	// A provider that names no principal has proved no one: the consumer's
+	// wiring is at fault, so this is a 500 with no challenge, and nothing is
+	// cleared, because no password was shown to belong to this username. The
+	// login tail's record and its sampling budget are shared deliberately: a
+	// provider answering so is one wiring fault, whichever endpoint meets it.
+	if auth == nil || auth.Principal == nil {
+		return nil, requireUserIdentifier(ctx,
+			loginTailDeps{log: b.log, sampler: b.sampler, now: b.now}, &policy.Input{})
+	}
+
 	// A proven password supersedes the guesses before it, as at the login
 	// form: a Basic client's typos must not add up to a lock its owner keeps
 	// hitting with the right password.
@@ -297,6 +307,15 @@ func (b *basicAuth) challenge(ex *Exchange) {
 // would suggest otherwise.
 type BasicAuthDeps struct {
 	// Authenticator judges the decoded credentials.
+	//
+	// A provider that returns no authentication, or one with no principal, has
+	// proved no one: the request fails as a wiring fault, a 500 whose cause
+	// matches token.ErrNoSubject and carries no challenge, and nothing is
+	// recorded or cleared for the account. To refuse such a credential as an
+	// ordinary wrong password instead, return authenticate.ErrAuthenticationFailed
+	// from the provider, or wrap it in authenticate.FirstOf for the uniform
+	// refusal. A principal with no user identifier is allowed: Basic establishes
+	// no session and no token, so nothing here needs one.
 	Authenticator authenticate.Authenticator
 
 	// Attempts is where a refused credential is recorded. Supply the
@@ -356,7 +375,12 @@ type BasicAuthOption func(*basicAuth) error
 //     the source, with nothing recorded or cleared for the account. A load
 //     the request's own context ended compared no password: it is refused
 //     as a failure and counted against the source only, with nothing
-//     recorded against the account. A success clears the
+//     recorded against the account. A provider that returns no authentication
+//     or no principal has proved no one: that is a 500 with no challenge,
+//     whose cause matches token.ErrNoSubject, with nothing recorded or cleared
+//     (a provider that wants the uniform refusal returns
+//     authenticate.ErrAuthenticationFailed, or is wrapped in FirstOf). A
+//     principal with no user identifier is allowed. A success clears the
 //     username's failures through BasicAuthDeps.Attempts, as form login does,
 //     including its count towards a cap set with
 //     lockout.WithFailureStreakLimit; a store that fails to clear is logged

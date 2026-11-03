@@ -91,8 +91,10 @@ var ErrInvalid = errors.New("token: invalid")
 // ErrNoSubject reports a principal with no value for the chosen subject: no user
 // identifier by default, no username under WithUsernameSubject. Generate returns
 // it. httpsec also uses it as the cause when a login's principal has no user
-// identifier, in every subject mode, including chains that issue no token, so a
-// consumer matches one error whichever way their chain reads a credential. The
+// identifier. Basic uses it only when a provider names no principal at all, not
+// for a principal with no user identifier, which Basic allows. Both hold in
+// every subject mode, including chains that issue no token, so a consumer
+// matches one error whichever way their chain reads a credential. The
 // value the other mode would carry does not stand in for it.
 // identity.Principal is a plain struct, so a store row with a blank value arrives
 // as a principal that names nobody, and a token with sub: "" would be

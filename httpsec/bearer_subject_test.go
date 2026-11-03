@@ -79,6 +79,9 @@ type subjectWorld struct {
 
 	// phaseRuns counts the per-request phase's evaluations.
 	phaseRuns atomic.Int32
+
+	// userLoads counts the user loads made through countUserLoads' expectations.
+	userLoads atomic.Int32
 }
 
 func newSubjectWorld(t *testing.T, usernames, dpop bool, extra ...httpsec.Option) *subjectWorld {
@@ -190,6 +193,26 @@ func (w *subjectWorld) renew(credential string) served {
 	return serve(w.t, w.chain, req)
 }
 
+// renewalProof is k's proof for a renewal presenting credential, issued at the
+// world's clock.
+func (w *subjectWorld) renewalProof(k dpopKey, jti, credential string) string {
+	w.t.Helper()
+
+	return k.issuingProofParts(httpsec.DefaultSessionRenewalPath, jti, credential).
+		with(map[string]any{"iat": w.clk.Now().Unix()}).sign(w.t)
+}
+
+// renewBound posts a renewal presenting credential under the DPoP scheme, with
+// proof as its DPoP header.
+func (w *subjectWorld) renewBound(credential, proof string) served {
+	w.t.Helper()
+
+	req := withProof(postValues(w.t.Context(), httpsec.DefaultSessionRenewalPath, e2eSource, nil), proof)
+	req.Header.Set("Authorization", "DPoP "+credential)
+
+	return serve(w.t, w.chain, req)
+}
+
 // late signs in, renews once with a token whose subject is own, leaves the
 // successor unused and moves past the grace window, and returns the renewed
 // session: one only a late renewal may recover. It also keeps the user's
@@ -209,6 +232,22 @@ func (w *subjectWorld) late(own string) string {
 	require.NoError(w.t, err)
 
 	return sid
+}
+
+// countUserLoads answers alice's every load, by either key, counting each.
+func (w *subjectWorld) countUserLoads() {
+	w.users.EXPECT().LoadByUsername(gomock.Any(), "alice").AnyTimes().
+		DoAndReturn(func(context.Context, string) (*identity.Details, error) {
+			w.userLoads.Add(1)
+
+			return alice("alice"), nil
+		})
+	w.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).AnyTimes().
+		DoAndReturn(func(context.Context, identity.UserID) (*identity.Details, error) {
+			w.userLoads.Add(1)
+
+			return alice("alice"), nil
+		})
 }
 
 // noSuccessor asserts the user's sign-ins are as late left them.
@@ -593,14 +632,89 @@ func TestBearer_SubjectIsTheSessionUser(t *testing.T) {
 		{
 			name:      "Late renewal under usernames with the session's user's own username",
 			usernames: true,
-			act: lateUnderUsernames("alice", func(w *subjectWorld) {
-				w.users.EXPECT().LoadByUsername(gomock.Any(), "alice").Return(alice("alice"), nil).Times(2)
-			}),
-			assert: func(t *testing.T, _ *subjectWorld, _ string, out served) {
+			act: func(_ *testing.T, w *subjectWorld) (string, served) {
+				w.countUserLoads()
+
+				sid := w.late("alice")
+
+				// Only the late renewal itself is counted, not late's own setup.
+				w.userLoads.Store(0)
+
+				return sid, w.renew(w.tokenFor(sid, "alice", token.Confirmation{}))
+			},
+			assert: func(t *testing.T, w *subjectWorld, _ string, out served) {
 				t.Helper()
 
 				require.NoError(t, out.err)
 				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.EqualValues(t, 1, w.userLoads.Load(), "a late renewal loads the user once")
+			},
+		},
+		{
+			name:      "Late renewal under usernames refuses a user who has been disabled",
+			usernames: true,
+			act: lateUnderUsernames("alice", namedAway(func(c *MockUserLoaderLoadByUsernameCall) {
+				c.Return(&identity.Details{ID: "u-1", Username: "alice", Active: false}, nil)
+			})),
+			assert: lateRefused,
+		},
+		{
+			name:      "Late renewal under usernames runs the per-request phase",
+			usernames: true,
+			act: func(_ *testing.T, w *subjectWorld) (string, served) {
+				w.countUserLoads()
+
+				sid := w.late("alice")
+
+				// Only the late renewal itself is counted, not late's own setup.
+				w.phaseRuns.Store(0)
+
+				return sid, w.renew(w.tokenFor(sid, "alice", token.Confirmation{}))
+			},
+			assert: func(t *testing.T, w *subjectWorld, _ string, out served) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Positive(t, w.phaseRuns.Load(), "the record the bearer loaded is judged by the per-request phase")
+			},
+		},
+		{
+			name:      "Late renewal under usernames with another user's username consumes no proof",
+			usernames: true,
+			dpop:      true,
+			act: func(_ *testing.T, w *subjectWorld) (string, served) {
+				w.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(alice("alice"), nil).AnyTimes()
+				w.users.EXPECT().LoadByUsername(gomock.Any(), "alice").Return(alice("alice"), nil).AnyTimes()
+				w.users.EXPECT().LoadByUsername(gomock.Any(), "mallory").
+					Return(&identity.Details{ID: "u-2", Username: "mallory", Active: true}, nil).Times(2)
+
+				sid := w.signIn(session.KeyBinding{JKT: key.jkt})
+				cnf := token.Confirmation{JKT: key.jkt}
+
+				own := w.tokenFor(sid, "alice", cnf)
+				first := w.renewBound(own, w.renewalProof(key, "j-own", own))
+				require.NoError(w.t, first.err)
+
+				w.clk.Advance(session.DefaultRenewalGrace + time.Second)
+
+				var err error
+				w.signInsBefore, err = w.sessions.ListSignIns(w.t.Context(), "u-1", nil)
+				require.NoError(w.t, err)
+
+				tok := w.tokenFor(sid, "mallory", cnf)
+				proof := w.renewalProof(key, "j-late-usernames", tok)
+
+				require.ErrorIs(w.t, w.renewBound(tok, proof).err, httpsec.ErrAuthenticationRequired)
+
+				// A recorded proof would be refused as a replay here.
+				return sid, w.renewBound(tok, proof)
+			},
+			assert: func(t *testing.T, w *subjectWorld, sid string, out served) {
+				t.Helper()
+
+				assert.NotErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof, "the first refusal recorded the proof")
+				lateRefused(t, w, sid, out)
 			},
 		},
 		{
