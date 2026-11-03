@@ -40,5 +40,5 @@ Every Go task is test-first: write the failing test, run it, and confirm it fail
 
 ## Workflow follow-up
 
-- Archive the change and sync `token-issuance`, `authentication`, `http-security-chain`, `signing-keys` and `email-notification`.
+- Archive the change and sync `token-issuance`, `authentication`, `http-security-chain`, `identity-model`, `signing-keys`, `secrets-at-rest`, `email-notification`, `multi-factor-auth`, `security-state-stores` and `store-conformance`.
 - `release-readiness`'s first changelog entry summarises this change's breaking items, including the new `token.Generator` method.
