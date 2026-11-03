@@ -50,15 +50,18 @@ type nonBlockingSender struct{ *MockSender }
 func (nonBlockingSender) NonBlocking() bool { return true }
 
 // noticeStore is the fixture's memory store, whose creating write fails once
-// armed, and whose listing waits for listGate when one is set and counts its
-// calls.
+// armed, and whose listing waits for the gate holdListings set, if any, and
+// counts its calls.
 type noticeStore struct {
 	session.Store
 
 	failCreate atomic.Bool
-	listGate   <-chan struct{}
+	listGate   atomic.Value // <-chan struct{}
 	lists      atomic.Int32
 }
+
+// holdListings makes every listing from now on wait until gate is closed.
+func (s *noticeStore) holdListings(gate <-chan struct{}) { s.listGate.Store(gate) }
 
 func (s *noticeStore) Create(ctx context.Context, sess *session.Session) error {
 	if s.failCreate.Load() {
@@ -71,9 +74,9 @@ func (s *noticeStore) Create(ctx context.Context, sess *session.Session) error {
 func (s *noticeStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
 	s.lists.Add(1)
 
-	if s.listGate != nil {
+	if gate, _ := s.listGate.Load().(<-chan struct{}); gate != nil {
 		select {
-		case <-s.listGate:
+		case <-gate:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -120,9 +123,9 @@ func newNoticeFixture(t *testing.T, setup noticeSetup) *noticeFixture {
 	}
 	ctrl := gomock.NewController(t)
 
-	f.store = &noticeStore{
-		Store:    must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
-		listGate: setup.listGate,
+	f.store = &noticeStore{Store: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))}
+	if setup.listGate != nil {
+		f.store.holdListings(setup.listGate)
 	}
 	f.sessions = must.Must(session.New(session.WithClock(f.clk), session.WithStore(f.store),
 		session.WithSessionMetadata()))
@@ -572,6 +575,279 @@ func TestSignInNotice_OffTheRequestPath(t *testing.T) {
 	}
 }
 
+// msgNoticeDropped is the fixed text of the record a dropped notice leaves.
+const msgNoticeDropped = "sign-in notice was dropped"
+
+// droppedRecords are the log lines a dropped notice wrote.
+func droppedRecords(logs string) []string {
+	var lines []string
+
+	for line := range strings.Lines(logs) {
+		if strings.Contains(line, msgNoticeDropped) {
+			lines = append(lines, line)
+		}
+	}
+
+	return lines
+}
+
+// neverMatches is a matcher under which every sign-in beside another live one
+// is notified, so every notice that runs sends.
+var neverMatches = httpsec.WithSignInMatcher(func(session.SignIn, session.SignIn) bool { return false })
+
+// TestSignInNotice_BoundsConcurrentNoticeWork pins that at most the notice's
+// concurrency bound of notices are in progress at once while the store is
+// slow: a sign-in beyond it is not notified and its response is not held, the
+// drop is logged at WARN naming no user, and once the store answers every slot
+// is free again.
+func TestSignInNotice_BoundsConcurrentNoticeWork(t *testing.T) {
+	t.Parallel()
+
+	const (
+		logins = 200
+		prompt = 5 * time.Second
+		// settle is how long a notice beyond the bound is given to reach the
+		// store, were it let through.
+		settle = 200 * time.Millisecond
+	)
+
+	type testCase struct {
+		name   string
+		opts   []httpsec.SignInNoticeOption
+		bound  int
+		assert func(t *testing.T, peak int)
+	}
+
+	cases := []testCase{
+		{
+			name:  "Burst of sign-ins: the default bound",
+			bound: httpsec.DefaultSignInNoticeConcurrency,
+			assert: func(t *testing.T, peak int) {
+				assert.LessOrEqual(t, peak, 32)
+			},
+		},
+		{
+			name:  "Consumer's bound",
+			opts:  []httpsec.SignInNoticeOption{httpsec.WithSignInNoticeConcurrency(4)},
+			bound: 4,
+			assert: func(t *testing.T, peak int) {
+				assert.LessOrEqual(t, peak, 4)
+			},
+		},
+	}
+
+	// burst runs n concurrent sign-ins and fails the test when their
+	// responses are not all in within prompt.
+	burst := func(t *testing.T, f *noticeFixture, n int) {
+		t.Helper()
+
+		answersWithin(t, prompt, func() served {
+			var wg sync.WaitGroup
+			for range n {
+				wg.Go(func() {
+					out := f.loginOn(t.Context(), uaSafariMac)
+					if out.err != nil || out.rec.Code != http.StatusOK {
+						t.Errorf("login: %v, status %d", out.err, out.rec.Code)
+					}
+				})
+			}
+			wg.Wait()
+
+			return served{}
+		})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gate := make(chan struct{})
+			release := sync.OnceFunc(func() { close(gate) })
+			t.Cleanup(release)
+
+			f := newNoticeFixture(t, noticeSetup{
+				listGate: gate,
+				opts:     append([]httpsec.SignInNoticeOption{neverMatches}, tc.opts...),
+			})
+
+			// Every response is in while the store still holds every
+			// listing: no sign-in waited for a notice.
+			burst(t, f, logins)
+
+			require.Eventually(t, func() bool { return int(f.store.lists.Load()) >= tc.bound },
+				prompt, 5*time.Millisecond)
+			time.Sleep(settle)
+
+			peak := int(f.store.lists.Load())
+			tc.assert(t, peak)
+
+			dropped := droppedRecords(f.logs.String())
+			require.Len(t, dropped, 1, "the drops are logged, sampled to one record per window")
+			assert.Contains(t, dropped[0], "level=WARN")
+			for _, leak := range []string{"u-1", "ada@example.com", "203.0.113.7"} {
+				assert.NotContains(t, dropped[0], leak, "the record names no user")
+			}
+
+			release()
+			f.pending.Wait()
+			assert.Len(t, f.messages(), tc.bound, "only the notices in progress were sent")
+
+			// Every slot is free again: as many sign-ins as the bound all
+			// reach the store at once.
+			again := make(chan struct{})
+			f.store.holdListings(again)
+			before := f.store.lists.Load()
+
+			burst(t, f, tc.bound)
+			require.Eventually(t, func() bool { return int(f.store.lists.Load()-before) == tc.bound },
+				prompt, 5*time.Millisecond, "a slot was not freed")
+
+			close(again)
+			f.pending.Wait()
+			assert.Len(t, f.messages(), 2*tc.bound)
+		})
+	}
+}
+
+// TestSignInNotice_DroppedResponseMatchesNotified pins that a client cannot
+// tell from its response whether its sign-in was notified: a sign-in whose
+// notice is dropped gets the same status, headers and cookies as one whose
+// notice runs, and as promptly.
+func TestSignInNotice_DroppedResponseMatchesNotified(t *testing.T) {
+	t.Parallel()
+
+	const prompt = 5 * time.Second
+
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+
+	f := newNoticeFixture(t, noticeSetup{
+		listGate: gate,
+		opts:     []httpsec.SignInNoticeOption{httpsec.WithSignInNoticeConcurrency(1)},
+	})
+	f.signedIn(t, "u-1", uaFirefoxLinux)
+
+	notified := answersWithin(t, prompt, func() served { return f.loginOn(t.Context(), uaSafariMac) })
+	require.Eventually(t, func() bool { return f.store.lists.Load() == 1 }, prompt, 5*time.Millisecond)
+
+	// From another browser, so the first sign-in still has no match once
+	// its listing sees this one.
+	dropped := answersWithin(t, prompt, func() served { return f.loginOn(t.Context(), uaChromeWindows) })
+	require.Len(t, droppedRecords(f.logs.String()), 1, "the second sign-in's notice was dropped")
+
+	require.NoError(t, notified.err)
+	require.NoError(t, dropped.err)
+	assert.Equal(t, notified.rec.Code, dropped.rec.Code)
+
+	// cookieShape is a cookie without its value, which is per sign-in.
+	type cookieShape struct {
+		Name, Path, Domain string
+		MaxAge             int
+		Expires            time.Time
+		Secure, HTTPOnly   bool
+		SameSite           http.SameSite
+	}
+
+	shape := func(out served) (http.Header, []cookieShape) {
+		h := out.rec.Header().Clone()
+		h.Del("Set-Cookie")
+
+		var cookies []cookieShape
+		for _, c := range out.rec.Result().Cookies() {
+			cookies = append(cookies, cookieShape{
+				Name: c.Name, Path: c.Path, Domain: c.Domain, MaxAge: c.MaxAge, Expires: c.Expires,
+				Secure: c.Secure, HTTPOnly: c.HttpOnly, SameSite: c.SameSite,
+			})
+		}
+
+		return h, cookies
+	}
+
+	notifiedHeader, notifiedCookies := shape(notified)
+	droppedHeader, droppedCookies := shape(dropped)
+	assert.Equal(t, notifiedHeader, droppedHeader)
+	assert.Equal(t, notifiedCookies, droppedCookies)
+
+	release()
+	f.pending.Wait()
+	assert.Len(t, f.messages(), 1, "only the first sign-in was notified")
+}
+
+// TestSignInNotice_FreesItsSlot pins that a notice whose work ends badly
+// still frees its slot: under a bound of one, the next sign-in is notified.
+func TestSignInNotice_FreesItsSlot(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  func() noticeSetup
+		assert func(t *testing.T, f *noticeFixture)
+	}
+
+	notifiesNext := func(t *testing.T, f *noticeFixture) {
+		t.Helper()
+
+		f.signedIn(t, "u-1", uaFirefoxLinux)
+
+		require.NoError(t, f.login(t, uaSafariMac).err)
+		require.Empty(t, f.messages(), "the first notice ended badly")
+
+		require.NoError(t, f.login(t, uaChromeWindows).err)
+		assert.Len(t, f.messages(), 1, "the next sign-in found its slot free")
+	}
+
+	cases := []testCase{
+		{
+			name: "a notice that panics",
+			setup: func() noticeSetup {
+				var panicked atomic.Bool
+
+				return noticeSetup{opts: []httpsec.SignInNoticeOption{
+					httpsec.WithSignInNoticeConcurrency(1),
+					httpsec.WithSignInMatcher(func(signedIn, known session.SignIn) bool {
+						if panicked.CompareAndSwap(false, true) {
+							panic("matcher bug")
+						}
+
+						return signedIn.UserAgent == known.UserAgent
+					}),
+				}}
+			},
+			assert: notifiesNext,
+		},
+		{
+			name: "a notice abandoned at its timeout",
+			setup: func() noticeSetup {
+				return noticeSetup{
+					opts: []httpsec.SignInNoticeOption{
+						httpsec.WithSignInNoticeConcurrency(1),
+						httpsec.WithSignInNoticeTimeout(20 * time.Millisecond),
+					},
+					seen: func(m *MockSeenDevices) {
+						m.EXPECT().Seen(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+							func(ctx context.Context, _ identity.UserID, _ string) (bool, error) {
+								<-ctx.Done()
+
+								return false, ctx.Err()
+							}).Times(1)
+						m.EXPECT().Seen(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, nil)
+					},
+				}
+			},
+			assert: notifiesNext,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, newNoticeFixture(t, tc.setup()))
+		})
+	}
+}
+
 // TestSignInNotice_DeviceDescription pins the device text a notice carries:
 // a browser and platform family from a fixed vocabulary, never the raw user
 // agent or any part of it.
@@ -771,6 +1047,24 @@ func TestSignInNotice_Construction(t *testing.T) {
 			opts: []httpsec.Option{httpsec.WithSessions(withMetadata),
 				httpsec.EnableSignInNotice(sender, httpsec.WithSignInNoticeTimeout(-time.Second))},
 			assert: refused("WithSignInNoticeTimeout"),
+		},
+		{
+			name: "a zero concurrency bound",
+			opts: []httpsec.Option{httpsec.WithSessions(withMetadata),
+				httpsec.EnableSignInNotice(sender, httpsec.WithSignInNoticeConcurrency(0))},
+			assert: refused("WithSignInNoticeConcurrency"),
+		},
+		{
+			name: "a negative concurrency bound",
+			opts: []httpsec.Option{httpsec.WithSessions(withMetadata),
+				httpsec.EnableSignInNotice(sender, httpsec.WithSignInNoticeConcurrency(-1))},
+			assert: refused("WithSignInNoticeConcurrency"),
+		},
+		{
+			name: "a concurrency bound of one",
+			opts: []httpsec.Option{httpsec.WithSessions(withMetadata),
+				httpsec.EnableSignInNotice(sender, httpsec.WithSignInNoticeConcurrency(1))},
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "a positive timeout",

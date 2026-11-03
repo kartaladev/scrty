@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -65,7 +66,12 @@ type SignInNoticeOption func(*signInNotice) error
 type signInNotice struct {
 	sender   notify.Sender
 	sessions *session.Sessions
-	logger   *slog.Logger
+
+	// logger and sampler are the chain's, and now reads the chain's clock,
+	// handed over once the chain exists.
+	logger  *slog.Logger
+	sampler *logsample.Sampler
+	now     func() time.Time
 
 	matches   func(signedIn, known session.SignIn) bool
 	seen      SeenDevices
@@ -74,6 +80,12 @@ type signInNotice struct {
 
 	// timeout bounds the notice's work (WithSignInNoticeTimeout).
 	timeout time.Duration
+
+	// concurrency is how many notices may be in progress at once
+	// (WithSignInNoticeConcurrency), and slots holds one value per notice in
+	// progress.
+	concurrency int
+	slots       chan struct{}
 
 	// track, when set, counts the notice's work in flight
 	// (withSignInNoticeTracker).
@@ -96,6 +108,31 @@ func WithSignInNoticeTimeout(d time.Duration) SignInNoticeOption {
 		}
 
 		n.timeout = d
+
+		return nil
+	}
+}
+
+// DefaultSignInNoticeConcurrency is how many sign-in notices may be in
+// progress at once (WithSignInNoticeConcurrency).
+const DefaultSignInNoticeConcurrency = 32
+
+// WithSignInNoticeConcurrency bounds how many notices may be in progress at
+// once. A sign-in that completes while that many are in progress is not
+// notified: its notice is dropped, never queued, and the drop is logged at
+// WARN, sampled, naming no user. The sign-in itself is not delayed.
+//
+// Default: DefaultSignInNoticeConcurrency, 32, about one store connection
+// pool's worth. A value below 1 is refused; omit the option to keep the
+// default.
+func WithSignInNoticeConcurrency(c int) SignInNoticeOption {
+	return func(n *signInNotice) error {
+		if c < 1 {
+			return newConfigError("WithSignInNoticeConcurrency was given %d, which is below 1; omit "+
+				"the option to keep the default of %d", c, DefaultSignInNoticeConcurrency)
+		}
+
+		n.concurrency = c
 
 		return nil
 	}
@@ -220,8 +257,11 @@ func WithSignInNoticeMessage(fn func(f SignInNoticeFacts) (subject, body string)
 // cancel, bounded by WithSignInNoticeTimeout (DefaultSignInNoticeTimeout by
 // default), and a panic in it is recovered and logged. A failure, a timeout
 // or a panic is logged without its text and changes nothing about the
-// sign-in. Sign-ins are throttled, so one short-lived goroutine per notice
-// stays bounded.
+// sign-in. At most DefaultSignInNoticeConcurrency notices are in progress at
+// once (WithSignInNoticeConcurrency); a sign-in that completes while that many
+// are is not notified, and the drop is logged at WARN, sampled, naming no
+// user. A dropped notice is never queued, and its sign-in's response is the
+// same as a notified one's.
 //
 // The chain's session manager must record sign-in metadata
 // (session.WithSessionMetadata), since the user agents it compares are that
@@ -243,6 +283,8 @@ func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option
 			recipient: usernameRecipient,
 			message:   defaultSignInNoticeMessage,
 			timeout:   DefaultSignInNoticeTimeout,
+
+			concurrency: DefaultSignInNoticeConcurrency,
 		}
 
 		for _, opt := range opts {
@@ -253,6 +295,8 @@ func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option
 				return err
 			}
 		}
+
+		n.slots = make(chan struct{}, n.concurrency)
 
 		if err := eachInterceptor(c, func(*signInNotice) error {
 			return newConfigError("%s was given twice; one chain has one sign-in notice", option)
@@ -277,7 +321,11 @@ func EnableSignInNotice(sender notify.Sender, opts ...SignInNoticeOption) Option
 
 			return nil
 		})
-		c.wire(func(*Chain) { n.logger = c.logger })
+		c.wire(func(ch *Chain) {
+			n.logger = c.logger
+			n.sampler = ch.sampler
+			n.now = c.now
+		})
 		c.register(n, OrderSignInNotice)
 
 		return nil
@@ -305,7 +353,20 @@ func (n *signInNotice) Intercept(ex *Exchange, next Next) error {
 // goroutine is handed only the few values it needs, copied here, and shares
 // no map or slice with them. It recovers a panic, which it logs without its
 // value.
+//
+// The goroutine holds one of the notice's slots, taken here without waiting
+// and freed as it ends, whatever ended it. When every slot is taken the
+// notice is dropped and logged, and nothing else happens: the sign-in's
+// response is the same either way.
 func (n *signInNotice) start(parent context.Context, s *session.Session, p *identity.Principal) {
+	select {
+	case n.slots <- struct{}{}:
+	default:
+		n.dropped(parent)
+
+		return
+	}
+
 	signedIn := noticeSignIn{user: s.UserID, family: s.FamilyID, at: s.CreatedAt}
 
 	var principal *identity.Principal
@@ -326,6 +387,9 @@ func (n *signInNotice) start(parent context.Context, s *session.Session, p *iden
 			}
 
 			cancel()
+			// Free the slot before Done, so whoever waits on the tracker
+			// finds it free.
+			<-n.slots
 
 			if n.track != nil {
 				n.track.Done()
@@ -334,6 +398,24 @@ func (n *signInNotice) start(parent context.Context, s *session.Session, p *iden
 
 		n.notify(ctx, signedIn, principal)
 	}()
+}
+
+// The sampler key and message of the record a dropped notice leaves.
+const (
+	signInNoticeDroppedKey = "signin-notice" + sampleKeySeparator + "dropped"
+	msgSignInNoticeDropped = "httpsec: a sign-in notice was dropped: too many are in progress"
+)
+
+// dropped logs a notice that was not started because every slot was taken,
+// sampled through the chain's sampler, naming no user, device or address.
+func (n *signInNotice) dropped(ctx context.Context) {
+	logger := n.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	logSampled(ctx, n.sampler, logger, slog.LevelWarn, n.now(), signInNoticeDroppedKey, msgSignInNoticeDropped,
+		slog.Int("concurrency", n.concurrency))
 }
 
 // errNoticePanicked is what a recovered panic in the notice's work is logged
