@@ -24,7 +24,7 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - request too large;
 - an unknown MFA method named in a second-factor path;
 - an MFA method the session's user may not use;
-- a request to the MFA method-listing, verify or begin endpoint from a session that owes no MFA challenge;
+- a request to the MFA method-listing endpoint from a session that owes no MFA challenge;
 - a refused account recovery, whatever the cause: an unknown user, a disabled user, a wrong or spent proof, or an unknown, spent or cancelled completion token;
 - a malformed recovery: the wrong number or kinds of proofs, a proof kind that is not enabled, or a reported loss the user does not hold;
 - a held recovery presented for completion before its hold ends;
@@ -37,17 +37,24 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - a passkey registration beyond the user's passkey limit;
 - a passkey registration or removal from a session below the account's assurance or outside the freshness window;
 - a passkey identifier that names no passkey of the session's user;
-- a request to a route that requires a more recent authentication than the session's, which SHALL carry the window the route required;
-- a re-proof by a method the re-authentication factor policy does not offer the session's user;
 - a session renewal that lost a concurrent renewal of the same session;
 - a session renewal refused because its family has renewed too often;
-- a session identifier presented after its supersession window, which SHALL also be identifiable as the session-expired refusal of the session capability.
+- a session identifier presented after its supersession window, which SHALL also be identifiable as the session-expired refusal of the session capability;
+- a cross-site request refused by CSRF protection, whatever layer refused it: Fetch Metadata, Origin or token;
+- a request whose resolved host is not an allowed host;
+- a missing or invalid DPoP proof, a bound token presented without a proof from its key, or a proof without a required server nonce, the last also identifiable as its own nonce-required refusal;
+- a certificate-bound token presented without its certificate;
+- a request refused by the automation-challenge verifier;
+- a new password refused by the password policy, which SHALL name the rule that refused it;
+- a session handle that names no live sign-in of the requesting user.
+
+The password-reused refusal of the password-policy capability SHALL be identifiable both as itself and as the password-policy refusal.
 
 A refused recovery SHALL be identifiable as the authentication-failed refusal, so it reads to the client like a failed login. A refused passkey ceremony (an invalid, spent or mismatched challenge, a missing ceremony cookie, an unknown credential, a user-handle mismatch or a signature that does not verify) SHALL be identifiable as the authentication-failed refusal without a sentinel of its own. As a second factor it SHALL be the invalid second-factor code refusal.
 
 A refusal a core already names SHALL be reported as that core's own error rather than restated under a second name. In particular, a policy that denies without giving a reason SHALL be reported as the security-policy capability's reasonless-deny error, because the policy engine already substitutes it: a second sentinel for the same condition would be unreachable, and a consumer matching one identity would miss the other. Where this capability's own refusal and a core's name the same condition, the chain SHALL wrap the core's with its own so that either identity matches.
 
-It SHALL also expose one challenge error type, whose kinds include account recovery, and SHALL map the refusal errors that the authentication, authorization, session, security-policy, second-factor and passkey cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. A challenge error of the second-factor kind SHALL also carry the session user's usable MFA methods, each with its name, its channel and whether it has a begin step, computed by the one function the security policies use to decide usability; when that computation fails, the request SHALL be refused with the failure instead of the challenge, and SHALL NEVER carry an empty or partial list. No refusal error's text SHALL contain an access token, a session handle, a submitted credential, a method name, a challenge, a credential ID or a user handle. A refusal caused by a consumer-supplied dependency SHALL carry fixed library text, with the dependency's error reachable by identity and type, as the diagnostic-redaction capability requires; this SHALL NOT change the status it maps to.
+It SHALL also expose one challenge error type, whose kinds include account recovery, and SHALL map the refusal errors that the authentication, authorization, session, security-policy, second-factor and passkey cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. A challenge error of the second-factor kind SHALL also carry the session user's usable MFA methods, each with its name, its channel and whether it has a begin step, computed by the one function the security policies use to decide usability; when that computation fails, the request SHALL be refused with the failure instead of the challenge, and SHALL NEVER carry an empty or partial list. No refusal error's text SHALL contain an access token, a session handle, a submitted credential, a method name, a challenge, a credential ID, a user handle, a DPoP proof, a certificate, a CSRF token, a candidate password or a forwarded host. A refusal caused by a consumer-supplied dependency SHALL carry fixed library text, with the dependency's error reachable by identity and type, as the diagnostic-redaction capability requires; this SHALL NOT change the status it maps to.
 
 #### Scenario: Challenge error contents
 - **WHEN** form login is challenged for a second factor
@@ -86,13 +93,25 @@ It SHALL also expose one challenge error type, whose kinds include account recov
 - **THEN** the refusal is identifiable as the reused-session refusal, and also as the authentication-required and session-expired refusals
 - **AND** its text contains no session identifier
 
+#### Scenario: Recency refusal carries its window
+- **WHEN** a recency guard with a 5-minute window refuses a stale session
+- **THEN** the refusal is identifiable as the reauthentication-required refusal, reports the 5-minute window, and its text contains no session handle
+
 #### Scenario: Passkey refusal reveals no credential
 - **WHEN** one passwordless finish is refused for an unknown credential and another for a bad signature
 - **THEN** both errors are the authentication-failed refusal, and neither's text contains a credential ID or a challenge
 
-#### Scenario: Recency refusal carries its window
-- **WHEN** a recency guard with a 5-minute window refuses a stale session
-- **THEN** the refusal is identifiable as the reauthentication-required refusal, reports the 5-minute window, and its text contains no session handle
+#### Scenario: Password-policy refusal names its rule
+- **WHEN** a password change is refused by the policy because the candidate is breached
+- **THEN** the refusal is identifiable as the password-policy refusal, names the breached rule, and its text contains neither the candidate nor the user reference
+
+#### Scenario: Reused password is both refusals
+- **WHEN** a password change is refused by the policy's reuse rule
+- **THEN** the refusal is identifiable both as the password-reused refusal and as the password-policy refusal
+
+#### Scenario: Host refusal does not echo the host
+- **WHEN** a request is refused because a trusted proxy forwarded the host `evil.example`
+- **THEN** the refusal's text does not contain `evil.example`
 
 ### Requirement: One public table maps refusals to a status
 The library SHALL provide a public status-only mapping from an error to an HTTP status code. Every library default response and helper SHALL use it, and it SHALL recognise wrapped and joined errors:
@@ -103,18 +122,22 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | challenge of kind password change, challenge of kind second-factor enrolment, challenge of kind account recovery | 403 |
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
-| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, reauthentication required by a recency guard, a re-proof method the factor policy does not offer, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
-| malformed login, malformed recovery, invalid federated logout token | 400 |
-| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found, API key not found | 404 |
+| missing or invalid DPoP proof, bound token without a proof from its key, DPoP proof without a required server nonce, certificate-bound token without its certificate | 401 |
+| cross-site request refused by CSRF protection, request refused by the automation-challenge verifier | 403 |
+| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
+| malformed login, malformed recovery, invalid federated logout token, resolved host not allowed | 400 |
+| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found, API key not found, session handle naming no live sign-in of the requesting user | 404 |
 | request too large | 413 |
-| new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
+| new password refused by the password policy, for any rule (too short, too long, common, context word, breached or reused), the password-reused refusal included | 422 |
 | account locked, too many sessions, session renewal throttled for its family, one-time issuance limit reached | 429 |
 | held recovery presented before its hold ends | 409 |
 | session renewal that lost a concurrent renewal | 409 |
 | API key rotation refused (the key is revoked or expired, or a concurrent rotation won) | 409 |
 | any other error | 500 |
 
-A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.
+A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error. So SHALL a failure of the DPoP replay store, of the breach lookup when the consumer chose that failures refuse, of the automation-challenge verifier, and of the session store while listing or ending sign-ins: each carries fixed library text with the dependency's error reachable, and none is charged to any throttle. A request whose own context ended while one of them ran SHALL fail with an error matching the context's error, as the http-security-chain capability defines for verification and resolution.
+
+A DPoP refusal SHALL be answered by the default responder with a `WWW-Authenticate: DPoP` challenge as the sender-constrained-tokens capability defines.
 
 Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code, an absent, unknown, expired, spent or mismatched pending MFA challenge, and an invalid, expired or voided emailed passkey confirmation code, SHALL be identifiable as the invalid second-factor code refusal.
 
@@ -215,8 +238,16 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 - **THEN** the consumer's error returns 409 and a library refusal keeps its library status
 
 #### Scenario: Reused password
-- **WHEN** a consumer's password-change function returns the password-reused error, wrapped with extra context
+- **WHEN** a consumer's password-change function returns the password-policy's password-reused refusal, wrapped with extra context
 - **THEN** the mapping returns 422
+
+#### Scenario: Breached password
+- **WHEN** a consumer's password-change function returns the password-policy refusal for a breached candidate
+- **THEN** the mapping returns 422
+
+#### Scenario: Breach lookup outage with failures refusing
+- **WHEN** the breach lookup times out, the consumer chose that failures refuse, and the policy returns its lookup-unavailable error
+- **THEN** the mapping returns 500, not 422
 
 #### Scenario: Password history unavailable
 - **WHEN** the error is the history-unavailable error wrapping a database connection failure
@@ -297,6 +328,42 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Re-proof method not usable
 - **WHEN** the error is the refusal of a password re-proof from a user who holds a usable second factor
 - **THEN** the mapping returns 403
+
+#### Scenario: CSRF refusal
+- **WHEN** an error wraps the cross-site-request refusal
+- **THEN** the mapping returns 403
+
+#### Scenario: Host not allowed
+- **WHEN** an error is the host-not-allowed refusal
+- **THEN** the mapping returns 400
+
+#### Scenario: Invalid proof
+- **WHEN** an error wraps the invalid-DPoP-proof refusal
+- **THEN** the mapping returns 401
+
+#### Scenario: Nonce required
+- **WHEN** an error is the DPoP nonce-required refusal
+- **THEN** the mapping returns 401, and it is also identifiable as the invalid-DPoP-proof refusal
+
+#### Scenario: Certificate binding
+- **WHEN** an error wraps the certificate-binding refusal
+- **THEN** the mapping returns 401
+
+#### Scenario: Challenge refused
+- **WHEN** an error wraps the automation-challenge-required refusal
+- **THEN** the mapping returns 403
+
+#### Scenario: Unknown session handle
+- **WHEN** an error wraps the session-handle-not-found refusal
+- **THEN** the mapping returns 404
+
+#### Scenario: Replay store outage
+- **WHEN** the DPoP replay store fails with a connection error that wraps no refusal
+- **THEN** the mapping returns 500, not 401
+
+#### Scenario: Challenge verifier outage
+- **WHEN** the automation-challenge verifier fails with a connection error
+- **THEN** the mapping returns 500, not 403
 
 ### Requirement: A challenge takes precedence over a sentinel
 When an error is, or wraps, a challenge error, the mapping SHALL use the challenge's status even if the error also wraps a refusal sentinel.
