@@ -13,7 +13,6 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.6 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
-	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/gofiber/schema v1.8.3 // indirect
 	github.com/gofiber/utils/v2 v2.4.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
