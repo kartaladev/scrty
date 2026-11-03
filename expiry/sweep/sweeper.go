@@ -162,11 +162,11 @@ const defaultStopTimeout = 10 * time.Second
 // ends first; a purge still running when the timeout elapses keeps running,
 // and Shutdown returns an error wrapping gocron.ErrStopJobsTimedOut. d is
 // handed to gocron.WithStopTimeout and measured on the sweeper's clock
-// (WithClock). gocron also arms a real-time backstop of d plus one second: on
-// a clock that does not advance, such as a fake clock nobody moves, Shutdown
-// gives up when the backstop fires and returns an error wrapping
-// gocron.ErrStopExecutorTimedOut instead; the backstop is also what ensures
-// the shutdown always completes. A zero or negative d fails construction
+// (WithClock), as is gocron's backstop of d plus one second on its wait for
+// the executor. With the default real clock both elapse in real time. On a
+// clock that does not advance, such as a fake clock nobody moves, neither
+// fires: Shutdown then returns only when its own ctx ends, so give it a ctx
+// with a deadline. A zero or negative d fails construction
 // with ErrInvalidOption.
 func WithStopTimeout(d time.Duration) Option {
 	return func(c *config) error {
@@ -399,10 +399,11 @@ func (s *Sweeper) lockFailed(ctx context.Context, task string) func(uuid.UUID, s
 // The wait for a running purge is bounded by the stop timeout (WithStopTimeout,
 // default 10 seconds) and by ctx, whichever ends first. A purge that ignores
 // its context and outlasts either keeps running, and Shutdown returns the
-// error that says so. On a clock that does not advance, gocron gives up after
-// the stop timeout plus one second of real time, with an error wrapping
-// gocron.ErrStopExecutorTimedOut; that backstop also ensures the shutdown
-// always completes.
+// error that says so. The stop timeout and gocron's backstop of one second
+// more are both measured on the sweeper's clock (WithClock). On a clock that
+// does not advance, neither fires, and Shutdown returns only when ctx ends,
+// with an error wrapping ctx.Err(); the shutdown carries on, and a later call
+// still waits for it.
 //
 // Do not call Shutdown from inside a purge. The shutdown waits for that very
 // purge to return, so the call cannot see it finish: it waits until its own
