@@ -29,6 +29,10 @@ type RehashFunc func(ctx context.Context, user *identity.Details, replaced, upgr
 // user, the password or either hash.
 const msgRehashFailed = "httpsec: an upgraded password hash could not be stored"
 
+// requestUpgrade marks a context for a password upgrade. It is a variable only
+// so a test can observe the handles the login layers obtain.
+var requestUpgrade = authenticate.RequestPasswordUpgrade
+
 // requestRehash returns ctx asking the password provider to prepare an
 // upgraded hash, and the handle it leaves it in, or ctx unchanged and no handle
 // when no write is configured: without a write nothing is encoded.
@@ -37,7 +41,7 @@ func requestRehash(ctx context.Context, fn RehashFunc) (context.Context, *authen
 		return ctx, nil
 	}
 
-	return authenticate.RequestPasswordUpgrade(ctx)
+	return requestUpgrade(ctx)
 }
 
 // runRehash hands what the provider prepared to fn, once the request's outcome
