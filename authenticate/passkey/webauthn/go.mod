@@ -3,7 +3,7 @@ module github.com/kartaladev/scrty/authenticate/passkey/webauthn
 go 1.27
 
 require (
-	github.com/fxamacker/cbor/v2 v2.9.4
+	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/google/uuid v1.6.0
 	github.com/kartaladev/scrty v0.0.0-00010101000000-000000000000
