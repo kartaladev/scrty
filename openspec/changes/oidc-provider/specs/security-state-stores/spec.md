@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Durable stores exist for every provider record on every supported backend
-Each SQL adapter (`database/sql`, `pgx` and GORM) SHALL provide a durable store for each provider record: clients, pending requests, authorization codes, consents, grants, refresh-token lineages, opaque access tokens, and seen client-assertion identifiers. Each SHALL behave as the in-memory default does.
+Each SQL adapter (`database/sql`, `pgx` and GORM) SHALL provide a durable store for each provider record: clients, pending requests, browser sessions, authorization codes, consents, grants, refresh-token lineages, opaque access tokens, and seen client-assertion identifiers. Each SHALL behave as the in-memory default does.
 
 #### Scenario: Each backend
 - **WHEN** the provider is wired with the stores of any one SQL adapter
@@ -35,7 +35,7 @@ Refresh-token lineages SHALL be stored in a table of their own, never in the tab
 - **THEN** it is not found
 
 ### Requirement: Provider stores hold no credential in clear
-Stores SHALL keep codes, handles, refresh tokens, opaque access tokens and client secrets only as digests. They SHALL keep the consumer's client metadata and user references unchanged.
+Stores SHALL keep codes, handles, flow and browser-session secrets, refresh tokens, opaque access tokens and client secrets only as digests. They SHALL keep the consumer's client metadata and user references unchanged.
 
 #### Scenario: Database read by an attacker
 - **WHEN** the provider's tables are read directly after a code, a refresh token and a client secret were issued
@@ -55,6 +55,17 @@ A grant store SHALL end sign-ins in one operation, selected by family, by user, 
 - **WHEN** sign-in `s-1`, from which `billing-web` and `billing-ios` hold grants, is ended once by the chain's logout and once by the session manager's report
 - **THEN** the first operation returns both grants, and the second returns none
 
+### Requirement: Ending a sign-in reaches its codes and browser sessions
+The same operation SHALL delete the matching browser sessions, and SHALL record a revocation for the grant named by each matching unspent code that does not hold `offline_access`. Revoking every grant of a user, or of a user and client, SHALL record one for each such code whether or not it holds `offline_access`.
+
+#### Scenario: Outstanding code
+- **WHEN** a sign-in ends while an unspent code without `offline_access` from it is outstanding, and the exchange then stores its grant
+- **THEN** the grant is stored revoked
+
+#### Scenario: Browser session of the sign-in
+- **WHEN** a sign-in ends by any selector
+- **THEN** its browser sessions can no longer be loaded
+
 ### Requirement: A grant records the sign-in it came from
 A grant SHALL record the family of the sign-in it came from, and the upstream issuer and session of a federated sign-in, unchanged.
 
@@ -63,7 +74,7 @@ A grant SHALL record the family of the sign-in it came from, and the upstream is
 - **THEN** `g-1` is revoked when it does not hold `offline_access`, and returned
 
 ### Requirement: Expired provider records are swept
-Expired pending requests, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. A revoked grant SHALL be kept until every code that could still name it has expired.
+Expired pending requests, browser sessions, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. The orphan pass SHALL remove only a grant of a client that was issued a refresh token and whose lineage is missing, never a grant recorded to hold none. A revoked grant SHALL be kept until every code that could still name it has expired.
 
 #### Scenario: Sweep
 - **WHEN** the sweep runs after pending requests and codes expired
