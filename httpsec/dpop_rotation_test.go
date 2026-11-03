@@ -48,7 +48,7 @@ func newLateRenewalWorld(t *testing.T, mode bearerMode, limiter ratelimit.Limite
 
 	w := &lateRenewalWorld{t: t, mode: mode, clk: clk, sessions: sessions, gen: issuingGenerator(t)}
 
-	opts := []httpsec.Option{httpsec.WithLogger(slog.New(slog.DiscardHandler)), httpsec.EnableDPoP(httpsec.DPoP{})}
+	opts := []httpsec.Option{httpsec.WithLogger(slog.New(slog.DiscardHandler)), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})}
 
 	switch mode {
 	case signedBearer:
@@ -195,42 +195,42 @@ func TestDPoP_Rotation(t *testing.T) {
 		{
 			name: "renewal with a proof leaves an unbound session unbound",
 			act: func(t *testing.T) outcome {
-				return through(t, renewalEndpoint(t, httpsec.DPoP{}), "", key.validProver("j-1"))
+				return through(t, renewalEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}), "", key.validProver("j-1"))
 			},
 			assert: boundTo(""),
 		},
 		{
 			name: "renewal keeps a bound session bound",
 			act: func(t *testing.T) outcome {
-				return through(t, renewalEndpoint(t, httpsec.DPoP{}), key.jkt, key.validProver("j-1"))
+				return through(t, renewalEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}), key.jkt, key.validProver("j-1"))
 			},
 			assert: boundTo(key.jkt),
 		},
 		{
 			name: "re-authentication binds an unbound session",
 			act: func(t *testing.T) outcome {
-				return through(t, reauthEndpoint(t, httpsec.DPoP{}), "", key.validProver("j-1"))
+				return through(t, reauthEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}), "", key.validProver("j-1"))
 			},
 			assert: boundTo(key.jkt),
 		},
 		{
 			name: "re-authentication keeps a bound session bound",
 			act: func(t *testing.T) outcome {
-				return through(t, reauthEndpoint(t, httpsec.DPoP{}), key.jkt, key.validProver("j-1"))
+				return through(t, reauthEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}), key.jkt, key.validProver("j-1"))
 			},
 			assert: boundTo(key.jkt),
 		},
 		{
 			name: "renewal with another key is refused",
 			act: func(t *testing.T) outcome {
-				return through(t, renewalEndpoint(t, httpsec.DPoP{}), key.jkt, thief.validProver("j-1"))
+				return through(t, renewalEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}), key.jkt, thief.validProver("j-1"))
 			},
 			assert: refusedNothingRotated,
 		},
 		{
 			name: "re-authentication with another key is refused",
 			act: func(t *testing.T) outcome {
-				return through(t, reauthEndpoint(t, httpsec.DPoP{}), key.jkt, thief.validProver("j-1"))
+				return through(t, reauthEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}), key.jkt, thief.validProver("j-1"))
 			},
 			assert: refusedNothingRotated,
 		},
@@ -247,7 +247,7 @@ func TestDPoP_Rotation(t *testing.T) {
 					session.WithIdleTimeout(6*time.Hour), session.WithAbsoluteTimeout(6*time.Hour),
 					session.WithMaxFamilyLifetime(6*time.Hour)))
 
-				f := renewalOver(t, newIssuingBaseOver(t, sessions, creator), httpsec.DPoP{})
+				f := renewalOver(t, newIssuingBaseOver(t, sessions, creator), httpsec.DPoP{PublicURL: dpopPublicURL})
 				send := f.prepare(t, key.jkt)
 				clk.Advance(7 * time.Hour)
 

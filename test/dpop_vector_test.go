@@ -102,6 +102,9 @@ func TestDPoP_RecordedProofVector(t *testing.T) {
 
 			clk := clockwork.NewFakeClockAt(time.Unix(vec.IAT, 0))
 
+			// The deployment declares the host the proof was recorded for.
+			target := must.Must(url.Parse(vec.URL))
+
 			enc := must.Must(password.NewBcryptEncoder())
 			users := identitytest.NewInMemoryStore()
 			_, err := users.Provision(t.Context(), "ada",
@@ -122,7 +125,7 @@ func TestDPoP_RecordedProofVector(t *testing.T) {
 					Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 				}),
 				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: sessions, Users: users}),
-				httpsec.EnableDPoP(httpsec.DPoP{}),
+				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: target.Scheme + "://" + target.Host}),
 			))
 
 			srv := httptest.NewServer(chain.Middleware()(http.NotFoundHandler()))
@@ -131,7 +134,6 @@ func TestDPoP_RecordedProofVector(t *testing.T) {
 			// The test server listens on a loopback port, and the proof names
 			// the URL it was recorded for, so the request is sent with that
 			// URL's host.
-			target := must.Must(url.Parse(vec.URL))
 			req, err := http.NewRequestWithContext(t.Context(), vec.Method, srv.URL+target.Path,
 				strings.NewReader(url.Values{"username": {"ada"}, "password": {"s3cret-passphrase"}}.Encode()))
 			require.NoError(t, err)

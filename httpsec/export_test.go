@@ -251,14 +251,17 @@ type DPoPChecker struct {
 }
 
 // NewDPoPChecker builds the verifier EnableDPoP would build for d, reading
-// time from now and logging through log.
-func NewDPoPChecker(d DPoP, now func() time.Time, log *slog.Logger) (*DPoPChecker, error) {
+// time from now and logging through log. allowedHosts is the trusted proxies'
+// ForwardedHost allowlist EnableDPoP copies onto the verifier when d names no
+// PublicURL.
+func NewDPoPChecker(d DPoP, now func() time.Time, log *slog.Logger, allowedHosts ...string) (*DPoPChecker, error) {
 	v, err := newDPoPVerifier(d, now)
 	if err != nil {
 		return nil, err
 	}
 
 	v.log = log
+	v.allowedHosts = allowedHosts
 
 	c := &DPoPChecker{v: v}
 	verify := v.verifySignature

@@ -295,7 +295,7 @@ func TestEnableCertificateBinding_Construction(t *testing.T) {
 			name: "with DPoP required it is refused, naming both options",
 			opts: func(_ *testing.T, b *issuingBase) []httpsec.Option {
 				return []httpsec.Option{
-					b.bearer(), httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{Require: true}),
+					b.bearer(), httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL, Require: true}),
 				}
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
@@ -307,7 +307,7 @@ func TestEnableCertificateBinding_Construction(t *testing.T) {
 			name: "with DPoP required it is refused whatever the order of the options",
 			opts: func(_ *testing.T, b *issuingBase) []httpsec.Option {
 				return []httpsec.Option{
-					httpsec.EnableDPoP(httpsec.DPoP{Require: true}), b.bearer(), httpsec.EnableCertificateBinding(),
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL, Require: true}), b.bearer(), httpsec.EnableCertificateBinding(),
 				}
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
@@ -318,7 +318,7 @@ func TestEnableCertificateBinding_Construction(t *testing.T) {
 		{
 			name: "beside DPoP that is not required it builds",
 			opts: func(_ *testing.T, b *issuingBase) []httpsec.Option {
-				return []httpsec.Option{b.bearer(), httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})}
+				return []httpsec.Option{b.bearer(), httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})}
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				require.NoError(t, err)
@@ -853,13 +853,13 @@ func TestCertificateBinding_Presented(t *testing.T) {
 		},
 		{
 			name:    "switched off with DPoP on: a certificate-bound token is refused for its binding",
-			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})},
 			request: asBearerWithC,
 			assert:  refusedForCertificate,
 		},
 		{
 			name:    "switched off with DPoP on: a certificate-bound token under the DPoP scheme is refused for its binding",
-			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})},
 			request: underDPoPScheme(theToken),
 			assert:  refusedForCertificate,
 		},
@@ -871,40 +871,40 @@ func TestCertificateBinding_Presented(t *testing.T) {
 		},
 		{
 			name:      "switched off with DPoP on: a certificate-bound session reference is refused for its binding",
-			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://example.com"})},
 			reference: true,
 			request:   referenceWithC,
 			assert:    refusedForCertificate,
 		},
 		{
 			name:      "switched off with DPoP on: a certificate-bound session reference under the DPoP scheme is refused for its binding",
-			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://example.com"})},
 			reference: true,
 			request:   underDPoPScheme(theReference),
 			assert:    refusedForCertificate,
 		},
 		{
 			name:    "switched off with DPoP required: a certificate-bound token is refused for its binding",
-			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL, Require: true})},
 			request: asBearerWithC,
 			assert:  refusedForCertificate,
 		},
 		{
 			name:    "switched off with DPoP required: a certificate-bound token under the DPoP scheme is refused for its binding",
-			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			opts:    []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL, Require: true})},
 			request: underDPoPScheme(theToken),
 			assert:  refusedForCertificate,
 		},
 		{
 			name:      "switched off with DPoP required: a certificate-bound session reference is refused for its binding",
-			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://example.com", Require: true})},
 			reference: true,
 			request:   referenceWithC,
 			assert:    refusedForCertificate,
 		},
 		{
 			name:      "switched off with DPoP required: a certificate-bound session reference under the DPoP scheme is refused for its binding",
-			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			opts:      []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://example.com", Require: true})},
 			reference: true,
 			request:   underDPoPScheme(theReference),
 			assert:    refusedForCertificate,
@@ -944,13 +944,13 @@ func TestCertificateBinding_Presented(t *testing.T) {
 		},
 		{
 			name:    "switched on: a certificate-bound token under the DPoP scheme is refused, its certificate notwithstanding",
-			opts:    []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts:    []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})},
 			request: underDPoPScheme(theToken),
 			assert:  refusedProof,
 		},
 		{
 			name:      "switched on: a certificate-bound session reference under the DPoP scheme is refused, its certificate notwithstanding",
-			opts:      []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts:      []httpsec.Option{httpsec.EnableCertificateBinding(), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})},
 			reference: true,
 			request:   underDPoPScheme(theReference),
 			assert:    refusedProof,
@@ -1032,13 +1032,20 @@ func TestCertificateBinding_BothOffered(t *testing.T) {
 			t.Parallel()
 
 			b := newIssuingBase(t)
+
+			// A request over TLS resolves to https, which its proof names.
+			public := dpopPublicURL
+			if tc.withCert {
+				public = "https://example.com"
+			}
+
 			chain, err := httpsec.New(
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 					Authenticator: b.authn, Sessions: b.sessions, Tokens: b.gen,
 					Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 				}),
 				b.bearer(),
-				httpsec.EnableDPoP(httpsec.DPoP{}),
+				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: public}),
 				httpsec.EnableCertificateBinding(),
 			)
 			require.NoError(t, err)
@@ -1150,20 +1157,20 @@ func TestCertificateBinding_Endpoints(t *testing.T) {
 
 	endpoints := []endpoint{
 		{name: "passkey login", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
-			return passkeyLoginEndpoint(t, httpsec.DPoP{}, extra...)
+			return passkeyLoginEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}, extra...)
 		}},
 		{name: "magic link", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
-			return magicLinkEndpoint(t, httpsec.DPoP{}, extra...)
+			return magicLinkEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}, extra...)
 		}},
 		{name: "OIDC handoff", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
-			return oidcHandoffEndpoint(t, httpsec.DPoP{}, extra...)
+			return oidcHandoffEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}, extra...)
 		}},
 		{name: "recovery complete", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
-			return recoveryEndpoint(t, httpsec.DPoP{}, extra...)
+			return recoveryEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL}, extra...)
 		}},
 		{name: "recovery finish", build: recoveryFinishFixtureWith},
 		{name: "re-authentication of an unbound sign-in", build: func(t *testing.T, extra ...httpsec.Option) issuingFixture {
-			return reauthEndpointWith(t, httpsec.DPoP{}, extra...)
+			return reauthEndpointWith(t, httpsec.DPoP{PublicURL: dpopPublicURL}, extra...)
 		}},
 	}
 

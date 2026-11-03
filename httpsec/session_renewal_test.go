@@ -1598,7 +1598,7 @@ func TestSessionRenewalThrottle_ConsumerLimiter(t *testing.T) {
 			// proof charges no renewal.
 			name: "a bad proof beside the session's Bearer credential is neither asked nor charged",
 			setup: func(*testing.T) renewalSetup {
-				return renewalSetup{interceptors: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})}}
+				return renewalSetup{interceptors: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})}}
 			},
 			drive: func(t *testing.T, f *renewalFixture) served {
 				t.Helper()

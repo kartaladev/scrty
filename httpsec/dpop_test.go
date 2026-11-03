@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,10 @@ func dpopSessions(t *testing.T, clk clockwork.Clock) *session.Sessions {
 	return sessions
 }
 
+// dpopPublicURL is the host the DPoP proofs in these tests are made for
+// (dpopProof's htu), declared as the chain's PublicURL.
+const dpopPublicURL = "http://example.com"
+
 func TestDPoP_Construction(t *testing.T) {
 	t.Parallel()
 
@@ -232,7 +237,7 @@ func TestDPoP_Construction(t *testing.T) {
 					Tokens:        tokens(t),
 					Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
 				}),
-				httpsec.EnableDPoP(httpsec.DPoP{}),
+				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
 			}
 		}
 	}
@@ -244,7 +249,7 @@ func TestDPoP_Construction(t *testing.T) {
 		return testCase{
 			name: name,
 			opts: func(t *testing.T) []httpsec.Option {
-				return append(opts(t, NewMockGenerator(gomock.NewController(t))), httpsec.EnableDPoP(httpsec.DPoP{}))
+				return append(opts(t, NewMockGenerator(gomock.NewController(t))), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}))
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				refused("EnableDPoP")(t, chain, err)
@@ -369,7 +374,7 @@ func TestDPoP_Construction(t *testing.T) {
 					Users: NewMockUserLoader(gomock.NewController(t)), Tokens: g,
 				})}
 			}),
-		{name: "with the signed bearer", opts: dpop(httpsec.DPoP{}), assert: built},
+		{name: "with the signed bearer", opts: dpop(httpsec.DPoP{PublicURL: dpopPublicURL}), assert: built},
 		{
 			name:     "with the session-reference bearer",
 			noBearer: true,
@@ -380,7 +385,7 @@ func TestDPoP_Construction(t *testing.T) {
 					httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
 						Sessions: sessions, Users: NewMockUserLoader(gomock.NewController(t)),
 					}),
-					httpsec.EnableDPoP(httpsec.DPoP{}),
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
 				}
 			},
 			assert: built,
@@ -390,7 +395,7 @@ func TestDPoP_Construction(t *testing.T) {
 			// enabled feature that verifies bound credentials does.
 			name:     "without a feature that verifies bound credentials",
 			noBearer: true,
-			opts:     dpop(httpsec.DPoP{}),
+			opts:     dpop(httpsec.DPoP{PublicURL: dpopPublicURL}),
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				refused("EnableDPoP")(t, chain, err)
 				assert.Contains(t, err.Error(), "no feature that verifies bound credentials")
@@ -403,7 +408,7 @@ func TestDPoP_Construction(t *testing.T) {
 			noBearer: true,
 			opts: func(t *testing.T) []httpsec.Option {
 				return []httpsec.Option{
-					httpsec.EnableDPoP(httpsec.DPoP{}),
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
 					httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 						Verifier: NewMockVerifier(gomock.NewController(t)),
 						Sessions: dpopSessions(t, clockwork.NewFakeClockAt(dpopNow)),
@@ -418,7 +423,7 @@ func TestDPoP_Construction(t *testing.T) {
 			noBearer: true,
 			opts: func(t *testing.T) []httpsec.Option {
 				return []httpsec.Option{
-					httpsec.EnableDPoP(httpsec.DPoP{}),
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
 					httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
 						Sessions: dpopSessions(t, clockwork.NewFakeClockAt(dpopNow)),
 						Users:    NewMockUserLoader(gomock.NewController(t)),
@@ -430,23 +435,23 @@ func TestDPoP_Construction(t *testing.T) {
 		{
 			name: "enabled twice",
 			opts: func(*testing.T) []httpsec.Option {
-				return []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{}), httpsec.EnableDPoP(httpsec.DPoP{})}
+				return []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})}
 			},
 			assert: refused("EnableDPoP"),
 		},
 		{
 			name:   "a symmetric algorithm",
-			opts:   dpop(httpsec.DPoP{Algorithms: []jwa.SignatureAlgorithm{jwa.ES256(), jwa.HS256()}}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, Algorithms: []jwa.SignatureAlgorithm{jwa.ES256(), jwa.HS256()}}),
 			assert: refused("HS256"),
 		},
 		{
 			name:   "no signature",
-			opts:   dpop(httpsec.DPoP{Algorithms: []jwa.SignatureAlgorithm{jwa.NoSignature()}}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, Algorithms: []jwa.SignatureAlgorithm{jwa.NoSignature()}}),
 			assert: refused("none"),
 		},
-		{name: "a negative proof lifetime", opts: dpop(httpsec.DPoP{ProofMaxAge: -time.Second}), assert: refused("ProofMaxAge")},
-		{name: "a negative proof size", opts: dpop(httpsec.DPoP{MaxProofSize: -1}), assert: refused("MaxProofSize")},
-		{name: "a typed-nil replay store", opts: dpop(httpsec.DPoP{Replay: nilStore}), assert: refused("Replay")},
+		{name: "a negative proof lifetime", opts: dpop(httpsec.DPoP{PublicURL: dpopPublicURL, ProofMaxAge: -time.Second}), assert: refused("ProofMaxAge")},
+		{name: "a negative proof size", opts: dpop(httpsec.DPoP{PublicURL: dpopPublicURL, MaxProofSize: -1}), assert: refused("MaxProofSize")},
+		{name: "a typed-nil replay store", opts: dpop(httpsec.DPoP{PublicURL: dpopPublicURL, Replay: nilStore}), assert: refused("Replay")},
 		{
 			name:   "a public URL with a query",
 			opts:   dpop(httpsec.DPoP{PublicURL: "https://app.example.com/?a=b"}),
@@ -454,57 +459,100 @@ func TestDPoP_Construction(t *testing.T) {
 		},
 		{name: "a relative public URL", opts: dpop(httpsec.DPoP{PublicURL: "app.example.com"}), assert: refused("PublicURL")},
 		{
+			name: "no public URL and no trusted proxies",
+			opts: dpop(httpsec.DPoP{}),
+			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
+				refused("PublicURL")(t, chain, err)
+				assert.Contains(t, err.Error(), "ForwardedHost")
+			},
+		},
+		{
+			name: "trusted proxies that name no allowed host",
+			opts: func(*testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+						Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+						Headers:  httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto),
+					}),
+					httpsec.EnableDPoP(httpsec.DPoP{}),
+				}
+			},
+			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
+				refused("PublicURL")(t, chain, err)
+				assert.Contains(t, err.Error(), "ForwardedHost")
+			},
+		},
+		{
+			name:   "a declared public URL",
+			opts:   dpop(httpsec.DPoP{PublicURL: "https://app.example.com"}),
+			assert: built,
+		},
+		{
+			name: "trusted proxies with an allowed host",
+			opts: func(*testing.T) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+						Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+						Headers: httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto,
+							httpsec.ForwardedHost("app.example.com")),
+					}),
+					httpsec.EnableDPoP(httpsec.DPoP{}),
+				}
+			},
+			assert: built,
+		},
+		{
 			name:   "server nonces with a cipher",
-			opts:   dpop(httpsec.DPoP{Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA)}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA)}),
 			assert: built,
 		},
 		{
 			// No key material of its own: a nonce nobody could open would
 			// read as enforced while nothing was.
 			name:   "server nonces without a cipher",
-			opts:   dpop(httpsec.DPoP{Nonce: true}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true}),
 			assert: refused("NonceCipher"),
 		},
 		{
 			name:   "server nonces with a typed-nil cipher",
-			opts:   dpop(httpsec.DPoP{Nonce: true, NonceCipher: (*MockNonceCipher)(nil)}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: (*MockNonceCipher)(nil)}),
 			assert: refused("NonceCipher"),
 		},
 		{
 			name:   "a nonce cipher with nonces off",
-			opts:   dpop(httpsec.DPoP{NonceCipher: newNonceCipher(t, nonceKeyA)}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, NonceCipher: newNonceCipher(t, nonceKeyA)}),
 			assert: refused("NonceCipher"),
 		},
 		{
 			name:   "a nonce lifetime with nonces off",
-			opts:   dpop(httpsec.DPoP{NonceLifetime: time.Minute}),
+			opts:   dpop(httpsec.DPoP{PublicURL: dpopPublicURL, NonceLifetime: time.Minute}),
 			assert: refused("NonceLifetime"),
 		},
 		{
 			name: "a negative nonce lifetime",
 			opts: dpop(httpsec.DPoP{
-				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: -time.Second,
+				PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: -time.Second,
 			}),
 			assert: refused("NonceLifetime"),
 		},
 		{
 			name: "a nonce lifetime of one second",
 			opts: dpop(httpsec.DPoP{
-				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: time.Second,
+				PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: time.Second,
 			}),
 			assert: refused("NonceLifetime"),
 		},
 		{
 			name: "a nonce lifetime just under the floor",
 			opts: dpop(httpsec.DPoP{
-				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: 9 * time.Second,
+				PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: 9 * time.Second,
 			}),
 			assert: refused("NonceLifetime"),
 		},
 		{
 			name: "a nonce lifetime exactly at the floor",
 			opts: dpop(httpsec.DPoP{
-				Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: 10 * time.Second,
+				PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA), NonceLifetime: 10 * time.Second,
 			}),
 			assert: built,
 		},
@@ -554,7 +602,7 @@ func TestDPoP_Defaults(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "every default filled",
-			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})},
 			assert: func(t *testing.T, d httpsec.DPoP, enabled bool, err error) {
 				require.NoError(t, err)
 				require.True(t, enabled)
@@ -566,7 +614,7 @@ func TestDPoP_Defaults(t *testing.T) {
 				assert.False(t, d.Nonce)
 				assert.Nil(t, d.NonceCipher)
 				assert.Zero(t, d.NonceLifetime, "no nonces, so no lifetime")
-				assert.Empty(t, d.PublicURL, "built from the resolved scheme and host")
+				assert.Equal(t, dpopPublicURL, d.PublicURL, "no default: the host is declared")
 			},
 		},
 		{
@@ -592,7 +640,7 @@ func TestDPoP_Defaults(t *testing.T) {
 		},
 		{
 			name: "nonces on take the default lifetime",
-			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Nonce: true, NonceCipher: cipher})},
+			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipher})},
 			assert: func(t *testing.T, d httpsec.DPoP, enabled bool, err error) {
 				require.NoError(t, err)
 				require.True(t, enabled)
@@ -685,14 +733,14 @@ func TestDPoP_CORSPreflight(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "DPoP enabled after CORS",
-			opts: []httpsec.Option{httpsec.EnableCORS(policy), httpsec.EnableDPoP(httpsec.DPoP{})},
+			opts: []httpsec.Option{httpsec.EnableCORS(policy), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL})},
 			assert: func(t *testing.T, run corsRun) {
 				assert.Equal(t, "Authorization, DPoP", run.rec.Header().Get("Access-Control-Allow-Headers"))
 			},
 		},
 		{
 			name: "DPoP enabled before CORS",
-			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{}), httpsec.EnableCORS(policy)},
+			opts: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}), httpsec.EnableCORS(policy)},
 			assert: func(t *testing.T, run corsRun) {
 				assert.Equal(t, "Authorization, DPoP", run.rec.Header().Get("Access-Control-Allow-Headers"))
 			},
@@ -725,6 +773,71 @@ func TestDPoP_CORSPreflight(t *testing.T) {
 			}
 
 			tc.assert(t, serveCORS(t, chain, req))
+		})
+	}
+}
+
+// TestDPoP_HTURefusesHostTheDeploymentDidNotDeclare pins that, with DPoP on and
+// the deployment's host declared (PublicURL), a proof whose htu names a host
+// the client itself chose in the Host header is not accepted: the expected htu
+// is never built from a value the client controls.
+func TestDPoP_HTURefusesHostTheDeploymentDidNotDeclare(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+
+	type testCase struct {
+		name string
+		// target is the URL the app receives; its host becomes the Host header.
+		target string
+		// htu is what the client signs its proof for.
+		htu    string
+		assert func(t *testing.T, out served)
+	}
+
+	refused := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+		assert.False(t, out.handlerRan, "the handler ran for a proof whose htu the client chose")
+	}
+
+	cases := []testCase{
+		{
+			name:   "Host and htu both the attacker's choice",
+			target: "https://evil.example/api/orders",
+			htu:    "https://evil.example/api/orders",
+			assert: refused,
+		},
+		{
+			name:   "htu names a host other than the one the request carries",
+			target: "https://app.example.com/api/orders",
+			htu:    "https://evil.example/api/orders",
+			assert: refused,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+
+			chain, err := httpsec.New(
+				httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: w.gen, Sessions: w.sessions, Users: w.users}),
+				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://app.example.com"}),
+			)
+			require.NoError(t, err)
+
+			tok := w.token(token.Confirmation{JKT: key.jkt})
+			req := dpopRequest(t, "GET", tc.target)
+			req.Header.Set("Authorization", "DPoP "+tok)
+			req.Header.Set("DPoP", key.validProof("j-htu").with(map[string]any{
+				"htu": tc.htu, "ath": tokenHash(tok),
+			}).sign(t))
+
+			tc.assert(t, serve(t, chain, req))
 		})
 	}
 }

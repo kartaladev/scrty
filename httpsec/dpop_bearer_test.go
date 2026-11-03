@@ -189,8 +189,8 @@ func TestDPoP_Bearer(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 	}
 
-	enabled := &httpsec.DPoP{}
-	required := &httpsec.DPoP{Require: true}
+	enabled := &httpsec.DPoP{PublicURL: dpopPublicURL}
+	required := &httpsec.DPoP{PublicURL: dpopPublicURL, Require: true}
 
 	type testCase struct {
 		name string
@@ -555,7 +555,7 @@ func TestDPoP_ReferenceBindingCharged(t *testing.T) {
 			chain, err := httpsec.New(httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler)),
 				httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: w.sessions, Users: w.users},
 					httpsec.WithSessionBearerLimiter(limiter)),
-				httpsec.EnableDPoP(httpsec.DPoP{}))
+				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}))
 			require.NoError(t, err)
 
 			tc.assert(t, tc.run(t, w, chain))
@@ -577,6 +577,15 @@ func TestDPoP_PublicURL(t *testing.T) {
 	// forwarded is a GET of /api/orders the app receives from trusted proxy
 	// 10.20.0.2 at http://10.20.1.5:8080, forwarded for https and
 	// app.example.com.
+	// untrusting trusts another network, so 10.20.0.2's forwarded headers
+	// are not read; it allows the host the app received, and the forwarded
+	// one too, so only the unread headers can explain a refusal.
+	untrusting := httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")},
+		Headers: httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto,
+			httpsec.ForwardedHost("10.20.1.5", "app.example.com")),
+	})
+
 	forwarded := func(t *testing.T) *http.Request {
 		t.Helper()
 
@@ -629,9 +638,14 @@ func TestDPoP_PublicURL(t *testing.T) {
 			htu: "http://10.20.1.5:8080/api/orders", assert: refused,
 		},
 		{
-			name:    "without trusting the proxy, the forwarded URL",
-			request: forwarded,
-			htu:     "https://app.example.com/api/orders", assert: refused,
+			name: "without trusting the proxy, the forwarded URL",
+			opts: []httpsec.Option{untrusting}, request: forwarded,
+			htu: "https://app.example.com/api/orders", assert: refused,
+		},
+		{
+			name: "without trusting the proxy, the URL the app received",
+			opts: []httpsec.Option{untrusting}, request: forwarded,
+			htu: "http://10.20.1.5:8080/api/orders", assert: accepted,
 		},
 		{
 			name: "a configured public URL",
@@ -662,6 +676,111 @@ func TestDPoP_PublicURL(t *testing.T) {
 				httpsec.EnableDPoP(tc.d),
 			}, tc.opts...)
 			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			tok := w.token(token.Confirmation{JKT: key.jkt})
+			req := tc.request(t)
+			req.Header.Set("Authorization", "DPoP "+tok)
+			req.Header.Set("DPoP", key.validProof("j-1").with(map[string]any{
+				"htu": tc.htu, "ath": tokenHash(tok),
+			}).sign(t))
+
+			tc.assert(t, serve(t, chain, req))
+		})
+	}
+}
+
+func TestDPoP_HTURefusesHostOffTheForwardedHostAllowlist(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+
+	// The host is declared only by the allowlist: no PublicURL.
+	proxies := httpsec.EnableTrustedProxies(httpsec.TrustedProxies{
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16")},
+		Headers: httpsec.XForwarded(httpsec.ForwardedFor, httpsec.ForwardedProto,
+			httpsec.ForwardedHost("app.example.com")),
+	})
+
+	// request is a GET of /api/orders with Host host, from peer.
+	request := func(host, peer string, forwarded map[string]string) func(t *testing.T) *http.Request {
+		return func(t *testing.T) *http.Request {
+			t.Helper()
+
+			req := dpopRequest(t, http.MethodGet, "http://"+host+"/api/orders")
+			req.RemoteAddr = peer
+			for k, v := range forwarded {
+				req.Header.Set(k, v)
+			}
+
+			return req
+		}
+	}
+
+	type testCase struct {
+		name    string
+		request func(t *testing.T) *http.Request
+		// htu is what the client signs its proof for.
+		htu    string
+		assert func(t *testing.T, out served)
+	}
+
+	accepted := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.True(t, out.handlerRan)
+	}
+	refused := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrInvalidDPoPProof)
+		assert.False(t, out.handlerRan)
+	}
+
+	cases := []testCase{
+		{
+			name:    "an untrusted peer's own Host, off the allowlist",
+			request: request("evil.example", "198.51.100.7:41000", nil),
+			htu:     "http://evil.example/api/orders", assert: refused,
+		},
+		{
+			name: "a trusted peer forwarding no host, with a Host off the allowlist",
+			request: request("evil.example", "10.20.0.2:41000", map[string]string{
+				"X-Forwarded-For": "198.51.100.7", "X-Forwarded-Proto": "https",
+			}),
+			htu: "https://evil.example/api/orders", assert: refused,
+		},
+		{
+			name: "a trusted peer forwarding an allowed host",
+			request: request("10.20.1.5:8080", "10.20.0.2:41000", map[string]string{
+				"X-Forwarded-For": "198.51.100.7", "X-Forwarded-Proto": "https", "X-Forwarded-Host": "app.example.com",
+			}),
+			htu: "https://app.example.com/api/orders", assert: accepted,
+		},
+		{
+			name:    "an untrusted peer's own Host, on the allowlist",
+			request: request("App.Example.com", "198.51.100.7:41000", nil),
+			htu:     "http://app.example.com/api/orders", assert: accepted,
+		},
+		{
+			name:    "an untrusted peer's own Host, on the allowlist with a port",
+			request: request("app.example.com:8080", "198.51.100.7:41000", nil),
+			htu:     "http://app.example.com:8080/api/orders", assert: accepted,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := newDPoPBearerWorld(t)
+
+			chain, err := httpsec.New(
+				httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: w.gen, Sessions: w.sessions, Users: w.users}),
+				httpsec.EnableDPoP(httpsec.DPoP{}), proxies,
+			)
 			require.NoError(t, err)
 
 			tok := w.token(token.Confirmation{JKT: key.jkt})

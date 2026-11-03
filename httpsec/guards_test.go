@@ -1443,12 +1443,12 @@ func TestGuards_DPoPChallenge(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "DPoP optional: the DPoP and Bearer challenges",
-			d:      &httpsec.DPoP{},
+			d:      &httpsec.DPoP{PublicURL: dpopPublicURL},
 			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
 		},
 		{
 			name:   "DPoP required: the DPoP challenge alone",
-			d:      &httpsec.DPoP{Require: true},
+			d:      &httpsec.DPoP{PublicURL: dpopPublicURL, Require: true},
 			assert: challenged(`DPoP algs="ES256"`),
 		},
 		{
@@ -1457,7 +1457,7 @@ func TestGuards_DPoPChallenge(t *testing.T) {
 		},
 		{
 			name: "a consumer's error handler finds the challenge set, as the chain's does",
-			d:    &httpsec.DPoP{},
+			d:    &httpsec.DPoP{PublicURL: dpopPublicURL},
 			opts: func(seen *http.Header) []httpsec.GuardOption {
 				return []httpsec.GuardOption{httpsec.WithGuardErrorHandler(
 					func(w http.ResponseWriter, _ *http.Request, err error) {

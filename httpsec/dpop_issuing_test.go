@@ -713,7 +713,7 @@ func TestDPoP_Binding(t *testing.T) {
 			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				f := ep.build(t, httpsec.DPoP{})
+				f := ep.build(t, httpsec.DPoP{PublicURL: dpopPublicURL})
 				send := f.prepare(t, tc.bound(ep))
 				tc.assert(t, &f, send(t, tc.proof))
 			})
@@ -814,7 +814,7 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 		},
 		{
 			name:  "required DPoP refuses a request without a proof before any account lookup",
-			d:     httpsec.DPoP{Require: true},
+			d:     httpsec.DPoP{PublicURL: dpopPublicURL, Require: true},
 			bound: func(issuingEndpoint) string { return "" },
 			proof: noProof,
 			skip:  func(issuingEndpoint) bool { return false },
@@ -836,7 +836,12 @@ func TestDPoP_ProofBeforeSpend(t *testing.T) {
 			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				f := ep.build(t, tc.d)
+				d := tc.d
+				if d.PublicURL == "" {
+					d.PublicURL = dpopPublicURL
+				}
+
+				f := ep.build(t, d)
 				send := f.prepare(t, tc.bound(ep))
 
 				before := f.activeSessions(t)
@@ -922,7 +927,7 @@ func TestDPoP_ProofBesideCertificateBinding(t *testing.T) {
 				b := newIssuingBase(t)
 				b.certThumb = c.thumb
 
-				f := ep.build(t, b, httpsec.DPoP{}, httpsec.EnableCertificateBinding(), presentingCertificate(c))
+				f := ep.build(t, b, httpsec.DPoP{PublicURL: dpopPublicURL}, httpsec.EnableCertificateBinding(), presentingCertificate(c))
 				send := f.prepare(t, "")
 				before := f.activeSessions(t)
 
@@ -999,7 +1004,7 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 	cases := []testCase{
 		{
 			name:    "an invalid proof is charged",
-			d:       func(*testing.T) httpsec.DPoP { return httpsec.DPoP{} },
+			d:       func(*testing.T) httpsec.DPoP { return httpsec.DPoP{PublicURL: dpopPublicURL} },
 			proof:   key.brokenProver("j-1"),
 			charges: 1,
 			assert: func(t *testing.T, out served) {
@@ -1020,7 +1025,7 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 				c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 					Return(nil, fmt.Errorf("%w: %w", session.ErrCipherUnavailable, errDown))
 
-				return httpsec.DPoP{Nonce: true, NonceCipher: c}
+				return httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c}
 			},
 			proof: func(t *testing.T, path, _ string) string {
 				return key.issuingProofParts(path, "j-1", "").with(map[string]any{"nonce": "c2VhbGVk"}).sign(t)
@@ -1038,7 +1043,7 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 						return nil, ctx.Err()
 					})
 
-				return httpsec.DPoP{Nonce: true, NonceCipher: c}
+				return httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c}
 			},
 			extra: []httpsec.Option{issuingHangUpOption},
 			proof: func(t *testing.T, path, _ string) string {
@@ -1056,7 +1061,7 @@ func TestDPoP_IssuingChargesOnlyInvalidProofs(t *testing.T) {
 				s := NewMockReplayStore(gomock.NewController(t))
 				s.EXPECT().Record(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(false, errDown)
 
-				return httpsec.DPoP{Replay: s}
+				return httpsec.DPoP{PublicURL: dpopPublicURL, Replay: s}
 			},
 			proof:  key.validProver("j-1"),
 			assert: outage,
@@ -1131,7 +1136,7 @@ func TestDPoP_TokenType(t *testing.T) {
 			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 
-				f := ep.build(t, httpsec.DPoP{})
+				f := ep.build(t, httpsec.DPoP{PublicURL: dpopPublicURL})
 				send := f.prepare(t, tc.bound(ep))
 				tc.assert(t, send(t, tc.proof))
 			})
@@ -1168,7 +1173,7 @@ func TestDPoP_TokenTypeToConsumerResponder(t *testing.T) {
 
 			var got httpsec.LoginResult
 
-			f := b.fixture(t, httpsec.DPoP{}, httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+			f := b.fixture(t, httpsec.DPoP{PublicURL: dpopPublicURL}, httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 				Authenticator: b.authn, Sessions: b.sessions, Tokens: b.gen,
 				Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 			}, httpsec.WithLoginResponder(func(_ *httpsec.Exchange, r httpsec.LoginResult) error {

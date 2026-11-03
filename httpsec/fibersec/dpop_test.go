@@ -139,7 +139,7 @@ func TestFiber_DPoPJudgesThePathAsSent(t *testing.T) {
 
 			chain := newChain(t,
 				httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
-				httpsec.EnableDPoP(httpsec.DPoP{}),
+				httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"}),
 			)
 
 			app := fiber.New()

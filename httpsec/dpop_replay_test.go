@@ -275,7 +275,7 @@ func TestDPoP_Replay(t *testing.T) {
 			clk := newReplayClock(dpopNow)
 			logs := &capturingHandler{}
 
-			d := httpsec.DPoP{}
+			d := httpsec.DPoP{PublicURL: dpopPublicURL}
 			if tc.store != nil {
 				d.Replay = tc.store(t)
 			} else {
@@ -308,7 +308,7 @@ func TestDPoP_ReplayConcurrent(t *testing.T) {
 	key := newDPoPKey(t, elliptic.P256())
 	proof := key.validProof("j-1").sign(t)
 
-	checker, err := httpsec.NewDPoPChecker(httpsec.DPoP{}, func() time.Time { return dpopNow },
+	checker, err := httpsec.NewDPoPChecker(httpsec.DPoP{PublicURL: dpopPublicURL}, func() time.Time { return dpopNow },
 		slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 

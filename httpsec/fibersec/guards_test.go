@@ -979,13 +979,13 @@ func TestFiber_GuardsDPoPChallenge(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "DPoP optional: the DPoP and Bearer challenges",
-			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
 			config: withErrorHandler,
 			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
 		},
 		{
 			name:   "DPoP required: the DPoP challenge alone",
-			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com", Require: true})},
 			config: withErrorHandler,
 			assert: challenged(`DPoP algs="ES256"`),
 		},
@@ -996,7 +996,7 @@ func TestFiber_GuardsDPoPChallenge(t *testing.T) {
 		},
 		{
 			name:   "fiber's own error handler keeps the challenge",
-			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
 			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
 		},
 	}

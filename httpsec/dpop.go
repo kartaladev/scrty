@@ -14,6 +14,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -138,10 +139,17 @@ type DPoP struct {
 	NonceLifetime time.Duration
 
 	// PublicURL is the scheme and host proofs' htu is judged against, such as
-	// "https://app.example.com". Default: empty, meaning the scheme and host
-	// the chain resolved for the request (EnableTrustedProxies,
-	// WithHTTPSDeployment). It must be an absolute http or https URL with no
-	// query, fragment or user information.
+	// "https://app.example.com". Default: none, and EnableDPoP then needs
+	// the host declared another way: EnableTrustedProxies with a
+	// ForwardedHost allowlist, in which case the scheme and host the chain
+	// resolved for the request are used, and that host must be on the
+	// allowlist whether a trusted proxy forwarded it or it is the request's
+	// own Host header; a proof for a request whose host is not on it is
+	// refused as invalid. A chain with neither is a configuration error,
+	// because a host taken from the request's own Host header is a value the
+	// client chooses. When set, it alone is used: neither the request's Host
+	// nor the ForwardedHost allowlist is consulted. It must be an absolute
+	// http or https URL with no query, fragment or user information.
 	PublicURL string
 
 	// MaxProofSize is the longest DPoP header, in bytes, the chain parses; a
@@ -186,8 +194,15 @@ const optionDPoP = "EnableDPoP"
 // proof lifetime (ProofMaxAge); ES256 alone (Algorithms); an 8 KiB proof
 // bound (MaxProofSize); an in-memory replay store per process (Replay); no
 // server nonces (Nonce), and when they are on, a five-minute nonce lifetime
-// (NonceLifetime) sealed with the consumer's cipher (NonceCipher); the public
-// URL built from the scheme and host the chain resolved (PublicURL).
+// (NonceLifetime) sealed with the consumer's cipher (NonceCipher). The host
+// has no default: it must be declared, with PublicURL or with trusted proxies
+// that name their allowed hosts (ForwardedHost), and a chain with neither is
+// a configuration error from New. Trusted proxies without ForwardedHost do
+// not count. Without PublicURL, the host the chain resolved must be on the
+// ForwardedHost allowlist, compared by name as a forwarded host is, or the
+// proof is refused (ErrInvalidDPoPProof): a request from an untrusted peer,
+// or one a trusted proxy forwarded with no host, still carries a Host the
+// client chose.
 //
 // Enabling it on a chain with no feature that verifies bound credentials
 // (today EnableBearerToken and EnableSessionBearer), or more than once, is a
@@ -216,6 +231,15 @@ func EnableDPoP(d DPoP) Option {
 			if len(c.bindingVerifiers) == 0 {
 				return newConfigError("%s was enabled on a chain with no feature that verifies bound credentials; "+
 					"enable one, such as EnableBearerToken or EnableSessionBearer", optionDPoP)
+			}
+
+			if v.publicURL == nil && (c.proxies == nil || len(c.proxies.allowed) == 0) {
+				return newConfigError("%s needs the host its proofs are judged against: set DPoP.PublicURL, "+
+					"or name the allowed hosts with EnableTrustedProxies(..., ForwardedHost(...))", optionDPoP)
+			}
+
+			if v.publicURL == nil {
+				v.allowedHosts = c.proxies.allowed
 			}
 
 			return nil
@@ -272,6 +296,11 @@ type dpopVerifier struct {
 	// publicURL is cfg.PublicURL parsed, and nil when the resolved scheme and
 	// host are used.
 	publicURL *url.URL
+
+	// allowedHosts is the trusted proxies' ForwardedHost allowlist, set when
+	// publicURL is nil: the resolved host must be on it, whether a proxy
+	// forwarded it or it is the request's own Host header.
+	allowedHosts []string
 
 	// algorithms is cfg.Algorithms by name, for the header check.
 	algorithms map[string]jwa.SignatureAlgorithm
@@ -641,7 +670,10 @@ func (v *dpopVerifier) sameURL(r Request, htu string) bool {
 
 // requestURL is r's public URL, normalised: the configured PublicURL's scheme
 // and host, and its path as a prefix, or else the scheme and host the chain
-// resolved; then the path as the client sent it.
+// resolved; then the path as the client sent it. A resolved host that is not
+// on the ForwardedHost allowlist, compared by name as the trusted proxies
+// compare a forwarded host, has no public URL: requestURL returns "", which
+// no htu matches.
 func (v *dpopVerifier) requestURL(r Request) string {
 	path := r.EscapedPath()
 
@@ -649,12 +681,17 @@ func (v *dpopVerifier) requestURL(r Request) string {
 		return normalisedURL(v.publicURL.Scheme, v.publicURL.Host, v.publicURL.EscapedPath()+path)
 	}
 
+	host, name, ok := canonicalHost(r.Host())
+	if !ok || !slices.Contains(v.allowedHosts, strings.TrimSuffix(name, ".")) {
+		return ""
+	}
+
 	scheme := "http"
 	if r.Secure() {
 		scheme = "https"
 	}
 
-	return normalisedURL(scheme, r.Host(), path)
+	return normalisedURL(scheme, strings.TrimSuffix(name, ".")+host[len(name):], path)
 }
 
 // normalisedURL renders scheme, host and path with scheme and host in lower

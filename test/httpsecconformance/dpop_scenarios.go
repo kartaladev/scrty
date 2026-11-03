@@ -140,7 +140,7 @@ func (fx *dpopFixture) spec(t *testing.T, nonces bool) ChainSpec {
 
 	effects := newEffects(t)
 
-	d := httpsec.DPoP{Replay: fx.replay}
+	d := httpsec.DPoP{PublicURL: dpopOrigin, Replay: fx.replay}
 	if nonces {
 		d.Nonce, d.NonceCipher, d.NonceLifetime = true, fx.nonces, httpsec.MinDPoPNonceLifetime
 	}
