@@ -7,7 +7,7 @@ require (
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/google/uuid v1.6.0
 	github.com/kartaladev/scrty v0.0.0-00010101000000-000000000000
-	github.com/lestrrat-go/jwx/v4 v4.5.0
+	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.24.0
 )
@@ -23,7 +23,6 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
-	github.com/valyala/fastjson v1.6.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
