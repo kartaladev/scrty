@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -115,16 +116,23 @@ func replayKey(jti, jkt string) string {
 }
 
 // memoryReplayStore is the in-memory ReplayStore EnableDPoP uses by default:
-// one map under one lock, so Record is an atomic insert-if-absent.
+// replayShardCount shards chosen by the key, each one map under its own lock,
+// so Record is an atomic insert-if-absent and requests on different shards do
+// not wait for each other.
 //
-// Expired keys are swept on a Record at most once per sweep interval, so the
-// map holds only the records still current and those that expired within the
-// last interval, and no goroutine is needed to drop them. It has no size cap:
-// the records still current are one per valid proof, kept for about three
+// Expired keys are swept per shard, on a Record that lands on the shard, at
+// most once per sweep interval. A shard holds only the records still current
+// and those that expired since its last sweep, a sweep walks only its own
+// shard, and no goroutine is needed to drop them. It has no size cap: the
+// records still current are one per valid proof, kept for about three
 // minutes, so a deployment that must bound them supplies its own store.
 type memoryReplayStore struct {
-	now func() time.Time
+	now    func() time.Time
+	shards [replayShardCount]replayShard
+}
 
+// replayShard is one shard of the memory store.
+type replayShard struct {
 	mu        sync.Mutex
 	seen      map[string]time.Time
 	nextSweep time.Time
@@ -133,32 +141,50 @@ type memoryReplayStore struct {
 // replaySweepInterval is how often the memory store sweeps expired keys.
 const replaySweepInterval = time.Minute
 
+// replayShardCount is how many shards the memory store splits its records into.
+const replayShardCount = 64
+
+// replayShardIndex returns the index of the shard key is recorded in: FNV-1a over its bytes,
+// modulo replayShardCount.
+func replayShardIndex(key string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key)) // a hash.Hash never fails
+
+	return int(h.Sum32() % replayShardCount)
+}
+
 func newMemoryReplayStore(now func() time.Time) *memoryReplayStore {
-	return &memoryReplayStore{now: now, seen: make(map[string]time.Time)}
+	m := &memoryReplayStore{now: now}
+	for i := range m.shards {
+		m.shards[i].seen = make(map[string]time.Time)
+	}
+
+	return m
 }
 
 // Record records key until until, unless it is already recorded and has not
 // expired. It never fails.
 func (m *memoryReplayStore) Record(_ context.Context, key string, until time.Time) (bool, error) {
 	now := m.now()
+	s := &m.shards[replayShardIndex(key)]
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if !now.Before(m.nextSweep) {
-		for k, exp := range m.seen {
+	if !now.Before(s.nextSweep) {
+		for k, exp := range s.seen {
 			if !now.Before(exp) {
-				delete(m.seen, k)
+				delete(s.seen, k)
 			}
 		}
-		m.nextSweep = now.Add(replaySweepInterval)
+		s.nextSweep = now.Add(replaySweepInterval)
 	}
 
-	if exp, ok := m.seen[key]; ok && now.Before(exp) {
+	if exp, ok := s.seen[key]; ok && now.Before(exp) {
 		return false, nil
 	}
 
-	m.seen[key] = until
+	s.seen[key] = until
 
 	return true, nil
 }
