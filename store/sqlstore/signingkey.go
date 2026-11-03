@@ -3,9 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -128,16 +126,12 @@ func (s *signingKeyStore) ResealSigningKey(ctx context.Context, kid string, old,
 func (s *signingKeyStore) Delete(ctx context.Context, kids ...string) error {
 	const op = "delete signing keys"
 
-	kids = slices.DeleteFunc(slices.Clone(kids), func(kid string) bool { return !storekit.Storable(kid) })
-	if len(kids) == 0 {
+	set, ok := storekit.StorableSet(kids)
+	if !ok {
 		return nil
 	}
-	set, err := json.Marshal(kids)
-	if err != nil {
-		return failed(op, err)
-	}
 
-	_, err = s.c.exec(ctx, op, pgschema.SigningKeyDelete, string(set))
+	_, err := s.c.exec(ctx, op, pgschema.SigningKeyDelete, set)
 
 	return err
 }

@@ -2,9 +2,7 @@ package gormstore
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"slices"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -148,20 +146,16 @@ func (s *signingKeyStore) ResealSigningKey(ctx context.Context, kid string, old,
 func (s *signingKeyStore) Delete(ctx context.Context, kids ...string) error {
 	const op = "delete signing keys"
 
-	kids = slices.DeleteFunc(slices.Clone(kids), func(kid string) bool { return !storekit.Storable(kid) })
-	if len(kids) == 0 {
+	set, ok := storekit.StorableSet(kids)
+	if !ok {
 		return nil
-	}
-	set, err := json.Marshal(kids)
-	if err != nil {
-		return failed(op, err)
 	}
 
 	q, _, err := s.c.conn(ctx)
 	if err != nil {
 		return failed(op, err)
 	}
-	if err := q.Exec(pgschema.SigningKeyDelete, string(set)).Error; err != nil {
+	if err := q.Exec(pgschema.SigningKeyDelete, set).Error; err != nil {
 		return failed(op, err)
 	}
 
