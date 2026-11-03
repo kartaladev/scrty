@@ -124,8 +124,8 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 - [ ] **Step 1: Implement.**
   - Each file target depends on `$(TOOLS_DEPS)`, and its recipe is `cd tools && GOWORK=off GOBIN=$(BIN) go install <package>`.
   - `tools: $(TOOL_BINS)`, with an empty recipe.
-  - `lint: $(BIN)/golangci-lint`, `vuln: $(BIN)/govulncheck` and `generate-check: $(BIN)/mockgen`.
-  - `tools-check` and `sbom` keep depending on `tools`, and `pincheck` needs no tool.
+  - `lint: $(BIN)/golangci-lint`, `tools-check: $(BIN)/golangci-lint`, `vuln: $(BIN)/govulncheck` and `generate-check: $(BIN)/mockgen`.
+  - `sbom` keeps depending on `tools`, and `pincheck` needs no tool.
   - Keep the existing comment explaining `GOWORK=off`.
 - [ ] **Step 2: Verify.** With `.bin` moved aside, run each of `make lint`, `make vuln` and `make generate-check` under the `PATH` from 1.1. Expected:
   - each passes;
@@ -255,7 +255,7 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
   - checkout with `fetch-depth: 0`;
   - setup-node with `node-version: lts/*`;
   - a step whose `env` sets `SPEC_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}`, and that runs `make spec-check SPEC_BASE="$SPEC_BASE"`;
-  - no Go setup.
+  - setup-go with `GO_VERSION` and `cache: false`, because the Makefile lists the workspace modules with `go` whatever the target, and no cache.
 - [ ] **Step 2: Verify.** `actionlint` prints nothing.
 
 ### Task 3.6: `ci-ok`

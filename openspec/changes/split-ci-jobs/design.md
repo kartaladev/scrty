@@ -61,7 +61,7 @@ See `proposal.md` for why. What shapes the approach:
 - **One file target per tool.** Each tool in `tools/go.mod` gets a target, for example `$(BIN)/golangci-lint`:
   - it runs `cd tools && GOWORK=off GOBIN=$(BIN) go install <package>`, which builds the version `tools/go.mod` pins;
   - it depends on `tools/go.mod` and `tools/go.sum`, so bumping a tool reinstalls it on the next run.
-- **Each gate depends on its own tool.** `lint`, `vuln` and `generate-check` depend on the file target of the tool they call. `tools` keeps installing everything, `benchstat` included.
+- **Each gate depends on its own tool.** `lint`, `tools-check`, `vuln` and `generate-check` depend on the file target of the tool they call. `tools` keeps installing everything, `benchstat` included.
 - **`make check` is unchanged.** It runs the same targets in the same order, and `test-isolated` still runs from its recipe.
 - **Alternative considered:** `golangci/golangci-lint-action` and `golang/govulncheck-action` instead of `make`. That would give each tool two version sources, the action input and `tools/go.mod`, and CI could then pass with a linter a contributor never ran. Rejected for parity.
 - **Override:** a contributor runs `make lint` or any other gate alone, with no `make tools` first. Running `make tools` first still works.
@@ -114,7 +114,7 @@ See `proposal.md` for why. What shapes the approach:
   - `SPEC_BASE ?= $(shell git merge-base HEAD main)`. Locally that covers committed and uncommitted edits against `main`.
 - **In CI:**
   - the job checks out the full history (`fetch-depth: 0`);
-  - it sets up Node with `lts/*` (OpenSpec 1.16.0 needs `>=22.12.0`);
+  - it sets up Node with `lts/*` (OpenSpec 1.16.0 needs `>=22.12.0`), and Go, because the Makefile lists the workspace modules with `go` whatever the target;
   - it passes `SPEC_BASE`: the pull request's base SHA, or for a push the `before` SHA.
   - If the base is unreachable or all zeros, the target falls back to the merge base with `origin/main`.
 - **Not in `make check`.** Go contributors then need no Node (decided 2026-11-02). The `module-layout` delta narrows the parity promise to the build gates.
@@ -167,6 +167,8 @@ Read on 2026-11-03. These drift with every run.
 - **Autobuild coverage (decision 5):** the Go analysis extracted packages from all nine modules that `go.work` lists, so `build-mode: autobuild` stays. It also extracts the fixtures under `testdata/layout`, and one of them, `wsunlisted`, fails to extract. Both analyses reported no alerts.
 - **A failing run (pull request #69, closed):** only `format` and `openspec` failed, `openspec` named the invalid change, and `ci-ok` ran and failed, naming both.
 - **A push just before marking a draft ready** starts two runs on one commit. The earlier one is skipped as a draft, so the commit carries a skipped `ci-ok` beside the real one. GitHub's check list reports both. Whether a required check blocks on the failed one while a skipped one exists is not yet shown, because `ci-ok` was not required on #69. The maintainer step that requires it should check this.
+
+- **Scenarios proven only in part** (whole-branch review, 2026-11-03): no run yet shows a lint finding or a failing test as the failing job, a push to `main`, a skipped or cancelled dependency on GitHub (the expression was run against fixtures), or a broken settled spec or stale mock in CI (the first was run locally). Each job is independent by construction, so the same mechanism covers them. The first push to `main` is the proof of that clause.
 
 ## Migration Plan
 

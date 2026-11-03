@@ -12,7 +12,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
 - [x] 1.1 Red: move `.bin` aside, then run `make lint`, `make vuln` and `make generate-check` one at a time. Record that each fails because its tool (`golangci-lint`, `govulncheck`, `mockgen`) is not found.
 - [x] 1.2 Add one file target per tool in `tools/go.mod`, for example `$(BIN)/golangci-lint`.
   - Each builds that one package from `tools/`, with `GOWORK=off GOBIN=$(BIN)`, and depends on `tools/go.mod` and `tools/go.sum`.
-  - Make `lint`, `vuln` and `generate-check` depend on their own tool.
+  - Make `lint`, `tools-check`, `vuln` and `generate-check` depend on their own tool.
   - Keep `tools` installing every tool, and leave `check`'s prerequisites and its `test-isolated` recipe line unchanged.
 
   Verify:
@@ -77,7 +77,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
   Verify `actionlint` reports nothing, and that no `python` language appears in the file.
 - [x] 3.5 Add the `openspec` job to `ci.yml`:
   - `fetch-depth: 0`;
-  - setup-node with `lts/*`;
+  - setup-node with `lts/*`, and setup-go on `GO_VERSION` with `cache: false`;
   - `make spec-check SPEC_BASE=<base>`, where the base is the pull request's base SHA, or the push's `before`.
 
   Verify `actionlint` reports nothing.
@@ -115,7 +115,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
   Record the sizes.
 - [ ] 4.5 Run `make check`, `make spec-check` and `openspec validate split-ci-jobs --strict`. Verify all three pass, and keep their output.
-- [ ] 4.6 Review the whole branch against every requirement in this change's two spec deltas, with a reviewer that wrote none of it. Verify that the review lists each requirement and scenario as met, or files a finding.
+- [x] 4.6 Review the whole branch against every requirement in this change's two spec deltas, with a reviewer that wrote none of it. Verify that the review lists each requirement and scenario as met, or files a finding.
 
 ## Workflow follow-up
 

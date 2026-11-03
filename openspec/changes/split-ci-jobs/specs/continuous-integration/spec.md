@@ -34,7 +34,7 @@ The test job SHALL run once for each PostgreSQL and Redis pairing CI tests again
 
 #### Scenario: Two database pairings
 - **WHEN** CI runs on a matrix with two PostgreSQL and Redis pairings
-- **THEN** two test jobs run, one per pairing, and the formatting, vet, lint, generate, vulnerability, action pin, tools module, code-scanning and spec-validation jobs each run once
+- **THEN** two test jobs run, one per pairing, the formatting, vet, lint, generate, vulnerability, action pin, tools module and spec-validation jobs each run once, and code scanning runs once per analysed language
 
 #### Scenario: Isolated test
 - **WHEN** a test job runs

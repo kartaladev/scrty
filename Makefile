@@ -48,7 +48,7 @@ tools: $(TOOL_BINS)
 # go.work, so no loop over MODULES reaches it. This target vets, lints and tests
 # it with the workspace off, as `pincheck` and `tools` do. gofmt is checked here
 # too, because fmt-check only names the workspace modules.
-tools-check: tools
+tools-check: $(BIN)/golangci-lint
 	@set -eu -o pipefail; out="$$(gofmt -l tools)"; \
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi; \
 	cd tools && GOWORK=off go vet ./... && GOWORK=off golangci-lint run ./... && GOWORK=off go test -race -count=1 ./...
