@@ -312,11 +312,17 @@ func (l *securityHeaders) applyHeaders(w ResponseWriter, req Request) {
 // the profile being built by APIHeaders or NewHeaderProfile, with p.
 //
 // Default: StrictCSP() with no directives added. A policy that fails its own
-// check (see CSPDirective) fails construction here, naming the policy.
+// check (see CSPDirective), or that holds no directive at all (the zero
+// CSPPolicy, or one built from it with nothing added), fails construction
+// here. To send no policy, use WithoutHeader("Content-Security-Policy").
 func WithCSP(p CSPPolicy) HeaderOption {
 	return func(l *securityHeaders) error {
 		if p.err != nil {
 			return newConfigError("WithCSP was given a policy that cannot be sent: %s", p.err)
+		}
+
+		if len(p.directives) == 0 {
+			return newConfigError("WithCSP was given a policy with no directive; remove the header with WithoutHeader to send none")
 		}
 
 		l.document.set(profileHeader{name: headerCSP, policy: &p})

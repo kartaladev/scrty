@@ -288,3 +288,135 @@ func TestSecurityHeaders_Streaming(t *testing.T) {
 		})
 	}
 }
+
+func TestWithCSP_RefusesPolicyWithNoDirectives(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []httpsec.HeaderOption
+		assert func(t *testing.T, err error)
+	}
+
+	refused := func(want string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) {
+			require.ErrorIs(t, err, httpsec.ErrConfig, "an empty policy is a configuration error")
+			assert.Contains(t, err.Error(), want)
+		}
+	}
+
+	api := func(p httpsec.CSPPolicy) httpsec.HeaderOption {
+		return httpsec.WithHeaderProfile(httpsec.APIHeaders(httpsec.WithCSP(p)), httpsec.PathPrefix("/api/"))
+	}
+
+	own := func(p httpsec.CSPPolicy) httpsec.HeaderOption {
+		return httpsec.WithHeaderProfile(httpsec.NewHeaderProfile(httpsec.WithCSP(p)), httpsec.PathPrefix("/own/"))
+	}
+
+	cases := []testCase{
+		{
+			name:   "the document profile given the zero policy",
+			opts:   []httpsec.HeaderOption{httpsec.WithCSP(httpsec.CSPPolicy{})},
+			assert: refused("WithCSP"),
+		},
+		{
+			name:   "the document profile given a zero policy with nothing added",
+			opts:   []httpsec.HeaderOption{httpsec.WithCSP(httpsec.CSPPolicy{}.With())},
+			assert: refused("WithCSP"),
+		},
+		{
+			name:   "an APIHeaders profile given the zero policy",
+			opts:   []httpsec.HeaderOption{api(httpsec.CSPPolicy{})},
+			assert: refused("WithCSP"),
+		},
+		{
+			name:   "a NewHeaderProfile profile given the zero policy",
+			opts:   []httpsec.HeaderOption{own(httpsec.CSPPolicy{})},
+			assert: refused("WithCSP"),
+		},
+		{
+			name:   "the report-only candidate given the zero policy",
+			opts:   []httpsec.HeaderOption{httpsec.WithCSPReportOnlyPolicy(httpsec.CSPPolicy{})},
+			assert: refused("WithCSPReportOnlyPolicy"),
+		},
+		{
+			name: "an APIHeaders profile with its CSP removed builds",
+			opts: []httpsec.HeaderOption{httpsec.WithHeaderProfile(
+				httpsec.APIHeaders(httpsec.WithoutHeader("Content-Security-Policy")), httpsec.PathPrefix("/api/"))},
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			// Control: already refused today, so this case is green before and after the fix.
+			name:   "the document profile given HashCSP with no hash",
+			opts:   []httpsec.HeaderOption{httpsec.WithCSP(httpsec.HashCSP())},
+			assert: refused("HashCSP"),
+		},
+		{
+			// Control: the strict default is a meaningful policy and must stay accepted.
+			name: "the document profile given StrictCSP with nothing added",
+			opts: []httpsec.HeaderOption{httpsec.WithCSP(httpsec.StrictCSP())},
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := httpsec.New(httpsec.EnableSecurityHeaders(tc.opts...))
+
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestWithoutHeader_ContentSecurityPolicyOnAPIProfile: a profile with its CSP
+// removed builds and sends none, while the document profile keeps its strict
+// default.
+func TestWithoutHeader_ContentSecurityPolicyOnAPIProfile(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		path   string
+		assert func(t *testing.T, h http.Header)
+	}
+
+	cases := []testCase{
+		{
+			name: "a request under the API prefix carries no Content-Security-Policy",
+			path: "/api/things",
+			assert: func(t *testing.T, h http.Header) {
+				assert.Empty(t, h.Values("Content-Security-Policy"))
+			},
+		},
+		{
+			name: "a document request still carries the strict default",
+			path: "/page",
+			assert: func(t *testing.T, h http.Header) {
+				assert.NotEmpty(t, h.Get("Content-Security-Policy"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chain, err := httpsec.New(httpsec.EnableSecurityHeaders(httpsec.WithHeaderProfile(
+				httpsec.APIHeaders(httpsec.WithoutHeader("Content-Security-Policy")), httpsec.PathPrefix("/api/"))))
+			require.NoError(t, err)
+
+			rec := httptest.NewRecorder()
+			chain.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rec, getRequest(t, tc.path))
+
+			tc.assert(t, rec.Header())
+		})
+	}
+}
