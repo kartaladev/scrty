@@ -890,9 +890,13 @@ func (ex *Exchange) dpop() *dpopVerifier {
 // the endpoint's checks, before anything is spent, so a refused proof spends
 // no link, code, attempt or recovery proof.
 //
-// The proof carries no ath: the credential it binds does not exist yet. It is
-// recorded at once, so a replayed proof is refused before anything is spent
-// too. With DPoP off (v nil) it checks no proof. With DPoP required a request
+// The proof's ath is judged against tok, the credential the chain's bearer
+// authenticated on the request (Exchange.RecordPresentedToken): a login has
+// none, so its proof carries no ath, the credential it binds not existing yet,
+// and an Authorization header no bearer authenticated changes nothing; a
+// re-authentication of an unbound session has its own, and the proof carries
+// ath over it. It is recorded at once, so a replayed proof is refused before
+// anything is spent too. With DPoP off (v nil) it checks no proof. With DPoP required a request
 // without a proof is refused. Every refusal is ErrInvalidDPoPProof; a replay
 // store that fails is a dependency failure, and one the caller's hang-up cut
 // short fails with the context's error.
@@ -901,7 +905,7 @@ func (ex *Exchange) dpop() *dpopVerifier {
 // when certificate binding is on (cb not nil) and it presents one
 // (EnableCertificateBinding). A request with both is bound to the proof's key
 // only: a credential carries one confirmation.
-func issuingBinding(ctx context.Context, v *dpopVerifier, cb *certBinding, r Request) (session.KeyBinding, error) {
+func issuingBinding(ctx context.Context, v *dpopVerifier, cb *certBinding, r Request, tok string) (session.KeyBinding, error) {
 	if v == nil || len(r.HeaderValues(dpopHeader)) == 0 {
 		if v != nil && v.cfg.Require {
 			return session.KeyBinding{}, v.refuse(ctx, reasonProofMissing)
@@ -914,7 +918,7 @@ func issuingBinding(ctx context.Context, v *dpopVerifier, cb *certBinding, r Req
 		return session.KeyBinding{X5TS256: certificateThumbprint(r.ClientCertificate())}, nil
 	}
 
-	p, err := v.verify(ctx, r, "")
+	p, err := v.verify(ctx, r, tok)
 	if err != nil {
 		return session.KeyBinding{}, err
 	}

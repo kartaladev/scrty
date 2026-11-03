@@ -41,7 +41,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// the code unspent. An invalid proof is counted against the source as a
 	// request carrying no code is; the nonce round trip and a failure of the
 	// replay store or nonce cipher are not.
-	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request)
+	binding, err := issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
 	if err != nil {
 		if chargesProofRefusal(err) {
 			recordSourceFailure(ctx, i.guard, src)

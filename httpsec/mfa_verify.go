@@ -342,9 +342,13 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 // read. Any other sign-in is presented under the Bearer scheme, whose
 // credential the bearer judges without a proof: an unbound one, and one bound
 // to a certificate, whose binding stays the certificate. A proof the request
-// carries beside such a credential is verified here, without ath, and its jti
-// recorded, before the endpoint spends anything. A refusal is
-// ErrInvalidDPoPProof.
+// carries beside such a credential is verified here, and its jti recorded,
+// before the endpoint spends anything. Its ath is judged against the
+// credential the chain's bearer authenticated (Exchange.RecordPresentedToken),
+// as RFC 9449 section 4.2 requires of a proof used with an access token: it
+// must hash that credential, under whatever scheme the bearer read it, and be
+// absent when no bearer authenticated one, as for a sign-in carried by a
+// cookie. A refusal is ErrInvalidDPoPProof.
 //
 // A request carrying no proof, and a chain without DPoP, check nothing: the
 // sign-in's binding rules are the bearer's, unchanged.
@@ -356,7 +360,7 @@ func continuingProof(ex *Exchange, s *session.Session) error {
 
 	ctx := ex.Context()
 
-	p, err := v.verify(ctx, ex.Request, "")
+	p, err := v.verify(ctx, ex.Request, ex.bearerCredential)
 	if err != nil {
 		return err
 	}

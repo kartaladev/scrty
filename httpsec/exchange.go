@@ -231,6 +231,13 @@ type Exchange struct {
 	certificateThumb string
 	certificateRead  bool
 
+	// bearerCredential is the credential the chain's bearer authenticated on
+	// this request, as it was presented: a signed token or a session
+	// reference, under whatever scheme the bearer reads. It is set only once
+	// the bearer has resolved it, and "" on a request no bearer
+	// authenticated. A DPoP proof beside it carries ath over it.
+	bearerCredential string
+
 	ctx context.Context
 }
 
@@ -325,8 +332,10 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 //
 // The default is unused: the built-ins call it, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor, normally at
-// OrderBearerToken, after verifying the credential that names s. It is itself
-// the consumer's extension point, so it has no override.
+// OrderBearerToken, after verifying the credential that names s. Such an
+// interceptor also calls RecordPresentedToken with that credential, so a DPoP
+// proof beside it is judged for its ath. PublishSession is itself the
+// consumer's extension point, so it has no override.
 func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Session) error {
 	if s != nil && s.FamilyID == id.Nil {
 		return errors.New("httpsec: a session with no family cannot be published; every stored session belongs to one")
@@ -390,4 +399,22 @@ func (e *Exchange) EvaluatePerRequest(s *session.Session, p *identity.Principal)
 	}
 
 	return e.evaluatePerRequest(ph, s, p, e.Authentication.PasswordChangedAt, ph.now())
+}
+
+// RecordPresentedToken records tok as the access token the request presented,
+// as the caller verified it, under whatever scheme the caller reads. A DPoP
+// proof the request carries beside it must then carry ath over tok (RFC 9449
+// section 4.2), at the endpoints that issue or continue a sign-in.
+//
+// A consumer's own bearer interceptor, registered with RegisterInterceptor at
+// OrderBearerToken, calls it after verifying the credential and before next.
+// The built-in bearers (EnableBearerToken, EnableSessionBearer) call it for
+// the credential they authenticate. Call it only for a credential that was
+// verified: the proof is judged against it as given.
+//
+// The default is that nothing is recorded: the request is judged as presenting
+// no access token, so a proof with ath is refused and one without is accepted.
+// It has no override, being the consumer's own extension point.
+func (e *Exchange) RecordPresentedToken(tok string) {
+	e.bearerCredential = tok
 }

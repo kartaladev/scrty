@@ -139,6 +139,8 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
+	ex.RecordPresentedToken(presented)
+
 	return next(ex)
 }
 

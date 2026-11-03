@@ -192,6 +192,8 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		ex.chargeRenewal = func(ctx context.Context) { recordSourceFailure(ctx, b.guard, src) }
 	}
 
+	ex.RecordPresentedToken(presented)
+
 	return next(ex)
 }
 

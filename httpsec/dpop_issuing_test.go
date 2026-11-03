@@ -37,9 +37,9 @@ import (
 )
 
 // prover makes the DPoP header of one issuing request for path: credential is
-// the access credential the request presents under the DPoP scheme, which the
-// proof's ath hashes, and empty when it presents none that way. It returns ""
-// for a request that carries no proof.
+// the access credential the request presents, under the Bearer or the DPoP
+// scheme, which the proof's ath hashes, and empty when it presents none. It
+// returns "" for a request that carries no proof.
 type prover func(t *testing.T, path, credential string) string
 
 // noProof is a request that carries no proof.
@@ -280,16 +280,16 @@ func (b *issuingBase) signedIn(t *testing.T, bound string, change func(*session.
 	return tok
 }
 
-// presenting is req presenting credential: under the DPoP scheme with a
-// proof whose ath hashes it when the session is bound, and as Bearer with an
-// issuing proof, if any, otherwise.
+// presenting is req presenting credential: under the DPoP scheme when the
+// session is bound, and as Bearer otherwise, with a proof, if any, whose ath
+// hashes it either way.
 func presenting(t *testing.T, req *http.Request, credential, bound string, proof prover) *http.Request {
 	t.Helper()
 
 	if bound == "" {
 		req.Header.Set("Authorization", "Bearer "+credential)
 
-		return withProof(req, proof(t, req.URL.Path, ""))
+		return withProof(req, proof(t, req.URL.Path, credential))
 	}
 
 	req.Header.Set("Authorization", "DPoP "+credential)

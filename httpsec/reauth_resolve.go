@@ -88,18 +88,19 @@ func (i *reauthInterceptor) resolve(ex *Exchange, s *session.Session, method mfa
 
 // reauthBinding is the key a re-proof binds its successor to: the key of the
 // DPoP proof the request carries when the session is unbound, verified among
-// the re-proof's checks, before anything is spent (issuingBinding). A session
-// bound to a DPoP key reached here under the DPoP scheme with a proof from
-// that key, which the bearer verified and recorded, so it keeps its binding
-// and nothing more is read. A session bound to a certificate keeps it too,
-// but a proof the request carries beside its Bearer credential is verified and
-// recorded (continuingProof). The zero value binds nothing.
+// the re-proof's checks, before anything is spent, with ath over the
+// credential the bearer authenticated (issuingBinding). A session bound to a
+// DPoP key reached here under the DPoP scheme with a proof from that key,
+// which the bearer verified and recorded, so it keeps its binding and nothing
+// more is read. A session bound to a certificate keeps it too, but a proof the
+// request carries beside its credential is verified, its ath over that
+// credential, and recorded (continuingProof). The zero value binds nothing.
 func reauthBinding(ex *Exchange, s *session.Session) (session.KeyBinding, error) {
 	if !s.KeyBinding.IsZero() {
 		return session.KeyBinding{}, continuingProof(ex, s)
 	}
 
-	return issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request)
+	return issuingBinding(ex.Context(), ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)
 }
 
 // reauthRotation is the rotation option binding asks for: none for the zero
