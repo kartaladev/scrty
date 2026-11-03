@@ -231,10 +231,12 @@ func WithLogger(l *slog.Logger) Option {
 // answer a read before the write loses the event, which the policy logs
 // through WithLogger, and never the failure.
 //
-// With a failure-streak limit (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
+// A zero instant given to the view's RecordFailure is recorded at the
+// policy's clock, always, whatever the policy is configured with; an instant
+// that is given is kept as it is. With a failure-streak limit
+// (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
 // consecutive-failure streak and then the failure log, and always attempts the
-// log even when the streak write failed; it returns both errors joined. A zero
-// instant is recorded at the policy's clock, for both writes.
+// log even when the streak write failed; it returns both errors joined.
 func (p *Policy) Attempts() policy.AttemptStore { return p.attempts }
 
 // observedAttempts is the view Attempts hands out: it forwards every call to
@@ -257,10 +259,11 @@ const msgReportLost = "lockout: a lockout report was lost: the attempt store rec
 func (o *observedAttempts) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	p := o.p
 
-	// A view under a failure-streak limit records a zero instant at the policy's clock, for the
-	// streak and the log alike: a hold set at the zero instant would read as no
-	// hold at all.
-	if p.streaks != nil && at.IsZero() {
+	// A zero instant is recorded at the policy's clock, for the streak and the
+	// log alike: Evaluate reads a zero instant as now, and a failure stored at
+	// the zero instant falls outside every window, so it would never count and
+	// a hold set at it would read as no hold at all.
+	if at.IsZero() {
 		at = p.clock.Now()
 	}
 
@@ -288,7 +291,7 @@ func (o *observedAttempts) RecordFailure(ctx context.Context, username string, a
 		p.report(ctx, *out.report)
 	}
 	if out.locked {
-		p.reportLock(ctx, o.eventInstant(at))
+		p.reportLock(ctx, at)
 	}
 
 	return out.err
@@ -378,16 +381,6 @@ func (o *observedAttempts) record(ctx context.Context, username string, at time.
 	}
 
 	return out
-}
-
-// eventInstant is the instant a lock event carries: the failure's, or the
-// policy clock's when the caller recorded a zero instant.
-func (o *observedAttempts) eventInstant(at time.Time) time.Time {
-	if at.IsZero() {
-		return o.p.clock.Now()
-	}
-
-	return at
 }
 
 // msgEventLost is the record for a failure whose lock event could not be

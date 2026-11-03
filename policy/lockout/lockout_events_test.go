@@ -1011,3 +1011,216 @@ func TestSecurityEvents_LockoutIdentifierLocks(t *testing.T) {
 		})
 	}
 }
+
+// longRetentionStore is an in-memory store that keeps failures for 48 hours,
+// longer than the 15-minute windows these tests lock on, as a store shared with
+// a policy of a longer window does. The policy that made it keep that long is
+// dropped: only the store's retention matters.
+func longRetentionStore(t *testing.T) *lockout.MemoryAttemptStore {
+	t.Helper()
+
+	store, err := lockout.NewMemoryAttemptStore()
+	require.NoError(t, err)
+	lockoutWith(t, lockout.WithAttemptStore(store), lockout.WithFailureWindow(48*time.Hour))
+
+	return store
+}
+
+// TestAttempts_CountsZeroInstantFailuresAtThePolicyClock pins that a failure
+// recorded through the policy's view with a zero instant counts as a failure
+// now, whether or not the policy keeps a failure streak, an observer or a
+// sink: Evaluate treats a zero instant as the policy clock, so three such
+// failures must lock a sliding lock of three.
+func TestAttempts_CountsZeroInstantFailuresAtThePolicyClock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts func(l *eventLog) []lockout.Option
+	}{
+		{
+			name: "NoStreakStoreNoObserverNoSink",
+			opts: func(*eventLog) []lockout.Option { return nil },
+		},
+		{
+			name: "NoStreakStoreWithObserver",
+			opts: func(*eventLog) []lockout.Option {
+				return []lockout.Option{lockout.WithObserver(func(context.Context, lockout.Report) {})}
+			},
+		},
+		{
+			name: "NoStreakStoreWithSink",
+			opts: func(l *eventLog) []lockout.Option {
+				return []lockout.Option{lockout.WithSecurityEvents(l.sink)}
+			},
+		},
+		{
+			name: "WithStreakStore",
+			opts: func(*eventLog) []lockout.Option {
+				return []lockout.Option{lockout.WithFailureStreakLimit(10)}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := lockoutWith(t, append([]lockout.Option{lockout.WithSliding(3, 15*time.Minute)}, tt.opts(&eventLog{})...)...)
+			for range 3 {
+				require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", time.Time{}))
+			}
+
+			d := p.Evaluate(t.Context(), &policy.Input{Username: "ada"})
+			assert.Equal(t, policy.Deny, d.Outcome,
+				"three failures recorded with a zero instant left the identifier unlocked: they were stored at year 1, outside the window")
+		})
+	}
+}
+
+// TestAttempts_ReportsLockOnceOnTheZeroInstantFailureThatLocks pins that, with
+// failures inside the store's retention but outside the lock's window, the lock
+// events are reported once, by the failure that brings the window to the
+// threshold, and carry the policy clock's instant, when the failures that lock
+// are recorded with a zero instant.
+func TestAttempts_ReportsLockOnceOnTheZeroInstantFailureThatLocks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		assert func(t *testing.T, afterEach [][]string, all []string)
+	}{
+		{
+			name: "OneLockEventPairOnTheThirdFailure",
+			assert: func(t *testing.T, afterEach [][]string, all []string) {
+				t.Helper()
+
+				assert.Empty(t, afterEach[0], "failure 1 reported a lock with one failure in the window, below the threshold of 3")
+				assert.Empty(t, afterEach[1], "failure 2 reported a lock with two failures in the window, below the threshold of 3")
+				assert.Equal(t, []string{"authn_login_fail_max", "authn_login_lock"}, afterEach[2],
+					"the failure that brought the window to 3 did not report the lock")
+				assert.Len(t, all, 2)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := longRetentionStore(t)
+			// Three failures two hours ago: inside the 48-hour retention, outside
+			// the 15-minute window, so none is a failure the lock counts.
+			failuresAt(t, store, "ada",
+				lockoutNow.Add(-2*time.Hour), lockoutNow.Add(-2*time.Hour+time.Second), lockoutNow.Add(-2*time.Hour+2*time.Second))
+
+			events := &eventLog{}
+			p := lockoutWith(t,
+				lockout.WithAttemptStore(store),
+				lockout.WithSliding(3, 15*time.Minute),
+				lockout.WithSecurityEvents(events.sink),
+			)
+
+			var afterEach [][]string
+			seen := 0
+			for range 3 {
+				require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", time.Time{}))
+
+				var names []string
+				for _, e := range events.all()[seen:] {
+					names = append(names, e.Name)
+					assert.Equal(t, lockoutNow, e.At, "the lock event did not carry the policy clock's instant")
+				}
+				seen = len(events.all())
+				afterEach = append(afterEach, names)
+			}
+
+			var all []string
+			for _, e := range events.all() {
+				all = append(all, e.Name)
+			}
+			tt.assert(t, afterEach, all)
+		})
+	}
+}
+
+// TestAttempts_ReportsLockedToTheObserverOnlyWhenTheWindowReachesTheThreshold
+// pins the same sequence for the observer: a failure recorded with a zero
+// instant is reported as locking only when the window holds the threshold's
+// worth of failures, counted from the policy clock.
+func TestAttempts_ReportsLockedToTheObserverOnlyWhenTheWindowReachesTheThreshold(t *testing.T) {
+	t.Parallel()
+
+	store := longRetentionStore(t)
+	failuresAt(t, store, "ada",
+		lockoutNow.Add(-2*time.Hour), lockoutNow.Add(-2*time.Hour+time.Second), lockoutNow.Add(-2*time.Hour+2*time.Second))
+
+	var reports []lockout.Report
+	p := lockoutWith(t,
+		lockout.WithAttemptStore(store),
+		lockout.WithSliding(3, 15*time.Minute),
+		lockout.WithObserver(func(_ context.Context, r lockout.Report) { reports = append(reports, r) }),
+	)
+
+	for i := range 2 {
+		require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", time.Time{}))
+		assert.Empty(t, reports, "failure %d reported a lock with %d failure(s) in the window, below the threshold of 3", i+1, i+1)
+	}
+	require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", time.Time{}))
+
+	require.Len(t, reports, 1)
+	assert.Equal(t, lockout.ReportLocked, reports[0].Kind)
+	assert.Equal(t, 3, reports[0].Failures, "the report counted failures outside the window")
+	assert.Equal(t, lockoutNow, reports[0].At)
+}
+
+// TestAttempts_KeepsAGivenFailureInstant pins that a failure recorded with an
+// instant is counted at that instant, not at the policy clock.
+func TestAttempts_KeepsAGivenFailureInstant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		opts   []lockout.Option
+		assert func(t *testing.T, store *lockout.MemoryAttemptStore)
+	}{
+		{
+			name: "NoStreakStore",
+			assert: func(t *testing.T, store *lockout.MemoryAttemptStore) {
+				t.Helper()
+
+				n, err := store.FailureCount(t.Context(), "ada", lockoutNow.Add(-5*time.Minute))
+				require.NoError(t, err)
+				assert.Zero(t, n, "a failure given at now-10m was counted at the policy clock")
+				n, err = store.FailureCount(t.Context(), "ada", lockoutNow.Add(-15*time.Minute))
+				require.NoError(t, err)
+				assert.Equal(t, 1, n)
+			},
+		},
+		{
+			name: "WithStreakStore",
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(10)},
+			assert: func(t *testing.T, store *lockout.MemoryAttemptStore) {
+				t.Helper()
+
+				n, err := store.FailureCount(t.Context(), "ada", lockoutNow.Add(-5*time.Minute))
+				require.NoError(t, err)
+				assert.Zero(t, n, "a failure given at now-10m was counted at the policy clock")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := longRetentionStore(t)
+			p := lockoutWith(t, append([]lockout.Option{
+				lockout.WithAttemptStore(store), lockout.WithSliding(3, 15*time.Minute),
+			}, tt.opts...)...)
+
+			require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow.Add(-10*time.Minute)))
+			tt.assert(t, store)
+		})
+	}
+}
