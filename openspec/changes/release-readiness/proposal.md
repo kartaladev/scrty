@@ -73,7 +73,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
   - `oidc-provider` is delivered before the tag (decided 2026-11-02), so its new capabilities and its breaking changes to existing ports ship in `v0.1.0`;
   - `first-party-sessions` is implemented first, so its session store port, its security-state migration and its session features ship in `v0.1.0` and are summarised in that entry;
   - `close-security-gaps` is implemented before this change's tag (decided 2026-11-01). Its breaking items and security additions are summarised in the first changelog entry, and its supply-chain gate steps (SHA-pinned actions, SBOMs, `govulncheck` blocking) join this change's release gate;
-  - `session-signals` is implemented after `close-security-gaps` and before this change's tag (decided 2026-11-02). It makes `httpsec.ResponseWriter.Flush` required, which would be a breaking change after the tag, and its stream is summarised in the first changelog entry;
+  - `session-signals` is implemented after `close-security-gaps` and before this change's tag (decided 2026-11-02). It makes `httpsec.ResponseWriter.Stream` required (its design chose `Stream` over `Flush`, D1), which would be a breaking change after the tag, and its stream is summarised in the first changelog entry;
   - `trusted-proxy-client-ip` is superseded by `close-security-gaps`;
   - `bff-resource-server` is unaffected, except that it no longer owns CSRF protection.
 - **Dependencies:** `golang.org/x/exp/cmd/gorelease` is added to the `tools` module for the API report.
