@@ -1,7 +1,7 @@
 // The queued sender cases are separate TestXxx functions where their setup
-// differs in kind — a blocking, recording, panicking or concurrency-measuring
-// inner sender, inside or outside a synctest bubble — and tables wherever the
-// rows share one call shape.
+// differs in kind — a blocking, recording, panicking, goroutine-ending or
+// concurrency-measuring inner sender, inside or outside a synctest bubble — and
+// tables wherever the rows share one call shape.
 package notify_test
 
 import (
@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -745,6 +747,563 @@ func TestQueuedSenderRecoversPanic(t *testing.T) {
 	assert.NotContains(t, buf.String(), "inner sender exploded", "the panic's own value is not logged")
 }
 
+// queuedTestBound is how long a goroutine-ending test waits for something that
+// must happen. It bounds the failing run, which would otherwise wait forever.
+const queuedTestBound = 5 * time.Second
+
+// goexitSender ends the goroutine of its first deliveries with runtime.Goexit,
+// which is what t.FailNow does inside a sender and which recover cannot stop.
+// Those deliveries stay in flight together until the test releases them, so a
+// test can decide what happens first. Every later delivery is recorded.
+type goexitSender struct {
+	ending    int64
+	arrived   atomic.Int64
+	allIn     chan struct{}
+	release   chan struct{}
+	once      sync.Once
+	delivered chan string
+
+	// lateDelay is how long a later delivery takes. completed counts the
+	// later deliveries that have finished, so a test can read it the moment
+	// Shutdown returns, and delivered carries their subjects.
+	lateDelay time.Duration
+	completed atomic.Int64
+}
+
+func newGoexitSender(ending int, lateDelay time.Duration) *goexitSender {
+	return &goexitSender{
+		ending:    int64(ending),
+		lateDelay: lateDelay,
+		allIn:     make(chan struct{}),
+		release:   make(chan struct{}),
+		delivered: make(chan string, 16),
+	}
+}
+
+func (s *goexitSender) Send(ctx context.Context, msg notify.Message) error {
+	n := s.arrived.Add(1)
+	if n > s.ending {
+		time.Sleep(s.lateDelay)
+		s.completed.Add(1)
+		s.delivered <- msg.Subject
+
+		return nil
+	}
+
+	if n == s.ending {
+		close(s.allIn)
+	}
+
+	select {
+	case <-s.allIn:
+	case <-ctx.Done():
+	}
+
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+	}
+
+	runtime.Goexit()
+
+	return nil
+}
+
+// end lets the held deliveries end their goroutines. Calling it twice is safe.
+func (s *goexitSender) end() { s.once.Do(func() { close(s.release) }) }
+
+// lockedBuffer lets a test read what a logger wrote while a worker may still be
+// writing, which a failing run can leave happening.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
+}
+
+// TestQueuedSender_WrappedSenderEndsItsGoroutine pins that a delivery whose
+// wrapped sender ends its goroutine is logged as failed and costs the pool
+// nothing, whether it happens in service or during the drain, and that no
+// worker is left running afterwards. It does not run in parallel, so goleak
+// sees only its own goroutines.
+func TestQueuedSender_WrappedSenderEndsItsGoroutine(t *testing.T) {
+	const laterSubject = "later message"
+
+	type testCase struct {
+		name    string
+		workers int
+		// later is how many later messages the row queues, all of which must
+		// have been delivered by the time the final Shutdown returns.
+		later int
+		// act runs once every ending delivery is in flight. It never waits for
+		// a later message: the final Shutdown does that.
+		act    func(t *testing.T, s *notify.QueuedSender, inner *goexitSender)
+		assert func(t *testing.T, shutdownErr error, records string)
+	}
+
+	sendLater := func(t *testing.T, s *notify.QueuedSender) {
+		t.Helper()
+
+		msg := testMessage()
+		msg.Subject = laterSubject
+
+		require.NoError(t, s.Send(t.Context(), msg))
+	}
+
+	// closeQueue begins the shutdown without waiting for it. An already-ended
+	// context makes Shutdown close the queue and return at once, because the
+	// held delivery keeps the drain from having finished.
+	closeQueue := func(t *testing.T, s *notify.QueuedSender) {
+		t.Helper()
+
+		ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
+		cancel()
+
+		require.ErrorIs(t, s.Shutdown(ctx), context.Canceled)
+		require.ErrorIs(t, s.Send(t.Context(), testMessage()), notify.ErrAlreadyShutdown)
+	}
+
+	// drainedAndLogged is the expectation of a row whose ending deliveries are
+	// each logged once, at error, naming nothing of the message.
+	drainedAndLogged := func(ending int) func(t *testing.T, shutdownErr error, records string) {
+		return func(t *testing.T, shutdownErr error, records string) {
+			t.Helper()
+
+			assert.NoError(t, shutdownErr, "shutdown drains and returns no error")
+			assert.Equal(t, ending, strings.Count(records, `"reason":"goexit"`),
+				"each failed delivery is logged once: %s", records)
+			assert.Equal(t, ending, strings.Count(records, `"level":"ERROR"`),
+				"and at error, with nothing else logged: %s", records)
+			assert.NotContains(t, records, testMessage().To, "the record names no recipient")
+			assert.NotContains(t, records, testMessage().Subject, "the record names no subject")
+			assert.NotContains(t, records, testMessage().TextBody, "the record names no body")
+		}
+	}
+
+	endThenSendLater := func(t *testing.T, s *notify.QueuedSender, inner *goexitSender) {
+		t.Helper()
+
+		inner.end()
+		sendLater(t, s)
+	}
+
+	cases := []testCase{
+		{
+			name:    "wrapped sender ends its goroutine",
+			workers: 1,
+			later:   1,
+			act:     endThenSendLater,
+			assert:  drainedAndLogged(1),
+		},
+		{
+			name:    "several workers end their goroutines",
+			workers: 2,
+			later:   1,
+			act:     endThenSendLater,
+			assert:  drainedAndLogged(2),
+		},
+		{
+			name:    "a delivery ends its goroutine during the drain with a message left",
+			workers: 1,
+			later:   1,
+			act: func(t *testing.T, s *notify.QueuedSender, inner *goexitSender) {
+				sendLater(t, s)
+				closeQueue(t, s)
+				inner.end()
+			},
+			assert: drainedAndLogged(1),
+		},
+		{
+			name:    "the only worker ends its goroutine during the drain with two messages left",
+			workers: 1,
+			later:   2,
+			act: func(t *testing.T, s *notify.QueuedSender, inner *goexitSender) {
+				sendLater(t, s)
+				sendLater(t, s)
+				closeQueue(t, s)
+				inner.end()
+			},
+			assert: drainedAndLogged(1),
+		},
+		{
+			name:    "the drain's last delivery ends its goroutine with a message queued behind it",
+			workers: 2,
+			later:   1,
+			act: func(t *testing.T, s *notify.QueuedSender, inner *goexitSender) {
+				sendLater(t, s)
+				closeQueue(t, s)
+				inner.end()
+			},
+			assert: drainedAndLogged(2),
+		},
+		{
+			name:    "the drain's last delivery ends its goroutine with nothing behind it",
+			workers: 1,
+			act: func(t *testing.T, s *notify.QueuedSender, inner *goexitSender) {
+				closeQueue(t, s)
+				inner.end()
+			},
+			assert: drainedAndLogged(1),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer goleak.VerifyNone(t)
+
+			// The bubble's clock moves only when every goroutine is blocked,
+			// so a later delivery is still in flight whenever Shutdown has
+			// returned without waiting for it. goleak looks from outside the
+			// bubble, after every goroutine in it has ended.
+			synctest.Test(t, func(t *testing.T) {
+				var logged lockedBuffer
+
+				inner := newGoexitSender(tc.workers, time.Second)
+
+				s, err := notify.NewQueuedSender(inner,
+					notify.WithQueueWorkers(tc.workers),
+					notify.WithQueueSendTimeout(2*queuedTestBound),
+					notify.WithQueueLogger(slog.New(slog.NewJSONHandler(&logged, nil))),
+				)
+				require.NoError(t, err)
+
+				// Everything is released before goleak looks, whether the
+				// assertions passed or not, so a failing run reports its failure.
+				defer func() {
+					inner.end()
+
+					ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), queuedTestBound)
+					defer cancel()
+
+					_ = s.Shutdown(ctx)
+				}()
+
+				for range tc.workers {
+					require.NoError(t, s.Send(t.Context(), testMessage()))
+				}
+
+				select {
+				case <-inner.allIn:
+				case <-time.After(queuedTestBound):
+					require.FailNow(t, "the deliveries never came to be in flight together")
+				}
+
+				tc.act(t, s, inner)
+
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), queuedTestBound)
+				defer cancel()
+
+				shutdownErr := s.Shutdown(ctx)
+
+				// Read straight after Shutdown returns, with no wait: a
+				// Shutdown that returned before the drain finished leaves a
+				// later message in flight here.
+				assert.Equal(t, int64(tc.later), inner.completed.Load(),
+					"every later message is delivered by the time Shutdown returns")
+
+				for range inner.completed.Load() {
+					assert.Equal(t, laterSubject, <-inner.delivered)
+				}
+
+				tc.assert(t, shutdownErr, logged.String())
+			})
+		})
+	}
+}
+
+// sendCarryingProbe sends one message whose body is a heap allocation that
+// reports through released once the runtime has reclaimed it. It is a function
+// of its own so the caller's frame holds no reference to the allocation.
+//
+// The probe rides in the body rather than in the context's values because
+// delivery bounds the wrapped sender with a timeout: the runtime may keep a
+// stopped timer, and the context it was made from, until its processor next
+// schedules, and that would read as a worker holding the value.
+//
+//go:noinline
+func sendCarryingProbe(t *testing.T, s *notify.QueuedSender, released chan<- struct{}) {
+	t.Helper()
+
+	backing := make([]byte, 256)
+	runtime.AddCleanup(&backing[0], func(chan<- struct{}) { close(released) }, released)
+
+	msg := testMessage()
+	msg.TextBody = unsafe.String(&backing[0], len(backing)) //nolint:gosec // G103: a string over the probed allocation, so the body is what is reclaimed
+
+	require.NoError(t, s.Send(t.Context(), msg))
+}
+
+// TestQueuedSender_IdleWorkerReleasesLastDelivery pins that a worker waiting
+// for its next message keeps nothing of the last one: the message body is a
+// sign-in link, and it may not outlive the delivery.
+func TestQueuedSender_IdleWorkerReleasesLastDelivery(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		workers int
+		assert  func(t *testing.T, released <-chan struct{})
+	}
+
+	collected := func(t *testing.T, released <-chan struct{}) {
+		t.Helper()
+
+		deadline := time.After(queuedTestBound)
+
+		for {
+			runtime.GC()
+
+			select {
+			case <-released:
+				return
+			case <-deadline:
+				assert.Fail(t, "the delivered message is still reachable",
+					"an idle worker held it for %s after its delivery", queuedTestBound)
+
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	cases := []testCase{
+		{name: "a single idle worker", workers: 1, assert: collected},
+		{name: "a pool of idle workers", workers: 3, assert: collected},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			delivered := make(chan struct{}, 1)
+
+			s := newQueued(t, senderFunc(func(context.Context, notify.Message) error {
+				delivered <- struct{}{}
+
+				return nil
+			}), notify.WithQueueWorkers(tc.workers))
+
+			released := make(chan struct{})
+
+			sendCarryingProbe(t, s, released)
+
+			select {
+			case <-delivered:
+			case <-time.After(queuedTestBound):
+				require.FailNow(t, "the message was never delivered")
+			}
+
+			tc.assert(t, released)
+		})
+	}
+}
+
+// goexitHandler ends the goroutine logging a record with the given message, as
+// a log handler calling t.FailNow would.
+type goexitHandler struct{ match string }
+
+func (h goexitHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h goexitHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == h.match {
+		runtime.Goexit()
+	}
+
+	return nil
+}
+
+func (h goexitHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h goexitHandler) WithGroup(string) slog.Handler { return h }
+
+// TestQueuedSender_PoolKeepsItsSize pins that a misbehaving delivery leaves the
+// pool at exactly its configured size: a worker that is lost is replaced even
+// when the log handler reporting it blocks, and a worker that survives is not
+// replaced as well, so no failed message is delivered again.
+func TestQueuedSender_PoolKeepsItsSize(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workers  = 3
+		messages = workers + 16
+	)
+
+	// outcome is what one row observed. settled is the number of completed
+	// deliveries counted before the row released its log handler; finished is
+	// the number counted straight after Shutdown returned, with no wait.
+	type outcome struct {
+		peak     int64
+		settled  int64
+		finished int64
+		seen     map[string]int
+	}
+
+	type testCase struct {
+		name      string
+		misbehave func()
+		// settle is how long the row lets the clock run before it releases
+		// its handler and shuts down; zero shuts down at once, so Shutdown is
+		// what has to wait for the deliveries.
+		settle time.Duration
+		// handler builds the row's log handler and the function that releases
+		// it; nil means a discarding handler.
+		handler func() (slog.Handler, func())
+		assert  func(t *testing.T, o outcome)
+	}
+
+	// exactlyConfigured builds one row's expectation: the most deliveries ever
+	// in flight together equal the configured pool size, neither short of it
+	// (a lost worker) nor over it (a worker replaced that was still alive), and
+	// the wrapped sender saw every message exactly once, so none was redelivered.
+	exactlyConfigured := func(t *testing.T, o outcome) {
+		t.Helper()
+
+		assert.Equal(t, int64(workers), o.peak, "the pool runs exactly its configured number of deliveries")
+		assert.Len(t, o.seen, messages, "every message reached the wrapped sender")
+		assert.Equal(t, int64(messages-workers), o.finished,
+			"every delivery has completed by the time Shutdown returns")
+
+		for subject, n := range o.seen {
+			assert.Equal(t, 1, n, "%s reached the wrapped sender once", subject)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:      "deliveries end their goroutines",
+			misbehave: runtime.Goexit,
+			assert:    exactlyConfigured,
+		},
+		{
+			name:      "deliveries panic",
+			misbehave: func() { panic("inner sender exploded") },
+			assert:    exactlyConfigured,
+		},
+		{
+			name:      "the log handler ends the goroutine reporting a lost worker",
+			misbehave: runtime.Goexit,
+			handler: func() (slog.Handler, func()) {
+				return goexitHandler{match: "notify: sender ended its goroutine while delivering"}, func() {}
+			},
+			assert: exactlyConfigured,
+		},
+		{
+			name:      "a blocking log handler does not shrink the pool",
+			misbehave: runtime.Goexit,
+			settle:    time.Minute,
+			handler: func() (slog.Handler, func()) {
+				h := &blockingHandler{
+					match:   "notify: sender ended its goroutine while delivering",
+					entered: make(chan struct{}),
+					release: make(chan struct{}),
+				}
+
+				return h, func() { close(h.release) }
+			},
+			assert: func(t *testing.T, o outcome) {
+				t.Helper()
+
+				assert.Equal(t, int64(messages-workers), o.settled,
+					"every message the failed deliveries left behind is delivered while the handler still blocks")
+				exactlyConfigured(t, o)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				var (
+					calls, concurrent, peak, settled atomic.Int64
+					mu                               sync.Mutex
+				)
+
+				seen := map[string]int{}
+
+				inner := senderFunc(func(_ context.Context, msg notify.Message) error {
+					mu.Lock()
+					seen[msg.Subject]++
+					mu.Unlock()
+
+					if calls.Add(1) <= workers {
+						tc.misbehave()
+					}
+
+					n := concurrent.Add(1)
+
+					for {
+						p := peak.Load()
+						if n <= p || peak.CompareAndSwap(p, n) {
+							break
+						}
+					}
+
+					time.Sleep(100 * time.Millisecond)
+					concurrent.Add(-1)
+					settled.Add(1)
+
+					return nil
+				})
+
+				handler := slog.DiscardHandler
+
+				release := func() {}
+
+				if tc.handler != nil {
+					handler, release = tc.handler()
+				}
+
+				s, err := notify.NewQueuedSender(inner,
+					notify.WithQueueWorkers(workers),
+					notify.WithQueueLogger(slog.New(handler)),
+				)
+				require.NoError(t, err)
+
+				for i := range messages {
+					msg := testMessage()
+					msg.Subject = fmt.Sprintf("message %d", i)
+
+					require.NoError(t, s.Send(t.Context(), msg))
+				}
+
+				// Let the clock run far past every delivery before the handler
+				// is released, so a worker held by it shows as undelivered mail.
+				time.Sleep(tc.settle)
+
+				settledBefore := settled.Load()
+
+				release()
+
+				require.NoError(t, s.Shutdown(context.WithoutCancel(t.Context())))
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				tc.assert(t, outcome{
+					peak:     peak.Load(),
+					settled:  settledBefore,
+					finished: settled.Load(),
+					seen:     seen,
+				})
+			})
+		})
+	}
+}
+
 func TestQueuedSenderWorkers(t *testing.T) {
 	t.Parallel()
 
@@ -813,15 +1372,70 @@ func swapDefaultLogger(t *testing.T, l *slog.Logger) func() {
 func TestQueuedSenderReportsDropsByDefault(t *testing.T) {
 	const body = "here is your single-use sign-in link"
 
+	// run provokes the failure inside a synctest bubble and returns the error
+	// Send gave for it.
 	type testCase struct {
 		name   string
 		opts   []notify.QueuedOption
+		run    func(t *testing.T, opts []notify.QueuedOption) error
 		assert func(t *testing.T, logged string, err error)
+	}
+
+	// dropOnFullQueue fills the only worker and the queue of one, so the third
+	// message has nowhere to go.
+	dropOnFullQueue := func(t *testing.T, opts []notify.QueuedOption) error {
+		t.Helper()
+
+		inner := &blockingSender{release: make(chan struct{})}
+
+		msg := testMessage()
+		msg.TextBody = body
+
+		opts = append([]notify.QueuedOption{
+			notify.WithQueueWorkers(1),
+			notify.WithQueueMaxMessages(1),
+		}, opts...)
+
+		s, err := notify.NewQueuedSender(inner, opts...)
+		require.NoError(t, err)
+
+		require.NoError(t, s.Send(t.Context(), msg))
+		synctest.Wait()
+		require.Equal(t, int64(1), inner.inflight.Load())
+		require.NoError(t, s.Send(t.Context(), msg))
+
+		err = s.Send(t.Context(), msg)
+
+		close(inner.release)
+		require.NoError(t, s.Shutdown(context.WithoutCancel(t.Context())))
+
+		return err
+	}
+
+	// endGoroutine has the wrapped sender end its goroutine while delivering.
+	endGoroutine := func(t *testing.T, opts []notify.QueuedOption) error {
+		t.Helper()
+
+		msg := testMessage()
+		msg.TextBody = body
+
+		s, err := notify.NewQueuedSender(senderFunc(func(context.Context, notify.Message) error {
+			runtime.Goexit()
+
+			return nil
+		}), append([]notify.QueuedOption{notify.WithQueueWorkers(1)}, opts...)...)
+		require.NoError(t, err)
+
+		require.NoError(t, s.Send(t.Context(), msg))
+		require.NoError(t, s.Shutdown(context.WithoutCancel(t.Context())))
+
+		return nil
 	}
 
 	cases := []testCase{
 		{
 			name: "a drop is reported with no logger configured",
+			run:  dropOnFullQueue,
 			assert: func(t *testing.T, logged string, err error) {
 				require.ErrorIs(t, err, notify.ErrQueueFull)
 				assert.Contains(t, logged, "queue",
@@ -833,9 +1447,21 @@ func TestQueuedSenderReportsDropsByDefault(t *testing.T) {
 		{
 			name: "silence is available but must be asked for",
 			opts: []notify.QueuedOption{notify.WithQueueLogger(slog.New(slog.DiscardHandler))},
+			run:  dropOnFullQueue,
 			assert: func(t *testing.T, logged string, err error) {
 				require.ErrorIs(t, err, notify.ErrQueueFull)
 				assert.Empty(t, logged, "a supplied discarding logger writes nothing")
+			},
+		},
+		{
+			name: "an ended goroutine is reported with no logger configured",
+			run:  endGoroutine,
+			assert: func(t *testing.T, logged string, err error) {
+				require.NoError(t, err)
+				assert.Contains(t, logged, "ended its goroutine",
+					"a lost delivery is reported without configuration")
+				assert.Contains(t, logged, "goexit", "with the fixed reason")
+				assert.NotContains(t, logged, body, "and no message body")
 			},
 		},
 	}
@@ -848,30 +1474,7 @@ func TestQueuedSenderReportsDropsByDefault(t *testing.T) {
 			defer restore()
 
 			synctest.Test(t, func(t *testing.T) {
-				inner := &blockingSender{release: make(chan struct{})}
-
-				msg := testMessage()
-				msg.TextBody = body
-
-				opts := append([]notify.QueuedOption{
-					notify.WithQueueWorkers(1),
-					notify.WithQueueMaxMessages(1),
-				}, tc.opts...)
-
-				s, err := notify.NewQueuedSender(inner, opts...)
-				require.NoError(t, err)
-
-				// One message occupies the only worker, the next fills the
-				// queue of one, and the third has nowhere to go.
-				require.NoError(t, s.Send(t.Context(), msg))
-				synctest.Wait()
-				require.Equal(t, int64(1), inner.inflight.Load())
-				require.NoError(t, s.Send(t.Context(), msg))
-
-				err = s.Send(t.Context(), msg)
-
-				close(inner.release)
-				require.NoError(t, s.Shutdown(context.WithoutCancel(t.Context())))
+				err := tc.run(t, tc.opts)
 
 				tc.assert(t, buf.String(), err)
 			})

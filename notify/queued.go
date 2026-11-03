@@ -37,6 +37,12 @@ type QueuedSender struct {
 	// Shutdown call waits on it, so a later call waits for the same drain.
 	drained chan struct{}
 
+	// wg counts the workers, replacements included, and its reaching zero is
+	// what closes drained. A replacement is only ever added by a worker that
+	// has not yet been marked done, so the count cannot reach zero and rise
+	// again while the watcher in NewQueuedSender waits on it.
+	wg sync.WaitGroup
+
 	// mu guards shutdown and the queue channel together: a send holds it for
 	// reading while it writes to the channel, and Shutdown holds it for
 	// writing while it flips the flag and closes the channel. A send therefore
@@ -110,16 +116,14 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error) 
 		drained: make(chan struct{}),
 	}
 
-	var wg sync.WaitGroup
-
 	for range cfg.workers {
-		wg.Go(s.work)
+		s.wg.Go(s.work)
 	}
 
 	// One watcher turns the workers' end into a channel every Shutdown can
 	// select on. It ends with the workers.
 	go func() {
-		wg.Wait()
+		s.wg.Wait()
 		close(s.drained)
 	}()
 
@@ -185,11 +189,13 @@ func WithQueueSendTimeout(d time.Duration) QueuedOption {
 // slog.Default, captured when the sender is built, so a consumer who
 // configures nothing still hears about mail that was never delivered.
 //
-// Records report a dropped message, a failed delivery and a panic in the
-// wrapped sender. None of them carries the message body, the subject or the
-// recipient; a failed delivery or a recovered panic carries a fixed reason and
-// a Go type in place of the inner sender's own error text or panic value — a
-// consumer who wants that detail logs it inside their own Sender.
+// Records report a dropped message, a failed delivery, a panic in the wrapped
+// sender and a wrapped sender that ended its goroutine. None of them carries
+// the message body, the subject or the recipient; a failed delivery or a
+// recovered panic carries a fixed reason and a Go type in place of the inner
+// sender's own error text or panic value, and an ended goroutine carries only a
+// fixed reason, since it leaves no value to describe — a consumer who wants that
+// detail logs it inside their own Sender.
 //
 // Each of those is a sign-in link that never arrives, and Send returned nil
 // long before, so a record discarded here is a failure nobody learns of at
@@ -264,16 +270,61 @@ func (s *QueuedSender) enqueue(ctx context.Context, msg Message) error {
 	}
 }
 
-// work is one worker's loop. It ends when the queue is closed and drained.
+// work is one worker's loop. It ends when the queue is closed and drained, or
+// when a delivery ends its goroutine, in which case another worker takes over.
+//
+// recover cannot stop runtime.Goexit, which is what t.FailNow calls, so such a
+// delivery runs this deferred check on its way out. The check sits here rather
+// than in deliver because a delivery that panicked returns from deliver
+// normally: only a worker that is really going away reaches it with the loop
+// unfinished, so a recovered panic can never start a second worker.
+//
+// The replacement starts first, for two reasons. It is added to the wait group
+// before the dying worker is marked done, which happens when this function has
+// returned, so the count stays above zero and drained cannot close early even
+// when this is the last worker in the middle of the drain; a replacement that
+// finds the queue closed drains what is left and returns like any other worker.
+// And it starts before the log call, so a log handler that blocks or ends the
+// goroutine in turn cannot shrink the pool.
+//
+// The message is lost, as a panicking delivery's is; it is not retried. The
+// record carries the fixed reason "goexit" and nothing from the inner sender.
 func (s *QueuedSender) work() {
-	for q := range s.queue {
-		s.deliver(q)
+	var (
+		current  queued
+		finished bool
+	)
+
+	defer func() {
+		if finished {
+			return
+		}
+
+		s.wg.Go(s.work)
+
+		s.logger.LogAttrs(current.ctx, slog.LevelError,
+			"notify: sender ended its goroutine while delivering",
+			slog.String("reason", "goexit"))
+	}()
+
+	for current = range s.queue {
+		s.deliver(current)
+
+		// The deferred check reads current only when deliver did not return,
+		// so a delivered message is dropped here: its body is a live
+		// credential and its context carries the request's values, and a
+		// worker idling on the next receive must not keep either.
+		current = queued{}
 	}
+
+	finished = true
 }
 
 // deliver sends one message, bounded by the send timeout, and never lets a
-// failure or a panic take the worker with it. A panicking delivery is logged
-// and the message is lost; it is not retried.
+// failure or a panic of the wrapped sender take the worker with it. A panicking
+// delivery is logged and the message is lost; it is not retried. A delivery
+// that ends its goroutine does take the worker with it, since nothing can stop
+// that, and work replaces the worker.
 //
 // Neither record carries the inner sender's own text: a failure is logged
 // through [diag.Failure] (reason "send"), and a recovered panic is logged as
