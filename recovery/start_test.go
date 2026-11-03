@@ -118,7 +118,14 @@ func TestRecoverer_Start(t *testing.T) {
 				d.ID = ""
 				f.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(d, nil)
 			},
-			assert: sendsNothing,
+			assert: func(t *testing.T, f *fixture, r *recovery.Recoverer, run *startRun) {
+				sendsNothing(t, f, r, run)
+				// Written at ERROR by the guard itself. Without it the code store
+				// would refuse the empty subject, and the record would be an
+				// issue failure instead.
+				assert.Regexp(t, `level=ERROR msg="recovery: start failed: the resolved account carries no user reference"`, f.logs.String())
+				assert.NotContains(t, f.logs.String(), "token-issue")
+			},
 		},
 		{
 			name: "a lookup failure sends nothing and is logged",

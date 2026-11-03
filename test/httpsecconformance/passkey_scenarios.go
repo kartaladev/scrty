@@ -259,7 +259,7 @@ func newPasskeyClient(t *testing.T, spec ChainSpec, send func(RequestSpec) Resul
 
 // bearer is the header of a request made as the session sid.
 func bearer(sid string) map[string]string {
-	return map[string]string{"Authorization": "Bearer " + issuedTokenFor(Username, sid)}
+	return map[string]string{"Authorization": "Bearer " + issuedTokenFor(string(UserID), sid)}
 }
 
 // bearerToken is the header of a request made with the credential token.
@@ -1014,7 +1014,7 @@ func passkeyEnrolmentOnlyUserRegistersWithEmailedCode() Scenario {
 			bound := spec.Effects.Recovery.LoadSession(t, spec.Effects.SessionID)
 			assert.Equal(t, session.MFAPending, bound.MFA, "the confirmed passkey moves the session on to its proof")
 
-			verified := c.proveWithPasskey(issuedTokenFor(Username, spec.Effects.SessionID))
+			verified := c.proveWithPasskey(issuedTokenFor(string(UserID), spec.Effects.SessionID))
 			credential := accessTokenOf(t, verified)
 
 			full := sessionOfToken(t, spec.Effects, credential)

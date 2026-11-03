@@ -187,7 +187,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 	resolvingSession := func(_ *testing.T, h *authHarness, saved *savedSessions) {
 		h.expectVerified()
 		h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
-		h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+		h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
 			Return(storedUser(), nil).AnyTimes()
 		h.expectSaved(saved, nil)
 		h.acceptsActivityWriteBack()
@@ -223,7 +223,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				live := owingPasswordChange()
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(live, nil).AnyTimes()
-				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+				h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
 					Return(storedUser(), nil).AnyTimes()
 				h.expectSaved(saved, nil)
 				h.acceptsActivityWriteBack()
@@ -275,7 +275,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				enc := fastReuseEncoder(t)
 				store := newPasswordReuseStore(&identity.Details{
 					ID:       "u-1",
-					Username: testSubject,
+					Username: testUsername,
 					Password: mustEncodeReuse(t, enc, reuseCurrentPassword),
 				})
 				history := newPasswordReuseHistory()
@@ -286,7 +286,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				return func(ex *httpsec.Exchange) error {
 					*ran = true
 
-					details, err := store.LoadByUsername(ex.Context(), testSubject)
+					details, err := store.LoadByUsername(ex.Context(), testUsername)
 					if err != nil {
 						return err
 					}
@@ -329,7 +329,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				enc := fastReuseEncoder(t)
 				store := newPasswordReuseStore(&identity.Details{
 					ID:       "u-1",
-					Username: testSubject,
+					Username: testUsername,
 					Password: mustEncodeReuse(t, enc, reuseCurrentPassword),
 				})
 
@@ -338,7 +338,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				return func(ex *httpsec.Exchange) error {
 					*ran = true
 
-					details, err := store.LoadByUsername(ex.Context(), testSubject)
+					details, err := store.LoadByUsername(ex.Context(), testUsername)
 					if err != nil {
 						return err
 					}
@@ -665,7 +665,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			name:    "a successful change clears the principal's username in the login store",
 			options: login,
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
 			},
 			change: changes, request: post, assert: succeeded,
 		},
@@ -678,8 +678,8 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 				}
 			},
 			expect: func(h *authHarness, other *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
-				other.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
+				other.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
 			},
 			change: changes, request: post, assert: succeeded,
 		},
@@ -692,7 +692,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 				}
 			},
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
 			},
 			change: changes, request: post, assert: succeeded,
 		},
@@ -719,7 +719,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 				}
 			},
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(2)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(2)
 			},
 			change: changes, request: post, assert: succeeded,
 		},
@@ -738,7 +738,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 				}
 			},
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(2)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(2)
 			},
 			change: changes, request: post, assert: succeeded,
 		},
@@ -748,7 +748,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			name:    "a change function that replaces the context cannot change the username cleared",
 			options: login,
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
 			},
 			change: func(ex *httpsec.Exchange) error {
 				ex.SetContext(identity.WithPrincipal(ex.Context(), &identity.Principal{Username: "mallory"}))
@@ -762,7 +762,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			name:    "a change function that drops the principal still has the original username cleared",
 			options: login,
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
 			},
 			change: func(ex *httpsec.Exchange) error {
 				ex.SetContext(context.Background())
@@ -783,7 +783,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			name:    "a client that hangs up after changing its password is still cleared",
 			options: login,
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).
 					DoAndReturn(func(ctx context.Context, _ string) error {
 						if ctx.Err() != nil {
 							return fmt.Errorf("cleared on a cancelled context: %w", ctx.Err())
@@ -819,7 +819,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			name:    "a session that cannot be saved after the change is still cleared",
 			options: login,
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).Return(nil).Times(1)
 			},
 			change: changes, request: post,
 			saveErr: errSaveFailed,
@@ -866,7 +866,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			name:    "a clearing that fails is logged and the consumer's response stands",
 			options: login,
 			expect: func(h *authHarness, _ *MockAttemptStore) {
-				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).
+				h.attempts.EXPECT().Reset(gomock.Any(), testUsername).
 					Return(errors.New("db: column secret_hint=hunter2")).Times(1)
 			},
 			change: changes, request: post,
@@ -894,7 +894,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 					})
 				}
 				cleared[0].Attrs(func(a slog.Attr) bool {
-					assert.NotEqual(t, testSubject, a.Value.String(), "the username reached the log")
+					assert.NotEqual(t, testUsername, a.Value.String(), "the username reached the log")
 
 					return true
 				})
@@ -914,7 +914,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			h := newAuthHarness(t)
 			h.expectVerified()
 			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
-			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(user, nil).AnyTimes()
+			h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(user, nil).AnyTimes()
 			h.expectSaved(&savedSessions{}, tc.saveErr)
 			h.acceptsActivityWriteBack()
 
@@ -997,7 +997,7 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 	store := must.Must(lockout.NewMemoryAttemptStore())
 	now := time.Now()
 	for i := range 7 {
-		require.NoError(t, store.RecordFailure(t.Context(), testSubject, now.Add(-time.Duration(i)*time.Second)))
+		require.NoError(t, store.RecordFailure(t.Context(), testUsername, now.Add(-time.Duration(i)*time.Second)))
 	}
 
 	lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(store))
@@ -1007,7 +1007,7 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 
 	h.expectVerified()
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
-	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil).AnyTimes()
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil).AnyTimes()
 	h.expectSaved(&savedSessions{}, nil)
 	h.acceptsActivityWriteBack()
 	h.expectAuthenticated(testPrincipal())
@@ -1033,7 +1033,7 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 	require.NoError(t, serve(t, chain, changePasswordRequest(t.Context(), http.MethodPost, true)).err)
 
 	got := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath,
-		"username="+testSubject+"&password=the-new-one"))
+		"username="+testUsername+"&password=the-new-one"))
 
 	require.NoError(t, got.err, "the new password was refused for guesses at the old one")
 }

@@ -45,7 +45,7 @@ func statelessAuthentication() httpsec.Option {
 	return httpsec.RegisterInterceptor(
 		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
 			ex.Authentication = &authenticate.Authentication{
-				Principal: &identity.Principal{ID: "u-1", Username: testSubject},
+				Principal: &identity.Principal{ID: "u-1", Username: testUsername},
 				Time:      time.Now(),
 			}
 
@@ -85,7 +85,7 @@ func TestLogout(t *testing.T) {
 			name: "an authenticated POST revokes the session's family and answers 200 empty",
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
-				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+				h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
 					Return(storedUser(), nil).AnyTimes()
 
 				// The session is there for the logout and gone afterwards, so

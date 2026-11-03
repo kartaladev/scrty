@@ -38,6 +38,8 @@ func (fixedTokens) Verify(context.Context, string) (*token.Claims, error) {
 	return nil, token.ErrInvalid
 }
 
+func (fixedTokens) SubjectMode() token.SubjectMode { return token.SubjectUserID }
+
 var _ token.Generator = fixedTokens{}
 
 // TestLoginOwnLimiterUnderRedisFactory pins that an endpoint given its own

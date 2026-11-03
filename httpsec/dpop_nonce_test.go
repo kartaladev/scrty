@@ -1101,7 +1101,7 @@ func TestDPoP_StaleNonceRefreshesOnlyForAcceptedProofs(t *testing.T) {
 	}
 	deletedToken := func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
 		sid := w.session(key.jkt)
-		tok, err := w.gen.GenerateWith(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject},
+		tok, err := w.gen.GenerateWith(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testUsername},
 			token.WithConfirmation(token.Confirmation{JKT: key.jkt}))
 		require.NoError(t, err)
 		require.NoError(t, w.sessions.Delete(t.Context(), sid))

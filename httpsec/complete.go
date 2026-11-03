@@ -3,6 +3,8 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"mime"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -133,6 +136,54 @@ func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
 	return signedTokens(g)
 }
 
+// errNoUserIdentifier is the cause of a login whose principal has no user
+// identifier. It wraps token.ErrNoSubject in every mode, so a consumer matches one
+// error whichever way their chain reads a credential.
+var errNoUserIdentifier = fmt.Errorf("%s: %w", textNoUserIdentifier, token.ErrNoSubject)
+
+// textNoUserIdentifier is the fixed text such a login fails with.
+const textNoUserIdentifier = "httpsec: the login's principal has no user identifier"
+
+// requireUserIdentifier fails a login whose principal has no user identifier.
+//
+// A session records its user by that identifier, and an empty one names no one
+// (ownsSession), so storing it would leave a session no request can use and no
+// revocation can find. A provider that returns only a username, or no principal,
+// is the consumer's wiring fault, so this is an issuing failure, answered 500 as a
+// generator's token.ErrNoSubject is, not a refusal of the client's credential. No
+// option relaxes it: there is no session to give such a login.
+//
+// The refusal also writes one sampled ERROR record of fixed text (deps.log, in
+// the window of the chain's refusal logs), because the default error handler
+// answers the status alone and nothing else would tell the consumer their
+// provider is miswired. The record names no username, identifier or provider
+// text. A component that refused the principal before it reached the tail
+// (a magic link's or a recovery's own manager) wrote its own record, which
+// stands.
+func requireUserIdentifier(ctx context.Context, deps loginTailDeps, in *policy.Input) error {
+	if in.User != "" {
+		return nil
+	}
+
+	if deps.log != nil && deps.now != nil {
+		logSampled(ctx, deps.sampler, deps.log, slog.LevelError, deps.now(),
+			loginFlow+sampleKeySeparator+reasonNoUserIdentifier, msgLoginNoUserIdentifier)
+	}
+
+	return issuingFailure(errNoUserIdentifier, textNoUserIdentifier)
+}
+
+const (
+	// loginFlow and reasonNoUserIdentifier name the sampler key of the record
+	// requireUserIdentifier writes.
+	loginFlow              = "login"
+	reasonNoUserIdentifier = "no-user-identifier"
+
+	// msgLoginNoUserIdentifier is that record's fixed text.
+	msgLoginNoUserIdentifier = "httpsec: a login's principal carries no user identifier; " +
+		"the authentication provider must return one"
+)
+
 // loginTailDeps is what the login tail needs to end a login.
 type loginTailDeps struct {
 	engine   *policy.Engine
@@ -151,6 +202,14 @@ type loginTailDeps struct {
 
 	// enforced holds the challenge kinds something on the chain enforces.
 	enforced map[policy.ChallengeKind]bool
+
+	// log, sampler and now write the sampled record of a login refused for a
+	// principal with no user identifier (requireUserIdentifier): the chain's
+	// logger and refusal-log sampler, and its clock. A nil log or clock writes
+	// no record, which only a test seam leaves it.
+	log     *slog.Logger
+	sampler *logsample.Sampler
+	now     func() time.Time
 
 	// challengeMethods looks up the methods a raised challenge offers: the
 	// chain's challengeMethods, handed to each first factor at assembly, so a
@@ -359,6 +418,10 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // errors.As, so the status it maps to is unchanged. A policy's reason is the
 // policy's own, and is returned as itself.
 //
+// A principal with no user identifier fails the login before anything else, in
+// every mode (requireUserIdentifier): nothing is cancelled, decided, issued or
+// stored for it.
+//
 // When the chain may hold account recoveries, the user's held recoveries are
 // cancelled first, as soon as the first factor has authenticated: before the
 // policy phase and before the session is built. A login the policy then
@@ -405,6 +468,10 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // not set, so every later request matches the stored values again. Zero
 // evidence, which every other first factor passes, records nothing.
 func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...session.CreateOption) (string, error) {
+	if err := requireUserIdentifier(ex.Context(), deps, in); err != nil {
+		return "", err
+	}
+
 	// A user who completes a first factor can still get into their account,
 	// so a recovery held for it is cancelled here, before the policy phase:
 	// a login the policy denies still showed the user holds their first
@@ -459,7 +526,8 @@ type preparedLogin struct {
 	afterFailures bool
 }
 
-// prepareLogin is the first half of completeLogin: it decides the
+// prepareLogin is the first half of completeLogin: it fails a principal with no
+// user identifier (requireUserIdentifier), decides the
 // post-authentication phase for in (or acts on deps.decided), refuses a deny,
 // an unenforced challenge and a failed methods lookup, builds the session with
 // opts and the tail's own attributes, marks any challenge on it, and issues
@@ -476,6 +544,10 @@ func prepareLogin(
 	in *policy.Input,
 	opts ...session.CreateOption,
 ) (*preparedLogin, error) {
+	if err := requireUserIdentifier(ctx, deps, in); err != nil {
+		return nil, err
+	}
+
 	d := policy.Decision{Outcome: policy.Allow}
 
 	switch {

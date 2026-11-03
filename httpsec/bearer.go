@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -48,6 +49,10 @@ type bearerToken struct {
 	// dpop is the chain's DPoP verifier, handed over at assembly, and nil
 	// while DPoP is off.
 	dpop *dpopVerifier
+
+	// subject is what the token's subject is read as: the user identifier by
+	// default, and the username under WithBearerUsernameSubject.
+	subject token.SubjectMode
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -114,7 +119,18 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 
 	// The session's own binding must be the token's, so a token reported
 	// without its cnf (a consumer's Verifier, NewClaims) does not unbind a
-	// bound sign-in. The proof is recorded only then, last.
+	// bound sign-in. The subject is judged next, so a wrong sender is answered
+	// as that whatever the token names. The proof is recorded only then, last,
+	// so a refused subject consumes none.
+	//
+	// All of it is judged here rather than after resolution because this step
+	// is also the only one a session a late renewal may recover goes through:
+	// resolution returns early for it and hands this step on to the renewal
+	// endpoint (session_renewal.go), so a token naming another user could
+	// otherwise renew that session. That holds in either subject mode, so under
+	// usernames the user is loaded here, and the record handed to resolution.
+	subject := claims.Subject()
+
 	resolver := b.resolver
 	resolver.admit = func(ex *Exchange, s *session.Session) error {
 		if s.KeyBinding.JKT != cnf.JKT {
@@ -129,19 +145,64 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 			return ErrCertificateBinding
 		}
 
+		admitted, err := b.admitSubject(ex.Context(), subject, s)
+		if err != nil {
+			return err
+		}
+
+		resolver.admitted = admitted
+
 		return recordProof(ex.Context(), b.dpop, proof)
 	}
 
 	// The session identifier is the token's jti, which is how a token issued at
-	// login finds the session it was issued for. The token's subject is the
-	// username, which is what the user loader is keyed on.
-	if err := resolver.resolve(ex, claims.ID(), lookupByUsername(claims.Subject())); err != nil {
+	// login finds the session it was issued for.
+	if err := resolver.resolve(ex, claims.ID()); err != nil {
 		return err
 	}
 
 	ex.RecordPresentedToken(presented)
 
 	return next(ex)
+}
+
+// admitSubject judges a verified token's subject against the session it names.
+//
+// A token with no subject identifies nobody and is refused in either mode, with
+// no user loaded. By default the subject must be the user reference s records,
+// which needs no load either, and the returned record is nil.
+//
+// Under WithBearerUsernameSubject the subject is a username, which only the user
+// store can resolve. It is loaded here and must be the user s records. The record
+// is returned, so resolution does not load it a second time; a late renewal, whose
+// endpoint reloads by the session's reference, does. A load that fails is answered
+// as resolution answers one (classifyReload).
+//
+// The refusal is ErrAuthenticationRequired and revokes nothing: nothing has been
+// recorded on s, and the session's own user can still use it.
+func (b *bearerToken) admitSubject(ctx context.Context, subject string, s *session.Session) (*identity.Details, error) {
+	if subject == "" {
+		return nil, ErrAuthenticationRequired
+	}
+
+	if b.subject != token.SubjectUsername {
+		if identity.UserID(subject) != s.UserID {
+			return nil, ErrAuthenticationRequired
+		}
+
+		return nil, nil
+	}
+
+	details, err := b.users.LoadByUsername(ctx, subject)
+	if err != nil {
+		return nil, classifyReload(ctx, err)
+	}
+
+	if !ownsSession(s, details) {
+		return nil, ErrAuthenticationRequired
+	}
+
+	return details, nil
 }
 
 // notVerified answers a token the verifier did not accept, with err.
@@ -302,14 +363,19 @@ const (
 // without them a revoked session and a revoked role would both be honoured for
 // the rest of the token's life.
 type BearerTokenDeps struct {
-	// Verifier checks the presented token and reports its claims.
+	// Verifier checks the presented token and reports its claims. A
+	// token.Generator given here is checked against the bearer's subject mode
+	// like any other the chain is given; one hidden behind a verifier that does
+	// not itself implement token.Generator cannot be seen.
 	Verifier token.Verifier
 
 	// Sessions loads the session the token's jti names.
 	Sessions *session.Sessions
 
-	// Users reloads the user the token's subject names, so the roles the
-	// request is judged on are the ones the store holds now.
+	// Users reloads the session's user, so the roles the request is judged on
+	// are the ones the store holds now: by the user reference the session
+	// records, or under WithBearerUsernameSubject by the username the token's
+	// subject names.
 	Users identity.UserLoader
 }
 
@@ -321,6 +387,19 @@ type BearerTokenOption func(*bearerToken) error
 // Default: the scheme DefaultBearerScheme, matched without regard to case, and
 // a token presented with no scheme at all is ignored. Requests carrying another
 // scheme, or no Authorization header, pass through untouched.
+//
+// Default: a token's subject is the user identifier, as token.NewGenerator
+// writes it. A token whose subject is not the user reference its session
+// records, or that has no subject, is refused with ErrAuthenticationRequired,
+// before any user reload and before any DPoP proof is recorded. The session is
+// not revoked, its activity is not recorded and the per-request phase does not
+// run. WithBearerUsernameSubject reads the subject as a username instead. New
+// fails with a configuration error when any token generator the chain is given,
+// the bearer's own Verifier included, reports a mode other than the bearer's
+// (token.Generator.SubjectMode), and when two signed bearers on the chain
+// disagree on the mode, whatever their schemes. A generator outside the chain, or
+// hidden behind a verifier that does not itself implement token.Generator, cannot
+// be seen, and its tokens are refused as above.
 //
 // Refusals and failures are kept apart. A token the verifier rejects
 // (token.ErrInvalid) is refused with authenticate.ErrAuthenticationFailed, a
@@ -385,8 +464,21 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 			if err := requireDep(option, "session manager", d.Sessions); err != nil {
 				return err
 			}
+			if err := requireDep(option, "user loader", d.Users); err != nil {
+				return err
+			}
+			if err := b.checkOtherBearers(c, option); err != nil {
+				return err
+			}
 
-			return requireDep(option, "user loader", d.Users)
+			// A generator given as the verifier is one more generator the chain
+			// is given. One hidden behind a verifier that does not itself implement
+			// token.Generator cannot be seen.
+			if g, ok := d.Verifier.(token.Generator); ok {
+				return checkSubjectGenerator(c, option, "BearerTokenDeps.Verifier", g)
+			}
+
+			return nil
 		})
 
 		c.useSessions(d.Sessions)
@@ -400,6 +492,26 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 
 		return nil
 	}
+}
+
+// checkOtherBearers refuses a chain with another signed bearer that reads the
+// subject differently from b. No generator could agree with both, and a request
+// goes through both when their schemes overlap, so the second would refuse every
+// token the first accepts.
+//
+// It runs in validate, once every option has been applied, so the order of the
+// bearers does not matter.
+func (b *bearerToken) checkOtherBearers(c *config, option string) error {
+	return eachInterceptor(c, func(other *bearerToken) error {
+		if other.subject == b.subject {
+			return nil
+		}
+
+		return newConfigError("%s was enabled twice with different subject modes, one reading the "+
+			"subject as %s and the other as %s, whatever their schemes: no token generator could agree "+
+			"with both; use WithBearerUsernameSubject on both or on neither",
+			option, subjectModeName(b.subject), subjectModeName(other.subject))
+	})
 }
 
 // WithBearerScheme presents tokens under scheme instead.
@@ -438,6 +550,40 @@ func WithBearerScheme(scheme string) BearerTokenOption {
 func WithBearerAllowEmptyScheme() BearerTokenOption {
 	return func(b *bearerToken) error {
 		b.allowEmptyScheme = true
+		return nil
+	}
+}
+
+// WithBearerUsernameSubject reads a token's subject as a username, and reloads
+// the user by that username.
+//
+// Default: the subject is the user identifier, the token must name the user
+// reference its session records, and the user is reloaded by that reference.
+//
+// It is for a consumer whose tokens carry the name. It must agree with
+// token.WithUsernameSubject on the generator, which New enforces for every
+// generator the chain is given, the bearer's own Verifier included, by failing
+// with a configuration error. It must also agree with
+// authenticate.WithJWTUsernameSubject on any standalone JWT authenticator reading
+// the same tokens, and with a generator hidden behind a verifier that does not
+// itself implement token.Generator, neither of which New can see. Two signed bearers on one chain must agree too,
+// whatever their schemes, or New fails: migrating subjects means one mode at a
+// time.
+//
+// The line it does not cross: the user the username names must own the session,
+// and this is judged once the session has loaded and its key binding has been
+// checked, before any DPoP proof is recorded, on a live session and on one only a
+// late renewal may recover alike. A username since given to someone else is
+// refused rather than authenticating them on the first owner's session, a refused
+// username consumes no proof, and a renamed user's live tokens are refused until they sign
+// in again; that is the cost the default avoids. A token with no subject is refused
+// here too, and a user with no identifier owns no session.
+//
+// A request loads the user once, as under the default, and a late renewal twice:
+// by this username, and by the session's reference.
+func WithBearerUsernameSubject() BearerTokenOption {
+	return func(b *bearerToken) error {
+		b.subject = token.SubjectUsername
 		return nil
 	}
 }

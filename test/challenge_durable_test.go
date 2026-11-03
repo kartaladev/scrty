@@ -46,6 +46,8 @@ func (durableTokens) Verify(context.Context, string) (*token.Claims, error) {
 	return nil, token.ErrInvalid
 }
 
+func (durableTokens) SubjectMode() token.SubjectMode { return token.SubjectUserID }
+
 var _ token.Generator = durableTokens{}
 
 // durableChain builds a chain whose limits are kept by factory, with form login

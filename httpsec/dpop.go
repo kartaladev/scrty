@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"slices"
@@ -274,6 +275,60 @@ func checkBindingGenerator(c *config, option, field string, g token.Generator) e
 	}
 
 	return nil
+}
+
+// checkSubjectGenerator refuses, on a chain with signed bearer tokens, a token
+// generator the endpoint option issues through (named by field) whose tokens the
+// bearer would read differently: every one of them would be refused at runtime.
+//
+// It sits beside checkBindingGenerator rather than inside it because that check
+// returns early with no binding on, and this one applies to every chain. It
+// checks nothing with signed bearer tokens off, since a session-reference chain
+// refuses generators outright and any other reads no token subject. It checks
+// nothing when g is nil, which is the endpoint's own refusal to make, and which
+// includes a nil pointer, whose SubjectMode could not be asked.
+//
+// It runs in validate, once every option has been applied, so the order of the
+// chain's options does not matter.
+func checkSubjectGenerator(c *config, option, field string, g token.Generator) error {
+	if nilcheck.IsNil(g) {
+		return nil
+	}
+
+	return eachInterceptor(c, func(b *bearerToken) error {
+		mode := g.SubjectMode()
+		if mode == b.subject {
+			return nil
+		}
+
+		return newConfigError("%s was given a token generator (%s) whose tokens carry %s as their "+
+			"subject, and EnableBearerToken reads the subject as %s, so the chain would refuse every "+
+			"token it issued; use token.WithUsernameSubject on the generator and "+
+			"WithBearerUsernameSubject on the bearer together, or neither",
+			option, field, subjectModeName(mode), subjectModeName(b.subject))
+	})
+}
+
+// subjectModeName names a subject mode for a configuration error.
+func subjectModeName(mode token.SubjectMode) string {
+	switch mode {
+	case token.SubjectUserID:
+		return "the user identifier"
+	case token.SubjectUsername:
+		return "the username"
+	default:
+		return fmt.Sprintf("subject mode %d", int(mode))
+	}
+}
+
+// checkIssuingGenerator runs both checks every generator a chain issues signed
+// tokens through must pass.
+func checkIssuingGenerator(c *config, option, field string, g token.Generator) error {
+	if err := checkBindingGenerator(c, option, field, g); err != nil {
+		return err
+	}
+
+	return checkSubjectGenerator(c, option, field, g)
 }
 
 // bindingOptions names the enabled options that bind the tokens the chain

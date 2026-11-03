@@ -56,6 +56,10 @@ const testMFACode = "123456"
 // asked to verify a code the endpoint should have refused first, and the
 // limiter the throttle counts failures through.
 type mfaHarness struct {
+	// onReload, when set, runs inside each user reload, which is how a case
+	// races something against a reload.
+	onReload func(context.Context)
+
 	// clock is the time the harness's sessions and its chain share. A case
 	// that moves time advances it; no case sleeps.
 	clock *clockwork.FakeClock
@@ -139,7 +143,7 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 		method:   m,
 		response: mfa.FormField("code", 4<<10),
 		limiter:  NewMockLimiter(ctrl),
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		users:    NewMockUserLoader(ctrl),
 	}
 
@@ -178,11 +182,15 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 				return nil, errMFATokenUnreadable
 			}
 
-			return token.NewClaims(mfaUsername, id), nil
+			return token.NewClaims(string(testMFAUser), id), nil
 		})
 
-	h.users.EXPECT().LoadByUsername(gomock.Any(), mfaUsername).AnyTimes().
-		DoAndReturn(func(context.Context, string) (*identity.Details, error) {
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().
+		DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+			if h.onReload != nil {
+				h.onReload(ctx)
+			}
+
 			return &identity.Details{
 				ID:       testMFAUser,
 				Name:     "Ada Lovelace",

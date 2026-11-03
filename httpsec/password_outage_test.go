@@ -153,7 +153,7 @@ func TestPasswordLoginStoreOutageIsNotACredentialFailure(t *testing.T) {
 		sessions, err := session.New(session.WithStore(must.Must(session.NewMemoryStore())))
 		require.NoError(t, err)
 
-		tokens := NewMockGenerator(gomock.NewController(t))
+		tokens := newMockGenerator(gomock.NewController(t))
 		tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("tok", nil).AnyTimes()
 
 		return httpsec.EnableFormLogin(httpsec.FormLoginDeps{

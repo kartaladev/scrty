@@ -1263,7 +1263,7 @@ func TestHeld(t *testing.T) {
 				httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 					Authenticator: authn, Sessions: sessions,
-					Tokens: NewMockGenerator(gomock.NewController(t)), Attempts: lockoutPolicy.Attempts(),
+					Tokens: newMockGenerator(gomock.NewController(t)), Attempts: lockoutPolicy.Attempts(),
 				}),
 				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: lockoutPolicy.Attempts()}),
 			}, tc.opts...)...)
@@ -1372,7 +1372,7 @@ func TestUnknownUsernameLock(t *testing.T) {
 			chain, err := httpsec.New(append([]httpsec.Option{
 				httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: authn, Sessions: sessions, Tokens: NewMockGenerator(gomock.NewController(t)), Attempts: attempts,
+					Authenticator: authn, Sessions: sessions, Tokens: newMockGenerator(gomock.NewController(t)), Attempts: attempts,
 				}),
 				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: attempts}),
 			}, tc.opts...)...)
@@ -1469,7 +1469,7 @@ func TestUnknownUsernameLockRealAuthenticator(t *testing.T) {
 			chain, err := httpsec.New(
 				httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: authn, Sessions: sessions, Tokens: NewMockGenerator(ctrl), Attempts: attempts,
+					Authenticator: authn, Sessions: sessions, Tokens: newMockGenerator(ctrl), Attempts: attempts,
 				}),
 				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: attempts}),
 			)
@@ -1643,7 +1643,7 @@ func TestLockoutCapWiring(t *testing.T) {
 			if w.form != nil {
 				opts = append(opts, httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 					Authenticator: NewMockAuthenticator(ctrl), Sessions: sessions,
-					Tokens: NewMockGenerator(ctrl), Attempts: w.form,
+					Tokens: newMockGenerator(ctrl), Attempts: w.form,
 				}))
 			}
 

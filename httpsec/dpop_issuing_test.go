@@ -537,7 +537,7 @@ func oidcHandoffEndpointWith(
 
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
-			Verifier: gen, Sessions: h.sessions, Users: NewMockUserLoader(gomock.NewController(t)),
+			Verifier: gen, Sessions: h.sessions, Users: users,
 		}),
 		httpsec.EnableDPoP(d))
 	h.chainOpts = append(h.chainOpts, extra...)

@@ -690,7 +690,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 
 	h := &integrationHarness{
 		sessions: sessions,
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		users:    NewMockUserLoader(ctrl),
 		sender:   &capturingSender{},
 		clock:    clockwork.NewFakeClockAt(time.Date(2026, time.September, 24, 9, 0, 0, 0, time.UTC)),
@@ -779,7 +779,7 @@ func (h *integrationHarness) wireTokens() {
 				return nil, errMFATokenUnreadable
 			}
 
-			return token.NewClaims(integrationAddress, id), nil
+			return token.NewClaims(string(integrationUser), id), nil
 		})
 }
 
@@ -918,6 +918,8 @@ func (h *integrationHarness) verify(t *testing.T, source, accessToken, code stri
 // accessTokenFrom reads the credential a verify response returned.
 func accessTokenFrom(t *testing.T, out served) string {
 	t.Helper()
+
+	require.NotNil(t, out.rec, "no request was served, so there is no credential to read")
 
 	var body verifyBody
 	require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &body))
@@ -1601,7 +1603,7 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 		clock:    clockwork.NewFakeClockAt(time.Now().Truncate(time.Second)),
 		users:    NewMockUserLoader(ctrl),
 		sender:   &capturingSender{},
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		required: &requiredFlag{},
 	}
 	d.required.on.Store(true)
@@ -1667,7 +1669,7 @@ func (d *e2eDeployment) wireTokens() {
 				return nil, errMFATokenUnreadable
 			}
 
-			return token.NewClaims(e2eAddress, id), nil
+			return token.NewClaims(string(e2eUser), id), nil
 		})
 }
 
@@ -2517,7 +2519,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 		clock:    clk,
 		users:    NewMockUserLoader(ctrl),
 		sender:   &capturingSender{},
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		required: &requiredFlag{},
 	}
 	d.wireUsers(t)
@@ -2732,7 +2734,7 @@ func oidcLoginOver(t *testing.T, m *oidc.RelyingParty) httpsec.Option {
 	require.NoError(t, err)
 
 	return httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: m, Handoff: newTestHandoffManager(t)},
-		httpsec.WithOIDCTokens(NewMockGenerator(gomock.NewController(t))),
+		httpsec.WithOIDCTokens(newMockGenerator(gomock.NewController(t))),
 		httpsec.WithOIDCSessions(sessions))
 }
 
@@ -2926,7 +2928,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 	issuing := func(t *testing.T) *MockGenerator {
 		t.Helper()
 
-		g := NewMockGenerator(gomock.NewController(t))
+		g := newMockGenerator(gomock.NewController(t))
 		g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil).AnyTimes()
 
 		return g
@@ -3092,7 +3094,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				sessions, err := session.New()
 				require.NoError(t, err)
 
-				tokens := NewMockGenerator(gomock.NewController(t))
+				tokens := newMockGenerator(gomock.NewController(t))
 				tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("", errFixtureFailure)
 
 				return mfaVerify(t, pendingIn(t, sessions), sessions, acceptingMethod(t), tokens)

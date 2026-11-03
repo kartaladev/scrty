@@ -250,6 +250,26 @@ func TestRecoverer_Verify(t *testing.T) {
 			},
 		},
 		{
+			// The guard is the only thing that stops it: without it the code check
+			// refuses anyway, but only after the user limiter and the code stores
+			// have been asked about an empty reference, which the strict limiter
+			// mock rejects, and with no record of the wiring fault.
+			name: "a user with no reference is refused, and logged, before any limiter or code is touched",
+			setup: func(e *recoverEnv) {
+				d := anaDetails()
+				d.ID = ""
+				e.users.EXPECT().LoadByUsername(gomock.Any(), anaUsername).Return(d, nil)
+			},
+			req: savedAndIssued,
+			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				nothingSpent(t, e, r)
+				assert.Zero(t, e.failures.Load(), "no failure is counted against an empty reference")
+				assert.Zero(t, e.passwordCalls.Load())
+				assert.Regexp(t, `level=ERROR msg="recovery: the resolved account carries no user reference"`, e.logs.String())
+			},
+		},
+		{
 			name: "neither an unknown user nor a known user with a wrong saved code reaches the password check",
 			setup: func(e *recoverEnv) {
 				e.users.EXPECT().LoadByUsername(gomock.Any(), "bob@example.com").Return(nil, identity.ErrUserNotFound)

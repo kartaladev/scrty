@@ -94,6 +94,10 @@ type pwlDeployment struct {
 	signingFails    atomic.Bool
 	loaderOtherUser atomic.Bool
 
+	// loaderNoIdentifier makes LoadByUserID answer, for any user, a record with
+	// no identifier.
+	loaderNoIdentifier atomic.Bool
+
 	// hash is the user's password hash, for form login, and totpClock the
 	// TOTP method's clock.
 	hash      []byte
@@ -153,7 +157,7 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 	d := &pwlDeployment{
 		sessions:          sessions,
 		users:             NewMockUserLoader(ctrl),
-		tokens:            NewMockGenerator(ctrl),
+		tokens:            newMockGenerator(ctrl),
 		verifier:          newPasskeyVerifierStub(t),
 		creds:             passkey.NewMemoryCredentialStore(),
 		handles:           passkey.NewMemoryHandleStore(),
@@ -196,6 +200,13 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 				return nil, errors.New(pwlLoaderCause)
 			}
 
+			if d.loaderNoIdentifier.Load() {
+				out := details()
+				out.ID = ""
+
+				return out, nil
+			}
+
 			if user != e2eUser {
 				return nil, identity.ErrUserNotFound
 			}
@@ -223,7 +234,7 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 				return nil, errMFATokenUnreadable
 			}
 
-			return token.NewClaims(e2eAddress, sid), nil
+			return token.NewClaims(string(e2eUser), sid), nil
 		})
 
 	return d
@@ -952,7 +963,7 @@ func TestPasswordless(t *testing.T) {
 				limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).Times(1)
 				limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 
-				tokens := NewMockGenerator(ctrl)
+				tokens := newMockGenerator(ctrl)
 				tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("consumer-token", nil)
 
 				d.settings = append(d.settings, httpsec.PasswordlessLimiter(limiter), httpsec.PasswordlessTokens(tokens))

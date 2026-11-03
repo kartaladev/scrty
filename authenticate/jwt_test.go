@@ -141,8 +141,30 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:     "a token the verifier accepts yields a principal built from its subject",
+			name:     "Valid token",
+			verifier: verifies(token.NewClaims("u-1", tokenID.String())),
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				require.NotNil(t, got.Principal)
+				assert.Equal(t, identity.UserID("u-1"), got.Principal.ID)
+				assert.Empty(t, got.Principal.Username,
+					"the subject is an identifier by default, and was read as a name too")
+				assert.Equal(t, identity.CredentialsJWT, got.Credentials.Type())
+				assert.True(t, got.PasswordChangedAt.IsZero(),
+					"a bearer token said something about a password it never saw")
+			},
+		},
+		{
+			name:     "Consumer reads the subject as a username",
 			verifier: verifies(token.NewClaims("ada", tokenID.String())),
+			opts: func(t *testing.T, _ *gomock.Controller) []authenticate.JWTOption {
+				t.Helper()
+
+				return []authenticate.JWTOption{authenticate.WithJWTUsernameSubject()}
+			},
 			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
 				t.Helper()
 
@@ -150,9 +172,8 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 				require.NotNil(t, got)
 				require.NotNil(t, got.Principal)
 				assert.Equal(t, "ada", got.Principal.Username)
-				assert.Equal(t, identity.CredentialsJWT, got.Credentials.Type())
-				assert.True(t, got.PasswordChangedAt.IsZero(),
-					"a bearer token said something about a password it never saw")
+				assert.Empty(t, got.Principal.ID,
+					"a username was read as a user identifier")
 			},
 		},
 		{
@@ -210,14 +231,30 @@ func TestJwtAuthenticatorAuthenticate(t *testing.T) {
 			},
 		},
 		{
-			name:     "a verified token with no subject is refused rather than made anonymous",
+			name:     "Token with no subject",
 			verifier: verifies(token.NewClaims("", tokenID.String())),
 			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
 				t.Helper()
 
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, got,
-					"a principal with no username would pass every check that only asks whether someone is authenticated")
+					"a principal naming nobody would pass every check that only asks whether someone is authenticated")
+			},
+		},
+		{
+			name:     "Token with no subject, under the username subject",
+			verifier: verifies(token.NewClaims("", tokenID.String())),
+			opts: func(t *testing.T, _ *gomock.Controller) []authenticate.JWTOption {
+				t.Helper()
+
+				return []authenticate.JWTOption{authenticate.WithJWTUsernameSubject()}
+			},
+			assert: func(t *testing.T, got *authenticate.Authentication, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, got,
+					"a principal naming nobody would pass every check that only asks whether someone is authenticated")
 			},
 		},
 		{

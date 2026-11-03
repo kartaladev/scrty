@@ -216,7 +216,7 @@ func (i *magicLinkInterceptor) check(c *config, option string) error {
 				option)
 		}
 
-		if err := checkBindingGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
+		if err := checkIssuingGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
 			return err
 		}
 	}
@@ -472,6 +472,9 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		issue:             i.issue,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
+		log:               i.log,
+		sampler:           i.sampler,
+		now:               i.now,
 		challengeMethods:  i.challengeMethods,
 		cancelHeld:        i.cancelHeld,
 		csrfToken:         i.csrfToken,

@@ -80,7 +80,7 @@ func (w *lateRenewalWorld) signIn(jkt string) string {
 		return s.ID
 	}
 
-	tok, err := w.gen.GenerateWith(w.t.Context(), s.ID, &identity.Principal{ID: "u-1", Username: testSubject},
+	tok, err := w.gen.GenerateWith(w.t.Context(), s.ID, &identity.Principal{ID: "u-1", Username: testUsername},
 		token.WithConfirmation(token.Confirmation{JKT: jkt}))
 	require.NoError(w.t, err)
 

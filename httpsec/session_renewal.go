@@ -326,10 +326,11 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 	}
 
 	// The bearer judged the credential's binding and the proof only as far
-	// as it could without the session; the rest is judged on the session
-	// loaded here, before anything is rotated. A refusal that reads as a
-	// missing session, a sender holding a valid credential it may not use,
-	// is charged as a refused load is.
+	// as it could without the session; the rest, the token's subject with it,
+	// is judged on the session loaded here, before anything is rotated. A
+	// refusal that reads as a missing session, a sender holding a valid
+	// credential it may not use or naming someone else, is charged as a
+	// refused load is.
 	if ex.admitRenewal != nil {
 		if err := ex.admitRenewal(ex, s); err != nil {
 			if ex.chargeRenewal != nil && errors.Is(err, ErrAuthenticationRequired) {

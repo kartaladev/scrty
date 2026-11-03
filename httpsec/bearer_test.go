@@ -244,7 +244,7 @@ func TestBearerSessionResolution(t *testing.T) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
 				h.acceptsFirstPresentation()
-				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+				h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
 					Return(nil, identity.ErrUserNotFound)
 			},
 			assert: unauthenticated,
@@ -255,7 +255,7 @@ func TestBearerSessionResolution(t *testing.T) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
 				h.acceptsFirstPresentation()
-				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+				h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
 					Return(nil, errUsersDown)
 			},
 			// A dependency failure, not a refusal: an outage of the user store
@@ -398,7 +398,7 @@ func TestBearerPerRequestPhase(t *testing.T) {
 			h := newAuthHarness(t)
 			h.expectVerified()
 			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(loaded, nil)
-			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
+			h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
 				Return(storedUser(), nil).AnyTimes()
 			h.acceptsActivityWriteBack()
 
@@ -432,7 +432,7 @@ func TestBearerPerRequestInput(t *testing.T) {
 	h := newAuthHarness(t)
 	h.expectVerified()
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
-	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(stored, nil)
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(stored, nil)
 	h.acceptsActivityWriteBack()
 
 	s := serveBearer(t, h, engineOf(t, recorder), bearerRequest(t.Context(), "Bearer abc.def.ghi"))
@@ -440,7 +440,7 @@ func TestBearerPerRequestInput(t *testing.T) {
 
 	require.NotNil(t, seen)
 	assert.Equal(t, identity.UserID("u-1"), seen.User)
-	assert.Equal(t, testSubject, seen.Username)
+	assert.Equal(t, testUsername, seen.Username)
 	require.NotNil(t, seen.Principal)
 	require.NotNil(t, seen.Session)
 	assert.Equal(t, testJTI, seen.Session.ID)
@@ -507,7 +507,7 @@ func TestBearerPerRequestSeesSatisfiedSecondFactor(t *testing.T) {
 			h := newAuthHarness(t)
 			h.expectVerified()
 			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(loaded, nil)
-			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+			h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 			h.acceptsActivityWriteBack()
 
 			s := serveBearer(t, h, engineOf(t, recorder), bearerRequest(t.Context(), "Bearer abc.def.ghi"))
@@ -739,7 +739,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				Return(token.NewClaims(testSubject, s.ID), nil)
 
 			users := NewMockUserLoader(ctrl)
-			users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+			users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 
 			chain, err := httpsec.New(append([]httpsec.Option{
 				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
@@ -798,7 +798,7 @@ func TestBearerMarksEnrolmentSaveFails(t *testing.T) {
 	h.expectVerified()
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
 	h.acceptsFirstPresentation()
-	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 	h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errStore).AnyTimes()
 
 	out := serveBearerOn(t, h, challengingIn(t, policy.PerRequest, policy.ChallengeMFAEnrolment),
@@ -950,7 +950,7 @@ type bearerMode int
 
 const (
 	// signedBearer is EnableBearerToken: a signed token whose subject is the
-	// username, reloaded by username.
+	// user the session records, which is who is reloaded.
 	signedBearer bearerMode = iota
 
 	// referenceBearer is EnableSessionBearer: the session's own identifier,
@@ -1085,8 +1085,8 @@ func refusedBeforeHandler(t *testing.T, out served, why string) {
 
 // TestBearer_AuthenticatesOnlyOwnActiveUser pins that a resolved session
 // authenticates only the user it records, and only while that user is
-// active, in both bearer modes: a reassigned username, a loader answering
-// with someone else, and a disabled user are refused, and the refusal revokes
+// active, in both bearer modes: a loader answering with someone else, and a
+// disabled user are refused, and the refusal revokes
 // nothing, so a re-enabled user's session authenticates again.
 //
 // Not rows of TestBearerSessionResolution: it runs both bearer modes on a real manager.
@@ -1112,9 +1112,9 @@ func TestBearer_AuthenticatesOnlyOwnActiveUser(t *testing.T) {
 				},
 			},
 			testCase{
-				// In the signed mode this is the username reassigned to u-2
-				// after u-1's token was issued; in the reference mode, a loader
-				// answering for the wrong user.
+				// A loader answering for the wrong user, in either mode.
+				// TestBearer_SubjectIsTheSessionUser has the username reassigned
+				// to u-2 under WithBearerUsernameSubject.
 				name: "the reloaded user is another user: refused, and the handler does not run",
 				mode: mode,
 				assert: func(t *testing.T, f *ownUserFixture) {
@@ -1306,7 +1306,7 @@ func TestBearer_KeySourceOutageIsNotARefusal(t *testing.T) {
 				token.WithIssuer(keySourceTestIssuer), token.WithAudience(keySourceTestAudience))
 			require.NoError(t, err)
 
-			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testSubject})
+			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testUsername})
 			require.NoError(t, err)
 
 			verifier, err := token.NewVerifier(
@@ -1533,7 +1533,7 @@ func TestBearer_HangUpDuringVerificationIsNotAnOutage(t *testing.T) {
 				token.WithIssuer(keySourceTestIssuer), token.WithAudience(keySourceTestAudience))
 			require.NoError(t, err)
 
-			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testSubject})
+			tok, err := gen.Generate(t.Context(), testJTI, &identity.Principal{ID: "u-1", Username: testUsername})
 			require.NoError(t, err)
 
 			var verifier token.Verifier

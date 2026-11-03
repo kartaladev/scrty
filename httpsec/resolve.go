@@ -42,38 +42,23 @@ type sessionResolver struct {
 
 	// admit, when set, judges the loaded session before its user is reloaded
 	// or anything is published; an error it returns is the request's answer.
-	// The session-reference bearer judges the session's key binding here.
+	// Both bearers judge the session's key binding here, and the signed bearer
+	// its token's subject. A late renewal runs it too, at the endpoint.
 	admit func(ex *Exchange, s *session.Session) error
+
+	// admitted is the user admit has already loaded, which the reload reuses
+	// rather than loading again, and nil when it loaded none. Only a signed
+	// bearer under WithBearerUsernameSubject sets it, on its per-request copy of
+	// the resolver.
+	admitted *identity.Details
 }
 
-// userLookup says how the core reloads the session's user.
-//
-// The signed bearer reloads by the username its token names, which is what
-// lookupByUsername builds. The session-reference bearer has no token to name
-// anyone, and reloads by the user reference the session itself records, which
-// is what lookupBySessionUser builds.
-type userLookup struct {
-	username      string
-	bySessionUser bool
-}
-
-// lookupByUsername reloads the user by username. The user it finds must still
-// be the one the session records (see ownActiveUser), so a username reissued
-// to another person does not carry the first one's session over to them.
-func lookupByUsername(username string) userLookup { return userLookup{username: username} }
-
-// lookupBySessionUser reloads the user by the reference the session records,
-// never by username: a username is a reusable handle, and one reissued to
-// another person would otherwise authenticate them on the first one's session.
-func lookupBySessionUser() userLookup { return userLookup{bySessionUser: true} }
-
-// load reloads the user the lookup names for s.
-func (l userLookup) load(ctx context.Context, users identity.UserLoader, s *session.Session) (*identity.Details, error) {
-	if l.bySessionUser {
-		return users.LoadByUserID(ctx, s.UserID)
-	}
-
-	return users.LoadByUsername(ctx, l.username)
+// ownsSession reports whether details is the user s records. A loader that
+// reported no error and no user owns nothing, and neither does a user with no
+// identifier: an empty reference names no one, so it matches no user, not even
+// one with no identifier of its own.
+func ownsSession(s *session.Session, details *identity.Details) bool {
+	return details != nil && details.ID != "" && details.ID == s.UserID
 }
 
 // ownActiveUser refuses with ErrAuthenticationRequired unless details is the
@@ -82,11 +67,12 @@ func (l userLookup) load(ctx context.Context, users identity.UserLoader, s *sess
 // A loader that reported no error and no user has told us nothing, and a
 // request judged on no principal is an anonymous one wearing a credential.
 //
-// A user other than the one the session records is refused: a username is a
-// reusable handle, and a signed token naming one that has since been
-// reassigned would otherwise authenticate its new owner on the old owner's
-// session. A user who is not active is refused too, so disabling a user takes
-// effect at the next request rather than when the session ends.
+// A user other than the one the session records is refused (ownsSession): a
+// username is a reusable handle, and a signed token read under
+// WithBearerUsernameSubject naming one that has since been reassigned would
+// otherwise authenticate its new owner on the old owner's session. A user who is
+// not active is refused too, so disabling a user takes effect at the next request
+// rather than when the session ends.
 //
 // The refusal revokes nothing. What disabling means for the consumer's other
 // systems is the consumer's to decide, so a refused session stays stored and
@@ -95,20 +81,27 @@ func (l userLookup) load(ctx context.Context, users identity.UserLoader, s *sess
 // There is no option to relax either check: a session that authenticates
 // someone else, or a disabled user, is never a legitimate configuration.
 func ownActiveUser(s *session.Session, details *identity.Details) error {
-	if details == nil || details.ID != s.UserID || !details.Active {
+	if !ownsSession(s, details) || !details.Active {
 		return ErrAuthenticationRequired
 	}
 
 	return nil
 }
 
-// resolve resolves the session id names, and its user by, onto ex.
+// resolve resolves the session id names, and its user, onto ex.
+//
+// The user is reloaded by the reference the session itself records, never by
+// username: a username is a reusable handle, and one reissued to another person
+// would otherwise authenticate them on the first one's session. Only a signed
+// bearer configured with WithBearerUsernameSubject loads by the username its
+// token names, and it does so in its admit step (admitSubject), handing the
+// record on through admitted.
 //
 // It returns nil when the request may go on. Otherwise it returns a refusal,
 // which matches ErrAuthenticationRequired unless the per-request phase refused
 // on a policy's grounds, or a failure that matches neither: a dependency
 // failure or the request's own context ending (classifyLoad, classifyReload).
-func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error {
+func (r *sessionResolver) resolve(ex *Exchange, id string) error {
 	ctx := ex.Context()
 
 	s, err := r.sessions.Load(ctx, id)
@@ -137,7 +130,8 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 			r.renewal != nil && r.renewal.answers(ex.Request) {
 			// The session is judged once the endpoint loads it, as admit
 			// judges one loaded here, so a late credential presented by the
-			// wrong sender is refused there and its proof recorded.
+			// wrong sender, or naming someone other than the session's user, is
+			// refused there, and its proof recorded only if it is not.
 			ex.renewal = id
 			ex.admitRenewal = r.admit
 
@@ -156,10 +150,14 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 	}
 
 	// Reloaded rather than taken from the credential, so a role revoked a
-	// minute ago is not honoured for the rest of the credential's life.
-	details, err := by.load(ctx, r.users, s)
-	if err != nil {
-		return classifyReload(ctx, err)
+	// minute ago is not honoured for the rest of the credential's life. A user
+	// admit loaded for this request has just been read, so it is not read again.
+	details := r.admitted
+	if details == nil {
+		details, err = r.users.LoadByUserID(ctx, s.UserID)
+		if err != nil {
+			return classifyReload(ctx, err)
+		}
 	}
 
 	if err := ownActiveUser(s, details); err != nil {

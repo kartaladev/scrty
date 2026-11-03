@@ -155,7 +155,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 				return err
 			}
-		} else if err := checkBindingGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
+		} else if err := checkIssuingGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 			return err
 		}
 	} else {
@@ -172,7 +172,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 			return newConfigError("%s needs a token generator: a redeemed handoff opens a "+
 				"session, and a caller with no credential for it could not use it "+
 				"(WithOIDCTokens)", option)
-		} else if err := checkBindingGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
+		} else if err := checkIssuingGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
 			return err
 		}
 	}

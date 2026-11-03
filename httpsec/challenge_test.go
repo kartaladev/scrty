@@ -1257,7 +1257,7 @@ func TestChallenge_AsksBeforeThePreAuthenticationPhase(t *testing.T) {
 				httpsec.WithLogger(slog.New(h.logs)),
 				httpsec.WithPolicyEngine(lockingAda(t)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-					Authenticator: h.authn, Sessions: sessions, Tokens: NewMockGenerator(ctrl), Attempts: attempts,
+					Authenticator: h.authn, Sessions: sessions, Tokens: newMockGenerator(ctrl), Attempts: attempts,
 				}, httpsec.WithLoginLimiter(limiter)),
 				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: attempts},
 					httpsec.WithBasicAuthLimiter(limiter)),

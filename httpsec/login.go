@@ -384,6 +384,12 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	l.resetFailures(ctx, username)
 
+	// A provider that answers neither an authentication nor an error has
+	// named no principal, which the login tail refuses as it does any other.
+	if auth == nil {
+		auth = &authenticate.Authentication{}
+	}
+
 	ex.Authentication = auth
 
 	var create []session.CreateOption
@@ -401,6 +407,9 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		issue:             l.issue,
 		enrolmentLifetime: l.enrolmentLifetime,
 		enforced:          l.enforced,
+		log:               l.log,
+		sampler:           l.sampler,
+		now:               l.now,
 		challengeMethods:  l.challengeMethods,
 		cancelHeld:        l.cancelHeld,
 		csrfToken:         l.csrfToken,

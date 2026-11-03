@@ -553,7 +553,7 @@ func TestCSRF_TokenAtSignIn(t *testing.T) {
 
 			var sid string
 
-			tokens := NewMockGenerator(ctrl)
+			tokens := newMockGenerator(ctrl)
 			tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
 				DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
 					sid = id

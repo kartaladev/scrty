@@ -367,7 +367,7 @@ func oidcRedemptionOpensAFederatedSession() Scenario {
 			}
 			require.NoError(t, json.Unmarshal([]byte(res.Body), &body))
 
-			sessionID, ok := strings.CutPrefix(body.AccessToken, tokenPrefix+Username+".")
+			sessionID, ok := strings.CutPrefix(body.AccessToken, tokenPrefix+string(UserID)+".")
 			require.True(t, ok, "the access token was issued for the linked user: %q", body.AccessToken)
 
 			require.Equal(t, 1, res.Effects.ActiveSessions(t), "one session was opened")

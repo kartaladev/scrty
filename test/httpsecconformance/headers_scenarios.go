@@ -309,7 +309,7 @@ func securityHeadersClearSiteDataOnSecureLogout() Scenario {
 				Method: http.MethodPost,
 				Path:   LogoutPath,
 				Header: map[string]string{
-					"Authorization":     "Bearer " + issuedTokenFor(Username, spec.Effects.SessionID),
+					"Authorization":     "Bearer " + issuedTokenFor(string(UserID), spec.Effects.SessionID),
 					"X-Forwarded-For":   clientAddress,
 					"X-Forwarded-Proto": "https",
 				},

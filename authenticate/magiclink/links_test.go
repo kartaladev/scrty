@@ -1446,6 +1446,51 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 			},
 		},
 		{
+			// Not a dependency's failure: the guard refuses before any link is
+			// minted, so no token store call is made and none is recorded. Without
+			// it the token store would still refuse the empty subject, but as a
+			// failure to issue, and this record would be missing.
+			name: "the resolved account carries no user reference",
+			assert: func(t *testing.T, recs []map[string]any) {
+				t.Helper()
+
+				var found bool
+
+				for _, rec := range recs {
+					assert.NotEqual(t, "token-issue", rec["reason"], "the token store was asked to issue for an empty subject")
+
+					if rec["msg"] == "magiclink: the resolved account carries no user reference" {
+						found = true
+
+						assert.Equal(t, "ERROR", rec["level"], "a wiring fault is written at ERROR")
+					}
+				}
+
+				assert.True(t, found, "the refusal left no record")
+			},
+			run: func(t *testing.T) *bytes.Buffer {
+				t.Helper()
+
+				var buf bytes.Buffer
+				logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+				loader := stubLoader{byUsername: map[string]*identity.Details{
+					"ada@example.com": {Username: "ada@example.com", Active: true},
+				}}
+				sender := &recordingSender{}
+
+				m, err := magiclink.New(testTokens(t), loader, sender, "https://app.example.com",
+					magiclink.WithLogger(logger))
+				require.NoError(t, err)
+
+				m.Request(t.Context(), "ada@example.com", "/")
+
+				assert.Zero(t, sender.Count(), "no link is sent for an account with no reference")
+
+				return &buf
+			},
+		},
+		{
 			name: "the link's user cannot be loaded at redemption",
 			assert: func(t *testing.T, recs []map[string]any) {
 				assertReasonRecorded(t, recs, "user-loader")

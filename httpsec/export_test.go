@@ -13,7 +13,9 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/assurance"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -152,6 +154,10 @@ var PostAuthenticationInputForTest = postAuthenticationInput
 // before any first factor is built on it.
 var CompleteLoginForTest = completeLogin
 
+// LoginTailDeps names what the login tail needs, so a table row can take it as a
+// parameter.
+type LoginTailDeps = loginTailDeps
+
 // LoginTailDepsForTest builds what the login tail needs, so a test assembles it
 // without this package exporting the struct to consumers.
 func LoginTailDepsForTest(
@@ -160,6 +166,17 @@ func LoginTailDepsForTest(
 	tokens token.Generator,
 ) loginTailDeps {
 	return loginTailDeps{engine: engine, sessions: sessions, tokens: tokens, enforced: everyBuiltInEnforced()}
+}
+
+// LoginTailDepsCancellingForTest is d with cancel as what cancels the user's held
+// recoveries, which the chain otherwise hands every login tail at assembly.
+func LoginTailDepsCancellingForTest(
+	d loginTailDeps,
+	cancel func(ctx context.Context, user identity.UserID) error,
+) loginTailDeps {
+	d.cancelHeld = cancel
+
+	return d
 }
 
 // PrepareLoginForTest exposes the login tail's first half, which a redemption
@@ -449,4 +466,16 @@ func CaptureUpgrades(t testing.TB) func() []*authenticate.PasswordUpgrade {
 
 		return append([]*authenticate.PasswordUpgrade(nil), seen...)
 	}
+}
+
+// CheckSubjectGeneratorForTest runs the subject check for g on a configuration
+// bearer has been applied to, and is how a test reaches the check's nil guard,
+// which the entry points' own refusals leave nothing typed-nil to reach.
+func CheckSubjectGeneratorForTest(bearer Option, g token.Generator) error {
+	c := &config{clock: clock.System()}
+	if err := bearer(c); err != nil {
+		return err
+	}
+
+	return checkSubjectGenerator(c, "option", "field", g)
 }

@@ -549,12 +549,12 @@ func TestSessionRenewal_SignedTokenMode(t *testing.T) {
 	verifier.EXPECT().Verify(gomock.Any(), "signed-old").Return(token.NewClaims(testSubject, s.ID), nil)
 
 	users := NewMockUserLoader(ctrl)
-	users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+	users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil)
 
 	var successor string
 
-	tokens := NewMockGenerator(ctrl)
+	tokens := newMockGenerator(ctrl)
 	tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, id string, p *identity.Principal) (string, error) {
 			assert.NotEqual(t, s.ID, id, "the token names the successor")
@@ -706,12 +706,12 @@ func TestSessionRenewal_IssueFailureDoesNotLaterReadAsReuse(t *testing.T) {
 				Return(token.NewClaims(testSubject, s.ID), nil).AnyTimes()
 
 			users := NewMockUserLoader(ctrl)
-			users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil).AnyTimes()
+			users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil).AnyTimes()
 			users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
 
 			var issued atomic.Int32
 
-			tokens := NewMockGenerator(ctrl)
+			tokens := newMockGenerator(ctrl)
 			tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 				DoAndReturn(func(ctx context.Context, _ string, _ *identity.Principal) (string, error) {
 					if issued.Add(1) == 1 {

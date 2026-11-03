@@ -137,7 +137,7 @@ func TestExchangeEvaluatePerRequest(t *testing.T) {
 					Return(token.NewClaims(testSubject, f.session.ID), nil)
 
 				users := NewMockUserLoader(ctrl)
-				users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+				users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 
 				return httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 					Verifier: verifier, Sessions: f.sessions, Users: users,
@@ -304,8 +304,8 @@ func resolvingAuthenticators() []resolvingAuthenticator {
 				return []httpsec.Option{httpsec.EnableBearerToken(h.bearerTokenDeps())}
 			},
 			reload: func(h *authHarness, fn func(ctx context.Context) (*identity.Details, error)) {
-				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
-					DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) { return fn(ctx) })
+				h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).
+					DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) { return fn(ctx) })
 			},
 		},
 		{

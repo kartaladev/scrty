@@ -219,9 +219,9 @@ type Exchange struct {
 
 	// admitRenewal judges the session a late renewal loads, as the bearer
 	// that let it through would have judged a session it loaded: its key
-	// binding against the credential and the proof presented, the proof then
-	// recorded. It is set with renewal by the resolution core, and nil when
-	// the bearer has nothing to judge.
+	// binding against the credential and the proof presented, a signed token's
+	// subject against its user, the proof then recorded. It is set with renewal
+	// by the resolution core, and nil when the bearer has nothing to judge.
 	admitRenewal func(ex *Exchange, s *session.Session) error
 
 	// certificateThumb is the thumbprint of the client certificate the

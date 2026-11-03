@@ -24,6 +24,11 @@ type FormLoginDeps struct {
 	// satisfies it, and so does a consumer's own provider. A FirstOf forwards
 	// the refusal-log flush to its delegates, so the chain's flush reaches
 	// each of them.
+	//
+	// A principal it returns must carry the user's identifier. One with no
+	// identifier, or no principal, fails the login in every mode, a 500 whose
+	// cause matches token.ErrNoSubject, with no session stored and no credential
+	// handed out. No option relaxes this: a session must name its user.
 	Authenticator authenticate.Authenticator
 
 	// Sessions opens the session a successful login establishes.

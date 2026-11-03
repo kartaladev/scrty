@@ -558,7 +558,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 				policy.WithMFAEnrolmentPath())
 			require.NoError(t, err)
 
-			mfaTokens := NewMockGenerator(ctrl)
+			mfaTokens := newMockGenerator(ctrl)
 
 			chain, err := httpsec.New(
 				httpsec.EnableMagicLink(h.manager, h.options()...),

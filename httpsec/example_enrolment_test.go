@@ -47,8 +47,8 @@ func (exampleRequirement) Required(context.Context, identity.UserID) (bool, erro
 
 // exampleTokens is the smallest token.Generator that keeps this example free
 // of a signing key: it issues the session identifier itself as the token and
-// looks the claims up from it, which is enough to show the enrolment path's
-// wiring and unfit for anything real.
+// reports the example's one user as its subject, which is enough to show the
+// enrolment path's wiring and unfit for anything real.
 type exampleTokens struct{}
 
 func (exampleTokens) Generate(_ context.Context, id string, _ *identity.Principal) (string, error) {
@@ -56,8 +56,10 @@ func (exampleTokens) Generate(_ context.Context, id string, _ *identity.Principa
 }
 
 func (exampleTokens) Verify(_ context.Context, presented string) (*token.Claims, error) {
-	return token.NewClaims("", presented), nil
+	return token.NewClaims("u-1", presented), nil
 }
+
+func (exampleTokens) SubjectMode() token.SubjectMode { return token.SubjectUserID }
 
 // exampleSender only reports itself non-blocking, which is what
 // EnableMFAEnrolment requires of a sender by default; a real deployment wraps
