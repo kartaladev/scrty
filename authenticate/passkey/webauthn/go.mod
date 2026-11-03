@@ -9,7 +9,7 @@ require (
 	github.com/kartaladev/scrty v0.0.0-00010101000000-000000000000
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/stretchr/testify v1.12.1
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 )
 
 require (
