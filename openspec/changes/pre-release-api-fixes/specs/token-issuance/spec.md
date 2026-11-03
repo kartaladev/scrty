@@ -25,6 +25,10 @@ Issuing a token for a principal whose chosen subject is empty SHALL fail, and SH
 - **WHEN** a token is issued by a default generator for a principal with no user identifier
 - **THEN** issuing fails and no token is returned
 
+#### Scenario: Empty username under the username subject
+- **WHEN** a generator configured to use usernames issues a token for a principal with user identifier `u-1` and no username
+- **THEN** issuing fails and no token is returned
+
 #### Scenario: Consumer algorithm and lifetime
 - **WHEN** a consumer configures ES256 and a 5-minute lifetime and issues a token at 10:00:00
 - **THEN** the header has `alg` `ES256`

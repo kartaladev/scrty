@@ -3,15 +3,19 @@
 ## MODIFIED Requirements
 
 ### Requirement: Bearer tokens are authenticated by a verifier
-The bearer-token provider SHALL delegate token verification to the configured token verifier, and SHALL build the principal only from the verified claims. By default it SHALL read the subject as the principal's user identifier; when configured to use usernames, it SHALL read the subject as the principal's username, matching a generator configured the same way. A verification error that rejects the token as invalid SHALL be returned as an error that matches both the uniform authentication failure and the verifier's error. A failure to obtain the verification keys from the key source is a dependency failure, not a rejected token: it SHALL be returned with fixed library text that keeps the key source's error reachable, and SHALL NOT match the uniform authentication failure. When the caller's own context has ended and the verification error is that context's error, or the cause it was cancelled with, the provider SHALL return an error that matches the context's error, with fixed library text of its own that does not report the verification keys as unavailable, and that does not match the uniform authentication failure. The verifier SHALL be given the caller's context. The result's identifier SHALL be the token's identifier. Constructing the provider without a verifier SHALL fail with a configuration error.
+The bearer-token provider SHALL delegate token verification to the configured token verifier, and SHALL build the principal only from the verified claims. By default it SHALL read the subject as the principal's user identifier; when configured to use usernames, it SHALL read the subject as the principal's username, matching a generator configured the same way. A verified token with no subject SHALL be refused with the uniform authentication failure. A verification error that rejects the token as invalid SHALL be returned as an error that matches both the uniform authentication failure and the verifier's error. A failure to obtain the verification keys from the key source is a dependency failure, not a rejected token: it SHALL be returned with fixed library text that keeps the key source's error reachable, and SHALL NOT match the uniform authentication failure. When the caller's own context has ended and the verification error is that context's error, or the cause it was cancelled with, the provider SHALL return an error that matches the context's error, with fixed library text of its own that does not report the verification keys as unavailable, and that does not match the uniform authentication failure. The verifier SHALL be given the caller's context. The result's identifier SHALL be the token's identifier. Constructing the provider without a verifier SHALL fail with a configuration error.
 
 #### Scenario: Valid token
 - **WHEN** a token the verifier accepts, with subject `u-1`, is presented to a default provider
-- **THEN** the result's principal has user identifier `u-1`
+- **THEN** the result's principal has user identifier `u-1` and no username
 
 #### Scenario: Consumer reads the subject as a username
 - **WHEN** a token the verifier accepts, with subject `ada`, is presented to a provider configured to use usernames
-- **THEN** the result's principal has username `ada`
+- **THEN** the result's principal has username `ada` and no user identifier
+
+#### Scenario: Token with no subject
+- **WHEN** a token the verifier accepts carries no subject
+- **THEN** the returned error matches the uniform authentication failure, and no principal is returned
 
 #### Scenario: Rejected token
 - **WHEN** the verifier rejects a token as expired
