@@ -6,7 +6,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 1. Baseline check (before any code)
 
-- [ ] 1.1 `pre-release-api-fixes` and `close-security-gaps` have merged, so rebase this branch onto `main`. Recheck the design's "What exists", P6, T4 and R6 against the merged code, and record every difference in `design.md`:
+- [x] 1.1 `pre-release-api-fixes` and `close-security-gaps` have merged, so rebase this branch onto `main`. Recheck the design's "What exists", P6, T4 and R6 against the merged code, and record every difference in `design.md`:
   - DPoP: the proof-verification entry point a non-bearer endpoint can call, the `jti` and nonce stores, and the internal set of features that verify bound credentials (D8 as amended);
   - certificate binding: the thumbprint accessor (D9);
   - CSRF: the exemption API (D6);

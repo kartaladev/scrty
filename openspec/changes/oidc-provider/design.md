@@ -16,7 +16,7 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
 - **Keys and tokens.**
   - `token/signingkey` rotates RS256 (default), ES256 or EdDSA keys and publishes them.
   - `httpsec.EnableJWKSEndpoint` serves the key set at `/.well-known/jwks.json`.
-  - `token.Generator.Generate(ctx, id, principal)` signs a fixed claim set: `jti`, `iss`, `sub`, `iat`, `exp`, and an optional audience. It cannot carry `nonce`, `azp`, `auth_time`, `acr`, `amr`, `scope` or `client_id`. In #68 it gains a required `SubjectMode()`, and `sub` defaults to the user identifier.
+  - `token.Generator.Generate(ctx, id, principal)` signs a fixed claim set: `jti`, `sub`, `iat`, `exp`, `iss` unless `WithoutIssuer` waives it, and an optional audience. `ConfirmingGenerator.GenerateWith` adds only `cnf`. It cannot carry `nonce`, `azp`, `auth_time`, `acr`, `amr`, `scope` or `client_id`. In #68 it gains a required `SubjectMode()`, and `sub` defaults to the user identifier.
   - A token's lifetime is capped at the key lifetime minus the rotation interval (23 hours by default) when the key source reports them. Since #68 a signing key retires one reload interval after its tokens can have expired, and leaves the store one grace later.
   - A test pins the package's use of jwx to a reviewed allow-list.
 - **Sessions** (`session`).
@@ -27,16 +27,32 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
   - **Session bearer:** `httpsec.EnableSessionBearer` accepts a session's own identifier as the bearer credential.
 - **Single-use credentials.** `token/onetime` issues a credential for a purpose and a subject, stores only its hash, and makes check-then-consume structural: a refusal between the check and the consume leaves the credential unspent.
 - **Client-style secrets.** `authenticate/apikey` shows a 256-bit secret once and keeps a SHA-256 digest.
-- **One login completion.** `completeLogin` (`httpsec/complete.go`) closes form login, magic link, OIDC handoff and passkey passwordless. MFA verify and recovery completion issue on their own.
+- **One login completion.** `completeLogin` (`httpsec/complete.go`) closes form login and passkey passwordless. Magic link and OIDC handoff run its two halves, `prepareLogin` and `commit`, around spending their single-use credential. MFA verify and recovery completion issue on their own.
 - **Landed since this design was written.** `close-security-gaps` was archived on 2026-11-03 (#45, #66), so its D-numbers below now name built code and settled specs:
   - DPoP (`EnableDPoP`, D8) and certificate binding (`EnableCertificateBinding`, D9);
   - CORS (D5), security headers (D4), CSRF (D6), trusted proxies with `Request.Host()` and `Request.Secure()` (D2, D7);
   - security events (D13), and session management: `EnableSessionManagement`, `Sessions.ListSignIns`, `EndSignIn` and `EndOtherSignIns` (D12).
 - **In flight.**
   - `pre-release-api-fixes` (merged in #68, archived 2026-11-04): `sub` is the user identifier by default, with username options; a chain whose generators disagree with its bearer fails to build; a login whose principal has no identifier fails matching `token.ErrNoSubject`; key retirement and deletion as above. R6 records what follows.
-  - `split-ci-jobs` (CI shape merged in #68; the change is still active on `main`, with two tasks open): one CI job per check behind an aggregate `ci-ok`, each calling a `make` target. R5 places the conformance job in that shape.
+  - `split-ci-jobs` (CI shape merged in #68; the change is still active on `main`, with two tasks open): one CI job per check behind an aggregate `ci-ok`, each calling a `make` target except `codeql`. R5 places the conformance job in that shape.
   - `session-signals`: defines its own `session.WithEndObserver`, which collides with T4. R16 resolves it.
   - `bff-resource-server`: the cookie session and the resource-server mode, both still waiting on its open questions. Its exploration notes ask whether scrty or an external IdP is the authority for browser apps. An OpenID Provider in scrty makes scrty an authority, which that change should take into account when it resumes. R2 no longer waits for its cookie session.
+- **Rechecked against the merged code (task 1.1, 2026-11-04, `main` at `b18db5c`, with #68 as `0080ee2` and #70 as `b18db5c`).** What the plan left open, as merged:
+
+  | The design's term | As merged |
+  |---|---|
+  | D8's proof verification, for a non-bearer endpoint | unexported `issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential) (session.KeyBinding, error)`, `httpsec/dpop.go`. No `dpop` package exists. The provider's endpoints live in `httpsec`, so they call it directly. It records the proof, refuses a missing proof under `Require`, and with a proof and a certificate binds the proof's key alone, as R12 needs |
+  | The `jti` and nonce stores | `ReplayStore` (`Record`) for `jti`. There is no nonce store: nonces are sealed by `NonceCipher` and refused with `ErrDPoPNonceRequired` |
+  | Internal set of binding verifiers (D8) | `bindingVerifiers []string`, `httpsec/options.go` |
+  | Certificate thumbprint (D9) | unexported `certificateThumbprint(*x509.Certificate) string`, and `Exchange.presentedThumbprint`. `session.KeyBinding{JKT, X5TS256}` holds the binding |
+  | CSRF exemption (D6) | `WithCSRFExemption(method, pattern string) CSRFOption`, one exact method and path, where `*` matches one segment |
+  | CORS routes (D5) | not matched at all: a policy covers the whole chain. Task 9.6's provider-registered exclusion in `cors.go` is therefore needed, and is the only way to meet RFC 9700 §2.6 |
+  | Security events (D13) | `event.Sink func(ctx, event.Event)`; `Event` has `Name`, `At`, `Outcome`, `User`, `ClientIP`, `Factor`, `Session` |
+  | Session listing (D12) | `Sessions.ListSignIns`, `EndSignIn(ctx, user, handle)`, `EndOtherSignIns(ctx, user, current)`, and `DELETE /sessions`. `Sessions.IdleTimeout()` exists, as R2 assumes |
+  | `token.Generator` | `Generate`, `SubjectMode` and an embedded `Verifier`. `ConfirmingGenerator` adds `GenerateWith`. `SubjectUserID` is the zero value and the default. The lifetime check reads `signingkey.LifetimeReporter` |
+  | CI (R5) | `ci-ok` has a hand-written `needs`, and `.github/scripts/ci-needs-check.sh` fails when any other job is missing from it. `pincheck` covers workflow references: `docker://` needs `@sha256:`, and others a 40-character SHA with a `# <tag>` comment |
+
+  None of it changes a decision. The corrections it caused are in this section and R6, and `plans.md` now uses these names.
 - **The established design** has no OpenID Provider side, so there is no inherited behaviour to follow or depart from here. Every decision below rests on the standards and established practice listed in References.
 
 ## Goals / Non-Goals
@@ -1077,7 +1093,7 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **`sub` is always the user identifier.** `pre-release-api-fixes` says an OP's `sub` must never be reassigned, and then offers username modes. So the mode must not reach the provider: `sub` in every provider token is the grant's user identifier, on a chain reading usernames too.
 - **The provider takes a key source, not a generator.** `oidcprovider.New` takes `signingkey.KeySource` through the required `Deps.Keys`, which P1's sketch omitted, and builds its own `token.Issuer`s, one per algorithm and over the provider's issuer. Consequently: a username-mode generator cannot reach it, an issuer mismatch cannot be wired, and `token.Generator`, already gaining a required method in #68, gains no other. Task 2.3's typed issue moves from `Generator` to `Issuer`. The chain's subject check needs no tenth route. *Rejected:* an optional interface on `Generator`, as `ConfirmingGenerator` is, because the consumer's generator would still carry a mode.
 - **Per-client lifetimes meet the key cap.** A token lifetime above key lifetime minus rotation (23 hours by default) would be refused by `token` for a generator. The issuer applies the same, and construction names the client. A consumer's durable registry is checked as each client is read (R13).
-- **Retired keys and old hints.** Core §3.1.2.2 says the OP SHOULD accept expired hints for a recent session, but the provider can verify only what it still publishes: about 25 hours by default. An old hint cannot be judged, which is different from forged, so it counts as no hint (or `login_required` with `prompt=none`). At logout that means asking. *Rejected:* verifying against keys kept until the store deletes them, which would need a port for it and buys one more key lifetime.
+- **Retired keys and old hints.** Core §3.1.2.2 says the OP SHOULD accept expired hints for a recent session, but the provider can verify only what it still publishes: by default, a key is published until about 24 hours and 1 minute after its creation, so a hint stays verifiable for about 23 to 24 hours after it was issued. A rotation outage lengthens that. An old hint cannot be judged, which is different from forged, so it counts as no hint (or `login_required` with `prompt=none`). At logout that means asking. *Rejected:* verifying against keys kept until the store deletes them, which would need a port for it and buys one more key lifetime.
 - **A sign-in with no identifier.** #68 makes a login with one fail matching `token.ErrNoSubject`. The resume does the same, for a session stored before that or by a consumer's own path, and issues no code.
 - **A session only a late renewal may recover** is not a sign-in that can resume. #68's `admit` passes such a session on for the renewal endpoint only.
 - **Cross-check.** A JWKS provider that is the same manager as the key source can be checked at construction. A wrapped one cannot, and the godoc says so, as #68 does for wrapped verifiers.

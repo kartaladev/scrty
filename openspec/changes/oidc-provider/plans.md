@@ -109,7 +109,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 1.1: Recheck the merged in-flight changes
 - [ ] Rebase this change's branch onto `main`, which holds `pre-release-api-fixes` and `close-security-gaps`.
 - [ ] Read the merged code with gopls and record in `design.md`:
-  - the exact names this plan assumes and leaves open. The placeholders below are `dpop.VerifyIssuingProof`, `httpsec.certThumbprint`, `bindingVerifiers`, the CSRF exemption option, the events sink type, and `token.Generator`'s final shape;
+  - the exact names this plan assumes and leaves open, which the plan's later tasks now use;
   - each difference from the design, R6's retire rule and key cap included.
 - [ ] Rewrite every plan line that names a placeholder with the merged name. That is a plan edit (`tasks-plans`), done here before any lane starts.
 - [ ] Run `openspec validate oidc-provider --strict`. Expected: `Change 'oidc-provider' is valid`.
@@ -801,7 +801,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - two provider paths equal;
   - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`;
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
-  - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (1.1's merged name).
+  - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (`httpsec/options.go`).
 - [ ] FAIL; implement; PASS; commit.
 - [ ] Red rows on `TestOIDCProvider_Construction` (R2, R11): browser sessions on without CSRF protection refused; `WithoutBrowserSessions` without it built; no security headers refused; `WithOIDCPagesCarryFrameAncestors` without them built. FAIL; implement; PASS; commit.
 
@@ -890,7 +890,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a `RequireBinding: BindingDPoP` client without a proof → `invalid_dpop_proof`, and the code is unspent;
   - `dpop_jkt(k1)` exchanged with `k2` → `invalid_grant`;
   - a TLS client certificate `C` with no proof → `cnf["x5t#S256"]` of `C`.
-- [ ] FAIL; implement by calling D8's issuing-proof verification before `p.Token`; PASS; commit.
+- [ ] FAIL; implement by calling `issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)` before `p.Token`, and mapping its `session.KeyBinding{JKT, X5TS256}` to `Binding{JKT, X5T}`; PASS; commit.
 - [ ] Red rows on `TestOIDCToken_SenderConstrained` (R12): nonces on and a proof with none → 400 `{"error":"use_dpop_nonce"}` with `DPoP-Nonce` and `no-store`, and the same code exchanges with that nonce; a proof and a certificate → `cnf.jkt` alone; a refresh of a bound public grant → `token_type` `DPoP`; a confidential client refreshing with no proof → `Bearer`, and a required one refused; a `DPoP` header while DPoP is off → ignored, `Bearer`. FAIL; implement; PASS; commit.
 
 ### Task 9.3: Revocation and introspection endpoints
@@ -1042,7 +1042,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - cross-site POSTs to authorize, token, revoke, introspect and logout are not refused by CSRF;
   - cross-site POSTs to resume, `/logout/confirm` and `/consents` are refused, a consent answer with the victim's handle included;
   - each exempt endpoint still runs the throttle.
-- [ ] FAIL; register the exemptions through D6's API (1.1's merged name) from `EnableOIDCProvider`; PASS.
+- [ ] FAIL; register the exemptions from `EnableOIDCProvider`, each the exact method and path `WithCSRFExemption(method, pattern)` takes, on the chain's CSRF layer; PASS.
 - [ ] Godoc and README: logout, consents, and the four event options with their defaults. Commit.
 
 ---
