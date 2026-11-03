@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -412,4 +414,36 @@ func NewTestCookieAuthenticator(sessions *session.Sessions, cookie string) Inter
 // default makes is the constant-time one it is handed.
 func SessionCSRFTokensComparingWith(compare func(x, y []byte) int) CSRFTokens {
 	return sessionCSRFTokens{compare: compare}
+}
+
+// CaptureUpgrades records every password-upgrade handle the login layers
+// obtain from now until the test ends, and returns the reader of them. It swaps
+// a package variable, so the calling test must not run in parallel.
+func CaptureUpgrades(t testing.TB) func() []*authenticate.PasswordUpgrade {
+	t.Helper()
+
+	var (
+		mu   sync.Mutex
+		seen []*authenticate.PasswordUpgrade
+	)
+
+	orig := requestUpgrade
+	requestUpgrade = func(ctx context.Context) (context.Context, *authenticate.PasswordUpgrade) {
+		ctx, u := orig(ctx)
+
+		mu.Lock()
+		seen = append(seen, u)
+		mu.Unlock()
+
+		return ctx, u
+	}
+
+	t.Cleanup(func() { requestUpgrade = orig })
+
+	return func() []*authenticate.PasswordUpgrade {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return append([]*authenticate.PasswordUpgrade(nil), seen...)
+	}
 }

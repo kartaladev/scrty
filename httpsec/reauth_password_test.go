@@ -580,6 +580,7 @@ func TestReauthPassword(t *testing.T) {
 				refusedWith(errReauthPostDenied)(t, f, s, out)
 				assert.Equal(t, int32(1), f.adaMatches.Load(), "the password was proved first")
 				assert.Empty(t, f.rehash.recorded(), "a denied re-proof must not upgrade the hash")
+				assert.Zero(t, f.encodes.Load(), "a denied re-proof encoded the password again")
 			},
 		},
 		{

@@ -192,6 +192,10 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 
 	verifyCtx, upgrade := requestRehash(ctx, b.rehash)
 
+	// Ends the handle on every outcome, after any Result, so the presented
+	// password does not outlive the request.
+	defer upgrade.Discard()
+
 	auth, err := b.authn.Authenticate(verifyCtx, identity.NewUsernamePassword(username, password))
 	if err != nil {
 		// A user store that could not answer judged no credential, and a load

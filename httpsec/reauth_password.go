@@ -97,6 +97,10 @@ func (i *reauthInterceptor) reprove(ex *Exchange) error {
 
 	verifyCtx, upgrade := requestRehash(ctx, i.rehash)
 
+	// Ends the handle on every outcome, after any Result, so the presented
+	// password does not outlive the request.
+	defer upgrade.Discard()
+
 	// A re-proof is made from a signed-in session, so no automation challenge
 	// stands in front of it.
 	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,

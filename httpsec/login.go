@@ -356,6 +356,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	verifyCtx, upgrade := requestRehash(ctx, l.rehash)
 
+	// Ends the handle on every outcome, after any Result, so the presented
+	// password does not outlive the request.
+	defer upgrade.Discard()
+
 	auth, err := l.attemptPassword(verifyCtx, ex.Request.ClientIP(), username, password, now,
 		func(ctx context.Context) {
 			emitEvent(ctx, userEvent(security.AuthnLoginFail, security.OutcomeFailure, "", factor.Password))
