@@ -1,0 +1,283 @@
+# Session Signals Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repository the main session dispatches every task to a subagent and reviews it (`.claude/rules/subagent-delegation.md`).
+
+**Goal:** An opt-in `text/event-stream` endpoint that tells a front end about the signed-in user's own session, through an allowlisted set of signals, on net/http, gin and fiber.
+
+**Architecture:**
+- The adapters gain `ResponseWriter.Stream(ctx, body)`. The body runs inline on net/http and gin, and through `SendStreamWriter` on fiber.
+- The endpoint is a terminal interceptor at `OrderSessionSignals` (673): after authentication and the pending-session gates, and below session touch (800), so it never records activity. It refuses cross-site requests by Fetch Metadata and `Origin` itself.
+- Each stream reloads its sign-in from the session store at every heartbeat, and the store is the truth. Signals from the session manager's end observer, the chain's endpoints and the consumer reach streams through a bus. There is one subscription per replica, and a local registry by user and family. A bus message only wakes a stream.
+
+**Tech Stack:** Go 1.27; `net/http` `ResponseController`; gin v1.12.0; fiber v3.5.0 and fasthttp v1.73.0, or whatever `httpsec/fibersec` pins when task 1.2 runs; testify, uber-go/mock, the project's fake clock.
+
+**Spec:** `openspec/changes/session-signals/` (`proposal.md`, `design.md` D1–D10 and its security review, `specs/{session-signals,framework-adapters,http-security-chain,sessions}/spec.md`, `tasks.md`). Revised on 2026-11-03 against `main` at `4649c90`.
+
+## Global Constraints
+
+- Test-first for every task: a red run that fails on an assertion (a compile error is not red), then green, then refactor (`.claude/rules/golang-tdd.md`). Tables follow the `table-test` skill: an `assert` closure, and `t.Context()`.
+- Mocks come from `mockgen` (`use-mockgen`), never hand-rolled. Database-backed tests use the `test` module's testcontainers helpers.
+- Defaults are safe. Every option names its default in godoc, and a meaningless configuration is `ErrConfig` from `New` (`.claude/rules/library-design.md`).
+- Defaults pinned by the spec:
+  - path `/session/signals`;
+  - signals `session_ended` and `session_expiring`;
+  - heartbeat 15 s, within 5–60 s, with ±10% jitter;
+  - warning window 2 min, greater than 0 and shorter than the idle timeout;
+  - assurance window `DefaultRecentAuthenticationWindow` (15 min), greater than 0;
+  - caps 4 per sign-in, 16 per user and 10 000 in total, per replica;
+  - `retry: 5000`;
+  - a queue of 32 per stream, and a wake channel of 1;
+  - at most 16 `signals` query names and 256 bytes;
+  - consumer data up to 8 KiB of valid JSON;
+  - consumer names matching `^app\.[a-z0-9][a-z0-9._-]{0,62}$`;
+  - `Subscribe` retried with backoff from 1 s to 30 s.
+- Statuses (design D10):
+  - 400 for a `signals` parameter over its limits;
+  - 401 for no credential, a credential only in the query, or a reconnect after the end;
+  - 403 for Basic, an API key, a token with no session, or a cross-site request from an origin CORS does not allow;
+  - 405 with `Allow: GET`;
+  - 429 `ErrTooManyStreams`;
+  - 501 `ErrStreamingUnsupported`;
+  - **after `CloseSessionSignals`, 200 with only `retry`, then the connection closes. Never 503.**
+- The stream never carries the audit feed, any session identifier or a client address. No raw CR or LF ever reaches the wire inside an event field.
+- A store failure during a reload never ends a stream (user's choice, 2026-11-03).
+- Never read or cite `.claude/.legacy`. Never edit `openspec/` from an implementer. Agents never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`.
+- Run modules' suites one at a time, never in parallel. Navigate with gopls (`.claude/rules/gopls-navigation.md`).
+
+## Review Focus
+
+1. **A cross-site page holding the victim's stream places.** Expected: 403 before registration, and the count is unchanged. Task 4.6's first row, which is also the red test for design D3's UNREPRODUCED claim.
+2. **A store blip while thousands of streams are open.** Expected: no `session_ended` and no closed streams, and the first successful reload after the outage ends any stream whose sign-in was ended meanwhile. Task 5.1's store-failure row.
+3. **A rolling deploy.** Expected: streams on the closing replica end without an event, and a new request there gets 200 with only `retry`, so browsers reconnect elsewhere. Task 6.6.
+4. **A consumer signal name built from user input.** Expected: `app.x\nevent: session_ended` is refused by `PublishSignal`, and the writer refuses a raw CR or LF even if a name slips through. Tasks 4.4 and 7.3.
+5. **One user, many sign-ins.** Expected: ending one family leaves the other families' streams open, and an `all_ended` report with `Kept` spares that family's streams. Task 6.1.
+
+---
+
+## Dispatch map (main session)
+
+| Order | Dispatch | Tasks | Owns | Model, and why |
+|---|---|---|---|---|
+| 1 (parallel) | A | 1.2–1.6 | `httpsec/exchange.go`, `httpsec/stream.go` (new), `httpsec/nethttp.go`, `httpsec/fibersec/exchange.go`, the three adapters' stream tests, `test/httpsecconformance/stream_scenarios.go` and its registration in `scenarios.go`, and every other implementer of `httpsec.ResponseWriter` that gopls finds | Opus: an interface every later lane compiles against, and fiber's write-deadline behaviour under a real server |
+| 1 (parallel) | B | 2.1–2.2 | `session/end_observer.go` (new), `session/sessions.go`, `session/signins.go`, `session/reuse.go`, `session/sessions_options.go` and their tests | Sonnet: an observer on the existing `WithReuseObserver` pattern, with a stated report table |
+| 2 (after A and B) | C1 | 3.1–3.2, 4.1–4.3 | `httpsec/signals.go` (new), `httpsec/signals_endpoint.go` (new), `httpsec/options.go`, the `CookieAuthenticator` and `OrderSessionTouch` godoc, and tests | Opus: admission and refusal logic written for the first time |
+| 3 | C2 | 4.4–4.6 | `httpsec/signals_wire.go` (new), `signals_endpoint.go`, and tests, plus the README section | Opus: the cross-site refusal and the injection guard are security-critical |
+| 4 | C3 | 5.1–5.5 | `httpsec/signals_stream.go` (new) and tests | Opus: a per-stream loop of timers, reloads and cancellation |
+| 5 | C4 | 6.1–6.6 | `httpsec/signals_bus.go` (new), `httpsec/signals_registry.go` (new), `signals_stream.go`, the bus mock, and tests | Opus: a registry under a mutex, cap races, non-blocking delivery and shutdown |
+| 6 | C5 | 7.1–7.4 | `httpsec/signals_publish.go` (new), `password_change.go`, `recovery.go`, `passkey_register.go`, `passkey_manage.go`, `mfa_enrol.go`, and the MFA removal endpoint, and tests | Sonnet: raising a known signal after existing writes, and input checks the plan states |
+| 7 | D | 8.1 | `test/httpsecconformance/signals_scenarios.go` | Sonnet: conformance cases in an existing suite |
+| 8 | main | 8.2–8.3 | — | Opus reviewer for 8.3 |
+
+- **Why this order.** C1–C5 are one lane, sequential, because each extends the `signals*.go` files the previous one created, and C1 compiles against A's `Stream` and B's `EndObserver`. A and B touch different packages and run together.
+- **Reviews.** Each dispatch gets a fresh reviewer that edits nothing: Opus for A, C1, C2, C3 and C4, and Sonnet for B, C5 and D. The next dispatch of a lane starts only when verification is green and the review is clean.
+
+---
+
+### Tasks 1.2–1.6: Adapter streaming (D1; dispatch A)
+
+**Files:**
+- Modify: `httpsec/exchange.go` (the `ResponseWriter` interface).
+- Create: `httpsec/stream.go` (`EventWriter`, `ErrStreamingUnsupported`, `ErrStreamingStarted`).
+- Modify: `httpsec/nethttp.go` (the net/http writer, which gin also uses through `NewHTTPResponseWriter`).
+- Modify: `httpsec/fibersec/exchange.go` (`responseWriter`).
+- Tests: `httpsec/nethttp_stream_test.go`, `httpsec/ginsec/stream_test.go`, `httpsec/fibersec/stream_test.go`.
+- Conformance: `test/httpsecconformance/stream_scenarios.go`, registered in `scenarios.go`.
+
+**Interfaces produced:**
+```go
+// httpsec
+type ResponseWriter interface { /* SetHeader, AddHeader, SetCookie, WriteHeader, Write */; Stream(ctx context.Context, body func(ctx context.Context, w EventWriter) error) error }
+type EventWriter interface { io.Writer; Flush() error }
+var ErrStreamingUnsupported = errors.New("httpsec: response writer cannot stream")
+var ErrStreamingStarted = errors.New("httpsec: response already started")
+```
+
+- [ ] **1.2 Red:** `TestFiber_StreamOutlivesWriteTimeout`. A fasthttp server with `WriteTimeout: 3*time.Second` serves a fiber route whose `SendStreamWriter` body writes `:\n\n`, flushes, and calls `fc.RequestCtx().Conn().SetWriteDeadline(time.Now().Add(10*time.Second))` every 5 s for 30 s. The client reads with `bufio.Reader` and counts 6 comments. First run it without the deadline call, and expect the read to fail near 3 s. With the call it should pass. If it never passes, stop and report to the main session (design D1 risk). Record the fiber and fasthttp versions in the report.
+- [ ] **1.3 Red:** `TestHTTPResponseWriter_Stream`, a table over `httptest.NewUnstartedServer` with `Config.WriteTimeout = 3s`:
+  - the client receives the first event before the body returns;
+  - the stream lives 30 s with 5 s flushes;
+  - an ordinary handler sleeping 4 s is cut;
+  - closing the client ends the body's `ctx` within 1 s;
+  - `Cache-Control` and `Access-Control-Allow-Origin` set before `Stream` arrive with the response;
+  - `Stream` after `Write`, and a second `Stream`, return `ErrStreamingStarted` and add no bytes.
+
+  **Green:** `Stream` runs `body` inline. `Flush` calls `rc.SetWriteDeadline(now + 10s)`, then writes, then `rc.Flush()`. `ctx` is the request context. A started flag guards against a second start.
+- [ ] **1.4:** `TestGin_Stream` asserts the same rows through `ginsec.Middleware`. Expect green with no new production code, because gin uses `NewHTTPResponseWriter`. If it is red, fix it in `nethttp.go`.
+- [ ] **1.5 Red:** `TestFiber_Stream`, with the same rows, client loss detected within one flush interval, and a server `ShutdownWithTimeout` that ends an open stream. **Green:**
+  - `Stream` calls `fc.SendStreamWriter` with a closure that builds `ctx` from `context.WithoutCancel(chainCtx)`;
+  - the closure cancels it on a `Flush` error, or when `RequestCtx.Done()` closes;
+  - each `Flush` sets the connection deadline (from 1.2), then calls `w.Flush()`.
+- [ ] **1.6:** Add conformance scenarios named `stream: …` for every `framework-adapters` scenario, plus a consumer writer returning `ErrStreamingUnsupported` that yields 501 (exercised from Task 4.1). Godoc `Stream`, `EventWriter` and both errors.
+- [ ] Verify each task's command from `tasks.md`, then `go test -race -count=1 ./...` in the root, `httpsec/ginsec`, `httpsec/fibersec` and `test`. Commit `feat(httpsec)!: response writers can stream`.
+
+### Tasks 2.1–2.2: End observer (D5; dispatch B)
+
+**Files:**
+- Create: `session/end_observer.go`.
+- Modify: `session/sessions.go` (`Delete`, `DeleteByUser`, `DeleteByUserExcept`, `DeleteByUserAndExternalIssuer`, `RevokeFamily`), `session/signins.go` (`EndSignIn`, `EndOtherSignIns`), `session/reuse.go` (the reuse path), `session/sessions_options.go`.
+- Test: `session/end_observer_test.go`.
+
+**Interfaces produced:**
+```go
+type EndReason string // EndLogout "logout", EndEnded "ended", EndReuse "reuse", EndAllEnded "all_ended", EndProviderLogout "provider_logout"
+type EndReport struct { User identity.UserID; Family id.ID; Kept id.ID; Reason EndReason }
+type EndObserver func(ctx context.Context, r EndReport)
+func WithEndObserver(o EndObserver) Option
+func EndObservers(os ...EndObserver) EndObserver
+func (m *Sessions) HasEndObserver() bool // read by httpsec at construction (Task 3.1)
+```
+
+- [ ] **2.1 Red:** `TestSessions_EndObserver`, one row per line of design D5's table, each asserting the exact `EndReport`:
+  - `Delete` → `{User, Family, logout}`, and with an observer set, the session is loaded first;
+  - `EndSignIn` → `{User, Family, ended}`;
+  - the reuse path → `{User, Family, reuse}`, and `RevokeFamily` → `{Family, reuse}`;
+  - `DeleteByUser` → `{User, all_ended}`;
+  - `DeleteByUserExcept` → `{User, Kept: <the kept session's family>, all_ended}`;
+  - `EndOtherSignIns` → `{User, Kept: <current family>, all_ended}`;
+  - `DeleteByUserAndExternalIssuer` → `{User, provider_logout}`;
+  - `DeleteByExternalSession` → nothing.
+
+  Also: with no observer, nothing is reported and `Delete` does no extra load; a store error is not reported; a panicking observer leaves `err == nil`; a cancelled caller context still reports, and the observer's `ctx.Err()` is nil.
+
+  **Green:** call the observer after the store call returns nil, with a deferred `recover`, on `context.WithoutCancel(ctx)`, as `WithReuseObserver` does.
+- [ ] **2.2 Red:** `TestEndObservers` checks that both are called in order, and that a panic in the first still calls the second. `TestSessions_EndObserver_NotOnExpiry` checks that `DeleteExpired` and loading past a deadline report nothing. Godoc: the default is no observer.
+- [ ] Verify with `go test -race -count=1 ./session/` and the root suite. Commit `feat(session): report ended sign-ins to an optional observer`.
+
+### Tasks 3.1–3.2, 4.1–4.3: Configuration, endpoint, admission, activity (D2, D3; dispatch C1)
+
+**Files:**
+- Create: `httpsec/signals.go` (types, config, `EnableSessionSignals`), `httpsec/signals_endpoint.go` (the interceptor).
+- Modify: `httpsec/options.go` (construction), and the godoc of `CookieAuthenticator` (`httpsec/csrf.go`) and `OrderSessionTouch` (`httpsec/chain.go`).
+- Tests: `httpsec/signals_construction_test.go`, `httpsec/signals_endpoint_test.go`.
+
+**Interfaces produced:**
+```go
+type Signal string // SignalSessionEnded, SignalSessionExpiring, SignalAssuranceLapsed, SignalCredentialChanged
+type SessionSignals struct { Path string; Signals []Signal; Heartbeat, ExpiryWarning, AssuranceWindow time.Duration; MaxPerSignIn, MaxPerUser, MaxStreams int; Bus SignalBus }
+const DefaultSessionSignalsPath = "/session/signals"
+const OrderSessionSignals = OrderSessionManagement - 1
+func EnableSessionSignals(s SessionSignals) Option
+func RecordsSessionActivity(ex *Exchange) bool
+var ErrSessionSignalsDisabled, ErrInvalidSignal, ErrTooManyStreams error
+```
+`SignalBus` is declared here as the port's interface only. C4 adds the default and the envelope.
+
+- [ ] **3.1 Red:** `TestSessionSignals_Construction`, with every row in `tasks.md` 3.1. The refusing rows assert `errors.Is(err, ErrConfig)` and that the message names the field. **Green:**
+  - validate after all options have applied, so the idle timeout and re-authentication are known;
+  - install the end observer on the chain's session manager, and refuse when `HasEndObserver()` is already true, naming `session.EndObservers`.
+- [ ] **3.2:** Godoc each field with its default and range. `AssuranceWindow` says to match the guards' window. Verify with `go doc ./httpsec SessionSignals`.
+- [ ] **4.1–4.3 Red, one table per task:**
+  - `TestSessionSignals_Endpoint`: status, `Content-Type`, `Cache-Control`, `X-Accel-Buffering`; 405 with `Allow: GET`; the consumer path; 501 from a consumer writer;
+  - `TestSessionSignals_Admission`: every row in `tasks.md` 4.2;
+  - `TestSessionSignals_NoActivity`: hold a stream past `Sessions.TouchInterval()` on the fake clock, and assert that `LastAccessedAt` and `IdleExpiresAt` are unchanged in the store and that `RecordsSessionActivity` is false.
+- [ ] Verify each task's command, then the root suite. Commit per task.
+
+### Tasks 4.4–4.6: Wire format, narrowing, cross-site refusal (D2, D3, D7; dispatch C2)
+
+**Files:**
+- Create: `httpsec/signals_wire.go` (event encoding).
+- Modify: `httpsec/signals_endpoint.go`.
+- Tests: `httpsec/signals_wire_test.go`, `httpsec/signals_endpoint_test.go`.
+- Docs: the README section "Session signals".
+
+**Interfaces produced:**
+```go
+func writeEvent(w io.Writer, name string, data any) error // "event: %s\ndata: %s\n\n"; refuses CR or LF in name or encoded data
+var appSignalName = regexp.MustCompile(`^app\.[a-z0-9][a-z0-9._-]{0,62}$`)
+func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protection origin rule, applied to GET
+```
+
+- [ ] **4.4 Red:** `TestSessionSignals_WireFormat`:
+  - the first line is `retry: 5000`, then `event: session` with `idle_deadline`, `absolute_deadline` and `authenticated_at` all ending in `Z`;
+  - there is no `id:` line anywhere, and heartbeats are `:`;
+  - `writeEvent` with a name or data holding `\n` or `\r` returns an error and writes nothing.
+- [ ] **4.5 Red:** `TestSessionSignals_Narrowing`: narrowed; widening ignored; `app.Bad` and `app.x:y` dropped; 17 names → 400; 257 bytes → 400; no parameter.
+- [ ] **4.6 Red:** `TestSessionSignals_CrossSite`. The first row: `Sec-Fetch-Site: cross-site` with `Origin: https://evil.example`, CORS allowing only `https://app.example.com`, returns 403, and the sign-in's registered count is still 0. Then:
+  - the same with CSRF protection off;
+  - `Origin: null` → 403;
+  - `same-site` from a disallowed origin → 403;
+  - neither header → opens;
+  - an allowed origin → opens with its CORS headers.
+
+  Also `TestSessionSignals_EarlySlots`: a CORS preflight for `Authorization` gets 204 with no stream; a same-origin cookie stream opens without a CSRF token; a rate-limited source gets no stream. **Green:** reuse the CSRF layer's origin comparison, with CORS's credentialed allowlist as the trusted origins, before registration.
+- [ ] Write the README section: enabling it; an `EventSource` example (cookie session) that rebuilds itself with backoff after `error`; a `fetch()` reader example (bearer); the defaults table; and nginx `proxy_buffering off`, with a note that `X-Accel-Buffering` depends on the proxy.
+- [ ] Verify each task's command, then the root suite. Commit per task.
+
+### Tasks 5.1–5.5: Lifecycle (D4; dispatch C3)
+
+**Files:**
+- Create: `httpsec/signals_stream.go` (the per-stream loop: ticker, timer, wake channel, queue).
+- Tests: `httpsec/signals_stream_test.go`. The fake clock drives every timer.
+
+**Interfaces consumed:** `session.Sessions` load, and the user loader the bearer uses (for the active-user check).
+
+- [ ] **5.1 Red:** `TestSessionSignals_Heartbeat`, every row in `tasks.md` 5.1. The jitter row asserts that each interval is within `[0.9, 1.1] × heartbeat` over 20 beats. The store-failure row uses a store double that fails for two reloads and then reports the sign-in gone. It asserts two comments and no event, then `session_ended`.
+- [ ] **5.2–5.4 Red:**
+  - `TestSessionSignals_DeadlineMoved`, including a re-authentication that moves `authenticated_at`;
+  - `TestSessionSignals_Expiring`: the idle deadline 90 s away gives `{"deadline":"idle"}`; a consumer window of 5 min; activity after a warning; reaching the absolute deadline gives `expired`, even when the store fails throughout;
+  - `TestSessionSignals_AssuranceLapsed`: 15 min default, 5 min consumer, and once more after a re-authentication.
+- [ ] **5.5 Red:** `TestSessionSignals_IdleTab` and `TestSessionSignals_EndedAlwaysSent`. Then update the README lifecycle section, including "10 000 streams at 15 s ≈ 670 reads/s per replica".
+- [ ] Verify each task's command with `-race`. Commit.
+
+### Tasks 6.1–6.6: Bus, registry, caps, shutdown (D6, D8, D9; dispatch C4)
+
+**Files:**
+- Create: `httpsec/signals_bus.go` (the port's default and the envelope), `httpsec/signals_registry.go`.
+- Modify: `httpsec/signals_stream.go` (the wake and queue inputs).
+- Tests: `httpsec/signals_bus_test.go`, `httpsec/signals_registry_test.go`.
+- Mock: `SignalBus`, through a `//go:generate` directive per `use-mockgen`.
+
+**Interfaces produced:**
+```go
+type SignalBus interface {
+    Publish(ctx context.Context, e SignalEnvelope) error
+    Subscribe(ctx context.Context, deliver func(SignalEnvelope)) error
+}
+type SignalEnvelope struct { User identity.UserID; Family id.ID; Kept id.ID; Name string; Reason string; Data json.RawMessage }
+func (c *Chain) CloseSessionSignals(ctx context.Context) error
+```
+
+- [ ] **6.1–6.5 Red:**
+  - `TestSessionSignals_Bus`: routing by user, by family, and by user minus `Kept`. With two families of one user, ending one leaves the other's stream open.
+  - `TestSessionSignals_BusWakeUp`: a wake-up whose session exists is not forwarded, and the heartbeat ends it later; three wake-ups cause one reload.
+  - `TestSessionSignals_BusUntrusted`: an unknown library name, malformed data, a 9 KiB payload, and `app.X` arriving from the bus are all dropped.
+  - `TestSessionSignals_BusOutage`: `Publish` fails and the raising request still returns 200; `Subscribe` fails twice and then succeeds, retried at 1 s and 2 s; the heartbeat still ends streams; the default bus does not cross a second chain instance.
+  - `TestSessionSignals_Caps`, including a barrier test where two goroutines request the fourth place at once and exactly one gets 200.
+  - `TestSessionSignals_SlowStream`: a stream that never reads loses its 33rd event, another stream gets all 33, `PublishSignal` returns within 10 ms, and ending the slow stream's sign-in still delivers `session_ended`.
+- [ ] **6.6 Red:** `TestSessionSignals_Close`:
+  - streams close with no event;
+  - a new request gets 200 with the body exactly `retry: 5000\n\n`, the connection closes, and the registry count stays 0;
+  - a second `CloseSessionSignals` returns nil;
+  - `srv.Shutdown` with a 2 s context returns nil when `CloseSessionSignals` is registered with `RegisterOnShutdown`.
+
+  Then update the README shutdown snippet.
+- [ ] Verify each task's command with `-race`. Commit.
+
+### Tasks 7.1–7.4: Signal sources (D5; dispatch C5)
+
+**Files:**
+- Modify: `httpsec/password_change.go`, `httpsec/recovery.go`, `httpsec/passkey_register.go`, `httpsec/passkey_manage.go`, `httpsec/mfa_enrol.go`, and the MFA removal endpoint, which the dispatch locates with gopls and names in its report.
+- Create: `httpsec/signals_publish.go`.
+- Tests: `httpsec/signals_sources_test.go`.
+
+**Interfaces produced:**
+```go
+type CredentialKind string // CredentialPassword "password", CredentialPasskey "passkey", CredentialSecondFactor "second_factor"
+func (c *Chain) ReportCredentialChange(ctx context.Context, user identity.UserID, kind CredentialKind) error
+func (c *Chain) PublishSignal(ctx context.Context, user identity.UserID, name string, data json.RawMessage) error
+```
+
+- [ ] **7.1–7.4 Red:**
+  - `TestSessionSignals_CredentialChanged`: one row per endpoint, asserting `{"kind":…}` only, and no event on a refused request;
+  - `TestSessionSignals_ReportCredentialChange`;
+  - `TestSessionSignals_Publish`: every row in `tasks.md` 7.3, including `app.x\nevent: session_ended` refused with `ErrInvalidSignal`;
+  - `TestSessionSignals_NoAuditFeed`: every row asserts that the stream, read for two heartbeats, holds only comments.
+
+  **Green:** each endpoint calls the internal raise after its write succeeds, never on a refusal.
+- [ ] Update the README with the signal list and the consumer's API. Verify each task's command. Commit.
+
+### Tasks 8.1–8.3: Integration (dispatch D, then the main session)
+
+- [ ] **8.1:** `test/httpsecconformance/signals_scenarios.go`, with scenarios named `signals: …` covering the six listed in `tasks.md` 8.1, on all three adapters.
+- [ ] **8.2:** Run every module's suite one at a time with `-race`, then `govulncheck ./...`, `gofmt -l .` and `go vet ./...` per module. All output must be clean.
+- [ ] **8.3:** An Opus reviewer checks the branch against every requirement in the four spec deltas, every decision D1–D10, and each row of the security review table. Each finding is REPRODUCED with a failing test or labelled UNREPRODUCED (`.claude/rules/defect-claims.md`). Findings go back to a fresh dispatch.
