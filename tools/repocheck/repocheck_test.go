@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/mod/modfile"
@@ -164,6 +165,81 @@ func TestAutoMergeSteps(t *testing.T) {
 			workflows: map[string]string{"gql.yml": wrap("      - run: gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'\n")},
 			assert:    assertNamed("gql.yml"),
 		},
+		{
+			name:      "gh -R flag merge",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh -R owner/repo pr merge 1 --auto\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh --repo flag merge",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh --repo owner/repo pr merge\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh -R flag approve",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh -R owner/repo pr review 1 --approve\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh --repo flag approve",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh --repo owner/repo pr review --approve 1\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh pr review short flag",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh pr review 1 -a\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh pr review approve after continuation",
+			workflows: map[string]string{"a.yml": wrap("      - run: |\n          gh pr review 1 \\\\\n            --approve\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh api merge endpoint",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh api -X PUT repos/o/r/pulls/1/merge\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "curl merge endpoint with expression",
+			workflows: map[string]string{"a.yml": wrap("      - run: curl -X PUT https://api.github.com/repos/o/r/pulls/${{ github.event.number }}/merge\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh api review event field",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh api repos/o/r/pulls/1/reviews -f event=APPROVE\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh api review long field",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh api repos/o/r/pulls/1/reviews --field event=APPROVE\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "curl review json event",
+			workflows: map[string]string{"a.yml": wrap("      - run: |\n          curl -d '{\"event\":\"APPROVE\"}' https://api.github.com/repos/o/r/pulls/1/reviews\n")},
+			assert:    assertNamed("a.yml"),
+		},
+		{
+			name:      "gh pr view",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh pr view 1\n")},
+			assert:    assertClean,
+		},
+		{
+			name:      "gh pr review comment with -b",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh pr review --comment -b x\n")},
+			assert:    assertClean,
+		},
+		{
+			name:      "gh api pull GET",
+			workflows: map[string]string{"a.yml": wrap("      - run: gh api repos/o/r/pulls/1\n")},
+			assert:    assertClean,
+		},
+		{
+			name:      "curl pull files",
+			workflows: map[string]string{"a.yml": wrap("      - run: curl https://api.github.com/repos/o/r/pulls/1/files\n")},
+			assert:    assertClean,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,6 +249,13 @@ func TestAutoMergeSteps(t *testing.T) {
 			}
 			tc.assert(t, repocheck.AutoMergeSteps(in))
 		})
+	}
+}
+
+func assertClean(t *testing.T, got []string) {
+	t.Helper()
+	if len(got) != 0 {
+		t.Fatalf("got %v; want nothing", got)
 	}
 }
 
@@ -213,8 +296,15 @@ func TestRepository_DependabotAndWorkflows(t *testing.T) {
 	}
 
 	workflows := map[string][]byte{}
-	for _, pattern := range []string{"*.yml", "*.yaml"} {
-		files, err := filepath.Glob("../../.github/workflows/" + pattern)
+	for _, pattern := range []string{
+		"../../.github/workflows/*.yml",
+		"../../.github/workflows/*.yaml",
+		"../../.github/actions/*/action.yml",
+		"../../.github/actions/*/action.yaml",
+		"../../.github/actions/*/*/action.yml",
+		"../../.github/actions/*/*/action.yaml",
+	} {
+		files, err := filepath.Glob(pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,7 +313,7 @@ func TestRepository_DependabotAndWorkflows(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			workflows[filepath.Base(f)] = b
+			workflows[strings.TrimPrefix(f, "../../")] = b
 		}
 	}
 	if len(workflows) == 0 {
