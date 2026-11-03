@@ -901,12 +901,12 @@ func TestGin_GuardsDPoPChallenge(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "DPoP optional: the DPoP and Bearer challenges",
-			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
 			assert: challenged(`DPoP algs="ES256"`, "Bearer"),
 		},
 		{
 			name:   "DPoP required: the DPoP challenge alone",
-			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{Require: true})},
+			dpop:   []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com", Require: true})},
 			assert: challenged(`DPoP algs="ES256"`),
 		},
 		{
@@ -915,7 +915,7 @@ func TestGin_GuardsDPoPChallenge(t *testing.T) {
 		},
 		{
 			name: "a consumer's error handler finds the challenge set",
-			dpop: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{})},
+			dpop: []httpsec.Option{httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "http://example.com"})},
 			opts: func(seen *http.Header) []ginsec.GuardOption {
 				return []ginsec.GuardOption{ginsec.WithGuardErrorHandler(func(gc *gin.Context, err error) {
 					*seen = gc.Writer.Header().Clone()

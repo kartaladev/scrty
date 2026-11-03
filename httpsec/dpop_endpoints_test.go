@@ -94,7 +94,7 @@ func TestDPoP_ProofCharges(t *testing.T) {
 			t.Parallel()
 
 			charges := newChargeCounter(t)
-			f := tc.build(t, httpsec.DPoP{}, httpsec.WithRateLimiterFactory(charges.factory))
+			f := tc.build(t, httpsec.DPoP{PublicURL: dpopPublicURL}, httpsec.WithRateLimiterFactory(charges.factory))
 			send := f.prepare(t, "")
 
 			before := charges.net.Load()
@@ -129,7 +129,7 @@ func recoveryFinishFixtureWith(t *testing.T, extra ...httpsec.Option) issuingFix
 	h.recOpts = append(h.recOpts, httpsec.WithRecoveryTokens(gen))
 	h.chainOpts = append(h.chainOpts,
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: gen, Sessions: h.sessions, Users: h.users}),
-		httpsec.EnableDPoP(httpsec.DPoP{}))
+		httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}))
 	h.chainOpts = append(h.chainOpts, extra...)
 	h.build(t)
 
@@ -224,7 +224,7 @@ func TestDPoP_SessionReferenceIssuing(t *testing.T) {
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: b.authn, Sessions: b.sessions, Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		}),
-		httpsec.EnableDPoP(httpsec.DPoP{}),
+		httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}),
 	))
 
 	req := postValues(t.Context(), httpsec.DefaultLoginPath, e2eSource, url.Values{
@@ -258,7 +258,7 @@ func TestDPoP_SecondFactorCarriesBinding(t *testing.T) {
 	t.Parallel()
 
 	key := newDPoPKey(t, elliptic.P256())
-	f := mfaVerifyEndpoint(t, httpsec.DPoP{})
+	f := mfaVerifyEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL})
 
 	out := f.prepare(t, "")(t, key.validProver("j-1"))
 
@@ -285,7 +285,7 @@ func TestDPoP_SignInWritesEveryCreateOption(t *testing.T) {
 	sessions := must.Must(session.New(session.WithSessionMetadata()))
 	b := newIssuingBaseOver(t, sessions, sessions)
 
-	f := b.fixture(t, httpsec.DPoP{},
+	f := b.fixture(t, httpsec.DPoP{PublicURL: dpopPublicURL},
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 			Authenticator: b.authn, Sessions: b.sessions, Tokens: b.gen,
 			Attempts: must.Must(lockout.NewMemoryAttemptStore()),

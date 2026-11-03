@@ -1480,15 +1480,23 @@ holds (RFC 9449). The client signs a short proof for every request, so a token
 copied out of a log, a proxy or a browser extension is of no use without the
 private key. It needs a feature that verifies bound credentials (today
 `EnableBearerToken` or `EnableSessionBearer`; your own handler that checks
-proofs does not count), and is off until you enable it:
+proofs does not count), and is off until you enable it. It also needs the host
+your proofs name, declared by you: `PublicURL`, or trusted proxies that name
+their allowed hosts with `ForwardedHost`. The chain never takes it from the
+request's own `Host` header, which the client chooses, so a chain with neither
+is a construction error:
 
 ```go
 chain, err := httpsec.New(
     httpsec.EnableFormLogin(loginDeps),
     httpsec.EnableBearerToken(bearerDeps), // or EnableSessionBearer
-    httpsec.EnableDPoP(httpsec.DPoP{}),
+    httpsec.EnableDPoP(httpsec.DPoP{PublicURL: "https://app.example.com"}),
 )
 ```
+
+Behind a reverse proxy, you may declare the host through the proxy instead:
+`EnableTrustedProxies` with `ForwardedHost("app.example.com")`. Trusted
+proxies without `ForwardedHost` do not count.
 
 Once enabled:
 
@@ -1519,7 +1527,7 @@ Once enabled:
 | `Replay` | in memory, per process |
 | `Nonce` | off |
 | `NonceLifetime` | 5 minutes, when nonces are on; the floor is 10 seconds (`MinDPoPNonceLifetime`) |
-| `PublicURL` | the scheme and host the chain resolved (see "Behind a reverse proxy") |
+| `PublicURL` | none, and none is refused at construction unless trusted proxies name their allowed hosts (`ForwardedHost`; see "Behind a reverse proxy") |
 
 With more than one replica, give `Replay` a store they share, or a proof can be
 replayed once on each replica within its lifetime.
@@ -1540,7 +1548,11 @@ kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("2026-11", key))
 // ...
 c, err := seal.NewAEADCipher(kr)
 // ...
-httpsec.EnableDPoP(httpsec.DPoP{Nonce: true, NonceCipher: seal.SessionCipher(c)})
+httpsec.EnableDPoP(httpsec.DPoP{
+    PublicURL:   "https://app.example.com",
+    Nonce:       true,
+    NonceCipher: seal.SessionCipher(c),
+})
 ```
 
 A proof without a current nonce is refused (401, `ErrDPoPNonceRequired`, which

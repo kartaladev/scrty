@@ -32,6 +32,7 @@ func TestDPoP_Proof(t *testing.T) {
 	type testCase struct {
 		name   string
 		d      httpsec.DPoP
+		hosts  []string // the ForwardedHost allowlist, when d names no PublicURL
 		req    func(t *testing.T) *http.Request
 		token  string // the token the proof accompanies; empty for none
 		assert func(t *testing.T, jkt string, signatures int64, err error)
@@ -122,7 +123,7 @@ func TestDPoP_Proof(t *testing.T) {
 		{name: "an alg outside the accepted set", req: get(orders, es384), assert: refusedUnsigned},
 		{
 			name: "an alg the consumer accepts",
-			d:    httpsec.DPoP{Algorithms: []jwa.SignatureAlgorithm{jwa.ES384()}},
+			d:    httpsec.DPoP{PublicURL: dpopPublicURL, Algorithms: []jwa.SignatureAlgorithm{jwa.ES384()}},
 			req:  get(orders, es384),
 			assert: func(t *testing.T, jkt string, signatures int64, err error) {
 				require.NoError(t, err)
@@ -162,7 +163,8 @@ func TestDPoP_Proof(t *testing.T) {
 		},
 		{name: "no htu", req: get(orders, valid.with(map[string]any{"htu": nil})), assert: refused},
 		{
-			name: "htu with host case, default port and the request's query",
+			name:  "htu with host case, default port and the request's query",
+			hosts: []string{"app.example.com"},
 			req: get("https://app.example.com/api/orders?page=2",
 				valid.with(map[string]any{"htu": "https://APP.example.com:443/api/orders"})),
 			assert: accepted,
@@ -173,7 +175,8 @@ func TestDPoP_Proof(t *testing.T) {
 			assert: accepted,
 		},
 		{
-			name: "htu on a port that is not the default",
+			name:  "htu on a port that is not the default",
+			hosts: []string{"example.com"},
 			req: get("http://example.com:8080/api/orders",
 				valid.with(map[string]any{"htu": "http://example.com/api/orders"})),
 			assert: refused,
@@ -245,10 +248,17 @@ func TestDPoP_Proof(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// A real chain always declares the host (EnableDPoP refuses
+			// otherwise): a row names its allowlist, or else gets the
+			// shared PublicURL.
+			if tc.d.PublicURL == "" && len(tc.hosts) == 0 {
+				tc.d.PublicURL = dpopPublicURL
+			}
+
 			t.Parallel()
 
 			checker, err := httpsec.NewDPoPChecker(tc.d, func() time.Time { return dpopNow },
-				slog.New(slog.DiscardHandler))
+				slog.New(slog.DiscardHandler), tc.hosts...)
 			require.NoError(t, err)
 
 			jkt, err := checker.Verify(t.Context(), httpsec.NewHTTPRequest(tc.req(t)), tc.token)
@@ -267,7 +277,7 @@ func TestDPoP_ProofErrorNamesNothing(t *testing.T) {
 	key := newDPoPKey(t, elliptic.P256())
 	proof := key.validProof("jti-secret-value").with(map[string]any{"htu": "http://evil.example/x"}).sign(t)
 
-	checker, err := httpsec.NewDPoPChecker(httpsec.DPoP{}, func() time.Time { return dpopNow },
+	checker, err := httpsec.NewDPoPChecker(httpsec.DPoP{PublicURL: dpopPublicURL}, func() time.Time { return dpopNow },
 		slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 

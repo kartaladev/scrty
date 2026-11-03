@@ -50,7 +50,7 @@ func newNonceCipher(t *testing.T, key []byte) httpsec.NonceCipher {
 func nonceDPoP(t *testing.T, key []byte) *httpsec.DPoP {
 	t.Helper()
 
-	return &httpsec.DPoP{Nonce: true, NonceCipher: newNonceCipher(t, key)}
+	return &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, key)}
 }
 
 // headerDPoPNonce is the response header a server nonce travels in.
@@ -272,7 +272,7 @@ func TestDPoP_Nonce(t *testing.T) {
 		{
 			name: "nonces off: a nonce claim is ignored",
 			run: func(t *testing.T, w *dpopBearerWorld) served {
-				return presentWith(t, w, w.chain(signedBearer, &httpsec.DPoP{}), "j-1", "anything")
+				return presentWith(t, w, w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL}), "j-1", "anything")
 			},
 			assert: func(t *testing.T, out served) {
 				authenticatedAsOwner(t, out)
@@ -287,7 +287,7 @@ func TestDPoP_Nonce(t *testing.T) {
 
 				tok := w.token(token.Confirmation{JKT: key.jkt})
 
-				return w.present(w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c}), "DPoP", tok,
+				return w.present(w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c}), "DPoP", tok,
 					resourceProof(t, w, "j-1", tok, ""))
 			},
 			assert: func(t *testing.T, out served) {
@@ -309,7 +309,7 @@ func TestDPoP_Nonce(t *testing.T) {
 					c.EXPECT().Seal(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(sealer.Seal),
 				)
 
-				chain := w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c})
+				chain := w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c})
 				tok := w.token(token.Confirmation{JKT: key.jkt})
 
 				failed := w.present(chain, "DPoP", tok, resourceProof(t, w, "j-1", tok, ""))
@@ -327,7 +327,7 @@ func TestDPoP_Nonce(t *testing.T) {
 				c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(nil, errors.Join(session.ErrCipherUnavailable, errCipherFixture))
 
-				return presentWith(t, w, w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c}),
+				return presentWith(t, w, w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c}),
 					"j-1", "c2VhbGVk")
 			},
 			assert: func(t *testing.T, out served) {
@@ -489,7 +489,7 @@ func TestDPoP_NonceSealedOncePerHalfLifetime(t *testing.T) {
 
 			w := newDPoPBearerWorld(t)
 			c, seals := countingNonceCipher(t, nonceKeyA)
-			tc.run(t, w, w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c}), seals)
+			tc.run(t, w, w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c}), seals)
 		})
 	}
 }
@@ -538,7 +538,7 @@ func TestDPoP_NonceSealDoesNotBlock(t *testing.T) {
 				return sealer.Seal(ctx, p, ad)
 			})
 		c.EXPECT().Open(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(sealer.Open)
-		x.chain = w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c})
+		x.chain = w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c})
 		t.Cleanup(func() { close(x.release) })
 
 		return x
@@ -729,7 +729,7 @@ func TestDPoP_NonceHangUp(t *testing.T) {
 		key.validProof("j-1").with(map[string]any{"ath": tokenHash(tok), "nonce": "c2VhbGVk"}).sign(t))
 	req.Header.Set("Authorization", "DPoP "+tok)
 
-	out := serveWithin(ctx, t, w.chain(signedBearer, &httpsec.DPoP{Nonce: true, NonceCipher: c}), req)
+	out := serveWithin(ctx, t, w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: c}), req)
 
 	assert.False(t, out.handlerRan)
 	require.ErrorIs(t, out.err, context.Canceled)
@@ -773,6 +773,10 @@ func TestDPoP_Challenge(t *testing.T) {
 	// route requires an authenticated caller.
 	protected := func(t *testing.T, w *dpopBearerWorld, mode bearerMode, d httpsec.DPoP) *httpsec.Chain {
 		t.Helper()
+
+		if d.PublicURL == "" {
+			d.PublicURL = dpopPublicURL
+		}
 
 		opts := []httpsec.Option{
 			httpsec.WithClock(w.clk), httpsec.WithLogger(slog.New(slog.DiscardHandler)),
@@ -842,7 +846,7 @@ func TestDPoP_Challenge(t *testing.T) {
 		{
 			name: "the accepted algorithms are listed",
 			mode: signedBearer,
-			d:    httpsec.DPoP{Algorithms: []jwa.SignatureAlgorithm{jwa.ES256(), jwa.EdDSA()}},
+			d:    httpsec.DPoP{PublicURL: dpopPublicURL, Algorithms: []jwa.SignatureAlgorithm{jwa.ES256(), jwa.EdDSA()}},
 			run: func(_ *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
 				return w.present(c, "DPoP", w.token(token.Confirmation{JKT: key.jkt}), "")
 			},
@@ -883,7 +887,7 @@ func TestDPoP_Challenge(t *testing.T) {
 		{
 			name:   "no token with DPoP required gets the DPoP challenge alone",
 			mode:   signedBearer,
-			d:      httpsec.DPoP{Require: true},
+			d:      httpsec.DPoP{PublicURL: dpopPublicURL, Require: true},
 			run:    noToken,
 			assert: challenged(`DPoP algs="ES256"`),
 		},
@@ -922,7 +926,7 @@ func TestDPoP_ChallengeAtIssuing(t *testing.T) {
 	t.Parallel()
 
 	key := newDPoPKey(t, elliptic.P256())
-	f := loginEndpoint(t, httpsec.DPoP{})
+	f := loginEndpoint(t, httpsec.DPoP{PublicURL: dpopPublicURL})
 
 	out := f.prepare(t, "")(t, key.brokenProver("j-1"))
 
