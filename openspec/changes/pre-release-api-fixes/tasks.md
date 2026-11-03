@@ -35,8 +35,8 @@ Every Go task is test-first: write the failing test, run it, and confirm it fail
 
 ## 5. Integration gate
 
-- [ ] 5.1 Run a whole-branch review against every requirement in this change's specs and decisions 1–6, with a fresh Opus reviewer that edits nothing, since the dispatches for groups 1–3 and 4.2 to 4.4 are on the Opus list. Verify every finding is fixed or explicitly declined in the design.
-- [ ] 5.2 Run `make check` and `openspec validate pre-release-api-fixes --strict`. Verify both are clean, and keep the output.
+- [x] 5.1 Run a whole-branch review against every requirement in this change's specs and decisions 1–6, with a fresh Opus reviewer that edits nothing, since the dispatches for groups 1–3 and 4.2 to 4.4 are on the Opus list. Verify every finding is fixed or explicitly declined in the design.
+- [x] 5.2 Run `make check` and `openspec validate pre-release-api-fixes --strict`. Verify both are clean, and keep the output.
 
 ## Workflow follow-up
 
