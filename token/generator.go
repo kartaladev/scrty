@@ -160,6 +160,8 @@ func WithClock(clk clock.Clock) Option { return Option(setClock(clk)) }
 // mismatch: building it with this generator without that option fails with a
 // configuration error, and a token that reaches it from a generator it was not
 // given is refused unless its subject is the user its session records.
+// authenticate.NewJWTAuthenticator refuses a mismatch too, when its verifier is
+// this generator.
 func WithUsernameSubject() Option {
 	return func(c *config) { c.subject = SubjectUsername }
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -669,6 +670,147 @@ func TestJWTProvider_CallerLeavesDuringVerification(t *testing.T) {
 
 			got, err := auth.Authenticate(ctx, authenticate.NewBearerToken(tok))
 			tc.assert(t, got, err)
+		})
+	}
+}
+
+// TestNewJWTAuthenticator_SubjectModeAgreement pins that a verifier which is
+// also a token generator is checked against the provider's subject mode at
+// construction, and that a verifier that merely wraps one is not.
+func TestNewJWTAuthenticator_SubjectModeAgreement(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+
+		// verifier builds the verifier handed to the provider, given a key source.
+		verifier func(t *testing.T, keys signingkey.KeySource) token.Verifier
+		opts     []authenticate.JWTOption
+		// verifierLast gives the verifier after opts instead of before them.
+		verifierLast bool
+		assert       func(t *testing.T, a authenticate.Authenticator, err error)
+	}
+
+	generator := func(t *testing.T, keys signingkey.KeySource, opts ...token.Option) *token.JWTGenerator {
+		t.Helper()
+
+		opts = append([]token.Option{token.WithIssuer("i"), token.WithAudience("a")}, opts...)
+
+		g, err := token.NewGenerator(keys, opts...)
+		require.NoError(t, err)
+
+		return g
+	}
+
+	// wrapping hides a generator behind a type that is only a verifier.
+	type wrapping struct{ token.Verifier }
+
+	disagrees := func(t *testing.T, a authenticate.Authenticator, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, authenticate.ErrConfig)
+		assert.Nil(t, a)
+	}
+	builds := func(t *testing.T, a authenticate.Authenticator, err error) {
+		t.Helper()
+
+		require.NoError(t, err)
+		assert.NotNil(t, a)
+	}
+
+	cases := []testCase{
+		{
+			name: "a generator by username with the default provider is refused",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				return generator(t, keys, token.WithUsernameSubject())
+			},
+			assert: disagrees,
+		},
+		{
+			name: "a default generator with a username provider is refused",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				return generator(t, keys)
+			},
+			opts:   []authenticate.JWTOption{authenticate.WithJWTUsernameSubject()},
+			assert: disagrees,
+		},
+		{
+			name: "a subject option given before the verifier is still compared",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				return generator(t, keys)
+			},
+			opts:         []authenticate.JWTOption{authenticate.WithJWTUsernameSubject()},
+			verifierLast: true,
+			assert:       disagrees,
+		},
+		{
+			name: "a default generator with the default provider builds",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				return generator(t, keys)
+			},
+			assert: builds,
+		},
+		{
+			name: "a username generator with a username provider builds",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				return generator(t, keys, token.WithUsernameSubject())
+			},
+			opts:   []authenticate.JWTOption{authenticate.WithJWTUsernameSubject()},
+			assert: builds,
+		},
+		{
+			name: "a verifier that is not a generator builds with the default provider",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				v, err := token.NewVerifier(token.WithVerifyKeySource(keys), token.WithVerifyIssuer("i"), token.WithVerifyAudience("a"))
+				require.NoError(t, err)
+
+				return v
+			},
+			assert: builds,
+		},
+		{
+			name: "a verifier that is not a generator builds with the username provider",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				v, err := token.NewVerifier(token.WithVerifyKeySource(keys), token.WithVerifyIssuer("i"), token.WithVerifyAudience("a"))
+				require.NoError(t, err)
+
+				return v
+			},
+			opts:   []authenticate.JWTOption{authenticate.WithJWTUsernameSubject()},
+			assert: builds,
+		},
+		{
+			name: "a wrapped generator of the other mode cannot be seen and builds",
+			verifier: func(t *testing.T, keys signingkey.KeySource) token.Verifier {
+				return wrapping{generator(t, keys, token.WithUsernameSubject())}
+			},
+			assert: builds,
+		},
+		{
+			name: "a typed-nil generator is the existing configuration error, not a panic",
+			verifier: func(*testing.T, signingkey.KeySource) token.Verifier {
+				var g *token.JWTGenerator
+
+				return g
+			},
+			assert: disagrees,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+			require.NoError(t, err)
+
+			verifier := authenticate.WithJWTVerifier(tc.verifier(t, keys))
+			opts := append([]authenticate.JWTOption{verifier}, tc.opts...)
+			if tc.verifierLast {
+				opts = append(slices.Clone(tc.opts), verifier)
+			}
+			a, err := authenticate.NewJWTAuthenticator(opts...)
+			tc.assert(t, a, err)
 		})
 	}
 }

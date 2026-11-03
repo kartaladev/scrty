@@ -59,10 +59,12 @@ func WithJWTIDGenerator(g id.Generator) JWTOption {
 // token.WithUsernameSubject on the generator that issued the token, and
 // httpsec.WithBearerUsernameSubject on a security chain's signed bearer.
 //
-// Nothing can check that agreement here. The provider sees only a verifier, and
-// never a generator, so neither this option nor its absence can be compared
-// with what the issuer writes. A mismatch fails no construction: it produces a
-// principal whose user identifier is a name, or whose username is an identifier.
+// NewJWTAuthenticator checks the agreement where it can see both sides: a
+// verifier that is also a token.Generator, such as the one token.NewGenerator
+// returns, reports the mode it writes, and a disagreement is a configuration
+// error. Any other verifier reports nothing, and the check cannot be made. A
+// mismatch it misses produces a principal whose user identifier is a name, or
+// whose username is an identifier, so keep the options together.
 func WithJWTUsernameSubject() JWTOption {
 	return func(a *JWTAuthenticator) { a.subject = token.SubjectUsername }
 }
@@ -95,6 +97,14 @@ type JWTAuthenticator struct {
 // default it therefore has a user identifier and no username: code behind this
 // provider that needs the name loads it from the identifier.
 //
+// Where the verifier is itself a token.Generator, its subject mode is compared
+// with the one this provider reads, and a disagreement is an error matching
+// ErrConfig, whatever the order of the options. A verifier that wraps a
+// generator, or is any other type, reveals no mode, so a mismatch there cannot
+// be detected and is the consumer's to avoid. A consumer who really issues and
+// reads different subjects gives a verifier that is not the generator, such as
+// one built with token.NewVerifier, and owns the agreement.
+//
 // Nothing here parses or trusts a token itself. The verifier is the only thing
 // that reads one, and this provider builds a principal only from what the
 // verifier reported — never from an unverified segment of the presented string.
@@ -108,6 +118,14 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 
 	if nilcheck.IsNil(a.verifier) {
 		return nil, fmt.Errorf("%w: a token verifier is required; supply WithJWTVerifier", ErrConfig)
+	}
+	if g, ok := a.verifier.(token.Generator); ok && g.SubjectMode() != a.subject {
+		return nil, fmt.Errorf("%w: the verifier is a token generator whose tokens carry %s as their subject, "+
+			"and this provider reads the subject as %s; use token.WithUsernameSubject on the generator and "+
+			"WithJWTUsernameSubject on the provider together, or neither; a consumer who "+
+			"issues and reads different subjects on purpose gives a verifier that is not the generator, "+
+			"such as one from token.NewVerifier",
+			ErrConfig, subjectModeName(g.SubjectMode()), subjectModeName(a.subject))
 	}
 	if a.idsSet && nilcheck.IsNil(a.ids) {
 		return nil, fmt.Errorf("%w: the authentication identifier generator is nil", ErrConfig)
@@ -299,3 +317,15 @@ func (c *BearerToken) Cleanup() error {
 }
 
 var _ BearerCredentials = (*BearerToken)(nil)
+
+// subjectModeName names a subject mode for a configuration error.
+func subjectModeName(mode token.SubjectMode) string {
+	switch mode {
+	case token.SubjectUserID:
+		return "the user identifier"
+	case token.SubjectUsername:
+		return "the username"
+	default:
+		return fmt.Sprintf("subject mode %d", int(mode))
+	}
+}
