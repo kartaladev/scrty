@@ -7,7 +7,7 @@
 **Architecture:**
 - **Makefile.** One file target per tool, so every gate target installs only what it calls. A new `spec-check` target stays outside `check`.
 - **`ci.yml`.** Rewritten into jobs:
-  - `format`, `vet`, `lint`, `generate` and `vuln`, once each;
+  - `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck` and `tools-check`, once each;
   - `test`, on the existing matrix;
   - `codeql`, with `go` and `actions` legs;
   - `openspec`;
@@ -30,7 +30,7 @@ Plan task N.M is `tasks.md` task N.M.
 
 ## Global Constraints
 
-- **Not part of `make check`.** `make check`'s prerequisites and order stay `tools fmt-check vet lint test vuln generate-check`, then `test-isolated` from the recipe. `spec-check` is never added to it.
+- **Not part of `make check`.** `make check`'s prerequisites and order stay `tools pincheck tools-check fmt-check vet lint test vuln generate-check`, then `test-isolated` from the recipe. `spec-check` is never added to it.
 - **Tool versions** come only from `tools/go.mod`, installed with `cd tools && GOWORK=off GOBIN=$(BIN) go install <package>`.
 - **Static jobs' Go release:** workflow-level `GO_VERSION: "1.27.x"`.
 - **Test matrix, unchanged:**
@@ -45,6 +45,7 @@ Plan task N.M is `tasks.md` task N.M.
 - **Agents never:**
   - run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`;
   - commit, push, or use `gh` with a write method;
+  - touch a file outside their dispatch's list: another session commits on this branch and shares this tree.
   - edit `openspec/`.
 
   A deliberately broken file is restored by editing it back.
@@ -69,18 +70,15 @@ Plan task N.M is `tasks.md` task N.M.
    - Test: in task 2.1, an untracked `openspec/changes/<tmp>/proposal.md` with no deltas makes `spec-check` fail, naming `<tmp>`. Then delete the directory.
 5. **`make -j check` on an empty `.bin`,** where `tools` and a gate's own tool prerequisite could both write the same binary.
    - Expected: each binary is installed exactly once.
-   - Test: in task 1.2, `tools` depends on the four file targets instead of running `go install tool`, and `make -n -j8 check | grep -c 'go install'` prints `4` with `.bin` removed.
+   - Test: in task 1.2, `tools` depends on the five file targets instead of running `go install tool`, and `make -n -j8 check | grep -c 'go install'` prints `5` with `.bin` removed.
 
 ---
 
 ## Before any dispatch (main session)
 
-The proposal lands on `main` through its own pull request (`docs/split-ci-jobs`). The main working tree may hold another change's uncommitted work, so implementation runs in its own worktree:
+This change is delivered in pull request #68, on `feat/pre-release-api-fixes`, together with `pre-release-api-fixes`. Its artifacts came onto that branch from `docs/split-ci-jobs`, and #41 is closed as superseded once #68 carries them.
 
-1. `git fetch origin && git worktree add ../scrty-split-ci-jobs -b ci/split-ci-jobs origin/main`, once the proposal's pull request is merged.
-2. Confirm `openspec/changes/split-ci-jobs/` is present there.
-
-Every dispatch below runs in `../scrty-split-ci-jobs`.
+Dispatches run in the main working tree, because the branch cannot be checked out in a second worktree. Another session commits on the same branch, so each dispatch owns only the files named below, and the main session commits by exact path.
 
 ## Dispatch map (main session)
 
@@ -93,7 +91,7 @@ Every dispatch below runs in `../scrty-split-ci-jobs`.
 | 3 | main | 4.1–4.5 | — | Only if 4.3 finds a module missing: a Sonnet dispatch that owns `ci.yml` |
 | 4 | reviewer | 4.6 | — | Sonnet: a whole-branch review of a tooling change with no concurrency or security logic |
 
-W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-check`, `vet`, `lint`, `generate-check`, `vuln`, `test`, `test-isolated`, `spec-check`, and the variables `SPEC_BASE` and `OPENSPEC`), so they run at the same time. Every dispatch gets a fresh Sonnet reviewer that edits nothing.
+W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-check`, `vet`, `lint`, `generate-check`, `vuln`, `pincheck`, `tools-check`, `test`, `test-isolated`, `spec-check`, and the variables `SPEC_BASE` and `OPENSPEC`), so they run at the same time. Every dispatch gets a fresh Sonnet reviewer that edits nothing.
 
 ---
 
@@ -120,19 +118,20 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 **Interfaces:**
 - Produces:
   - `TOOLS_DEPS := tools/go.mod tools/go.sum`;
-  - the file targets `$(BIN)/golangci-lint`, `$(BIN)/govulncheck`, `$(BIN)/mockgen` and `$(BIN)/benchstat`, built from `github.com/golangci/golangci-lint/v2/cmd/golangci-lint`, `golang.org/x/vuln/cmd/govulncheck`, `go.uber.org/mock/mockgen` and `golang.org/x/perf/cmd/benchstat`;
-  - `TOOL_BINS`, listing those four file targets.
+  - the file targets `$(BIN)/golangci-lint`, `$(BIN)/govulncheck`, `$(BIN)/mockgen`, `$(BIN)/benchstat` and `$(BIN)/cyclonedx-gomod`, built from `github.com/golangci/golangci-lint/v2/cmd/golangci-lint`, `golang.org/x/vuln/cmd/govulncheck`, `go.uber.org/mock/mockgen`, `golang.org/x/perf/cmd/benchstat` and `github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod`;
+  - `TOOL_BINS`, listing those five file targets.
 
 - [ ] **Step 1: Implement.**
   - Each file target depends on `$(TOOLS_DEPS)`, and its recipe is `cd tools && GOWORK=off GOBIN=$(BIN) go install <package>`.
   - `tools: $(TOOL_BINS)`, with an empty recipe.
   - `lint: $(BIN)/golangci-lint`, `vuln: $(BIN)/govulncheck` and `generate-check: $(BIN)/mockgen`.
+  - `tools-check` and `sbom` keep depending on `tools`, and `pincheck` needs no tool.
   - Keep the existing comment explaining `GOWORK=off`.
 - [ ] **Step 2: Verify.** With `.bin` moved aside, run each of `make lint`, `make vuln` and `make generate-check` under the `PATH` from 1.1. Expected:
   - each passes;
   - `ls .bin` after each shows only the tools installed so far.
 - [ ] **Step 3: Verify.** `touch tools/go.mod && make -n lint | grep 'go install'` prints one install line.
-- [ ] **Step 4: Verify (Review Focus 5).** With `.bin` removed, `make -n -j8 check | grep -c 'go install'` prints `4`. Then `make tools && ls .bin` lists exactly `benchstat golangci-lint govulncheck mockgen`.
+- [ ] **Step 4: Verify (Review Focus 5).** With `.bin` removed, `make -n -j8 check | grep -c 'go install'` prints `5`. Then `make tools && ls .bin` lists exactly `benchstat cyclonedx-gomod golangci-lint govulncheck mockgen`.
 - [ ] **Step 5: Verify.** `make check` passes.
 
 ### Task 2.1: `make spec-check`
@@ -159,8 +158,8 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
   5. **Validate each active change.** For each directory `openspec/changes/*/` (not `archive`): if it is touched, print the touched line and run `$(OPENSPEC) validate <name> --type change --no-interactive`. Otherwise print the untouched line.
 
   A touched name whose directory no longer exists is ignored.
-- [ ] **Step 3: Verify the clean tree.** `make spec-check` passes. Its output shows `split-ci-jobs touched, validating`, and `bff-resource-server` and `trusted-proxy-client-ip` as `untouched, skipped`.
-- [ ] **Step 4: Verify a touched invalid change.** Append a blank line to `openspec/changes/release-readiness/design.md`. `make spec-check` fails, and its output names `release-readiness`. Remove the blank line.
+- [ ] **Step 3: Verify the clean tree.** `make spec-check` passes. Its output shows `split-ci-jobs` and `pre-release-api-fixes` as `touched, validating`, and `bff-resource-server` and `trusted-proxy-client-ip` as `untouched, skipped`.
+- [ ] **Step 4: Verify a touched invalid change.** Create `openspec/changes/zz-invalid-fixture/` with a `proposal.md` and a `specs/time-source/spec.md` delta whose added requirement has no scenario. `make spec-check` fails, and its output names `zz-invalid-fixture`. Then `rm -r openspec/changes/zz-invalid-fixture`.
 - [ ] **Step 5: Verify a broken settled spec.** In `openspec/specs/time-source/spec.md`, delete the `#### Scenario:` line of a requirement with exactly one scenario, choosing it with `grep -n`. `make spec-check` fails, naming `time-source`. Put the line back. `git diff --stat openspec/specs` is empty.
 - [ ] **Step 6: Verify Review Focus 2, 3 and 4.**
   - `make spec-check SPEC_BASE=0000000000000000000000000000000000000000` passes and prints the fallback line.
@@ -188,7 +187,7 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 
 **Files:** none changed. The output feeds 3.3 to 3.6.
 
-- [ ] **Step 1:** For each of `actions/checkout@v7.0.1`, `actions/setup-go@v7.0.0`, `actions/setup-node@v7.1.0`, `actions/cache@v6.1.0` and `github/codeql-action@v4.39.1`:
+- [ ] **Step 1:** For each of `actions/checkout@v7.0.1`, `actions/setup-go@v7.0.0`, `actions/setup-node@v7.1.0`, `actions/cache` and `github/codeql-action@v4.39.2`. For `actions/cache`, two reads gave v6.1.0 and v5.1.0, so list its tags and report the newest, as the design leaves it to this task:
   - read `gh api repos/<o>/<r>/git/ref/tags/<tag>`;
   - if `.object.type` is `tag`, follow it with `gh api repos/<o>/<r>/git/tags/<sha>`.
 
@@ -211,6 +210,7 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 - [ ] **Step 2: Fixtures.**
   - `needs-missing.yml` has jobs `a`, `b`, `c` and `ok`, where `ok` needs `[a, b]`.
   - `needs-complete.yml` is the same, except that `ok` needs `[a, b, c]`.
+  - Neither holds a `uses:` line, because `pincheck` scans all of `.github`.
 - [ ] **Step 3: Red.** Write the script, then run `.github/scripts/ci-needs-check.sh .github/scripts/testdata/needs-missing.yml ok`. Expected: exit 1, with `ci-needs-check: ok does not need: c`.
 - [ ] **Step 4: Verify.**
   - The complete fixture exits 0.
@@ -222,14 +222,14 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 **Files:** Modify `.github/workflows/ci.yml`.
 
 **Interfaces:**
-- Produces: the job ids `format`, `vet`, `lint`, `generate`, `vuln` and `test`. W2 adds `codeql`, `openspec` and `ci-ok`.
+- Produces: the job ids `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck`, `tools-check` and `test`. W2 adds `codeql`, `openspec` and `ci-ok`.
 
 - [ ] **Step 1: Implement.**
   - `env: GO_VERSION: "1.27.x"`, with a comment pointing to the matrix's `go`, and the matrix carries the reverse comment.
   - **Each static job:** checkout, then setup-go with `go-version: ${{ env.GO_VERSION }}` and `cache: false`, then `make <target>`.
     - `format` runs `make fmt-check` and caches nothing.
-    - `vet`, `lint`, `generate` and `vuln` each cache `~/go/pkg/mod` and `~/.cache/go-build`, with key `go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}` and restore key `go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-`.
-    - `lint` also caches `~/.cache/golangci-lint`.
+    - `vet`, `lint`, `generate`, `vuln`, `pincheck` and `tools-check` each cache `~/go/pkg/mod` and `~/.cache/go-build`, with key `go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('**/go.sum') }}` and restore key `go-${{ github.job }}-${{ runner.os }}-${{ env.GO_VERSION }}-`.
+    - `lint` and `tools-check` also cache `~/.cache/golangci-lint`.
   - **`test`:** the existing matrix, `strategy` and `env`. Its cache key uses `matrix.go` in place of `env.GO_VERSION`. Its steps are `make test`, then `make test-isolated`, each named for its target.
   - Keep the existing comments on the matrix and the draft trigger.
 - [ ] **Step 2: Verify.** `actionlint` prints nothing, and `grep -E 'uses: ' .github/workflows/ci.yml | grep -vE '@[0-9a-f]{40} # v'` prints nothing.
@@ -273,7 +273,7 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 
   Expected: the first three exit non-zero and name `b`. `success` exits 0. Report the four exit codes.
 - [ ] **Step 2: Implement.**
-  - `needs: [format, vet, lint, generate, vuln, test, codeql, openspec]`;
+  - `needs: [format, vet, lint, generate, vuln, pincheck, tools-check, test, codeql, openspec]`;
   - `if: always() && (<draft condition>)`;
   - checkout;
   - a step running `.github/scripts/ci-needs-check.sh .github/workflows/ci.yml ci-ok`;
@@ -288,10 +288,10 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 Follow `tasks.md` 4.1 to 4.5 as written. What the main session checks at each one:
 
 - **4.1:**
-  - `gh run list --branch ci/split-ci-jobs` shows no run while the pull request is a draft.
-  - After it is marked ready, `gh run view <id> --json jobs` lists `format`, `vet`, `lint`, `generate`, `vuln`, two `test` legs, two `codeql` legs, `openspec` and `ci-ok`, all `success`.
+  - `gh run list --branch feat/pre-release-api-fixes` shows no run for the pushed commit while #68 is a draft.
+  - After it is marked ready, `gh run view <id> --json jobs` lists `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck`, `tools-check`, two `test` legs, two `codeql` legs, `openspec` and `ci-ok`, all `success`.
   - Record the wall-clock time and the summed job durations against run 41356788862.
-- **4.2:** the disposable pull request shows only `format` and `openspec` failing, `openspec`'s log naming `release-readiness`, and `ci-ok` as `failure`, not `skipped`.
+- **4.2:** the disposable pull request shows only `format` and `openspec` failing, `openspec`'s log naming `zz-invalid-fixture`, and `ci-ok` as `failure`, not `skipped`.
 - **4.3:**
   - `gh api 'repos/kartaladev/scrty/code-scanning/analyses?ref=refs/pull/<n>/merge'` lists `go` and `actions`.
   - The `codeql (go)` log shows extraction for each of the nine `go.work` modules.
@@ -301,7 +301,7 @@ Follow `tasks.md` 4.1 to 4.5 as written. What the main session checks at each on
 
 ### Task 4.6: Whole-branch review
 
-- [ ] A fresh Sonnet reviewer, who edits nothing, reads `git diff main...ci/split-ci-jobs` and both spec deltas. For every requirement and scenario in those deltas, it reports one of:
+- [ ] A fresh Sonnet reviewer, who edits nothing, reads the change's own files in `git diff origin/main...HEAD` (`Makefile`, `README.md`, `.github/`) and both spec deltas. For every requirement and scenario in those deltas, it reports one of:
   - met, with the file, line or run that shows it;
   - a finding, `REPRODUCED` with a failing run or test, or `UNREPRODUCED` with the reason.
 
@@ -309,7 +309,7 @@ Follow `tasks.md` 4.1 to 4.5 as written. What the main session checks at each on
 
 ### Commits (main session)
 
-Commit one per dispatch, after its verification and review:
+Commit one per dispatch, after its verification and review, staging exact paths:
 1. `build(make): let each gate target install its own tool`;
 2. `build(make): add spec-check for OpenSpec validation`;
 3. `ci: run each check as its own job behind ci-ok`;

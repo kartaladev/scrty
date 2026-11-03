@@ -18,7 +18,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
   Verify:
   - with `.bin` removed, each of `make lint`, `make vuln` and `make generate-check` passes alone, and afterwards `.bin` holds only the binary that target needed;
   - after `touch tools/go.mod`, `make -n lint` shows the reinstall;
-  - `make tools` installs all four tools;
+  - `make tools` installs all five tools;
   - `make check` passes.
 - [ ] 1.3 Update the README's development section (around "`make check` is what continuous integration runs"):
   - any single gate can be run on its own;
@@ -40,7 +40,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
   Do not add it to `check`. Verify each of these, editing every broken file back afterwards:
   - **Clean tree:** on this branch it passes, and its output shows `split-ci-jobs` validated and the untouched drafts `bff-resource-server` and `trusted-proxy-client-ip` not validated.
-  - **Touched invalid change:** a whitespace-only edit to `openspec/changes/release-readiness/design.md` makes it fail, naming `release-readiness`.
+  - **Touched invalid change:** a throwaway directory `openspec/changes/zz-invalid-fixture/`, holding a proposal and a delta whose requirement has no scenario, makes it fail, naming `zz-invalid-fixture`. Delete the directory afterwards.
   - **Broken settled spec:** deleting one `#### Scenario:` heading line from a requirement that has only one scenario, in a settled spec, makes it fail, naming that spec.
   - **Override:** `make spec-check OPENSPEC=openspec` uses the locally installed CLI.
   - **Build gates without Node:** `make check` still runs no OpenSpec command (`make -n check | grep -c openspec` prints `0`).
@@ -53,13 +53,13 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
 ## 3. The workflow (design decisions 1, 3, 4, 5, 7 and 8; every continuous-integration requirement)
 
-- [ ] 3.1 Resolve the commit SHA of each release design decision 8 names: `actions/checkout` v7.0.1, `actions/setup-go` v7.0.0, `actions/setup-node` v7.1.0, `actions/cache` v6.1.0 and `github/codeql-action` v4.39.1. Use the GitHub API and dereference annotated tags. If a newer release exists when the work starts, use it, and report the change so the main session updates decision 8. Verify `gh api repos/<owner>/<repo>/commits/<sha>` resolves each SHA, and report the table of tags and SHAs.
+- [ ] 3.1 Resolve the commit SHA of each release design decision 8 names: `actions/checkout` v7.0.1, `actions/setup-go` v7.0.0, `actions/setup-node` v7.1.0, `actions/cache` (the design records v6.1.0 and v5.1.0 from two reads; settle the newest from the tags) and `github/codeql-action` v4.39.2. Use the GitHub API and dereference annotated tags. If a newer release exists when the work starts, use it, and report the change so the main session updates decision 8. Verify `gh api repos/<owner>/<repo>/commits/<sha>` resolves each SHA, and report the table of tags and SHAs.
 - [ ] 3.2 Add `.github/scripts/ci-needs-check.sh`. It takes the workflow file and the aggregate job's id, and fails, naming each missing id, when the aggregate's `needs` leaves out any other job in the workflow.
   - Use a YAML tool that is preinstalled on `ubuntu-latest`, and confirm from the runner image's documentation that it is. If none is, install one pinned in the step and report it.
   - Red: run it against a fixture workflow whose aggregate omits one job, and confirm it fails naming that job.
   - Verify it passes against a fixture that lists every job, and that `shellcheck` reports nothing.
 - [ ] 3.3 Rewrite `.github/workflows/ci.yml`:
-  - **Static jobs:** `format`, `vet`, `lint`, `generate` and `vuln`, each running its `make` target on a workflow-level `GO_VERSION`.
+  - **Static jobs:** `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck` and `tools-check`, each running its `make` target on a workflow-level `GO_VERSION`.
   - **`test`:** on the existing matrix, with `make test` and then `make test-isolated` as separate steps.
   - **Caching:** per-job `actions/cache` keys for the building jobs, and `cache: false` on setup-go.
   - **Drafts:** the draft condition on every job.
@@ -94,12 +94,12 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
 ## 4. Proof on GitHub (integration: every continuous-integration requirement; design decisions 3, 5 and 7)
 
-- [ ] 4.1 **(main session)** Push the branch and open the pull request as a draft. Verify that no workflow job runs. Mark it ready for review, and verify that every job runs on its head commit and `ci-ok` passes. Record:
+- [ ] 4.1 **(main session)** Push the branch to pull request #68, which carries this change, while it is a draft. Verify that no workflow job runs. Mark it ready for review, and verify that every job runs on its head commit and `ci-ok` passes. Record:
   - the run's wall-clock time and longest job;
   - the total job time, against run 41356788862.
-- [ ] 4.2 **(main session)** On a disposable branch from this one, open a pull request with an unformatted Go file and a whitespace edit to `openspec/changes/release-readiness/design.md`. Verify:
+- [ ] 4.2 **(main session)** On a disposable branch from this one, open a pull request with an unformatted Go file and the throwaway invalid change from task 2.1. Verify:
   - only `format` and `openspec` fail;
-  - `openspec` names `release-readiness`;
+  - `openspec` names `zz-invalid-fixture`;
   - every other check job passes;
   - `ci-ok` runs and fails rather than being skipped.
 
@@ -120,8 +120,5 @@ Restore a deliberately broken file by editing it back, never with a git command 
 ## Workflow follow-up
 
 - **(maintainer)** Confirm that CodeQL default setup is off, and add `ci-ok` to the `default` ruleset's required status checks once the pull request's run is green.
-- **(maintainer)** Check whether the ruleset's `code_quality` rule blocks merges without GitHub Code Quality enabled (design Open Questions).
-- Whichever of `close-security-gaps` and `release-readiness` lands after this change updates its own artifacts:
-  - `close-security-gaps`' pinning check becomes a job under `ci-ok`;
-  - `release-readiness`' `design.md` no longer describes CI as running `make check`.
+- If `release-readiness` lands after this change, its `design.md` stops describing CI as running `make check`.
 - Archive `split-ci-jobs` after the maintainer steps, and verify that the archived `module-layout` and `continuous-integration` specs validate.

@@ -13,6 +13,8 @@ Continuous integration SHALL run each check as a separate job with its own statu
 - lint;
 - the generate check;
 - the vulnerability check;
+- the action pin check;
+- the checks of the tools module;
 - tests;
 - code scanning;
 - spec validation.
@@ -21,7 +23,7 @@ A failing check SHALL fail its own job only, and every other job SHALL still run
 
 #### Scenario: Lint finding
 - **WHEN** a pull request introduces a finding the configured linters report, and nothing else is wrong
-- **THEN** the lint job fails, and the formatting, vet, generate, vulnerability, test, code-scanning and spec-validation jobs each pass
+- **THEN** the lint job fails, and the formatting, vet, generate, vulnerability, action pin, tools module, test, code-scanning and spec-validation jobs each pass
 
 #### Scenario: Two checks fail
 - **WHEN** a pull request leaves a Go file unformatted and breaks a test
@@ -32,7 +34,7 @@ The test job SHALL run once for each PostgreSQL and Redis pairing CI tests again
 
 #### Scenario: Two database pairings
 - **WHEN** CI runs on a matrix with two PostgreSQL and Redis pairings
-- **THEN** two test jobs run, one per pairing, and the formatting, vet, lint, generate, vulnerability, code-scanning and spec-validation jobs each run once
+- **THEN** two test jobs run, one per pairing, and the formatting, vet, lint, generate, vulnerability, action pin, tools module, code-scanning and spec-validation jobs each run once
 
 #### Scenario: Isolated test
 - **WHEN** a test job runs

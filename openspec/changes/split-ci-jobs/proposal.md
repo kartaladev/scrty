@@ -6,12 +6,12 @@ CI is one job that runs `make check` on each PostgreSQL leg of the matrix. That 
 - **Duplicated work on the long path.** gofmt, vet, lint, govulncheck and the generate check do not depend on the database, yet each leg runs all of them. A leg takes about 11.5 minutes: about 7 for the tests, and the rest mostly for gates that run twice. Run 41356788862 was read on 2026-11-02.
 - **Two gates the repository needs are missing.**
   - **CodeQL.** The repository's ruleset requires CodeQL code scanning results, and CodeQL is not configured. GitHub blocks a merge while a required tool is not configured, so every pull request today merges only through the maintainer's bypass.
-  - **OpenSpec validation.** Nothing validates the OpenSpec artifacts. `release-readiness` already fails validation: its delta to the authentication spec leaves out three scenarios that the archive of `key-port-context` added afterwards. No check flagged it.
+  - **OpenSpec validation.** Nothing validates the OpenSpec artifacts. `release-readiness` failed validation when this change was proposed: its delta to the authentication spec left out three scenarios that the archive of `key-port-context` had added. It validates today, but no check flagged it then, and none would flag the next one.
 
 ## What Changes
 
 - **One CI job per check.**
-  - `format`, `vet`, `lint`, `generate` and `vuln` each run once, on the Go release in the matrix, without a database.
+  - `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck` and `tools-check` each run once, on the Go release in the matrix, without a database.
   - `test` alone runs on the PostgreSQL and Redis matrix. It also runs the test that must not run beside the suite.
   - Each job calls the same `make` target a contributor runs locally.
 - **One aggregate result.**
@@ -29,7 +29,6 @@ CI is one job that runs `make check` on each PostgreSQL leg of the matrix. That 
 - **Not in scope.**
   - Scheduled runs: scans run on push and pull request only, by decision on 2026-11-02.
   - Strict OpenSpec validation: 252 warnings about over-long requirements would fail 32 of 36 settled specs. That clean-up is its own change.
-  - Fixing `release-readiness`'s delta.
 - **Repository setting, a step for the maintainer.** Adding the aggregate job to the ruleset's required status checks is a change to the public repository's settings, so tooling does not make it. Today the ruleset requires no status check at all.
 
 ## Capabilities
@@ -55,7 +54,7 @@ CI is one job that runs `make check` on each PostgreSQL leg of the matrix. That 
   - `README.md`, whose line "`make check` is what continuous integration runs" becomes stale.
 - **No library code, API or `go.mod` change.**
 - **Related changes:**
-  - `close-security-gaps` (in progress) pins every workflow action to a commit SHA and adds a CI check for the pinning. This change adds new action references, such as `github/codeql-action` and a Node setup action. They are pinned the same way from the start, so it does not matter which change lands first. The pinning check becomes one more job under the aggregate result.
+  - `close-security-gaps` (archived 2026-11-03) pinned every workflow action to a commit SHA and added the `pincheck` and `tools-check` gates to `make check`. This change runs each of them as its own job under the aggregate result, and pins its new action references, such as `github/codeql-action` and a Node setup action, the same way.
   - `release-readiness` adds `release-check.yml` "on `ci.yml`'s matrix". It reads the matrix only, which stays the same here. Its `design.md` describes CI as running `make check`, and whichever change lands second updates that line.
 - **Repository settings (maintainer):**
   - require the aggregate job in the `default` ruleset;

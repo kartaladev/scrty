@@ -8,18 +8,19 @@ See `proposal.md` for why. What shapes the approach:
 
   Each leg runs `make check`, which runs:
   - `tools`;
+  - `pincheck` and `tools-check`, for the workflow pins and the `tools` module, which sits outside the workspace;
   - `fmt-check`, `vet`, `lint`, `test`, `vuln` and `generate-check`, over every workspace module;
   - then `test-isolated`, from the recipe so that it never runs beside the suite.
 
   Drafts are skipped through an `if:` on the job. The workflow has `contents: read` only.
-- **Gate targets assume `tools` already ran.** `lint`, `vuln` and `generate-check` call `golangci-lint`, `govulncheck` and `mockgen` from `.bin`. Only `check` depends on `tools`, and `tools` runs `go install tool`, which builds all four tools pinned in `tools/go.mod`.
+- **Gate targets assume `tools` already ran.** `lint`, `vuln` and `generate-check` call `golangci-lint`, `govulncheck` and `mockgen` from `.bin`. Only `check` depends on `tools`, and `tools` runs `go install tool`, which builds all five tools pinned in `tools/go.mod`.
 - **The ruleset.**
   - It requires no status check.
   - It does require CodeQL results, blocking on high-or-higher security alerts and on errors.
-  - It also has a `code_quality` rule.
+  - It also has a `code_quality` rule, which passes today: on a merge to `main`, `code_scanning` was the only rule that failed (rule suite 4880674338, read 2026-11-03).
   - The maintainer can bypass it.
 - **Other changes touch the same files.**
-  - `close-security-gaps` (in progress) pins every workflow action to a full commit SHA and adds a CI check that enforces it (its task 13.1, requirement "CI actions are pinned to commit SHAs").
+  - `close-security-gaps` (archived 2026-11-03) pinned every workflow action to a full commit SHA and added `pincheck` and `tools-check` to `make check`.
   - `release-readiness` adds `release-check.yml` on `ci.yml`'s matrix.
 - **Library-design rule.** CI is repository tooling, not library behaviour, so no decision here has a consumer override. Where contributors get a default they can change, the decision says so.
 
@@ -33,17 +34,17 @@ See `proposal.md` for why. What shapes the approach:
 
 **Non-Goals:**
 - Scheduled scans (decided 2026-11-02).
-- Strict OpenSpec validation, and fixing `release-readiness`'s delta.
+- Strict OpenSpec validation.
 - Shortening the test job itself, or changing the matrix.
 - Cancelling superseded runs (`concurrency`). It is useful, but no concern here needs it.
-- Enabling GitHub Code Quality for the ruleset's `code_quality` rule (see Open Questions).
+- Enabling GitHub Code Quality: the ruleset's `code_quality` rule does not block merges today (see Context).
 
 ## Decisions
 
 ### 1. One job per check; only `test` runs on the matrix
 
 - **The jobs:**
-  - `format`, `vet`, `lint`, `generate` and `vuln`, once each, on the Go release in a workflow-level `GO_VERSION` (`1.27.x`);
+  - `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck` and `tools-check`, once each, on the Go release in a workflow-level `GO_VERSION` (`1.27.x`);
   - `test`, on the existing matrix, unchanged;
   - `codeql`;
   - `openspec`;
@@ -124,7 +125,7 @@ See `proposal.md` for why. What shapes the approach:
 ### 7. Go caches: a key per job
 
 - **setup-go caching is off** (`cache: false`).
-- **Each building job** (`vet`, `lint`, `generate`, `vuln`, `test`, `codeql`) caches the module and build caches with `actions/cache`:
+- **Each building job** (`vet`, `lint`, `generate`, `vuln`, `pincheck`, `tools-check`, `test`, `codeql`) caches the module and build caches with `actions/cache`:
   - key: `go-<job>-<os>-<Go version>-<hash of every go.sum>`;
   - restore keys: the same prefix without the hash.
 - **`format` and `openspec`** build nothing and cache nothing.
@@ -134,39 +135,38 @@ See `proposal.md` for why. What shapes the approach:
 
 ### 8. Actions pinned to commit SHAs from the start
 
-- **Every action reference** this change writes is a full 40-character SHA with its tag in a comment. That satisfies `close-security-gaps`' requirement whichever change lands first.
-- **Releases at writing** (GitHub API, 2026-11-02):
+- **Every action reference** this change writes is a full 40-character SHA with its tag in a comment. That satisfies `pincheck`.
+- **Releases at writing** (GitHub API, 2026-11-03):
 
   | Action | Release |
   |---|---|
   | `actions/checkout` | v7.0.1 |
   | `actions/setup-go` | v7.0.0 |
   | `actions/setup-node` | v7.1.0 |
-  | `actions/cache` | v6.1.0 |
-  | `github/codeql-action` | v4.39.1 |
+  | `actions/cache` | v6.1.0 as read on 2026-11-02; a release query on 2026-11-03 returned v5.1.0 first, so task 3.1 settles it from the tags |
+  | `github/codeql-action` | v4.39.2 |
 
-- **Moving to new majors.** `ci.yml` uses `checkout@v5` and `setup-go@v6` today, so moving to these releases is part of this change. The SHAs are resolved from the tags through the API when the change is implemented.
-- **When `close-security-gaps`' pinning check lands,** it becomes one more job under `ci-ok`, by decision 3's completeness check.
+- **Current majors.** `ci.yml` already pins `checkout` v7.0.1 and `setup-go` v7.0.0. The other SHAs are resolved from the tags through the API when the change is implemented.
+- **`pincheck` runs as its own job under `ci-ok`,** so a new reference that is not pinned fails that job.
 - **Override:** none.
 
 ## Risks / Trade-offs
 
-- **More runner time in total, less wall-clock time.** About eight jobs each pay roughly 25 s of setup. The static gates no longer run twice. → The longest path is the test job, about 7.5 minutes against about 11.5 today. Total runner time is measured on the first green run and recorded in the tasks' evidence.
+- **More runner time in total, less wall-clock time.** About ten jobs each pay roughly 25 s of setup. The static gates no longer run twice. → The longest path is the test job, about 7.5 minutes against about 11.5 today. Total runner time is measured on the first green run and recorded in the tasks' evidence.
 - **The `codeql` Go job may become the longest path.** → It runs in parallel. Its time is measured on the first run. If it exceeds the test job, that is recorded, and nothing else here changes.
 - **The 10 GB repository cache limit.** Six per-job caches, the race-built test cache the largest, may evict each other. → Least-recently-used entries are evicted, so the worst case is a cold cache, never a wrong result. The total size is checked after the first runs.
 - **`GO_VERSION` and the test matrix name the Go release in two places.** → A comment beside each points to the other. `module-layout`'s supported-releases requirement governs the matrix.
-- **`close-security-gaps` also edits `ci.yml`.** → Whichever change lands second rebases onto the first. All references are already pinned here, so the rebase is textual.
 - **Rollback while `ci-ok` is required.** Reverting this change removes `ci-ok`. A required check that never reports blocks every pull request. → Remove `ci-ok` from the ruleset before reverting.
 
 ## Migration Plan
 
 1. Land the change. `ci-ok` and every job run on the pull request that brings it in, which also gives the first CodeQL results.
 2. **(Maintainer)** Confirm that CodeQL default setup is off, and add `ci-ok` to the `default` ruleset's required status checks.
-3. Whichever of `close-security-gaps` and `release-readiness` lands after this change updates its own references: the pinning check job, and `release-readiness`' description of CI as `make check`.
+3. If `release-readiness` lands after this change, it updates its description of CI as `make check`.
 
 ## Open Questions
 
-- **The ruleset's `code_quality` rule.** Whether it blocks a merge while GitHub Code Quality is not enabled was not determined. It does not change this change's specs or jobs. The maintainer checks it on the first pull request after this lands.
+- None. The earlier question, whether the ruleset's `code_quality` rule blocks merges, is answered: it passed on a merge to `main`, and `code_scanning` was the only rule that failed (see Context).
 
 ## References
 
@@ -183,6 +183,8 @@ See `proposal.md` for why. What shapes the approach:
 - [Available rules for rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets): the code-scanning rule blocks a merge when "a required tool is not configured for the repository".
 - [CodeQL code scanning for compiled languages](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages): Go uses `autobuild` or manual build steps, and manual steps need advanced setup.
 - The repository's CodeQL default-setup state, read through the GitHub API: `not-configured`, with detected languages `actions`, `go` and `python`. Live; it drifts.
+- Rule suite 4880674338, read through the GitHub API on 2026-11-03: `code_scanning` failed with "Waiting for Code Scanning results", and every other rule passed. It confirms which rule blocks merges.
+- [CodeQL supported languages and frameworks](https://codeql.github.com/docs/codeql-overview/supported-languages-and-frameworks/), accessed 2026-11-03: Go up to 1.27.
 - [github/codeql PR 20675](https://github.com/github/codeql/pull/20675) and a [docker-cli autobuild fix](https://git.coopcloud.tech/p4u1/docker-cli/src/commit/24186d8008ecbd5e00b09185cd42ac88aac6f701): `autobuild` has misbehaved on multi-module repositories and `go.work` workspaces. Anecdotal and unverified for the current release; it is the reason for decision 5's coverage check.
 
 ### Spec validation
