@@ -60,6 +60,28 @@ func noCredential(t *testing.T, out served) {
 	assert.Empty(t, out.rec.Header().Values("Set-Cookie"), "no credential is handed out")
 }
 
+// oneNoIdentifierRecord asserts logs holds one ERROR record of fixed text for a
+// login refused for want of an identifier, and that it names no one: not the
+// username the candidate carried, nor any identifier.
+func oneNoIdentifierRecord(t *testing.T, logs string, unwanted ...string) {
+	t.Helper()
+
+	var records []string
+
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "level=ERROR") {
+			records = append(records, line)
+		}
+	}
+
+	require.Len(t, records, 1, "logs: %q", logs)
+	assert.Contains(t, records[0], "no user identifier")
+
+	for _, name := range unwanted {
+		assert.NotContains(t, records[0], name)
+	}
+}
+
 // nothingStored asserts sessions holds nothing for the empty user reference.
 func nothingStored(t *testing.T, sessions *session.Sessions) {
 	t.Helper()
@@ -458,6 +480,7 @@ func TestMagicLink_NoIdentifier(t *testing.T) {
 		h  *magicLinkHarness
 		id *switchableIdentifier
 
+		logs  syncBuffer
 		chain *httpsec.Chain
 		sent  int
 		link  string
@@ -483,9 +506,12 @@ func TestMagicLink_NoIdentifier(t *testing.T) {
 		if gen != nil {
 			h.linkOpts = append(h.linkOpts, httpsec.WithMagicLinkTokens(gen))
 		}
-		h.chainOpts = append(h.chainOpts, mode.bearer(gen, h.sessions, users))
+		w := &world{h: h, id: id}
+		h.chainOpts = append(h.chainOpts,
+			httpsec.WithLogger(slog.New(slog.NewTextHandler(&w.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+			mode.bearer(gen, h.sessions, users))
 
-		return &world{h: h, id: id}
+		return w
 	}
 
 	type testCase struct {
@@ -568,6 +594,7 @@ func TestMagicLink_NoIdentifier(t *testing.T) {
 				noCredential(t, out)
 				nothingStored(t, w.h.sessions)
 				assert.False(t, w.spent.Load(), "the checks refused before the redeemer spent the link")
+				oneNoIdentifierRecord(t, w.logs.String(), magicLinkKnown)
 			},
 		},
 	}
@@ -605,6 +632,7 @@ func TestOIDCHandoff_NoIdentifierRefusedInsideTheChecks(t *testing.T) {
 		noCredential(t, out)
 		nothingStored(t, h.sessions)
 		assert.False(t, spent, "the checks refused before the redeemer spent the code")
+		oneNoIdentifierRecord(t, h.logs.String(), "ada@example.com")
 	}
 
 	var cases []testCase
@@ -663,23 +691,28 @@ func TestPasskeyLogin_NoIdentifier(t *testing.T) {
 	type testCase struct {
 		name   string
 		owner  identity.UserID
-		assert func(t *testing.T, err error)
+		assert func(t *testing.T, err error, logs string)
 	}
 
 	cases := []testCase{
 		{
 			name:  "a credential of a user whose record has no identifier",
 			owner: e2eUser,
-			assert: func(t *testing.T, err error) {
+			assert: func(t *testing.T, err error, _ string) {
 				t.Helper()
 
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 			},
 		},
 		{
-			name:   "a credential that records no user",
-			owner:  "",
-			assert: noIdentifierFailure,
+			name:  "a credential that records no user",
+			owner: "",
+			assert: func(t *testing.T, err error, logs string) {
+				t.Helper()
+
+				noIdentifierFailure(t, err)
+				oneNoIdentifierRecord(t, logs, "cred-1")
+			},
 		},
 	}
 
@@ -691,6 +724,11 @@ func TestPasskeyLogin_NoIdentifier(t *testing.T) {
 			dep.required.on.Store(false)
 			dep.jwt = issuingGenerator(t)
 			dep.loaderNoIdentifier.Store(true)
+
+			var logs syncBuffer
+
+			dep.extra = append(dep.extra,
+				httpsec.WithLogger(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))))
 			dep.build(t)
 
 			handle := dep.seed(t, tc.owner, "cred-1", passkey.StateActive)
@@ -701,7 +739,7 @@ func TestPasskeyLogin_NoIdentifier(t *testing.T) {
 
 			out := serve(t, dep.chain, req)
 
-			tc.assert(t, out.err)
+			tc.assert(t, out.err, logs.String())
 			assert.False(t, out.handlerRan)
 			assert.NotContains(t, out.rec.Body.String(), "access_token")
 			nothingStored(t, dep.sessions)

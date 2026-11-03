@@ -42,13 +42,14 @@ type Record struct {
 //
 // A key retires, and stops being published, one reload interval after the later of
 // its creation plus the key lifetime and its successor's creation plus the key
-// lifetime minus the rotation interval. The key manager deletes it once that time has passed by longer than the
-// grace, one key lifetime unless WithRetiredKeyGrace says otherwise. So a store
-// holds the keys still in use, the retired keys waiting out their grace, the ones
-// whose delete has yet to succeed, and any key dated far ahead, which housekeeping
-// unpublishes and leaves in place, since that date may come from another replica's
-// clock. WithRetiredKeysKept turns the deleting off, for a consumer who audits
-// retired keys.
+// lifetime minus the rotation interval. The key manager deletes it once that
+// time has passed by longer than the grace, one key lifetime unless
+// WithRetiredKeyGrace says otherwise. So a store holds the keys still in use,
+// the retired keys waiting out their grace, the ones whose delete has yet to
+// succeed, and any key dated far ahead, which housekeeping unpublishes and
+// leaves in place, since that date may come from another replica's clock.
+// WithRetiredKeysKept turns the deleting off, for a consumer who audits retired
+// keys.
 //
 //go:generate mockgen -source=record.go -package=signingkey_test -destination=keystore_mock_test.go -typed
 type KeyStore interface {

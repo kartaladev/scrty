@@ -564,11 +564,11 @@ func WithBearerAllowEmptyScheme() BearerTokenOption {
 // token.WithUsernameSubject on the generator, which New enforces for every
 // generator the chain is given, the bearer's own Verifier included, by failing
 // with a configuration error. It must also agree with
-// authenticate.WithJWTUsernameSubject on any standalone JWT authenticator reading
-// the same tokens, and with a generator hidden behind a verifier that does not
-// itself implement token.Generator, neither of which New can see. Two signed bearers on one chain must agree too,
-// whatever their schemes, or New fails: migrating subjects means one mode at a
-// time.
+// authenticate.WithJWTUsernameSubject on any standalone JWT authenticator
+// reading the same tokens, and with a generator hidden behind a verifier that
+// does not itself implement token.Generator, neither of which New can see. Two
+// signed bearers on one chain must agree too, whatever their schemes, or New
+// fails: migrating subjects means one mode at a time.
 //
 // The line it does not cross: the user the username names must own the session,
 // and this is judged once the session has loaded and its key binding has been

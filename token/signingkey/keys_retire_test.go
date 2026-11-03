@@ -340,7 +340,7 @@ func TestRetireTime(t *testing.T) {
 		},
 		{
 			name: "A stale current key displaced by its rotation keeps verifying",
-			// The review's TestRepro_DisplacedStaleCurrentKeyGoesWhileItsTokensAreLive.
+			// Displacing the stale current key must not end it while tokens it signed are live.
 			assert: func(t *testing.T, f *retireFixture) {
 				stale := f.seed(t, signingkey.EdDSA, -25*time.Hour)[0]
 				km := f.start(t)
@@ -839,7 +839,7 @@ func TestRetireTime(t *testing.T) {
 		},
 		{
 			name: "Replica with a fast clock leaves keys in place",
-			// The review's TestRepro_FastClockReplicaDeletesKeyStillSigningElsewhere.
+			// A fast clock must not delete a key another replica is still signing with.
 			assert: func(t *testing.T, f *retireFixture) {
 				fastClk := clockwork.NewFakeClockAt(f.clk.Now().Add(19 * time.Hour))
 				correct, err := signingkey.New(t.Context(), retentionOptions(f.clk, f.mem)...)
@@ -886,7 +886,7 @@ func TestRetireTime(t *testing.T) {
 		},
 		{
 			name: "Replica with a slow clock leaves its key in place",
-			// The review's TestRepro_SlowClockReplicasSigningKeyDeleted.
+			// Another replica's housekeeping must not delete the key a slow-clock replica signs with.
 			assert: func(t *testing.T, f *retireFixture) {
 				slowClk := clockwork.NewFakeClockAt(f.clk.Now().Add(-19 * time.Hour))
 				correct, err := signingkey.New(t.Context(), retentionOptions(f.clk, f.mem)...)
@@ -929,7 +929,7 @@ func TestRetireTime(t *testing.T) {
 		},
 		{
 			name: "Replica with a shorter lifetime, through its own rotation",
-			// The review's TestRepro_ShorterLifetimeReplicaDeletesLongerLifetimeReplicasKey.
+			// A shorter-lifetime replica rotating must not delete a key within a longer-lifetime replica's lifetime.
 			assert: func(t *testing.T, f *retireFixture) {
 				long, err := signingkey.New(t.Context(), append(retentionOptions(f.clk, f.mem),
 					signingkey.WithKeyLifetime(72*time.Hour))...)
@@ -947,6 +947,41 @@ func TestRetireTime(t *testing.T) {
 					signingkey.WithKeyLifetime(72*time.Hour))...)
 				require.NoError(t, err)
 				assert.True(t, publishes(t, restarted, first), "within the longer lifetime, it survives that replica's restart")
+			},
+		},
+		// The next two rows each pin a limit signingkey's package documentation
+		// states, as today's behaviour and not as a guarantee: a change that lifts
+		// the limit is welcome and rewrites its row.
+		{
+			name: "Limit: a replica with a longer rotation interval refuses a token a shorter one verifies",
+			assert: func(t *testing.T, f *retireFixture) {
+				stale := realRecordFor(t, signingkey.EdDSA, epoch.Add(-28*time.Hour))
+				require.NoError(t, f.mem.Store(t.Context(), stale))
+				successor := realRecordFor(t, signingkey.EdDSA, epoch)
+				issued := signedBy(t, stale, epoch.Add(-time.Second), retireWindow)
+				require.NoError(t, f.mem.Store(t.Context(), successor))
+
+				at := clockwork.NewFakeClockAt(epoch.Add(13 * time.Hour))
+				alike, err := signingkey.New(t.Context(), retireOptions(at, f.mem)...)
+				require.NoError(t, err)
+				longer, err := signingkey.New(t.Context(),
+					append(retireOptions(at, f.mem), signingkey.WithRotateInterval(12*time.Hour))...)
+				require.NoError(t, err)
+
+				assert.NoError(t, verifyToken(t, alike, at, issued), "the replica rotating hourly verifies it")
+				assert.Error(t, verifyToken(t, longer, at, issued), "the one rotating every 12 hours does not")
+			},
+		},
+		{
+			name: "Limit: removing a live key by hand republishes a key already retired",
+			assert: func(t *testing.T, f *retireFixture) {
+				recs := f.seed(t, signingkey.EdDSA, -25*time.Hour, -24*time.Hour, -5*time.Minute)
+				require.False(t, publishes(t, f.restart(t), recs[0].Kid), "it has retired")
+
+				require.NoError(t, f.mem.Delete(t.Context(), recs[1].Kid))
+
+				assert.True(t, publishes(t, f.restart(t), recs[0].Kid),
+					"the next newer key becomes its successor, with a later retire time")
 			},
 		},
 	}

@@ -115,9 +115,10 @@ type Keys struct {
 // (WithRotateInterval); housekeeping every 1h (WithHousekeepingInterval);
 // reload every 1m (WithReloadInterval); a 5m failure-log sampling interval
 // (WithLogInterval); deleting a key from the store one key lifetime after its
-// retire time (WithRetiredKeyGrace, WithRetiredKeysKept); an in-memory store that does not survive a restart
-// (WithKeyStore); clock.System(), the system clock (WithClock); slog.Default() (WithLogger);
-// and no error hook (WithErrorHook).
+// retire time (WithRetiredKeyGrace, WithRetiredKeysKept); an in-memory store
+// that does not survive a restart (WithKeyStore); clock.System(), the system
+// clock (WithClock); slog.Default() (WithLogger); and no error hook
+// (WithErrorHook).
 //
 // A configuration that cannot work — an unsupported algorithm, a non-positive
 // interval, a lifetime no longer than the rotation interval, a reload interval no
@@ -303,8 +304,8 @@ func (km *Keys) retireTimes(keys []storedKey, now time.Time) map[string]time.Tim
 
 // repickCurrentLocked re-chooses the current key per configured algorithm from
 // the keys held, as pickCurrent describes, breaking a tie by the order
-// knownKeysLocked gives them. The order is taken here, under the lock, so a key rotation held after the reload
-// read the store is a candidate too. A listed record the manager does not hold
+// knownKeysLocked gives them. The order is taken here, under the lock, so a key
+// rotation held after the reload read the store is a candidate too. A listed record the manager does not hold
 // is passed over. A reload never leaves a configured algorithm without a
 // current key: where no held key qualifies, as after the clock steps back past
 // the reload interval, the previous current key stays current while it is still
@@ -588,8 +589,9 @@ func WithAlgs(algs ...Alg) Option {
 }
 
 // WithKeyLifetime sets how long a key stays published after it was created, and
-// how long after its replacement less one rotation interval, whichever is later, in
-// each case with one reload interval on top (WithReloadInterval). Default: 24h. It must be longer than the rotation interval, or a key would
+// how long after its replacement less one rotation interval, whichever is
+// later, in each case with one reload interval on top (WithReloadInterval).
+// Default: 24h. It must be longer than the rotation interval, or a key would
 // stop being published while tokens it signed are still valid.
 //
 // Housekeeping judges a stored key by this replica's lifetime, so a replica with a
