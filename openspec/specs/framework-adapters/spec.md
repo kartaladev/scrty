@@ -110,27 +110,33 @@ On fiber, a refused request SHALL return an error from the chain's handler, and 
 - **THEN** the helper returns 403 and a body holding only `Forbidden`
 
 ### Requirement: Adapters take the client address from the framework's trusted configuration only
-The gin integration SHALL attribute a request to its transport peer by default. An opt-in, offered only by the gin integration, SHALL use gin's own proxy-aware client address instead. The opt-in's documentation SHALL state that gin trusts every proxy until the consumer sets a trusted proxy list, and that until then a client chooses its own address.
+Every adapter SHALL attribute a request to its transport peer by default, and SHALL resolve the client address, scheme and host through the chain's own trusted-proxy configuration when the consumer configures it, reading the raw peer address and headers from the framework. No adapter SHALL take the client address, scheme or host from its framework's own proxy settings: gin's trusted proxies and client-IP opt-in, and fiber's proxy trust, SHALL have no effect on the chain. The documentation of each adapter SHALL say so, and SHALL state that an in-memory or Unix-socket transport reports an unspecified peer.
 
-The fiber integration SHALL use fiber's own client address. That is the transport peer unless the consumer enables fiber's proxy trust. Its documentation SHALL state the fiber configuration under which forwarded addresses are trustworthy, and SHALL state that an in-memory or Unix-socket transport reports an unspecified peer.
-
-The chain's refusal of empty, malformed or unspecified addresses SHALL apply to whatever address an adapter returns.
+The chain's refusal of empty, malformed or unspecified addresses SHALL apply to whatever address is resolved.
 
 #### Scenario: gin default ignores forwarded headers
-- **WHEN** a gin app behind the chain receives `X-Forwarded-For: 203.0.113.9` from a peer at 198.51.100.7
+- **WHEN** a gin app behind the chain receives `X-Forwarded-For: 203.0.113.9` from a peer at 198.51.100.7, with no trusted proxies configured on the chain
 - **THEN** the request is attributed to 198.51.100.7
 
+#### Scenario: gin's own trusted proxies do not change the chain
+- **WHEN** the consumer sets gin's trusted proxies to every address, configures no trusted proxies on the chain, and a peer at 198.51.100.7 sends `X-Forwarded-For: 203.0.113.9`
+- **THEN** the chain attributes the request to 198.51.100.7
+
+#### Scenario: Same answer on every adapter
+- **WHEN** the chain trusts 10.0.0.2 for `X-Forwarded-For` and that proxy forwards a client at 198.51.100.7 to a net/http, a gin and a fiber app
+- **THEN** all three attribute the request to 198.51.100.7
+
 #### Scenario: Opting into gin's client address
-- **WHEN** the consumer sets gin's trusted proxies to 10.0.0.2, opts into gin's client address, and the proxy forwards a client at 198.51.100.7
+- **WHEN** the consumer configures the chain to trust 10.0.0.2 for `X-Forwarded-For`, and that proxy forwards a client at 198.51.100.7 to a gin app
+- **THEN** the request is attributed to 198.51.100.7, with no gin-specific option involved
+
+#### Scenario: fiber with a trusted proxy
+- **WHEN** the consumer configures the chain to trust 10.0.0.2 for `X-Forwarded-For`, leaves fiber's own proxy trust off, and that proxy forwards a client at 198.51.100.7
 - **THEN** the request is attributed to 198.51.100.7
 
 #### Scenario: fiber in-memory transport
-- **WHEN** a request to a throttled flow arrives through fiber's in-memory test transport with no proxy trust configured
+- **WHEN** a request to a throttled flow arrives through fiber's in-memory test transport with no trusted proxies configured
 - **THEN** it is refused as an unspecified client address
-
-#### Scenario: fiber with a trusted proxy
-- **WHEN** the consumer enables fiber's proxy trust for 10.0.0.2 with address validation, and that proxy forwards a client at 198.51.100.7
-- **THEN** the request is attributed to 198.51.100.7
 
 ### Requirement: Every adapter reads a form field with the same precedence
 Reading a form field through the framework-neutral request abstraction SHALL look in the posted form first and fall back to the URL query, on every adapter the library provides. Only POST, PUT and PATCH requests carry a posted form; for any other method the field SHALL be read from the URL query alone. Reading a field SHALL NOT consume the body: reading the body before or after a form field SHALL return the same bytes. Reading a field SHALL NOT change the size limit a later body read applies, and each body read SHALL refuse a body longer than its own limit whatever an earlier read on the same request read or refused. The form read SHALL read at most 10 MiB of a URL-encoded body and 32 MiB of a multipart body; a larger body, an unparseable content type or an unparseable body SHALL be answered from the query. A consumer interceptor that reads a field SHALL therefore get the same value on net/http, gin and fiber. The abstraction's documentation SHALL state the precedence, and that the library's own credential reads never take the query, apart from the OIDC authorization response, whose `code` and `state` the protocol delivers in the query.
@@ -237,3 +243,29 @@ The gin and fiber guards SHALL offer the recency guard with the same default win
 #### Scenario: One wiring mistake, one error on every adapter
 - **WHEN** guards are built on net/http, gin and fiber with a recency window of zero and no authorizer
 - **THEN** each adapter refuses construction naming the recency window, not the missing authorizer
+
+### Requirement: Every adapter supplies the request's host and transport security
+The gin and fiber adapters SHALL supply the request's host from its `Host` header and whether it arrived over TLS from the transport, before any trusted-proxy resolution, so the chain resolves both identically on every adapter.
+
+#### Scenario: fiber over TLS
+- **WHEN** a fiber app serves a request over TLS for host `app.example.com` with no trusted proxies
+- **THEN** the chain sees host `app.example.com` and a secure request, as the net/http adapter would
+
+#### Scenario: gin's proxy settings do not make a request secure
+- **WHEN** gin is configured to trust every proxy, no trusted proxies are configured on the chain, and a plain-HTTP request carries `X-Forwarded-Proto: https`
+- **THEN** the chain sees an insecure request
+
+#### Scenario: fiber's proxy header does not change the host
+- **WHEN** fiber's own proxy header settings name `X-Forwarded-Host`, no trusted proxies are configured on the chain, and a request carries `X-Forwarded-Host: evil.example` with `Host: app.example.com`
+- **THEN** the chain sees host `app.example.com`
+
+### Requirement: Removing forwarded headers reaches the framework's request
+When the chain removes consumed forwarded headers, every adapter SHALL remove them from the request its framework hands to the handlers after the chain, so a gin or fiber handler cannot read them either.
+
+#### Scenario: gin handler after the chain
+- **WHEN** trusted proxies are configured with default removal and a gin handler after the chain reads `X-Forwarded-For`
+- **THEN** the header is absent
+
+#### Scenario: fiber handler after the chain
+- **WHEN** trusted proxies are configured with default removal and a fiber handler after the chain reads `X-Forwarded-Host`
+- **THEN** the header is absent
