@@ -1782,11 +1782,12 @@ type stubVerifier struct {
 func (v stubVerifier) Verify(
     ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals,
 ) (httpsec.ChallengeDecision, error) {
-    // Ordinary traffic is not asked; a source with recent failures is. The
+    // Ordinary traffic is not asked; a source with recent failures is, and so
+    // is a fresh IPv6 /64 inside an aggregate others failed from. The
     // identifier signal is not a reason to challenge on its own: it can tell
     // a known account from an unknown one (see the stated limits below), so
     // read it only together with other evidence of automation.
-    if !s.SourceHasFailures {
+    if !s.SourceHasFailures && !s.SourceAggregateHasFailures {
         return httpsec.ChallengeNotNeeded, nil
     }
 
@@ -1836,13 +1837,23 @@ Once enabled:
   with fixed text, the verifier's error reachable through `errors.Is` and
   `errors.As` but never in the text or a log record, charged to nothing. A
   client that hangs up while the verifier runs fails with its context's error;
-- the verifier is told whether the source has recent failures and, at form login
-  and Basic (when named) only, whether the username has (`ChallengeSignals`). The username's
-  failures count within the failure window of the chain's lockout policy
-  (`lockout.WithFailureWindow`), so the challenge and the lockout agree on what
-  "recent" means. Whatever cannot answer, a limiter or attempt store that
-  fails, or a limiter that does not implement `ratelimit.RecentFailureReporter`,
-  reads as having failures, so the verifier asks.
+- the verifier is told (`ChallengeSignals`):
+  - `SourceHasFailures`: whether the source has recent failures;
+  - `SourceAggregateHasFailures`: whether the IPv6 aggregate holding the source
+    (`WithIPv6Aggregate`, a /56 by default) has recent failures, from any
+    source inside it. A client rotating through the /64s of its allocation
+    arrives at each one clean, so this is what shows it. It is reported apart
+    from the source's own signal, which keeps its meaning, and is false for
+    IPv4 (IPv4-mapped addresses included) and for a guard with no aggregate
+    (`WithoutIPv6Aggregate`);
+  - `IdentifierHasFailures`, at form login and Basic (when named) only: whether
+    the username has failures within the failure window of the chain's lockout
+    policy (`lockout.WithFailureWindow`), so the challenge and the lockout
+    agree on what "recent" means.
+
+  Whatever cannot answer, a limiter or attempt store that fails, or a limiter
+  that does not implement `ratelimit.RecentFailureReporter`, reads as having
+  failures, so the verifier asks.
 
 ### Defaults
 
@@ -1851,6 +1862,7 @@ Once enabled:
 | Verifier | none: the seam is off |
 | Flows | form login, magic-link request, passwordless begin and recovery start; Basic only when named (`WithChallengeFlows`) |
 | Refusal | counted against the source limit (`WithoutChallengeRefusalCounting`) |
+| Aggregate signal | the source's IPv6 aggregate, the chain's `WithIPv6Aggregate` prefix (/56); false for IPv4 and with `WithoutIPv6Aggregate` |
 | Identifier signal | form login and Basic only: a failed login for the username within the lockout policy's failure window (24 hours when the chain's engine holds no lockout policy; `lockout.WithFailureWindow`). Always false at the other three flows |
 
 ### Stated limits

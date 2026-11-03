@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 //go:generate mockgen -destination=challengeverifier_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/httpsec ChallengeVerifier
@@ -97,6 +98,23 @@ type ChallengeSignals struct {
 	// that can try both names, so combine it with SourceHasFailures or
 	// other evidence of automation before refusing.
 	IdentifierHasFailures bool
+
+	// SourceAggregateHasFailures reports at least one failure recorded for
+	// the IPv6 aggregate holding the request's source (WithIPv6Aggregate), by
+	// any source inside it, in the window of the flow's aggregate limiter. A
+	// client rotating through the /64s of its own allocation arrives at each
+	// one clean, so SourceHasFailures stays false while this reads true.
+	//
+	// It is reported apart from SourceHasFailures, which keeps its meaning:
+	// the aggregate is shared with every other source inside it, so a
+	// verifier may weigh it below the source's own failures. It is false for
+	// an IPv4 source, IPv4-mapped IPv6 addresses included, and wherever the
+	// flow's guard keeps no aggregate (WithoutIPv6Aggregate, a source prefix
+	// of /56 or wider set with WithIPv6SourcePrefix, or a flow's own limiter
+	// that reports no policy). Otherwise, an aggregate limiter that
+	// fails or cannot report recent failures, and an address that cannot be
+	// attributed, read as having failures, as for the source.
+	SourceAggregateHasFailures bool
 }
 
 // ChallengeVerifier decides whether a request has passed an automation
@@ -278,18 +296,20 @@ type challengeGate struct {
 // failures and, at form login and Basic authentication only, whether the
 // username has, within the failure window of the chain's lockout policy
 // (lockout.WithFailureWindow), so it can answer ChallengeNotNeeded for ordinary
-// traffic and ask only suspicious requests. The identifier signal is withheld
-// at the other flows, where it would let a verifier tell a known username from
-// an unknown one; ChallengeSignals says why, and what remains at login.
+// traffic and ask only suspicious requests. It is also told, apart from the
+// source's own, whether the IPv6 aggregate holding the source has recent
+// failures (WithIPv6Aggregate). The identifier signal is withheld at the other
+// flows, where it would let a verifier tell a known username from an unknown
+// one; ChallengeSignals says why, and what remains at login.
 //
 // Construction fails with a configuration error, from New, for a nil v, or an
 // interface holding a nil pointer, naming the verifier; for a second
-// EnableAutomationChallenge; for a selection (WithChallengeFlows) naming a flow
-// the chain does not enable, naming the flow; and for the default selection over
-// a chain that enables none of its four flows, such as one with only Basic
-// authentication; the error says to name Basic through WithChallengeFlows. A
-// verifier that would never be asked reads as protection the chain does not
-// have.
+// EnableAutomationChallenge; for a selection (WithChallengeFlows) naming a
+// flow the chain does not enable, naming the flow; and for the default
+// selection over a chain that enables none of its four flows, such as one
+// with only Basic authentication; the error says to name Basic through
+// WithChallengeFlows. A verifier that would never be asked reads as protection
+// the chain does not have.
 func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Option {
 	const option = "EnableAutomationChallenge"
 
@@ -333,11 +353,12 @@ func EnableAutomationChallenge(v ChallengeVerifier, opts ...ChallengeOption) Opt
 // authentication is left out unless named here
 // (WithChallengeFlows(ChallengeFlowBasicAuth, ...)): it carries credentials on
 // every request, so a challenge would be consulted on every API call. The
-// selection replaces the default, so name every flow to challenge. Selecting no flow, a value that names none of
-// the five, or a flow the chain does not enable (no EnableBasicAuth for
-// ChallengeFlowBasicAuth, say) is a configuration error from New, naming the
-// flow: a verifier no flow asks would read as protection the chain does not
-// have. So is the default selection over a chain that enables none of its four flows.
+// selection replaces the default, so name every flow to challenge. Selecting
+// no flow, a value that names none of the five, or a flow the chain does not
+// enable (no EnableBasicAuth for ChallengeFlowBasicAuth, say) is a
+// configuration error from New, naming the flow: a verifier no flow asks would
+// read as protection the chain does not have. So is the default selection over
+// a chain that enables none of its four flows.
 func WithChallengeFlows(flows ...ChallengeFlow) ChallengeOption {
 	return func(g *challengeGate) error {
 		if len(flows) == 0 {
@@ -451,8 +472,8 @@ func (c *config) wireChallenge() error {
 // refuseUnguarded is a configuration error when the verifier would stand in
 // front of a flow the chain does not enable: any flow WithChallengeFlows named
 // that is missing, or, for the default selection, the chain enabling none of
-// its four flows. Flows are checked in their declared order, so the error names the
-// first.
+// its four flows. Flows are checked in their declared order, so the error
+// names the first.
 func (g *challengeGate) refuseUnguarded(enabled map[ChallengeFlow]bool) error {
 	if g.selected {
 		for _, f := range challengeFlowsAll {
@@ -507,7 +528,8 @@ type challengeQuery struct {
 	flow ChallengeFlow
 
 	// source is the guard whose recorded failures for clientIP answer
-	// ChallengeSignals.SourceHasFailures.
+	// ChallengeSignals.SourceHasFailures and
+	// ChallengeSignals.SourceAggregateHasFailures.
 	source   sourceGuard
 	clientIP string
 
@@ -530,6 +552,22 @@ type recentFailureReader interface {
 	HasRecentFailures(ctx context.Context, clientAddr string) bool
 }
 
+// recentAggregateFailureReader is the part of ratelimit.SourceGuard that
+// answers ChallengeSignals.SourceAggregateHasFailures. It is asked for with a
+// type assertion, as recentFailureReader is, but a guard without it reports
+// no aggregate failures: only the library's guard keeps an aggregate, so one
+// without the method has none to report.
+type recentAggregateFailureReader interface {
+	HasRecentAggregateFailures(ctx context.Context, clientAddr string) bool
+}
+
+// The real guard answers both signals, so a change to either method is a
+// compile error here rather than a signal that silently reads its fallback.
+var (
+	_ recentFailureReader          = (*ratelimit.SourceGuard)(nil)
+	_ recentAggregateFailureReader = (*ratelimit.SourceGuard)(nil)
+)
+
 // signals reads what the verifier is told about q's request. Whatever cannot
 // say a source or an identifier is clean, a limiter or an attempt store that
 // fails among it, reports it as having failures, so a verifier that asks only
@@ -541,6 +579,10 @@ func (g *challengeGate) signals(ctx context.Context, q challengeQuery) Challenge
 		s.SourceHasFailures = r.HasRecentFailures(ctx, q.clientIP)
 	} else {
 		s.SourceHasFailures = true
+	}
+
+	if r, ok := q.source.(recentAggregateFailureReader); ok {
+		s.SourceAggregateHasFailures = r.HasRecentAggregateFailures(ctx, q.clientIP)
 	}
 
 	if q.identifier != "" && q.attempts != nil {

@@ -3,6 +3,7 @@ package ratelimit_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -240,6 +241,139 @@ func TestSourceGuard_HasRecentFailures(t *testing.T) {
 
 			has := g.HasRecentFailures(ctx, tc.addr)
 			tc.assert(t, has, strings.TrimSpace(rec.String()))
+		})
+	}
+}
+
+// TestSourceGuard_HasRecentAggregateFailures pins that a source never seen
+// before, inside an IPv6 aggregate whose limiter has counted failures from
+// other /64s, is reported apart from the source: its aggregate has recent
+// failures, and the source itself still has none. The failures stay below
+// every limit, so nothing is refused.
+func TestSourceGuard_HasRecentAggregateFailures(t *testing.T) {
+	t.Parallel()
+
+	errDown := errors.New("redis: connection refused to 10.0.0.9")
+
+	type testCase struct {
+		name string
+
+		// aggregate is the aggregate's limiter, nil for a guard with none.
+		aggregate func(t *testing.T) ratelimit.Limiter
+		addr      string
+		assert    func(t *testing.T, g *ratelimit.SourceGuard, has bool, logs string)
+	}
+
+	memory := func(t *testing.T) ratelimit.Limiter { return memoryLimiterOf(t, aggregateLimit) }
+
+	// permissive is a mock aggregate limiter that admits and counts anything,
+	// so the failures before the call can be recorded against it.
+	permissive := func(ctrl *gomock.Controller) *MockLimiter {
+		m := NewMockLimiter(ctrl)
+		m.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+		m.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+		return m
+	}
+
+	// unasked is an aggregate limiter that reports recent failures, but
+	// fails the case if it is asked.
+	unasked := func(t *testing.T) ratelimit.Limiter {
+		ctrl := gomock.NewController(t)
+
+		return reportingLimiter{MockLimiter: permissive(ctrl), MockRecentFailureReporter: NewMockRecentFailureReporter(ctrl)}
+	}
+
+	reporting := func(key string, has bool, err error) func(t *testing.T) ratelimit.Limiter {
+		return func(t *testing.T) ratelimit.Limiter {
+			ctrl := gomock.NewController(t)
+			r := NewMockRecentFailureReporter(ctrl)
+			r.EXPECT().HasRecentFailures(gomock.Any(), key).Return(has, err)
+
+			return reportingLimiter{MockLimiter: permissive(ctrl), MockRecentFailureReporter: r}
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a fresh /64 inside the aggregate others failed from", aggregate: memory, addr: "2001:db8:1:ff::1",
+			assert: func(t *testing.T, g *ratelimit.SourceGuard, has bool, _ string) {
+				assert.True(t, has, "the aggregate holds failures from other /64s")
+				assert.False(t, g.HasRecentFailures(t.Context(), "2001:db8:1:ff::1"),
+					"the source's own signal keeps its meaning")
+			},
+		},
+		{
+			name: "a fresh /64 in another aggregate stays clean", aggregate: memory, addr: "2001:db8:2:ff::1",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.False(t, has) },
+		},
+		{
+			name:      "the limiter is asked under the key the guard counts the aggregate by",
+			aggregate: reporting(aggregateKey, false, nil), addr: "2001:db8:1:ff::1",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.False(t, has) },
+		},
+		{
+			name: "an IPv4 source has no aggregate, and the limiter is not asked", aggregate: unasked,
+			addr:   "203.0.113.7",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.False(t, has) },
+		},
+		{
+			name: "an IPv4-mapped source has no aggregate, and the limiter is not asked", aggregate: unasked,
+			addr:   "::ffff:203.0.113.7",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.False(t, has) },
+		},
+		{
+			name: "a guard with no aggregate reports none", addr: "2001:db8:1:ff::1",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.False(t, has) },
+		},
+		{
+			name:      "an aggregate limiter that cannot answer is reported as having failures, recorded without its text",
+			aggregate: reporting(aggregateKey, false, errDown), addr: "2001:db8:1:ff::1",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, logs string) {
+				assert.True(t, has)
+				assert.Contains(t, logs, `"level":"WARN"`)
+				assert.NotContains(t, logs, "10.0.0.9")
+			},
+		},
+		{
+			name: "an aggregate limiter that does not report is reported as having failures",
+			aggregate: func(t *testing.T) ratelimit.Limiter {
+				return permissive(gomock.NewController(t))
+			},
+			addr:   "2001:db8:1:ff::1",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.True(t, has) },
+		},
+		{
+			name: "an address that cannot be attributed is reported as having failures", aggregate: memory,
+			addr:   "not-an-address",
+			assert: func(t *testing.T, _ *ratelimit.SourceGuard, has bool, _ string) { assert.True(t, has) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec, logger := newLogRecorder()
+
+			opts := []ratelimit.GuardOption{ratelimit.WithSourceGuardLogger(logger)}
+			if tc.aggregate != nil {
+				opts = append(opts, ratelimit.WithSourceGuardIPv6Aggregate(aggregateBits, tc.aggregate(t)))
+			}
+
+			g, err := ratelimit.NewSourceGuard(testFlow, memoryLimiterOf(t, sourceLimit), opts...)
+			require.NoError(t, err)
+
+			// Three failures, from three different /64s of aggregatedPrefix:
+			// one under the aggregate's limit of four, so no check is refused.
+			for i := range aggregateLimit - 1 {
+				s, err := g.Check(t.Context(), fmt.Sprintf("2001:db8:1:%x::1", i+1))
+				require.NoError(t, err)
+				g.RecordFailure(t.Context(), s)
+			}
+
+			has := g.HasRecentAggregateFailures(t.Context(), tc.addr)
+			tc.assert(t, g, has, strings.TrimSpace(rec.String()))
 		})
 	}
 }

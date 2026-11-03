@@ -531,11 +531,66 @@ func (g *SourceGuard) HasRecentFailures(ctx context.Context, clientAddr string) 
 	return has
 }
 
+// HasRecentAggregateFailures reports whether the IPv6 aggregate holding the
+// source clientAddr names has at least one failure counted in the aggregate's
+// limiter (WithSourceGuardIPv6Aggregate), under the key Check reads, however
+// far below its limit. It records nothing and refuses nothing.
+//
+// It answers false for a guard with no aggregate and for an IPv4 source,
+// IPv4-mapped IPv6 addresses included, since neither has an aggregate. Beyond
+// those, it answers true whenever it cannot say the aggregate is clean, as
+// HasRecentFailures does for the source: an address that cannot be attributed
+// to one source, an aggregate limiter that does not implement
+// RecentFailureReporter, and one that returns an error, recorded as
+// HasRecentFailures records it.
+//
+// The answer is about the allocation the source shares with others, and says
+// nothing about the source itself, which HasRecentFailures answers.
+func (g *SourceGuard) HasRecentAggregateFailures(ctx context.Context, clientAddr string) bool {
+	if !g.aggregateSet {
+		return false
+	}
+
+	addr, aggregate, err := g.keyer.keys(clientAddr, g.aggregateBits)
+	if err != nil {
+		return true
+	}
+
+	if aggregate == "" {
+		return false
+	}
+
+	r, ok := g.aggregate.(RecentFailureReporter)
+	if !ok {
+		return true
+	}
+
+	src := Source{
+		key: g.flow + keySeparator + addr, addr: addr,
+		aggregateKey: g.flow + keySeparator + aggregate, aggregateAddr: aggregate,
+	}
+
+	has, err := r.HasRecentFailures(ctx, src.aggregateKey)
+	if err != nil {
+		g.reportUnreported(ctx, src, err)
+
+		return true
+	}
+
+	return has
+}
+
 // reportUnreported writes about a limiter that could not say whether a source
 // has recent failures, as reportUnconsultableLimiter writes about a check: a
-// hang-up at debug, anything else sampled per flow at warning level.
+// hang-up at debug, anything else sampled per flow at warning level. A Source
+// carrying an aggregate address is the aggregate's limiter, and the record
+// names the aggregate too.
 func (g *SourceGuard) reportUnreported(ctx context.Context, s Source, err error) {
-	attrs := append([]slog.Attr{slog.String("source", s.addr)}, diag.Failure("limiter", err)...)
+	attrs := []slog.Attr{slog.String("source", s.addr)}
+	if s.aggregateAddr != "" {
+		attrs = append(attrs, slog.String("aggregate", s.aggregateAddr))
+	}
+	attrs = append(attrs, diag.Failure("limiter", err)...)
 
 	if contextCaused(ctx, err) {
 		g.logger.LogAttrs(ctx, slog.LevelDebug, msgUnreportedEnded, append(attrs, slog.String("flow", g.flow))...)

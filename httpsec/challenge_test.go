@@ -798,6 +798,10 @@ func (l reportingLimiter) HasRecentFailures(ctx context.Context, key string) (bo
 	return l.has(ctx, key)
 }
 
+// aggregateFailures are three sources, each its own /64 inside
+// 2001:db8:1::/56, the default IPv6 aggregate's prefix length.
+var aggregateFailures = []string{"2001:db8:1:1::1", "2001:db8:1:2::1", "2001:db8:1:3::1"}
+
 func TestChallenge_Signals(t *testing.T) {
 	t.Parallel()
 
@@ -813,8 +817,13 @@ func TestChallenge_Signals(t *testing.T) {
 		failures func(since time.Time) (int, error)
 
 		// before are logins sent first, each answered not needed and refused
-		// as a wrong password.
-		before int
+		// as a wrong password; beforeFrom are more of them, one from each
+		// address. from is the address the login under test comes from, the
+		// request's default when empty, and chainOpts are added to the chain.
+		before     int
+		beforeFrom []string
+		from       string
+		chainOpts  []httpsec.Option
 
 		assert func(t *testing.T, seen httpsec.ChallengeSignals, out served)
 	}
@@ -962,25 +971,55 @@ func TestChallenge_Signals(t *testing.T) {
 				assert.False(t, seen.SourceHasFailures)
 			},
 		},
+		{
+			name:       "a fresh /64 in a /56 others failed from: the source is clean, its aggregate is not",
+			failures:   none,
+			beforeFrom: aggregateFailures,
+			from:       "2001:db8:1:ff::1",
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.Equal(t, httpsec.ChallengeSignals{SourceAggregateHasFailures: true}, seen)
+			},
+		},
+		{
+			name:       "with no aggregate configured, a fresh /64 in a /56 others failed from reports none",
+			failures:   none,
+			beforeFrom: aggregateFailures,
+			from:       "2001:db8:1:ff::1",
+			chainOpts:  []httpsec.Option{httpsec.WithoutIPv6Aggregate()},
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.Equal(t, httpsec.ChallengeSignals{}, seen)
+			},
+		},
+		{
+			name:       "an IPv4-mapped source reports no aggregate, whatever the IPv6 aggregates hold",
+			failures:   none,
+			beforeFrom: aggregateFailures,
+			from:       "::ffff:203.0.113.7",
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.Equal(t, httpsec.ChallengeSignals{}, seen)
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			logins := tc.before + len(tc.beforeFrom) + 1
+
 			h := newAuthHarness(t)
 			h.attempts.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).
 				DoAndReturn(func(_ context.Context, _ string, since time.Time) (int, error) {
 					return tc.failures(since)
 				}).AnyTimes()
-			h.attempts.EXPECT().RecordFailure(gomock.Any(), "ada", gomock.Any()).Return(nil).Times(tc.before + 1)
+			h.attempts.EXPECT().RecordFailure(gomock.Any(), "ada", gomock.Any()).Return(nil).Times(logins)
 			h.authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
-				Return(nil, authenticate.ErrAuthenticationFailed).Times(tc.before + 1)
+				Return(nil, authenticate.ErrAuthenticationFailed).Times(logins)
 
 			var seen httpsec.ChallengeSignals
 
 			v := NewMockChallengeVerifier(gomock.NewController(t))
-			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(tc.before + 1).
+			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(logins).
 				DoAndReturn(func(_ context.Context, _ httpsec.Request, s httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
 					seen = s
 
@@ -1001,7 +1040,7 @@ func TestChallenge_Signals(t *testing.T) {
 				opts = append(opts, httpsec.WithPolicyEngine(tc.engine(t)))
 			}
 
-			chain, err := httpsec.New(opts...)
+			chain, err := httpsec.New(append(opts, tc.chainOpts...)...)
 			require.NoError(t, err)
 
 			login := func() served {
@@ -1010,6 +1049,17 @@ func TestChallenge_Signals(t *testing.T) {
 
 			for range tc.before {
 				login()
+			}
+
+			for _, addr := range tc.beforeFrom {
+				out := formLoginFrom(t, chain, addr, "ada", "wrong")
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "no failure before is refused")
+			}
+
+			if tc.from != "" {
+				tc.assert(t, seen, formLoginFrom(t, chain, tc.from, "ada", "wrong"))
+
+				return
 			}
 
 			tc.assert(t, seen, login())
