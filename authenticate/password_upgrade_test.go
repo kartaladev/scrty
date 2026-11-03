@@ -320,7 +320,7 @@ func TestPasswordUpgrade_Discard(t *testing.T) {
 
 				return upgraded, ok
 			},
-			assert: func(t *testing.T, enc *upgradingEncoder, upgraded []byte, ok bool) {
+			assert: func(t *testing.T, enc *upgradingEncoder, _ []byte, ok bool) {
 				t.Helper()
 
 				assert.False(t, ok)
