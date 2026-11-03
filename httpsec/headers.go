@@ -337,18 +337,25 @@ func WithCSP(p CSPPolicy) HeaderOption {
 // string and generates no nonce for it: use WithCSP to keep the nonce.
 //
 // Default: the headers named on EnableSecurityHeaders. A name that is not an
-// HTTP token, or a value holding a control character, fails construction.
+// HTTP token, or a value holding a control character, fails construction. So
+// does an empty or blank value for Content-Security-Policy or
+// Content-Security-Policy-Report-Only, as WithCSP does for a policy with no
+// directive: to send no policy, use WithoutHeader("Content-Security-Policy").
 func WithHeader(name, value string) HeaderOption {
 	return func(l *securityHeaders) error {
 		if !isHeaderToken(name) {
 			return newConfigError("WithHeader was given %q, which is not an HTTP header name", name)
 		}
 
+		canonical := textproto.CanonicalMIMEHeaderKey(name)
+		if (canonical == headerCSP || canonical == headerCSPReportOnly) && strings.TrimSpace(value) == "" {
+			return newConfigError("WithHeader was given an empty %s; remove the header with WithoutHeader to send none", canonical)
+		}
+
 		if hasControl(value) {
 			return newConfigError("WithHeader was given a value for %s holding a control character or line break", name)
 		}
 
-		canonical := textproto.CanonicalMIMEHeaderKey(name)
 		if canonical == headerHSTS {
 			return newConfigError("WithHeader was given %s: set it with WithHSTS, which keeps it "+
 				"off plain-HTTP responses and refuses an unsafe preload", headerHSTS)

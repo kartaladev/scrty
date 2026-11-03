@@ -637,6 +637,33 @@ func TestPolicy_BreachedLogsToTheDefaultLogger(t *testing.T) {
 	assert.Equal(t, slog.LevelError, records[0].level)
 }
 
+// TestPolicy_BreachedLogsToTheConsumerLoggerNotTheDefault pins that a logger
+// given to WithPolicyLogger receives the record and slog.Default() receives
+// nothing. It replaces the default logger, so it does not run in parallel.
+func TestPolicy_BreachedLogsToTheConsumerLoggerNotTheDefault(t *testing.T) {
+	def := &recordingHandler{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(def))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	consumer := &recordingHandler{}
+	prefix, _ := sha1Hex(breachCandidate)
+	src := NewMockBreachSource(gomock.NewController(t))
+	src.EXPECT().Range(gomock.Any(), prefix).Return(nil, errors.New("down"))
+
+	p, err := password.NewPolicy(
+		password.WithPolicyLogger(slog.New(consumer)),
+		password.Breached(src, password.Accept))
+	require.NoError(t, err)
+	require.NoError(t, p.Check(t.Context(), checkUser(), breachCandidate))
+
+	assert.Empty(t, def.all(), "the default logger must see nothing")
+
+	records := consumer.all()
+	require.Len(t, records, 1)
+	assert.Equal(t, slog.LevelError, records[0].level)
+}
+
 // lowerKeySource answers with its own keys, whatever their case: the
 // BreachSource contract says only "35 hexadecimal characters".
 type lowerKeySource struct{ entries map[string]int }

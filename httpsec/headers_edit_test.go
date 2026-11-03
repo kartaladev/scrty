@@ -420,3 +420,54 @@ func TestWithoutHeader_ContentSecurityPolicyOnAPIProfile(t *testing.T) {
 		})
 	}
 }
+
+func TestWithHeader_RefusesAnEmptyContentSecurityPolicy(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opt    httpsec.HeaderOption
+		assert func(t *testing.T, err error)
+	}
+
+	refused := func(t *testing.T, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, httpsec.ErrConfig)
+		assert.Contains(t, err.Error(), "WithoutHeader")
+	}
+
+	viaAPI := func(name, value string) httpsec.HeaderOption {
+		return httpsec.WithHeaderProfile(
+			httpsec.APIHeaders(httpsec.WithHeader(name, value)), httpsec.PathPrefix("/api/"))
+	}
+
+	cases := []testCase{
+		{name: "empty enforced policy", opt: httpsec.WithHeader("Content-Security-Policy", ""), assert: refused},
+		{name: "blank enforced policy", opt: httpsec.WithHeader("Content-Security-Policy", "  "), assert: refused},
+		{name: "tab-only enforced policy", opt: httpsec.WithHeader("Content-Security-Policy", "\t"), assert: refused},
+		{name: "empty report-only policy", opt: httpsec.WithHeader("Content-Security-Policy-Report-Only", ""), assert: refused},
+		{name: "blank report-only policy", opt: httpsec.WithHeader("Content-Security-Policy-Report-Only", "  "), assert: refused},
+		{name: "name in another case", opt: httpsec.WithHeader("content-security-policy", ""), assert: refused},
+		{name: "empty policy on the API profile", opt: viaAPI("Content-Security-Policy", ""), assert: refused},
+		{name: "empty report-only policy on the API profile", opt: viaAPI("Content-Security-Policy-Report-Only", " "), assert: refused},
+		{
+			name: "a non-empty policy builds",
+			opt:  httpsec.WithHeader("Content-Security-Policy", "default-src 'none'"),
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := httpsec.New(httpsec.EnableSecurityHeaders(tc.opt))
+			tc.assert(t, err)
+		})
+	}
+}

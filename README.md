@@ -1138,6 +1138,9 @@ SHA-1 leave the process, through the confined outbound client.
   cannot be asked: no password is set during an outage.
 - `password.Accept` lets the candidate through that rule and the next rule runs: an outage never
   stops a password change.
+  It is not silent: each such candidate writes one ERROR record with fixed text and the failure's
+  Go type, never the candidate, its hash or the error's text. The record goes to `slog.Default()`
+  as it is when the policy is built; `password.WithPolicyLogger(l)` replaces it with your logger.
 
 Either way, a caller who cancelled the request gets the context's own error, not a lookup failure.
 
@@ -1219,6 +1222,13 @@ Every profile is editable with the same editors (`WithHeader`, `WithoutHeader`,
 profile whose matcher selects a request applies. `WithHSTS`, `WithCSPReportOnly`
 and the reporting options belong to the layer, not to a profile, and a profile
 given one fails construction.
+
+A policy with no directive is refused at construction, whether it is the zero
+`CSPPolicy` given to `WithCSP` or an empty (or blank) value given to
+`WithHeader("Content-Security-Policy", "")`. The same holds for
+`Content-Security-Policy-Report-Only`. To send no policy, use
+`WithoutHeader("Content-Security-Policy")`. This is a breaking change before the
+first tag: an empty policy used to be sent as it was.
 
 ### Rolling a policy out
 
