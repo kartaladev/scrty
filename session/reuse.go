@@ -519,12 +519,13 @@ func (m *Sessions) ended(ctx context.Context, s *Session, now time.Time) error {
 	return ErrExpired
 }
 
-// reuse revokes s's family, tells the observer, reports the security event,
-// logs the fixed reason with the family, and returns ErrReused.
+// reuse revokes s's family, tells the end observers and the reuse observer,
+// reports the security event, logs the fixed reason with the family, and
+// returns ErrReused.
 //
 // A revocation that fails is returned joined with ErrReused, so the
-// request is still refused and the failure is not hidden; the observer is not
-// called then, since it is told about a revoked family.
+// request is still refused and the failure is not hidden; no observer is
+// called then, since each is told about a revoked family.
 func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot abort the revocation;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
@@ -536,6 +537,10 @@ func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 
 		return errors.Join(ErrReused, storeFailed(err, "session: the reused session's family could not be revoked"))
 	}
+
+	// First, because a reuse observer's panic is not recovered and would take
+	// these reports with it.
+	m.reportEnd(ctx, EndReport{Cause: EndReuse, User: s.UserID, Family: s.FamilyID})
 
 	if m.reuseObserver != nil {
 		m.reuseObserver(ctx, ReuseReport{

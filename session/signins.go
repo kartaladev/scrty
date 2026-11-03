@@ -191,6 +191,7 @@ func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle s
 	if _, err := m.store.DeleteFamily(ctx, family); err != nil {
 		return storeFailed(err, "session: the sign-in could not be ended")
 	}
+	m.reportEnd(ctx, EndReport{Cause: EndByHandle, User: user, Family: family})
 
 	return nil
 }
@@ -238,6 +239,7 @@ func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, cu
 
 		return n, storeFailed(err, "session: the user's other sign-ins could not be ended")
 	}
+	m.reportEnd(ctx, EndReport{Cause: EndOtherSignIns, User: user, KeptFamily: current.FamilyID})
 
 	return n, nil
 }
