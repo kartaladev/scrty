@@ -94,17 +94,17 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
 ## 4. Proof on GitHub (integration: every continuous-integration requirement; design decisions 3, 5 and 7)
 
-- [ ] 4.1 **(main session)** Push the branch to pull request #68, which carries this change, while it is a draft. Verify that no workflow job runs. Mark it ready for review, and verify that every job runs on its head commit and `ci-ok` passes. Record:
+- [x] 4.1 **(main session)** Push the branch to pull request #68, which carries this change, while it is a draft. Verify that no workflow job runs. Mark it ready for review, and verify that every job runs on its head commit and `ci-ok` passes. Record:
   - the run's wall-clock time and longest job;
   - the total job time, against run 41356788862.
-- [ ] 4.2 **(main session)** On a disposable branch from this one, open a pull request with an unformatted Go file and the throwaway invalid change from task 2.1. Verify:
+- [x] 4.2 **(main session)** On a disposable branch from this one, open a pull request with an unformatted Go file and the throwaway invalid change from task 2.1. Verify:
   - only `format` and `openspec` fail;
   - `openspec` names `zz-invalid-fixture`;
   - every other check job passes;
   - `ci-ok` runs and fails rather than being skipped.
 
   Then close the pull request and delete the branch.
-- [ ] 4.3 Check CodeQL coverage on the run from 4.1:
+- [x] 4.3 Check CodeQL coverage on the run from 4.1:
   - the Go analysis log shows packages from every module that `go.work` lists;
   - `gh api 'repos/kartaladev/scrty/code-scanning/analyses?ref=<pr ref>'` lists a `go` and an `actions` analysis for the head commit.
 

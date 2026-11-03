@@ -159,6 +159,15 @@ See `proposal.md` for why. What shapes the approach:
 - **`GO_VERSION` and the test matrix name the Go release in two places.** → A comment beside each points to the other. `module-layout`'s supported-releases requirement governs the matrix.
 - **Rollback while `ci-ok` is required.** Reverting this change removes `ci-ok`. A required check that never reports blocks every pull request. → Remove `ci-ok` from the ruleset before reverting.
 
+## Measurements
+
+Read on 2026-11-03. These drift with every run.
+
+- **Run 41674333276 on #68, with cold caches:** 11.5 minutes of wall-clock time, a longest job (`test`) of about 11 minutes, and about 38 minutes of total job time. The prediction above, a longest path of about 7.5 minutes, did not hold on this run. Task 4.4 measures a run with warm caches.
+- **Autobuild coverage (decision 5):** the Go analysis extracted packages from all nine modules that `go.work` lists, so `build-mode: autobuild` stays. It also extracts the fixtures under `testdata/layout`, and one of them, `wsunlisted`, fails to extract. Both analyses reported no alerts.
+- **A failing run (pull request #69, closed):** only `format` and `openspec` failed, `openspec` named the invalid change, and `ci-ok` ran and failed, naming both.
+- **A push just before marking a draft ready** starts two runs on one commit. The earlier one is skipped as a draft, so the commit carries a skipped `ci-ok` beside the real one. GitHub's check list reports both. Whether a required check blocks on the failed one while a skipped one exists is not yet shown, because `ci-ok` was not required on #69. The maintainer step that requires it should check this.
+
 ## Migration Plan
 
 1. Land the change. `ci-ok` and every job run on the pull request that brings it in, which also gives the first CodeQL results.
