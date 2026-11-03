@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,16 @@ import (
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
+
+// challengeFor is the seam enabled for flow. Basic authentication is outside
+// the default selection, so it is named; every other flow is in it.
+func challengeFor(flow httpsec.ChallengeFlow, v httpsec.ChallengeVerifier, opts ...httpsec.ChallengeOption) httpsec.Option {
+	if flow == httpsec.ChallengeFlowBasicAuth {
+		opts = append([]httpsec.ChallengeOption{httpsec.WithChallengeFlows(flow)}, opts...)
+	}
+
+	return httpsec.EnableAutomationChallenge(v, opts...)
+}
 
 // challengeFlow is one of the five flows the verifier can stand in front of,
 // built over a chain carrying extra, with doubles strict enough that a step the
@@ -249,9 +260,11 @@ func TestChallenge_Flows(t *testing.T) {
 		assert func(t *testing.T, run challengeRun, out served)
 	}
 
-	enabled := func(opts ...httpsec.ChallengeOption) func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+	// enabled turns the seam on for f's flow. Basic is not in the default
+	// selection, so its cases name it.
+	enabled := func(f challengeFlow, opts ...httpsec.ChallengeOption) func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
 		return func(_ *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
-			return []httpsec.Option{httpsec.EnableAutomationChallenge(v, opts...)}
+			return []httpsec.Option{challengeFor(f.flow, v, opts...)}
 		}
 	}
 
@@ -286,7 +299,7 @@ func TestChallenge_Flows(t *testing.T) {
 			},
 			testCase{
 				name: f.name + ": a refusal is the challenge-required error, before any account lookup",
-				flow: f, options: enabled(), decision: httpsec.ChallengeRefuse,
+				flow: f, options: enabled(f), decision: httpsec.ChallengeRefuse,
 				assert: func(t *testing.T, run challengeRun, out served) {
 					require.ErrorIs(t, out.err, httpsec.ErrChallengeRequired)
 					assert.False(t, run.worked(t, out), "no guarded work runs")
@@ -294,11 +307,11 @@ func TestChallenge_Flows(t *testing.T) {
 			},
 			testCase{
 				name: f.name + ": a pass lets the flow run",
-				flow: f, options: enabled(), decision: httpsec.ChallengePass, work: true, assert: proceeded,
+				flow: f, options: enabled(f), decision: httpsec.ChallengePass, work: true, assert: proceeded,
 			},
 			testCase{
 				name: f.name + ": not needed lets the flow run",
-				flow: f, options: enabled(), decision: httpsec.ChallengeNotNeeded, work: true, assert: proceeded,
+				flow: f, options: enabled(f), decision: httpsec.ChallengeNotNeeded, work: true, assert: proceeded,
 			},
 			testCase{
 				name:    f.name + ": selected explicitly, the verifier is asked",
@@ -443,6 +456,23 @@ func TestChallenge_Construction(t *testing.T) {
 				return []httpsec.Option{httpsec.EnableAutomationChallenge(v)}
 			},
 			assert: refused("EnableAutomationChallenge", "no flow"),
+		},
+		{
+			name: "the default selection over a chain that enables only Basic is refused, naming WithChallengeFlows",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{basic(t), httpsec.EnableAutomationChallenge(v)}
+			},
+			assert: refused("WithChallengeFlows", "ChallengeFlowBasicAuth"),
+		},
+		{
+			name: "Basic named in the selection builds over a Basic-only chain",
+			options: func(t *testing.T, v httpsec.ChallengeVerifier) []httpsec.Option {
+				return []httpsec.Option{
+					basic(t),
+					httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(httpsec.ChallengeFlowBasicAuth)),
+				}
+			},
+			assert: built,
 		},
 		{
 			name: "enabling the seam twice is refused",
@@ -720,7 +750,7 @@ func TestChallenge_OutageAcrossFlows(t *testing.T) {
 					return tc.verify(cancel, vctx)
 				})
 
-			run := tc.flow.build(t, false, httpsec.EnableAutomationChallenge(v))
+			run := tc.flow.build(t, false, challengeFor(tc.flow.flow, v))
 			tc.assert(t, run, run.sendWith(t, ctx))
 		})
 	}
@@ -768,6 +798,10 @@ func (l reportingLimiter) HasRecentFailures(ctx context.Context, key string) (bo
 	return l.has(ctx, key)
 }
 
+// aggregateFailures are three sources, each its own /64 inside
+// 2001:db8:1::/56, the default IPv6 aggregate's prefix length.
+var aggregateFailures = []string{"2001:db8:1:1::1", "2001:db8:1:2::1", "2001:db8:1:3::1"}
+
 func TestChallenge_Signals(t *testing.T) {
 	t.Parallel()
 
@@ -783,8 +817,13 @@ func TestChallenge_Signals(t *testing.T) {
 		failures func(since time.Time) (int, error)
 
 		// before are logins sent first, each answered not needed and refused
-		// as a wrong password.
-		before int
+		// as a wrong password; beforeFrom are more of them, one from each
+		// address. from is the address the login under test comes from, the
+		// request's default when empty, and chainOpts are added to the chain.
+		before     int
+		beforeFrom []string
+		from       string
+		chainOpts  []httpsec.Option
 
 		assert func(t *testing.T, seen httpsec.ChallengeSignals, out served)
 	}
@@ -932,25 +971,55 @@ func TestChallenge_Signals(t *testing.T) {
 				assert.False(t, seen.SourceHasFailures)
 			},
 		},
+		{
+			name:       "a fresh /64 in a /56 others failed from: the source is clean, its aggregate is not",
+			failures:   none,
+			beforeFrom: aggregateFailures,
+			from:       "2001:db8:1:ff::1",
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.Equal(t, httpsec.ChallengeSignals{SourceAggregateHasFailures: true}, seen)
+			},
+		},
+		{
+			name:       "with no aggregate configured, a fresh /64 in a /56 others failed from reports none",
+			failures:   none,
+			beforeFrom: aggregateFailures,
+			from:       "2001:db8:1:ff::1",
+			chainOpts:  []httpsec.Option{httpsec.WithoutIPv6Aggregate()},
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.Equal(t, httpsec.ChallengeSignals{}, seen)
+			},
+		},
+		{
+			name:       "an IPv4-mapped source reports no aggregate, whatever the IPv6 aggregates hold",
+			failures:   none,
+			beforeFrom: aggregateFailures,
+			from:       "::ffff:203.0.113.7",
+			assert: func(t *testing.T, seen httpsec.ChallengeSignals, _ served) {
+				assert.Equal(t, httpsec.ChallengeSignals{}, seen)
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			logins := tc.before + len(tc.beforeFrom) + 1
+
 			h := newAuthHarness(t)
 			h.attempts.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).
 				DoAndReturn(func(_ context.Context, _ string, since time.Time) (int, error) {
 					return tc.failures(since)
 				}).AnyTimes()
-			h.attempts.EXPECT().RecordFailure(gomock.Any(), "ada", gomock.Any()).Return(nil).Times(tc.before + 1)
+			h.attempts.EXPECT().RecordFailure(gomock.Any(), "ada", gomock.Any()).Return(nil).Times(logins)
 			h.authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
-				Return(nil, authenticate.ErrAuthenticationFailed).Times(tc.before + 1)
+				Return(nil, authenticate.ErrAuthenticationFailed).Times(logins)
 
 			var seen httpsec.ChallengeSignals
 
 			v := NewMockChallengeVerifier(gomock.NewController(t))
-			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(tc.before + 1).
+			v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(logins).
 				DoAndReturn(func(_ context.Context, _ httpsec.Request, s httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
 					seen = s
 
@@ -971,7 +1040,7 @@ func TestChallenge_Signals(t *testing.T) {
 				opts = append(opts, httpsec.WithPolicyEngine(tc.engine(t)))
 			}
 
-			chain, err := httpsec.New(opts...)
+			chain, err := httpsec.New(append(opts, tc.chainOpts...)...)
 			require.NoError(t, err)
 
 			login := func() served {
@@ -980,6 +1049,17 @@ func TestChallenge_Signals(t *testing.T) {
 
 			for range tc.before {
 				login()
+			}
+
+			for _, addr := range tc.beforeFrom {
+				out := formLoginFrom(t, chain, addr, "ada", "wrong")
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "no failure before is refused")
+			}
+
+			if tc.from != "" {
+				tc.assert(t, seen, formLoginFrom(t, chain, tc.from, "ada", "wrong"))
+
+				return
 			}
 
 			tc.assert(t, seen, login())
@@ -1064,7 +1144,7 @@ func TestChallenge_SignalsPerFlow(t *testing.T) {
 				chain, err := httpsec.New(
 					httpsec.WithLogger(h.logger()),
 					httpsec.EnableBasicAuth(h.basicAuthDeps()),
-					httpsec.EnableAutomationChallenge(v),
+					httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(httpsec.ChallengeFlowBasicAuth)),
 				)
 				require.NoError(t, err)
 
@@ -1181,7 +1261,8 @@ func TestChallenge_AsksBeforeThePreAuthenticationPhase(t *testing.T) {
 				}, httpsec.WithLoginLimiter(limiter)),
 				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: attempts},
 					httpsec.WithBasicAuthLimiter(limiter)),
-				httpsec.EnableAutomationChallenge(v, httpsec.WithoutChallengeRefusalCounting()),
+				httpsec.EnableAutomationChallenge(v, httpsec.WithoutChallengeRefusalCounting(),
+					httpsec.WithChallengeFlows(httpsec.ChallengeFlowFormLogin, httpsec.ChallengeFlowBasicAuth)),
 			)
 			require.NoError(t, err)
 
@@ -1344,7 +1425,8 @@ func TestChallenge_CountsAgainstSource(t *testing.T) {
 		chain, err := httpsec.New(
 			httpsec.WithLogger(h.logger()),
 			httpsec.EnableBasicAuth(h.basicAuthDeps(), httpsec.WithBasicAuthLimiter(limiter)),
-			httpsec.EnableAutomationChallenge(v, opts...),
+			httpsec.EnableAutomationChallenge(v,
+				append([]httpsec.ChallengeOption{httpsec.WithChallengeFlows(httpsec.ChallengeFlowBasicAuth)}, opts...)...),
 		)
 		require.NoError(t, err)
 
@@ -1463,5 +1545,111 @@ func TestChallenge_CountsAgainstSource(t *testing.T) {
 
 			tc.assert(t, send())
 		})
+	}
+}
+
+// TestEnableAutomationChallenge_BasicRequestFromCleanSourceConsultsNothing
+// pins that, under the default selection, a run of successful Basic requests
+// from a clean source does not consult the verifier, so it reads neither the
+// attempt store's failure count nor the limiter's recent failures on the way
+// to the password check. Form login is enabled beside Basic so the default
+// selection builds.
+func TestEnableAutomationChallenge_BasicRequestFromCleanSourceConsultsNothing(t *testing.T) {
+	t.Parallel()
+
+	const requests = 5
+
+	var verifierCalls, failureCountCalls, recentFailuresCalls atomic.Int32
+
+	h := newAuthHarness(t)
+	h.authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
+		Return(&authenticate.Authentication{Principal: testPrincipal(), Time: time.Now()}, nil).AnyTimes()
+	h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil).AnyTimes()
+	h.attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, string, time.Time) (int, error) {
+			failureCountCalls.Add(1)
+
+			return 0, nil
+		}).AnyTimes()
+
+	limiter := NewMockLimiter(gomock.NewController(t))
+	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+	limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	reporting := reportingLimiter{
+		MockLimiter: limiter,
+		has: func(context.Context, string) (bool, error) {
+			recentFailuresCalls.Add(1)
+
+			return false, nil
+		},
+	}
+
+	v := NewMockChallengeVerifier(gomock.NewController(t))
+	v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+			verifierCalls.Add(1)
+
+			return httpsec.ChallengeNotNeeded, nil
+		}).AnyTimes()
+
+	chain, err := httpsec.New(append([]httpsec.Option{
+		httpsec.WithLogger(h.logger()),
+		httpsec.EnableBasicAuth(h.basicAuthDeps(), httpsec.WithBasicAuthLimiter(reporting)),
+		httpsec.EnableAutomationChallenge(v),
+	}, alsoFormLogin(t)...)...)
+	require.NoError(t, err)
+
+	for i := range requests {
+		out := serve(t, chain, basicRequest(t.Context(), "ada", "s3cret"))
+		require.NoError(t, out.err, "request %d", i)
+		require.True(t, out.handlerRan, "request %d was not let through", i)
+	}
+
+	assert.Zero(t, verifierCalls.Load(), "the verifier was consulted on clean Basic requests")
+	assert.Zero(t, failureCountCalls.Load(), "the attempt store's FailureCount was read on clean Basic requests")
+	assert.Zero(t, recentFailuresCalls.Load(), "the limiter's HasRecentFailures was read on clean Basic requests")
+}
+
+// TestEnableAutomationChallenge_BasicNamedAsksOncePerRequest pins that Basic is
+// challenged when WithChallengeFlows names it: the verifier is asked once per
+// request, before the password check.
+func TestEnableAutomationChallenge_BasicNamedAsksOncePerRequest(t *testing.T) {
+	t.Parallel()
+
+	const requests = 3
+
+	h := newAuthHarness(t)
+	h.attempts.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).Return(0, nil).AnyTimes()
+	h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil).AnyTimes()
+
+	var asked, authenticated atomic.Int32
+
+	v := NewMockChallengeVerifier(gomock.NewController(t))
+	v.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, httpsec.Request, httpsec.ChallengeSignals) (httpsec.ChallengeDecision, error) {
+			asked.Add(1)
+
+			return httpsec.ChallengeNotNeeded, nil
+		}).Times(requests)
+	h.authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(context.Context, identity.Credentials) (*authenticate.Authentication, error) {
+			n := authenticated.Add(1)
+			assert.Equal(t, n, asked.Load(), "the verifier was not asked before the password check")
+
+			return &authenticate.Authentication{Principal: testPrincipal(), Time: time.Now()}, nil
+		}).Times(requests)
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(h.logger()),
+		httpsec.EnableBasicAuth(h.basicAuthDeps()),
+		httpsec.EnableAutomationChallenge(v, httpsec.WithChallengeFlows(httpsec.ChallengeFlowBasicAuth)),
+	)
+	require.NoError(t, err)
+
+	for i := range requests {
+		out := serve(t, chain, basicRequest(t.Context(), "ada", "s3cret"))
+		require.NoError(t, out.err, "request %d", i)
+		require.True(t, out.handlerRan, "request %d was not let through", i)
 	}
 }

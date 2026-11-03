@@ -1782,11 +1782,12 @@ type stubVerifier struct {
 func (v stubVerifier) Verify(
     ctx context.Context, r httpsec.Request, s httpsec.ChallengeSignals,
 ) (httpsec.ChallengeDecision, error) {
-    // Ordinary traffic is not asked; a source with recent failures is. The
+    // Ordinary traffic is not asked; a source with recent failures is, and so
+    // is a fresh IPv6 /64 inside an aggregate others failed from. The
     // identifier signal is not a reason to challenge on its own: it can tell
     // a known account from an unknown one (see the stated limits below), so
     // read it only together with other evidence of automation.
-    if !s.SourceHasFailures {
+    if !s.SourceHasFailures && !s.SourceAggregateHasFailures {
         return httpsec.ChallengeNotNeeded, nil
     }
 
@@ -1814,13 +1815,18 @@ chain, err := httpsec.New(
 
 Once enabled:
 
-- form login, Basic, the magic-link request, the passwordless passkey begin and
-  the recovery start ask the verifier, after their source limit and before
-  their own work and any account lookup. `WithChallengeFlows(...)` narrows
-  them, and may name only flows the chain enables: a flow it does not enable,
-  or the default selection over a chain that enables none of the five, fails
-  `New` with `ErrConfig` naming the flow, because the verifier would never be
-  asked and the chain would look protected when it is not;
+- form login, the magic-link request, the passwordless passkey begin and the
+  recovery start ask the verifier, after their source limit and before their
+  own work and any account lookup. Basic is not in that default: it carries
+  credentials on every request, so a challenge would be consulted on every API
+  call. Name it to challenge it, as in
+  `WithChallengeFlows(httpsec.ChallengeFlowBasicAuth, httpsec.ChallengeFlowFormLogin)`;
+  the option replaces the default selection with the flows it names, and may
+  name only flows the chain enables. A flow it does not enable, or the default
+  selection over a chain that enables none of the four default flows (a chain
+  with only Basic, say), fails `New` with `ErrConfig` naming `WithChallengeFlows`
+  or the flow, because the verifier would never be asked and the chain would
+  look protected when it is not;
 - `ChallengePass` and `ChallengeNotNeeded` let the request through;
   `ChallengeRefuse` refuses it with `ErrChallengeRequired` (403). The refusal
   counts against the flow's source limit like a failed attempt, never against
@@ -1831,21 +1837,32 @@ Once enabled:
   with fixed text, the verifier's error reachable through `errors.Is` and
   `errors.As` but never in the text or a log record, charged to nothing. A
   client that hangs up while the verifier runs fails with its context's error;
-- the verifier is told whether the source has recent failures and, at form login
-  and Basic only, whether the username has (`ChallengeSignals`). The username's
-  failures count within the failure window of the chain's lockout policy
-  (`lockout.WithFailureWindow`), so the challenge and the lockout agree on what
-  "recent" means. Whatever cannot answer, a limiter or attempt store that
-  fails, or a limiter that does not implement `ratelimit.RecentFailureReporter`,
-  reads as having failures, so the verifier asks.
+- the verifier is told (`ChallengeSignals`):
+  - `SourceHasFailures`: whether the source has recent failures;
+  - `SourceAggregateHasFailures`: whether the IPv6 aggregate holding the source
+    (`WithIPv6Aggregate`, a /56 by default) has recent failures, from any
+    source inside it. A client rotating through the /64s of its allocation
+    arrives at each one clean, so this is what shows it. It is reported apart
+    from the source's own signal, which keeps its meaning, and is false for
+    IPv4 (IPv4-mapped addresses included) and for a guard with no aggregate
+    (`WithoutIPv6Aggregate`);
+  - `IdentifierHasFailures`, at form login and Basic (when named) only: whether
+    the username has failures within the failure window of the chain's lockout
+    policy (`lockout.WithFailureWindow`), so the challenge and the lockout
+    agree on what "recent" means.
+
+  Whatever cannot answer, a limiter or attempt store that fails, or a limiter
+  that does not implement `ratelimit.RecentFailureReporter`, reads as having
+  failures, so the verifier asks.
 
 ### Defaults
 
 | Setting | Default |
 |---|---|
 | Verifier | none: the seam is off |
-| Flows | all five (`WithChallengeFlows`) |
+| Flows | form login, magic-link request, passwordless begin and recovery start; Basic only when named (`WithChallengeFlows`) |
 | Refusal | counted against the source limit (`WithoutChallengeRefusalCounting`) |
+| Aggregate signal | the source's IPv6 aggregate, the chain's `WithIPv6Aggregate` prefix (/56); false for IPv4 and with `WithoutIPv6Aggregate` |
 | Identifier signal | form login and Basic only: a failed login for the username within the lockout policy's failure window (24 hours when the chain's engine holds no lockout policy; `lockout.WithFailureWindow`). Always false at the other three flows |
 
 ### Stated limits
