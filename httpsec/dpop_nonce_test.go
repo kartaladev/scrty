@@ -3,6 +3,8 @@ package httpsec_test
 import (
 	"context"
 	"crypto/elliptic"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/seal"
@@ -1011,4 +1014,189 @@ func TestDPoP_ReplayedProofGetsNoNonceRefreshAndSealsNothing(t *testing.T) {
 	require.ErrorIs(t, other.err, httpsec.ErrInvalidDPoPProof)
 	assert.Empty(t, other.rec.Header().Get(headerDPoPNonce), "a refused replay is handed no nonce (other replica)")
 	assert.Equal(t, sealedBefore, sealsB.Load(), "a refused replay costs a replica no NonceCipher.Seal")
+}
+
+// pastHalfNonce is a nonce sealed by hand under key as issued at issued: one
+// the chain still accepts, and owes a replacement when it is past half its
+// lifetime. The plaintext is the version byte and the issuing second, as the
+// chain seals it.
+func pastHalfNonce(t *testing.T, key []byte, issued time.Time) string {
+	t.Helper()
+
+	var plain [9]byte
+	plain[0] = 1
+	binary.BigEndian.PutUint64(plain[1:], uint64(issued.Unix())) //nolint:gosec // G115: a clock after 1970
+
+	sealed, err := newNonceCipher(t, key).Seal(t.Context(), plain[:], []byte("scrty/httpsec:dpop-nonce:v1"))
+	require.NoError(t, err)
+
+	return base64.RawURLEncoding.EncodeToString(sealed)
+}
+
+// TestDPoP_StaleNonceRefreshesOnlyForAcceptedProofs pins that a proof whose
+// nonce is past half its lifetime is handed the next nonce only once every
+// check has accepted it: a proof refused for its binding, for a session that
+// is gone or for a missing ath is handed none, whichever endpoint it reached.
+func TestDPoP_StaleNonceRefreshesOnlyForAcceptedProofs(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+	thief := newDPoPKey(t, elliptic.P256())
+	half := httpsec.DefaultDPoPNonceLifetime / 2
+
+	// proofFor is k's proof for a GET presenting credential, carrying nonce.
+	proofFor := func(t *testing.T, k dpopKey, jti, credential, nonce string) string {
+		t.Helper()
+
+		return k.validProof(jti).with(map[string]any{"ath": tokenHash(credential), "nonce": nonce}).sign(t)
+	}
+
+	// proverWith is a proof by key for an issuing request, carrying nonce,
+	// and ath over the credential unless withAth is false.
+	proverWith := func(nonce string, withAth bool) prover {
+		return func(t *testing.T, path, credential string) string {
+			t.Helper()
+
+			if !withAth {
+				credential = ""
+			}
+
+			return key.issuingProofParts(path, "j-1", credential).with(map[string]any{"nonce": nonce}).sign(t)
+		}
+	}
+
+	// stale is a nonce past half its lifetime, by the real clock the
+	// issuing endpoints run on.
+	stale := func(t *testing.T) string {
+		t.Helper()
+
+		return pastHalfNonce(t, nonceKeyA, time.Now().Add(-half-time.Second))
+	}
+
+	// bearerRow runs one request through the bearer mode of a world whose
+	// clock stands at dpopNow.
+	type bearerRequest func(t *testing.T, w *dpopBearerWorld, nonce string) (scheme, credential, proof string)
+
+	bearerCase := func(mode bearerMode, req bearerRequest) func(t *testing.T) served {
+		return func(t *testing.T) served {
+			t.Helper()
+
+			w := newDPoPBearerWorld(t)
+			nonce := pastHalfNonce(t, nonceKeyA, w.clk.Now().Add(-half))
+			scheme, credential, proof := req(t, w, nonce)
+
+			return w.present(w.chain(mode, nonceDPoP(t, nonceKeyA)), scheme, credential, proof)
+		}
+	}
+
+	boundToken := func(t *testing.T, w *dpopBearerWorld, k dpopKey, nonce string) (string, string, string) {
+		tok := w.token(token.Confirmation{JKT: key.jkt})
+
+		return "DPoP", tok, proofFor(t, k, "j-1", tok, nonce)
+	}
+	boundReference := func(t *testing.T, w *dpopBearerWorld, k dpopKey, nonce string) (string, string, string) {
+		sid := w.session(key.jkt)
+
+		return "DPoP", sid, proofFor(t, k, "j-1", sid, nonce)
+	}
+	deletedToken := func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
+		sid := w.session(key.jkt)
+		tok, err := w.gen.GenerateWith(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject},
+			token.WithConfirmation(token.Confirmation{JKT: key.jkt}))
+		require.NoError(t, err)
+		require.NoError(t, w.sessions.Delete(t.Context(), sid))
+
+		return "DPoP", tok, proofFor(t, key, "j-1", tok, nonce)
+	}
+	deletedReference := func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
+		sid := w.session(key.jkt)
+		require.NoError(t, w.sessions.Delete(t.Context(), sid))
+
+		return "DPoP", sid, proofFor(t, key, "j-1", sid, nonce)
+	}
+
+	// issuing runs the unbound sign-in prepared by f, presented as Bearer.
+	issuing := func(build func(t *testing.T, d httpsec.DPoP) issuingFixture, withAth bool) func(t *testing.T) served {
+		return func(t *testing.T) served {
+			t.Helper()
+
+			f := build(t, httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: newNonceCipher(t, nonceKeyA)})
+
+			return f.prepare(t, "")(t, proverWith(stale(t), withAth))
+		}
+	}
+	continuing := func(ep continuingEndpoint, withAth bool) func(t *testing.T) served {
+		return issuing(func(t *testing.T, d httpsec.DPoP) issuingFixture { return ep.build(t, newIssuingBase(t), d) }, withAth)
+	}
+
+	accepted := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.NotEmpty(t, out.rec.Header().Get(headerDPoPNonce), "an accepted proof is handed the next nonce")
+		assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"), "a nonce is never cached")
+	}
+	refused := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.Error(t, out.err)
+		assert.False(t, out.handlerRan, "never reaches the handler")
+		assert.Empty(t, out.rec.Header().Get(headerDPoPNonce), "a refused proof is handed no nonce")
+	}
+
+	type testCase struct {
+		name string
+		// serve presents the case's request, whose proof carries a nonce
+		// past half its lifetime.
+		serve  func(t *testing.T) served
+		assert func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "signed bearer/accepted",
+			serve: bearerCase(signedBearer, func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
+				return boundToken(t, w, key, nonce)
+			}),
+			assert: accepted,
+		},
+		{
+			name: "session bearer/accepted",
+			serve: bearerCase(referenceBearer, func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
+				return boundReference(t, w, key, nonce)
+			}),
+			assert: accepted,
+		},
+		{name: "login/accepted", serve: issuing(func(t *testing.T, d httpsec.DPoP) issuingFixture { return loginEndpoint(t, d) }, false), assert: accepted},
+		{name: "MFA verify/accepted", serve: continuing(continuingEndpoints[0], true), assert: accepted},
+		{name: "re-authentication/accepted", serve: continuing(continuingEndpoints[1], true), assert: accepted},
+		{name: "renewal/accepted", serve: continuing(continuingEndpoints[2], true), assert: accepted},
+		{
+			name: "signed bearer/binding mismatch",
+			serve: bearerCase(signedBearer, func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
+				return boundToken(t, w, thief, nonce)
+			}),
+			assert: refused,
+		},
+		{
+			name: "session bearer/binding mismatch",
+			serve: bearerCase(referenceBearer, func(t *testing.T, w *dpopBearerWorld, nonce string) (string, string, string) {
+				return boundReference(t, w, thief, nonce)
+			}),
+			assert: refused,
+		},
+		{name: "signed bearer/deleted session", serve: bearerCase(signedBearer, deletedToken), assert: refused},
+		{name: "session bearer/deleted session", serve: bearerCase(referenceBearer, deletedReference), assert: refused},
+	}
+	for _, ep := range continuingEndpoints {
+		cases = append(cases, testCase{name: ep.name + "/proof lacking ath beside a Bearer token", serve: continuing(ep, false), assert: refused})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.serve(t))
+		})
+	}
 }
