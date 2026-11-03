@@ -16,10 +16,30 @@ import (
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
-// ErrConfig is wrapped by every error NewGenerator and NewVerifier return for a
-// wiring mistake, so a consumer can tell a contradictory configuration from a
-// failure at issue or verification time without matching on message text.
+// ErrConfig is wrapped by every error NewGenerator, NewVerifier and NewIssuer
+// return for a wiring mistake, so a consumer can tell a contradictory
+// configuration from a failure at issue or verification time without matching on
+// message text. Issuer.Issue wraps it too for a request that cannot be honoured.
 var ErrConfig = errors.New("token: invalid configuration")
+
+// The types a token declares in its typ header, one per kind of token. A
+// verifier accepts only the one it is for, so a token of one kind never
+// validates as another, even under the same keys, issuer and audience.
+const (
+	// TypeFirstParty is the type of a token a Generator issues, and the one a
+	// Verifier accepts, by default. WithTokenType and WithVerifyTokenType replace
+	// it.
+	TypeFirstParty = "scrty+jwt"
+
+	// TypeAccessToken is the type of an OAuth access token (RFC 9068).
+	TypeAccessToken = "at+jwt"
+
+	// TypeIDToken is the type of an OpenID Connect ID token.
+	TypeIDToken = "JWT"
+
+	// TypeLogoutToken is the type of a back-channel logout token.
+	TypeLogoutToken = "logout+jwt" //nolint:gosec // G101: a media type, not a credential
+)
 
 // defaultLifetime is how long an issued token is valid with no lifetime
 // configured.
@@ -32,9 +52,9 @@ const defaultLifetime = 15 * time.Minute
 // unauthenticated request can buy bounded.
 const defaultMaxTokenSize = 8 << 10
 
-// config is the shared state of a generator and a verifier. Both are built
-// from it so that a generator verifies under exactly the rules it issues
-// under.
+// config is the shared state of a generator, a verifier and an issuer. They are
+// built from it so that a generator verifies under exactly the rules it issues
+// under, and an issuer signs as a generator does.
 type config struct {
 	keys     signingkey.KeySource
 	issuer   string
@@ -46,6 +66,10 @@ type config struct {
 	// subject is which of the principal's values a generator writes as sub.
 	// A verifier reads no principal, and leaves it at its zero value.
 	subject SubjectMode
+
+	// tokenType is the typ a generator declares and the type a verification
+	// accepts.
+	tokenType string
 
 	// maxTokenSize bounds the string Verify will look at, in bytes.
 	maxTokenSize int
@@ -70,6 +94,13 @@ type config struct {
 	// configured or waived, and never both.
 	issuerWaived   bool
 	audienceWaived bool
+
+	// algSet, subjectSet and tokenTypeSet record that the consumer applied
+	// WithSigningAlg, WithUsernameSubject and WithTokenType, so NewIssuer can
+	// refuse them whatever value they carry, including the default's.
+	algSet       bool
+	subjectSet   bool
+	tokenTypeSet bool
 }
 
 func newConfig() *config {
@@ -77,6 +108,7 @@ func newConfig() *config {
 		lifetime:     defaultLifetime,
 		alg:          signingkey.RS256,
 		clock:        clock.System(),
+		tokenType:    TypeFirstParty,
 		maxTokenSize: defaultMaxTokenSize,
 	}
 }
@@ -260,15 +292,20 @@ func (c *config) validate() error {
 
 // validateLifetime refuses a token lifetime that cannot be honoured.
 func (c *config) validateLifetime() error {
-	if c.lifetime <= 0 {
-		return fmt.Errorf("%w: lifetime must be positive, got %s", ErrConfig, c.lifetime)
+	return c.checkLifetime(c.lifetime)
+}
+
+// checkLifetime refuses lifetime when a token cannot be issued for that long.
+func (c *config) checkLifetime(lifetime time.Duration) error {
+	if lifetime <= 0 {
+		return fmt.Errorf("%w: lifetime must be positive, got %s", ErrConfig, lifetime)
 	}
 
 	// Expiry is recorded in whole seconds, so a fractional lifetime would issue
 	// tokens that expire at an instant the consumer did not ask for.
-	if c.lifetime%time.Second != 0 {
+	if lifetime%time.Second != 0 {
 		return fmt.Errorf("%w: lifetime must be a whole number of seconds, at least 1s, got %s",
-			ErrConfig, c.lifetime)
+			ErrConfig, lifetime)
 	}
 
 	// A key source that reports its own lifetimes lets the cap be checked here.
@@ -284,16 +321,54 @@ func (c *config) validateLifetime() error {
 		return nil
 	}
 	window := reporter.KeyLifetime() - reporter.RotateInterval()
-	if c.lifetime > window {
+	if lifetime > window {
 		return fmt.Errorf(
 			"%w: lifetime %s exceeds the key source's usable window %s "+
 				"(key lifetime %s minus rotate interval %s); "+
 				"tokens would outlive the key that signed them",
-			ErrConfig, c.lifetime, window,
+			ErrConfig, lifetime, window,
 			reporter.KeyLifetime(), reporter.RotateInterval())
 	}
 
 	return nil
+}
+
+// validateFirstPartyType refuses a type a first-party token cannot declare: a
+// blank one, and the type of another kind of token.
+func (c *config) validateFirstPartyType() error {
+	wanted := normalizeTokenType(c.tokenType)
+	if strings.TrimSpace(wanted) == "" {
+		return fmt.Errorf("%w: the token type given to WithTokenType is empty or blank", ErrConfig)
+	}
+	for _, reserved := range []string{TypeAccessToken, TypeIDToken, TypeLogoutToken} {
+		if wanted == normalizeTokenType(reserved) {
+			return fmt.Errorf("%w: the token type %q given to WithTokenType is reserved for another kind of token",
+				ErrConfig, c.tokenType)
+		}
+	}
+
+	return nil
+}
+
+// normalizeTokenType is the form two types are compared in: ASCII lower case,
+// with an "application/" prefix dropped, as RFC 7515 section 4.1.9 lets a type
+// be written either way. Only ASCII letters fold: Unicode folding would equate
+// a dotted capital I with i and the Kelvin sign with k, so a type spelled with
+// them would pass for one it is not.
+func normalizeTokenType(typ string) string {
+	return strings.TrimPrefix(asciiLower(typ), "application/")
+}
+
+// asciiLower lower-cases the ASCII letters of s and leaves every other byte as
+// it is.
+func asciiLower(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+
+		return r
+	}, s)
 }
 
 // nilPort reports whether port is nil, or a non-nil interface holding a nil

@@ -117,7 +117,9 @@ func validClaims(now time.Time) map[string]any {
 }
 
 // signRaw builds a compact JWS by hand: the claims are signed with signer
-// under alg, and kid is written into the protected header unless it is empty.
+// under alg, kid is written into the protected header unless it is empty, and
+// typ declares the first-party type, so a row is refused for what it targets
+// rather than for its type.
 //
 // Hand-building is deliberate here. Asking the library to produce a token
 // without a kid, or one naming an algorithm the key does not use, would test
@@ -139,7 +141,10 @@ func signRaw(t *testing.T, signer crypto.Signer, kid string, alg signingkey.Alg,
 	signature, ok := jwa.LookupSignatureAlgorithm(alg)
 	require.True(t, ok, "unknown algorithm %q", alg)
 
-	signed, err := jws.Sign(payload, jws.WithKey(signature, key))
+	headers := jws.NewHeaders()
+	require.NoError(t, headers.Set(jws.TypeKey, token.TypeFirstParty))
+
+	signed, err := jws.Sign(payload, jws.WithKey(signature, key, jws.WithProtectedHeaders(headers)))
 	require.NoError(t, err)
 
 	return string(signed)

@@ -33,6 +33,7 @@ var allowedJOSECalls = map[string]string{
 	// verification can select the key.
 	"jws.NewHeaders":           "builds the protected header",
 	"jws.KeyIDKey":             "the kid header parameter",
+	"jws.TypeKey":              "the typ header parameter, declaring the kind of token",
 	"jws.WithProtectedHeaders": "attaches the protected header when signing",
 	"jwt.NewBuilder":           "builds the claim set",
 	"jwt.Sign":                 "signs the claim set",
@@ -53,6 +54,7 @@ var allowedJOSECalls = map[string]string{
 	// Verification: the key set, the caller's context, and the validation
 	// rules built once at construction.
 	"jwt.Parse":             "the one verification call",
+	"jws.Parse":             "reads the typ of a token jwt.Parse has already verified; it decides nothing about the signature",
 	"jwt.ParseOption":       "the type the validation rules travel as",
 	"jwt.WithKeySet":        "pins verification to the key source's current set",
 	"jwt.WithContext":       "propagates the caller's context",
