@@ -294,3 +294,42 @@ func keysOf[K comparable, V any](m map[K]V) []K {
 	}
 	return out
 }
+
+// RunSessionListAcrossReplicas holds a durable session store to listing a
+// user's sign-ins from the database, not from the instance that created them.
+// It creates one sign-in through the store h.New returns and another, for the
+// same user, through a second instance h.NewReplica returns, then lists the
+// user through each and requires both families on both, and no other user's.
+//
+// It fails at once, naming every missing input, when h is missing one.
+func RunSessionListAcrossReplicas[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	h.Require(t)
+
+	t.Run("a user signed in through two replicas is listed by both", func(t *testing.T) {
+		first, replica := h.New(t), h.NewReplica(t)
+		const user = identity.UserID("replicas-user")
+		viaFirst := withSignInState(familySession("replicas-first", user, suiteID(2501)))
+		viaReplica := withSignInState(familySession("replicas-second", user, suiteID(2502)))
+		stranger := familySession("replicas-stranger", "replicas-other-user", suiteID(2503))
+		require.NoError(t, first.Create(t.Context(), viaFirst))
+		require.NoError(t, replica.Create(t.Context(), viaReplica))
+		require.NoError(t, replica.Create(t.Context(), stranger))
+
+		now := suiteStart.Add(time.Minute)
+		for name, s := range map[string]session.Store{"the first replica": first, "the second replica": replica} {
+			listed, err := s.ListByUser(t.Context(), user, now)
+			require.NoError(t, err, name)
+			byFamily := map[id.ID]*session.Session{}
+			for _, l := range listed {
+				require.NotNil(t, l, "%s: a listing holds no nil session", name)
+				byFamily[l.FamilyID] = l
+			}
+			require.ElementsMatch(t, []id.ID{suiteID(2501), suiteID(2502)}, keysOf(byFamily),
+				"%s must list the sign-in made through either replica, and no other user's", name)
+			assertListed(t, viaFirst, byFamily[suiteID(2501)])
+			assertListed(t, viaReplica, byFamily[suiteID(2502)])
+		}
+	})
+}
