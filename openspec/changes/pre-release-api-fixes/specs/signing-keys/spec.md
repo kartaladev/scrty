@@ -20,6 +20,14 @@ By default, housekeeping SHALL also delete from the key store every key it stops
 - **WHEN** the key store fails to delete a retired key during housekeeping, and the next housekeeping run finds the store working
 - **THEN** the failure is reported, the key stays unpublished, and the next run deletes it
 
+#### Scenario: Replicas delete the same retired key
+- **WHEN** two key managers sharing a store both run housekeeping over a key created 25 hours ago that is not current
+- **THEN** both runs succeed, no failure is reported, and the key is no longer in the key store
+
+#### Scenario: Deleted key not republished on reload
+- **WHEN** one replica's housekeeping deletes a retired key, and another replica sharing the store then reloads its keys
+- **THEN** the reloading replica does not publish that key
+
 #### Scenario: Current key kept
 - **WHEN** the current key was created 25 hours ago because rotation has not run, and housekeeping runs
 - **THEN** that key is still published and still signs, and is still in the key store

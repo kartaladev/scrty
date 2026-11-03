@@ -49,6 +49,12 @@ Shutdown SHALL be terminal and idempotent: a later shutdown SHALL return no erro
 #### Scenario: Wrapped sender ends its goroutine
 - **WHEN** a queued sender with one worker wraps a sender that ends its goroutine while delivering the first message, and a second message is then queued
 - **THEN** the second message is delivered
+- **AND** the failed delivery of the first message is logged
+
+#### Scenario: Several workers end their goroutines
+- **WHEN** a queued sender with two workers wraps a sender that ends its goroutine while delivering each of the first two messages, and a third message is then queued
+- **THEN** the third message is delivered
+- **AND** shutdown drains and returns no error, and no worker goroutine is left running
 
 #### Scenario: Consumer sizing
 - **WHEN** a queued sender is configured with 8 workers
@@ -57,3 +63,23 @@ Shutdown SHALL be terminal and idempotent: a later shutdown SHALL return no erro
 #### Scenario: Zero workers
 - **WHEN** a queued sender is constructed with zero workers
 - **THEN** construction fails with a configuration error
+
+### Requirement: SMTP wiring mistakes fail at construction
+Constructing the SMTP sender SHALL fail with a configuration error when no server host is given, when the port is outside 1 to 65535, or when the deadline is zero or less. The default port SHALL be 587. A message that names no sender address SHALL use the configured default sender address. A message with neither SHALL fail to send, before any network activity, with an error identifiable as a configuration error, since neither the consumer's wiring nor the message names a sender.
+
+#### Scenario: Missing host
+- **WHEN** an SMTP sender is constructed without a host
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Zero deadline
+- **WHEN** an SMTP sender is constructed with a deadline of zero
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Message overrides the default sender address
+- **WHEN** a sender configured with default sender address `no-reply@example.com` sends a message whose sender address is `support@example.com`
+- **THEN** the delivered message's sender is `support@example.com`
+
+#### Scenario: No sender address anywhere
+- **WHEN** a sender with no default sender address sends a message that names none
+- **THEN** sending fails with an error identifiable as a configuration error
+- **AND** no connection is made
