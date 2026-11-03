@@ -195,6 +195,63 @@ func WithLogger(l *slog.Logger) Option {
 // choice about where this deployment's randomness comes from.
 func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } }
 
+// WithEndObserver adds an observer told about each explicit end of a sign-in
+// through the manager. The default is none: ends happen exactly the same, and
+// no one is told. The option may be given any number of times, and observers
+// are called in the order given.
+//
+// These ends are reported, each once, after the store write returned no
+// error:
+//
+//   - a family revoked for reuse (EndReuse) and a family revoked
+//     (EndFamilyRevoked, from RevokeFamily);
+//   - a session deleted (EndDeleted, from Delete) and a sign-in ended by its
+//     handle (EndByHandle, from EndSignIn);
+//   - a user's sessions deleted (EndUserSessions, from DeleteByUser), with one
+//     kept (EndUserSessionsExcept, from DeleteByUserExcept), and a user's other
+//     sign-ins ended (EndOtherSignIns, from EndOtherSignIns);
+//   - sessions deleted by upstream session (EndExternalSession, from
+//     DeleteByExternalSession) or by user and upstream issuer
+//     (EndUserExternalIssuer, from DeleteByUserAndExternalIssuer).
+//
+// Expiry is never reported: not a session reaching its idle or absolute
+// deadline, and not the sweep removing it (DeleteExpired, or a store's own
+// housekeeping). Nor is a store write that failed, a call refused before any
+// write, or a deletion by upstream session or issuer given an empty value,
+// which by contract ends nothing.
+//
+// A store write that matched nothing and returned no error is still reported.
+// DeleteByUser and Delete cannot tell that case apart, and a report is what
+// lets an observer end what it holds for a sign-in whose sessions are already
+// gone, so an observer treats a report as idempotent and not as proof that a
+// session was removed. Only calls through the manager are seen: a consumer
+// that calls its Store directly is not reported, and neither is a port such as
+// passkey's session revoker when it was given the store rather than the
+// manager.
+//
+// Observers run synchronously on the calling goroutine, one after another, so
+// one that blocks holds the request that ended the sign-in and every observer
+// after it. They must not block. The context keeps the caller's values and not
+// its cancellation or deadline, so a client that hangs up cannot drop a report.
+// A consumer's transaction in the context is therefore joined, and if that
+// transaction later rolls back, the end reported has been undone.
+//
+// An observer returns nothing, and cannot fail or undo the end. A panic in one
+// is recovered and logged through WithLogger with fixed text, without the
+// report or the panic's value, and the next observer still runs.
+//
+// When an observer is set, Delete and DeleteByUserExcept read the session they
+// were given from the store first, to learn its user and family. A read that
+// fails does not stop the deletion: the report then leaves out what it could
+// not learn. With no observer they make no such read. With one set, each makes
+// exactly one store read before the write, inside any transaction the consumer
+// attached to the context.
+//
+// A nil observer, typed nil included, is a configuration error from New.
+func WithEndObserver(o EndObserver) Option {
+	return func(m *Sessions) { m.endObservers = append(m.endObservers, o) }
+}
+
 // CreateOption configures one session as it is created, rather than the
 // Sessions behind it.
 //

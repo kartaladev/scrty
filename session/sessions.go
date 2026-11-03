@@ -73,6 +73,10 @@ type Sessions struct {
 	reuseObserver         ReuseObserver
 	reuseObserverSupplied bool
 
+	// endObservers are told about each explicit end, in order. Only
+	// WithEndObserver and observing touch the field.
+	endObservers []EndObserver
+
 	// events is the sink WithSecurityEvents gave the manager, for the reuse
 	// it detects outside a chain.
 	events eventsink.Own
@@ -221,6 +225,11 @@ func New(opts ...Option) (*Sessions, error) {
 	}
 	if m.reuseObserverSupplied && m.reuseObserver == nil {
 		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)
+	}
+	for i, o := range m.observing() {
+		if nilcheck.IsNil(o) {
+			return nil, fmt.Errorf("%w: end observer %d must not be nil", ErrConfig, i)
+		}
 	}
 	if m.storeSupplied && nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
@@ -518,13 +527,28 @@ func (m *Sessions) Save(ctx context.Context, s *Session) error {
 
 // Delete removes the session with this identifier.
 func (m *Sessions) Delete(ctx context.Context, id string) error {
-	return storeFailed(m.store.Delete(ctx, id), "session: the session could not be deleted")
+	report := EndReport{Cause: EndDeleted}
+	if s := m.readForReport(ctx, id); s != nil {
+		report.User, report.Family = s.UserID, s.FamilyID
+	}
+
+	if err := m.store.Delete(ctx, id); err != nil {
+		return storeFailed(err, "session: the session could not be deleted")
+	}
+	m.reportEnd(ctx, report)
+
+	return nil
 }
 
 // DeleteByUser removes every session of this user, expired ones included: a
 // caller ending a user's sessions wants them gone, not filtered.
 func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	return storeFailed(m.store.DeleteByUser(ctx, user), "session: the user's sessions could not be deleted")
+	if err := m.store.DeleteByUser(ctx, user); err != nil {
+		return storeFailed(err, "session: the user's sessions could not be deleted")
+	}
+	m.reportEnd(ctx, EndReport{Cause: EndUserSessions, User: user})
+
+	return nil
 }
 
 // DeleteByUserExcept removes every session of this user except the one with
@@ -537,10 +561,18 @@ func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error
 // A keep naming another user's session, or none, is left untouched and every
 // session of this user goes; an empty keep ends them all.
 func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	report := EndReport{Cause: EndUserSessionsExcept, User: user}
+	// A keep naming another user's session keeps nothing of this user's, and
+	// that user's family is not this report's to name.
+	if s := m.readForReport(ctx, keep); s != nil && s.UserID == user {
+		report.KeptFamily = s.FamilyID
+	}
+
 	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
 	}
+	m.reportEnd(ctx, report)
 
 	return n, nil
 }
@@ -578,6 +610,9 @@ func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionI
 	if err != nil {
 		return n, storeFailed(err, "session: the provider session's sessions could not be deleted")
 	}
+	if issuer != "" && sessionID != "" {
+		m.reportEnd(ctx, EndReport{Cause: EndExternalSession, ExternalIssuer: issuer, ExternalSessionID: sessionID})
+	}
 
 	return n, nil
 }
@@ -588,6 +623,9 @@ func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user ident
 	n, err := m.store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's sessions from the issuer could not be deleted")
+	}
+	if issuer != "" {
+		m.reportEnd(ctx, EndReport{Cause: EndUserExternalIssuer, User: user, ExternalIssuer: issuer})
 	}
 
 	return n, nil
@@ -607,6 +645,7 @@ func (m *Sessions) RevokeFamily(ctx context.Context, family id.ID) (int, error) 
 	if err != nil {
 		return n, storeFailed(err, "session: the family's sessions could not be deleted")
 	}
+	m.reportEnd(ctx, EndReport{Cause: EndFamilyRevoked, Family: family})
 
 	return n, nil
 }
