@@ -187,7 +187,7 @@ W1 and M1 share no file. W1 depends only on the target names fixed below (`fmt-c
 
 **Files:** none changed. The output feeds 3.3 to 3.6.
 
-- [ ] **Step 1:** For each of `actions/checkout@v7.0.1`, `actions/setup-go@v7.0.0`, `actions/setup-node@v7.1.0`, `actions/cache` and `github/codeql-action@v4.39.2`. For `actions/cache`, two reads gave v6.1.0 and v5.1.0, so list its tags and report the newest, as the design leaves it to this task:
+- [ ] **Step 1:** For each of `actions/checkout@v7.0.1`, `actions/setup-go@v7.0.0`, `actions/setup-node@v7.1.0`, `actions/cache@v6.1.0` and `github/codeql-action@v4.39.2`:
   - read `gh api repos/<o>/<r>/git/ref/tags/<tag>`;
   - if `.object.type` is `tag`, follow it with `gh api repos/<o>/<r>/git/tags/<sha>`.
 

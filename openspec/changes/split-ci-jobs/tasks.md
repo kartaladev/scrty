@@ -9,8 +9,8 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
 ## 1. Gate targets that stand alone (design decision 2; module-layout scenario "One gate run on its own")
 
-- [ ] 1.1 Red: move `.bin` aside, then run `make lint`, `make vuln` and `make generate-check` one at a time. Record that each fails because its tool (`golangci-lint`, `govulncheck`, `mockgen`) is not found.
-- [ ] 1.2 Add one file target per tool in `tools/go.mod`, for example `$(BIN)/golangci-lint`.
+- [x] 1.1 Red: move `.bin` aside, then run `make lint`, `make vuln` and `make generate-check` one at a time. Record that each fails because its tool (`golangci-lint`, `govulncheck`, `mockgen`) is not found.
+- [x] 1.2 Add one file target per tool in `tools/go.mod`, for example `$(BIN)/golangci-lint`.
   - Each builds that one package from `tools/`, with `GOWORK=off GOBIN=$(BIN)`, and depends on `tools/go.mod` and `tools/go.sum`.
   - Make `lint`, `vuln` and `generate-check` depend on their own tool.
   - Keep `tools` installing every tool, and leave `check`'s prerequisites and its `test-isolated` recipe line unchanged.
@@ -20,7 +20,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
   - after `touch tools/go.mod`, `make -n lint` shows the reinstall;
   - `make tools` installs all five tools;
   - `make check` passes.
-- [ ] 1.3 Update the README's development section (around "`make check` is what continuous integration runs"):
+- [x] 1.3 Update the README's development section (around "`make check` is what continuous integration runs"):
   - any single gate can be run on its own;
   - CI runs each gate as its own job;
   - `make check` remains the one local command for the build gates.
@@ -29,7 +29,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
 ## 2. `make spec-check` (design decision 6; continuous-integration requirements "Spec validation checks settled specs and the changes a run touches" and "Spec validation runs locally on its own command")
 
-- [ ] 2.1 Red: `make spec-check` fails as an unknown target. Then add the target, with these defaults:
+- [x] 2.1 Red: `make spec-check` fails as an unknown target. Then add the target, with these defaults:
   - `OPENSPEC ?= npx --yes @fission-ai/openspec@1.16.0`;
   - `SPEC_BASE ?=` the merge base of `HEAD` and `main`, falling back to `origin/main` when the base is unreachable or all zeros.
 
@@ -44,7 +44,7 @@ Restore a deliberately broken file by editing it back, never with a git command 
   - **Broken settled spec:** deleting one `#### Scenario:` heading line from a requirement that has only one scenario, in a settled spec, makes it fail, naming that spec.
   - **Override:** `make spec-check OPENSPEC=openspec` uses the locally installed CLI.
   - **Build gates without Node:** `make check` still runs no OpenSpec command (`make -n check | grep -c openspec` prints `0`).
-- [ ] 2.2 Document `make spec-check` in the README's development section:
+- [x] 2.2 Document `make spec-check` in the README's development section:
   - what it validates;
   - that it needs Node `>=22.12` or a local OpenSpec CLI through `OPENSPEC=`;
   - that it is not part of `make check`.
@@ -53,12 +53,12 @@ Restore a deliberately broken file by editing it back, never with a git command 
 
 ## 3. The workflow (design decisions 1, 3, 4, 5, 7 and 8; every continuous-integration requirement)
 
-- [ ] 3.1 Resolve the commit SHA of each release design decision 8 names: `actions/checkout` v7.0.1, `actions/setup-go` v7.0.0, `actions/setup-node` v7.1.0, `actions/cache` (the design records v6.1.0 and v5.1.0 from two reads; settle the newest from the tags) and `github/codeql-action` v4.39.2. Use the GitHub API and dereference annotated tags. If a newer release exists when the work starts, use it, and report the change so the main session updates decision 8. Verify `gh api repos/<owner>/<repo>/commits/<sha>` resolves each SHA, and report the table of tags and SHAs.
-- [ ] 3.2 Add `.github/scripts/ci-needs-check.sh`. It takes the workflow file and the aggregate job's id, and fails, naming each missing id, when the aggregate's `needs` leaves out any other job in the workflow.
+- [x] 3.1 Resolve the commit SHA of each release design decision 8 names: `actions/checkout` v7.0.1, `actions/setup-go` v7.0.0, `actions/setup-node` v7.1.0, `actions/cache` v6.1.0 and `github/codeql-action` v4.39.2. Use the GitHub API and dereference annotated tags. If a newer release exists when the work starts, use it, and report the change so the main session updates decision 8. Verify `gh api repos/<owner>/<repo>/commits/<sha>` resolves each SHA, and report the table of tags and SHAs.
+- [x] 3.2 Add `.github/scripts/ci-needs-check.sh`. It takes the workflow file and the aggregate job's id, and fails, naming each missing id, when the aggregate's `needs` leaves out any other job in the workflow.
   - Use a YAML tool that is preinstalled on `ubuntu-latest`, and confirm from the runner image's documentation that it is. If none is, install one pinned in the step and report it.
   - Red: run it against a fixture workflow whose aggregate omits one job, and confirm it fails naming that job.
   - Verify it passes against a fixture that lists every job, and that `shellcheck` reports nothing.
-- [ ] 3.3 Rewrite `.github/workflows/ci.yml`:
+- [x] 3.3 Rewrite `.github/workflows/ci.yml`:
   - **Static jobs:** `format`, `vet`, `lint`, `generate`, `vuln`, `pincheck` and `tools-check`, each running its `make` target on a workflow-level `GO_VERSION`.
   - **`test`:** on the existing matrix, with `make test` and then `make test-isolated` as separate steps.
   - **Caching:** per-job `actions/cache` keys for the building jobs, and `cache: false` on setup-go.
@@ -69,19 +69,19 @@ Restore a deliberately broken file by editing it back, never with a git command 
   Verify:
   - `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` reports nothing on it;
   - every `uses:` line references a 40-character SHA (`grep -E 'uses: ' .github/workflows/ci.yml | grep -vE '@[0-9a-f]{40}( |$)'` prints nothing).
-- [ ] 3.4 Add the `codeql` job to `ci.yml`:
+- [x] 3.4 Add the `codeql` job to `ci.yml`:
   - a matrix over `go` (`build-mode: autobuild`) and `actions` (`build-mode: none`);
   - job-level permissions `security-events: write`, `contents: read` and `actions: read`;
   - the draft condition and a per-job cache.
 
   Verify `actionlint` reports nothing, and that no `python` language appears in the file.
-- [ ] 3.5 Add the `openspec` job to `ci.yml`:
+- [x] 3.5 Add the `openspec` job to `ci.yml`:
   - `fetch-depth: 0`;
   - setup-node with `lts/*`;
   - `make spec-check SPEC_BASE=<base>`, where the base is the pull request's base SHA, or the push's `before`.
 
   Verify `actionlint` reports nothing.
-- [ ] 3.6 Add the `ci-ok` aggregate job:
+- [x] 3.6 Add the `ci-ok` aggregate job:
   - `needs` lists every other job;
   - `if: always() && (<draft condition>)`;
   - one step runs `ci-needs-check.sh` on the workflow;

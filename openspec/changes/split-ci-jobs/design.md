@@ -92,6 +92,7 @@ See `proposal.md` for why. What shapes the approach:
 - **Workspace coverage.** Whether autobuild extracts every workspace module is unverified for the current CodeQL release (proposal References). A task checks the analysis log for every workspace module's packages. If any module is missing, the job switches `go` to `build-mode: manual`, with a build of each workspace module as the manual step.
 - **Python is left out**, so the archived evidence scripts are not analysed.
 - **Permissions, at job level:** `security-events: write` to upload the results, and `contents: read` and `actions: read`. The workflow-level default stays `contents: read`.
+- **Dependabot and fork pull requests.** Their token is read-only, which a job's `permissions` cannot raise, but code scanning accepts results on the `pull_request` event regardless. The workflow already runs on `pull_request`, and on `push` to `main` only, so no Dependabot branch uploads through `push`. No real Dependabot run has shown this yet: the first one after this lands is the proof.
 - **Default setup stays off.** GitHub refuses results from advanced setup while default setup is on for the same language. This is listed for the maintainer.
 - **Alternative considered:** default setup. It needs no file, but:
   - it analyses Python;
@@ -107,7 +108,7 @@ See `proposal.md` for why. What shapes the approach:
   2. `$(OPENSPEC) validate --archived`;
   3. `$(OPENSPEC) validate <name> --type change`, for each directory under `openspec/changes/` (other than `archive`) that has a file changed between `$(SPEC_BASE)` and the working tree, and still exists. A change archived by the same pull request no longer exists, and step 2 covers it.
 
-  All three use the CLI's non-interactive mode, and none uses `--strict`.
+  All three use the CLI's non-interactive mode, and none uses `--strict`. Step 3 keeps validating after a change fails and fails the target at the end, so one run names every invalid change.
 - **Defaults:**
   - `OPENSPEC ?= npx --yes @fission-ai/openspec@1.16.0`. Version 1.16.0 passed `--specs` (36/36) and `--archived` (35/35) on 2026-11-02.
   - `SPEC_BASE ?= $(shell git merge-base HEAD main)`. Locally that covers committed and uncommitted edits against `main`.
@@ -143,7 +144,7 @@ See `proposal.md` for why. What shapes the approach:
   | `actions/checkout` | v7.0.1 |
   | `actions/setup-go` | v7.0.0 |
   | `actions/setup-node` | v7.1.0 |
-  | `actions/cache` | v6.1.0 as read on 2026-11-02; a release query on 2026-11-03 returned v5.1.0 first, so task 3.1 settles it from the tags |
+  | `actions/cache` | v6.1.0 (v5.1.0, published the same day, is a backport to the v5 line) |
   | `github/codeql-action` | v4.39.2 |
 
 - **Current majors.** `ci.yml` already pins `checkout` v7.0.1 and `setup-go` v7.0.0. The other SHAs are resolved from the tags through the API when the change is implemented.
@@ -185,6 +186,7 @@ See `proposal.md` for why. What shapes the approach:
 - The repository's CodeQL default-setup state, read through the GitHub API: `not-configured`, with detected languages `actions`, `go` and `python`. Live; it drifts.
 - Rule suite 4880674338, read through the GitHub API on 2026-11-03: `code_scanning` failed with "Waiting for Code Scanning results", and every other rule passed. It confirms which rule blocks merges.
 - [CodeQL supported languages and frameworks](https://codeql.github.com/docs/codeql-overview/supported-languages-and-frameworks/), accessed 2026-11-03: Go up to 1.27.
+- [Error: 403 "Resource not accessible by integration"](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/resource-not-accessible), accessed 2026-11-03: "code scanning always allows the uploading of results when the pull_request event triggers the action run", and its recommended triggers for Dependabot branches.
 - [github/codeql PR 20675](https://github.com/github/codeql/pull/20675) and a [docker-cli autobuild fix](https://git.coopcloud.tech/p4u1/docker-cli/src/commit/24186d8008ecbd5e00b09185cd42ac88aac6f701): `autobuild` has misbehaved on multi-module repositories and `go.work` workspaces. Anecdotal and unverified for the current release; it is the reason for decision 5's coverage check.
 
 ### Spec validation
