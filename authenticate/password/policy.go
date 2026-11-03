@@ -81,8 +81,11 @@ const (
 // context words, then the breach check, then reuse. The first refusal ends the
 // check, and no later rule runs.
 //
-// The policy writes no log record, and does not keep the candidate after a
-// call returns. A Policy is safe for concurrent use.
+// The policy never logs a candidate, a hash or a context word, and does not
+// keep the candidate after a call returns. Its one log record is a
+// breach-lookup failure accepted under Accept, written at ERROR with fixed
+// text to the logger WithPolicyLogger sets (default slog.Default()). A Policy
+// is safe for concurrent use.
 type Policy struct {
 	minLength int
 	maxLength int
