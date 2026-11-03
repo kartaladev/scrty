@@ -74,8 +74,11 @@ func normalize(dir string) string {
 }
 
 var (
-	ghPRMerge  = regexp.MustCompile(`\bgh\s+pr\s+merge\b`)
-	ghPRReview = regexp.MustCompile(`\bgh\s+pr\s+review\b[^\n]*--approve\b`)
+	ghPRMerge  = regexp.MustCompile(`\bgh\b[^\n]*?\bpr\s+merge\b`)
+	ghPRReview = regexp.MustCompile(`\bgh\b[^\n]*?\bpr\s+review\b[^\n]*?\s(?:--approve|-a)\b`)
+	restMerge  = regexp.MustCompile(`/pulls/(?:\$\{\{[^}]*\}\}|[^/\s"']+)/merge\b`)
+	restReview = regexp.MustCompile(`(?i)\bevent["']?\s*[=:]\s*["']?APPROVE\b`)
+	lineCont   = regexp.MustCompile(`\\\r?\n`)
 
 	mergeActions = []string{
 		"peter-evans/enable-pull-request-automerge",
@@ -88,7 +91,9 @@ var (
 
 // AutoMergeSteps returns one "file: reason" entry, in file-name order, for each
 // workflow that approves or merges a pull request: a run step with "gh pr
-// merge" or "gh pr review --approve", a use of one of the known auto-merge or
+// merge" or "gh pr review --approve" (also -a, with gh global flags before the
+// subcommand and line continuations), a call to the REST merge endpoint or an
+// APPROVE review event, a use of one of the known auto-merge or
 // auto-approve actions at any ref, or text naming the GraphQL mutations
 // enablePullRequestAutoMerge, mergePullRequest or addPullRequestReview. A
 // workflow that is not valid YAML is reported too, since it cannot be shown
@@ -134,11 +139,18 @@ func scan(n *yaml.Node) []string {
 			}
 			switch key {
 			case "run":
-				if ghPRMerge.MatchString(val.Value) {
+				cmd := lineCont.ReplaceAllString(val.Value, " ")
+				if ghPRMerge.MatchString(cmd) {
 					reasons = append(reasons, "runs gh pr merge")
 				}
-				if ghPRReview.MatchString(val.Value) {
+				if ghPRReview.MatchString(cmd) {
 					reasons = append(reasons, "runs gh pr review --approve")
+				}
+				if restMerge.MatchString(cmd) {
+					reasons = append(reasons, "calls the pull request merge endpoint")
+				}
+				if restReview.MatchString(cmd) {
+					reasons = append(reasons, "submits an APPROVE review through the API")
 				}
 			case "uses":
 				for _, a := range mergeActions {
