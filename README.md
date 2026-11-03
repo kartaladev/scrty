@@ -274,6 +274,12 @@ session confined to that one purpose, right after they sign in. The path enrols 
 method that implements `mfa.Enroller` over a store that keeps device proofs, or those you name
 with `httpsec.WithEnrolmentMethods`; `httpsec.EnableMFAEnrolment` checks that for you.
 
+`ConfirmEnrolment` serves consumers enrolling out of band, and must never be reachable from a
+session the enrolment path confines. Once a device proof is recorded on a generation, that call
+cannot confirm that generation, but it carries no mailbox proof of its own: a begin followed by a
+valid code confirms, and so does begin, prove, begin again, then confirm, because a new begin clears
+the proof.
+
 Because a password alone would otherwise be enough to bind a second factor of an attacker's
 choosing, the path is off unless both halves are turned on together:
 

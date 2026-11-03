@@ -118,8 +118,8 @@ func refuseCharge(ctx context.Context, t *testing.T, s mfa.DeviceProofStore, gen
 // a charge counts an attempt only against an outstanding, unexpired code on
 // its generation, at most mfa.MaxEmailCodeAttempts times; and the nil
 // generation matches nothing, even an enrolment stored without one. Every
-// refused write changes nothing. The cases are sequential; RunCompleteRace and
-// RunChargeRace hold the same writes under contention.
+// refused write changes nothing. The cases are sequential; RunCompleteRace,
+// RunChargeRace and RunConfirmProofRace hold the same writes under contention.
 //
 // newStore is called once per case and must return an empty store. The store
 // takes every instant from its caller, so it needs no clock. A factory whose
@@ -377,6 +377,9 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		// suite could run them.
 		{name: newGenerationCase, assert: withDeviceProof(assertNewGeneration)},
 		{name: confirmKeepsStepCase, assert: withDeviceProof(assertConfirmKeepsStep)},
+		{name: confirmRefusedNoCodeCase, assert: withDeviceProof(assertConfirmRefusedNoCode)},
+		{name: confirmRefusedDeadCase, assert: withDeviceProof(assertConfirmRefusedDeadCode)},
+		{name: proofOnConfirmedCase, assert: withDeviceProof(assertProofOnConfirmed)},
 	}
 
 	runSuite(t, cases, withoutClock(newStore))

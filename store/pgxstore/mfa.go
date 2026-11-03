@@ -32,9 +32,10 @@ import (
 //
 // PutPending, Confirm and AcceptStep are each one conditional statement: a
 // begin over a confirmed enrolment is refused with mfa.ErrAlreadyEnrolled, a
-// second confirmation reports false, a confirmation or a step naming a
-// generation that is not the enrolment's reports false, and a step at or
-// below the recorded one reports false, each without writing, so of
+// second confirmation reports false, a confirmation of an enrolment with a
+// device proof reports false, a confirmation or a step naming a generation
+// that is not the enrolment's reports false, and a step at or below the
+// recorded one reports false, each without writing, so of
 // concurrent verifications of one step exactly one succeeds, on this process
 // or on another replica.
 //

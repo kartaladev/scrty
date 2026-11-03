@@ -47,10 +47,9 @@ type Enrolment struct {
 	// EmailCode is the code emailed to the user when the device was proven,
 	// as the store was given it (sealed at rest by a durable store). Nil means
 	// none was issued for this generation's proof, or the enrolment was
-	// completed or confirmed, or a begin cleared it. A store clears it only on
-	// Complete, Confirm or PutPending: never on expiry or when its attempts
-	// run out. An expired or exhausted code stays, and ChargeEmailCode refuses
-	// it.
+	// completed, or a begin cleared it. A store clears it only on Complete or
+	// PutPending: never on expiry or when its attempts run out. An expired or
+	// exhausted code stays, and ChargeEmailCode refuses it.
 	//
 	// A reader may still see nil for a code the store keeps: a sealing store
 	// (seal.NewEnrolmentStore) does not open a code whose EmailCodeUntil has
@@ -63,7 +62,7 @@ type Enrolment struct {
 	// that the device proof of this generation issued a code, and that record
 	// is what keeps such an enrolment from completing without the code. A store
 	// clears it only on PutPending, which starts a new generation: never on
-	// expiry, exhaustion, completion or confirmation.
+	// expiry, exhaustion or completion.
 	EmailCodeUntil time.Time
 
 	// EmailCodeAttempts counts the attempts charged against EmailCode, each
@@ -91,9 +90,10 @@ type Enrolment struct {
 //     write, so two concurrent begins cannot both replace one confirmed
 //     enrolment.
 //   - Confirm must be one conditional update — confirm only where the
-//     enrolment is pending on the generation the caller names — so a code
-//     checked against one pending secret never confirms a secret a later
-//     begin put in its place.
+//     enrolment is pending on the generation the caller names, with no device
+//     proof — so a code checked against one pending secret never confirms a
+//     secret a later begin put in its place, nor an enrolment a proof has since
+//     bound to the enrolment path.
 //   - AcceptStep must be one conditional update — set the last step to this one
 //     only where the enrolment is confirmed, is on the generation the caller
 //     names, and the recorded step is strictly lower — and report whether it
@@ -140,11 +140,18 @@ type EnrolmentStore interface {
 	PutPending(ctx context.Context, e Enrolment) error
 
 	// Confirm marks the user's pending enrolment on generation gen confirmed
-	// at the given time and records step, never moving the recorded step
-	// backwards, and clears any outstanding emailed code. It reports false,
-	// changing nothing, when there is no pending enrolment on gen to confirm:
-	// none at all, one already confirmed, or one a later begin moved to
-	// another generation. The nil generation matches nothing.
+	// at the given time and records step. It reports false, changing nothing,
+	// when there is no pending enrolment on gen to confirm: none at all, one
+	// already confirmed, or one a later begin moved to another generation. It
+	// also reports false, changing nothing, for an enrolment with a device
+	// proof, whether or not the proof issued an emailed code and whatever became
+	// of that code: only the enrolment path completes a proof. The nil
+	// generation matches nothing.
+	//
+	// The write decides, not a preceding read: on a SQL backend it is one UPDATE
+	// with every condition in its WHERE clause, so a device proof landing after
+	// a caller's read still refuses it. A store without DeviceProofStore has no
+	// device proofs, so that condition never applies to it.
 	Confirm(ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time) (bool, error)
 
 	// AcceptStep records step for user in the same operation that decides
@@ -205,7 +212,7 @@ type EnrolmentStore interface {
 //
 // Within one generation, the fields a device proof writes are written once:
 // an implementation clears EmailCodeUntil only in PutPending, and EmailCode
-// only in Complete, Confirm or PutPending — never when the code expires or
+// only in Complete or PutPending — never when the code expires or
 // runs out of attempts. A method reads them before completing to decide
 // whether a proof issued a code, so a store that clears either one early
 // lets an enrolment complete without the mailbox proof.

@@ -406,7 +406,13 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
 			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", storefix.EnrolmentGen, 1000, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND generation = $5 AND confirmed_at IS NULL`)},
+		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
+		{name: "MFA confirm of a proven enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			gen := begunOn(ctx, t, seed, "stmt-mfa-confirm-proven")
+			require.NoError(t, flag(proofs(t, seed).ProveDevice(ctx, "stmt-mfa-confirm-proven", gen, 1000, []byte("314159"), now.Add(10*time.Minute), now)))
+			started()
+			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm-proven", gen, 999, now))
+		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1000, now)))

@@ -1489,13 +1489,13 @@ func TestTOTPVerifyRace(t *testing.T) {
 }
 
 // The code that proved a device on the enrolment path must never be accepted
-// again. The single-call confirm refuses a path-proven enrolment, but the
-// store's Confirm can still reach it (the stated limit of that call: a proof
-// landing between its read and its write) with the step before, which the
-// window admits; that must not move the recorded step backwards below the
-// proving one.
-// Standalone: it drives the store's own ProveDevice and Confirm between TOTP calls.
-func TestTOTPProvingCodeNotReplayableAfterConfirm(t *testing.T) {
+// again. The store's Confirm refuses a proven enrolment, even for the step
+// before, which the window admits and which a confirmation that read the
+// enrolment before the proof would name, so the proving step stays recorded.
+// The enrolment accepts no verification while pending, and once the path
+// completes it the proving step is spent.
+// Standalone: it drives the store's own ProveDevice, Confirm and Complete between TOTP calls.
+func TestTOTPProvingCodeNotReplayableAfterPathCompletion(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
@@ -1516,12 +1516,26 @@ func TestTOTPProvingCodeNotReplayableAfterConfirm(t *testing.T) {
 	require.ErrorIs(t, m.ConfirmEnrolment(t.Context(), "u-1", previous), mfa.ErrInvalidCode,
 		"a path-proven enrolment completes only through the path")
 
+	proven, _, err := store.Get(t.Context(), "u-1")
+	require.NoError(t, err)
+
 	confirmed, err := store.Confirm(t.Context(), "u-1", gen, now.Unix()/30-1, now)
 	require.NoError(t, err)
-	require.True(t, confirmed)
+	require.False(t, confirmed, "the store's Confirm must refuse a proven enrolment")
+
+	after, _, err := store.Get(t.Context(), "u-1")
+	require.NoError(t, err)
+	assert.Equal(t, proven, after, "a refused confirmation changes nothing")
 
 	proving := codeAt(t, e.Secret, now, 6, 30*time.Second)
-	assert.Error(t, m.Verify(t.Context(), "u-1", []byte(proving)),
+	assert.ErrorIs(t, m.Verify(t.Context(), "u-1", []byte(proving)), mfa.ErrInvalidCode,
+		"the code that proved the device was accepted on a pending enrolment")
+
+	completed, err := store.Complete(t.Context(), "u-1", gen, now)
+	require.NoError(t, err)
+	require.True(t, completed)
+
+	assert.ErrorIs(t, m.Verify(t.Context(), "u-1", []byte(proving)), mfa.ErrInvalidCode,
 		"the code that proved the device was accepted again")
 }
 

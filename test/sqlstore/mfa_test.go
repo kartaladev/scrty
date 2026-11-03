@@ -99,6 +99,16 @@ func TestEnrolmentStore_CompleteRace(t *testing.T) {
 	})
 }
 
+func TestEnrolmentStore_ConfirmProofRace(t *testing.T) {
+	t.Parallel()
+
+	h := provingHarness(t)
+
+	t.Run("sqlstore", func(t *testing.T) {
+		storetest.RunConfirmProofRace(t, h, storefix.ConfirmProofRace[storetest.DeviceProofEnrolmentStore]())
+	})
+}
+
 func TestEnrolmentStore_ChargeRace(t *testing.T) {
 	t.Parallel()
 

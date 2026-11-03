@@ -39,8 +39,8 @@ func pendingOn(user identity.UserID, secret string, n int, gen id.ID) mfa.Enrolm
 
 // assertEnrolment requires the user's stored enrolment to be present and to
 // equal want in every field: the ones mfa.EnrolmentStore writes, and the
-// enrolment path's, which mfa.DeviceProofStore writes and PutPending and
-// Confirm clear. An emailed code of nil and one of no bytes are both none.
+// enrolment path's, which mfa.DeviceProofStore writes and PutPending clears.
+// An emailed code of nil and one of no bytes are both none.
 func assertEnrolment(ctx context.Context, t *testing.T, s mfa.EnrolmentStore, want mfa.Enrolment) {
 	t.Helper()
 
@@ -273,8 +273,11 @@ func confirmEnrolment(
 // as not run otherwise; RunDeviceProofSuite, which requires the port, always
 // runs them, so a store behind that suite cannot pass them unchecked.
 const (
-	newGenerationCase    = "A new pending enrolment starts a new generation"
-	confirmKeepsStepCase = "Confirmation keeps a later device-proof step"
+	newGenerationCase        = "A new pending enrolment starts a new generation"
+	confirmKeepsStepCase     = "Confirmation keeps a later device-proof step"
+	confirmRefusedNoCodeCase = "Confirmation refused after a device proof with no emailed code"
+	confirmRefusedDeadCase   = "Confirmation refused when the emailed code has expired or run out of attempts"
+	proofOnConfirmedCase     = "Device proof on a confirmed enrolment"
 )
 
 // assertNewGeneration is the case newGenerationCase: a begin over a proven
@@ -297,9 +300,22 @@ func assertNewGeneration(
 	assertEnrolment(ctx, t, s, next)
 }
 
-// assertConfirmKeepsStep is the case confirmKeepsStepCase: a confirmation at
-// a step earlier than the device proof's clears the emailed code, keeps the
-// later step, and so leaves that step spent.
+// refuseConfirmation requires a confirmation of mfaUser's enrolment on gen, at
+// step and at, to be refused, naming the case.
+func refuseConfirmation(
+	ctx context.Context, t *testing.T, s mfa.EnrolmentStore, gen id.ID, step int64, at time.Time, row string,
+) {
+	t.Helper()
+
+	confirmed, err := s.Confirm(ctx, mfaUser, gen, step, at)
+	require.NoError(t, err)
+	assert.False(t, confirmed, "%s: Confirm must report false", row)
+}
+
+// assertConfirmKeepsStep is the case confirmKeepsStepCase: a confirmation at a
+// step earlier than the device proof's is refused while the emailed code is
+// live and after it expires, changing nothing, so the proof's step, time and
+// code stay as they were. Completing the path leaves that step spent.
 //
 //nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
 func assertConfirmKeepsStep(
@@ -308,17 +324,81 @@ func assertConfirmKeepsStep(
 	begunOn(ctx, t, s, suiteID(1))
 	e := proveDevice(ctx, t, p, suiteID(1), 1001, emailCode)
 
-	at := suiteStart.Add(time.Hour)
-	confirmed, err := s.Confirm(ctx, mfaUser, suiteID(1), 1000, at)
-	require.NoError(t, err)
-	require.True(t, confirmed, "Confirmation keeps a later device-proof step: Confirm must report true")
+	for _, at := range []time.Time{chargeAt, codeUntil.Add(time.Minute)} {
+		refuseConfirmation(ctx, t, s, suiteID(1), 1000, at, confirmKeepsStepCase)
+		assertEnrolment(ctx, t, s, e)
+	}
 
-	e.ConfirmedAt, e.EmailCode = at, nil
-	assertEnrolment(ctx, t, s, e)
+	completed, err := p.Complete(ctx, mfaUser, suiteID(1), chargeAt)
+	require.NoError(t, err)
+	require.True(t, completed, "the refused confirmation must leave the proof completable")
 
 	accepted, err := s.AcceptStep(ctx, mfaUser, suiteID(1), 1001)
 	require.NoError(t, err)
 	assert.False(t, accepted, "the device-proof step 1001 is spent and must not be accepted again")
+}
+
+// assertConfirmRefusedNoCode is the case confirmRefusedNoCodeCase: a proof with
+// email confirmation off blocks a confirmation as one that issued a code does.
+//
+//nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
+func assertConfirmRefusedNoCode(
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *clockwork.FakeClock,
+) {
+	begunOn(ctx, t, s, suiteID(1))
+	e := proveDevice(ctx, t, p, suiteID(1), 1001, nil)
+
+	refuseConfirmation(ctx, t, s, suiteID(1), 1002, chargeAt, confirmRefusedNoCodeCase)
+
+	assertEnrolment(ctx, t, s, e)
+}
+
+// assertConfirmRefusedDeadCode is the case confirmRefusedDeadCase: a code that
+// can no longer be redeemed still blocks a confirmation, or a stale read would
+// walk round the mailbox proof by waiting for the code to die. The code dies by
+// its attempts, by both, and by its expiry alone.
+//
+//nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
+func assertConfirmRefusedDeadCode(
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *clockwork.FakeClock,
+) {
+	afterExpiry := codeUntil.Add(time.Minute)
+
+	begunOn(ctx, t, s, suiteID(1))
+	spent := proveDevice(ctx, t, p, suiteID(1), 1001, emailCode)
+	for range mfa.MaxEmailCodeAttempts {
+		_, charged, err := p.ChargeEmailCode(ctx, mfaUser, suiteID(1), chargeAt)
+		require.NoError(t, err)
+		require.True(t, charged, "the code must take every attempt it allows")
+	}
+	spent.EmailCodeAttempts = mfa.MaxEmailCodeAttempts
+
+	refuseConfirmation(ctx, t, s, suiteID(1), 1002, chargeAt, "out of attempts, unexpired")
+	assertEnrolment(ctx, t, s, spent)
+
+	refuseConfirmation(ctx, t, s, suiteID(1), 1002, afterExpiry, "out of attempts and expired")
+	assertEnrolment(ctx, t, s, spent)
+
+	begunOn(ctx, t, s, suiteID(2))
+	expired := proveDevice(ctx, t, p, suiteID(2), 1001, emailCode)
+
+	refuseConfirmation(ctx, t, s, suiteID(2), 1002, afterExpiry, "expired, with attempts left")
+	assertEnrolment(ctx, t, s, expired)
+}
+
+// assertProofOnConfirmed is the case proofOnConfirmedCase: the other order of
+// the confirmation and the proof, where the proof is the write refused, leaving
+// no proof and no code on the confirmed enrolment.
+//
+//nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
+func assertProofOnConfirmed(
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *clockwork.FakeClock,
+) {
+	confirmed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
+
+	refuseProof(ctx, t, p, confirmed.Generation, 1001, proofOnConfirmedCase)
+
+	assertEnrolment(ctx, t, s, confirmed)
 }
 
 // RunEnrolmentStoreSuite checks an mfa.EnrolmentStore against the contract
@@ -340,13 +420,15 @@ func assertConfirmKeepsStep(
 // count and no window. That at most the limit of concurrent charges succeed
 // is RunVerifyChargeRace's to prove.
 //
-// For a store that also implements mfa.DeviceProofStore, two more cases hold
-// the begin and the confirmation to the enrolment path: a begin starts a new
-// generation and clears the device proof, the emailed code, its expiry and
-// its attempts; and a confirmation clears the emailed code and never lowers a
-// step a device proof recorded. They need ProveDevice to seed, so for a store
-// without it they are logged as not run; RunDeviceProofSuite runs them too,
-// with the rest of that port, and fails a store without it.
+// For a store that also implements mfa.DeviceProofStore, more cases hold the
+// begin and the confirmation to the enrolment path: a begin starts a new
+// generation and clears the device proof, the emailed code, its expiry and its
+// attempts; a confirmation of a proven enrolment is refused and changes
+// nothing, whether the proof issued a code or not and whatever became of that
+// code; and a proof of a confirmed enrolment is refused. They need ProveDevice
+// to seed, so for a store without it, which has no device proofs to honour,
+// they are logged as not run. RunDeviceProofSuite runs them too, with the rest
+// of that port, and fails a store without it.
 //
 // newStore is called once per case and must return an empty store. The store
 // takes every instant from its caller, so it needs no clock.
@@ -576,6 +658,9 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		optionalCase(false, newGenerationCase, assertNewGeneration),
 		optionalCase(false, confirmKeepsStepCase, assertConfirmKeepsStep),
+		optionalCase(false, confirmRefusedNoCodeCase, assertConfirmRefusedNoCode),
+		optionalCase(false, confirmRefusedDeadCase, assertConfirmRefusedDeadCode),
+		optionalCase(false, proofOnConfirmedCase, assertProofOnConfirmed),
 	}
 	cases = append(cases, verifyAttemptCases()...)
 
