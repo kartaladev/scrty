@@ -100,9 +100,6 @@ type CredentialStore interface {
 	// Delete removes user's credential cid, and reports whether this call
 	// removed it.
 	Delete(ctx context.Context, user identity.UserID, cid id.ID) (bool, error)
-	// DeleteAwaitingSavedCodes removes every credential of user whose
-	// PendingSavedCodes reason is set, and reports how many it removed.
-	DeleteAwaitingSavedCodes(ctx context.Context, user identity.UserID) (int, error)
 	// DeleteUser removes every credential of user, and reports how many it
 	// removed.
 	DeleteUser(ctx context.Context, user identity.UserID) (int, error)
@@ -402,14 +399,6 @@ func (s *MemoryCredentialStore) Delete(_ context.Context, user identity.UserID, 
 	s.remove(c)
 
 	return true, nil
-}
-
-// DeleteAwaitingSavedCodes removes user's credentials with PendingSavedCodes
-// set, and reports how many.
-func (s *MemoryCredentialStore) DeleteAwaitingSavedCodes(_ context.Context, user identity.UserID) (int, error) {
-	return s.deleteWhere(func(c *Credential) bool {
-		return c.User == user && c.Pending&PendingSavedCodes != 0
-	}), nil
 }
 
 // DeleteUser removes every credential of user, and reports how many.

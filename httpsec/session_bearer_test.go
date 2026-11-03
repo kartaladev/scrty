@@ -211,7 +211,7 @@ func TestSessionBearer(t *testing.T) {
 				renamed.Username = "ada.renamed@example.com"
 
 				h.store.EXPECT().Load(gomock.Any(), testReference).Return(referencedSession(), nil)
-				// testSubject, the old username, now belongs to another user.
+				// testUsername, the old username, now belongs to another user.
 				// LoadByUsername has no expectation, so asking for it fails.
 				h.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(renamed, nil)
 				h.acceptsActivityWriteBack()

@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -35,11 +36,31 @@ const (
 	// AcceptStep accepts a step whatever generation it names, so a code
 	// checked against a removed secret counts for the re-enrolment.
 	mfaGenerationBlindAccept mfaDefect = "generation-blind-accept"
-	// Confirm records the step it is given, lowering a later one a device
-	// proof recorded, so the proving code can be replayed.
-	mfaStepOverwritingConfirm mfaDefect = "step-overwriting-confirm"
-	// Confirm leaves the emailed code stored on the confirmed enrolment.
-	mfaConfirmKeepsCode mfaDefect = "confirm-keeps-code"
+	// Store ignoring the device proof: Confirm confirms a proven enrolment, so
+	// a proof landing after a stale read goes round the emailed code.
+	mfaConfirmIgnoresProof mfaDefect = "store-ignoring-the-device-proof"
+	// Store honouring only a live emailed code: Confirm refuses a proven
+	// enrolment only while its code is unexpired, so waiting out the code goes
+	// round it.
+	mfaConfirmHonoursOnlyLiveCode mfaDefect = "store-honouring-only-a-live-emailed-code"
+	// Confirm refuses a proven enrolment only while its code has attempts
+	// left, so spending them goes round it.
+	mfaConfirmHonoursOnlyUnspentCode mfaDefect = "store-honouring-only-an-unspent-emailed-code"
+	// Confirm refuses a proven enrolment only when the proof issued a code, so
+	// a proof with email confirmation off does not block it.
+	mfaConfirmHonoursOnlyIssuedCode mfaDefect = "store-honouring-only-an-issued-emailed-code"
+	// Store confirming by reading and then writing: Confirm checks the proof,
+	// lets go of its lock, then writes without the condition, as a SELECT
+	// followed by an unconditional UPDATE, so a proof landing between the two
+	// and the confirmation both report success. Called one after the other it
+	// conforms, so only the race can catch it.
+	mfaConfirmReadThenWrite mfaDefect = "store-confirming-by-reading-and-then-writing"
+	// Store whose refusal still writes: Confirm of a proven enrolment reports
+	// false, and clears the emailed code the path still needs.
+	mfaConfirmRefusalWrites mfaDefect = "store-whose-refusal-still-writes"
+	// ProveDevice proves a confirmed enrolment on its generation, so a proof
+	// landing after a confirmation stores a code nothing can redeem.
+	mfaProofOnConfirmed mfaDefect = "proof-on-confirmed"
 	// ChargeEmailCode charges however many attempts were charged before.
 	mfaChargeWithoutCap mfaDefect = "charge-without-cap"
 	// ChargeEmailCode charges a code whatever its expiry.
@@ -108,12 +129,40 @@ type mfaStore struct {
 
 	mu         sync.Mutex
 	enrolments map[identity.UserID]mfa.Enrolment
+
+	// proofs, when set, holds an mfaConfirmReadThenWrite store's Confirm between
+	// its check and its write until a proof of that user lands, or its context
+	// ends, so a confirmation that passed the check always overlaps the proof
+	// racing it. Each channel closes when its user's proof is written.
+	proofs map[identity.UserID]chan struct{}
 }
 
 var _ storetest.DeviceProofEnrolmentStore = (*mfaStore)(nil)
 
 func newMFAStore(defect mfaDefect) *mfaStore {
 	return &mfaStore{defect: defect, enrolments: make(map[identity.UserID]mfa.Enrolment)}
+}
+
+// newHeldConfirmStore returns an mfaConfirmReadThenWrite store whose window
+// between check and write stays open until the proof racing it has landed.
+func newHeldConfirmStore() *mfaStore {
+	s := newMFAStore(mfaConfirmReadThenWrite)
+	s.proofs = make(map[identity.UserID]chan struct{})
+	return s
+}
+
+// proofLanded returns the channel closed when user's proof is written, and nil
+// for a store that holds nothing. The caller holds s.mu.
+func (s *mfaStore) proofLanded(user identity.UserID) chan struct{} {
+	if s.proofs == nil {
+		return nil
+	}
+	landed, ok := s.proofs[user]
+	if !ok {
+		landed = make(chan struct{})
+		s.proofs[user] = landed
+	}
+	return landed
 }
 
 func (s *mfaStore) Get(_ context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
@@ -156,7 +205,7 @@ func (s *mfaStore) PutPending(_ context.Context, e mfa.Enrolment) error {
 }
 
 func (s *mfaStore) Confirm(
-	_ context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
+	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
 ) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,15 +217,49 @@ func (s *mfaStore) Confirm(
 	if s.defect != mfaGenerationBlindConfirm && !s.onGeneration(e, gen) {
 		return false, nil
 	}
+	refused := !e.DeviceProvenAt.IsZero()
+	switch s.defect {
+	case mfaConfirmIgnoresProof:
+		refused = false
+	case mfaConfirmHonoursOnlyLiveCode:
+		refused = at.Before(e.EmailCodeUntil)
+	case mfaConfirmHonoursOnlyUnspentCode:
+		refused = e.EmailCode != nil && e.EmailCodeAttempts < mfa.MaxEmailCodeAttempts
+	case mfaConfirmHonoursOnlyIssuedCode:
+		refused = !e.EmailCodeUntil.IsZero()
+	default:
+	}
+	if refused {
+		if s.defect == mfaConfirmRefusalWrites {
+			e.EmailCode = nil
+			s.enrolments[user] = e
+		}
+		return false, nil
+	}
+	if s.defect == mfaConfirmReadThenWrite {
+		e = s.afterConfirmWindow(ctx, user)
+	}
 	e.ConfirmedAt, e.LastStep = at, max(e.LastStep, step)
-	if s.defect == mfaStepOverwritingConfirm {
-		e.LastStep = step
-	}
-	if s.defect != mfaConfirmKeepsCode {
-		e.EmailCode = nil
-	}
 	s.enrolments[user] = e
 	return true, nil
+}
+
+// afterConfirmWindow is the window between the read and the write that a real
+// store's round trips open: it lets go of s.mu, waits for the proof when the
+// store holds for one, and returns the row as it now stands, which an
+// unconditional UPDATE would write over. The caller holds s.mu, and holds it
+// again on return.
+func (s *mfaStore) afterConfirmWindow(ctx context.Context, user identity.UserID) mfa.Enrolment {
+	landed := s.proofLanded(user)
+	s.mu.Unlock()
+	if landed != nil {
+		select {
+		case <-landed:
+		case <-ctx.Done():
+		}
+	}
+	s.mu.Lock()
+	return s.enrolments[user]
 }
 
 func (s *mfaStore) AcceptStep(_ context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
@@ -230,12 +313,19 @@ func (s *mfaStore) ProveDevice(
 	defer s.mu.Unlock()
 
 	e, ok := s.enrolments[user]
-	if !ok || !s.onGeneration(e, gen) || !e.DeviceProvenAt.IsZero() || step <= e.LastStep {
+	onGen := ok && s.onGeneration(e, gen)
+	if ok && s.defect == mfaProofOnConfirmed {
+		onGen = gen != id.Nil && e.Generation == gen
+	}
+	if !onGen || !e.DeviceProvenAt.IsZero() || step <= e.LastStep {
 		return false, nil
 	}
 	e.LastStep, e.DeviceProvenAt = step, at
 	e.EmailCode, e.EmailCodeUntil, e.EmailCodeAttempts = bytes.Clone(code), codeUntil, 0
 	s.enrolments[user] = e
+	if landed := s.proofLanded(user); landed != nil {
+		close(landed)
+	}
 	return true, nil
 }
 
@@ -356,8 +446,12 @@ func (s *mfaStore) RefundVerifyAttempt(_ context.Context, user identity.UserID, 
 // The suite cases the enrolment-path variants must fail at, as the suites
 // name them.
 const (
-	newGenerationCase    = "A new pending enrolment starts a new generation"
-	confirmKeepsStepCase = "Confirmation keeps a later device-proof step"
+	newGenerationCase        = "A new pending enrolment starts a new generation"
+	confirmKeepsStepCase     = "Confirmation keeps a later device-proof step"
+	confirmRefusedNoCodeCase = "Confirmation refused after a device proof with no emailed code"
+	confirmRefusedDeadCase   = "Confirmation refused when the emailed code has expired or run out of attempts"
+	proofOnConfirmedCase     = "Device proof on a confirmed enrolment"
+	confirmProofCase         = "a confirmation and a device proof of one generation never both succeed"
 )
 
 // enrolmentPathVariants are the variants of the enrolment path's suite
@@ -380,8 +474,41 @@ var enrolmentPathVariants = []brokenVariant{
 		"nil generation: ProveDevice must report false"),
 	mfaVariant(mfaGenerationBlindConfirm, "confirm naming a replaced generation is refused"),
 	mfaVariant(mfaGenerationBlindAccept, "accept naming a removed generation is refused"),
-	mfaVariant(mfaStepOverwritingConfirm, confirmKeepsStepCase),
-	mfaVariant(mfaConfirmKeepsCode, confirmKeepsStepCase),
+	mfaVariant(mfaConfirmIgnoresProof, confirmKeepsStepCase),
+	deviceProofVariant(mfaConfirmIgnoresProof, confirmKeepsStepCase, "Confirm must report false"),
+	mfaVariant(mfaConfirmHonoursOnlyLiveCode, confirmRefusedDeadCase),
+	deviceProofVariant(mfaConfirmHonoursOnlyLiveCode, confirmKeepsStepCase, "Confirm must report false"),
+	mfaVariant(mfaConfirmHonoursOnlyUnspentCode, confirmRefusedDeadCase),
+	mfaVariant(mfaConfirmHonoursOnlyIssuedCode, confirmRefusedNoCodeCase),
+	mfaVariant(mfaProofOnConfirmed, proofOnConfirmedCase),
+	// RunDeviceProofSuite holds a store to these three on its own, so a store
+	// behind it cannot pass them by being run only through that suite.
+	deviceProofVariant(mfaConfirmHonoursOnlyIssuedCode, confirmRefusedNoCodeCase, "Confirm must report false"),
+	deviceProofVariant(mfaConfirmHonoursOnlyUnspentCode, confirmRefusedDeadCase, "Confirm must report false"),
+	deviceProofVariant(mfaProofOnConfirmed, proofOnConfirmedCase, "ProveDevice must report false"),
+	mfaVariant(mfaConfirmRefusalWrites, confirmKeepsStepCase),
+	deviceProofVariant(mfaConfirmRefusalWrites, confirmKeepsStepCase, "EmailCode"),
+	deviceProofVariant(mfaConfirmRefusalWrites, confirmRefusedDeadCase, "EmailCode"),
+	// The sequential suites pass a confirmation that reads and then writes, as
+	// the calls never overlap there, which is what the race below is for.
+	mfaVariant(mfaConfirmReadThenWrite, ""),
+	deviceProofVariant(mfaConfirmReadThenWrite, "", ""),
+	confirmProofVariant("race-confirm-proof-memory", mfa.NewMemoryEnrolmentStore, "", ""),
+	confirmProofVariant("race-confirm-proof-conforming", mfaRaceStore(mfaConforming), "", ""),
+	confirmProofVariant("race-confirm-proof-read-then-write", newHeldConfirmStore, confirmProofCase,
+		"more than one successful confirmation or device proof: 2 of 2 racers won"),
+	{
+		// A store written against mfa.EnrolmentStore alone has no device
+		// proofs, so a Confirm with no proof condition conforms: the cases
+		// that would seed a proof are logged as not run, not failed.
+		name: "mfa-enrolment-only-store-with-no-proof-condition",
+		run: func(t *testing.T) {
+			storetest.RunEnrolmentStoreSuite(t, func(t *testing.T) mfa.EnrolmentStore {
+				t.Helper()
+				return enrolmentOnlyStore{newMFAStore(mfaConfirmIgnoresProof)}
+			})
+		},
+	},
 	mfaVariant(mfaPutPendingKeepsProof, newGenerationCase),
 	mfaVariant(mfaVerifyChargeWithoutCap, "The window ends at its end instant"),
 	mfaVariant(mfaVerifyWindowNeverEnds, "The window ends at its end instant"),
@@ -429,6 +556,25 @@ func deviceProofVariant(d mfaDefect, failsCase, failsWith string) brokenVariant 
 				t.Helper()
 				return newMFAStore(d)
 			})
+		},
+		failsCase: failsCase,
+		failsWith: failsWith,
+	}
+}
+
+// confirmProofVariant races a confirmation against a device proof through
+// storefix's race inputs on a store newStore makes, shared by both instances,
+// with a pool only as wide as the race's default of 2 racers. An empty
+// failsCase is a conforming run, which the race must pass.
+func confirmProofVariant[S storetest.DeviceProofEnrolmentStore](
+	name string, newStore func() S, failsCase, failsWith string,
+) brokenVariant {
+	return brokenVariant{
+		name: name,
+		run: func(t *testing.T) {
+			h := sharedHarness(newStore)
+			h.PoolSize = 2
+			storetest.RunConfirmProofRace(t, h, storefix.ConfirmProofRace[S]())
 		},
 		failsCase: failsCase,
 		failsWith: failsWith,

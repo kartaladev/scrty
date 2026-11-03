@@ -90,9 +90,10 @@ func (s *MemoryEnrolmentStore) PutPending(_ context.Context, e Enrolment) error 
 // code belonged to. An enrolment that is already confirmed reports false: there
 // was no pending enrolment to confirm, and silently re-confirming one would
 // reset the step that makes codes single-use. So does one a later begin moved
-// to another generation, whose secret the code was never checked against.
-// Confirming clears any outstanding emailed code, and the recorded step only
-// moves forward.
+// to another generation, whose secret the code was never checked against. And
+// so does one with a device proof, which completes only through the enrolment
+// path, whatever became of its emailed code. The conditions and the write happen
+// under one lock.
 func (s *MemoryEnrolmentStore) Confirm(
 	_ context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
 ) (bool, error) {
@@ -100,16 +101,13 @@ func (s *MemoryEnrolmentStore) Confirm(
 	defer s.mu.Unlock()
 
 	e, ok := s.enrolments[user]
-	if !ok || !onPendingGeneration(e, gen) {
+	if !ok || !onPendingGeneration(e, gen) || !e.DeviceProvenAt.IsZero() {
 		return false, nil
 	}
 
 	e.ConfirmedAt = at
-	// An emailed code outstanding from a device proof can confirm nothing
-	// once the enrolment is confirmed, so it is not kept.
-	e.EmailCode = nil
-	// A device proof may already have recorded a later step; the recorded step
-	// only moves forward, or the proving code could be replayed.
+	// The forward-only step is a safety net against replaying a proving code,
+	// not a guarantee of the port.
 	e.LastStep = max(e.LastStep, step)
 	s.enrolments[user] = e
 

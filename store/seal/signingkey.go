@@ -57,6 +57,8 @@ type signingKeyStore struct {
 // of inner, or of c while sealing, is returned the same way; nothing is
 // stored when sealing fails.
 //
+// Delete forwards to inner, since it has nothing to seal.
+//
 // By default a load re-seals, under the active key, every key that opened
 // under another one, and hands the old and new values to r. A failed
 // re-seal, or a cipher that cannot say which key is active, never fails the
@@ -135,6 +137,12 @@ func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, err
 	}
 
 	return recs, nil
+}
+
+// Delete forwards to inner: a delete has nothing to seal or open. A failure is
+// returned with fixed text, inner's error reachable through errors.Is and errors.As.
+func (s *signingKeyStore) Delete(ctx context.Context, kids ...string) error {
+	return diag.Wrap(s.inner.Delete(ctx, kids...), "seal: the inner store could not delete the signing keys")
 }
 
 // staleKey is a loaded record, by index, that opened under a retired key: the

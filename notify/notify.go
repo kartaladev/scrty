@@ -77,9 +77,16 @@ var (
 )
 
 // ErrConfig is wrapped by every error a constructor in this package returns
-// for a wiring mistake, and by the error QueuedSender.Shutdown returns when it
-// is given a nil context, so a consumer can tell a contradictory configuration
+// for a wiring mistake, so a consumer can tell a contradictory configuration
 // from a failure at send time without matching on message text.
+//
+// Two errors outside the constructors wrap it too, because each is a wiring
+// mistake that only a call can reveal:
+//
+//   - SMTPSender.Send, for a message with no From through a sender with no
+//     default address (WithSMTPFrom): neither the wiring nor the message names
+//     a sender. It is refused before any connection is made.
+//   - QueuedSender.Shutdown, when it is given a nil context.
 var ErrConfig = errors.New("notify: invalid configuration")
 
 // refuseUnsafeHeaders rejects a message whose header fields could inject

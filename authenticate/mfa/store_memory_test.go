@@ -753,21 +753,33 @@ func TestDeviceProofPort(t *testing.T) {
 
 		// Confirm
 		{
-			name: "Confirm clears an outstanding emailed code and keeps the step forward",
+			name: "Confirm refuses a device proof with an emailed code and changes nothing",
 			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (result, error) {
 				provenOn(t, s, "u-1", g1, now)
 				ok, err := s.Confirm(t.Context(), "u-1", g1, 4, later)
 
 				return result{ok: ok, e: stored(t, s, "u-1")}, err
 			},
-			assert: func(t *testing.T, got result, err error) {
+			assert: refusedUnchanged(provenG1),
+		},
+		{
+			name: "Confirm refuses a device proof with no emailed code and changes nothing",
+			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (result, error) {
+				pendingOn(t, s, "u-1", g1)
+				proved, err := s.ProveDevice(t.Context(), "u-1", g1, 5, nil, time.Time{}, now)
 				require.NoError(t, err)
-				assert.True(t, got.ok)
-				assert.Equal(t, later, got.e.ConfirmedAt)
-				assert.Nil(t, got.e.EmailCode, "a confirmed enrolment keeps no emailed code")
-				assert.Equal(t, until, got.e.EmailCodeUntil, "confirmation keeps the record that a code was issued")
-				assert.Equal(t, int64(5), got.e.LastStep, "the recorded step never moves backwards")
+				require.True(t, proved)
+
+				ok, err := s.Confirm(t.Context(), "u-1", g1, 6, later)
+
+				return result{ok: ok, e: stored(t, s, "u-1")}, err
 			},
+			assert: refusedUnchanged(func() mfa.Enrolment {
+				e := pendingG1()
+				e.LastStep, e.DeviceProvenAt = 5, now
+
+				return e
+			}),
 		},
 	}
 

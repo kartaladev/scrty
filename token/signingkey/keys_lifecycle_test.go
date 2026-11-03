@@ -560,8 +560,8 @@ func TestKeys_ServedAfterShutdown(t *testing.T) {
 // parked again.
 //
 // The manager runs RS256 only, rotates hourly, reloads every minute and sweeps
-// hourly. Housekeeping touches no store, so the counts are rotation's writes
-// and reload's loads; construction's own load and write are zeroed first.
+// hourly. The counts are rotation's writes, and reload's and housekeeping's
+// loads; construction's own load and write are zeroed first.
 // Standalone: its manager runs on a controlled clock over a counting store.
 func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 	type testCase struct {
@@ -577,7 +577,8 @@ func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 
 				advance(t, clk, time.Hour, loopCount)
 				assert.Equal(t, 1, store.stores(), "one rotation for the one configured algorithm")
-				assert.Equal(t, 1, store.loads(), "one reload: the minute intervals inside the hour did not each run")
+				assert.Equal(t, 2, store.loads(),
+					"one reload, since the minute intervals inside the hour did not each run, and one housekeeping listing")
 			},
 		},
 		{
@@ -608,7 +609,7 @@ func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 
 				advance(t, clk, 5*time.Hour, loopCount)
 				assert.Equal(t, 1, store.stores(), "five hourly intervals at once rotate once, not five times")
-				assert.Equal(t, 1, store.loads(), "and reload once, not three hundred times")
+				assert.Equal(t, 2, store.loads(), "and reload and sweep once each, not hundreds of times")
 
 				advance(t, clk, time.Hour-time.Nanosecond, loopCount)
 				assert.Equal(t, 1, store.stores(), "the next rotation is a full interval after the jump")
@@ -767,8 +768,10 @@ func TestRestartedManager(t *testing.T) {
 		{
 			name: "refuses tokens from a key past its lifetime",
 			seed: func(t *testing.T) ([]signingkey.Record, signingkey.Record) {
+				// Replaced 29 days ago, so nothing but its age is left to keep it.
 				old := realRecord(t, epoch.Add(-30*24*time.Hour))
-				return []signingkey.Record{old, realRecord(t, epoch)}, old
+				replacement := realRecord(t, epoch.Add(-29*24*time.Hour))
+				return []signingkey.Record{old, replacement, realRecord(t, epoch)}, old
 			},
 			start: true,
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, old signingkey.Record) {
@@ -815,8 +818,9 @@ func TestRestartedManager(t *testing.T) {
 		{
 			name: "manager never started drops a past-lifetime key",
 			seed: func(t *testing.T) ([]signingkey.Record, signingkey.Record) {
+				// Replaced on time, an hour later, by the key still current.
 				old := realRecord(t, epoch.Add(-25*time.Hour))
-				return []signingkey.Record{old, realRecord(t, epoch)}, old
+				return []signingkey.Record{old, realRecord(t, epoch.Add(-24*time.Hour))}, old
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, old signingkey.Record) {
 				published, err := km.VerificationKeys(t.Context())
@@ -950,6 +954,7 @@ func TestShutdownAfterSeveralLoopRuns(t *testing.T) {
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(30*time.Minute),
 		signingkey.WithKeyLifetime(24*time.Hour),
+		signingkey.WithRetiredKeysKept(), // so reload is the only thing listing the store
 	)
 	require.NoError(t, err)
 	require.NoError(t, km.Start(t.Context()))

@@ -331,7 +331,7 @@ func TestEnableCertificateBinding_Construction(t *testing.T) {
 				return []httpsec.Option{
 					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 						Authenticator: b.authn, Sessions: b.sessions,
-						Tokens:   NewMockGenerator(gomock.NewController(t)),
+						Tokens:   newMockGenerator(gomock.NewController(t)),
 						Attempts: must.Must(lockout.NewMemoryAttemptStore()),
 					}),
 					b.bearer(),

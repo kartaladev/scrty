@@ -1,6 +1,7 @@
 package httpsec_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token"
 )
 
 // errRecoveryCodesConsumerRefused is what a consumer's own gate refuses a
@@ -385,18 +387,25 @@ func TestRecoveryCodes(t *testing.T) {
 		{
 			name: "a GET for a user with no set counts none, which is low",
 			arrange: func(t *testing.T, h *recoveryHarness) {
-				// The token's username names a user with no set, and the
-				// session is that user's own: a session authenticates only the
-				// user it records, so the loader and the session must agree.
+				// The token names a user with no set, and the session is that
+				// user's own: a session authenticates only the user it records,
+				// so the loader, the token and the session must all agree.
 				withoutSet := &identity.Details{ID: "u-without-set", Username: e2eAddress, Active: true}
 
 				users := NewMockUserLoader(gomock.NewController(t))
-				users.EXPECT().LoadByUsername(gomock.Any(), e2eAddress).Return(withoutSet, nil).AnyTimes()
 				users.EXPECT().LoadByUserID(gomock.Any(), withoutSet.ID).Return(withoutSet, nil).AnyTimes()
 
+				verifier := NewMockVerifier(gomock.NewController(t))
+				verifier.EXPECT().Verify(gomock.Any(), gomock.Any()).AnyTimes().
+					DoAndReturn(func(_ context.Context, presented string) (*token.Claims, error) {
+						return token.NewClaims(string(withoutSet.ID), strings.TrimPrefix(presented, mfaTokenPrefix)), nil
+					})
+
 				h.users = users
-				h.chainOpts = nil
-				h.withCodesEndpoint()
+				h.chainOpts = []httpsec.Option{
+					httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: verifier, Sessions: h.sessions, Users: users}),
+					httpsec.WithClock(h.clock),
+				}
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
 				_, err := h.codes.Generate(t.Context(), "someone-else")

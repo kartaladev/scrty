@@ -33,6 +33,27 @@ func Storable(values ...string) bool {
 	return true
 }
 
+// StorableSet is the JSON array of those of values PostgreSQL text can hold
+// (see Storable), in order, and whether there are any. values is left
+// unchanged; a value that cannot be stored is left out, since no row can
+// match it.
+func StorableSet(values []string) (set string, ok bool) {
+	kept := make([]string, 0, len(values))
+	for _, v := range values {
+		if Storable(v) {
+			kept = append(kept, v)
+		}
+	}
+	if len(kept) == 0 {
+		return "", false
+	}
+
+	// Marshalling a []string cannot fail, and the values are valid UTF-8 here.
+	b, _ := json.Marshal(kept)
+
+	return string(b), true
+}
+
 // Field is one text value a write stores, and the name its refusal gives it.
 // Text makes one.
 type Field struct{ name, value string }

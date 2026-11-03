@@ -51,6 +51,24 @@ func WithJWTIDGenerator(g id.Generator) JWTOption {
 	return func(a *JWTAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
+// WithJWTUsernameSubject reads a token's subject as the principal's username.
+// It replaces the default, which reads the subject as the principal's user
+// identifier. The principal then has a username and no user identifier.
+//
+// It must agree with the two options that decide or read the same subject:
+// token.WithUsernameSubject on the generator that issued the token, and
+// httpsec.WithBearerUsernameSubject on a security chain's signed bearer.
+//
+// NewJWTAuthenticator checks the agreement where it can see both sides: a
+// verifier that is also a token.Generator, such as the one token.NewGenerator
+// returns, reports the mode it writes, and a disagreement is a configuration
+// error. Any other verifier reports nothing, and the check cannot be made. A
+// mismatch it misses produces a principal whose user identifier is a name, or
+// whose username is an identifier, so keep the options together.
+func WithJWTUsernameSubject() JWTOption {
+	return func(a *JWTAuthenticator) { a.subject = token.SubjectUsername }
+}
+
 // JWTAuthenticator resolves a bearer token through a token verifier. It is an
 // Authenticator.
 //
@@ -62,13 +80,30 @@ type JWTAuthenticator struct {
 
 	ids    id.Generator
 	idsSet bool
+
+	// subject is how the token's subject is read into the principal.
+	subject token.SubjectMode
 }
 
 // NewJWTAuthenticator returns a provider that resolves BearerCredentials
 // through a token verifier.
 //
 // WithJWTVerifier is required. Defaults: id.NewV7Generator, for the identifier
-// an authentication takes when its token carries none this library can use.
+// an authentication takes when its token carries none this library can use; the
+// subject read as the principal's user identifier, which WithJWTUsernameSubject
+// replaces.
+//
+// The principal is built from the claims alone, with no user reloaded. Under the
+// default it therefore has a user identifier and no username: code behind this
+// provider that needs the name loads it from the identifier.
+//
+// Where the verifier is itself a token.Generator, its subject mode is compared
+// with the one this provider reads, and a disagreement is an error matching
+// ErrConfig, whatever the order of the options. A verifier that wraps a
+// generator, or is any other type, reveals no mode, so a mismatch there cannot
+// be detected and is the consumer's to avoid. A consumer who really issues and
+// reads different subjects gives a verifier that is not the generator, such as
+// one built with token.NewVerifier, and owns the agreement.
 //
 // Nothing here parses or trusts a token itself. The verifier is the only thing
 // that reads one, and this provider builds a principal only from what the
@@ -83,6 +118,14 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 
 	if nilcheck.IsNil(a.verifier) {
 		return nil, fmt.Errorf("%w: a token verifier is required; supply WithJWTVerifier", ErrConfig)
+	}
+	if g, ok := a.verifier.(token.Generator); ok && g.SubjectMode() != a.subject {
+		return nil, fmt.Errorf("%w: the verifier is a token generator whose tokens carry %s as their subject, "+
+			"and this provider reads the subject as %s; use token.WithUsernameSubject on the generator and "+
+			"WithJWTUsernameSubject on the provider together, or neither; a consumer who "+
+			"issues and reads different subjects on purpose gives a verifier that is not the generator, "+
+			"such as one from token.NewVerifier",
+			ErrConfig, subjectModeName(g.SubjectMode()), subjectModeName(a.subject))
 	}
 	if a.idsSet && nilcheck.IsNil(a.ids) {
 		return nil, fmt.Errorf("%w: the authentication identifier generator is nil", ErrConfig)
@@ -120,9 +163,10 @@ func NewJWTAuthenticator(opts ...JWTOption) (*JWTAuthenticator, error) {
 // does not match ErrAuthenticationFailed. A caller that answers it as a
 // refused token sends every client back to authenticate during an outage.
 //
-// A verified token with no subject is refused. A principal with no username
-// satisfies every check that asks only whether someone is authenticated, while
-// naming nobody the consumer's store could recognise, so it must not exist.
+// A verified token with no subject is refused. A principal with neither a user
+// identifier nor a username satisfies every check that asks only whether someone
+// is authenticated, while naming nobody the consumer's store could recognise, so
+// it must not exist.
 func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	creds, ok := c.(BearerCredentials)
 	if !ok {
@@ -160,9 +204,19 @@ func (a *JWTAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 	return &Authentication{
 		ID:          eventID,
 		Credentials: creds,
-		Principal:   &identity.Principal{Username: claims.Subject()},
+		Principal:   a.principal(claims.Subject()),
 		Time:        time.Now(),
 	}, nil
+}
+
+// principal builds the caller from the token's subject, read as the configured
+// subject mode says.
+func (a *JWTAuthenticator) principal(subject string) *identity.Principal {
+	if a.subject == token.SubjectUsername {
+		return &identity.Principal{Username: subject}
+	}
+
+	return &identity.Principal{ID: identity.UserID(subject)}
 }
 
 // eventID names the authentication after the token that caused it.
@@ -263,3 +317,15 @@ func (c *BearerToken) Cleanup() error {
 }
 
 var _ BearerCredentials = (*BearerToken)(nil)
+
+// subjectModeName names a subject mode for a configuration error.
+func subjectModeName(mode token.SubjectMode) string {
+	switch mode {
+	case token.SubjectUserID:
+		return "the user identifier"
+	case token.SubjectUsername:
+		return "the username"
+	default:
+		return fmt.Sprintf("subject mode %d", int(mode))
+	}
+}

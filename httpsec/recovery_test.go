@@ -118,7 +118,7 @@ func recoveryIssuer(t *testing.T, h *recoveryHarness) *MockGenerator {
 	var allow atomic.Bool
 	h.allow = &allow
 
-	g := NewMockGenerator(gomock.NewController(t))
+	g := newMockGenerator(gomock.NewController(t))
 	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
 			if !allow.Load() {
@@ -1648,7 +1648,7 @@ func newRecoveryDeployment(t *testing.T, setup recoverySetup) *recoveryDeploymen
 			clock:    clk,
 			users:    NewMockUserLoader(ctrl),
 			sender:   &capturingSender{},
-			tokens:   NewMockGenerator(ctrl),
+			tokens:   newMockGenerator(ctrl),
 			required: &requiredFlag{},
 			pathOpts: setup.pathOpts,
 		},

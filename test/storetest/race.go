@@ -47,12 +47,13 @@ type Race[S any] struct {
 
 	// Racers is how many callers race for each record, and so how many
 	// connections the pool must be able to open at once
-	// (DurableHarness.PoolSize). Zero means the race's default: 8, or 20 for
-	// RunChargeRace and RunVerifyChargeRace. Fewer racers than one more than
-	// the wins the race allows per record are refused, naming that minimum,
-	// as they could never show a store letting too many win: two for the
-	// single-winner races, mfa.MaxEmailCodeAttempts+1 for RunChargeRace, and
-	// mfa.DefaultVerifyAttemptLimit+1 for RunVerifyChargeRace.
+	// (DurableHarness.PoolSize). Zero means the race's default: 8, 2 for
+	// RunConfirmProofRace, or 20 for RunChargeRace and RunVerifyChargeRace.
+	// Fewer racers than one more than the wins the race allows per record are
+	// refused, naming that minimum, as they could never show a store letting
+	// too many win: two for the single-winner races, mfa.MaxEmailCodeAttempts+1
+	// for RunChargeRace, and mfa.DefaultVerifyAttemptLimit+1 for
+	// RunVerifyChargeRace.
 	Racers int
 
 	// Timeout bounds the racing. Every racer's context carries a deadline
@@ -152,6 +153,28 @@ func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 	t.Helper()
 
 	runRace(t, h, r, completeRule)
+}
+
+// RunConfirmProofRace holds an MFA enrolment store to deciding a confirmation
+// against a device proof by the write: one confirmation and one device proof
+// of one generation are released together for each of Records independent
+// pending enrolments, and exactly one of the two must succeed. A store that
+// checks for a proof and writes the confirmation separately lets both through,
+// though it passes RunEnrolmentStoreSuite and RunDeviceProofSuite, where the
+// calls come one after the other. Seed begins an enrolment on a generation of
+// its own and returns a key Attempt can recover the user and the generation
+// from; Attempt confirms for an even racer and proves the device for an odd
+// one, reporting the bool the store returns. storefix.ConfirmProofRace is such
+// a race.
+//
+// Racers defaults to 2 here, one of each, so a store is failed by these two
+// operations meeting and not by two confirmations meeting; the confirmation
+// runs on h.New's store and the proof on h.NewReplica's. Its inputs are
+// otherwise checked as RunConsumeRace checks them.
+func RunConfirmProofRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+	t.Helper()
+
+	runRace(t, h, r, confirmProofRule)
 }
 
 // RunChargeRace holds an MFA enrolment store to capping the attempts charged
@@ -391,7 +414,13 @@ var (
 	stepRule      = raceRule{name: "exactly one acceptance of a step wins per record", noun: "acceptance of a step"}
 	completeRule  = raceRule{name: "exactly one completion wins per record", noun: "completion"}
 	supersedeRule = raceRule{name: "exactly one supersession wins per session", noun: "supersession"}
-	chargeRule    = raceRule{
+	// One of each operation, the most that lets exactly these two meet.
+	confirmProofRule = raceRule{
+		name:   "a confirmation and a device proof of one generation never both succeed",
+		noun:   "confirmation or device proof",
+		racers: 2,
+	}
+	chargeRule = raceRule{
 		name:   "exactly the allowed number of charges win per code",
 		noun:   "charge",
 		wins:   mfa.MaxEmailCodeAttempts,

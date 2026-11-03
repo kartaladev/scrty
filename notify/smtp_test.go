@@ -149,10 +149,18 @@ func TestSMTPSenderFrom(t *testing.T) {
 			},
 		},
 		{
+			name:    "a message that names a sender needs no default",
+			msgFrom: "support@example.com",
+			assert: func(t *testing.T, srv *scriptedServer, err error) {
+				require.NoError(t, err)
+				assert.Contains(t, srv.MailFrom(), "support@example.com")
+			},
+		},
+		{
 			name:    "neither is an error before any network activity",
 			msgFrom: "",
 			assert: func(t *testing.T, srv *scriptedServer, err error) {
-				require.Error(t, err)
+				require.ErrorIs(t, err, notify.ErrConfig)
 				assert.False(t, srv.Dialled(), "nothing may be dialled")
 			},
 		},

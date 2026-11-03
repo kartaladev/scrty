@@ -62,6 +62,12 @@ type SessionRenewalDeps struct {
 
 	// Users reloads the session's user by the user reference the session
 	// records (LoadByUserID), never by username, before anything is rotated.
+	//
+	// The one exception is a late renewal under WithBearerUsernameSubject:
+	// its user is the record the bearer's own loader (BearerTokenDeps.Users)
+	// returned from LoadByUsername, once the bearer has checked that it owns
+	// the session, and Users is not called for it. A consumer who wires two
+	// loaders sees that renewal only on the bearer's.
 	Users identity.UserLoader
 
 	// Tokens mints the successor's credential in the signed-token mode. Leave
@@ -84,7 +90,10 @@ type RenewalResult struct {
 	// Session is the successor, as stored.
 	Session *session.Session
 
-	// User is the session's user, reloaded by its user reference.
+	// User is the session's user, reloaded by its user reference. For a late
+	// renewal under WithBearerUsernameSubject it is instead the record the
+	// bearer's loader returned for the token's username, which the bearer
+	// has checked is the session's user.
 	User *identity.Details
 
 	// Kind is the kind of renewal performed: a fresh rotation, a re-rotation
@@ -155,7 +164,7 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 
 	ctx := ex.Context()
 
-	s, err := r.renewing(ex)
+	s, admitted, err := r.renewing(ex)
 	if err != nil {
 		return err
 	}
@@ -167,8 +176,9 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 	}
 
 	// The user is reloaded before anything is rotated, so a removed user is
-	// refused without a successor being written.
-	details, principal, err := r.user(ctx, s)
+	// refused without a successor being written. A user a late renewal's admit
+	// step has just loaded is not loaded again.
+	details, principal, err := r.user(ctx, s, admitted)
 	if err != nil {
 		return err
 	}
@@ -278,7 +288,9 @@ func (r *sessionRenewal) rotateOptions(ex *Exchange, s *session.Session) []sessi
 
 // renewing is the session this request renews: the one the chain resolved
 // and published, or, under unused-successor recovery, the late one the
-// resolution core let through for this endpoint alone, loaded for renewal.
+// resolution core let through for this endpoint alone, loaded for renewal. For
+// a late one it also returns the user the bearer's admit step loaded judging it,
+// nil when it loaded none.
 //
 // A late load the request's own context ended, and that reached no refusal,
 // fails with fixed text that matches the context's error, as a hang-up at
@@ -287,13 +299,13 @@ func (r *sessionRenewal) rotateOptions(ex *Exchange, s *session.Session) []sessi
 // charged, whether or not the request has ended by then. A conflict, such as a
 // lost race, is a refusal too but is not charged: it says nothing about the
 // credential's source.
-func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
+func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, *identity.Details, error) {
 	if ex.Session != nil && ex.Authentication != nil && ex.Authentication.Principal != nil {
-		return ex.Session, nil
+		return ex.Session, nil, nil
 	}
 
 	if ex.renewal == "" {
-		return nil, ErrAuthenticationRequired
+		return nil, nil, ErrAuthenticationRequired
 	}
 
 	ctx := ex.Context()
@@ -307,10 +319,10 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 		refusal := refusedRenewal(err)
 		if refusal == nil {
 			if hangup.ByCaller(ctx, err) {
-				return nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
+				return nil, nil, diag.Wrap(err, textSessionLoadEnded, ctx.Err())
 			}
 
-			return nil, err
+			return nil, nil, err
 		}
 
 		// Only an authentication-required refusal is charged: a late
@@ -322,39 +334,53 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 			ex.chargeRenewal(ctx)
 		}
 
-		return nil, refusal
+		return nil, nil, refusal
 	}
 
 	// The bearer judged the credential's binding and the proof only as far
-	// as it could without the session; the rest is judged on the session
-	// loaded here, before anything is rotated. A refusal that reads as a
-	// missing session, a sender holding a valid credential it may not use,
-	// is charged as a refused load is.
+	// as it could without the session; the rest, the token's subject with it,
+	// is judged on the session loaded here, before anything is rotated. A
+	// refusal that reads as a missing session, a sender holding a valid
+	// credential it may not use or naming someone else, is charged as a
+	// refused load is.
+	var admitted *identity.Details
+
 	if ex.admitRenewal != nil {
-		if err := ex.admitRenewal(ex, s); err != nil {
+		admitted, err = ex.admitRenewal(ex, s)
+		if err != nil {
 			if ex.chargeRenewal != nil && errors.Is(err, ErrAuthenticationRequired) {
 				ex.chargeRenewal(ctx)
 			}
 
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	return s, nil
+	return s, admitted, nil
 }
 
-// user reloads s's user by the reference s records, and refuses unless it is
-// that user and active (ownActiveUser). A late renewal reaches here without
-// the resolution core having checked either, so the check is made here too.
+// user reloads s's user by the reference s records, unless admitted already
+// holds the record this request loaded, and refuses unless it is that user and
+// active (ownActiveUser). A late renewal reaches here without the resolution
+// core having checked either, so the check is made here too.
 //
 // A failed reload is answered as at resolution (classifyReload): a user not
 // found is refused, a request whose own context ended fails with that
 // context's error, and any other failure is a dependency failure, 500 by
 // default. None of them rotates anything.
-func (r *sessionRenewal) user(ctx context.Context, s *session.Session) (*identity.Details, *identity.Principal, error) {
-	details, err := r.users.LoadByUserID(ctx, s.UserID)
-	if err != nil {
-		return nil, nil, classifyReload(ctx, err)
+func (r *sessionRenewal) user(
+	ctx context.Context,
+	s *session.Session,
+	admitted *identity.Details,
+) (*identity.Details, *identity.Principal, error) {
+	details := admitted
+	if details == nil {
+		var err error
+
+		details, err = r.users.LoadByUserID(ctx, s.UserID)
+		if err != nil {
+			return nil, nil, classifyReload(ctx, err)
+		}
 	}
 
 	if err := ownActiveUser(s, details); err != nil {
@@ -472,7 +498,10 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //     session's Bearer credential that does not verify, recording the jti of
 //     one that does: a renewal adds no binding, but a proof it is given is
 //     checked before anything is counted or rotated;
-//  2. reloads the session's user with LoadByUserID, refusing with
+//  2. reloads the session's user with LoadByUserID (except a late renewal
+//     under WithBearerUsernameSubject, which uses the record the bearer
+//     loaded by username and does not call SessionRenewalDeps.Users),
+//     refusing with
 //     ErrAuthenticationRequired a user who no longer exists
 //     (identity.ErrUserNotFound), is not the user the session records, or is
 //     not active. Any other reload failure, a user store outage, is a

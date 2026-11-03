@@ -10,6 +10,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -41,6 +42,10 @@ type config struct {
 	lifetime time.Duration
 	alg      signingkey.Alg
 	clock    clock.Clock
+
+	// subject is which of the principal's values a generator writes as sub.
+	// A verifier reads no principal, and leaves it at its zero value.
+	subject SubjectMode
 
 	// maxTokenSize bounds the string Verify will look at, in bytes.
 	maxTokenSize int
@@ -96,6 +101,15 @@ func setAudience(aud string) func(*config) {
 
 func setClock(clk clock.Clock) func(*config) {
 	return func(c *config) { c.clock = clk }
+}
+
+// subjectOf is the value of p the configured subject mode writes as sub.
+func (c *config) subjectOf(p *identity.Principal) string {
+	if c.subject == SubjectUsername {
+		return p.Username
+	}
+
+	return string(p.ID)
 }
 
 func waiveIssuer() func(*config) {
@@ -258,10 +272,13 @@ func (c *config) validateLifetime() error {
 	}
 
 	// A key source that reports its own lifetimes lets the cap be checked here.
-	// A replaced key stays published for the rest of its lifetime, so the
-	// usable window for a token signed just before a rotation is the key
-	// lifetime minus one rotation interval. One that cannot report gets no
-	// check; nothing else about it changes.
+	// A replaced key stays published for at least the rest of its lifetime, so
+	// the usable window for a token signed just before a rotation is the key
+	// lifetime minus one rotation interval. A key replaced late stays for that
+	// window from its replacement, and either way a margin of one reload interval
+	// covers a replica still signing with it until it reloads, so a token at the
+	// window verifies in both cases. One that cannot report gets no check; nothing
+	// else about it changes.
 	reporter, ok := c.keys.(signingkey.LifetimeReporter)
 	if !ok {
 		return nil

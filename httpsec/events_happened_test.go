@@ -464,7 +464,7 @@ type barrierIssuer struct {
 func (b *barrierIssuer) generator(t *testing.T) *MockGenerator {
 	t.Helper()
 
-	g := NewMockGenerator(gomock.NewController(t))
+	g := newMockGenerator(gomock.NewController(t))
 	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
 			b.mu.Lock()

@@ -41,10 +41,20 @@
 //
 // # The subject
 //
-// The subject of an issued token is the principal's username. Renaming a user
-// therefore invalidates their live tokens, which is the documented cost of
-// carrying a name a consumer's own systems can read rather than an opaque
-// identifier.
+// The subject of an issued token is, by default, the principal's user
+// identifier. A rename does not change it and it is never reassigned to another
+// user, so it stays a safe thing for every verifier to key on.
+//
+// WithUsernameSubject makes it the principal's username instead, for a consumer
+// whose own systems read the name. Renaming a user then invalidates their live
+// tokens, and a username later given to someone else names that someone else,
+// which is the documented cost of that choice.
+//
+// A subject means only what its reader takes it to mean, so the option on the
+// generator must agree with the ones on its readers:
+// authenticate.WithJWTUsernameSubject and httpsec.WithBearerUsernameSubject.
+// Issuing for a principal with no value for the chosen subject fails with
+// ErrNoSubject.
 //
 // # No jwx in the public surface
 //
@@ -78,15 +88,21 @@ import (
 // maps it to "credential refused" must never see it from Generate.
 var ErrInvalid = errors.New("token: invalid")
 
-// ErrNoSubject reports that Generate was handed a principal with no username,
-// so there is no subject to name. identity.Principal is a plain struct, so a
-// store row with a blank username arrives as a principal that names nobody,
-// and a token with sub: "" would be indistinguishable from one carrying no
-// subject at all.
+// ErrNoSubject reports a principal with no value for the chosen subject: no user
+// identifier by default, no username under WithUsernameSubject. Generate returns
+// it. httpsec also uses it as the cause when a login's principal has no user
+// identifier. Basic uses it only when a provider names no principal at all, not
+// for a principal with no user identifier, which Basic allows. Both hold in
+// every subject mode, including chains that issue no token, so a consumer
+// matches one error whichever way their chain reads a credential. The
+// value the other mode would carry does not stand in for it.
+// identity.Principal is a plain struct, so a store row with a blank value arrives
+// as a principal that names nobody, and a token with sub: "" would be
+// indistinguishable from one carrying no subject at all.
 //
 // Like every failure on the issue path it deliberately does not match
 // ErrInvalid: there is no presented token to pass a verdict on.
-var ErrNoSubject = errors.New("token: principal has no username to name as subject")
+var ErrNoSubject = errors.New("token: principal has no value for the chosen subject")
 
 // ErrNoTokenID reports that Generate was handed an empty token identifier.
 // The identifier becomes jti, which is the session identifier on the session
@@ -145,8 +161,11 @@ func NewClaims(subject, id string) *Claims {
 	return &Claims{subject: subject, id: id}
 }
 
-// Subject reports the principal's username, as carried in sub. It is empty
-// when the token carries no subject, and on the zero value.
+// Subject reports the subject the token carries in sub: the principal's user
+// identifier by default, or its username when the issuer used
+// WithUsernameSubject. The token does not say which, so the reader must be
+// configured to match. It is empty when the token carries no subject, and on
+// the zero value.
 func (c *Claims) Subject() string {
 	if c == nil {
 		return ""

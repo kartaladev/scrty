@@ -61,6 +61,68 @@ func TestStorable(t *testing.T) {
 	}
 }
 
+func TestStorableSet(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		values []string
+		assert func(t *testing.T, input []string, set string, ok bool)
+	}
+
+	cases := []testCase{
+		{
+			name: "no values",
+			assert: func(t *testing.T, _ []string, set string, ok bool) {
+				assert.False(t, ok)
+				assert.Empty(t, set)
+			},
+		},
+		{
+			name:   "all storable",
+			values: []string{"alice", "", "résumé ✓", `q"uote`},
+			assert: func(t *testing.T, _ []string, set string, ok bool) {
+				assert.True(t, ok)
+				assert.JSONEq(t, `["alice","","résumé ✓","q\"uote"]`, set)
+			},
+		},
+		{
+			name:   "only a nul byte",
+			values: []string{"a\x00b"},
+			assert: func(t *testing.T, _ []string, set string, ok bool) {
+				assert.False(t, ok)
+				assert.Empty(t, set)
+			},
+		},
+		{
+			name:   "only invalid utf-8",
+			values: []string{"\xff"},
+			assert: func(t *testing.T, _ []string, set string, ok bool) {
+				assert.False(t, ok)
+				assert.Empty(t, set)
+			},
+		},
+		{
+			name:   "a mix keeps the storable values in order",
+			values: []string{"one", "a\x00b", "two", "\xff", "three"},
+			assert: func(t *testing.T, input []string, set string, ok bool) {
+				assert.True(t, ok)
+				assert.Equal(t, `["one","two","three"]`, set)
+				assert.Equal(t, []string{"one", "a\x00b", "two", "\xff", "three"}, input, "the input is left unchanged")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			set, ok := storekit.StorableSet(tc.values)
+			tc.assert(t, tc.values, set, ok)
+		})
+	}
+}
+
 func TestCheckStorable(t *testing.T) {
 	t.Parallel()
 

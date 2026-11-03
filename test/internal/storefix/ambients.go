@@ -147,6 +147,9 @@ func SigningKeyAmbient(foreign func() (signingkey.KeyStore, error)) storetest.Am
 			return err
 		},
 		Refusal: seal.ErrUnknownKeyID,
+		Remove: func(ctx context.Context, s signingkey.KeyStore, i int) error {
+			return s.Delete(ctx, kid(i))
+		},
 	}
 }
 

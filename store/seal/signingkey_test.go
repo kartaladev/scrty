@@ -626,3 +626,110 @@ func TestSigningKeyStore_CipherCarriesStoreContext(t *testing.T) {
 		})
 	}
 }
+
+func TestSigningKeyStore_Delete(t *testing.T) {
+	t.Parallel()
+
+	errInner := errors.New("inner: row (alice@example.com)")
+
+	type testCase struct {
+		name string
+		ctx  func(ctx context.Context) context.Context
+		kids []string
+		// expect states what inner is asked; the double fails on anything else.
+		expect func(inner *MockKeyStore)
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "it forwards the key ids to the inner store",
+			kids: []string{"kid-a", "kid-b"},
+			expect: func(inner *MockKeyStore) {
+				inner.EXPECT().Delete(gomock.Any(), "kid-a", "kid-b").Return(nil)
+			},
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "no key ids are forwarded too, for the inner store to ignore",
+			expect: func(inner *MockKeyStore) {
+				inner.EXPECT().Delete(gomock.Any()).Return(nil)
+			},
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "the inner store's failure is returned with fixed text",
+			kids: []string{"kid-a"},
+			expect: func(inner *MockKeyStore) {
+				inner.EXPECT().Delete(gomock.Any(), "kid-a").Return(errInner)
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, errInner)
+				assert.NotContains(t, err.Error(), "alice@example.com")
+			},
+		},
+		{
+			name: "the context reaches the inner store",
+			ctx: func(ctx context.Context) context.Context {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				return cancelled
+			},
+			kids: []string{"kid-a"},
+			expect: func(inner *MockKeyStore) {
+				inner.EXPECT().Delete(gomock.Any(), "kid-a").DoAndReturn(
+					func(ctx context.Context, _ ...string) error { return ctx.Err() })
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			ctrl := gomock.NewController(t)
+			inner := NewMockKeyStore(ctrl)
+			tc.expect(inner)
+
+			// Neither the cipher nor the resealer expects a call: a delete has
+			// nothing to seal.
+			store, err := seal.NewSigningKeyStore(inner, NewMockSigningKeyResealer(ctrl), NewMockCipher(ctrl))
+			require.NoError(t, err)
+
+			tc.assert(t, store.Delete(ctx, tc.kids...))
+		})
+	}
+}
+
+// TestSigningKeyStore_ForwardsADelete is "Sealing store forwards a delete" over a
+// real inner store, since TestSigningKeyStore_Delete's double cannot show what the
+// inner store still holds. It stands alone because nothing else about it varies.
+func TestSigningKeyStore_ForwardsADelete(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	inner := signingkey.NewMemoryKeyStore()
+	store, err := seal.NewSigningKeyStore(inner, NewMockSigningKeyResealer(ctrl), newCiphers(t).current)
+	require.NoError(t, err)
+	require.NoError(t, store.Store(t.Context(), signingRecord("kid-a", 1)))
+	require.NoError(t, store.Store(t.Context(), signingRecord("kid-b", 2)))
+
+	require.NoError(t, store.Delete(t.Context(), "kid-a"))
+
+	recs, err := inner.LoadAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, recs, 1, "the inner store no longer holds the key")
+	assert.Equal(t, "kid-b", recs[0].Kid)
+}

@@ -4,8 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
+	"os/exec"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -47,8 +52,8 @@ func (tx *fakeTx) commit() error {
 	if tx.aborted {
 		return errTxAborted
 	}
-	for i := range tx.pending {
-		tx.db.rows[i] = true
+	for i, stored := range tx.pending {
+		tx.db.rows[i] = stored
 	}
 	return nil
 }
@@ -67,6 +72,7 @@ type ambientDefect string
 const (
 	ambientConforming      ambientDefect = "conforming"
 	ambientBypasses        ambientDefect = "bypasses-tx"
+	ambientDeleteBypasses  ambientDefect = "delete-bypasses-tx"
 	ambientIgnoresResolver ambientDefect = "ignores-resolver"
 	ambientRefusalAborts   ambientDefect = "refusal-aborts"
 	ambientJoinsForeign    ambientDefect = "joins-foreign-tx"
@@ -115,6 +121,20 @@ func (s *ambientStore) write(ctx context.Context, i int) error {
 	return nil
 }
 
+// remove deletes record i, in the transaction ctx resolves to. The defective
+// store deletes on the base handle, whatever transaction ctx carries.
+func (s *ambientStore) remove(ctx context.Context, i int) error {
+	tx, ok := s.tx(ctx)
+	if !ok || s.defect == ambientDeleteBypasses {
+		s.db.mu.Lock()
+		defer s.db.mu.Unlock()
+		delete(s.db.rows, i)
+		return nil
+	}
+	tx.pending[i] = false
+	return nil
+}
+
 // refuse is a refusal. The conforming store refuses without a failed
 // statement; the defective one refuses through one, aborting the
 // transaction it ran in.
@@ -125,40 +145,104 @@ func (s *ambientStore) refuse(ctx context.Context) error {
 	return errRefused
 }
 
+// ambientRun runs the ambient-transaction suite over the fake store carrying d.
+// withRemove sets Ambient.Remove, the one optional field.
+func ambientRun(d ambientDefect, withRemove bool) func(t *testing.T) {
+	return func(t *testing.T) {
+		db := &txDB{rows: map[int]bool{}}
+		h := fakeHarness(func(*testing.T) *ambientStore { return &ambientStore{db: db, defect: d} })
+		h.Begin = func(t *testing.T) (context.Context, func() error, func() error) {
+			tx := db.begin()
+			return context.WithValue(t.Context(), txKey{}, tx), tx.commit, tx.rollback
+		}
+		h.BeginResolved = func(t *testing.T) (*ambientStore, context.Context, func() error, func() error) {
+			tx := db.begin()
+			s := &ambientStore{db: db, defect: d, resolver: func(context.Context) (*fakeTx, bool) { return tx, true }}
+			return s, t.Context(), tx.commit, tx.rollback
+		}
+		h.BeginForeign = func(t *testing.T) (context.Context, func() error) {
+			tx := db.begin()
+			return context.WithValue(t.Context(), foreignTxKey{}, tx), tx.rollback
+		}
+
+		a := storetest.Ambient[*ambientStore]{
+			Write:   func(ctx context.Context, s *ambientStore, i int) error { return s.write(ctx, i) },
+			Present: func(_ *testing.T, _ *sql.DB, i int) bool { return db.present(i) },
+			Refuse:  func(ctx context.Context, s *ambientStore) error { return s.refuse(ctx) },
+			Refusal: errRefused,
+		}
+		if withRemove {
+			a.Remove = func(ctx context.Context, s *ambientStore, i int) error { return s.remove(ctx, i) }
+		}
+		storetest.RunAmbientTx(t, h, a)
+	}
+}
+
 func ambientVariant(d ambientDefect, failsCase string) brokenVariant {
 	return brokenVariant{
-		name: "ambient-" + string(d),
-		run: func(t *testing.T) {
-			db := &txDB{rows: map[int]bool{}}
-			h := fakeHarness(func(*testing.T) *ambientStore { return &ambientStore{db: db, defect: d} })
-			h.Begin = func(t *testing.T) (context.Context, func() error, func() error) {
-				tx := db.begin()
-				return context.WithValue(t.Context(), txKey{}, tx), tx.commit, tx.rollback
-			}
-			h.BeginResolved = func(t *testing.T) (*ambientStore, context.Context, func() error, func() error) {
-				tx := db.begin()
-				s := &ambientStore{db: db, defect: d, resolver: func(context.Context) (*fakeTx, bool) { return tx, true }}
-				return s, t.Context(), tx.commit, tx.rollback
-			}
-			h.BeginForeign = func(t *testing.T) (context.Context, func() error) {
-				tx := db.begin()
-				return context.WithValue(t.Context(), foreignTxKey{}, tx), tx.rollback
-			}
-
-			storetest.RunAmbientTx(t, h, storetest.Ambient[*ambientStore]{
-				Write:   func(ctx context.Context, s *ambientStore, i int) error { return s.write(ctx, i) },
-				Present: func(_ *testing.T, _ *sql.DB, i int) bool { return db.present(i) },
-				Refuse:  func(ctx context.Context, s *ambientStore) error { return s.refuse(ctx) },
-				Refusal: errRefused,
-			})
-		},
+		name:      "ambient-" + string(d),
+		run:       ambientRun(d, true),
 		failsCase: failsCase,
+	}
+}
+
+// uncoveredDeleteVar names the child run of TestAmbientReportsAnUncoveredDelete.
+const uncoveredDeleteVar = "STORETEST_UNCOVERED_DELETE_CHILD"
+
+// TestAmbientUncoveredDeleteChild is the child half of
+// TestAmbientReportsAnUncoveredDelete: the suite over a conforming store that
+// leaves Ambient.Remove unset. Without the variable it skips.
+func TestAmbientUncoveredDeleteChild(t *testing.T) {
+	if _, child := os.LookupEnv(uncoveredDeleteVar); !child {
+		t.Skipf("run through TestAmbientReportsAnUncoveredDelete (%s)", uncoveredDeleteVar)
+	}
+	ambientRun(ambientConforming, false)(t)
+}
+
+// TestAmbientReportsAnUncoveredDelete pins that a run leaving Ambient.Remove
+// unset says in its output that deletes were not covered, rather than dropping
+// the four delete cases without a word. The child runs in its own process, since
+// a skip is visible only in the verbose output.
+func TestAmbientReportsAnUncoveredDelete(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		env    string
+		assert func(t *testing.T, output string, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "Remove unset reports the delete cases as not covered",
+			env:  uncoveredDeleteVar + "=1",
+			assert: func(t *testing.T, output string, err error) {
+				require.NoError(t, err, output)
+				assert.Contains(t, output, "--- SKIP: TestAmbientUncoveredDeleteChild/deletes_are_not_covered")
+				assert.Contains(t, output, "Ambient.Remove is not set")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			//nolint:gosec // G204: this test binary re-executed with fixed arguments
+			cmd := exec.CommandContext(t.Context(), os.Args[0],
+				"-test.run=^TestAmbientUncoveredDeleteChild$", "-test.count=1", "-test.v")
+			cmd.Env = append(os.Environ(), tc.env)
+			out, err := cmd.CombinedOutput()
+
+			tc.assert(t, string(out), err)
+		})
 	}
 }
 
 var ambientVariants = []brokenVariant{
 	ambientVariant(ambientConforming, ""),
 	ambientVariant(ambientBypasses, "a write inside a rolled back transaction is discarded"),
+	ambientVariant(ambientDeleteBypasses, "a delete inside a rolled back transaction is discarded"),
 	ambientVariant(ambientIgnoresResolver, "a configured resolver's transaction is used"),
 	ambientVariant(ambientRefusalAborts, "a refusal inside a transaction leaves it usable"),
 	ambientVariant(ambientJoinsForeign, "a transaction attached for another backend is ignored"),

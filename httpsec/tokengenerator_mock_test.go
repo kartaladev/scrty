@@ -81,6 +81,44 @@ func (c *MockGeneratorGenerateCall) DoAndReturn(f func(context.Context, string, 
 	return c
 }
 
+// SubjectMode mocks base method.
+func (m *MockGenerator) SubjectMode() token.SubjectMode {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SubjectMode")
+	ret0, _ := ret[0].(token.SubjectMode)
+	return ret0
+}
+
+// SubjectMode indicates an expected call of SubjectMode.
+func (mr *MockGeneratorMockRecorder) SubjectMode() *MockGeneratorSubjectModeCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubjectMode", reflect.TypeOf((*MockGenerator)(nil).SubjectMode))
+	return &MockGeneratorSubjectModeCall{Call: call}
+}
+
+// MockGeneratorSubjectModeCall wrap *gomock.Call
+type MockGeneratorSubjectModeCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockGeneratorSubjectModeCall) Return(arg0 token.SubjectMode) *MockGeneratorSubjectModeCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockGeneratorSubjectModeCall) Do(f func() token.SubjectMode) *MockGeneratorSubjectModeCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockGeneratorSubjectModeCall) DoAndReturn(f func() token.SubjectMode) *MockGeneratorSubjectModeCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Verify mocks base method.
 func (m *MockGenerator) Verify(ctx context.Context, arg1 string) (*token.Claims, error) {
 	m.ctrl.T.Helper()

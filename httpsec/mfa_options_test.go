@@ -416,7 +416,7 @@ func TestEnableMFA(t *testing.T) {
 			opts := tc.opts
 			if !tc.noTokens {
 				opts = append([]httpsec.MFAOption{
-					httpsec.WithMFATokens(NewMockGenerator(gomock.NewController(t))),
+					httpsec.WithMFATokens(newMockGenerator(gomock.NewController(t))),
 				}, opts...)
 			}
 

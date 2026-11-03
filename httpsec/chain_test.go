@@ -581,7 +581,7 @@ func TestUnenforcedChallengeAtRuntime(t *testing.T) {
 	bearer := func(_ *testing.T, h *authHarness, stored *session.Session) {
 		h.expectVerified()
 		h.store.EXPECT().Load(gomock.Any(), testJTI).Return(stored, nil)
-		h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+		h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 		// The session touch may write back the activity of a request
 		// that carried a session; what matters is what it wrote.
 		h.acceptsActivityWriteBack()
@@ -1362,7 +1362,7 @@ func oidcChain(
 
 	base := []httpsec.OIDCOption{httpsec.WithOIDCSessions(sessions)}
 	if handoffs != nil {
-		base = append(base, httpsec.WithOIDCTokens(NewMockGenerator(gomock.NewController(t))))
+		base = append(base, httpsec.WithOIDCTokens(newMockGenerator(gomock.NewController(t))))
 	}
 
 	c, err := httpsec.New(
@@ -1850,7 +1850,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 		httpsec.EnableMagicLink(lh.manager, lh.options()...),
 		httpsec.EnableOIDCLogin(httpsec.OIDCDeps{RelyingParty: m, Handoff: handoffs},
 			httpsec.WithOIDCSessions(oidcSessions),
-			httpsec.WithOIDCTokens(NewMockGenerator(gomock.NewController(t)))),
+			httpsec.WithOIDCTokens(newMockGenerator(gomock.NewController(t)))),
 	)
 	require.NoError(t, err)
 

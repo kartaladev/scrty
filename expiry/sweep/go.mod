@@ -3,7 +3,7 @@ module github.com/kartaladev/scrty/expiry/sweep
 go 1.27
 
 require (
-	github.com/go-co-op/gocron/v2 v2.22.0
+	github.com/go-co-op/gocron/v2 v2.23.0
 	github.com/google/uuid v1.6.0
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/kartaladev/scrty v0.0.0

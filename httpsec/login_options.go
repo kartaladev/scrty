@@ -24,6 +24,11 @@ type FormLoginDeps struct {
 	// satisfies it, and so does a consumer's own provider. A FirstOf forwards
 	// the refusal-log flush to its delegates, so the chain's flush reaches
 	// each of them.
+	//
+	// A principal it returns must carry the user's identifier. One with no
+	// identifier, or no principal, fails the login in every mode, a 500 whose
+	// cause matches token.ErrNoSubject, with no session stored and no credential
+	// handed out. No option relaxes this: a session must name its user.
 	Authenticator authenticate.Authenticator
 
 	// Sessions opens the session a successful login establishes.
@@ -317,7 +322,9 @@ func WithLoginLimiter(l ratelimit.Limiter) LoginOption {
 // d is given to the new session (session.WithAbsoluteLifetime). fn runs once
 // the password is verified, before the policy phase and the session creation,
 // so it does not run for a failed credential check, but it does run for a
-// login the policy phase then refuses.
+// login the policy phase then refuses. It also runs before the identifier
+// check, so ex.Authentication.Principal is nil when the provider returned no
+// authentication.
 //
 // fn never sees the password: the configured password parameter is not among
 // the fields. The manager holds d to its lifetime maximum

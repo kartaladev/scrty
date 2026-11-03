@@ -249,7 +249,7 @@ func TestDPoP_Construction(t *testing.T) {
 		return testCase{
 			name: name,
 			opts: func(t *testing.T) []httpsec.Option {
-				return append(opts(t, NewMockGenerator(gomock.NewController(t))), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}))
+				return append(opts(t, newMockGenerator(gomock.NewController(t))), httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}))
 			},
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				refused("EnableDPoP")(t, chain, err)
@@ -306,7 +306,7 @@ func TestDPoP_Construction(t *testing.T) {
 			// It would issue every token unbound while DPoP was asked for.
 			name: "with a consumer token generator that cannot bind",
 			opts: issuing(func(t *testing.T) token.Generator {
-				return NewMockGenerator(gomock.NewController(t))
+				return newMockGenerator(gomock.NewController(t))
 			}),
 			assert: func(t *testing.T, chain *httpsec.Chain, err error) {
 				refused("EnableDPoP")(t, chain, err)

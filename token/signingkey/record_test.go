@@ -24,6 +24,8 @@ func TestInMemoryKeyStore(t *testing.T) {
 	type testCase struct {
 		name   string
 		seed   []signingkey.Record
+		delete []string            // deleted after the seed is stored
+		reseed []signingkey.Record // stored after the delete
 		assert func(t *testing.T, got []signingkey.Record, err error)
 	}
 
@@ -89,6 +91,25 @@ func TestInMemoryKeyStore(t *testing.T) {
 					"the store never interprets the private bytes")
 			},
 		},
+		{
+			name:   "a deleted record no longer loads, and the rest keep their order",
+			seed:   tiedRecords(at(10), 4),
+			delete: []string{"tied-01", "tied-02", "never-stored"},
+			assert: func(t *testing.T, got []signingkey.Record, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"tied-00", "tied-03"}, recordKids(got))
+			},
+		},
+		{
+			name:   "a deleted kid stored again takes a new place among tied records",
+			seed:   tiedRecords(at(10), 3),
+			delete: []string{"tied-00"},
+			reseed: tiedRecords(at(10), 1),
+			assert: func(t *testing.T, got []signingkey.Record, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"tied-01", "tied-02", "tied-00"}, recordKids(got))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -98,6 +119,10 @@ func TestInMemoryKeyStore(t *testing.T) {
 			ctx := t.Context()
 			store := signingkey.NewMemoryKeyStore()
 			for _, rec := range tc.seed {
+				require.NoError(t, store.Store(ctx, rec))
+			}
+			require.NoError(t, store.Delete(ctx, tc.delete...))
+			for _, rec := range tc.reseed {
 				require.NoError(t, store.Store(ctx, rec))
 			}
 

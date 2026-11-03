@@ -932,7 +932,7 @@ func TestRedeemerGuard(t *testing.T) {
 			arrange: func(t *testing.T, h *magicLinkHarness) {
 				var calls atomic.Int32
 
-				g := NewMockGenerator(gomock.NewController(t))
+				g := newMockGenerator(gomock.NewController(t))
 				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 					DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
 						if calls.Add(1) == 1 {
@@ -971,7 +971,7 @@ func TestRedeemerGuard(t *testing.T) {
 			name:     "a redeemer whose every issue failed and that returns its first failure is not charged",
 			redeemer: retriesAndReportsFirst,
 			arrange: func(t *testing.T, h *magicLinkHarness) {
-				g := NewMockGenerator(gomock.NewController(t))
+				g := newMockGenerator(gomock.NewController(t))
 				g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 					Return("", errKeySourceDown)
 				h.tokens = g
@@ -1603,7 +1603,7 @@ type recordingIssuer struct {
 func (r *recordingIssuer) generator(t *testing.T) *MockGenerator {
 	t.Helper()
 
-	g := NewMockGenerator(gomock.NewController(t))
+	g := newMockGenerator(gomock.NewController(t))
 	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
 			r.mu.Lock()
@@ -1979,7 +1979,7 @@ func TestMagicLink_LinkExpiringWhileCredentialIssuedIsRefusedUnspent(t *testing.
 
 			// The generator is the step between the check and the consume: it
 			// takes tookTime of the link's clock to sign.
-			h.tokens = NewMockGenerator(gomock.NewController(t))
+			h.tokens = newMockGenerator(gomock.NewController(t))
 			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 				DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
 					clk.Advance(tookTime)

@@ -377,6 +377,16 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			`SELECT * FROM "signing_keys" ORDER BY created_at, kid`,
 			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`,
 			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`)},
+		{name: "signing key delete", run: with(func(ctx context.Context, s storeSet) error {
+			return s.keys.Delete(ctx, "stmt-kid-delete-1", "stmt-kid-delete-2")
+		}), assert: one(`DELETE FROM signing_keys WHERE kid IN (SELECT jsonb_array_elements_text($1::jsonb))`)},
+		{name: "signing key delete of no keys", run: with(func(ctx context.Context, s storeSet) error {
+			return s.keys.Delete(ctx)
+		}), assert: func(t *testing.T, err error, stmts []string) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Empty(t, stmts)
+		}},
 
 		{name: "MFA begin", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-begin", "TOTP"))
@@ -396,7 +406,13 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
 			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", storefix.EnrolmentGen, 1000, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND generation = $5 AND confirmed_at IS NULL`)},
+		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
+		{name: "MFA confirm of a proven enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			gen := begunOn(ctx, t, seed, "stmt-mfa-confirm-proven")
+			require.NoError(t, flag(proofs(t, seed).ProveDevice(ctx, "stmt-mfa-confirm-proven", gen, 1000, []byte("314159"), now.Add(10*time.Minute), now)))
+			started()
+			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm-proven", gen, 999, now))
+		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND generation = $4 AND confirmed_at IS NULL AND device_proven_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1000, now)))

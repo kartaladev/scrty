@@ -178,7 +178,7 @@ func newLoginSpies(t *testing.T) *loginSpies {
 	manager, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
-	return &loginSpies{store: store, tokens: NewMockGenerator(ctrl), sessions: manager}
+	return &loginSpies{store: store, tokens: newMockGenerator(ctrl), sessions: manager}
 }
 
 // expectCreate records that the session was created, which is the only place
@@ -867,7 +867,7 @@ func TestCompleteLoginEnrolment(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			store := NewMockStore(ctrl)
-			tokens := NewMockGenerator(ctrl)
+			tokens := newMockGenerator(ctrl)
 
 			sessions, err := session.New(session.WithStore(store),
 				session.WithClock(clockwork.NewFakeClockAt(start)))
@@ -1175,7 +1175,7 @@ func TestCompleteLogin_Proof(t *testing.T) {
 			}
 
 			store := NewMockStore(ctrl)
-			tokens := NewMockGenerator(ctrl)
+			tokens := newMockGenerator(ctrl)
 
 			sessions, err := session.New(session.WithStore(store),
 				session.WithClock(clockwork.NewFakeClockAt(start)))

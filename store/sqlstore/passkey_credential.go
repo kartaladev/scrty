@@ -459,19 +459,6 @@ func (s *PasskeyCredentialStore) Delete(ctx context.Context, user identity.UserI
 	return n > 0, err
 }
 
-// DeleteAwaitingSavedCodes removes user's credentials awaiting saved codes,
-// and reports how many.
-func (s *PasskeyCredentialStore) DeleteAwaitingSavedCodes(ctx context.Context, user identity.UserID) (int, error) {
-	if !storekit.Storable(string(user)) {
-		return 0, nil
-	}
-
-	n, err := s.c.exec(ctx, "delete passkey credentials awaiting saved codes",
-		pgschema.PasskeyDeleteAwaitingSavedCodes, string(user))
-
-	return int(n), err
-}
-
 // DeleteUser removes every credential of user, and reports how many.
 func (s *PasskeyCredentialStore) DeleteUser(ctx context.Context, user identity.UserID) (int, error) {
 	if !storekit.Storable(string(user)) {

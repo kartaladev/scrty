@@ -76,7 +76,7 @@ func (w *dpopBearerWorld) token(cnf token.Confirmation) string {
 
 	sid := w.session(cnf.JKT)
 
-	tok, err := w.gen.GenerateWith(w.t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject},
+	tok, err := w.gen.GenerateWith(w.t.Context(), sid, &identity.Principal{ID: "u-1", Username: testUsername},
 		token.WithConfirmation(cnf))
 	require.NoError(w.t, err)
 
@@ -357,7 +357,7 @@ func TestDPoP_Bearer(t *testing.T) {
 			mode: signedBearer, d: enabled,
 			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
 				sid := w.session(key.jkt)
-				tok, err := w.gen.Generate(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject})
+				tok, err := w.gen.Generate(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testUsername})
 				require.NoError(t, err)
 
 				return w.present(c, "Bearer", tok, "")
@@ -370,7 +370,7 @@ func TestDPoP_Bearer(t *testing.T) {
 			run: func(t *testing.T, w *dpopBearerWorld, c *httpsec.Chain) served {
 				sid := w.session(thief.jkt)
 				tok, err := w.gen.GenerateWith(t.Context(), sid,
-					&identity.Principal{ID: "u-1", Username: testSubject},
+					&identity.Principal{ID: "u-1", Username: testUsername},
 					token.WithConfirmation(token.Confirmation{JKT: key.jkt}))
 				require.NoError(t, err)
 

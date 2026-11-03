@@ -407,7 +407,7 @@ func TestRecoveryGatePerRequestPhase(t *testing.T) {
 				Return(token.NewClaims(testSubject, s.ID), nil)
 
 			users := NewMockUserLoader(ctrl)
-			users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+			users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 
 			var raised policy.ChallengeKind
 

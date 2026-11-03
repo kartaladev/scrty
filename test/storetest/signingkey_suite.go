@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,6 +24,10 @@ func signingKeyRecord(kid string, created time.Time) signingkey.Record {
 		CreatedAt: created,
 	}
 }
+
+// manyKeyIDs is more key identifiers than PostgreSQL accepts as bound parameters
+// in one statement, which is 65535.
+const manyKeyIDs = 70_000
 
 // assertSigningKeys requires LoadAll to return exactly want, in order.
 func assertSigningKeys(ctx context.Context, t *testing.T, s signingkey.KeyStore, want ...signingkey.Record) {
@@ -50,8 +55,9 @@ func assertSigningKeys(ctx context.Context, t *testing.T, s signingkey.KeyStore,
 // RunSigningKeyStoreSuite checks a signingkey.KeyStore against the contract
 // the key manager relies on: a record round-trips unchanged; storing a record
 // with a key identifier already present replaces it, leaving one; LoadAll
-// returns every record oldest first by CreatedAt; and an empty store loads
-// nothing without an error.
+// returns every record oldest first by CreatedAt; an empty store loads nothing
+// without an error; and Delete removes the named records, is idempotent, and
+// with no key identifiers changes nothing, however many it names.
 //
 // newStore is called once per case and must return an empty store.
 func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingkey.KeyStore) {
@@ -114,6 +120,120 @@ func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingke
 				}
 
 				assertSigningKeys(ctx, t, s, oldest, middle, newest)
+			},
+		},
+		{
+			name: "deleting removes only the named keys, and they are not loaded",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				first := signingKeyRecord("kid-a", suiteStart)
+				second := signingKeyRecord("kid-b", suiteStart.Add(time.Minute))
+				kept := signingKeyRecord("kid-c", suiteStart.Add(2*time.Minute))
+				for _, rec := range []signingkey.Record{first, second, kept} {
+					require.NoError(t, s.Store(ctx, rec))
+				}
+
+				require.NoError(t, s.Delete(ctx, first.Kid, second.Kid))
+
+				assertSigningKeys(ctx, t, s, kept)
+			},
+		},
+		{
+			name: "deleting a missing key is not an error",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				kept := signingKeyRecord("kid-a", suiteStart)
+				gone := signingKeyRecord("kid-b", suiteStart.Add(time.Minute))
+				require.NoError(t, s.Store(ctx, kept))
+				require.NoError(t, s.Store(ctx, gone))
+
+				require.NoError(t, s.Delete(ctx, "kid-never-stored"))
+				require.NoError(t, s.Delete(ctx, gone.Kid))
+				require.NoError(t, s.Delete(ctx, gone.Kid), "another replica deleted it first")
+
+				assertSigningKeys(ctx, t, s, kept)
+			},
+		},
+		{
+			name: "a missing key beside a stored one does not stop the stored one going",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				gone := signingKeyRecord("kid-a", suiteStart)
+				require.NoError(t, s.Store(ctx, gone))
+
+				require.NoError(t, s.Delete(ctx, "kid-never-stored", gone.Kid, gone.Kid))
+
+				assertSigningKeys(ctx, t, s)
+			},
+		},
+		{
+			name: "delete with no keys is a no-op",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				kept := signingKeyRecord("kid-a", suiteStart)
+				require.NoError(t, s.Store(ctx, kept))
+
+				require.NoError(t, s.Delete(ctx))
+
+				assertSigningKeys(ctx, t, s, kept)
+			},
+		},
+		{
+			name: "a key id is matched whole, whatever it holds",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				awkward := signingKeyRecord(`kid"',{}\%_<é`, suiteStart)
+				kept := signingKeyRecord("kid-a", suiteStart.Add(time.Minute))
+				require.NoError(t, s.Store(ctx, awkward))
+				require.NoError(t, s.Store(ctx, kept))
+
+				require.NoError(t, s.Delete(ctx, "kid", "%", "kid-_"))
+				assertSigningKeys(ctx, t, s, awkward, kept)
+
+				require.NoError(t, s.Delete(ctx, awkward.Kid))
+				assertSigningKeys(ctx, t, s, kept)
+			},
+		},
+		{
+			name: "a key id no store could hold is missing, and does not stop the others going",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				gone := signingKeyRecord("kid-a", suiteStart)
+				require.NoError(t, s.Store(ctx, gone))
+
+				require.NoError(t, s.Delete(ctx, "kid\x00nul", "kid\xffutf8"))
+				assertSigningKeys(ctx, t, s, gone)
+
+				require.NoError(t, s.Delete(ctx, "kid\x00nul", gone.Kid))
+				assertSigningKeys(ctx, t, s)
+			},
+		},
+		{
+			// Only the keys that show a call was split or cut short are stored,
+			// so the case costs one call however many identifiers it names: the
+			// first, the last of a first batch and the first past it, and the last.
+			name: "a delete naming more keys than a statement can bind removes every named key",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				kids := make([]string, manyKeyIDs)
+				for i := range kids {
+					kids[i] = fmt.Sprintf("kid-missing-%d", i)
+				}
+				for i, at := range []int{0, 65534, 65535, manyKeyIDs - 1} {
+					kids[at] = fmt.Sprintf("kid-named-%d", i)
+					require.NoError(t, s.Store(ctx, signingKeyRecord(kids[at], suiteStart.Add(time.Duration(i)*time.Minute))))
+				}
+				kept := signingKeyRecord("kid-kept", suiteStart.Add(time.Hour))
+				require.NoError(t, s.Store(ctx, kept))
+
+				require.NoError(t, s.Delete(ctx, kids...))
+
+				assertSigningKeys(ctx, t, s, kept)
+			},
+		},
+		{
+			name: "a deleted key id can be stored again",
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
+				rec := signingKeyRecord("kid-a", suiteStart)
+				require.NoError(t, s.Store(ctx, rec))
+				require.NoError(t, s.Delete(ctx, rec.Kid))
+
+				require.NoError(t, s.Store(ctx, rec))
+
+				assertSigningKeys(ctx, t, s, rec)
 			},
 		},
 	}

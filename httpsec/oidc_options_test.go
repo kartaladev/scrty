@@ -467,7 +467,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			f := oidcFixture{
 				manager:  newTestOIDCManager(t),
 				handoffs: newTestHandoffManager(t),
-				tokens:   NewMockGenerator(gomock.NewController(t)),
+				tokens:   newMockGenerator(gomock.NewController(t)),
 				sessions: mustSessions(t),
 			}
 			if tc.manager != nil {

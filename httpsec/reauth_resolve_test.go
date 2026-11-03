@@ -384,9 +384,6 @@ func TestReauthResolve(t *testing.T) {
 				f.chainOpts = append(f.chainOpts, httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{
 					Users: f.users, Tokens: f.tokens,
 				}))
-				f.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().Return(&identity.Details{
-					ID: testMFAUser, Username: mfaUsername, Active: true,
-				}, nil)
 			},
 			state: session.MFASatisfied,
 			act: func(t *testing.T, f *pwFixture, c *httpsec.Chain, s *session.Session) served {
@@ -437,18 +434,18 @@ func TestReauthResolve(t *testing.T) {
 				f.clock.Advance(time.Minute)
 
 				// The renewal reloads the user before it rotates; the
-				// re-proof runs there, once, and wins.
+				// re-proof runs there, once, and wins. The first reload is the
+				// bearer's, and the second the renewal endpoint's.
 				var (
-					once    sync.Once
+					reloads atomic.Int32
 					reprove served
 				)
-				f.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().
-					DoAndReturn(func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+				f.onReload = func(ctx context.Context) {
+					if reloads.Add(1) == 2 {
 						//nolint:contextcheck // the request carries ctx, the renewal's own request context
-						once.Do(func() { reprove = serve(t, c, totpPost(ctx, mfaTokenFor(s.ID))) })
-
-						return &identity.Details{ID: testMFAUser, Username: mfaUsername, Active: true}, nil
-					})
+						reprove = serve(t, c, totpPost(ctx, mfaTokenFor(s.ID)))
+					}
+				}
 
 				out := serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
 					httpsec.DefaultSessionRenewalPath, mfaTokenFor(s.ID), ""))
@@ -658,9 +655,6 @@ func TestReauthResolve(t *testing.T) {
 				h.chainOpts = append(h.chainOpts, httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{
 					Sessions: h.sessions, Users: h.users,
 				}))
-				h.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().Return(&identity.Details{
-					ID: testMFAUser, Username: mfaUsername, Active: true,
-				}, nil)
 
 				return newPwFixtureOn(t, h)
 			},

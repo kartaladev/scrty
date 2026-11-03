@@ -979,7 +979,7 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 	base := []httpsec.Option{
 		httpsec.WithLogger(slog.New(h.logs)),
 		httpsec.EnableFormLogin(httpsec.FormLoginDeps{
-			Authenticator: h.authn, Sessions: sessions, Tokens: NewMockGenerator(ctrl), Attempts: attempts,
+			Authenticator: h.authn, Sessions: sessions, Tokens: newMockGenerator(ctrl), Attempts: attempts,
 		}),
 		httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: attempts}),
 	}

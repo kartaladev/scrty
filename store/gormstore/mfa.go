@@ -32,9 +32,10 @@ import (
 //
 // PutPending, Confirm and AcceptStep are each one conditional statement: a
 // begin over a confirmed enrolment is refused with mfa.ErrAlreadyEnrolled, a
-// second confirmation reports false, a confirmation or a step naming a
-// generation that is not the enrolment's reports false, and a step at or
-// below the recorded one reports false, each without writing, so of
+// second confirmation reports false, a confirmation of an enrolment with a
+// device proof reports false, a confirmation or a step naming a generation
+// that is not the enrolment's reports false, and a step at or below the
+// recorded one reports false, each without writing, so of
 // concurrent verifications of one step exactly one succeeds, on this process
 // or on another replica.
 //
@@ -194,9 +195,10 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 }
 
 // Confirm confirms the user's pending enrolment on gen at at, recording step
-// and never moving the recorded step backwards, and clears its emailed code,
-// keeping the code's expiry: one conditional UPDATE, whose zero rows affected
-// reports false.
+// and never moving the recorded step backwards, only while it has no device
+// proof: one conditional UPDATE, whose zero rows affected reports false. The
+// forward-only step is a safety net against replaying a proving code, not a
+// guarantee of the port.
 func (s *enrolmentStore) Confirm(
 	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
 ) (bool, error) {
@@ -208,9 +210,9 @@ func (s *enrolmentStore) Confirm(
 		map[string]any{
 			"confirmed_at": storekit.Time(at),
 			"last_step":    gorm.Expr("GREATEST(last_step, ?)", step),
-			"email_code":   nil,
 		},
-		"user_id = ? AND generation = ? AND confirmed_at IS NULL", string(user), genArg(gen))
+		"user_id = ? AND generation = ? AND confirmed_at IS NULL AND device_proven_at IS NULL",
+		string(user), genArg(gen))
 
 	return n > 0, err
 }

@@ -70,16 +70,23 @@ var (
 // issues.
 const RaceEmailCode = "271828"
 
+// The steps the enrolment-path races write: a device proof at raceProofStep, and
+// a confirmation at raceConfirmStep, the step before, as a code the window admits
+// would name.
+const (
+	raceProofStep   = 1001
+	raceConfirmStep = 1000
+)
+
 // provenKeySep separates the user from the generation in a proven
 // enrolment's race key. The users the races seed never hold it.
 const provenKeySep = "|"
 
-// seedProven begins user i's enrolment on a generation of its own, proves its
-// device at step 1001 with the race's emailed code, and returns the key
-// "race-user-i|generation".
-func seedProven[S storetest.DeviceProofEnrolmentStore](
+// seedBegun begins user i's enrolment on a generation of its own, and returns
+// the user, the generation and the key "race-user-i|generation".
+func seedBegun[S mfa.EnrolmentStore](
 	ctx context.Context, t *testing.T, s S, gen id.Generator, i int,
-) string {
+) (identity.UserID, id.ID, string) {
 	t.Helper()
 
 	user := identity.UserID(fmt.Sprintf("race-user-%d", i))
@@ -89,14 +96,26 @@ func seedProven[S storetest.DeviceProofEnrolmentStore](
 	e := Pending(user, "secret")
 	e.Generation = g
 	require.NoError(t, s.PutPending(ctx, e))
-	proven, err := s.ProveDevice(ctx, user, g, 1001, []byte(RaceEmailCode), RaceCodeUntil, RaceProvenAt)
+
+	return user, g, string(user) + provenKeySep + g.String()
+}
+
+// seedProven begins user i's enrolment as seedBegun does, proves its device at
+// step 1001 with the race's emailed code, and returns seedBegun's key.
+func seedProven[S storetest.DeviceProofEnrolmentStore](
+	ctx context.Context, t *testing.T, s S, gen id.Generator, i int,
+) string {
+	t.Helper()
+
+	user, g, key := seedBegun(ctx, t, s, gen, i)
+	proven, err := s.ProveDevice(ctx, user, g, raceProofStep, []byte(RaceEmailCode), RaceCodeUntil, RaceProvenAt)
 	require.NoError(t, err)
 	require.True(t, proven, "the seeded enrolment of %q must be proven", user)
 
-	return string(user) + provenKeySep + g.String()
+	return key
 }
 
-// provenKey recovers the user and the generation from a key seedProven made.
+// provenKey recovers the user and the generation from a key seedBegun made.
 func provenKey(key string) (identity.UserID, id.ID, error) {
 	user, g, ok := strings.Cut(key, provenKeySep)
 	if !ok {
@@ -124,6 +143,52 @@ func CompleteRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 				return false, err
 			}
 			return s.Complete(ctx, user, g, RaceAttemptAt)
+		},
+	}
+}
+
+// ConfirmProofRace is the race between Confirm and ProveDevice: Seed begins
+// user i's enrolment on a generation of its own, an even racer confirms that
+// generation and an odd one proves its device. Check then requires each
+// enrolment to read as the one winner left it: confirmed with no proof and no
+// code, or proven with its step and code and not confirmed.
+func ConfirmProofRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
+	gen := id.NewV7Generator()
+	return storetest.Race[S]{
+		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
+			_, _, key := seedBegun(ctx, t, s, gen, i)
+			return key
+		},
+		Attempt: func(ctx context.Context, s S, key string, racer int) (bool, error) {
+			user, g, err := provenKey(key)
+			if err != nil {
+				return false, err
+			}
+			if racer%2 == 0 {
+				return s.Confirm(ctx, user, g, raceConfirmStep, RaceAttemptAt)
+			}
+			return s.ProveDevice(ctx, user, g, raceProofStep, []byte(RaceEmailCode), RaceCodeUntil, RaceProvenAt)
+		},
+		Check: func(ctx context.Context, t *testing.T, s S, key string) {
+			t.Helper()
+
+			user, _, err := provenKey(key)
+			require.NoError(t, err)
+			e, ok, err := s.Get(ctx, user)
+			require.NoError(t, err)
+			require.True(t, ok, "the enrolment of %q must be present after the race", user)
+
+			confirmed, proven := !e.ConfirmedAt.IsZero(), !e.DeviceProvenAt.IsZero()
+			assert.NotEqual(t, confirmed, proven,
+				"%q: after the race the enrolment must be confirmed or proven and not both, confirmed=%t proven=%t",
+				user, confirmed, proven)
+			if confirmed {
+				assert.EqualValues(t, raceConfirmStep, e.LastStep, "%q: the confirmation's step", user)
+				assert.Empty(t, e.EmailCode, "%q: a confirmation leaves no emailed code", user)
+				return
+			}
+			assert.EqualValues(t, raceProofStep, e.LastStep, "%q: the proof's step", user)
+			assert.Equal(t, []byte(RaceEmailCode), e.EmailCode, "%q: the proof's emailed code", user)
 		},
 	}
 }

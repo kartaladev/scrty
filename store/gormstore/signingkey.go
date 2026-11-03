@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -30,7 +31,8 @@ import (
 // re-sealing off.
 //
 // Store replaces the key already stored under the same kid, keeping its row,
-// as the contract defines. It honours WithTxResolver, WithIDGenerator
+// as the contract defines, and Delete is one statement that treats a key
+// already gone as deleted. It honours WithTxResolver, WithIDGenerator
 // (default id.NewV7Generator, for the rows' primary keys) and
 // WithResealOnRead (default on), and refuses any other option.
 //
@@ -133,6 +135,31 @@ func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, err
 func (s *signingKeyStore) ResealSigningKey(ctx context.Context, kid string, old, resealed []byte) error {
 	return resealWhere[signingKeyRow](ctx, s.c, "re-seal signing key",
 		map[string]any{"private_key": resealed}, "kid = ? AND private_key = ?", kid, old)
+}
+
+// Delete removes the keys with the given kids: one DELETE, the shared
+// pgschema.SigningKeyDelete run raw because its kids travel as one parameter, so a
+// call may name more of them than PostgreSQL accepts as bound parameters, which
+// gorm's IN clause would bind one each. A kid with no key is not an error, and
+// neither is one PostgreSQL text cannot hold, since no key can have been stored
+// under it. With nothing left to delete it runs no statement.
+func (s *signingKeyStore) Delete(ctx context.Context, kids ...string) error {
+	const op = "delete signing keys"
+
+	set, ok := storekit.StorableSet(kids)
+	if !ok {
+		return nil
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return failed(op, err)
+	}
+	if err := q.Exec(pgschema.SigningKeyDelete, set).Error; err != nil {
+		return failed(op, err)
+	}
+
+	return nil
 }
 
 var (

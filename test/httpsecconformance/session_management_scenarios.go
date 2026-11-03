@@ -73,7 +73,7 @@ func managedRequest(spec ChainSpec, method, path string) RequestSpec {
 	return RequestSpec{
 		Method:        method,
 		Path:          path,
-		Header:        map[string]string{"Authorization": "Bearer " + issuedTokenFor(Username, spec.Effects.SessionID)},
+		Header:        map[string]string{"Authorization": "Bearer " + issuedTokenFor(string(UserID), spec.Effects.SessionID)},
 		ClientAddress: ClientAddress,
 	}
 }

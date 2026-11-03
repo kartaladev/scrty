@@ -69,6 +69,8 @@ func (exampleTokens) Verify(context.Context, string) (*token.Claims, error) {
 	return nil, token.ErrInvalid
 }
 
+func (exampleTokens) SubjectMode() token.SubjectMode { return token.SubjectUserID }
+
 func exampleUser() exampleUsers {
 	return exampleUsers{details: &identity.Details{ID: "u-1", Username: "grace@example.com", Active: true}}
 }

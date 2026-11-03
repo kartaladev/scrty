@@ -190,15 +190,17 @@ type KeySource interface {
 // A source that does not implement it simply gets no such check; nothing else
 // about it changes.
 type LifetimeReporter interface {
-	// KeyLifetime reports how long a key stays published after creation.
+	// KeyLifetime reports how long a key stays published after creation, at
+	// least: a source may keep a key replaced late for longer.
 	KeyLifetime() time.Duration
 
 	// RotateInterval reports how often the source replaces its keys.
 	RotateInterval() time.Duration
 }
 
-// KeyLifetime reports how long a key stays published after it was created,
-// which is what WithKeyLifetime configured.
+// KeyLifetime reports how long a key stays published after it was created, at
+// least, which is what WithKeyLifetime configured. A key replaced late stays
+// longer: see the package documentation.
 func (km *Keys) KeyLifetime() time.Duration { return km.lifetime }
 
 // RotateInterval reports how often a new key is minted, which is what

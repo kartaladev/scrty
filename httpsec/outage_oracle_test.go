@@ -66,7 +66,7 @@ func formLoginEndpoint() passwordEndpoint {
 			return httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 				Authenticator: authn,
 				Sessions:      sessions,
-				Tokens:        NewMockGenerator(gomock.NewController(t)),
+				Tokens:        newMockGenerator(gomock.NewController(t)),
 				Attempts:      attempts,
 			}, httpsec.WithLoginLimiter(limiter))
 		},

@@ -458,7 +458,7 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 				rec := &eventRecorder{}
 				world := newDPoPBearerWorld(t)
 				sid := world.session("bound-key-thumbprint")
-				tok, err := world.gen.GenerateWith(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testSubject})
+				tok, err := world.gen.GenerateWith(t.Context(), sid, &identity.Principal{ID: "u-1", Username: testUsername})
 				require.NoError(t, err)
 
 				chain, err := httpsec.New(httpsec.WithClock(world.clk), httpsec.WithLogger(discardLogger()),

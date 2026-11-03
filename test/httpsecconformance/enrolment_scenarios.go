@@ -414,7 +414,7 @@ func enrolmentVerifyGrantsAccess() Scenario {
 			}
 			require.NoError(t, json.Unmarshal([]byte(res.Body), &body))
 
-			rotated, ok := strings.CutPrefix(body.AccessToken, tokenPrefix+Username+".")
+			rotated, ok := strings.CutPrefix(body.AccessToken, tokenPrefix+string(UserID)+".")
 			require.True(t, ok, "got %q", body.AccessToken)
 			require.NotEqual(t, res.Effects.SessionID, rotated, "the session was rotated")
 

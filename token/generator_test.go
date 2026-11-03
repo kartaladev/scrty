@@ -59,7 +59,7 @@ func TestGenerateClaims(t *testing.T) {
 				claims := decodeClaims(t, raw)
 				assert.Equal(t, "s-7", claims["jti"])
 				assert.Equal(t, "https://auth.example", claims["iss"])
-				assert.Equal(t, "alice", claims["sub"])
+				assert.Equal(t, "u-1", claims["sub"])
 				assert.EqualValues(t, issuedAt.Unix(), claims["iat"])
 				assert.EqualValues(t, issuedAt.Add(15*time.Minute).Unix(), claims["exp"])
 				assert.NotContains(t, claims, "aud", "no audience configured, no aud claim")
@@ -148,7 +148,7 @@ func TestAudienceRoundTrip(t *testing.T) {
 
 	claims, err := ver.Verify(t.Context(), raw)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", claims.Subject())
+	assert.Equal(t, "u-1", claims.Subject())
 }
 
 func TestNewGeneratorValidation(t *testing.T) {
@@ -401,23 +401,6 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 			},
 		},
 		{
-			// identity.Principal is a plain exported struct, so a store row
-			// with a blank username reaches here as a non-nil principal that
-			// names nobody. Issuing for it would put sub: "" in a valid
-			// token, which Claims.Subject cannot tell from "no subject at
-			// all", and a consumer comparing the subject to a row's username
-			// would then match every blank-username row.
-			name:      "a principal with no username to name as subject",
-			id:        "s-1",
-			principal: func() *identity.Principal { return &identity.Principal{ID: "u-1"} },
-			assert: func(t *testing.T, raw string, err error) {
-				require.ErrorIs(t, err, token.ErrNoSubject)
-				assert.Empty(t, raw)
-				assert.NotErrorIs(t, err, identity.ErrNoPrincipal,
-					"there is a principal; what it lacks is a username")
-			},
-		},
-		{
 			// jti is the session identifier on the session path, and
 			// Claims.ID reports the empty string both for a token that
 			// carries none and for one carrying "".
@@ -450,6 +433,128 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 	}
 }
 
+// TestGenerator_Subject pins which of the principal's values a token carries as
+// sub: the user identifier by default, the username under WithUsernameSubject,
+// and no token at all when the chosen value is empty.
+//
+// identity.Principal is a plain exported struct, so a store row with a blank
+// value reaches the generator as a non-nil principal that names nobody. Issuing
+// for it would put sub: "" in a valid token, which Claims.Subject cannot tell
+// from "no subject at all", and a consumer comparing the subject to a row would
+// then match every blank row. The value the other mode carries does not rescue
+// it, because a verifier reading the subject one way must never be handed the
+// other.
+func TestGenerator_Subject(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		opts      []token.Option
+		issue     []token.IssueOption
+		principal *identity.Principal
+		assert    func(t *testing.T, gen *token.JWTGenerator, raw string, err error)
+	}
+
+	carries := func(sub string, mode token.SubjectMode) func(*testing.T, *token.JWTGenerator, string, error) {
+		return func(t *testing.T, gen *token.JWTGenerator, raw string, err error) {
+			t.Helper()
+
+			require.NoError(t, err)
+			assert.Equal(t, sub, decodeClaims(t, raw)["sub"])
+			assert.Equal(t, mode, gen.SubjectMode())
+
+			claims, verifyErr := gen.Verify(t.Context(), raw)
+			require.NoError(t, verifyErr)
+			assert.Equal(t, sub, claims.Subject())
+		}
+	}
+
+	refused := func(mode token.SubjectMode) func(*testing.T, *token.JWTGenerator, string, error) {
+		return func(t *testing.T, gen *token.JWTGenerator, raw string, err error) {
+			t.Helper()
+
+			require.ErrorIs(t, err, token.ErrNoSubject)
+			assert.EqualError(t, err, "token: generate: token: principal has no value for the chosen subject")
+			assert.Empty(t, raw)
+			assert.NotErrorIs(t, err, identity.ErrNoPrincipal,
+				"there is a principal; what it lacks is a value for the chosen subject")
+			assert.NotErrorIs(t, err, token.ErrInvalid,
+				"a failure to issue is not the verdict on a presented token")
+			assert.Equal(t, mode, gen.SubjectMode())
+		}
+	}
+
+	bound := []token.IssueOption{token.WithConfirmation(token.Confirmation{JKT: thumbprint("k")})}
+
+	cases := []testCase{
+		{
+			name:      "Default token",
+			principal: alice(),
+			assert:    carries("u-1", token.SubjectUserID),
+		},
+		{
+			name:      "Consumer chooses the username as subject",
+			opts:      []token.Option{token.WithUsernameSubject()},
+			principal: alice(),
+			assert:    carries("alice", token.SubjectUsername),
+		},
+		{
+			name:      "Empty subject",
+			principal: &identity.Principal{Username: "alice"},
+			assert:    refused(token.SubjectUserID),
+		},
+		{
+			name:      "Empty username under the username subject",
+			opts:      []token.Option{token.WithUsernameSubject()},
+			principal: &identity.Principal{ID: "u-1"},
+			assert:    refused(token.SubjectUsername),
+		},
+		{
+			name:      "A principal with no username still gets a default token",
+			principal: &identity.Principal{ID: "u-1"},
+			assert:    carries("u-1", token.SubjectUserID),
+		},
+		{
+			name:      "A bound token follows the default subject",
+			issue:     bound,
+			principal: alice(),
+			assert:    carries("u-1", token.SubjectUserID),
+		},
+		{
+			name:      "A bound token follows the username subject",
+			opts:      []token.Option{token.WithUsernameSubject()},
+			issue:     bound,
+			principal: alice(),
+			assert:    carries("alice", token.SubjectUsername),
+		},
+		{
+			name:      "A bound token is refused with no value for the chosen subject",
+			issue:     bound,
+			principal: &identity.Principal{Username: "alice"},
+			assert:    refused(token.SubjectUserID),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := append([]token.Option{token.WithoutIssuer(), token.WithoutAudience()}, tc.opts...)
+
+			gen, err := token.NewGenerator(newKeySource(t), opts...)
+			require.NoError(t, err)
+
+			var raw string
+			if tc.issue != nil {
+				raw, err = gen.GenerateWith(t.Context(), "s-7", tc.principal, tc.issue...)
+			} else {
+				raw, err = gen.Generate(t.Context(), "s-7", tc.principal)
+			}
+			tc.assert(t, gen, raw, err)
+		})
+	}
+}
+
 // TestGeneratorVerifiesItsOwnTokens pins that one construction issues and
 // verifies under the same key source, issuer, audience and clock, and that the
 // clock really is the one both halves read.
@@ -472,7 +577,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 
 	claims, err := gen.Verify(t.Context(), raw)
 	require.NoError(t, err, "the generator verifies with its own key source, issuer and audience")
-	assert.Equal(t, "alice", claims.Subject())
+	assert.Equal(t, "u-1", claims.Subject())
 	assert.Equal(t, "s-7", claims.ID())
 
 	assert.EqualValues(t, issuedAt.Unix(), decodeClaims(t, raw)["iat"],
@@ -519,7 +624,7 @@ func TestConsumerSuppliedKeySource(t *testing.T) {
 
 	claims, err := ver.Verify(t.Context(), raw)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", claims.Subject())
+	assert.Equal(t, "u-1", claims.Subject())
 
 	// The algorithm is still pinned: this source holds no ES256 key.
 	esGen, err := token.NewGenerator(external,
@@ -599,7 +704,7 @@ func TestGeneratorReturnedErrors(t *testing.T) {
 				gen, err := token.NewGenerator(keys, token.WithoutIssuer(), token.WithoutAudience())
 				require.NoError(t, err)
 
-				_, genErr := gen.Generate(t.Context(), "jti-1", &identity.Principal{Username: "alice"})
+				_, genErr := gen.Generate(t.Context(), "jti-1", alice())
 				return genErr
 			},
 			assert: func(t *testing.T, err error) {

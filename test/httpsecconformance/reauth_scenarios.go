@@ -324,7 +324,7 @@ func reauthStaleThenTOTP() Scenario {
 			return newReauthSpec(t, reauthWiring{totp: true})
 		},
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
-			stale := issuedTokenFor(Username, spec.Effects.SessionID)
+			stale := issuedTokenFor(string(UserID), spec.Effects.SessionID)
 
 			requireStaleRefusal(t, send(guardedGet(stale)))
 
@@ -352,7 +352,7 @@ func reauthPasswordWithoutSecondFactor() Scenario {
 			return newReauthSpec(t, reauthWiring{login: true})
 		},
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
-			stale := issuedTokenFor(Username, spec.Effects.SessionID)
+			stale := issuedTokenFor(string(UserID), spec.Effects.SessionID)
 
 			requireStaleRefusal(t, send(guardedGet(stale)))
 
@@ -381,7 +381,7 @@ func reauthPasswordRefusedForTOTPHolder() Scenario {
 		},
 		Request: func(spec ChainSpec) RequestSpec {
 			return formPost(httpsec.DefaultReauthenticationPrefix+"/password",
-				issuedTokenFor(Username, spec.Effects.SessionID),
+				issuedTokenFor(string(UserID), spec.Effects.SessionID),
 				url.Values{httpsec.DefaultLoginPasswordParam: {Password}})
 		},
 		Assert: func(t *testing.T, res Result) {
@@ -407,7 +407,7 @@ func mfaVerifyRefusesFullSession() Scenario {
 			// The code is minted here, once the scenario's own Build has
 			// enrolled the secret, and is valid when it arrives.
 			return formPost(httpsec.DefaultMFAVerifyPrefix+"/totp",
-				issuedTokenFor(Username, spec.Effects.SessionID),
+				issuedTokenFor(string(UserID), spec.Effects.SessionID),
 				url.Values{"code": {mustTOTPCode(spec.Effects)}})
 		},
 		Assert: func(t *testing.T, res Result) {
@@ -431,7 +431,7 @@ func reauthPrefixUnderFormLogin() Scenario {
 			return newReauthSpec(t, reauthWiring{login: true, prefix: "/login/reauth"})
 		},
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
-			stale := issuedTokenFor(Username, spec.Effects.SessionID)
+			stale := issuedTokenFor(string(UserID), spec.Effects.SessionID)
 
 			methods := send(RequestSpec{
 				Method:        http.MethodGet,
@@ -465,7 +465,7 @@ func renewalLostToReproofIs409() Scenario {
 			return newReauthSpec(t, reauthWiring{login: true, renewal: true})
 		},
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
-			old := issuedTokenFor(Username, spec.Effects.SessionID)
+			old := issuedTokenFor(string(UserID), spec.Effects.SessionID)
 
 			// A request reads the session before the re-proof lands, as the
 			// renewal in flight will have; its record is what the renewal
@@ -526,7 +526,7 @@ func reauthPasswordRefusedByPostAuthenticationDeny() Scenario {
 			return newReauthSpec(t, reauthWiring{login: true, deny: true})
 		},
 		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
-			stale := issuedTokenFor(Username, spec.Effects.SessionID)
+			stale := issuedTokenFor(string(UserID), spec.Effects.SessionID)
 
 			refused := send(formPost(httpsec.DefaultReauthenticationPrefix+"/password", stale,
 				url.Values{httpsec.DefaultLoginPasswordParam: {Password}}))
@@ -565,7 +565,7 @@ func reauthRefusalCarriesWindow() Scenario {
 			return newReauthSpec(t, reauthWiring{login: true})
 		},
 		Request: func(spec ChainSpec) RequestSpec {
-			return guardedGet(issuedTokenFor(Username, spec.Effects.SessionID))
+			return guardedGet(issuedTokenFor(string(UserID), spec.Effects.SessionID))
 		},
 		Assert: func(t *testing.T, res Result) {
 			assert.Equal(t, http.StatusForbidden, res.Status)

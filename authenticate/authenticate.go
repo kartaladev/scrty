@@ -114,6 +114,11 @@ type Authenticator interface {
 	// that would let a caller tell one refusal from another. A dependency that
 	// could not answer, so that the credentials were never judged, is not a
 	// refusal: the built-in password provider returns ErrUnavailable for it.
+	//
+	// A provider must not answer success with no authentication, or with an
+	// authentication that names no principal: that is a fault in the provider,
+	// not a refusal, and the callers in this library treat it as one. A provider
+	// that has no one to name returns ErrAuthenticationFailed instead.
 	Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error)
 }
 

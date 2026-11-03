@@ -274,6 +274,12 @@ session confined to that one purpose, right after they sign in. The path enrols 
 method that implements `mfa.Enroller` over a store that keeps device proofs, or those you name
 with `httpsec.WithEnrolmentMethods`; `httpsec.EnableMFAEnrolment` checks that for you.
 
+`ConfirmEnrolment` serves consumers enrolling out of band, and must never be reachable from a
+session the enrolment path confines. Once a device proof is recorded on a generation, that call
+cannot confirm that generation, but it carries no mailbox proof of its own: a begin followed by a
+valid code confirms, and so does begin, prove, begin again, then confirm, because a new begin clears
+the proof.
+
 Because a password alone would otherwise be enough to bind a second factor of an attacker's
 choosing, the path is off unless both halves are turned on together:
 
@@ -2180,11 +2186,31 @@ failure.
 ## Development
 
 ```sh
-make tools   # install pinned golangci-lint, mockgen and govulncheck into ./.bin
 make check   # pin check, tools tests, gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
 ```
 
-`make check` is what continuous integration runs.
+`make check` is the one local command for the build gates. Each gate also runs on its own and
+installs only the tool it needs, so there is no `make tools` to run first:
+
+```sh
+make fmt-check       # gofmt
+make vet             # go vet
+make lint            # golangci-lint
+make test            # go test -race
+make vuln            # govulncheck
+make generate-check  # go generate leaves the tree unchanged
+make pincheck        # workflow actions are pinned to a commit SHA
+make tools-check     # the tools module's own checks
+```
+
+Continuous integration runs each gate as its own job, plus CodeQL and OpenSpec validation, behind a
+single `ci-ok` result.
+
+`make spec-check` validates the settled specs, the archived changes, and the active changes touched
+against `main`, including uncommitted and untracked files. An untracked note inside a change that has
+no deltas yet therefore makes that change fail. It needs Node `>=22.12`; with a locally installed
+OpenSpec CLI, run `make spec-check OPENSPEC=openspec`. `SPEC_BASE=<ref>` changes what counts as
+touched. It is not part of `make check`.
 
 ### Supply chain
 

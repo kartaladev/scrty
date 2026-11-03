@@ -252,7 +252,8 @@ func userActive(active bool) *identity.Details {
 	return d
 }
 
-// otherUser is an active u-2 under u-1's username: the username reassigned.
+// otherUser is an active u-2 under u-1's username, the record a reassigned
+// username or a confused loader answers with.
 func otherUser() *identity.Details {
 	d := storedUser()
 	d.ID = "u-2"
@@ -263,8 +264,10 @@ func otherUser() *identity.Details {
 // The identifiers the bearer tests share. The session identifier is the
 // token's jti, so one constant names both.
 const (
-	testJTI     = "sess-0123456789abcdef"
-	testSubject = "ada"
+	testJTI      = "sess-0123456789abcdef"
+	testUserID   = identity.UserID("u-1")
+	testSubject  = string(testUserID)
+	testUsername = "ada"
 )
 
 func bearerRequest(ctx context.Context, header string) *http.Request {
@@ -299,7 +302,7 @@ func storedUser() *identity.Details {
 	return &identity.Details{
 		ID:       "u-1",
 		Name:     "Ada Lovelace",
-		Username: testSubject,
+		Username: testUsername,
 		Active:   true,
 		Roles: []*identity.AssignedRole{
 			{ID: "r-admin", Name: "administrator", Primary: true},
@@ -317,8 +320,17 @@ func (h *authHarness) expectVerified() {
 // expectLiveSessionAndUser wires the whole resolution a valid token drives.
 func (h *authHarness) expectLiveSessionAndUser(s *session.Session) {
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(s, nil)
-	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 	h.acceptsActivityWriteBack()
+}
+
+// newMockGenerator is a mock generator reporting the default subject mode, as
+// the chain asks of every generator it is given beside a signed bearer.
+func newMockGenerator(ctrl *gomock.Controller) *MockGenerator {
+	g := NewMockGenerator(ctrl)
+	g.EXPECT().SubjectMode().Return(token.SubjectUserID).AnyTimes()
+
+	return g
 }
 
 // serveBearer builds a chain with bearer authentication enabled and runs one
@@ -457,7 +469,7 @@ func enableMFAFor(t *testing.T) httpsec.Option {
 	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-	return httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(NewMockGenerator(ctrl)))
+	return httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(newMockGenerator(ctrl)))
 }
 
 // flushSource is the client address every guarded refusal in these tests comes
@@ -606,7 +618,7 @@ func newAuthHarness(t *testing.T) *authHarness {
 		verifier: NewMockVerifier(ctrl),
 		store:    store,
 		sessions: manager,
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		attempts: NewMockAttemptStore(ctrl),
 		logs:     &capturingHandler{},
 	}
@@ -675,15 +687,23 @@ type served struct {
 func serve(t *testing.T, chain *httpsec.Chain, req *http.Request) served {
 	t.Helper()
 
+	return serveContext(t.Context(), t, chain, req)
+}
+
+// serveContext is serve with the exchange built on ctx, so a request whose own end a
+// test cuts short ends the exchange's context too, as a server's hang-up does.
+func serveContext(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *http.Request) served {
+	t.Helper()
+
 	out := served{rec: httptest.NewRecorder()}
-	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+	run := chain.Assemble(func(ex *httpsec.Exchange) error { //nolint:contextcheck // the exchange carries ctx, which the interceptors read through ex.Context()
 		out.handlerRan = true
 		out.handled = ex
 
 		return nil
 	})
 
-	ex := httpsec.NewExchange(t.Context(),
+	ex := httpsec.NewExchange(ctx,
 		httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(out.rec))
 	out.err = run(ex)
 
@@ -1100,7 +1120,7 @@ func (s *savedSessions) all() []session.Session {
 // what the store's Save must reach.
 func (h *authHarness) expectResolvedSession(s *session.Session) {
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(s, nil)
-	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 	h.acceptsFirstPresentation()
 }
 
@@ -1297,7 +1317,7 @@ func newLoginGuardHarness(t *testing.T) *loginGuardHarness {
 	h := &loginGuardHarness{
 		authn:    NewMockAuthenticator(ctrl),
 		attempts: must.Must(lockout.NewMemoryAttemptStore()),
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		logs:     &capturingHandler{},
 		reported: map[string]int{},
 	}
@@ -1899,7 +1919,7 @@ func newEnrolHarness(t *testing.T) *enrolHarness {
 		clock:    clockwork.NewFakeClockAt(time.Now().Truncate(time.Second)),
 		users:    NewMockUserLoader(ctrl),
 		sender:   NewMockSender(ctrl),
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		username: enrolUsername,
 	}
 
@@ -2589,7 +2609,7 @@ func newMagicLinkHarness(t *testing.T, managerOpts ...magiclink.Option) *magicLi
 	h := &magicLinkHarness{
 		sessions: sessions,
 		users:    NewMockUserLoader(ctrl),
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		sender:   &capturingSender{},
 	}
 
@@ -3084,7 +3104,7 @@ func newOIDCHarness(t *testing.T, managerOpts ...oidc.Option) *oidcHarness {
 		handoffs: handoffs,
 		store:    store,
 		sessions: sessions,
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		logs:     &syncBuffer{},
 	}
 }
@@ -3493,7 +3513,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 		codes:    codes,
 		clock:    clk,
 		sender:   &capturingSender{},
-		tokens:   NewMockGenerator(ctrl),
+		tokens:   newMockGenerator(ctrl),
 		attempts: must.Must(lockout.NewMemoryAttemptStore()),
 		users:    NewMockUserLoader(ctrl),
 		proofs: []recovery.ProofKind{
@@ -3533,7 +3553,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 				return nil, errMFATokenUnreadable
 			}
 
-			return token.NewClaims(e2eAddress, id), nil
+			return token.NewClaims(string(e2eUser), id), nil
 		})
 
 	return h

@@ -16,6 +16,22 @@ import (
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
+// SubjectMode names which of a principal's values a token carries as its
+// subject. The zero value is the default, SubjectUserID. See the package doc's
+// "The subject".
+type SubjectMode int
+
+const (
+	// SubjectUserID carries the principal's user identifier, which a rename
+	// does not change and which is never reassigned to another user. It is the
+	// default.
+	SubjectUserID SubjectMode = iota
+
+	// SubjectUsername carries the principal's username. A generator writes it
+	// under WithUsernameSubject.
+	SubjectUsername
+)
+
 // Generator issues tokens and verifies them with its own key source, issuer and
 // audience, so a service that issues can verify without a second construction.
 //
@@ -28,7 +44,11 @@ type Generator interface {
 	// rather than issuing an unsigned token or one signed with an algorithm
 	// other than the configured one, and rather than issuing one that
 	// identifies nobody: an empty id, a nil principal and a principal with no
-	// username are each refused. No failure here matches ErrInvalid.
+	// value for the chosen subject are each refused, the last with ErrNoSubject.
+	// No failure here matches ErrInvalid.
+	//
+	// The token's subject is the principal's user identifier or its username, as
+	// SubjectMode reports.
 	//
 	// ctx is passed to the key source, which is asked for a signer once for
 	// this token; the signer is never kept. A source that holds no key for the
@@ -41,6 +61,16 @@ type Generator interface {
 	// error stays reachable through errors.Is and errors.As, but its text
 	// never is.
 	Generate(ctx context.Context, id string, p *identity.Principal) (string, error)
+
+	// SubjectMode reports which of the principal's values Generate writes as the
+	// token's subject, so that whoever wires a generator beside a reader of that
+	// subject can refuse a mismatch at construction. It is required because that
+	// comparison applies to every generator: one that could not answer would
+	// have to be refused outright, or let through unchecked.
+	//
+	// A generator of a consumer's own that writes a value of its own choosing
+	// reports the mode its readers should take that value under.
+	SubjectMode() SubjectMode
 
 	Verifier
 }
@@ -113,6 +143,29 @@ func WithSigningAlg(alg signingkey.Alg) Option {
 // generator with no clock could not stamp iat or exp at all.
 func WithClock(clk clock.Clock) Option { return Option(setClock(clk)) }
 
+// WithUsernameSubject makes issued tokens carry the principal's username as
+// their subject. It replaces the default, the principal's user identifier
+// (SubjectUserID), and SubjectMode then reports SubjectUsername. A principal
+// with no username then fails Generate with ErrNoSubject, whatever identifier
+// it has.
+//
+// It is for a consumer whose own systems read the name. The cost is the one the
+// default avoids: renaming a user invalidates their live tokens, and a username
+// later given to someone else names that someone else.
+//
+// Every reader of the subject must take it the same way, so this option must
+// agree with the two that read it: authenticate.WithJWTUsernameSubject on a
+// standalone JWT authenticator, and httpsec.WithBearerUsernameSubject on a
+// security chain's signed bearer. A chain with signed bearer tokens refuses a
+// mismatch: building it with this generator without that option fails with a
+// configuration error, and a token that reaches it from a generator it was not
+// given is refused unless its subject is the user its session records.
+// authenticate.NewJWTAuthenticator refuses a mismatch too, when its verifier is
+// this generator.
+func WithUsernameSubject() Option {
+	return func(c *config) { c.subject = SubjectUsername }
+}
+
 // JWTGenerator is the Generator this package provides: it signs JWTs with the
 // keys of a signingkey.KeySource, and verifies its own tokens, so it is a
 // Verifier too.
@@ -126,8 +179,9 @@ type JWTGenerator struct{ cfg *config }
 // A decision on the issuer and on the audience is required: each is
 // configured, with WithIssuer and WithAudience, or waived by name, with
 // WithoutIssuer and WithoutAudience. There is no default that issues and checks
-// neither. Defaults: a 15-minute lifetime; RS256; the system clock. Each is an
-// Option naming its own default.
+// neither. Defaults: a 15-minute lifetime; RS256; the system clock; the
+// principal's user identifier as the subject. Each is an Option naming its own
+// default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
 //
@@ -165,6 +219,9 @@ func NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, err
 	return &JWTGenerator{cfg: cfg}, nil
 }
 
+// SubjectMode reports the subject this generator writes. See Generator.
+func (g *JWTGenerator) SubjectMode() SubjectMode { return g.cfg.subject }
+
 // Verify checks raw against the generator's own keys, issuer, audience and
 // clock, as a JWTVerifier configured the same way would, and returns its
 // claims. See Verifier.
@@ -191,12 +248,13 @@ func (g *JWTGenerator) GenerateWith(
 	//
 	// A principal that names nobody is refused alongside no principal at all.
 	// identity.Principal is a plain exported struct, so a store row with a
-	// blank username arrives here as a perfectly good pointer, and signing for
-	// it would mint a valid token for the empty subject.
+	// blank value arrives here as a perfectly good pointer, and signing for it
+	// would mint a valid token for the empty subject.
 	if p == nil {
 		return "", fmt.Errorf("token: generate: %w", identity.ErrNoPrincipal)
 	}
-	if p.Username == "" {
+	subject := g.cfg.subjectOf(p)
+	if subject == "" {
 		return "", fmt.Errorf("token: generate: %w", ErrNoSubject)
 	}
 	if id == "" {
@@ -240,7 +298,7 @@ func (g *JWTGenerator) GenerateWith(
 	now := cfg.clock.Now()
 	builder := jwt.NewBuilder().
 		JwtID(id).
-		Subject(p.Username). // the username, not the opaque identifier
+		Subject(subject).
 		IssuedAt(now).
 		Expiration(now.Add(cfg.lifetime))
 	if cfg.hasIssuer {

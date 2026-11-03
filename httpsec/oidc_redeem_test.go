@@ -813,11 +813,11 @@ func newAssuranceDeployment(t *testing.T, cfg assuranceConfig) *assuranceDeploym
 				return nil, errMFATokenUnreadable
 			}
 
-			return token.NewClaims(assuranceUsername, id), nil
+			return token.NewClaims(string(oidcTestUserID), id), nil
 		})
 
 	users := NewMockUserLoader(ctrl)
-	users.EXPECT().LoadByUsername(gomock.Any(), assuranceUsername).AnyTimes().
+	users.EXPECT().LoadByUserID(gomock.Any(), oidcTestUserID).AnyTimes().
 		Return(&identity.Details{ID: oidcTestUserID, Username: assuranceUsername, Active: true}, nil)
 
 	d.h.chainOpts = []httpsec.Option{
@@ -1479,7 +1479,7 @@ func TestBearerPerRequestFederatedAssurance(t *testing.T) {
 			h := newAuthHarness(t)
 			h.expectVerified()
 			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(loaded, nil)
-			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+			h.users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil)
 			h.acceptsActivityWriteBack()
 
 			s := serveBearer(t, h, engineOf(t, recorder), bearerRequest(t.Context(), "Bearer abc.def.ghi"))
@@ -1998,7 +1998,7 @@ func TestOIDCHandoff_CodeExpiringWhileCredentialIssuedIsRefusedUnconsumed(t *tes
 
 			// The generator is the step between the check and the consume: it
 			// takes signTook of the handoff's clock to sign.
-			h.tokens = NewMockGenerator(gomock.NewController(t))
+			h.tokens = newMockGenerator(gomock.NewController(t))
 			h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 				DoAndReturn(func(context.Context, string, *identity.Principal) (string, error) {
 					clk.Advance(signTook)

@@ -509,24 +509,25 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 // A wrong, malformed or out-of-window code, a user with nothing pending, and an
 // enrolment that is already confirmed all return ErrInvalidCode and change
 // nothing. So does any enrolment whose device was proven on the enrolment
-// path, whatever the state of its emailed code: such an enrolment completes
+// path, whatever the state of its emailed code: that generation completes
 // only through the path, by Enroller.CompleteEnrolment or
 // Enroller.RedeemEmailCode. A store failure is returned with the package's own
 // text, the store's error still matching by identity.
 //
 // The confirmation is written only on the generation whose secret the code
-// was checked against: a new begin landing between the read and the write
-// replaces the secret and the generation, and the confirmation then fails
-// with ErrInvalidCode and confirms nothing, the same answer a wrong code
-// gets. An enrolment stored without a generation cannot be confirmed here.
+// was checked against, and only while no device proof is recorded, decided by
+// the store's write: a new begin or a device proof landing between the read and
+// the write, or not yet visible to a store whose reads may lag its writes, makes
+// the confirmation fail with ErrInvalidCode and confirm nothing, the same answer
+// a wrong code gets. The enrolment stays as the proof left it, to complete
+// through the path. An enrolment stored without a generation cannot be confirmed
+// here.
 //
-// Known limit: the store's Confirm does not condition on the device proof. A
-// device proof of the same generation landing between that read and that
-// write, or not yet visible to a store whose reads may lag its writes, is not
-// seen, and the enrolment is confirmed with it. This call serves out-of-band enrolment through a
-// consumer's own route, which a session confined to the enrolment path cannot
-// reach; a consumer exposing both to one session should not offer this call
-// while an enrolment-path proof may be in flight.
+// Once a proof is recorded on a generation, this call cannot confirm that
+// generation, but it carries no mailbox proof of its own: a begin followed by a
+// valid code confirms, and so does begin, prove, begin again, then confirm,
+// because a new begin clears the proof. It serves consumers enrolling out of
+// band, and must never be reachable from a session the enrolment path confines.
 func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code string) error {
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
@@ -543,7 +544,8 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 	}
 
 	// The confirmation names the generation whose secret the code was matched
-	// against, so a begin landing since the read confirms nothing.
+	// against, and the store's write requires no device proof, so a begin or a
+	// proof landing since the read confirms nothing.
 	confirmed, err := t.store.Confirm(ctx, user, e.Generation, step, t.clock.Now())
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not confirm the enrolment")

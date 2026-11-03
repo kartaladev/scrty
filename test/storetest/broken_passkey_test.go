@@ -51,7 +51,6 @@ const (
 	credChargeReadThenWrite  credDefect = "charge-read-then-write"
 	credChargeAtExpiry       credDefect = "charge-at-expiry" //nolint:gosec // G101: a fixture string, not a credential
 	credRenameAcrossUsers    credDefect = "rename-across-users"
-	credDeleteAwaitingAll    credDefect = "delete-awaiting-all-users"
 	// A bounded insert counts, lets go of the lock, and then inserts, so
 	// racers for one user all read the same count and all store.
 	credBoundedCountsThenInserts credDefect = "bounded-counts-then-inserts" //nolint:gosec // G101: a fixture string, not a credential
@@ -429,12 +428,6 @@ func (s *credFake) deleteWhere(match func(*passkey.Credential) bool) int {
 	return n
 }
 
-func (s *credFake) DeleteAwaitingSavedCodes(_ context.Context, user identity.UserID) (int, error) {
-	return s.deleteWhere(func(c *passkey.Credential) bool {
-		return (c.User == user || s.defect == credDeleteAwaitingAll) && c.Pending&passkey.PendingSavedCodes != 0
-	}), nil
-}
-
 func (s *credFake) DeleteUser(_ context.Context, user identity.UserID) (int, error) {
 	return s.deleteWhere(func(c *passkey.Credential) bool { return c.User == user }), nil
 }
@@ -631,8 +624,6 @@ var passkeyVariants = []storefix.BrokenVariant{
 	credSuiteVariant(credChargeNoCap, "the fifth attempt is the last, and a sixth is refused"),
 	credSuiteVariant(credChargeAtExpiry, "a charge at the expiry is refused"),
 	credSuiteVariant(credRenameAcrossUsers, "rename is within the user"),
-	credSuiteVariant(credDeleteAwaitingAll,
-		"delete awaiting saved codes removes only the user's credentials with the reason, and counts them"),
 	credSuiteVariant(credBoundedCountsThenInserts, "bounded inserts for one user never exceed the limit"),
 	credSuiteVariant(credBoundedWritesRefused,
 		"a bounded insert counts every state of the user, and a refused one writes nothing"),

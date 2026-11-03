@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -245,6 +246,30 @@ var portableVariants = []brokenVariant{
 		},
 		failsCase: "keys load oldest first by creation time, whatever order they were stored in",
 	},
+	signingKeyDeleteVariant("signingkey-delete-removes-nothing", func() signingkey.KeyStore {
+		return deleteRemovesNothingStore{signingkey.NewMemoryKeyStore()}
+	}, "deleting removes only the named keys, and they are not loaded"),
+	signingKeyDeleteVariant("signingkey-delete-removes-every-record", func() signingkey.KeyStore {
+		return deleteRemovesEveryRecordStore{signingkey.NewMemoryKeyStore()}
+	}, "deleting removes only the named keys, and they are not loaded"),
+	signingKeyDeleteVariant("signingkey-delete-refuses-many", func() signingkey.KeyStore {
+		return deleteRefusesManyStore{signingkey.NewMemoryKeyStore()}
+	}, "a delete naming more keys than a statement can bind removes every named key"),
+	signingKeyDeleteVariant("signingkey-delete-drops-past-the-bound", func() signingkey.KeyStore {
+		return deleteDropsPastTheBoundStore{signingkey.NewMemoryKeyStore()}
+	}, "a delete naming more keys than a statement can bind removes every named key"),
+	signingKeyDeleteVariant("signingkey-delete-loses-the-last-of-the-first-batch", func() signingkey.KeyStore {
+		return deleteLosesLastOfFirstBatchStore{signingkey.NewMemoryKeyStore()}
+	}, "a delete naming more keys than a statement can bind removes every named key"),
+	signingKeyDeleteVariant("signingkey-delete-missing-is-an-error", func() signingkey.KeyStore {
+		return deleteMissingFailsStore{signingkey.NewMemoryKeyStore()}
+	}, "deleting a missing key is not an error"),
+	signingKeyDeleteVariant("signingkey-delete-nothing-empties-the-store", func() signingkey.KeyStore {
+		return deleteNothingEmptiesStore{signingkey.NewMemoryKeyStore()}
+	}, "delete with no keys is a no-op"),
+	signingKeyDeleteVariant("signingkey-delete-unstorable-is-an-error", func() signingkey.KeyStore {
+		return deleteRefusesUnstorableStore{signingkey.NewMemoryKeyStore()}
+	}, "a key id no store could hold is missing, and does not stop the others going"),
 	{
 		name: "mfa-putpending-overwrites-confirmed",
 		run: func(t *testing.T) {
@@ -356,6 +381,128 @@ func (s loadAllNewestFirstStore) LoadAll(ctx context.Context) ([]signingkey.Reco
 	recs, err := s.KeyStore.LoadAll(ctx)
 	slices.Reverse(recs)
 	return recs, err
+}
+
+// signingKeyDeleteVariant runs the signing-key suite over a store with one
+// defect in its Delete.
+func signingKeyDeleteVariant(name string, build func() signingkey.KeyStore, failsCase string) brokenVariant {
+	return brokenVariant{
+		name: name,
+		run: func(t *testing.T) {
+			storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
+				t.Helper()
+				return build()
+			})
+		},
+		failsCase: failsCase,
+	}
+}
+
+// deleteRemovesNothingStore reports a delete it never made.
+type deleteRemovesNothingStore struct{ signingkey.KeyStore }
+
+func (deleteRemovesNothingStore) Delete(context.Context, ...string) error { return nil }
+
+// deleteRemovesEveryRecordStore removes the whole table, whatever it is asked to
+// remove.
+type deleteRemovesEveryRecordStore struct{ signingkey.KeyStore }
+
+func (s deleteRemovesEveryRecordStore) Delete(ctx context.Context, kids ...string) error {
+	if len(kids) == 0 {
+		return nil
+	}
+	recs, err := s.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if err := s.KeyStore.Delete(ctx, rec.Kid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// postgresBindLimit is how many bound parameters PostgreSQL accepts in a statement.
+const postgresBindLimit = 65535
+
+// deleteRefusesManyStore binds a parameter per key identifier, so a call naming
+// more than the database accepts fails, and a store past that size never shrinks.
+type deleteRefusesManyStore struct{ signingkey.KeyStore }
+
+func (s deleteRefusesManyStore) Delete(ctx context.Context, kids ...string) error {
+	if len(kids) > postgresBindLimit {
+		return errors.New("extended protocol limited to 65535 parameters")
+	}
+	return s.KeyStore.Delete(ctx, kids...)
+}
+
+// deleteDropsPastTheBoundStore quietly ignores the key identifiers past the limit.
+type deleteDropsPastTheBoundStore struct{ signingkey.KeyStore }
+
+func (s deleteDropsPastTheBoundStore) Delete(ctx context.Context, kids ...string) error {
+	return s.KeyStore.Delete(ctx, kids[:min(len(kids), postgresBindLimit)]...)
+}
+
+// deleteLosesLastOfFirstBatchStore splits a long delete into batches at the limit
+// and loses the last key identifier of the first.
+type deleteLosesLastOfFirstBatchStore struct{ signingkey.KeyStore }
+
+func (s deleteLosesLastOfFirstBatchStore) Delete(ctx context.Context, kids ...string) error {
+	if len(kids) <= postgresBindLimit {
+		return s.KeyStore.Delete(ctx, kids...)
+	}
+	rest := slices.Concat(kids[:postgresBindLimit-1], kids[postgresBindLimit:])
+	return s.KeyStore.Delete(ctx, rest...)
+}
+
+// deleteMissingFailsStore treats a key already gone as a failure, so one
+// replica's delete fails another's.
+type deleteMissingFailsStore struct{ signingkey.KeyStore }
+
+func (s deleteMissingFailsStore) Delete(ctx context.Context, kids ...string) error {
+	recs, err := s.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, kid := range kids {
+		if !slices.ContainsFunc(recs, func(rec signingkey.Record) bool { return rec.Kid == kid }) {
+			return errors.New("no such key")
+		}
+	}
+	return s.KeyStore.Delete(ctx, kids...)
+}
+
+// deleteNothingEmptiesStore reads no key identifiers as every key.
+type deleteNothingEmptiesStore struct{ signingkey.KeyStore }
+
+func (s deleteNothingEmptiesStore) Delete(ctx context.Context, kids ...string) error {
+	if len(kids) > 0 {
+		return s.KeyStore.Delete(ctx, kids...)
+	}
+	recs, err := s.LoadAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if err := s.KeyStore.Delete(ctx, rec.Kid); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteRefusesUnstorableStore passes a key identifier it could never have
+// stored on to its database, whose refusal then fails the whole delete.
+type deleteRefusesUnstorableStore struct{ signingkey.KeyStore }
+
+func (s deleteRefusesUnstorableStore) Delete(ctx context.Context, kids ...string) error {
+	for _, kid := range kids {
+		if strings.IndexByte(kid, 0) >= 0 || !utf8.ValidString(kid) {
+			return errors.New("invalid byte sequence")
+		}
+	}
+	return s.KeyStore.Delete(ctx, kids...)
 }
 
 func oneTimeVariant(d oneTimeDefect, failsCase string) brokenVariant {

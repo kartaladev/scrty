@@ -94,7 +94,7 @@ func TestFormLogin_KeySourceFailureAnswerCarriesNoKeySourceText(t *testing.T) {
 func failingGenerator(t *testing.T, cause error) *MockGenerator {
 	t.Helper()
 
-	g := NewMockGenerator(gomock.NewController(t))
+	g := newMockGenerator(gomock.NewController(t))
 	g.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("", cause).AnyTimes()
 
 	return g
@@ -133,7 +133,7 @@ func TestIssuingFailureIsNeverARefusal(t *testing.T) {
 				Return(token.NewClaims(testSubject, s.ID), nil).AnyTimes()
 
 			users := NewMockUserLoader(ctrl)
-			users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil).AnyTimes()
+			users.EXPECT().LoadByUserID(gomock.Any(), testUserID).Return(storedUser(), nil).AnyTimes()
 			users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
 
 			chain, err := httpsec.New(

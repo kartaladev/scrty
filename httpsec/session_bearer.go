@@ -161,17 +161,17 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 	}
 
 	resolver := b.resolver
-	resolver.admit = func(ex *Exchange, s *session.Session) error {
+	resolver.admit = func(ex *Exchange, s *session.Session) (*identity.Details, error) {
 		ctx := ex.Context()
 		if err := admitBinding(ex, b.dpop, proof,
 			keyBinding{jkt: s.KeyBinding.JKT, x5tS256: s.KeyBinding.X5TS256}); err != nil {
-			return refusedReference(err)
+			return nil, refusedReference(err)
 		}
 
-		return recordProof(ctx, b.dpop, proof)
+		return nil, recordProof(ctx, b.dpop, proof)
 	}
 
-	if err := resolver.resolve(ex, presented, lookupBySessionUser()); err != nil {
+	if err := resolver.resolve(ex, presented); err != nil {
 		// Only a refusal of the reference itself is a failed guess. Once the
 		// session and its user are resolved the caller is published, so an
 		// error after that point is a policy decision about a valid session,
@@ -343,17 +343,19 @@ func WithSessionBearerScheme(scheme string) SessionBearerOption {
 // checkTokenGenerator checks the token generator a credential-issuing endpoint
 // was given against the chain's bearer mode. In the signed-token mode the
 // generator is required, since it mints the only credential that mode
-// accepts, and with EnableDPoP or EnableCertificateBinding on it must be able to bind the token it mints
-// (checkBindingGenerator). In the session-reference mode it is refused, since a token it
-// minted would not be accepted by this chain: the endpoint issues the
-// session's identifier instead. field names where the generator was given.
+// accepts, it must write the subject the bearer reads (checkSubjectGenerator),
+// and with EnableDPoP or EnableCertificateBinding on it must be able to bind the
+// token it mints (checkBindingGenerator). In the session-reference mode it is
+// refused, since a token it minted would not be accepted by this chain: the
+// endpoint issues the session's identifier instead. field names where the
+// generator was given.
 func checkTokenGenerator(c *config, option, field string, g token.Generator) error {
 	if !c.sessionBearer {
 		if err := requireDep(option, "token generator", g); err != nil {
 			return err
 		}
 
-		return checkBindingGenerator(c, option, field, g)
+		return checkIssuingGenerator(c, option, field, g)
 	}
 
 	if !nilcheck.IsNil(g) {

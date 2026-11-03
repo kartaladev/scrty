@@ -1,8 +1,9 @@
 package pgschema
 
 // MFA enrolment statements. Every refusal is a single conditional write: a
-// begin over a confirmed enrolment, a second confirmation, a confirmation or
-// a step naming a generation that is not the enrolment's, a step at or below
+// begin over a confirmed enrolment, a second confirmation, a confirmation of
+// an enrolment with a device proof, a confirmation or a step naming a
+// generation that is not the enrolment's, a step at or below
 // the recorded one, a device proof, completion or charge whose conditions do
 // not hold, and a TOTP verification charge or give-back that may not land each
 // affect no row. The secret and email_code columns hold the
@@ -34,10 +35,12 @@ FROM mfa_enrolments WHERE user_id = $1`
 
 	// EnrolmentConfirm confirms user $1's enrolment at $4 and records step $3,
 	// never moving the recorded step backwards, only while it is pending on
-	// generation $2. It clears the emailed code and keeps its expiry. A NULL
-	// $2 matches no row.
-	EnrolmentConfirm = `UPDATE mfa_enrolments SET confirmed_at = $4, last_step = GREATEST(last_step, $3), email_code = NULL
-WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL`
+	// generation $2 with no device proof. A proven enrolment is refused whatever
+	// became of its emailed code, and nothing is written. A NULL $2 matches no
+	// row. The forward-only GREATEST is a safety net against replaying a proving
+	// code, not a guarantee of the port.
+	EnrolmentConfirm = `UPDATE mfa_enrolments SET confirmed_at = $4, last_step = GREATEST(last_step, $3)
+WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_proven_at IS NULL`
 
 	// EnrolmentProveDevice records the device proof of user $1's enrolment
 	// on generation $2: step $3 as the last accepted step, emailed code $4

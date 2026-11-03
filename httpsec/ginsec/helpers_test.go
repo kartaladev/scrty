@@ -205,12 +205,12 @@ func authenticated(t *testing.T) ([]httpsec.Option, *session.Session) {
 	verifier := NewMockVerifier(ctrl)
 	verifier.EXPECT().
 		Verify(gomock.Any(), presentedToken).
-		Return(token.NewClaims("ada", live.ID), nil).
+		Return(token.NewClaims("u-1", live.ID), nil).
 		AnyTimes()
 
 	users := NewMockUserLoader(ctrl)
 	users.EXPECT().
-		LoadByUsername(gomock.Any(), "ada").
+		LoadByUserID(gomock.Any(), identity.UserID("u-1")).
 		Return(&identity.Details{
 			ID: "u-1", Username: "ada", Name: "Ada", Active: true,
 			PasswordChangedAt: time.Now().Add(-time.Hour),

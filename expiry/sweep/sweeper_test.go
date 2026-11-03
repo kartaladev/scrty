@@ -994,7 +994,11 @@ func TestSweeper_StopTimeout(t *testing.T) {
 	// call returns that same result.
 	timesOutAfter := func(d time.Duration) func(*testing.T, *harness, <-chan error) {
 		return func(t *testing.T, h *harness, shutdown <-chan error) {
-			h.block(t, 1) // the executor's stop timer; the job's timer is stopped
+			// Two timers on the fake clock during Shutdown, both armed on the
+			// sweeper's clock: the executor's stop timer (d) and gocron's
+			// backstop on the scheduler's wait for the executor (d plus one
+			// second). Wait for both, or the advance can miss the first.
+			h.block(t, 2)
 			h.fc.Advance(d - time.Millisecond)
 			assertPending(t, shutdown, "Shutdown returned before the stop timeout")
 
@@ -1027,6 +1031,40 @@ func TestSweeper_StopTimeout(t *testing.T) {
 			tc.assert(t, h, shutdown)
 		})
 	}
+}
+
+// TestSweeper_ShutdownOnAClockNobodyMoves pins what Shutdown does when a run
+// outlasts it and the sweeper's clock never advances: the stop timeout and
+// gocron's backstop are both measured on that clock, so neither fires, and
+// Shutdown returns only when its own ctx ends, with an error wrapping that
+// ctx's error and never gocron's stop timeout errors.
+func TestSweeper_ShutdownOnAClockNobodyMoves(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t, []taskSpec{{name: "sessions", interval: time.Minute, body: noteCancelThenRelease}}, nil)
+	p := h.probes["sessions"]
+	h.start(t)
+	h.block(t, 1)
+	h.advance(time.Minute)
+	recv(t, p.started)
+
+	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
+	defer cancel()
+	shutdown := shutdownAsync(ctx, h)
+	recv(t, p.cancelled)
+	h.block(t, 2) // the stop timer and the backstop are armed; neither will fire
+
+	assertPending(t, shutdown, "Shutdown returned although the clock never moved and its ctx was live")
+
+	cancel()
+	err := recv(t, shutdown)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, gocron.ErrStopExecutorTimedOut)
+	assert.NotErrorIs(t, err, gocron.ErrStopJobsTimedOut)
+
+	// Releasing the run lets the shutdown that carried on finish.
+	p.Release()
+	require.NoError(t, h.sweeper.Shutdown(t.Context()))
 }
 
 // TestSweeper_ConcurrentStartAndShutdown stands apart from

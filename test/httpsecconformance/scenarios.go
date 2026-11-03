@@ -527,7 +527,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.
@@ -587,7 +587,7 @@ func authenticatedRequest(method, path string) func(ChainSpec) RequestSpec {
 		return RequestSpec{
 			Method:        method,
 			Path:          path,
-			Header:        map[string]string{"Authorization": "Bearer " + issuedTokenFor(Username, spec.Effects.SessionID)},
+			Header:        map[string]string{"Authorization": "Bearer " + issuedTokenFor(string(UserID), spec.Effects.SessionID)},
 			ClientAddress: ClientAddress,
 		}
 	}
@@ -639,7 +639,7 @@ func loginSucceeds() Scenario {
 		Assert: func(t *testing.T, res Result) {
 			assert.Equal(t, http.StatusOK, res.Status)
 			assert.Equal(t, "application/json", res.Header.Get("Content-Type"))
-			assert.Contains(t, res.Body, `"access_token":"`+tokenPrefix+Username+`.`)
+			assert.Contains(t, res.Body, `"access_token":"`+tokenPrefix+string(UserID)+`.`)
 			assert.NoError(t, res.Refusal)
 			assert.False(t, res.RouteRan, "the chain answered the login itself")
 
@@ -1143,12 +1143,12 @@ type fixtureTokens struct{}
 func (fixtureTokens) Generate(
 	_ context.Context, id string, p *identity.Principal,
 ) (string, error) {
-	if id == "" || p == nil || p.Username == "" {
+	if id == "" || p == nil || p.ID == "" {
 		return "", fmt.Errorf("httpsecconformance: %w: nothing to identify the token by",
 			token.ErrInvalid)
 	}
 
-	return issuedTokenFor(p.Username, id), nil
+	return issuedTokenFor(string(p.ID), id), nil
 }
 
 func (fixtureTokens) Verify(_ context.Context, presented string) (*token.Claims, error) {
@@ -1167,9 +1167,11 @@ func (fixtureTokens) Verify(_ context.Context, presented string) (*token.Claims,
 	return token.NewClaims(subject, id), nil
 }
 
+func (fixtureTokens) SubjectMode() token.SubjectMode { return token.SubjectUserID }
+
 // issuedTokenFor is the one shape the fixture issues and accepts.
-func issuedTokenFor(username, sessionID string) string {
-	return tokenPrefix + username + "." + sessionID
+func issuedTokenFor(subject, sessionID string) string {
+	return tokenPrefix + subject + "." + sessionID
 }
 
 // fixtureUsers is the one user record bearer authentication reloads.

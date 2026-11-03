@@ -97,7 +97,7 @@ func crossSiteReproofIsRefused() Scenario {
 		},
 		Request: func(spec ChainSpec) RequestSpec {
 			req := formPost(httpsec.DefaultReauthenticationPrefix+"/password",
-				issuedTokenFor(Username, spec.Effects.SessionID),
+				issuedTokenFor(string(UserID), spec.Effects.SessionID),
 				url.Values{httpsec.DefaultLoginPasswordParam: {Password}})
 			req.Header = crossSite(req.Header)
 
