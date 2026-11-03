@@ -454,13 +454,32 @@ func TestHousekeeping_Retention(t *testing.T) {
 		},
 		{
 			name: "A held key the store no longer lists does not displace the newest stored key",
-			// Construction holds the newer key; the older is past the lifetime and
-			// is the newest the store will show once the newer is removed.
-			seed: seeded(-50*time.Hour, -23*time.Hour),
+			// Construction holds the newer key. The older is far enough past its
+			// retire time to go, were it not the newest the store shows once the
+			// newer is removed. The hourly interval lets two reloads pass first, so the
+			// manager has reloaded the store without the removed key before the run.
+			seed: seeded(-80*time.Hour, -49*time.Hour),
+			opts: []signingkey.Option{signingkey.WithHousekeepingInterval(time.Hour)},
 			assert: func(t *testing.T, f *retentionFixture) {
 				held, stored := f.seed[1], f.seed[0]
 				require.Equal(t, held.Kid, currentKid(t, f.km, signingkey.EdDSA))
 				// A backup restore, or a manual removal, took the held key away.
+				require.NoError(t, f.mem.Delete(t.Context(), held.Kid))
+
+				f.run(t, 30*time.Minute)
+				f.run(t, 30*time.Minute)
+
+				assert.Equal(t, []string{stored.Kid}, storedKids(t, f.mem), "the newest stored key is not deleted")
+			},
+		},
+		{
+			name: "Key removed from the store since the last reload",
+			// As the row above, with no reload between the removal and the run, so the
+			// run lists a store the manager's last reload has not seen.
+			seed: seeded(-80*time.Hour, -49*time.Hour),
+			assert: func(t *testing.T, f *retentionFixture) {
+				held, stored := f.seed[1], f.seed[0]
+				require.Equal(t, held.Kid, currentKid(t, f.km, signingkey.EdDSA))
 				require.NoError(t, f.mem.Delete(t.Context(), held.Kid))
 
 				f.run(t, time.Second)

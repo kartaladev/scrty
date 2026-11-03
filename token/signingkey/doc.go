@@ -76,7 +76,10 @@
 // newest stored key of an algorithm, whether or not this manager signs with it,
 // since another replica may. The newest is judged from the store's listing alone, so
 // a key this manager holds that the store no longer lists never stands in for it.
-// WithRetiredKeysKept keeps retired keys for a consumer who audits them.
+// Unless WithRetiredKeysKept is set, housekeeping lists the store at each run, and a
+// listing that fails is reported and attempted again at the next run.
+// WithRetiredKeysKept keeps retired keys for a consumer who audits them, and with it
+// housekeeping only unpublishes and never lists the store.
 //
 // # Replicas sharing a store
 //

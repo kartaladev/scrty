@@ -126,7 +126,7 @@ type Keys struct {
 // WithRetiredKeysKept — is an error here, not a surprise at the first
 // rotation.
 //
-// A record of a failed rotation, reload or housekeeping delete carries a fixed
+// A record of a failed rotation, reload or housekeeping listing or delete carries a fixed
 // reason and the error's Go type, never the store's own text; a consumer who wants that
 // detail logs it inside their own implementation of KeyStore. The algorithm
 // the failure belongs to is kept.
@@ -617,8 +617,10 @@ func WithRotateInterval(d time.Duration) Option {
 // WithHousekeepingInterval sets how often keys past their retire time stop being
 // published and, unless WithRetiredKeysKept is set, those past its grace too are
 // deleted from the store.
-// Default: 1h. Each run that deletes lists the store once, so a
-// shorter interval costs a load per run.
+// Default: 1h. Unless WithRetiredKeysKept is set, each run lists the store once, so a
+// shorter interval costs a load per run; a listing that fails is reported to the
+// logger and the error hook, and the next run lists again. With WithRetiredKeysKept a
+// run only unpublishes and does not list the store.
 func WithHousekeepingInterval(d time.Duration) Option {
 	return func(km *Keys) { km.housekeepEvery = d }
 }
@@ -642,10 +644,12 @@ func WithReloadInterval(d time.Duration) Option {
 // A store outage fails every interval for as long as it lasts, which without
 // sampling is one record per interval. At most one record per interval is
 // written, and every record states how many failures were suppressed before it,
-// so no failure goes unaccounted for. An interval of zero or less writes every
+// so no failure goes unaccounted for, bar a store call that Shutdown cut off, which
+// is no failure (see WithErrorHook). An interval of zero or less writes every
 // failure, for a consumer whose own handler samples.
 //
-// The error hook is never sampled: every failure reaches it.
+// The error hook is never sampled: every failure reaches it, bar a store call that
+// Shutdown cut off, which is no failure (see above).
 func WithLogInterval(d time.Duration) Option {
 	return func(km *Keys) { km.sampleWindow = d }
 }
@@ -729,7 +733,8 @@ func WithLogger(logger *slog.Logger) Option {
 }
 
 // WithErrorHook sets a function called with every rotation, reload and
-// housekeeping failure. Default: none. Use it to surface a store outage that
+// housekeeping failure, a failed listing of the store among them, which the next
+// run attempts again. Default: none. Use it to surface a store outage that
 // would otherwise leave one key signing indefinitely.
 //
 // The error the hook receives carries fixed library text naming the failed
@@ -754,6 +759,9 @@ func WithLogger(logger *slog.Logger) Option {
 //     To shut down from a hook without that wait, hand the error to a
 //     goroutine or a channel of the consumer's own and call Shutdown from
 //     there.
+//
+// A store call that Shutdown cuts off is no failure, so it reaches neither the hook
+// nor the logger, nor does anything else that fails once Shutdown has ended the work.
 //
 // Everything that reads the manager is safe from the hook, which is what a
 // hook needs in order to decide how bad an outage has become: Signer,

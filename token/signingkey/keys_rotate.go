@@ -52,7 +52,19 @@ func (km *Keys) rotateAll(ctx context.Context) {
 // The hook also runs on that goroutine, so a Shutdown it calls cannot wait
 // for the work to end — documented in WithErrorHook and Shutdown, because
 // nothing here can enforce it.
+//
+// It reports nothing once ctx has ended. Every caller passes the work's context,
+// which only Shutdown ends, since Start detaches it from the cancellation of the
+// context it was given, so a store call cut off by Shutdown raises no alarm. What
+// tells the two apart is that context and never the failure's error: a store that
+// answers context.Canceled while the work is running has failed, and is reported.
+// Construction returns its failures and never comes here, so a caller's context
+// ending there swallows nothing.
 func (km *Keys) report(ctx context.Context, op string, alg Alg, f *failure) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	if km.errorHook != nil {
 		km.errorHook(f.err)
 	}
@@ -237,6 +249,16 @@ func (km *Keys) dropUnlistedLocked(now time.Time) {
 	listed := make(map[string]struct{}, len(km.listed))
 	for _, k := range km.listed {
 		listed[k.kid] = struct{}{}
+	}
+
+	// Only a held key the listing lacks can be dropped here, so a listing that
+	// names every held key leaves nothing to decide, and the retire times, which
+	// cost a pass over every known key, are not worked out.
+	if !slices.ContainsFunc(km.order, func(kid string) bool {
+		_, ok := listed[kid]
+		return !ok
+	}) {
+		return
 	}
 
 	km.dropLocked(now, func(kid string) bool {
