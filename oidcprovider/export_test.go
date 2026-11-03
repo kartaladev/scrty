@@ -1,0 +1,26 @@
+package oidcprovider
+
+import (
+	"context"
+	"time"
+)
+
+// The defaults New records, read back by the construction table.
+func (p *Provider) PendingLifetimeForTest() time.Duration  { return p.cfg.pendingLifetime }
+func (p *Provider) CodeLifetimeForTest() time.Duration     { return p.cfg.codeLifetime }
+func (p *Provider) AssertionMaxForTest() time.Duration     { return p.cfg.assertionMax }
+func (p *Provider) AssertionAudienceForTest() AudienceRule { return p.cfg.assertionAudience }
+func (p *Provider) RefetchCooldownForTest() time.Duration  { return p.cfg.keysRefetchCooldown }
+func (p *Provider) BoundsForTest() RequestBounds           { return p.cfg.bounds }
+func (p *Provider) BrowserSessionsForTest() bool           { return p.cfg.browserSessions }
+func (p *Provider) LogoutConfirmationForTest() bool        { return p.cfg.logoutConfirmation }
+
+// ClientForTest reads a client as the provider's endpoints do.
+func (p *Provider) ClientForTest(ctx context.Context, id string) (*RegisteredClient, error) {
+	return p.client(ctx, id)
+}
+
+// MatchesSecretForTest compares a presented secret as client authentication does.
+func (c *RegisteredClient) MatchesSecretForTest(secret []byte, now time.Time) bool {
+	return c.matchesSecret(secret, now)
+}
