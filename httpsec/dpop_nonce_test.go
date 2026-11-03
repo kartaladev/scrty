@@ -935,3 +935,80 @@ func TestDPoP_ChallengeAtIssuing(t *testing.T) {
 		out.rec.Header().Values("WWW-Authenticate"))
 	assert.False(t, strings.Contains(out.rec.Header().Get("WWW-Authenticate"), "signature"))
 }
+
+// sharedReplay is a replay store two replicas share.
+type sharedReplay struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func (s *sharedReplay) Record(_ context.Context, key string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.seen[key] {
+		return false, nil
+	}
+	s.seen[key] = true
+
+	return true, nil
+}
+
+// A proof refused as a replay, which carried a nonce past half its lifetime,
+// must not cost a seal nor be answered with a fresh nonce: the replay check
+// refuses it, so the refresh is owed to the accepted proof alone.
+func TestDPoP_ReplayedProofGetsNoNonceRefreshAndSealsNothing(t *testing.T) {
+	t.Parallel()
+
+	key := newDPoPKey(t, elliptic.P256())
+	w := newDPoPBearerWorld(t)
+	replay := &sharedReplay{seen: map[string]bool{}}
+
+	cipherA, _ := countingNonceCipher(t, nonceKeyA)
+	cipherB, sealsB := countingNonceCipher(t, nonceKeyA)
+	chainA := w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipherA, Replay: replay})
+	chainB := w.chain(signedBearer, &httpsec.DPoP{PublicURL: dpopPublicURL, Nonce: true, NonceCipher: cipherB, Replay: replay})
+
+	request := func(jti, nonce string) *http.Request {
+		tok := w.token(token.Confirmation{JKT: key.jkt})
+		parts := key.validProof(jti).with(map[string]any{"ath": tokenHash(tok), "iat": w.clk.Now().Unix()})
+		if nonce != "" {
+			parts = parts.with(map[string]any{"nonce": nonce})
+		}
+		req := dpopRequest(t, http.MethodGet, "http://example.com/api/orders", parts.sign(t))
+		req.Header.Set("Authorization", "DPoP "+tok)
+
+		return req
+	}
+
+	first := askedForNonce(t, serve(t, chainA, request("j-ask", "")))
+
+	w.clk.Advance(httpsec.DefaultDPoPNonceLifetime / 2)
+
+	// One signed proof, presented twice: past half its nonce's lifetime.
+	proofReq := request("j-replayed", first)
+	again := request("j-replayed", first)
+	again.Header.Set("DPoP", proofReq.Header.Get("DPoP"))
+	again.Header.Set("Authorization", proofReq.Header.Get("Authorization"))
+
+	ok := serve(t, chainA, proofReq)
+	authenticatedAsOwner(t, ok)
+	require.NotEmpty(t, ok.rec.Header().Get(headerDPoPNonce), "the accepted proof is handed the refreshed nonce")
+	sealedBefore := sealsB.Load()
+	require.Zero(t, sealedBefore)
+
+	// Same replica: the replay is refused.
+	sameReplica := serve(t, chainA, again)
+	require.ErrorIs(t, sameReplica.err, httpsec.ErrInvalidDPoPProof)
+	assert.Empty(t, sameReplica.rec.Header().Get(headerDPoPNonce), "a refused replay is handed no nonce (same replica)")
+
+	// Another replica, whose current nonce is not yet sealed: the replay is
+	// refused and costs it no seal.
+	again2 := request("j-replayed", first)
+	again2.Header.Set("DPoP", proofReq.Header.Get("DPoP"))
+	again2.Header.Set("Authorization", proofReq.Header.Get("Authorization"))
+	other := serve(t, chainB, again2)
+	require.ErrorIs(t, other.err, httpsec.ErrInvalidDPoPProof)
+	assert.Empty(t, other.rec.Header().Get(headerDPoPNonce), "a refused replay is handed no nonce (other replica)")
+	assert.Equal(t, sealedBefore, sealsB.Load(), "a refused replay costs a replica no NonceCipher.Seal")
+}

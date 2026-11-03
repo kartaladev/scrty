@@ -88,6 +88,12 @@ func (v *dpopVerifier) record(ctx context.Context, p dpopProof) error {
 		return v.refuse(ctx, reasonProofReplayed)
 	}
 
+	// The proof is accepted: only now is it owed a fresh nonce, so a refused
+	// proof is handed none and costs no seal.
+	if p.staleNonce {
+		v.refreshNonce(ctx)
+	}
+
 	return nil
 }
 

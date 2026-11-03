@@ -324,6 +324,11 @@ type dpopProof struct {
 
 	jti string
 	iat time.Time
+
+	// staleNonce is set when the proof carried a nonce past half its
+	// lifetime: the response owes a fresh one, once the proof is accepted
+	// (record).
+	staleNonce bool
 }
 
 // asymmetricAlgorithms are the proof algorithms the chain can accept, by
@@ -557,13 +562,11 @@ func (v *dpopVerifier) verify(ctx context.Context, r Request, tok string) (dpopP
 		return dpopProof{}, v.refuse(ctx, reasonProofHash)
 	}
 
+	var stale bool
 	if v.cfg.Nonce {
-		stale, err := v.checkNonce(ctx, claims.Nonce)
-		if err != nil {
+		var err error
+		if stale, err = v.checkNonce(ctx, claims.Nonce); err != nil {
 			return dpopProof{}, err
-		}
-		if stale {
-			v.refreshNonce(ctx)
 		}
 	}
 
@@ -580,6 +583,8 @@ func (v *dpopVerifier) verify(ctx context.Context, r Request, tok string) (dpopP
 		jkt: jkt,
 		jti: *claims.JTI,
 		iat: iat,
+
+		staleNonce: stale,
 	}, nil
 }
 
