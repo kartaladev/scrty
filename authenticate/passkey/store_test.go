@@ -968,18 +968,6 @@ func TestMemoryCredentialStore_Writes(t *testing.T) {
 			},
 		},
 		{
-			name: "delete awaiting saved codes removes only the user's credentials with the bit",
-			write: func(ctx context.Context, s passkey.CredentialStore) (any, error) {
-				return s.DeleteAwaitingSavedCodes(ctx, "u-1")
-			},
-			assert: func(t *testing.T, s passkey.CredentialStore, got any, err error) {
-				require.NoError(t, err)
-				assert.Equal(t, 2, got)
-				assert.Equal(t, []string{"C1", "C4"}, credIDs(t, s, "u-1"))
-				assert.Equal(t, []string{"C5", "C6"}, credIDs(t, s, "u-2"))
-			},
-		},
-		{
 			name: "delete user removes every credential of the user",
 			write: func(ctx context.Context, s passkey.CredentialStore) (any, error) {
 				return s.DeleteUser(ctx, "u-1")

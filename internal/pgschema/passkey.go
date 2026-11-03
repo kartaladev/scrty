@@ -104,10 +104,6 @@ RETURNING email_code, email_code_expires_at, email_code_attempts`
 	// PasskeyDelete removes user $2's credential $1.
 	PasskeyDelete = `DELETE FROM passkey_credentials WHERE id = $1 AND user_id = $2`
 
-	// PasskeyDeleteAwaitingSavedCodes removes every credential of user $1
-	// whose saved-codes reason (1) is set.
-	PasskeyDeleteAwaitingSavedCodes = `DELETE FROM passkey_credentials WHERE user_id = $1 AND pending & 1 <> 0`
-
 	// PasskeyDeleteUser removes every credential of user $1.
 	PasskeyDeleteUser = `DELETE FROM passkey_credentials WHERE user_id = $1`
 )

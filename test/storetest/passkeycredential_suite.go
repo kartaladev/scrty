@@ -873,29 +873,6 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 			},
 		},
 		{
-			name: "delete awaiting saved codes removes only the user's credentials with the reason, and counts them",
-			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
-				insertCredentials(ctx, t, s,
-					passkeyCredential(1, "u-1", "C1"),
-					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkey.PendingSavedCodes),
-					passkeyPending(passkeyCredential(3, "u-1", "C3"), passkeyBoth),
-					passkeyPending(passkeyCredential(4, "u-1", "C4"), passkey.PendingEmailCode),
-					passkeyCredential(5, "u-2", "C5"),
-					passkeyPending(passkeyCredential(6, "u-2", "C6"), passkey.PendingSavedCodes),
-				)
-
-				n, err := s.DeleteAwaitingSavedCodes(ctx, "u-1")
-				require.NoError(t, err)
-				assert.Equal(t, 2, n)
-				assert.Equal(t, []string{"C1", "C4"}, credentialIDs(ctx, t, s, "u-1"))
-				assert.Equal(t, []string{"C5", "C6"}, credentialIDs(ctx, t, s, "u-2"))
-
-				n, err = s.DeleteAwaitingSavedCodes(ctx, "u-1")
-				require.NoError(t, err)
-				assert.Zero(t, n)
-			},
-		},
-		{
 			name: "delete user removes every credential of the user, and counts them",
 			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
 				insertCredentials(ctx, t, s,
