@@ -128,6 +128,7 @@ const (
 	minSignalsReloadTimeout      = 2 * time.Second
 	maxSignalsReloadTimeout      = 10 * time.Second
 	defaultSignalsBusQueue       = 1024
+	maxSignalsBusQueue           = 1 << 20
 	defaultSignalsBusTimeout     = 5 * time.Second
 
 	// streamQueueSize is how many credential_changed and app.* signals a stream
@@ -271,7 +272,9 @@ type SessionSignals struct {
 
 	// Bus carries signals between replicas. A shared one should authenticate its
 	// transport: the chain treats what it delivers as untrusted, and an end message
-	// only makes a stream read the store.
+	// only makes a stream read the store, so a holder of the bus cannot end a stream.
+	// It can still wake a user's streams at will, which costs store reads, and label a
+	// real end as reuse inside its window. See SignalBus for what else a bus costs.
 	//
 	// Default: nil, an in-process bus, so with several replicas session_ended still
 	// arrives within a heartbeat, while credential_changed and a consumer's signals
@@ -282,7 +285,8 @@ type SessionSignals struct {
 	// dropped and counted.
 	//
 	// Default: 1024. It is for a consumer's Bus only, and setting it without one is
-	// refused. It must not be negative.
+	// refused. It must be at least 1 and at most 1048576, so that a mistaken value
+	// cannot reserve memory the process does not have.
 	BusQueue int
 
 	// BusTimeout bounds one Publish to a consumer's Bus.
@@ -299,6 +303,18 @@ type SessionSignals struct {
 // process only (SessionSignals.Bus). A bus may be lossy: what a dropped message costs
 // is a heartbeat for session_ended, because the store decides, and the signal itself
 // for any other, so a consumer must not rely on one alone.
+//
+// What a bus costs, and what it is trusted with:
+//
+//   - A shared bus should authenticate its transport. A holder of it can wake a user's
+//     streams at will, which costs store reads, and can label a real end as reuse inside
+//     its window. It cannot end a stream, since the store decides.
+//   - An envelope still queued when CloseSessionSignals runs can be lost.
+//   - A Publish that ignores its context keeps the publisher's goroutine for as long as it
+//     hangs, and a goroutine cannot be stopped from outside. The queue then fills, and later
+//     signals are dropped and counted.
+//   - A chain that is never closed keeps its bus's goroutines, the publisher and the
+//     subscription.
 type SignalBus interface {
 	// Publish hands e to the other replicas and to this one. It is called from one
 	// goroutine, under SessionSignals.BusTimeout, on a context with none of the raising
@@ -760,6 +776,9 @@ func (e *sessionSignals) settleBus(option string) error {
 	case cfg.BusQueue < 0:
 		return newConfigError("%s was given SessionSignals.BusQueue %d, which must be at least 1",
 			option, cfg.BusQueue)
+	case cfg.BusQueue > maxSignalsBusQueue:
+		return newConfigError("%s was given SessionSignals.BusQueue %d, which must be at most %d",
+			option, cfg.BusQueue, maxSignalsBusQueue)
 	case cfg.BusTimeout < 0:
 		return newConfigError("%s was given SessionSignals.BusTimeout %s, which must be above zero",
 			option, cfg.BusTimeout)
@@ -950,11 +969,14 @@ func newSignalStream(user identity.UserID, family id.ID, upstream, source string
 }
 
 // noteEnd keeps what an end report said, reuse apart from every other reason, and then wakes
-// the stream without blocking.
+// the stream without blocking. A report with no reason keeps nothing, and still wakes.
 func (s *signalStream) noteEnd(n endNotice) {
-	if n.reason == reasonReuse {
+	switch n.reason {
+	case "":
+		// An unknown reason says nothing, so it must not erase one that was kept.
+	case reasonReuse:
 		s.reuse.Store(&n)
-	} else {
+	default:
 		s.notice.Store(&n)
 	}
 

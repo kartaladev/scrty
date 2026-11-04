@@ -1338,6 +1338,32 @@ func TestSessionSignals_StreamNoteEnd(t *testing.T) {
 			},
 		},
 		{
+			name: "an empty reason keeps what was kept, and still wakes the stream",
+			act: func(p *httpsec.SignalStreamProbe) {
+				p.NoteEnd("logout", first)
+				p.TakeWake()
+				p.NoteEnd("", later)
+			},
+			assert: func(t *testing.T, p *httpsec.SignalStreamProbe) {
+				reason, at := p.Notice()
+				assert.Equal(t, "logout", reason, "an unknown reason must not erase a real one")
+				assert.True(t, first.Equal(at))
+				assert.True(t, p.TakeWake())
+			},
+		},
+		{
+			name: "an empty reason alone stores no notice, and still wakes the stream",
+			act:  func(p *httpsec.SignalStreamProbe) { p.NoteEnd("", first) },
+			assert: func(t *testing.T, p *httpsec.SignalStreamProbe) {
+				reason, _ := p.Notice()
+				assert.Empty(t, reason)
+
+				reuse, _ := p.Reuse()
+				assert.Empty(t, reuse)
+				assert.True(t, p.TakeWake())
+			},
+		},
+		{
 			name: "several wake-ups coalesce into one, and none blocks",
 			act: func(p *httpsec.SignalStreamProbe) {
 				for range 10 {

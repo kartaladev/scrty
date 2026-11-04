@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -577,6 +578,23 @@ func TestSessionSignals_Construction(t *testing.T) {
 			name:    "a negative BusQueue is refused",
 			signals: httpsec.SessionSignals{BusQueue: -1},
 			assert:  refusedNamingField("SessionSignals.BusQueue"),
+		},
+		{
+			name:    "a BusQueue above 1048576 is refused, naming the field and the limit",
+			signals: httpsec.SessionSignals{Bus: NewMockSignalBus(nil), BusQueue: 1_048_577},
+			assert:  refusedNamingField("SessionSignals.BusQueue", "1048576"),
+		},
+		{
+			name:    "the largest int as a BusQueue is refused",
+			signals: httpsec.SessionSignals{Bus: NewMockSignalBus(nil), BusQueue: math.MaxInt},
+			assert:  refusedNamingField("SessionSignals.BusQueue", "1048576"),
+		},
+		{
+			name:    "a BusQueue of exactly 1048576 is kept",
+			signals: httpsec.SessionSignals{Bus: NewMockSignalBus(nil), BusQueue: 1_048_576},
+			assert: resolved(func(t *testing.T, cfg httpsec.SessionSignals) {
+				assert.Equal(t, 1_048_576, cfg.BusQueue)
+			}),
 		},
 		{
 			name:    "a negative BusTimeout is refused",
