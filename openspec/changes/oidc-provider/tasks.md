@@ -148,7 +148,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - `offline_access` asked unless explicitly consented before or the native client is pre-authorized, and honoured only when a code results.
 
   Verify: `go test -run 'TestConsentNeeded' -count=1 ./oidcprovider/`.
-- [ ] 6.5 Resume the login stage from sign-in facts, test-first:
+- [x] 6.5 Resume the login stage from sign-in facts, test-first:
   - the handle and flow secret must be valid, and the stage spent once;
   - `prompt=login` needs authentication after parking, and `max_age` (with 0 as `login`) is measured against `AuthenticatedAt`, never the renewal time. A failure leaves the handle unspent;
   - a hint naming another subject answers `login_required`;
@@ -156,14 +156,14 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - the answer is the consent URL with the handle, or the code redirect, and a browser session is recorded (R2).
 
   Verify: `go test -run 'TestProvider_ResumeLogin' -count=1 ./oidcprovider/`.
-- [ ] 6.6 Resume the consent stage, test-first:
+- [x] 6.6 Resume the consent stage, test-first:
   - the same user as the login stage, or the browser session of that user (R2);
   - granted scopes a subset that keeps `openid`, otherwise malformed with the handle unspent;
   - a denial answers `access_denied` and records nothing;
   - a grant adds to the remembered consent and binds the code to the granted scopes.
 
   Verify: `go test -run 'TestProvider_ResumeConsent' -count=1 ./oidcprovider/`.
-- [ ] 6.7 Issue codes through `token/onetime` with a code record (T2), test-first: every binding including `F`, a 60-second default with `WithCodeLifetime` up to 10 minutes, and a success redirect carrying `code`, `state` and `iss`. Godoc the authorization and consent API. Verify: `go test -run 'TestProvider_IssueCode' -count=1 ./oidcprovider/`, and `go doc ./oidcprovider PendingRequest`.
+- [x] 6.7 Issue codes through `token/onetime` with a code record (T2), test-first: every binding including `F`, a 60-second default with `WithCodeLifetime` up to 10 minutes, and a success redirect carrying `code`, `state` and `iss`. Godoc the authorization and consent API. Verify: `go test -run 'TestProvider_IssueCode' -count=1 ./oidcprovider/`, and `go doc ./oidcprovider PendingRequest`.
 
 - [ ] 6.8 Answer from the browser session, test-first, one table (R2), with these red tests first: a second authorization with `prompt=none` after a first login must issue a code carrying the same `auth_time`; and one after the sign-in ended must not:
   - a valid session skips the login stage, and touches its idle deadline;

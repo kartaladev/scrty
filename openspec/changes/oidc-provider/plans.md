@@ -504,7 +504,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - The error is `ErrInvalidAuthorization` (the client or redirect URI is unredirectable) or a dependency failure. Every redirectable error comes back as a `Location` carrying `error`.
 - `func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string) (*PendingView, error)`
   - `type PendingView struct { ClientID, ClientName string; Scopes, GrantedScopes []string; Prompt []string; MaxAge *int; LoginHint string; UILocales, ClaimsLocales, ACRValues []string; Stage Stage }`. `GrantedScopes` is everything the user has given that client
-- `func (p *Provider) Resume(ctx context.Context, handle, flowSecret string, s SignIn, answer *ConsentAnswer) (string, error)`
+- `func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, error)`, with `ResumeInput` and `ResumeResult` as built in `oidcprovider/resume.go`. Both print redacted. H1 fills `IdleTimeout` from the chain's manager
   - `type ConsentAnswer struct { Deny bool; Scopes []string }`. It is nil at the login stage.
   - It returns `redirect_to`. The errors are `ErrUnknownHandle`, `ErrReauthenticate`, `ErrConsentMalformed` or a dependency failure.
 - `func consentNeeded(c *RegisteredClient, req *PendingRequest, remembered *Consent) bool`, unexported and table-tested.

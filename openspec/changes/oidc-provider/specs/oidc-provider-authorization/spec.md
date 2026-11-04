@@ -441,3 +441,21 @@ A client registered without the `authorization_code` grant SHALL be answered wit
 - **WHEN** a client registered only for `refresh_token` sends an authorization request with a valid redirect URI
 - **THEN** it is answered with a redirect carrying `unauthorized_client`, `state` and `iss`
 
+### Requirement: A resume judges the client as it is now
+Every resume SHALL judge the parked request against the client as read at that moment. If the parked redirect URI is no longer registered, the client lost the code grant, `openid` was parked and may no longer be asked for, or no scope is left, the resume SHALL be refused as an unknown handle, with no redirect. A scope or resource the client may no longer use, and `offline_access` for a client that lost the refresh grant, SHALL be left out, and the request SHALL carry on.
+
+#### Scenario: Redirect URI removed after parking
+- **WHEN** a client stops registering a redirect URI, and a request parked with it resumes
+- **THEN** the resume is refused as an unknown handle, and the browser is not sent to that URI
+
+#### Scenario: Scope withdrawn after parking
+- **WHEN** a client may no longer ask for `profile`, and a request parked with `openid profile` resumes
+- **THEN** the code is issued for `openid` alone
+
+### Requirement: An authentication time in the future is not fresh
+A sign-in whose authentication time is more than 60 seconds ahead of the provider's clock SHALL be refused as needing re-authentication, whatever the request's `prompt` or `max_age`. Within 60 seconds it SHALL count as now.
+
+#### Scenario: A year ahead
+- **WHEN** a sign-in authenticated a year ahead of the provider's clock resumes a request with `max_age=300`
+- **THEN** the resume asks for re-authentication
+
