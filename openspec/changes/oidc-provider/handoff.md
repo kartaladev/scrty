@@ -136,3 +136,14 @@ What was agreed:
 ## Scratch
 
 The session's scratchpad, which a new session may not be able to rely on, holds only disposable material: review proofs, scripts and the conformance clone. Everything worth keeping is in a commit or in this file.
+
+## Update: second session, stopped at the usage limit
+
+This supersedes "Next steps" 1 to 5 and "Lanes not yet merged" where they differ.
+
+- **Told `session-signal`** this session's name, `oidc-provider`. A later session must do so again. It is not at C5, and its `ResponseWriter` change is uncommitted: it adds `Stream`, so group 8's test doubles need that method after the rebase. It adds an `EndLogout` row to `TestProvider_EndSignIn` when it rebases.
+- **Merged to this branch:** `pgxstore`'s commit, with its ambient transaction test, and `sqlstore`'s same test (the gap existed there). Both reviewed by mutant, every row red. **Task 12.3 is not ticked yet.** Tick it with 12.4.
+- **`feat/oidc-provider-gorm`, at `62d549f`:** rebased on this branch, all four findings fixed, verified in the main session on the default image only. **Not re-reviewed, not merged, not ticked.** Next: an Opus re-review of the fix commit, a run with `SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`, a cherry-pick of both commits, then tick 12.3 and 12.4 and record `lineagePool` and the timeout rule in `design.md`. Check that `scanRow` stays on gorm's processor path, and that each many-grant statement is bounded separately.
+- **`feat/oidc-provider-g`: review interrupted, with no final report.** The Opus reviewer was stopped during its mutation pass. Its interim message said its proof tests fail on the commit and pass with candidate fixes, so **expect `REPRODUCED` findings, which this session has not read or checked.** Its proofs are in `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/bff13c6d-670e-4235-af08-e711bde90918/scratchpad/review-g/oidcprovider/review_proof_test.go`. Run a fresh review, or read that file first, and do not merge the lane before then.
+- **Replay after the sweep: not yet put to the user.** Researched on 2026-11-04. RFC 6749 §4.1.2 says deny, and "SHOULD revoke (when possible)". RFC 9700 §4.2.4 says SHOULD revoke. node-oidc-provider refuses an expired code before its consumed check, and fosite treats a code it cannot find as plain `invalid_grant` with nothing revoked, so neither revokes once a code is expired or gone. The recommendation to offer is to narrow the spec: revoke while the record is held, at least until a minute past the code's expiry. Longer retention stores more, and for a public client lets whoever holds a leaked code end the grant for longer.
+- Session worktrees `oidc`, `wt-gorm` and `wt-g` are under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/bff13c6d-670e-4235-af08-e711bde90918/scratchpad`. If they are gone, the branches hold everything; run `git worktree prune`.
