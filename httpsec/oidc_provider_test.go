@@ -13,10 +13,13 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy/lockout"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -52,15 +55,23 @@ func (f *opFixture) provider(t *testing.T, opts ...oidcprovider.Option) *oidcpro
 func (f *opFixture) providerFor(t *testing.T, clients []oidcprovider.Client, opts ...oidcprovider.Option) *oidcprovider.Provider {
 	t.Helper()
 
+	return f.providerOver(t, opIssuer, f.keys, clients, opts...)
+}
+
+// providerOver builds a provider for issuer over keys, which need not be the
+// fixture's own, so a test can hand it a wrapper or an issuer with a path.
+func (f *opFixture) providerOver(t *testing.T, issuer string, keys signingkey.KeySource, clients []oidcprovider.Client, opts ...oidcprovider.Option) *oidcprovider.Provider {
+	t.Helper()
+
 	p, err := oidcprovider.New(oidcprovider.Deps{
-		Issuer: opIssuer,
+		Issuer: issuer,
 		Clients: append([]oidcprovider.Client{{
 			ID:           "billing-web",
 			Type:         oidcprovider.Confidential,
 			Secret:       []byte("0123456789abcdef0123456789abcdef"),
 			RedirectURIs: []string{"https://rp.example.com/cb"},
 		}}, clients...),
-		Keys:         f.keys,
+		Keys:         keys,
 		Users:        NewMockUserLoader(gomock.NewController(t)),
 		LoginURL:     opIssuer + "/login",
 		ConsentURL:   opIssuer + "/consent",
@@ -71,6 +82,10 @@ func (f *opFixture) providerFor(t *testing.T, clients []oidcprovider.Client, opt
 
 	return p
 }
+
+// wrappedKeys decorates a signing-key manager, as a consumer adding metrics or
+// tracing would: the same keys behind another value.
+type wrappedKeys struct{ *signingkey.Keys }
 
 // reporting is a session manager that reports each sign-in's end to p.
 func reporting(t *testing.T, p *oidcprovider.Provider) *session.Sessions {
@@ -153,6 +168,85 @@ func mfaListingOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
 	return []httpsec.Option{mfaOn(t, httpsec.WithMFAMethodListing())}
 }
 
+func formLoginOn(t *testing.T, m *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+		Authenticator: NewMockAuthenticator(gomock.NewController(t)),
+		Sessions:      m,
+		Attempts:      must.Must(lockout.NewMemoryAttemptStore()),
+	})}
+}
+
+func renewalOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{
+		Users: NewMockUserLoader(gomock.NewController(t)),
+	})}
+}
+
+const opPasswordChangePath = "/account/password"
+
+func passwordChangeOn(t *testing.T, m *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{httpsec.EnablePasswordChangeGate(m,
+		httpsec.WithPasswordChangeEndpoint(opPasswordChangePath, func(*httpsec.Exchange) error { return nil }))}
+}
+
+func recoveryOn(t *testing.T, m *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	totp := must.Must(mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Co"))
+	reset := must.Must(recovery.MFAEnrolments(totp))
+	codes := must.Must(recovery.NewCodes())
+
+	return append(passwordChangeOn(t, m), httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
+		Users:    exampleUserLoader{details: &identity.Details{ID: "u-1", Username: "grace@example.com", Active: true}},
+		Sessions: m,
+		Sender:   exampleSender{},
+		Codes:    codes,
+	},
+		httpsec.WithRecoveryCore(
+			recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
+			recovery.WithRepudiationContact("Contact support@example.com if you did not request this."),
+			recovery.WithAuthenticatorKinds(reset),
+		)))
+}
+
+func passkeysOn(t *testing.T, m *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	pm := must.Must(passkey.New(passkey.Deps{
+		Verifier: newPasskeyVerifierStub(t).mock,
+		Users:    users,
+		Sender:   exampleSender{},
+		Sessions: m,
+	}, passkey.WithRepudiationContact("help@example.com")))
+
+	return []httpsec.Option{httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: m, Users: users})}
+}
+
+func enrolmentOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{
+		mfaOn(t),
+		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
+			Users:  NewMockUserLoader(gomock.NewController(t)),
+			Sender: exampleSender{},
+		}),
+	}
+}
+
+func mfaPrefixesOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{mfaOn(t)}
+}
+
 func (f *opFixture) bearer(t *testing.T, m *session.Sessions) httpsec.Option {
 	t.Helper()
 
@@ -213,6 +307,21 @@ func TestOIDCProvider_Construction(t *testing.T) {
 		p := f.provider(t, popts...)
 
 		return append(f.wired(t, p), httpsec.EnableOIDCProvider(p, opts...))
+	}
+
+	// withHeaders is a provider on a chain whose security headers take opts.
+	withHeaders := func(t *testing.T, opts ...httpsec.HeaderOption) []httpsec.Option {
+		t.Helper()
+
+		p := f.provider(t)
+
+		return []httpsec.Option{
+			f.bearer(t, reporting(t, p)),
+			httpsec.EnableJWKSEndpoint(f.keys),
+			httpsec.EnableSecurityHeaders(opts...),
+			httpsec.EnableCSRFProtection(),
+			httpsec.EnableOIDCProvider(p),
+		}
 	}
 
 	// formLogin issues the session reference, as a chain under the session
@@ -355,6 +464,60 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "token"))
 			},
 			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "a path holding a query",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens?x=1"))
+			},
+			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "a path holding a fragment",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/tokens#x"))
+			},
+			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "a path holding a percent sign",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/a%20b"))
+			},
+			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "a prefix holding a query",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op?x"))
+			},
+			assert: refused("WithOIDCProviderPrefix"),
+		},
+		{
+			name: "a prefix holding a fragment",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op#x"))
+			},
+			assert: refused("WithOIDCProviderPrefix"),
+		},
+		{
+			name: "a prefix holding a percent sign",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/op%20x"))
+			},
+			assert: refused("WithOIDCProviderPrefix"),
 		},
 		{
 			name: "a path for an endpoint that does not exist",
@@ -607,7 +770,241 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			},
 			assert: built,
 		},
+		{
+			name: "a wrapper of the manager as the provider's keys, over the manager's own key set, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
 
+				p := f.providerOver(t, opIssuer, wrappedKeys{f.keys}, nil)
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			assert: built,
+		},
+		{
+			name: "a wrapper of the manager as the key set, beside a provider signing with the manager, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(wrappedKeys{f.keys}),
+					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
+					httpsec.EnableOIDCProvider(p),
+				}
+			},
+			assert: built,
+		},
+		{
+			name: "an issuer with a path, served behind a stripping router, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerOver(t, opIssuer+"/auth", f.keys, nil, oidcprovider.WithClientAssertionAudience(endpointAudience))
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			assert: built,
+		},
+		{
+			name: "an issuer with a path, the prefix holding the issuer's path, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerOver(t, opIssuer+"/auth", f.keys, nil, oidcprovider.WithClientAssertionAudience(endpointAudience))
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPrefix("/auth/oauth2")))
+			},
+			assert: built,
+		},
+		{
+			name: "an issuer with a path, the assertion endpoint stated elsewhere",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerOver(t, opIssuer+"/auth", f.keys, nil,
+					oidcprovider.WithClientAssertionAudience(endpointAudience),
+					oidcprovider.WithAssertionTokenEndpoint(opIssuer+"/auth/elsewhere/token"))
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			assert: refused("EnableOIDCProvider", "WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "an assertion endpoint naming the token path percent-encoded",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, []oidcprovider.Option{
+					oidcprovider.WithClientAssertionAudience(endpointAudience),
+					oidcprovider.WithAssertionTokenEndpoint(opIssuer + "/oauth2/%74oken"),
+				})
+			},
+			assert: refused("EnableOIDCProvider", "WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "security headers with the policy removed",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithoutHeader("Content-Security-Policy"))
+			},
+			assert: refused("EnableOIDCProvider", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "security headers with the policy only reported",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSPReportOnly())
+			},
+			assert: refused("EnableOIDCProvider", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "security headers opening frame-ancestors to anyone",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "*"))))
+			},
+			assert: refused("EnableOIDCProvider", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "security headers with a policy naming no frame-ancestors",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors"))))
+			},
+			assert: refused("EnableOIDCProvider", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "security headers limiting frame-ancestors to the origin itself build",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "'self'"))))
+			},
+			assert: built,
+		},
+		{
+			name: "security headers forbidding all framing build",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "'none'"))))
+			},
+			assert: built,
+		},
+		{
+			name: "security headers allowing framing, the consumer stating its pages carry frame-ancestors, build",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableSecurityHeaders(httpsec.WithoutHeader("Content-Security-Policy")),
+					httpsec.EnableCSRFProtection(),
+					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCPagesCarryFrameAncestors()),
+				}
+			},
+			assert: built,
+		},
+
+		{
+			name: "the provider given before everything it needs builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.wired(t, p)...)
+			},
+			assert: built,
+		},
+		{
+			name: "the provider given before the logout it collides with",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append([]httpsec.Option{
+					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCEndSession, httpsec.DefaultLogoutPath)),
+				}, append(f.wired(t, p), httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: reporting(t, p)}))...)
+			},
+			assert: refused("EnableOIDCProvider", httpsec.DefaultLogoutPath),
+		},
+		{
+			name: "the provider given before the key set endpoint its token path collides with",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append([]httpsec.Option{
+					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, httpsec.DefaultJWKSPath)),
+				}, f.wired(t, p)...)
+			},
+			assert: refused("EnableOIDCProvider", httpsec.DefaultJWKSPath),
+		},
+		{
+			name: "the provider given before the key set endpoint publishing other keys",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					httpsec.EnableOIDCProvider(p),
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(f.otherKeys),
+					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
+				}
+			},
+			assert: refused("EnableOIDCProvider", "EnableJWKSEndpoint"),
+		},
+		{
+			name: "the provider given before the bearer, which comes without a session manager of its own reporting",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					httpsec.EnableOIDCProvider(p),
+					f.bearer(t, must.Must(session.New())),
+					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
+				}
+			},
+			assert: refused("EnableOIDCProvider", "session.WithEndObserver"),
+		},
+		{
+			name: "the provider given before the security headers that leave pages frameable",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					httpsec.EnableOIDCProvider(p),
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableSecurityHeaders(httpsec.WithoutHeader("Content-Security-Policy")),
+					httpsec.EnableCSRFProtection(),
+				}
+			},
+			assert: refused("EnableOIDCProvider", "WithOIDCPagesCarryFrameAncestors"),
+		},
 		{
 			name: "browser sessions on and no CSRF protection",
 			build: func(t *testing.T) []httpsec.Option {
@@ -726,6 +1123,15 @@ func TestOIDCProvider_Construction(t *testing.T) {
 		{"the session management prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix, managementOn},
 		{"a session management path under its prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix + "/s-1", managementOn},
 		{"the MFA method listing path", httpsec.OIDCToken, httpsec.DefaultMFAMethodListingPath, mfaListingOn},
+		{"the login path", httpsec.OIDCToken, httpsec.DefaultLoginPath, formLoginOn},
+		{"the session renewal path", httpsec.OIDCToken, httpsec.DefaultSessionRenewalPath, renewalOn},
+		{"the password-change resolve path", httpsec.OIDCToken, opPasswordChangePath, passwordChangeOn},
+		{"a recovery path", httpsec.OIDCToken, httpsec.DefaultRecoveryStartPath, recoveryOn},
+		{"a passkey path", httpsec.OIDCToken, httpsec.DefaultPasskeyCredentialsPrefix, passkeysOn},
+		{"a second-factor begin path", httpsec.OIDCToken, httpsec.DefaultMFABeginPrefix + "/totp", mfaPrefixesOn},
+		{"a second-factor verify path", httpsec.OIDCToken, httpsec.DefaultMFAVerifyPrefix + "/totp", mfaPrefixesOn},
+		{"an enrolment begin path", httpsec.OIDCToken, httpsec.DefaultEnrolmentBeginPrefix + "/totp", enrolmentOn},
+		{"an enrolment confirm path", httpsec.OIDCToken, httpsec.DefaultEnrolmentConfirmPrefix + "/totp", enrolmentOn},
 	} {
 		cases = append(cases, testCase{
 			name: "the provider's path set to " + fam.name,
@@ -856,7 +1262,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 		name   string
 		group  *httpsec.TestOIDCGroup
 		header string
-		assert func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request)
+		assert func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request, bearer *session.Sessions)
 	}
 
 	cases := []testCase{
@@ -864,7 +1270,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 			name:   "an outer route is answered ahead of the bearer, whatever credential it carries",
 			group:  &httpsec.TestOIDCGroup{Path: "/g"},
 			header: "Bearer not-a-session",
-			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request) {
+			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.NoError(t, err)
 
@@ -877,7 +1283,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 			name:   "an inner route sits behind the bearer, which refuses a bad credential",
 			group:  &httpsec.TestOIDCGroup{Path: "/g", Inner: true},
 			header: "Bearer not-a-session",
-			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request) {
+			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.NoError(t, err)
 
@@ -889,7 +1295,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 		{
 			name:  "an inner route is answered with no credential at all",
 			group: &httpsec.TestOIDCGroup{Path: "/g", Inner: true},
-			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request) {
+			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, r *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.NoError(t, err)
 
@@ -901,7 +1307,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 		{
 			name:  "a route another group holds is refused",
 			group: &httpsec.TestOIDCGroup{Path: "/oauth2/token"},
-			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request) {
+			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.ErrorContains(t, err, "/oauth2/token")
@@ -911,7 +1317,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 		{
 			name:  "a group that cannot settle refuses the chain",
 			group: &httpsec.TestOIDCGroup{Path: "/g", SettleErr: errSettle},
-			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request) {
+			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.ErrorIs(t, err, errSettle)
 				assert.Nil(t, chain)
@@ -920,7 +1326,7 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 		{
 			name:  "a group settles with the bearer's manager to hand, and is wired with the chain",
 			group: &httpsec.TestOIDCGroup{Path: "/g"},
-			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, _ *httpsec.Chain, err error, _ *http.Request) {
+			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, _ *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.True(t, g.SettledWithManager())
@@ -928,9 +1334,27 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 			},
 		},
 		{
+			name:  "a group settles with the very manager the bearer resolves sessions through",
+			group: &httpsec.TestOIDCGroup{Path: "/g"},
+			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, _ *httpsec.Chain, err error, _ *http.Request, bearer *session.Sessions) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Same(t, bearer, g.SettledSessions())
+			},
+		},
+		{
+			name:  "a group settles before CSRF protection reads the chain's settings",
+			group: &httpsec.TestOIDCGroup{Path: "/g"},
+			assert: func(t *testing.T, g *httpsec.TestOIDCGroup, _ *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.False(t, g.SawCSRFSettled())
+			},
+		},
+		{
 			name:  "a group's refusal logs are flushed with the chain's",
 			group: &httpsec.TestOIDCGroup{Path: "/g", FlushErr: errFlush},
-			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request) {
+			assert: func(t *testing.T, _ *httpsec.TestOIDCGroup, chain *httpsec.Chain, err error, _ *http.Request, _ *session.Sessions) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.ErrorIs(t, chain.FlushRefusalLogs(), errFlush)
@@ -943,15 +1367,94 @@ func TestOIDCProvider_Routes_Groups(t *testing.T) {
 			t.Parallel()
 
 			p := f.provider(t)
-			chain, err := httpsec.New(append(f.wired(t, p),
-				httpsec.EnableOIDCProvider(p, httpsec.WithTestOIDCGroup(tc.group)))...)
+			m := reporting(t, p)
+			chain, err := httpsec.New(
+				f.bearer(t, m),
+				httpsec.EnableJWKSEndpoint(f.keys),
+				httpsec.EnableSecurityHeaders(),
+				httpsec.EnableCORS(httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example.com"}}),
+				httpsec.EnableCSRFProtection(),
+				httpsec.EnableOIDCProvider(p, httpsec.WithTestOIDCGroup(tc.group)),
+			)
 
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tc.group.Path, nil)
 			if tc.header != "" {
 				r.Header.Set("Authorization", tc.header)
 			}
 
-			tc.assert(t, tc.group, chain, err, r)
+			tc.assert(t, tc.group, chain, err, r, m)
+		})
+	}
+}
+
+// TestOIDCProvider_Slots pins where each slot stands among the chain's layers by
+// which of them a request reaches before a route answers it. A probe sits at each
+// order just inside or just outside a layer the slot is named against.
+func TestOIDCProvider_Slots(t *testing.T) {
+	t.Parallel()
+
+	f := newOPFixture(t)
+
+	// The probes: one inside CSRF protection (75), one either side of the outer
+	// slot (250), one behind the gates and the bearer (up to 675), one behind
+	// the session-touch step (800), and one either side of the inner slot (850).
+	probes := []httpsec.Order{76, 249, 251, 676, 801, 849, 851}
+
+	type testCase struct {
+		name  string
+		inner bool
+		ran   []httpsec.Order
+		didnt []httpsec.Order
+	}
+
+	cases := []testCase{
+		{
+			name:  "the outer slot is inside CSRF protection and outside the bearer and Basic",
+			ran:   []httpsec.Order{76, 249},
+			didnt: []httpsec.Order{251, 676, 801, 849, 851},
+		},
+		{
+			name:  "the inner slot is behind the gates and the session touch, and outside authorization",
+			inner: true,
+			ran:   []httpsec.Order{76, 249, 251, 676, 801, 849},
+			didnt: []httpsec.Order{851},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var reached []httpsec.Order
+
+			opts := make([]httpsec.Option, 0, len(probes)+6)
+
+			for _, at := range probes {
+				opts = append(opts, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					reached = append(reached, at)
+
+					return next(ex)
+				}), at))
+			}
+
+			g := &httpsec.TestOIDCGroup{Path: "/g", Inner: tc.inner}
+			p := f.provider(t)
+
+			chain, err := httpsec.New(append(append(f.wired(t, p), opts...),
+				httpsec.EnableOIDCProvider(p, httpsec.WithTestOIDCGroup(g)))...)
+			require.NoError(t, err)
+
+			serveOP(t, chain, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/g", nil))
+
+			require.Equal(t, 1, g.Calls())
+
+			for _, at := range tc.ran {
+				assert.Contains(t, reached, at, "the request should have passed the probe at %d", at)
+			}
+
+			for _, at := range tc.didnt {
+				assert.NotContains(t, reached, at, "the request should have been answered before the probe at %d", at)
+			}
 		})
 	}
 }

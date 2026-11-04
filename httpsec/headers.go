@@ -392,6 +392,31 @@ func WithoutHeader(name string) HeaderOption {
 	}
 }
 
+// forbidsFraming reports whether the document profile enforces a policy limiting
+// who may frame it. It reads only the document profile: a route-matched profile
+// is chosen per request, and cannot be seen at construction.
+//
+// Only a frame-ancestors of 'self', 'none' or both limits it: any other source
+// names an origin that may frame the pages, and no directive leaves them open.
+func (l *securityHeaders) forbidsFraming() bool {
+	h, ok := l.document.find(headerCSP)
+	if !ok || h.policy == nil {
+		return false
+	}
+
+	for _, d := range h.policy.directives {
+		if !strings.EqualFold(d.name, "frame-ancestors") {
+			continue
+		}
+
+		return len(d.sources) > 0 && !slices.ContainsFunc(d.sources, func(src string) bool {
+			return src != "'self'" && src != "'none'"
+		})
+	}
+
+	return false
+}
+
 // set replaces the header of h's name in place, or appends h.
 func (p *HeaderProfile) set(h profileHeader) {
 	for i := range p.headers {

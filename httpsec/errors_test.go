@@ -277,6 +277,11 @@ func TestStatusForError(t *testing.T) {
 			want: 500,
 		},
 		{
+			name: "a provider dependency failure outranks a challenge it arrives with",
+			err:  errors.Join(&httpsec.ChallengeError{Kind: policy.ChallengePasswordChange}, oidcprovider.ErrDependency),
+			want: 500,
+		},
+		{
 			name: "an unrecognised error is a server fault",
 			err:  errors.New("connection refused to db-primary:5432"),
 			want: 500,

@@ -8,6 +8,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 func TestProvider_Accessors(t *testing.T) {
@@ -28,7 +29,24 @@ func TestProvider_Accessors(t *testing.T) {
 		assert func(t *testing.T, p *oidcprovider.Provider)
 	}
 
+	managed, err := signingkey.New(t.Context(), signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()))
+	require.NoError(t, err)
+
 	cases := []testCase{
+		{
+			name: "a signing-key manager given as the keys is returned",
+			deps: func(_ *testing.T, d *oidcprovider.Deps) { d.Keys = managed },
+			assert: func(t *testing.T, p *oidcprovider.Provider) {
+				assert.Same(t, managed, p.SigningManager())
+			},
+		},
+		{
+			name: "any other key source, a wrapper of the manager included, answers nil",
+			deps: func(_ *testing.T, d *oidcprovider.Deps) { d.Keys = struct{ signingkey.KeySource }{managed} },
+			assert: func(t *testing.T, p *oidcprovider.Provider) {
+				assert.Nil(t, p.SigningManager())
+			},
+		},
 		{
 			name: "by default browser sessions are on and the issuer is the one given",
 			assert: func(t *testing.T, p *oidcprovider.Provider) {

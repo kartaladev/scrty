@@ -220,9 +220,10 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // these is a configuration error naming this option:
 //
 //   - no bearer mode, because a resume needs a sign-in credential;
-//   - no EnableJWKSEndpoint, or one given a *signingkey.Keys the provider does not
-//     sign with. A provider of any other type, such as a wrapper, cannot be
-//     compared, and builds;
+//   - no EnableJWKSEndpoint, or one given a *signingkey.Keys other than the
+//     *signingkey.Keys the provider signs with. Only two of them can be told apart:
+//     a wrapper on either side may hold the very keys the other publishes, and
+//     builds;
 //   - enabling it twice;
 //   - two of its paths equal, or one equal to, or under a prefix claimed by, another
 //     endpoint of the chain: the login, logout, key set, session renewal, session
@@ -231,15 +232,35 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //   - a session manager on the chain that does not report sign-in ends to p
 //     (session.WithEndObserver), because grants would then outlive a logout;
 //   - oidcprovider.WithDPoP disagreeing with EnableDPoP;
-//   - an oidcprovider.WithAssertionTokenEndpoint audience other than the path the
-//     token endpoint is served on;
+//   - an oidcprovider.WithAssertionTokenEndpoint audience other than the public URL
+//     of the token endpoint (see the issuer's path, below);
 //   - a client requiring DPoP while EnableDPoP is off, or one requiring a certificate
 //     binding while EnableCertificateBinding is off. A client of the consumer's own
 //     registry cannot be listed here, and is judged as it is read;
 //   - no EnableCSRFProtection while the provider keeps a browser session, which
 //     oidcprovider.WithoutBrowserSessions turns off;
-//   - no EnableSecurityHeaders, unless WithOIDCPagesCarryFrameAncestors states the
-//     consumer's pages protect themselves.
+//   - no EnableSecurityHeaders, or security headers whose document profile does not
+//     forbid framing: no Content-Security-Policy (removed, or only reported), no
+//     frame-ancestors directive, or one naming any source but 'self' and 'none'.
+//     WithOIDCPagesCarryFrameAncestors states the consumer's pages protect
+//     themselves instead. A route-matched profile (WithHeaderProfile) is chosen
+//     per request and cannot be seen at construction, so only the document
+//     profile is judged.
+//   - a path or prefix holding "?", "#" or "%", which no request path can match.
+//
+// # The issuer's path
+//
+// The issuer states the public URL, and the path the chain serves is planned
+// apart from it, with no option of its own. An endpoint reached at the issuer's
+// path plus its served path, behind a router that strips the issuer's path (such
+// as http.StripPrefix("/auth", chain.Middleware()(next)) for the issuer
+// https://id.example.com/auth), is published at that public URL. A served path
+// already at or under the issuer's path is taken to be public as it stands.
+//
+// At construction a chain cannot tell whether a router strips the prefix, so a
+// chain mounted without stripping must include the issuer's path in its prefix
+// (WithOIDCProviderPrefix("/auth/oauth2")); otherwise the published URLs do not
+// reach it.
 func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
 	return func(c *config) error {
 		if err := requireDep(optionOIDCProvider, "provider", p); err != nil {
@@ -363,6 +384,19 @@ func hasInterceptor[T any](c *config) bool {
 	})
 }
 
+// findInterceptor returns the first registered interceptor of type T.
+func findInterceptor[T any](c *config) (T, bool) {
+	for _, r := range c.registrations {
+		if v, ok := r.interceptor.(T); ok {
+			return v, true
+		}
+	}
+
+	var zero T
+
+	return zero, false
+}
+
 // checkBearer requires a bearer mode, whichever one: the resume is how a sign-in
 // reaches the provider, and it reads the credential only through one.
 func (op *oidcEndpoints) checkBearer(c *config) error {
@@ -382,8 +416,10 @@ func (op *oidcEndpoints) checkJWKS(c *config) error {
 	err := eachInterceptor(c, func(j *jwksEndpoint) error {
 		endpoints++
 
-		keys, ok := j.keys.(*signingkey.Keys)
-		if ok && !op.provider.SignsWith(keys) {
+		// Only two managers can be told apart: a wrapper on either side may hold
+		// the very keys the other publishes.
+		published, ok := j.keys.(*signingkey.Keys)
+		if signs := op.provider.SigningManager(); ok && signs != nil && signs != published {
 			return newConfigError("%s signs with other keys than EnableJWKSEndpoint publishes, so no "+
 				"client could verify what the provider issues: give both the same manager",
 				optionOIDCProvider)
@@ -597,19 +633,64 @@ func (op *oidcEndpoints) checkAssertionEndpoint(*config) error {
 	}
 
 	u, err := url.Parse(endpoint)
-	if err != nil || u.Path != op.paths[OIDCToken] {
-		return newConfigError("%s serves the token endpoint on %q, but the provider accepts assertions "+
+	if err != nil || u.EscapedPath() != op.publicPath(op.paths[OIDCToken]) {
+		return newConfigError("%s serves the token endpoint at %q, but the provider accepts assertions "+
 			"naming %q: state the served URL with oidcprovider.WithAssertionTokenEndpoint",
-			optionOIDCProvider, op.paths[OIDCToken], endpoint)
+			optionOIDCProvider, op.publicURL(op.paths[OIDCToken]), endpoint)
 	}
 
 	return nil
 }
 
+// publicURL is the URL a request is answered at when the chain serves it on
+// path served: the issuer's origin, then served when it is at or under the
+// issuer's own path, and the issuer's path before it otherwise.
+//
+// A chain cannot tell at construction whether a router strips the issuer's path
+// before it, so this is the rule a consumer follows: the issuer states the public
+// URL, and a chain mounted without stripping includes the path in its prefix.
+func (op *oidcEndpoints) publicURL(served string) string {
+	u, err := url.Parse(op.provider.Issuer())
+	if err != nil {
+		return served
+	}
+
+	return u.Scheme + "://" + u.Host + op.publicPath(served)
+}
+
+// publicPath is the path of publicURL.
+func (op *oidcEndpoints) publicPath(served string) string {
+	u, err := url.Parse(op.provider.Issuer())
+	if err != nil {
+		return served
+	}
+
+	base := strings.TrimRight(u.EscapedPath(), "/")
+	if underPrefix(served, base) {
+		return served
+	}
+
+	return base + served
+}
+
+// plainHTTPAllowed reports whether the provider's issuer uses the http scheme,
+// which construction permits only for oidcprovider.WithLoopbackHTTPIssuer on a
+// loopback host. The endpoints that would otherwise insist on https answer
+// plain http then.
+func (op *oidcEndpoints) plainHTTPAllowed() bool {
+	u, err := url.Parse(op.provider.Issuer())
+
+	return err == nil && u.Scheme == "http"
+}
+
 // checkFrameAncestors requires the protection against framing the consumer's
 // pages rest on, unless the consumer states those pages carry it themselves.
 func (op *oidcEndpoints) checkFrameAncestors(c *config) error {
-	if op.pagesCarryFrameAncestors || hasInterceptor[*securityHeaders](c) {
+	if op.pagesCarryFrameAncestors {
+		return nil
+	}
+
+	if l, ok := findInterceptor[*securityHeaders](c); ok && l.forbidsFraming() {
 		return nil
 	}
 

@@ -1,5 +1,7 @@
 package oidcprovider
 
+import "github.com/kartaladev/scrty/token/signingkey"
+
 // BrowserSessionsEnabled reports whether the provider keeps a browser session of its
 // own. It is on unless WithoutBrowserSessions was given. The chain asks, because a
 // browser session answers some requests from a cookie, and a cookie needs CSRF
@@ -40,4 +42,14 @@ func (p *Provider) RequiresBinding(b BindingRequirement) bool {
 	}
 
 	return false
+}
+
+// SigningManager returns the *signingkey.Keys the provider signs with, or nil when
+// its key source is any other type, a consumer's wrapper included. The chain asks,
+// to compare the key set it publishes with what the provider signs with: a source
+// that is not a *signingkey.Keys cannot be compared, so the chain does not judge it.
+func (p *Provider) SigningManager() *signingkey.Keys {
+	keys, _ := p.keys.(*signingkey.Keys)
+
+	return keys
 }
