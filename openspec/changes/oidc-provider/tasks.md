@@ -165,7 +165,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   Verify: `go test -run 'TestProvider_ResumeConsent' -count=1 ./oidcprovider/`.
 - [x] 6.7 Issue codes through `token/onetime` with a code record (T2), test-first: every binding including `F`, a 60-second default with `WithCodeLifetime` up to 10 minutes, and a success redirect carrying `code`, `state` and `iss`. Godoc the authorization and consent API. Verify: `go test -run 'TestProvider_IssueCode' -count=1 ./oidcprovider/`, and `go doc ./oidcprovider PendingRequest`.
 
-- [ ] 6.8 Answer from the browser session, test-first, one table (R2), with these red tests first: a second authorization with `prompt=none` after a first login must issue a code carrying the same `auth_time`; and one after the sign-in ended must not:
+- [x] 6.8 Answer from the browser session, test-first, one table (R2), with these red tests first: a second authorization with `prompt=none` after a first login must issue a code carrying the same `auth_time`; and one after the sign-in ended must not:
   - a valid session skips the login stage, and touches its idle deadline;
   - `prompt=login`, or an unmet `max_age`, shows the login page;
   - `prompt=none`: no session or an unmet `max_age` is `login_required`, consent needed is `consent_required`;

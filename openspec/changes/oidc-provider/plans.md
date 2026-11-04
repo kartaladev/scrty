@@ -499,7 +499,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ## Task group 6: authorization and consent (lane A)
 
 **Interfaces produced:**
-- `func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error)`, with `AuthorizeInput{Params url.Values; FlowSecret string}`, which 6.8 extends with `BrowserSessionSecret`, and which prints redacted as `AuthorizeResult` does
+- `func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error)`, with `AuthorizeInput{Params url.Values; FlowSecret, BrowserSessionSecret string; IdleTimeout time.Duration}`, the last filled by H1 from the chain's manager, and which prints redacted as `AuthorizeResult` does
   - `type AuthorizeResult struct { Location string; FlowSecret string }`. `FlowSecret` is empty unless the request was parked.
   - The error is `ErrInvalidAuthorization` (the client or redirect URI is unredirectable) or a dependency failure. Every redirectable error comes back as a `Location` carrying `error`.
 - `func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string) (*PendingView, error)`

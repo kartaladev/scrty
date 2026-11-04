@@ -1156,12 +1156,16 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
   - Under `WithDPoP`, a `dpop_jkt` that is not a SHA-256 thumbprint is `invalid_request`, rather than letting the user log in for a code that can never be exchanged.
   - `id_token_hint` has its own bound of 8 KiB, a proposed value, because a genuine ID token can exceed the general 4 KiB.
   - `WithDPoP()` tells the provider DPoP is on, since a chain cannot change a built provider, and `EnableOIDCProvider` compares `(*Provider).DPoPEnabled()` with `EnableDPoP` (task 8.1).
-  - Until task 6.8, `prompt=none` always answers `login_required`.
 - **What resuming settled while being built (2026-11-04).**
   - **Write order.** The code token, then its record, then any browser session, and the stage's conditional write is the commit point. Secrets are released only after it. A racing loser gets an unknown handle, and leaves records whose secrets nobody saw, which expire.
   - **After the commit point,** a failure remembering consent, or deleting or touching a browser session, is logged. The user still gets their code, and at worst is asked for consent again.
   - **The consent stage binds the sign-in presented then,** and re-judges freshness against it, since the login stage's sign-in may have ended. A denial grants nothing, so it skips that check.
   - **A hint naming another user** answers `login_required` and spends the handle, because the request has been answered. It is judged after freshness, so what the page can fix comes first.
+  - **Answering from a browser session (task 6.8).**
+    - `prompt=select_account` skips the session, so it reaches the consumer's page. Core §3.1.2.1 requires a selection or an error, and the provider's job here is to show it.
+    - The session is looked at through `Touch` before a code is released, and `ErrNotFound` withholds it. That narrows R7's known window for a session that ends in the same moment. At consent, this and the user check run before the stage is spent, so a refusal leaves the handle unspent.
+    - `Touch` runs only when the session produced a code or parked at consent, so refused silent polling cannot keep a session alive. Successful polling extends it, up to the absolute deadline.
+    - A store failure after validation answers `server_error` by redirect, with `state` and `iss`, as P3 says, under `prompt=none` or not. A failure reading the client has no validated redirect URI, so it is an error with no redirect.
   - **The client is judged as it is now (`REPRODUCED`, then fixed).** A code could be sent to a redirect URI the client had since unregistered. `rejudge` now runs at every resume, for a denial too. It refuses when the URI or code grant is gone, when `openid` was parked and is gone, or when no scope is left, and it leaves out other withdrawn scopes and resources. A consent answer naming a withdrawn scope has it dropped, as refresh does (R13).
   - **A future authentication time** more than 60 seconds ahead needs re-authentication (`REPRODUCED`, then fixed). The leeway is a proposed value, matching `nbf`'s.
   - **What the chain must refuse (task 8.5).** `SignIn` cannot express a session owing MFA or recoverable only by a late renewal, so the provider refuses only one past its deadline, or with no deadline, authentication time or family.

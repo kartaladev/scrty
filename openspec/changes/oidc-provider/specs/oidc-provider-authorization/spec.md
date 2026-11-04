@@ -293,7 +293,7 @@ A browser session SHALL expire at the sign-in's absolute deadline, and after the
 - **THEN** the login page is shown
 
 ### Requirement: A browser session skips the login stage
-An authorization request whose browser holds a valid browser session SHALL skip the login stage, unless `prompt` includes `login` or `max_age` is not met. The user SHALL be checked as a refresh checks one, and a missing or disabled user SHALL count as no session. When consent is not needed, the browser SHALL be redirected with 303 and the code.
+An authorization request whose browser holds a valid browser session SHALL skip the login stage, unless `prompt` includes `login` or `select_account`, or `max_age` is not met. The user SHALL be checked as a refresh checks one, and a missing or disabled user SHALL count as no session. When consent is not needed, the browser SHALL be redirected with 303 and the code.
 
 #### Scenario: Second relying party in one browser
 - **WHEN** a user signed in through one client's authorization, and a second client with no consent needed starts an authorization in that browser
