@@ -1023,7 +1023,7 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 #### T8. Grant revocation on security events is a one-method port in each package that needs it
 
 - **What it decides:**
-  - `recovery`, `authenticate/mfa` (`ResetDeps`), the passkey clone path in `httpsec`, and the password-change gate each declare a one-method port for revoking a user's grants with a cause;
+  - `recovery`, `authenticate/mfa` (`ResetDeps`), `authenticate/passkey`'s clone path, and the password-change gate each declare a one-method port for revoking a user's grants with a cause;
   - `*oidcprovider.Provider` satisfies all of them;
   - when the port is supplied, revocation is the default, and an option per package keeps grants (sub-decision 4). The chain supplies the provider to its own endpoints when it is enabled.
 - **Why:** none of those packages imports `oidcprovider`, so no import cycle can form, and each states its own default and override (`library-design`).
@@ -1378,7 +1378,8 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 
 - **Fields and names.** `event.Event` gains `Client` and `Cause`, with nine names under `scrty_`. A client is named only when the registry held it, so presented text never reaches an event.
 - **One event per outcome.** A refresh reuse yields two events, the reuse and the revocation, through a chain as well as outside one. The chain's emitter stays off the lineage manager's context, so the same reuse is not reported a third time as `authn_token_reuse`. A code replay likewise yields two. `GrantRevoked` is reported only by the call that newly revoked the row, with the cause the store keeps. `CodeReplayed` may repeat, as each replay is a real presentation. `GrantStore.Revoke` returns whether this call revoked the grant, following `ConsentStore.Revoke`, so racing callers cannot both report it; the store suite pins this under 32 racers on every adapter. A replay reports before its lineage delete, as a revocation does, so a sink that blocks spends the revocation's budget after the row has already ended the grant.
-- **Only what happened.** `GrantCreated` is reported once the credential is handed out. A failed dependency decided nothing, so `SignInsEnded` failing reports nothing, while grants that did end are reported as they end.
+- **Only what happened.** `GrantCreated` is reported once the credential is handed out. A failed dependency usually decided nothing, so it reports nothing. A failed grant end is the exception: the session did end, and a grant outlived it, so `SignInsEnded` logs it and reports `scrty_grant_end_failed`, as `http-security-chain` requires and OWASP's logging guidance lists session management failures. Grants that did end are reported as they end.
+- **Passkey clones.** The `passkey` package alone revokes nothing, as it holds no provider. `passkey.WithGrantRevoker` supplies one at construction, and `passkey.WithoutCloneGrantRevocation` keeps grants; keep wins if both are given. Injecting the chain's provider into a built manager was rejected: it mutates a manager two chains may share. So "revoke by default" holds on a chain with `EnableOIDCProvider` and `EnablePasskeys`, which refuses a manager that has decided neither. A chain using only `(*Passkeys).MFAMethod()` cannot be seen by that check, as the godoc states. A passkey manager takes no raw session store, because a store reports nothing to the provider.
 - **The default and the override.** No sink means no events and no clock read. `WithSecurityEvents` sets one, and a chain's emitter takes its place on the context. `RevokeUserGrants` puts the consumer's own cause in `Cause`, unchanged.
 
 #### R16. One end-observer option, shared with `session-signals`
@@ -1635,6 +1636,9 @@ Reasoned from scrty's own settled specs and the established design.
 - [OpenTelemetry, trace SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/): the batching processor's `maxQueueSize`, default 2048, drops spans when reached, and `Shutdown` includes a flush.
 
 ### R23 to R25
+
+**Researched (accessed 2026-11-05), for R25's failed grant end:**
+- [OWASP, Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html): session management failures and application errors are among what to always log.
 
 **Researched (accessed 2026-11-05), for R24's browser endpoints:**
 - [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110), §15.5.2, and [RFC 6585](https://www.rfc-editor.org/rfc/rfc6585), §4: a 401 carries a challenge, and 429 is the code for too many requests. The reviewer read §15.5.2 and this session did not re-read either.

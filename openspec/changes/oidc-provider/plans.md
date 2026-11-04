@@ -1074,7 +1074,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Ports, each declared in its own package: `interface{ RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error }`, importing nothing from `oidcprovider`. Options:
   - `recovery`: `WithGrantRevoker(r)` and `WithoutRecoveryGrantRevocation()`;
   - `mfa`: `ResetDeps.Grants` and `WithoutResetGrantRevocation()`;
-  - `httpsec`: `WithPasswordChangeGrantRevocation()` (off by default), `WithoutPasskeyCloneGrantRevocation()`, and the session-management body field `"revoke_application_access": true`.
+  - `httpsec`: `WithPasswordChangeGrantRevocation()` (off by default), and the session-management body field `"revoke_application_access": true`.
 - [ ] Red:
   - `TestRecoverer_RevokesGrants`: revoked, offline grants included; the keep option keeps them; a revoker error is returned; with no revoker, the behaviour is unchanged;
   - `TestResetEnrolment_RevokesGrants`: revoked after the removals; a failure is returned after them; the keep option keeps grants while sessions still end;
@@ -1089,7 +1089,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - cross-site POSTs to resume, `/logout/confirm` and `/consents` are refused, a consent answer with the victim's handle included;
   - each exempt endpoint still runs the throttle.
 - [ ] FAIL; register the exemptions from `EnableOIDCProvider`, each the exact method and path `WithCSRFExemption(method, pattern)` takes, on the chain's CSRF layer; PASS.
-- [ ] Godoc and README: logout, consents, and the four event options with their defaults. Commit.
+- [ ] Godoc and README: logout, consents, and each event's option with its default. Commit.
 
 ---
 
