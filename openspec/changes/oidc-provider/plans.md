@@ -1075,7 +1075,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `Advance` checks the move, then is `UPDATE … WHERE stage = $from`;
   - `Grant.Create` is `INSERT … ON CONFLICT (family) DO UPDATE SET … , revoked = op_grants.revoked OR EXCLUDED.revoked WHERE <the row is a tombstone>`, and no row affected is the refusal the suite requires, keeping any sign-in-ended mark;
   - `Revoke` is `INSERT … ON CONFLICT DO UPDATE SET revoked = true` (the first cause kept);
-  - `EndSignIns` is one `UPDATE … WHERE <selector> AND sign_in_ended_at IS NULL RETURNING *`;
+  - `EndSignIns`, `RevokeByUser` and `RevokeByUserAndClient` are `pgschema.GrantBulkWrite`: a Hold in ascending `family` order, then a Write over the set it took;
+  - `pgxstore` and `gormstore` reuse `internal/pgschema`'s statements, row types and encodings, and wire `storetest.RunGrantOrderRaces` and `ClientStoreSuite`;
   - `AssertionID.Record` is `INSERT … ON CONFLICT DO NOTHING`, with a row count of 1 meaning new.
 - [ ] Run `go test -race -run 'Test<Adapter>Store' ./<a>/...` in `test/` against PostgreSQL 15 and 18: PASS. Commit per adapter.
 - [ ] Each adapter also implements `BrowserSessionStore` and `CodeStore.UnspentBySignIn`, driven by the suites. `DeleteOrphans` carries `holds_lineage`.
@@ -1084,6 +1085,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 **Files:** Create `oidcprovider/expiry.go`; Test `test/expirytasks_test.go`
 - [ ] `func ExpiryTasks(p *Provider) []expiry.Task`, with these task names:
   - `oidc-provider.pending-requests`, `oidc-provider.codes` (the onetime purge plus the code records), `oidc-provider.access-tokens` and `oidc-provider.assertion-ids`;
+  - `oidc-provider.codes`, sweeping a record only one minute past its expiry, so an exchange in flight keeps what an end needs;
   - `oidc-provider.grants`, with `keepRevoked` one minute past the longest code lifetime, as the memory store keeps it, so a code spent as it expires cannot land after its tombstone is swept;
   - `oidc-provider.refresh-tokens` (the lineage `DeleteExpired`);
   - `oidc-provider.orphaned-grants`, with a 10 min cutoff.
