@@ -1028,6 +1028,9 @@ func newSignalStream(user identity.UserID, family id.ID, upstream, source string
 // the stream without blocking. A report with no reason keeps nothing, and still wakes, and holds
 // nothing on the queue: every end the session manager reports has a reason, so only a bus's
 // sender sends one without.
+//
+// A notice is counted before the wake is sent, so a read that starts on the wake sees the notice
+// it was woken for. Counted after, the read could start and answer, leaving the notice unanswered.
 func (s *signalStream) noteEnd(n endNotice) {
 	switch n.reason {
 	case "":
