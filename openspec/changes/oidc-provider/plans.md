@@ -738,7 +738,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `diverged_holders_are_caught`: `r2` rotated to `r3`, the grace passed, and `r2` presented: revoked with cause `reuse`;
   - `after_the_window_re_rotates`: `r1` presented 20 s after its rotation receives a new random successor, the grant live, and the knocked-out `r2` presented past its grace revokes;
   - `a_thief_missing_the_window_is_caught`: a thief refreshing 20 s from the victim each cycle diverges, and reuse fires within two cycles;
-  - `window_set_by_the_consumer`: zero turns the same successor off; a value over `session.MaxRenewalGrace`, or a negative one, is `ErrConfig`;
+  - `window_set_by_the_consumer`: zero turns the same successor off, and `TestProvider_RefreshSuccessorWindow_Limits`: a value over `session.MaxRenewalGrace`, or a negative one, is `ErrConfig`;
   - `walks_to_the_head`: `r1` → `r2` → `r3` inside the window, then `r1` presented, answers `r3`;
   - `second_read_after_the_first_write`: with the user load held open, tab one's write lands between tab two's two reads, and tab two is answered the same `r2`, not a dependency failure or a reuse;
   - `another_key_re_rotates`: `r1` re-presented to a provider with another key inside the grace receives tokens, and the grant is not revoked;

@@ -238,6 +238,10 @@ A refresh token SHALL carry at least 128 bits, from a cryptographically secure s
 - **WHEN** `r1` is presented again 20 seconds after its rotation, inside its grace window
 - **THEN** it receives tokens with a new successor, the grant is not revoked, and the previous successor presented past its own grace revokes the grant
 
+#### Scenario: Re-presented after the window, with its successor rotated
+- **WHEN** `r1` is rotated to `r2`, `r2` is rotated to `r3`, and `r1` is presented 20 seconds after its rotation, inside its grace window
+- **THEN** the response is `invalid_grant`, and the grant is revoked
+
 #### Scenario: Consumer sets the same-successor window
 - **WHEN** a consumer sets the window to zero, and `r1` is presented again inside its grace window
 - **THEN** it receives tokens with a new successor, as no re-presentation answers the same one
