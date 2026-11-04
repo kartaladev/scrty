@@ -120,7 +120,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 6. Authorization and consent (`oidcprovider`, `oidc-provider-authorization`, `oidc-provider-consent`)
 
-- [ ] 6.1 Validate an authorization request, test-first, one table over `oidc-provider-authorization`'s scenarios:
+- [x] 6.1 Validate an authorization request, test-first, one table over `oidc-provider-authorization`'s scenarios:
   - client and redirect URI first, as an unredirectable error;
   - a repeated `client_id` or `redirect_uri` as an unredirectable error too; a redirect URI's own query kept;
   - then `response_type=code` and `response_mode=query` only, a missing `response_type` refused, and a repeated parameter refused; a parameter with no value treated as omitted;
@@ -134,14 +134,14 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - `dpop_jkt`, refused while DPoP is off (R12); `login_hint`, `ui_locales`, `claims_locales` and `acr_values` kept.
 
   Every redirect error carries `state` and `iss`, and no `error_description`. Verify: `go test -run 'TestValidateAuthorizationRequest' -count=1 ./oidcprovider/`.
-- [ ] 6.2 Park a valid request, test-first: an `rh.<id>.<secret>` handle of at least 128 bits, a separate 256-bit flow secret (T5) reused from a valid cookie so that two tabs both resume (R9), a 10-minute lifetime by default with `WithPendingRequestLifetime`, and expiry refused as an unknown handle. Verify: `go test -run 'TestProvider_Park' -count=1 ./oidcprovider/`.
-- [ ] 6.3 Expose `PendingRequest` for the consumer's pages, test-first:
+- [x] 6.2 Park a valid request, test-first: an `rh.<id>.<secret>` handle of at least 128 bits, a separate 256-bit flow secret (T5) reused from a valid cookie so that two tabs both resume (R9), a 10-minute lifetime by default with `WithPendingRequestLifetime`, and expiry refused as an unknown handle. Verify: `go test -run 'TestProvider_Park' -count=1 ./oidcprovider/`.
+- [x] 6.3 Expose `PendingRequest` for the consumer's pages, test-first:
   - it requires the flow secret, or the handle is unknown;
   - it holds the client's identifier and name, the requested and already granted scopes, `prompt`, `max_age`, `login_hint`, `ui_locales`, `claims_locales`, `acr_values` and the stage;
   - it never holds the challenge, the nonce, the state or the redirect URI.
 
   Verify: `go test -run 'TestProvider_PendingRequest' -count=1 ./oidcprovider/`.
-- [ ] 6.4 Decide whether consent is needed, test-first, one table over `oidc-provider-consent`:
+- [x] 6.4 Decide whether consent is needed, test-first, one table over `oidc-provider-consent`:
   - required by default; skipped when remembered consent covers the scopes;
   - always shown for `prompt=consent`;
   - skipped by a first-party client for ordinary scopes;
@@ -271,7 +271,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - a JWKS endpoint serving a different signing-key manager from the provider's key source is refused, while a wrapped provider, which cannot be compared, builds (R6);
   - enabling it twice is refused, and so are path collisions;
   - every session manager on the chain must report to the provider (T4), judged after the chain's own wiring has run, because a manager can gain an observer at construction;
-  - a client requiring DPoP while DPoP is not enabled is refused;
+  - a client requiring DPoP while DPoP is not enabled is refused, and the provider's `WithDPoP` must agree with `EnableDPoP`;
   - CSRF protection required while browser sessions are on, and security headers required unless the consumer states its pages carry `frame-ancestors` (R2, R11);
   - the provider joins the internal set of features that verify bound credentials, so a provider-only chain can enable DPoP.
 

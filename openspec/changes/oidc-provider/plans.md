@@ -499,11 +499,11 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ## Task group 6: authorization and consent (lane A)
 
 **Interfaces produced:**
-- `func (p *Provider) Authorize(ctx context.Context, params url.Values) (AuthorizeResult, error)`
+- `func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error)`, with `AuthorizeInput{Params url.Values; FlowSecret string}`, which 6.8 extends with `BrowserSessionSecret`, and which prints redacted as `AuthorizeResult` does
   - `type AuthorizeResult struct { Location string; FlowSecret string }`. `FlowSecret` is empty unless the request was parked.
   - The error is `ErrInvalidAuthorization` (the client or redirect URI is unredirectable) or a dependency failure. Every redirectable error comes back as a `Location` carrying `error`.
 - `func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string) (*PendingView, error)`
-  - `type PendingView struct { ClientID, ClientName string; Scopes, GrantedScopes []string; Prompt []string; MaxAge *int; LoginHint, UILocales string; Stage Stage }`
+  - `type PendingView struct { ClientID, ClientName string; Scopes, GrantedScopes []string; Prompt []string; MaxAge *int; LoginHint string; UILocales, ClaimsLocales, ACRValues []string; Stage Stage }`. `GrantedScopes` is everything the user has given that client
 - `func (p *Provider) Resume(ctx context.Context, handle, flowSecret string, s SignIn, answer *ConsentAnswer) (string, error)`
   - `type ConsentAnswer struct { Deny bool; Scopes []string }`. It is nil at the login stage.
   - It returns `redirect_to`. The errors are `ErrUnknownHandle`, `ErrReauthenticate`, `ErrConsentMalformed` or a dependency failure.
@@ -541,7 +541,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - with a fixed clock, a resume at 10 min 1 s → `ErrUnknownHandle`;
   - with `WithPendingRequestLifetime(5*time.Minute)`, one at 6 min → `ErrUnknownHandle`.
 - [ ] FAIL; implement; PASS; commit.
-- [ ] Red rows on `TestProvider_Park` (R9): `Authorize` given a flow secret that a live request holds keeps it, and returns it as the `FlowSecret`; two requests parked with it both resume, each with its own `state` and `nonce`. FAIL; implement; PASS; commit.
+- [ ] Red rows on `TestProvider_Park` (R9): `Authorize` given a flow secret of the shape the provider mints keeps it, and returns it as the `FlowSecret`; two requests parked with it both resume, each with its own `state` and `nonce`. FAIL; implement; PASS; commit.
 
 ### Task 6.3: The page view
 - [ ] Red `TestProvider_PendingRequest`:
@@ -802,6 +802,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - two provider paths equal;
   - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`, checked in a `c.wire` step so an observer added during wiring counts;
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
+  - `(*Provider).DPoPEnabled()` differing from whether `EnableDPoP` is on → `ErrConfig` naming `WithDPoP`;
   - `(*Provider).AssertionTokenEndpoint()` not empty and differing from the chain's token URL, after the prefix and path options → `ErrConfig` naming `WithAssertionTokenEndpoint`;
   - `EnableJWKSEndpoint` given a `*signingkey.Keys` for which `(*Provider).SignsWith` answers false → `ErrConfig`, and a consumer's wrapped provider of any other type, which cannot be compared → built, as the godoc says;
   - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (`httpsec/options.go`).

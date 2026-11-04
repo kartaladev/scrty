@@ -1145,6 +1145,15 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 
 #### R9. The flow cookie across tabs, hosts and browsers
 
+- **What the flow cookie keeps (settled while building, 2026-11-04).** A presented value of the shape the provider mints, 32 bytes of unpadded base64url, is kept without asking whether a live request holds it, because `PendingRequestStore` has no lookup by it and an attacker can obtain a live value by starting a request of their own. `__Host-` is what stops planting. Any other value is replaced.
+- **What authorization requests settled while being built (2026-11-04).**
+  - A `nonce` under `PKCEOrNonce` needs `openid`, because with no ID token nothing would ever check it.
+  - `max_age` above int32 is refused, so later arithmetic cannot overflow.
+  - `offline_access` dropped with no scope left is `invalid_request`.
+  - Under `WithDPoP`, a `dpop_jkt` that is not a SHA-256 thumbprint is `invalid_request`, rather than letting the user log in for a code that can never be exchanged.
+  - `id_token_hint` has its own bound of 8 KiB, a proposed value, because a genuine ID token can exceed the general 4 KiB.
+  - `WithDPoP()` tells the provider DPoP is on, since a chain cannot change a built provider, and `EnableOIDCProvider` compares `(*Provider).DPoPEnabled()` with `EnableDPoP` (task 8.1).
+  - Until task 6.8, `prompt=none` always answers `login_required`.
 - **Two tabs.** T5's single cookie was overwritten by each new request, so a second tab killed the first, and a cross-site navigation to `/authorize` could do the same. A browser holding a valid flow cookie now keeps it, and each pending request stores its digest. `__Host-` stops another host planting one. *Rejected:* a cookie per handle. It lets a hostile site stuff cookies through repeated navigations, up to a header-size denial of service. node-oidc-provider scopes its cookie by path, which `__Host-`'s `Path=/` rules out.
 - **Same origin.** Login and consent URLs must be on the issuer's origin, refused at construction otherwise. T5's `__Host-` already made other hosts fail, only at first use.
 - **Another browser.** A magic link opened elsewhere, or recovery on another device, cannot resume, since the flow binding is exactly what refuses it. That is the attack P1 stops. The README states it, and the user starts again from the relying party.

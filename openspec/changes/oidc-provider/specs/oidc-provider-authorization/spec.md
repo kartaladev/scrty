@@ -176,7 +176,7 @@ A browser already holding a valid flow cookie SHALL keep it, so that requests pa
 - **THEN** the first tab's resume succeeds, and so does the second's
 
 ### Requirement: The strings a request carries are bounded
-Each string a request carries SHALL be bounded, and a request past a bound SHALL be answered with `invalid_request` and nothing parked. By default `state`, `nonce`, `login_hint` and each `resource` SHALL be at most 2048 bytes and `scope` at most 4096 bytes, each replaceable by the consumer.
+Each string a request carries SHALL be bounded, and a request past a bound SHALL be answered with `invalid_request` and nothing parked. By default `state`, `nonce`, `login_hint` and each `resource` SHALL be at most 2048 bytes, `scope` at most 4096 bytes and `id_token_hint` at most 8192 bytes, each replaceable by the consumer.
 
 #### Scenario: Oversized state
 - **WHEN** a request for a registered client and redirect URI carries a `state` of 1 MiB
@@ -426,3 +426,18 @@ Requests to the authorization and resume endpoints SHALL pass through the chain'
 #### Scenario: Requested assurance not met
 - **WHEN** a request carries `acr_values=urn:example:high`, and the sign-in does not meet it
 - **THEN** the request still succeeds, and the view shows the requested values so the consumer's page may ask for more
+
+### Requirement: A request carries only text a durable store can hold
+A request parameter holding a NUL byte or invalid UTF-8 SHALL be refused as `invalid_request`, with nothing parked and without echoing the value, once the client and redirect URI are valid. An unknown parameter is ignored and never stored.
+
+#### Scenario: NUL in the state
+- **WHEN** a request from a valid client and redirect URI has a `state` holding a NUL byte
+- **THEN** it is answered with a redirect carrying `invalid_request`, and nothing is parked
+
+### Requirement: Only a client registered for the code grant reaches the flow
+A client registered without the `authorization_code` grant SHALL be answered with a redirect carrying `unauthorized_client`, with nothing parked, once its redirect URI is valid.
+
+#### Scenario: Refresh-only client
+- **WHEN** a client registered only for `refresh_token` sends an authorization request with a valid redirect URI
+- **THEN** it is answered with a redirect carrying `unauthorized_client`, `state` and `iss`
+
