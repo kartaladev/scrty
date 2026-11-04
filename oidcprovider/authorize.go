@@ -639,48 +639,60 @@ const (
 // A key the provider cannot use says nothing about the token, so it is an outage, as
 // signingkey.PublicKey asks, and never a refusal.
 func (p *Provider) judgeHint(ctx context.Context, raw string) (string, hintVerdict, error) {
+	tok, verdict, err := p.judgeHintToken(ctx, raw)
+	if err != nil || verdict != hintAccepted {
+		return "", verdict, err
+	}
+	subject, _ := tok.Subject()
+
+	return subject, hintAccepted, nil
+}
+
+// judgeHintToken is judgeHint, handing an accepted hint's token to a caller reading more of
+// it than its subject.
+func (p *Provider) judgeHintToken(ctx context.Context, raw string) (jwt.Token, hintVerdict, error) {
 	msg, err := jws.ParseString(raw)
 	if err != nil {
-		return "", hintRefused, nil //nolint:nilerr // a token that does not parse is refused, and is no failure
+		return nil, hintRefused, nil //nolint:nilerr // a token that does not parse is refused, and is no failure
 	}
 	header := msg.Signatures()[0].ProtectedHeaders()
 	kid, _ := header.KeyID()
 	if kid == "" {
-		return "", hintRefused, nil
+		return nil, hintRefused, nil
 	}
 
 	published, err := p.keys.VerificationKeys(ctx)
 	if err != nil {
-		return "", hintRefused, dependencyFailure(ctx, err, "oidcprovider: read the verification keys")
+		return nil, hintRefused, dependencyFailure(ctx, err, "oidcprovider: read the verification keys")
 	}
 	i := slices.IndexFunc(published, func(k signingkey.PublicKey) bool { return k.Kid == kid })
 	if i < 0 {
-		return "", hintUnjudged, nil
+		return nil, hintUnjudged, nil
 	}
 
 	typ, _ := header.Type()
 	if typ != token.TypeIDToken {
-		return "", hintRefused, nil
+		return nil, hintRefused, nil
 	}
 
 	signature, known := jwa.LookupSignatureAlgorithm(published[i].Alg)
 	if !known {
-		return "", hintRefused, errUnusableKey
+		return nil, hintRefused, errUnusableKey
 	}
 	key, err := jwk.Import[jwk.Key](published[i].Key)
 	if err != nil {
-		return "", hintRefused, errUnusableKey
+		return nil, hintRefused, errUnusableKey
 	}
 	tok, err := jwt.Parse([]byte(raw), jwt.WithKey(signature, key), jwt.WithValidate(false))
 	if err != nil {
-		return "", hintRefused, nil //nolint:nilerr // a signature that does not hold is refused, and is no failure
+		return nil, hintRefused, nil //nolint:nilerr // a signature that does not hold is refused, and is no failure
 	}
 
 	iss, _ := tok.Issuer()
 	subject, _ := tok.Subject()
 	if iss != p.issuer || subject == "" {
-		return "", hintRefused, nil
+		return nil, hintRefused, nil
 	}
 
-	return subject, hintAccepted, nil
+	return tok, hintAccepted, nil
 }

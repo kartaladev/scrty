@@ -79,7 +79,8 @@ type PendingRequest struct {
 	// FlowDigest is the digest of the browser's flow secret.
 	FlowDigest []byte
 
-	// ClientID and RedirectURI name who asked, and where the answer goes.
+	// ClientID and RedirectURI name who asked, and where the answer goes. For an end-session
+	// request both are empty unless a valid hint named the client and the URI was registered.
 	ClientID, RedirectURI string
 	// Scopes and Resources are the scopes and resource indicators asked for.
 	Scopes, Resources []string
@@ -102,7 +103,10 @@ type PendingRequest struct {
 	ParkedAt, ExpiresAt time.Time
 	// Stage is how far the request has come.
 	Stage Stage
-	// SignIn is the sign-in that answered the login stage, and nil before that.
+	// SignIn is the sign-in that answered the login stage, and nil before that. For an
+	// end-session request it is the sign-in a valid hint names, holding only its user and
+	// family, and nil with no such hint: nothing has answered, and only a provider keeping
+	// no browser sessions acts on it.
 	SignIn *SignIn
 }
 

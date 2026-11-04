@@ -46,16 +46,23 @@ var (
 	// request's prompt or max_age. It maps to 401: the user signs in again.
 	ErrOIDCReauthenticate = fmt.Errorf("httpsec: the sign-in must be repeated: %w", oidcprovider.ErrReauthenticate)
 
-	// ErrOIDCThrottled refuses a request to the authorization or resume endpoint that the
-	// endpoint will not hear: its source is over the limit, the limiter could not answer,
-	// or the source cannot be attributed. It fails closed, as ratelimit.ErrThrottled does,
+	// ErrOIDCThrottled refuses a request to the authorization, resume, end-session or
+	// logout confirmation endpoint that the endpoint will not hear: its source is over the
+	// limit, the limiter could not answer, or the source cannot be attributed. It fails closed, as ratelimit.ErrThrottled does,
 	// and wraps it, so a consumer matching either identity reaches it.
 	//
 	// It maps to 429 (RFC 6585 section 4), where the chain's other throttled flows answer
-	// 401. Those two endpoints are visited by a browser, and a 401 there reads as "sign
+	// 401. Those endpoints are visited by a browser, and a 401 there reads as "sign
 	// the user in", which a page may answer by sending the browser back at once. The
 	// token endpoints keep the 401 their clients are told to expect.
 	ErrOIDCThrottled = fmt.Errorf("httpsec: too many requests: %w", ratelimit.ErrThrottled)
+
+	// ErrOIDCInvalidEndSession refuses an end-session request that must end nothing and
+	// must not be redirected: an id_token_hint failing its checks under a key still
+	// published, a hint whose audience is not client_id, or parameters that cannot be
+	// read. It maps to 400.
+	ErrOIDCInvalidEndSession = fmt.Errorf("httpsec: invalid end-session request: %w",
+		oidcprovider.ErrInvalidEndSession)
 
 	// ErrOIDCForeignConsent refuses a consent listing or revocation for a user other
 	// than the signed-in one. It maps to 404, as another user's passkey does.
@@ -350,6 +357,7 @@ var statusTable = []statusRow{
 	{oidcprovider.ErrInvalidAuthorization, http.StatusBadRequest},
 	{oidcprovider.ErrUnknownHandle, http.StatusBadRequest},
 	{oidcprovider.ErrConsentMalformed, http.StatusBadRequest},
+	{oidcprovider.ErrInvalidEndSession, http.StatusBadRequest},
 	{oidcprovider.ErrReauthenticate, http.StatusUnauthorized},
 	{oidcprovider.ErrForeignConsent, http.StatusNotFound},
 

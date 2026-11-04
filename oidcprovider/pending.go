@@ -98,6 +98,11 @@ func (p *Provider) park(ctx context.Context, req *PendingRequest, flowSecret str
 // parkRequest stores a validated request at the login stage under a new handle, and returns
 // the handle and the browser's flow secret, which leave here and are stored only as digests.
 func (p *Provider) parkRequest(ctx context.Context, req *PendingRequest, flowSecret string) (string, string, error) {
+	return p.parkAt(ctx, req, flowSecret, StageLogin)
+}
+
+// parkAt is parkRequest for a request waiting at stage.
+func (p *Provider) parkAt(ctx context.Context, req *PendingRequest, flowSecret string, stage Stage) (string, string, error) {
 	secret, handleDigest, err := p.mintSecret()
 	if err != nil {
 		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a handle")
@@ -117,9 +122,9 @@ func (p *Provider) parkRequest(ctx context.Context, req *PendingRequest, flowSec
 	req.FlowDigest = flowDigest
 	req.ParkedAt = now
 	req.ExpiresAt = now.Add(p.cfg.pendingLifetime)
-	req.Stage = StageLogin
+	req.Stage = stage
 	if err := p.stores.pendingRequests.Create(ctx, req); err != nil {
-		return "", "", dependencyFailure(ctx, err, "oidcprovider: park the authorization request")
+		return "", "", dependencyFailure(ctx, err, "oidcprovider: park the request")
 	}
 
 	return handlePrefix + "." + recordID.String() + "." + secret, flow, nil

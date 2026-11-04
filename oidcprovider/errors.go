@@ -36,6 +36,12 @@ var (
 
 	// ErrForeignConsent reports a consent record that belongs to another user.
 	ErrForeignConsent = errors.New("oidcprovider: foreign consent")
+
+	// ErrInvalidEndSession reports an end-session request that must end nothing and
+	// must not be redirected: an id_token_hint failing its checks under a key still
+	// published, a hint whose audience is not client_id, or parameters that cannot be
+	// read.
+	ErrInvalidEndSession = errors.New("oidcprovider: invalid end-session request")
 )
 
 // The protocol error codes an Error carries, as the standards spell them.
