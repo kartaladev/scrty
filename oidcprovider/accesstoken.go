@@ -44,6 +44,13 @@ type AccessToken struct {
 	Opaque bool
 	// GrantFamily names the grant the token was issued from.
 	GrantFamily id.ID
+	// ID is an opaque token's record, which nothing but the provider reads, and the nil
+	// identifier for a JWT, whose jti names no record.
+	ID id.ID
+	// Issuer is the provider that issued the token.
+	Issuer string
+	// IssuedAt and ExpiresAt bound the token's own life.
+	IssuedAt, ExpiresAt time.Time
 }
 
 // resolveAudience decides what an access token is for, from a request's resource values
@@ -267,20 +274,29 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, raw string) (*AccessTo
 	if err != nil {
 		return nil, err
 	}
-
-	grant, err := p.stores.grants.Load(ctx, at.GrantFamily)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return nil, refuseToken()
-	case err != nil:
-		return nil, dependencyFailure(ctx, err, "oidcprovider: read the access token's grant")
-	case grant.Revoked || !p.cfg.clock.Now().Before(grant.ExpiresAt):
-		return nil, refuseToken()
-	case grant.ClientID != at.ClientID || grant.User != at.Subject:
-		return nil, refuseToken()
+	if err := p.requireGrantHolds(ctx, at); err != nil {
+		return nil, err
 	}
 
 	return at, nil
+}
+
+// requireGrantHolds refuses a token whose grant is revoked, expired or gone, or names another
+// client or user. Its row is what ends a token, and a store that cannot answer is no verdict.
+func (p *Provider) requireGrantHolds(ctx context.Context, at *AccessToken) error {
+	grant, err := p.stores.grants.Load(ctx, at.GrantFamily)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return refuseToken()
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: read the access token's grant")
+	case grant.Revoked || !p.cfg.clock.Now().Before(grant.ExpiresAt):
+		return refuseToken()
+	case grant.ClientID != at.ClientID || grant.User != at.Subject:
+		return refuseToken()
+	}
+
+	return nil
 }
 
 // readOpaqueAccessToken reads <id>.<secret>. A secret of no shape the provider mints is refused
@@ -317,12 +333,16 @@ func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*Acce
 		Confirmation: maps.Clone(record.Confirmation),
 		Opaque:       true,
 		GrantFamily:  record.GrantFamily,
+		ID:           record.ID,
+		Issuer:       p.issuer,
+		IssuedAt:     record.IssuedAt,
+		ExpiresAt:    record.ExpiresAt,
 	}, nil
 }
 
 // readJWTAccessToken verifies a JWT and reads the claims the provider always puts there, so one
 // lacking any of them was not minted by this provider, whatever signed it: an audience, a jti, an
-// iat, a scope, a grant. A confirmation holding a member the library cannot check, or naming both
+// iat, an exp, a scope, a grant. A confirmation holding a member the library cannot check, or naming both
 // a DPoP key and a certificate when the provider binds a token to one, is refused rather than
 // read as the one it kept or as no binding.
 func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessToken, error) {
@@ -343,8 +363,9 @@ func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessT
 		return nil, refuseToken()
 	}
 	audience := claims.Audience()
-	_, hasIssuedAt := claims.Claim("iat")
-	if len(audience) == 0 || claims.ID() == "" || !hasIssuedAt {
+	issuedAt, hasIssuedAt := timeClaim(claims, "iat")
+	expiresAt, hasExpiry := timeClaim(claims, "exp")
+	if len(audience) == 0 || claims.ID() == "" || !hasIssuedAt || !hasExpiry {
 		return nil, refuseToken()
 	}
 	family, err := id.Parse(gid)
@@ -359,7 +380,21 @@ func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessT
 		Audience:     audience,
 		Confirmation: confirmationMembers(confirmation),
 		GrantFamily:  family,
+		Issuer:       p.issuer,
+		IssuedAt:     issuedAt,
+		ExpiresAt:    expiresAt,
 	}, nil
+}
+
+// timeClaim reads a registered time claim, which a verified token carries as a time.
+func timeClaim(claims *token.Claims, name string) (time.Time, bool) {
+	value, ok := claims.Claim(name)
+	if !ok {
+		return time.Time{}, false
+	}
+	at, ok := value.(time.Time)
+
+	return at, ok
 }
 
 // stringClaim reads a further claim that must be a string.

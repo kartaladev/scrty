@@ -156,6 +156,45 @@
 // and sid, and has no nonce. A bound grant needs its key, and a confidential client's refresh
 // token is bound by its client authentication rather than to a key.
 //
+// # Revocation and introspection
+//
+// [Provider.Revoke] ends a token for its client (RFC 7009): a refresh token ends its whole grant, an
+// opaque access token ends itself, and a public client may name its client_id alone. A JWT, an unknown
+// or an expired token answers success with nothing revoked, and so does a real family beside a secret
+// it never issued, because a family is no credential. A token whose secret proves it another client's
+// is invalid_grant. The grant's row is marked before its family is deleted, so a failure answers an
+// error and presenting the token again finishes the work.
+//
+// [Provider.Introspect] says what a token is, to a confidential client (RFC 7662): one issued to it,
+// or an access token whose audience includes its [Client].ResourceIdentifier. Anything else, and
+// anything unknown, expired or revoked, a JWT of a revoked grant included, answers {"active": false}.
+//
+// Neither is a refresh: presenting a superseded refresh token to either is no reuse. Introspection
+// answers it inactive and writes nothing, and revocation ends its grant as its client asked.
+//
+// # UserInfo
+//
+// [Provider.UserInfo] answers for an access token read by [Provider.VerifyAccessToken], holding openid
+// and for the issuer. A token for a named resource alone has no issuer, and is refused. The answer
+// holds sub, and by default for the scope profile the user's name and preferred_username.
+// [identity.Details] holds no email, so a consumer with email, phone, address or claims of its own
+// supplies a [ClaimSource] through [WithClaimSource]. Its values are returned unchanged, and a claim
+// the user does not have is left out. A missing or disabled user is invalid_token, and a store or
+// source that cannot answer is a dependency failure.
+//
+// # Ending grants
+//
+// [Provider.EndSignIn] ends the grants of the sign-ins a [SignInSelector] names, deletes their browser
+// sessions, and returns the clients to notify. A grant holding offline_access survives, unless its
+// client is registered with [Client].EndGrantsWithSignIn. A provider handed to session.WithEndObserver
+// does the same for each end its session manager reports, choosing its selector from what the report
+// names, so a cause added later needs nothing here. A failure there is logged, and never undoes the
+// end. A sign-in that merely expires is not reported, and ends nothing.
+//
+// [Provider.RevokeUserGrants] revokes every grant of a user with a cause, offline_access included, for
+// what a security event leaves in doubt. [Provider.RevokeConsent] forgets a user's consent for a client
+// and revokes that user's and client's grants, and [Provider.Consents] lists what a user has allowed.
+//
 // # Errors
 //
 // A refusal the protocol names is an [*Error], whose text is its code and holds no

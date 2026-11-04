@@ -1,6 +1,7 @@
 package oidcprovider
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -96,9 +97,14 @@ type config struct {
 	successorWindow time.Duration
 	outbound        *outbound.Client
 	outboundSet     bool
-	clock           clock.Clock
-	logger          *slog.Logger
-	random          io.Reader
+	claimSource     ClaimSource
+	claimSourceSet  bool
+	// logoutNotices is told the clients of each ended sign-in. It is where back-channel delivery
+	// takes over, and until then nothing but a test sets it.
+	logoutNotices func(context.Context, []ClientToNotify)
+	clock         clock.Clock
+	logger        *slog.Logger
+	random        io.Reader
 	// ids names the records the provider creates. validate builds it, over the clock and
 	// randomness the options gave.
 	ids id.Generator
@@ -200,6 +206,9 @@ func (c *config) validate() error {
 	}
 	if c.outboundSet && c.outbound == nil {
 		return fmt.Errorf("%w: WithOutbound: must not be nil", ErrConfig)
+	}
+	if c.claimSourceSet && nilcheck.IsNil(c.claimSource) {
+		return fmt.Errorf("%w: WithClaimSource: must not be nil", ErrConfig)
 	}
 	if nilcheck.IsNil(c.clock) {
 		return fmt.Errorf("%w: WithClock: must not be nil", ErrConfig)
@@ -329,6 +338,14 @@ func WithClientKeysRefetchCooldown(d time.Duration) Option {
 // staying on the origin, and the time and size bounds it names. It must not be nil.
 func WithOutbound(o *outbound.Client) Option {
 	return func(c *config) { c.outbound, c.outboundSet = o, true }
+}
+
+// WithClaimSource replaces where UserInfo reads a user's claims. The default reads the user just
+// loaded from Deps.Users, releasing name and preferred_username for the scope profile, and has no
+// email to release for the scope email, since identity.Details holds none: a consumer with email,
+// phone, address or claims of its own supplies them here. See ClaimSource. It must not be nil.
+func WithClaimSource(s ClaimSource) Option {
+	return func(c *config) { c.claimSource, c.claimSourceSet = s, true }
 }
 
 // WithClock replaces the time source. The default is clock.System(), and it must

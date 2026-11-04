@@ -186,6 +186,65 @@ type hookedGrants struct {
 	beforeRevoke func()
 	// strictContext makes a load refuse an ended context too.
 	strictContext atomic.Bool
+	// revokes counts the revocations that reached the store.
+	revokes atomic.Int32
+	// failBulk fails every write selecting grants by sign-in or by user.
+	failBulk atomic.Bool
+	// sawBulk is told the context of each such write, and is set before the request starts.
+	sawBulk func(context.Context)
+	// mu guards selectors.
+	mu sync.Mutex
+	// selectors holds what each end of sign-ins selected, in order.
+	selectors []oidcprovider.SignInSelector
+}
+
+// bulk runs what every write selecting grants in bulk shares.
+func (h *hookedGrants) bulk(ctx context.Context) error {
+	if h.sawBulk != nil {
+		h.sawBulk(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h.failBulk.Load() {
+		return errOutage
+	}
+
+	return nil
+}
+
+// EndSignIns implements oidcprovider.GrantStore.
+func (h *hookedGrants) EndSignIns(ctx context.Context, sel oidcprovider.SignInSelector, at time.Time) ([]oidcprovider.Grant, error) {
+	h.mu.Lock()
+	h.selectors = append(h.selectors, sel)
+	h.mu.Unlock()
+	if err := h.bulk(ctx); err != nil {
+		return nil, err
+	}
+
+	return h.GrantStore.EndSignIns(ctx, sel, at)
+}
+
+// RevokeByUser implements oidcprovider.GrantStore.
+func (h *hookedGrants) RevokeByUser(
+	ctx context.Context, user identity.UserID, cause oidcprovider.RevocationCause, at time.Time,
+) ([]oidcprovider.Grant, error) {
+	if err := h.bulk(ctx); err != nil {
+		return nil, err
+	}
+
+	return h.GrantStore.RevokeByUser(ctx, user, cause, at)
+}
+
+// RevokeByUserAndClient implements oidcprovider.GrantStore.
+func (h *hookedGrants) RevokeByUserAndClient(
+	ctx context.Context, user identity.UserID, clientID string, cause oidcprovider.RevocationCause, at time.Time,
+) ([]oidcprovider.Grant, error) {
+	if err := h.bulk(ctx); err != nil {
+		return nil, err
+	}
+
+	return h.GrantStore.RevokeByUserAndClient(ctx, user, clientID, cause, at)
 }
 
 // Load implements oidcprovider.GrantStore.
@@ -212,6 +271,7 @@ func (h *hookedGrants) Load(ctx context.Context, family id.ID) (*oidcprovider.Gr
 
 // Revoke implements oidcprovider.GrantStore.
 func (h *hookedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+	h.revokes.Add(1)
 	if h.beforeRevoke != nil {
 		h.beforeRevoke()
 	}
@@ -229,7 +289,11 @@ func (h *hookedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovi
 type hookedAccessTokens struct {
 	oidcprovider.AccessTokenStore
 
-	failCreate, failRevoke atomic.Bool
+	failCreate, failRevoke, failLoad atomic.Bool
+	// goneAtRevoke answers a revocation as a token swept since its read.
+	goneAtRevoke atomic.Bool
+	// beforeRevoke runs at each revocation, and is set before the request starts.
+	beforeRevoke func()
 	// creates counts what reached the store.
 	creates atomic.Int32
 	// created is the record last stored.
@@ -251,13 +315,28 @@ func (h *hookedAccessTokens) Create(ctx context.Context, record *oidcprovider.Ac
 	return nil
 }
 
+// Load implements oidcprovider.AccessTokenStore.
+func (h *hookedAccessTokens) Load(ctx context.Context, tokenID id.ID) (*oidcprovider.AccessTokenRecord, error) {
+	if h.failLoad.Load() {
+		return nil, errOutage
+	}
+
+	return h.AccessTokenStore.Load(ctx, tokenID)
+}
+
 // Revoke implements oidcprovider.AccessTokenStore.
 func (h *hookedAccessTokens) Revoke(ctx context.Context, tokenID id.ID) error {
+	if h.beforeRevoke != nil {
+		h.beforeRevoke()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if h.failRevoke.Load() {
 		return errOutage
+	}
+	if h.goneAtRevoke.Load() {
+		return oidcprovider.ErrNotFound
 	}
 
 	return h.AccessTokenStore.Revoke(ctx, tokenID)

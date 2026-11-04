@@ -88,7 +88,7 @@ type Provider struct {
 // consents, grants, refresh-token lineages, opaque access tokens and browser sessions
 // kept in memory, client key sets fetched through a default outbound.Client, kept 15 minutes and
 // refetched for an unknown kid at most every 30 seconds, the system clock, slog.Default
-// and crypto/rand. A refresh token's successors are derived under a key drawn here from that
+// and crypto/rand. UserInfo reads its claims from Deps.Users. A refresh token's successors are derived under a key drawn here from that
 // source, and New fails with an error matching ErrConfig if the source cannot supply it. ID and
 // access tokens last 5 minutes, and an access token is a JWT, each settable per client. Each option
 // names its default and its bound.

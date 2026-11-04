@@ -77,6 +77,8 @@ type exchangeUsers struct {
 	onLoad func()
 	// username is what every load names the user by, as a chain reading usernames does.
 	username string
+	// name is what every load gives as the user's display name.
+	name string
 }
 
 func (u *exchangeUsers) load(user identity.UserID) (*identity.Details, error) {
@@ -104,6 +106,7 @@ func (u *exchangeUsers) load(user identity.UserID) (*identity.Details, error) {
 	}
 	details.Active = !u.disabled[user]
 	details.Username = u.username
+	details.Name = u.name
 
 	return details, nil
 }

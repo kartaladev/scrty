@@ -46,3 +46,8 @@ func (m *MemoryAssertionIDStore) HeldForTest(clientID, jti string) bool {
 
 	return ok
 }
+
+// WithLogoutNoticesForTest watches what leaves for back-channel delivery.
+func WithLogoutNoticesForTest(notices func(context.Context, []ClientToNotify)) Option {
+	return func(c *config) { c.logoutNotices = notices }
+}
