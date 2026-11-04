@@ -246,3 +246,14 @@ Worktrees are under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrt
 Also: `TestProvider_NoSecretsInLogs` does not run an assertion, malformed-credential, UserInfo, `VerifyAccessToken` or introspection refusal. `Event.Cause` says "never free text" while `RevokeUserGrants` passes a consumer's string. `design.md:50` lacks `Client` and `Cause`.
 
 **Rest of 8.1:** the agent's rows pass; only finding 2 keeps `httpsec` red. Still uncommitted in `lane-h1`, and not verified by the main session.
+
+### 7.9 fold, reported finished
+
+`lane-g9fix`: F1 to F8 folded by the agent's report, uncommitted, not verified by the main session, and not re-reviewed (required: it changes a concurrency mechanism). `httpsec` was not run. Check it against the 7.10 findings: 7.10's 1, 6, 10 and 11 should be run from their proofs, not assumed closed.
+
+Record in `design.md`:
+- Reports run on two `reportLane`s, on demand: `records` (1 goroutine, in order, log lines) and `events` (up to 64, registry read and sink), each with 1024 waiting. Past that the newest loses, counted as `lost_events` or `lost_records`. A full queue at `Shutdown` loses nothing. No option: the bound protects the provider from the sink. A tight burst can outrun a healthy handler, and the `records` cap is the knob.
+- New `outbound` exports: `WithoutRedirects` and `PostFormStatus` (reads no body, so an oversized 200 is a success).
+- `EndSignIn`'s order is grants, browser delete, hand-on, then `reportEnded`, so a hung synchronous sink holds the response but not the deletes.
+- A consumer delivery cut off by `Shutdown` also reports `shutdown`. Status, panic and goexit keep their real reason, at the bound as well.
+- An event's `At` is stamped on reaching the sink. `WithOutbound`'s own time bound still applies. `Shutdown` is not callable from a log handler or sink. A sink panic with a panicking log handler still escapes `EndSignIn`, after the work is done.
