@@ -120,6 +120,7 @@ func TestSessions_ReportsEndsTo(t *testing.T) {
 	type testCase struct {
 		name   string
 		wired  []session.EndObserver
+		added  []session.EndObserver
 		asked  session.EndObserver
 		assert func(t *testing.T, reports bool)
 	}
@@ -134,6 +135,10 @@ func TestSessions_ReportsEndsTo(t *testing.T) {
 	}
 
 	cases := []testCase{
+		{name: "one added after construction is reported to", wired: []session.EndObserver{o1}, added: []session.EndObserver{o2}, asked: o2, assert: yes},
+		{name: "one added to a manager built with none is reported to", added: []session.EndObserver{o1}, asked: o1, assert: yes},
+		{name: "one wired at construction still is, after another is added", wired: []session.EndObserver{o1}, added: []session.EndObserver{o2}, asked: o1, assert: yes},
+		{name: "a nil addition adds no one", added: []session.EndObserver{nil}, asked: nil, assert: no},
 		{name: "the first of two is reported to", wired: []session.EndObserver{o1, o2}, asked: o1, assert: yes},
 		{name: "the second of two is reported to", wired: []session.EndObserver{o1, o2}, asked: o2, assert: yes},
 		{
@@ -199,6 +204,9 @@ func TestSessions_ReportsEndsTo(t *testing.T) {
 				opts = append(opts, session.WithEndObserver(o))
 			}
 			m := managerFor(t, opts...)
+			for _, o := range tc.added {
+				_ = m.AddEndObserver(o)
+			}
 
 			assert.NotPanics(t, func() { tc.assert(t, m.ReportsEndsTo(tc.asked)) })
 		})

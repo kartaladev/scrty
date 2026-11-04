@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -107,10 +109,12 @@ type EndObserverFunc func(ctx context.Context, r EndReport)
 // SignInsEnded calls f.
 func (f EndObserverFunc) SignInsEnded(ctx context.Context, r EndReport) { f(ctx, r) }
 
-// ReportsEndsTo reports whether the manager was built with observer o (see
-// WithEndObserver), comparing by identity. A component that relies on being
-// told about ends uses it to refuse, when it is wired, a manager that would
-// not tell it.
+// ReportsEndsTo reports whether the manager has observer o, given to
+// WithEndObserver or added with AddEndObserver, comparing by identity. A
+// component that relies on being told about ends uses it to refuse, when it is
+// wired, a manager that would not tell it. The answer can change from no to yes
+// once AddEndObserver has run, so a check means something only after the wiring
+// has finished.
 //
 // A value that cannot be compared, such as an EndObserverFunc or a struct
 // holding a func, is not the one asked about, even when it is the very value
@@ -129,9 +133,59 @@ func (m *Sessions) ReportsEndsTo(o EndObserver) bool {
 	return slices.Contains(m.observing(), o)
 }
 
-// observing is the observers to tell, in order. A caller ranges over what it
-// returned and never writes to it.
-func (m *Sessions) observing() []EndObserver { return m.endObservers }
+// AddEndObserver adds o to the observers of a manager already built, to be told
+// about each explicit end from now on, after those given to WithEndObserver and
+// after any added before it. WithEndObserver says what is reported and how an
+// observer is called.
+//
+// The default is no observer. It is for wiring at construction: a component
+// built from a manager, such as a chain that needs to hear of ends, adds
+// itself once, before traffic. It is safe to call while ends are being
+// reported, and from several goroutines at once: an end that began before the
+// call tells the observers it began with, and none of two simultaneous
+// additions is lost. There is no way to remove an observer.
+//
+// A nil observer, typed nil included, is ErrConfig, and the manager is left as
+// it was.
+func (m *Sessions) AddEndObserver(o EndObserver) error {
+	if nilcheck.IsNil(o) {
+		return fmt.Errorf("%w: end observer must not be nil", ErrConfig)
+	}
+
+	m.appendEndObserver(o)
+
+	return nil
+}
+
+// appendEndObserver publishes a copy of the list with o last. The compare and
+// swap retries when another writer published first, so no addition is lost,
+// and readers never see a list being changed.
+func (m *Sessions) appendEndObserver(o EndObserver) {
+	for {
+		old := m.endObservers.Load()
+		var next []EndObserver
+		if old != nil {
+			next = make([]EndObserver, len(*old), len(*old)+1)
+			copy(next, *old)
+		}
+		next = append(next, o)
+
+		if m.endObservers.CompareAndSwap(old, &next) {
+			return
+		}
+	}
+}
+
+// observing is the observers to tell, in order. It is the only read of the
+// list. A caller ranges over what it returned and never writes to it: the list
+// is replaced on every addition and never changed in place.
+func (m *Sessions) observing() []EndObserver {
+	if list := m.endObservers.Load(); list != nil {
+		return *list
+	}
+
+	return nil
+}
 
 // reportEnd tells the observers about r, with its time read from the manager's
 // clock now, once the store write it describes has returned no error. Their

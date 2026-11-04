@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -73,9 +74,13 @@ type Sessions struct {
 	reuseObserver         ReuseObserver
 	reuseObserverSupplied bool
 
-	// endObservers are told about each explicit end, in order. Only
-	// WithEndObserver and observing touch the field.
-	endObservers []EndObserver
+	// endObservers are told about each explicit end, in order. The list is
+	// replaced whole on every addition and never changed in place: readers
+	// load it without a lock (observing is the only read), and writers
+	// (appendEndObserver, from WithEndObserver and AddEndObserver) swap in a
+	// copy with compare-and-swap. A Sessions holds it by pointer for that
+	// reason and must not be copied.
+	endObservers atomic.Pointer[[]EndObserver]
 
 	// events is the sink WithSecurityEvents gave the manager, for the reuse
 	// it detects outside a chain.
