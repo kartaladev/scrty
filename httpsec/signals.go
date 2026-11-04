@@ -218,6 +218,9 @@ type SessionSignals struct {
 	// the client's bearer token or certificate, a policy that would now refuse it, and
 	// a store outage, for up to the session's absolute lifetime.
 	//
+	// A stream follows its family, so it goes on through a renewal it took no part in, a
+	// thief's stream opened before the victim renewed included. This is what bounds that.
+	//
 	// Default: 1 hour. It must be at least twice Heartbeat. NoMaxAge turns it off, and
 	// gives up all of that. Any other negative value is refused.
 	MaxAge time.Duration
@@ -237,7 +240,7 @@ type SessionSignals struct {
 	// can state.
 	BusyDelay time.Duration
 
-	// Users reads the stream's user at each heartbeat, so a stream ends when its user
+	// Users reads the stream's user at its first read and at each heartbeat, so a stream ends when its user
 	// stops being active. Disabling a user revokes no session, so the session read
 	// would not notice.
 	//
@@ -262,9 +265,13 @@ type SessionSignals struct {
 	// data.
 	ReloadContext func(context.Context) context.Context
 
-	// ReloadTimeout bounds one reload, the session read and the user read sharing it,
-	// so a store that hangs cannot stop the heartbeat. A store that ignores its context
-	// stays unbounded.
+	// ReloadTimeout bounds one reload, the session read and the user read sharing it. A
+	// reload runs beside the stream, so that a store that hangs stops neither the heartbeat,
+	// MaxAge, CloseSessionSignals nor a client leaving, and past this timeout it counts as a
+	// failure. A store that ignores its context costs one goroutine per stream until it
+	// returns, since a goroutine cannot be stopped from outside, and no further reload of that
+	// stream starts until then. The first read runs on the request, which such a store holds
+	// until it returns.
 	//
 	// Default: half of Heartbeat, kept within 2 to 10 seconds. It must not be negative,
 	// and must be shorter than Heartbeat.
@@ -376,8 +383,10 @@ type SignalEnvelope struct {
 // with 403. A sign-in owing a second factor, an enrolment, a recovery or a password
 // change is refused by its gate, or with the ChallengeError it owes on a chain without
 // that gate. A consumer's CookieAuthenticator opens one, once it has called
-// Exchange.PublishSession. A store failure while the sign-in is read is a dependency
-// failure.
+// Exchange.PublishSession. The first read reads the sign-in and its user, on the
+// ReloadContext and under one ReloadTimeout: a sign-in the store does not hold, or a user
+// who is not found or not active, is ErrAuthenticationRequired, and a failure of either
+// store is a dependency failure.
 //
 // A writer that cannot stream answers 501 (ErrStreamingUnsupported). Behind a consumer's
 // middleware that wraps the http.ResponseWriter, that takes an Unwrap method on the
@@ -440,6 +449,9 @@ type sessionSignals struct {
 
 	registry *signalRegistry
 	hub      *signalHub
+
+	// reloads is what this replica's streams counted of their reloads.
+	reloads streamReloadCounts
 
 	// cors is the chain's CORS layer, and nil without one. log and sampler are the
 	// chain's. All three are settled last, by wire.

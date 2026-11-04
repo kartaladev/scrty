@@ -1286,13 +1286,66 @@ refused when the chain is built.
 | `BusQueue` | 1024, for a consumer's `Bus` only |
 | `BusTimeout` | 5 seconds, for a consumer's `Bus` only |
 
+### What a stream does
+
+A stream's first bytes are a `retry` and a `session` event stating the sign-in's two deadlines and
+when it last authenticated. It then waits. Signals raised for it, such as `credential_changed` and
+your own `app.*`, go out as they arrive. What it says about the sign-in itself it says only when the
+store has just told it, and every read below acts on what the store then answers:
+
+| At | It reads | And sends |
+|---|---|---|
+| each heartbeat | the sign-in and the user | a `:` comment at once, and what the read finds |
+| a `session_ended` on the bus | the same, at once, then at most once a second | only what the read finds |
+| a warning, a lapse or a deadline falling due | the same, first | only what the read finds |
+
+What a read finds is `session` if a deadline or `authenticated_at` moved, `session_expiring` or
+`assurance_lapsed` if one has fallen due, `session_ended` if the sign-in is gone, and nothing if it
+holds and has not moved.
+
+The stream ends in one of three ways. If the sign-in is gone or its user is not active, it sends
+`session_ended` with the reason, and a reconnection with that credential gets 401. At `MaxAge` it
+closes with no event, and the client reconnects and is judged again. When the client leaves, nothing
+is sent.
+
+A reason on the bus names the end only if the store says gone within two heartbeats of its arrival,
+and a report of `reuse` is not relabelled by a later one. With no such report the reason is `expired`
+if a deadline the stream holds has passed, and `ended` otherwise.
+
+While the store cannot answer, a stream stays open and goes on sending comments, says nothing else,
+and ends only at the sign-in's absolute deadline, with `expired`: the idle deadline may have moved in
+a store it cannot read. A store failing or timing out is logged with sampling.
+
+A read runs beside the stream, at most one at a time, and what asks for one while it runs is served
+when it returns. So a store that hangs stops neither the heartbeat, signals, `MaxAge`,
+`CloseSessionSignals` nor a client leaving, and past `ReloadTimeout` the read counts as a failure at
+once. A store that ignores its context costs one goroutine per stream until it returns, and that
+stream reads nothing further until then. Its place is free as soon as the stream closes, which does
+not wait for the read. The first read runs on the opening request, so such a store holds that request
+until it returns, holding no place.
+
+A stream's reads never present its sign-in, so a renewal, a rotation or a step-up elsewhere leaves it
+open, and it follows the sign-in to its new deadlines. It follows a renewal it took no part in too,
+including a thief's stream opened before the victim renewed, and `MaxAge` is what bounds that.
+`NoMaxAge` gives that bound up, along with the re-judging of a token or a policy.
+
+A panic in a stream, or in a loader or store it calls, is logged through the chain's logger with its
+type, phase, family and frames, and never its value. The stream then closes and frees its place.
+
 ### Running it
 
 Each heartbeat reads the sign-in and the user, so 10 000 streams at 15 seconds is about 670 session
-reads and 670 user reads per second on one replica.
+reads and 670 user reads per second on one replica. Jitter of ±10% spreads them out. `Heartbeat` can
+go to 60 seconds, which is about 170 of each. A shared bus lets you lengthen it without delaying
+`session_ended`, because a signal wakes the stream at once. Without one, a sign-in ended on another
+replica takes up to a heartbeat to arrive.
 
-Keep `Heartbeat` below the shortest idle timeout on the path. The Envoy and corporate-proxy lines
-below rest on secondary sources and were not checked against those products' own documentation.
+Keep 1.1 × `Heartbeat` below the shortest idle timeout on the path. The longest gap between two bytes
+is 1.1 × `Heartbeat` plus the time of a write, because a comment goes out when its beat falls due,
+even while a read hangs: about 16.5 seconds at the default, and about 66 seconds at the 60-second
+maximum, which is past a proxy's 60-second default.
+The Envoy and corporate-proxy lines below rest on secondary sources and were not checked against
+those products' own documentation.
 
 - **nginx:** set `proxy_buffering off` on this path, and `proxy_read_timeout` above `Heartbeat` (its
   default is 60 s). The stream sends `X-Accel-Buffering: no`, which works only where the proxy

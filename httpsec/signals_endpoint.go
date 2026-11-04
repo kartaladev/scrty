@@ -2,12 +2,10 @@ package httpsec
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -73,10 +71,14 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 	ex.Writer.SetHeader("Content-Type", signalsContentType)
 	ex.Writer.SetHeader("X-Accel-Buffering", "no")
 
+	e.hub.start()
+
 	err = ex.Writer.Stream(cancelOnly{ex.Context()}, func(ctx context.Context, w EventWriter) error {
 		defer release()
 
-		return e.runStream(ctx, w, start)
+		e.runStream(ctx, w, start)
+
+		return nil
 	})
 	if err != nil {
 		release()
@@ -94,6 +96,10 @@ type cancelOnly struct{ context.Context }
 
 // Value holds nothing.
 func (cancelOnly) Value(any) any { return nil }
+
+// AfterFunc is what context asks a parent for before it starts a goroutine to watch one whose
+// cancellation it cannot see, as Value hides this one's. So a stream's WithCancel costs no goroutine.
+func (c cancelOnly) AfterFunc(f func()) func() bool { return context.AfterFunc(c.Context, f) }
 
 // streamSession is the sign-in a stream may open on. A session reference, a signed bearer
 // bound to a stored session and a consumer's cookie session all reach here the same way,
@@ -158,27 +164,6 @@ func (e *sessionSignals) reloadContext(ctx context.Context) (context.Context, er
 	return context.WithoutCancel(reload), nil
 }
 
-// readSignIn is the first read of the sign-in. It runs as a reload does, on the reload
-// context and within ReloadTimeout, so a tenant-scoped store with no hook fails here,
-// where it can be seen, and not as an open stream that never hears of an end.
-//
-// A sign-in the store does not hold is 401. Any other failure is returned as it is,
-// matching neither that nor anything a client is told by: a dependency failure.
-//
-// It takes the user and the family, not the session, so that a body can read through it
-// holding neither the session nor its raw identifier.
-func (e *sessionSignals) readSignIn(reload context.Context, user identity.UserID, family id.ID) (session.SignInState, error) {
-	ctx, cancel := context.WithTimeout(reload, e.cfg.ReloadTimeout)
-	defer cancel()
-
-	state, err := e.sessions.SignInState(ctx, user, family)
-	if errors.Is(err, session.ErrNotFound) {
-		return session.SignInState{}, ErrAuthenticationRequired
-	}
-
-	return state, err
-}
-
 // streamStart is what a stream's body starts from. Everything in it was copied from the
 // exchange before Stream was called, because a body must not read the exchange (see
 // ResponseWriter.Stream).
@@ -219,13 +204,30 @@ func newStreamStart(
 	return streamStart{
 		stream: newSignalStream(
 			identity.UserID(strings.Clone(string(s.UserID))), s.FamilyID,
-			upstream, source, wanted,
+			upstream, source, wanted.owned(),
 		),
 		reload: reload,
 		state:  state,
 		source: source,
 		origin: strings.Clone(ex.Request.Header("Origin")),
 	}
+}
+
+// owned is f with names of its own, since a parameter's values came from the request, and a
+// consumer's adapter may answer with views into its buffers.
+func (f signalFilter) owned() signalFilter {
+	if f.names == nil {
+		return f
+	}
+
+	names := make(map[string]bool, len(f.names))
+	for name := range f.names {
+		names[strings.Clone(name)] = true
+	}
+
+	f.names = names
+
+	return f
 }
 
 // streamByCookie reports whether a stream's credential is one a browser sends on its own,
@@ -238,17 +240,4 @@ func streamByCookie(ex *Exchange) bool {
 	_, token, _ := strings.Cut(ex.Request.Header("Authorization"), " ")
 
 	return ex.bearerCredential == "" || strings.TrimSpace(token) != ex.bearerCredential
-}
-
-// runStream is one stream's life. Dispatch C3 replaces it with the stream loop. For now
-// it sends the head and waits for the stream's context to end. It writes no retry and no
-// event.
-func (e *sessionSignals) runStream(ctx context.Context, w EventWriter, _ streamStart) error {
-	if err := w.Flush(); err != nil {
-		return err
-	}
-
-	<-ctx.Done()
-
-	return nil
 }
