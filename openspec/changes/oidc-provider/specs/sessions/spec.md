@@ -54,7 +54,7 @@ A session that reaches its idle or absolute deadline, and a session removed by t
 - **THEN** the error is returned, and no end observer is called
 
 ### Requirement: A caller can ask whether a manager reports to an observer
-The manager SHALL report whether it was built with a given end observer, comparing observers by identity. An observer whose value cannot be compared, such as a function, SHALL count as not the one asked about, and SHALL NOT panic. This lets a component that relies on being told refuse a manager that does not tell it.
+The manager SHALL answer whether it reports to a given end observer, comparing observers by identity. An observer whose value cannot be compared, such as a function, SHALL count as not the one asked about, and SHALL NOT panic. This lets a component that relies on being told refuse a manager that does not tell it.
 
 #### Scenario: Observer wired
 - **WHEN** a manager was built with observer `o`, and a caller asks whether it reports to `o`
