@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -547,11 +546,9 @@ func signalsRenewalLeavesStreamOpen(t *testing.T, listen func(ChainSpec) StreamS
 
 	// The first heartbeat read may have been sent before the renewal, so the stream is held
 	// to the second: its reload began after the renewal was stored. Neither may end it. A
-	// beat's comment goes out before its reload is answered, so the third is what shows the
-	// second's reload has been dealt with: a logout straight after the second would race
-	// that reload, which could then find the family gone before the logout was reported and
-	// name the end "ended" (seen in 3 of 48 runs at 16 copies at once).
-	c.heartbeats(3)
+	// beat's comment goes out before its reload is answered, so the logout below can race that
+	// reload, and the row's "logout" shows a read finding the family gone waits for the report.
+	c.heartbeats(2)
 
 	_, err = spec.Effects.Sessions.SignInState(t.Context(), s.UserID, s.FamilyID)
 	require.NoError(t, err, "a stream's reload harmed the sign-in it follows")
@@ -1133,13 +1130,9 @@ var (
 func captureDefaultLogs() {
 	installDefaultLogs.Do(func() {
 		// The original default handler writes through the log package, which slog.SetDefault
-		// has pointed back at the handler installed: writing on to it would loop. While the log
-		// package still writes to standard error, nothing has replaced that original, so a
-		// handler of standard error stands for it.
-		var out slog.Handler = slog.NewTextHandler(os.Stderr, nil)
-		if log.Default().Writer() != os.Stderr {
-			out = slog.Default().Handler()
-		}
+		// points back at the handler installed: writing on to it would loop. So the tee writes
+		// where the log package wrote until now, read before that call.
+		out := slog.NewTextHandler(log.Default().Writer(), nil)
 
 		slog.SetDefault(slog.New(&teeSink{sink: defaultLogs, out: out}))
 	})
@@ -1328,8 +1321,8 @@ func signalsDependencyFailureAtAdmission(t *testing.T, listen func(ChainSpec) St
 
 			requireWithinJitter(t, busy, openSignals(t, srv.URL, s, "").noPlace())
 
-			// The failure charged the sign-in nothing: with one place, the next request, once the
-			// dependency is back, takes it.
+			// Both reads come before a place is taken, so this guards a later reordering: with one
+			// place, the next request, once the dependency is back, takes it.
 			fail.Store(false)
 
 			open := openSignals(t, srv.URL, s, "")
