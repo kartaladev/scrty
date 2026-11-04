@@ -377,7 +377,7 @@ func TestOIDCResume(t *testing.T) {
 			},
 		},
 		{
-			name: "a local sign-in asserts no amr",
+			name: "a password sign-in asserts pwd",
 			run: func(t *testing.T, w *opFlow) {
 				t.Helper()
 
@@ -386,8 +386,69 @@ func TestOIDCResume(t *testing.T) {
 				require.Equal(t, http.StatusOK, a.status, a.body)
 
 				claims := w.exchange(t, flowFirstParty, a.redirectTo(t).Query().Get("code"))
+				assert.Equal(t, []any{"pwd"}, claims["amr"])
+				assert.NotContains(t, claims, "acr")
+			},
+		},
+		{
+			name: "a passkey sign-in asserts no amr",
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				handle, flow := w.park(t, flowFirstParty)
+				a := w.resume(t, flowLoginBody(handle), flowBearer(w.session(t, session.WithFirstFactor(factor.Passkey)).ID), flowCookieOf(flowCookie, flow))
+				require.Equal(t, http.StatusOK, a.status, a.body)
+
+				claims := w.exchange(t, flowFirstParty, a.redirectTo(t).Query().Get("code"))
 				assert.NotContains(t, claims, "amr")
 				assert.NotContains(t, claims, "acr")
+			},
+		},
+		{
+			name: "a passkey that met the second factor at login asserts mfa",
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				handle, flow := w.park(t, flowFirstParty)
+				a := w.resume(t, flowLoginBody(handle), flowBearer(w.session(t, session.WithFirstFactor(factor.Passkey), session.WithSecondFactorAtLogin()).ID), flowCookieOf(flowCookie, flow))
+				require.Equal(t, http.StatusOK, a.status, a.body)
+
+				claims := w.exchange(t, flowFirstParty, a.redirectTo(t).Query().Get("code"))
+				assert.Equal(t, []any{"mfa"}, claims["amr"])
+				assert.NotContains(t, claims, "acr")
+			},
+		},
+		{
+			name: "a password and a second factor assert pwd and mfa",
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				handle, flow := w.park(t, flowFirstParty)
+				a := w.resume(t, flowLoginBody(handle), flowBearer(w.session(t, session.WithSecondFactorAtLogin()).ID), flowCookieOf(flowCookie, flow))
+				require.Equal(t, http.StatusOK, a.status, a.body)
+
+				claims := w.exchange(t, flowFirstParty, a.redirectTo(t).Query().Get("code"))
+				assert.Equal(t, []any{"pwd", "mfa"}, claims["amr"])
+				assert.NotContains(t, claims, "acr")
+			},
+		},
+		{
+			name: "a consumer's assurance replaces the default whole",
+			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{
+				httpsec.WithOIDCSignInAssurance(func(*session.Session) ([]string, string) {
+					return []string{"hwk"}, "urn:example:own"
+				}),
+			}},
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				handle, flow := w.park(t, flowFirstParty)
+				a := w.resume(t, flowLoginBody(handle), flowBearer(w.session(t).ID), flowCookieOf(flowCookie, flow))
+				require.Equal(t, http.StatusOK, a.status, a.body)
+
+				claims := w.exchange(t, flowFirstParty, a.redirectTo(t).Query().Get("code"))
+				assert.Equal(t, []any{"hwk"}, claims["amr"])
+				assert.Equal(t, "urn:example:own", claims["acr"])
 			},
 		},
 		{

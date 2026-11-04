@@ -29,12 +29,18 @@ type oidcResumeGroup struct {
 
 	throttle  oidcClientThrottle
 	bodyLimit int64
+
+	// assurance states the amr and acr of a sign-in, and assuranceSet that a consumer
+	// replaced it.
+	assurance    func(*session.Session) (amr []string, acr string)
+	assuranceSet bool
 }
 
 // bind takes the provider's state, and the default the options replace.
 func (g *oidcResumeGroup) bind(op *oidcEndpoints) {
 	g.oidcGroupBase.bind(op)
 	g.bodyLimit = DefaultLoginBodyLimit
+	g.assurance = defaultOIDCSignInAssurance
 }
 
 func (g *oidcResumeGroup) routes() []oidcRoute {
@@ -151,7 +157,7 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 		return ratelimit.ErrThrottled
 	}
 
-	signIn, err := oidcResumeSignIn(ex)
+	signIn, err := g.resumeSignIn(ex)
 	if err != nil {
 		return err
 	}
@@ -195,7 +201,7 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 	return writeSuccessDocument(ex, oidcResumeDocument{RedirectTo: res.RedirectTo})
 }
 
-// oidcResumeSignIn is the sign-in the request's bearer authenticated, and nil when the
+// resumeSignIn is the sign-in the request's bearer authenticated, and nil when the
 // request presented no credential at all.
 //
 // The provider's SignIn cannot say that a session owes a step, so that is judged here. The
@@ -206,7 +212,7 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 // Anything else that authenticated, an API key or Basic credentials, is no sign-in, and
 // neither is an Authorization header nothing on the chain read. Neither falls back to the
 // browser session, because whoever sent it believed they were presenting a credential.
-func oidcResumeSignIn(ex *Exchange) (*oidcprovider.SignIn, error) {
+func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, error) {
 	s := ex.Session
 	if s == nil || ex.bearerCredential == "" {
 		if ex.Authentication != nil || s != nil || len(ex.Request.HeaderValues(oidcAuthorizationHeader)) > 0 {
@@ -224,7 +230,7 @@ func oidcResumeSignIn(ex *Exchange) (*oidcprovider.SignIn, error) {
 		return nil, err
 	}
 
-	signIn := oidcSignInOf(s)
+	signIn := oidcSignInOf(s, g.assurance)
 
 	return &signIn, nil
 }
@@ -265,18 +271,17 @@ func oidcResumeRefusal(err error) error {
 	}
 }
 
-// oidcSignInOf is the sign-in s states. Its assurance is what the session records of a
-// federated login, read as the relying-party path reads it (sessionFederatedAssurance),
-// so a session whose first factor is not federated asserts none.
-func oidcSignInOf(s *session.Session) oidcprovider.SignIn {
-	assured := sessionFederatedAssurance(s)
+// oidcSignInOf is the sign-in s states. Its amr and acr are what assure says of s: the
+// group's default, or the consumer's replacement.
+func oidcSignInOf(s *session.Session, assure func(*session.Session) ([]string, string)) oidcprovider.SignIn {
+	amr, acr := assure(s)
 
 	return oidcprovider.SignIn{
 		User:              s.UserID,
 		Family:            s.FamilyID,
 		AuthenticatedAt:   s.AuthenticatedAt,
-		AMR:               assured.AMR(),
-		ACR:               assured.ACR(),
+		AMR:               amr,
+		ACR:               acr,
 		AbsoluteExpiresAt: s.AbsoluteExpiresAt,
 		ExternalIssuer:    s.ExternalIssuer,
 		ExternalSessionID: s.ExternalSessionID,
