@@ -227,3 +227,22 @@ Worktrees are under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrt
 **Next:** gather those five results, then 8.4 to 8.7 and group 10 together, then 9.3 to 9.6, then group 11 after messaging `session-signal`.
 
 **Record in `design.md` when 7.9 and 8.1 merge:** R14's disagreements (`WithLogoutOutbound`, `WithLogoutDeliveryPool`, `WithLogoutDeliveryTimeout`, the `busy` reason, a cap of twice the workers, on-demand workers with `Start` launching nothing, a consumer delivery running on the pool); 7.10's `Event.Client` and `Cause`, nine names, and no event for `SignInsEnded`'s dependency failure; `OrderOIDCProvider` 250 and `OrderOIDCProviderSession` 850, `checkAfterWiring`, the path rules, `ErrDependency` answering 500 first. Fix plans 7.9's `Close(ctx)` and fake clock lines.
+
+### Third session, after the handoff above
+
+**7.10 review: not clean, 11 `REPRODUCED`, none fixed; the 7.9 fold may overlap 1, 6, 10 and 11.** Proofs: `review-g10/oidcprovider/review_g10_test.go`, run with `go test -tags reviewg10 -race -run 'TestReview_' -count=1 ./oidcprovider/` (finding 1 with `REVIEW_G10_CRASH=1`). Throwaway fixes: `fix_g10.py`; mutants: `review-g10-mutants.txt`, both in the scratchpad.
+1. High: a registry or log-handler panic on `reportLogoutFailed`'s goroutine kills the process.
+2. High: 7.10 turns `httpsec` red: `TestSecurityEvents_Emitted` needs the nine names in `reportedElsewhere`. Add `./httpsec/` to 7.10's verification.
+3. A public client refused at introspection (`revoke.go:72`) reports no `ClientAuthRefused`.
+4. A refresh reuse through a chain emits three events; two is right. Keep the chain's emitter off the manager's context.
+5. `GrantRevoked` repeats for an already revoked grant, with a false cause (`reportEnded`, `exchange.go:576`). The store must say whether the row was newly revoked.
+6. A blocking sink on the worker path stops other clients' deliveries.
+7. `GrantCreated` fires before the credential is handed out (`exchange.go:289`); move it before `return res, nil`.
+8. A stored replay revocation goes unreported when the lineage delete fails.
+9. A retried client revocation reports twice (`revoke.go:114`).
+10. `Shutdown` can answer nil with a report goroutine held: `enterReport` ignores `finished`.
+11. A burst of drops loses events past 64, and the godoc does not say so.
+
+Also: `TestProvider_NoSecretsInLogs` does not run an assertion, malformed-credential, UserInfo, `VerifyAccessToken` or introspection refusal. `Event.Cause` says "never free text" while `RevokeUserGrants` passes a consumer's string. `design.md:50` lacks `Client` and `Cause`.
+
+**Rest of 8.1:** the agent's rows pass; only finding 2 keeps `httpsec` red. Still uncommitted in `lane-h1`, and not verified by the main session.
