@@ -153,7 +153,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 ## 8. Integration
 
 - [x] 8.1 Run the stream scenarios end to end on all three adapters in conformance: snapshot, ended from another sign-in, logout naming `logout`, a renewal that leaves the stream open, narrowing, caps, a chain refusing after `Stream`, a cross-site refusal, a gzip wrapper in front, a fiber stream's copied values staying correct as later requests reuse the buffers, and a consumer signal. Verify: `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/signals' ./...` in the `test` module.
-- [ ] 8.2 Run every module's full suite with the race detector, one module at a time, then `govulncheck`, `gofmt -l` and `go vet` on every module. Verify: every command's output is clean.
+- [x] 8.2 Run every module's full suite with the race detector, one module at a time, then `govulncheck`, `gofmt -l` and `go vet` on every module. Verify: every command's output is clean.
 - [ ] 8.3 Review the whole branch against every requirement in this change's spec deltas, every design decision and the security review table, with each finding reproduced or labelled UNREPRODUCED. Verify: the review is recorded and its findings are resolved.
 
 ## Workflow follow-up
