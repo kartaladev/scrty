@@ -131,10 +131,19 @@ type Result struct {
 	//
 	// A reference carries the Kind of the authenticator kind that removed
 	// it, MFAKind for an MFA method and a consumer's own kind name for one
-	// registered with WithAuthenticatorKinds. Its ID and Channel are the
-	// kind's own, and a consumer's kind may put an identifier of a device
-	// or an address in them: handle them with the care the notice is
-	// given, and do not send them to a client or a log.
+	// registered with WithAuthenticatorKinds, and the kind's own ID. Its
+	// Channel is empty: the plan names each authenticator by kind and
+	// identifier alone, so a channel a kind listed is not carried here. A
+	// consumer's kind may put an identifier of a device or an address in
+	// the ID: handle it with the care the notice is given, and do not send
+	// it to a client or a log.
+	//
+	// A recovery that fails after removing some authenticators returns an
+	// error and no Result. The kinds are removed one after another and a
+	// removal already made stays made, so Removed reports nothing of it,
+	// the notice to the user is not sent, and a caller that raises a
+	// signal from Removed raises none. A consumer that needs to know what
+	// such a recovery took lists what the user still holds.
 	Removed []AuthenticatorRef
 
 	// Held is set, and nothing else is, when the recovery is held: it carries

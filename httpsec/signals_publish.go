@@ -82,7 +82,9 @@ func (ex *Exchange) credentialChanged(user identity.UserID, kind CredentialKind)
 // recovery removed, one credential_changed for each kind, in the order the recovery removed them.
 // removed is recovery.Result.Removed. Only the kinds the signal names are told: recovery.MFAKind
 // is a second_factor and the passkey kind is a passkey, and a consumer's own kind raises
-// nothing, since the signal's set of kinds is closed. Nothing of the references reaches a stream.
+// nothing, since the signal's set of kinds is closed. Kinds are told by name, and the name is the
+// contract: a consumer's kind that takes recovery.MFAKind or passkey.RecoveryKindName, where the
+// library's own is not registered, raises that signal. Nothing of the references reaches a stream.
 // The recovery never removes a password: one bound afterwards is raised by the password-change
 // endpoint. Like credentialChanged, it changes nothing the endpoint answers.
 func (ex *Exchange) credentialsRemoved(user identity.UserID, removed []recovery.AuthenticatorRef) {

@@ -15,6 +15,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -644,8 +645,17 @@ func withoutSignalsStatus(t *testing.T, opts func(r *streamRig) []httpsec.Option
 	return rec.Code
 }
 
-// recoveryHolds is which authenticators the recovering user holds, each of a different kind.
-type recoveryHolds struct{ secondFactor, passkey, device bool }
+// recoveryHolds is which authenticators the recovering user holds. Each of the first three is
+// one of a different kind; the rest add a second of a kind already held, so a kind is removed
+// as two references.
+type recoveryHolds struct {
+	secondFactor, passkey, device bool
+	// secondPasskey adds a second passkey to the one passkey holds.
+	secondPasskey bool
+	// twoSecondFactors holds two second factors, through a kind named recovery.MFAKind that lists
+	// two references, in place of the one TOTP secondFactor enrols.
+	twoSecondFactors bool
+}
 
 // everything is the user holding one of each.
 var everything = recoveryHolds{secondFactor: true, passkey: true, device: true}
@@ -683,14 +693,34 @@ func newRecoveryWorld(t *testing.T, holds recoveryHolds) *recoveryWorld {
 	mfaKind, err := recovery.MFAEnrolments(method)
 	require.NoError(t, err)
 
+	if holds.twoSecondFactors {
+		pair := NewMockAuthenticatorKind(gomock.NewController(t))
+		pair.EXPECT().Kind().Return(recovery.MFAKind).AnyTimes()
+		pair.EXPECT().Remove(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+		pair.EXPECT().Held(gomock.Any(), gomock.Any()).Return([]recovery.AuthenticatorRef{
+			{Kind: recovery.MFAKind, ID: "totp"}, {Kind: recovery.MFAKind, ID: "hotp"},
+		}, nil).AnyTimes()
+
+		mfaKind = pair
+	}
+
 	creds := passkey.NewMemoryCredentialStore()
 
+	held := 0
 	if holds.passkey {
+		held = 1
+	}
+
+	if holds.secondPasskey {
+		held = 2
+	}
+
+	for i := range held {
 		cid, err := id.NewV7Generator().NewID()
 		require.NoError(t, err)
 
 		require.NoError(t, creds.Insert(t.Context(), &passkey.Credential{
-			ID: cid, User: "u-1", CredentialID: []byte("cred-r"), PublicKey: []byte("key"),
+			ID: cid, User: "u-1", CredentialID: []byte{'c', byte('0' + i)}, PublicKey: []byte("key"),
 			Name: "Laptop", CreatedAt: time.Now().UTC().Truncate(time.Second), State: passkey.StateActive,
 		}))
 	}
@@ -763,6 +793,7 @@ func TestSessionSignals_CredentialChanged_Recovery(t *testing.T) {
 	t.Parallel()
 
 	keep := recovery.WithoutSessionRevocation()
+	finishClock := clockwork.NewFakeClock()
 
 	type testCase struct {
 		name  string
@@ -774,7 +805,11 @@ func TestSessionSignals_CredentialChanged_Recovery(t *testing.T) {
 		closeHub bool
 		// withoutSignals builds the chain without EnableSessionSignals, so there is no stream.
 		withoutSignals bool
-		assert         func(t *testing.T, status int, streams []*riggedStream)
+		// finish holds the recovery (core must hold it), asserts nothing was raised at the hold,
+		// advances clk past the hold and finishes it; assert then sees the finish's status.
+		finish bool
+		clk    *clockwork.FakeClock
+		assert func(t *testing.T, status int, streams []*riggedStream)
 	}
 
 	cases := []testCase{
@@ -782,6 +817,43 @@ func TestSessionSignals_CredentialChanged_Recovery(t *testing.T) {
 			name:  "a second factor and a passkey removed, on streams the recovery leaves open",
 			holds: everything,
 			core:  []recovery.Option{keep},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+
+				for i, s := range streams {
+					got := s.events("credential_changed")
+					require.Len(t, got, 2, "stream %d", i)
+					assert.JSONEq(t, `{"kind":"second_factor"}`, got[0].Data, "stream %d", i)
+					assert.JSONEq(t, `{"kind":"passkey"}`, got[1].Data, "stream %d", i)
+					assert.Equal(t, []string{"session", "credential_changed", "credential_changed"}, s.sent(), "stream %d", i)
+				}
+			},
+		},
+		{
+			name:  "two passkeys removed raise passkey once",
+			holds: recoveryHolds{passkey: true, secondPasskey: true},
+			core:  []recovery.Option{keep},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+				heardOnly(t, httpsec.CredentialPasskey, streams)
+			},
+		},
+		{
+			name:  "two second factors removed raise second_factor once",
+			holds: recoveryHolds{twoSecondFactors: true},
+			core:  []recovery.Option{keep},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+				heardOnly(t, httpsec.CredentialSecondFactor, streams)
+			},
+		},
+		{
+			name:  "a finished hold raises each removed kind once, on streams it leaves open",
+			holds: recoveryHolds{secondFactor: true, passkey: true, secondPasskey: true, device: true},
+			core: []recovery.Option{keep, recovery.WithHoldDelay(time.Hour),
+				recovery.WithCancelLink("https://app.example.com/cancel"), recovery.WithClock(finishClock)},
+			finish: true,
+			clk:    finishClock,
 			assert: func(t *testing.T, status int, streams []*riggedStream) {
 				require.Equal(t, http.StatusOK, status)
 
@@ -897,6 +969,27 @@ func TestSessionSignals_CredentialChanged_Recovery(t *testing.T) {
 				}
 
 				body := w.form(t, r, tc.wrong)
+
+				if tc.finish {
+					status, answer := r.callBody(t, "", httpsec.DefaultRecoveryCompletePath,
+						"application/x-www-form-urlencoded", body)
+					require.Equal(t, http.StatusAccepted, status)
+					requireNoneSent(t, streams)
+
+					var held struct {
+						CompletionToken string `json:"completion_token"`
+					}
+
+					require.NoError(t, json.Unmarshal(answer, &held))
+					require.NotEmpty(t, held.CompletionToken)
+
+					tc.clk.Advance(time.Hour)
+
+					tc.assert(t, r.callAs(t, "", httpsec.DefaultRecoveryFinishPath,
+						url.Values{httpsec.RecoveryCompletionTokenParam: {held.CompletionToken}}.Encode()), streams)
+
+					return
+				}
 
 				tc.assert(t, r.callAs(t, "", httpsec.DefaultRecoveryCompletePath, body), streams)
 			})

@@ -13,7 +13,10 @@ import (
 
 // RecoveryKindName is the passkey authenticator kind's name, the "passkey" of
 // a reference such as "passkey:<library id>". A caller that reads
-// recovery.Result.Removed compares a reference's Kind with it.
+// recovery.Result.Removed compares a reference's Kind with it. The name is the
+// contract: it is how httpsec tells the passkey kind from a consumer's own, so
+// a consumer's kind can take this name only where this kind is not registered,
+// and its removals then raise the passkey credential_changed signal.
 const RecoveryKindName = "passkey"
 
 // errNoRecoveryStore is what a kind built over a nil store returns.
