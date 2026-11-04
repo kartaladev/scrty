@@ -29,6 +29,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -153,6 +154,11 @@ func parseStreamFrame(text string) streamFrame {
 type streamClock struct {
 	offset atomic.Int64
 	armed  atomic.Bool
+
+	// beats, when set, is what a wait as long as a heartbeat of beatsFor waits on instead of time,
+	// so a row can name the moment a heartbeat falls, whatever its jitter drew.
+	beats    atomic.Pointer[chan time.Time]
+	beatsFor atomic.Int64
 }
 
 func (c *streamClock) Now() time.Time {
@@ -163,7 +169,15 @@ func (c *streamClock) Now() time.Time {
 	return time.Now().Add(time.Duration(c.offset.Load()))
 }
 
-func (*streamClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+func (c *streamClock) After(d time.Duration) <-chan time.Time {
+	if beats := c.beats.Load(); beats != nil {
+		if heartbeat := time.Duration(c.beatsFor.Load()); d >= heartbeat*9/10 && d <= heartbeat*11/10 {
+			return *beats
+		}
+	}
+
+	return time.After(d)
+}
 
 var _ clock.Timed = (*streamClock)(nil)
 
@@ -201,6 +215,14 @@ type streamRig struct {
 	listHook atomic.Pointer[func(context.Context) error]
 	loadHook atomic.Pointer[func(context.Context) error]
 	userHook atomic.Pointer[func(context.Context) (*identity.Details, error)]
+
+	// familyDeleted runs once a family's delete has reached the store and before its caller is
+	// told, which is before the session manager makes its end report.
+	familyDeleted atomic.Pointer[func()]
+
+	// listsNothing makes a listing answer that the user holds no sign-in, as a store does once an
+	// end has reached it, and setting it back as one does when that end is rolled back.
+	listsNothing atomic.Bool
 
 	// lists counts listings, ends the end reports, and reuses the reuse reports. The ByTest
 	// counts are what the test's own calls caused, and each stream's opening: anything else is
@@ -326,6 +348,10 @@ func (s *streamHookStore) ListByUser(ctx context.Context, user identity.UserID, 
 		}
 	}
 
+	if s.rig.listsNothing.Load() {
+		return nil, nil
+	}
+
 	return s.Store.ListByUser(ctx, user, at)
 }
 
@@ -337,6 +363,16 @@ func (s *streamHookStore) Load(ctx context.Context, sid string) (*session.Sessio
 	}
 
 	return s.Store.Load(ctx, sid)
+}
+
+func (s *streamHookStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	n, err := s.Store.DeleteFamily(ctx, family)
+
+	if hook := s.rig.familyDeleted.Load(); hook != nil {
+		(*hook)()
+	}
+
+	return n, err
 }
 
 // failListing makes every listing fail with a store's error until it is called with false.
@@ -794,6 +830,46 @@ func TestSessionSignals_Heartbeat_Verdict(t *testing.T) {
 			},
 		},
 	}
+
+	cases = append(cases,
+		testCase{
+			name: "gone with nothing reported and no deadline passed is ended for want of a report",
+			held: future,
+			read: httpsec.StreamRead{Gone: true},
+			assert: func(t *testing.T, v httpsec.StreamVerdict) {
+				assert.Equal(t, "ended", v.End)
+				assert.True(t, v.Unreported)
+			},
+		},
+		testCase{
+			name:   "gone with a report is that report's, and waits for nothing",
+			held:   future,
+			read:   httpsec.StreamRead{Gone: true},
+			notice: fresh("logout"),
+			assert: func(t *testing.T, v httpsec.StreamVerdict) {
+				assert.Equal(t, "logout", v.End)
+				assert.False(t, v.Unreported)
+			},
+		},
+		testCase{
+			name: "gone past a deadline is expired, and waits for nothing",
+			held: idlePast,
+			read: httpsec.StreamRead{Gone: true},
+			assert: func(t *testing.T, v httpsec.StreamVerdict) {
+				assert.Equal(t, "expired", v.End)
+				assert.False(t, v.Unreported)
+			},
+		},
+		testCase{
+			name: "a user no longer active waits for nothing",
+			held: future,
+			read: httpsec.StreamRead{Gone: true, UserGone: true},
+			assert: func(t *testing.T, v httpsec.StreamVerdict) {
+				assert.Equal(t, "ended", v.End)
+				assert.False(t, v.Unreported)
+			},
+		},
+	)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1821,6 +1897,323 @@ func (r *streamRig) raiseOnQueue(names ...string) {
 	synctest.Wait()
 }
 
+// logoutHeldBeforeItsReport starts a logout that has deleted the family and has not yet made its end
+// report, which it makes when the returned function is called. That is the gap a read can answer in.
+func (r *streamRig) logoutHeldBeforeItsReport(t *testing.T, s *session.Session) (report func()) {
+	t.Helper()
+
+	deleted, let, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+
+	hook := func() {
+		close(deleted)
+		<-let
+	}
+	r.familyDeleted.Store(&hook)
+
+	ends := r.ends.Load()
+
+	go func() {
+		defer close(done)
+
+		_, err := r.sessions.Logout(t.Context(), s.UserID, s.FamilyID)
+		assert.NoError(t, err)
+	}()
+
+	<-deleted
+	synctest.Wait()
+
+	var once sync.Once
+
+	report = func() {
+		once.Do(func() {
+			close(let)
+			<-done
+			r.endsByTest.Add(r.ends.Load() - ends)
+			synctest.Wait()
+		})
+	}
+	t.Cleanup(report)
+
+	return report
+}
+
+// untilRead moves time in small steps until a read has begun and answered, however long the
+// heartbeat's jitter took to start one.
+func (r *streamRig) untilRead(t *testing.T) {
+	t.Helper()
+
+	lists, began := r.lists.Load(), time.Now()
+
+	for r.lists.Load() == lists {
+		require.Less(t, time.Since(began), 2*time.Minute, "no read began")
+		advance(10 * time.Millisecond)
+	}
+}
+
+// manualBeats makes the stream's heartbeats the row's to fire, for a heartbeat of d. It must be called
+// before the stream opens.
+func (r *streamRig) manualBeats(d time.Duration) (fire func()) {
+	beats := make(chan time.Time)
+
+	r.clock.beatsFor.Store(int64(d))
+	r.clock.beats.Store(&beats)
+
+	return func() {
+		beats <- time.Now()
+
+		synctest.Wait()
+	}
+}
+
+// TestSessionSignals_Heartbeat_ReportBehindTheRead is a read that answers gone before the end's report
+// has reached the stream, which a session manager makes only after the store's write has returned. So a
+// stream that holds no report waits a short while for one, and only then says ended.
+func TestSessionSignals_Heartbeat_ReportBehindTheRead(t *testing.T) {
+	t.Parallel()
+
+	quick := streamSetup{signals: httpsec.SessionSignals{Heartbeat: 5 * time.Second, Signals: endedOnly}}
+
+	// goneUnreported opens a stream whose read has just said gone, with nothing reported.
+	goneUnreported := func(t *testing.T, r *streamRig) (*session.Session, *riggedStream) {
+		t.Helper()
+
+		s := r.signIn(t)
+		stream := r.open(t, s.ID)
+
+		r.listsNothing.Store(true)
+		r.untilRead(t)
+
+		return s, stream
+	}
+
+	runStreamCases(t, []streamCase{
+		{
+			name:  "a logout's report arriving just after the read names logout, at once",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				report := r.logoutHeldBeforeItsReport(t, s)
+				r.untilRead(t)
+				r.requireLive(t, stream)
+
+				report()
+
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			name:  "any report during the wait names its reason",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				s, stream := goneUnreported(t, r)
+
+				advance(httpsec.StreamReportGrace / 2)
+				r.wakeWith(s, "all_ended")
+
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "a wake that names no reason does not cut the wait short",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				s, stream := goneUnreported(t, r)
+
+				r.wakeWith(s, "")
+				r.requireLive(t, stream)
+
+				advance(httpsec.StreamReportGrace)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "no report says ended once the wait is over, and not before",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				_, stream := goneUnreported(t, r)
+
+				r.requireLive(t, stream)
+
+				advance(httpsec.StreamReportGrace - 50*time.Millisecond)
+				r.requireLive(t, stream)
+
+				advance(100 * time.Millisecond)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "closing during the wait closes with no event",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				_, stream := goneUnreported(t, r)
+
+				require.NoError(t, <-r.closing(t.Context()))
+
+				assert.True(t, stream.closed())
+				assert.Equal(t, []string{"session"}, stream.sent(), "closing sent an event")
+				lastRetry(t, stream)
+			},
+		},
+		{
+			name:  "a client leaving during the wait ends the stream at once",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				_, stream := goneUnreported(t, r)
+
+				stream.cancel()
+				synctest.Wait()
+
+				assert.True(t, stream.closed())
+				assert.Equal(t, []string{"session"}, stream.sent())
+				assert.Zero(t, r.openStreams())
+			},
+		},
+		{
+			name: "a deadline passed says expired with no wait",
+			setup: streamSetup{
+				idle:    3 * time.Minute,
+				signals: httpsec.SessionSignals{Heartbeat: time.Minute, Signals: endedOnly},
+			},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				advance(3*time.Minute - 100*time.Millisecond)
+				r.listsNothing.Store(true)
+				r.untilRead(t)
+				advance(100 * time.Millisecond)
+
+				r.requireEnded(t, stream, "expired")
+			},
+		},
+		{
+			name:  "a user no longer active says ended with no wait",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.userAnswers(func(context.Context) (*identity.Details, error) { return inactiveUser(), nil })
+				r.listsNothing.Store(true)
+				r.untilRead(t)
+
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a heartbeat during the wait still goes out, and its read's answer is not lost",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				fire := r.manualBeats(5 * time.Second)
+
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.listsNothing.Store(true)
+				fire()
+				r.requireLive(t, stream)
+
+				comments := len(stream.comments())
+				r.listsNothing.Store(false)
+				fire()
+				assert.Len(t, stream.comments(), comments+1, "the heartbeat waited")
+
+				advance(2 * httpsec.StreamReportGrace)
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a read that says gone again does not start the wait over",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				fire := r.manualBeats(5 * time.Second)
+
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.listsNothing.Store(true)
+				fire()
+
+				advance(httpsec.StreamReportGrace - 50*time.Millisecond)
+				fire()
+				r.requireLive(t, stream)
+
+				advance(100 * time.Millisecond)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a store that fails during the wait does not take back what it said",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				fire := r.manualBeats(5 * time.Second)
+
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.listsNothing.Store(true)
+				fire()
+
+				r.failListing(true)
+				fire()
+
+				advance(httpsec.StreamReportGrace)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a signal raised during the wait says nothing ahead of the end",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				_, stream := goneUnreported(t, r)
+
+				r.raiseOnQueue("app.note")
+				assert.Empty(t, stream.events("app.note"))
+
+				advance(httpsec.StreamReportGrace)
+				r.requireEnded(t, stream, "ended")
+				assert.Empty(t, stream.events("app.note"))
+			},
+		},
+		{
+			name:  "a signal raised during the wait goes out when the store takes the end back",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				fire := r.manualBeats(5 * time.Second)
+
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.listsNothing.Store(true)
+				fire()
+
+				r.raiseOnQueue("app.note")
+				assert.Empty(t, stream.events("app.note"))
+
+				r.listsNothing.Store(false)
+				fire()
+
+				assert.Len(t, stream.events("app.note"), 1)
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a clock stepped back during the wait holds it for at most two",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				_, stream := goneUnreported(t, r)
+
+				r.clock.offset.Add(int64(-time.Hour))
+
+				advance(2*httpsec.StreamReportGrace + 50*time.Millisecond)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+	})
+}
+
 // TestSessionSignals_BusWakeUp_QueueHold pins that a stream holding an end notice whose reload has
 // not answered sends nothing from its queue, so that a signal raised just after an end does not
 // overtake the session_ended it may have become moot by, and that a hold always ends.
@@ -2523,6 +2916,7 @@ func TestSessionSignals_Heartbeat_ReadInFlight(t *testing.T) {
 				held.letGo()
 				synctest.Wait()
 
+				advance(httpsec.StreamReportGrace)
 				r.requireEnded(t, stream, "ended")
 			},
 		},

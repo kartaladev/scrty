@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/hangup"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // orderSessionSignalsRetry is where a request for the stream that cannot be served now is answered
@@ -17,10 +18,10 @@ import (
 //
 // It has to wrap every read of a store on the stream's path, and the first of them is an
 // authenticator's, far below the endpoint's own slot. A consumer's CookieAuthenticator can be
-// registered anywhere after OrderCSRF, so it is outside that slot too. It answers from inside
-// OrderCORS, so that what CORS and the security headers set is on what it writes whichever way they
-// come to set it: a cross-origin EventSource could not read a 200 with no CORS headers, and would give
-// up for good, which is what this answer exists to prevent.
+// registered anywhere after OrderCSRF, so this slot sits above all of those. What CORS and the security
+// headers set, they set before calling next, so it is on what this writes: a cross-origin EventSource
+// could not read a 200 with no CORS headers, and would give up for good, which is what this answer
+// exists to prevent.
 const orderSessionSignalsRetry = OrderCORS + 1
 
 // streamClosingRetryLeast is the least retry a closing replica states.
@@ -60,17 +61,22 @@ func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
 // left to the chain's mapping, whose status a writer ignores by then. A writer that cannot stream never
 // could, so that stays 501: no retry would change it.
 func (e *sessionSignals) answerRetryOnly(ex *Exchange, err error) error {
-	if errors.Is(err, errStreamsClosed) {
-		// Closing is what this replica was told to do, so it is no refusal to report. The connection
-		// goes too, or a client would reconnect over it to the replica it is leaving.
+	if errors.Is(err, ErrStreamingUnsupported) || errors.Is(err, ErrStreamingStarted) {
+		return err
+	}
+
+	closing, overCap := errors.Is(err, errStreamsClosed), errors.Is(err, ErrTooManyStreams)
+	if !closing && !overCap && !e.isDependencyFailure(ex, err) {
+		return err
+	}
+
+	if closing || (!overCap && e.registry.isClosed()) {
+		// Closing is what this replica was told to do, so it is no refusal to report, and a store
+		// failing on the way here changes none of that. The connection goes too, or a client would
+		// reconnect over it to the replica it is leaving.
 		ex.Writer.SetHeader("Connection", "close")
 
 		return e.retryOnlyOr(err, e.streamOnlyRetry(ex, e.closingRetry()))
-	}
-
-	overCap := errors.Is(err, ErrTooManyStreams)
-	if !overCap && !e.isDependencyFailure(ex, err) {
-		return err
 	}
 
 	delay := jittered(e.cfg.BusyDelay, streamRetryJitter, rand.Float64()) //nolint:gosec // jitter, not a secret
@@ -124,13 +130,10 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 	ex.Writer.SetHeader("Content-Type", signalsContentType)
 	ex.Writer.SetHeader("X-Accel-Buffering", "no")
 
-	return ex.Writer.Stream(cancelOnly{ex.Context()}, func(ctx context.Context, w EventWriter) error {
-		// On fiber a chain that refused after this leaves a body on an ended context, and the
-		// response is that refusal.
-		if ctx.Err() != nil {
-			return nil
-		}
-
+	// The context can have ended without the client leaving: an interceptor's deferred cancel, or a
+	// deadline a server set. So the body writes whatever it says. Where nothing can be written, a client
+	// gone or a chain on fiber that refused after this, the writer fails and this stops.
+	return ex.Writer.Stream(cancelOnly{ex.Context()}, func(_ context.Context, w EventWriter) error {
 		if err := writeRetry(w, delay); err != nil {
 			return nil //nolint:nilerr // the client has gone, and it was only ever told when to come back
 		}
@@ -143,15 +146,42 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 
 // isDependencyFailure reports whether err is a failure of something the request depends on, and not
 // an answer: whatever the chain's error mapping would answer with a 5xx, because each such error is
-// one no client's request could have caused, and it may pass.
+// one no client's request could have caused, and it may pass, unless SessionSignals.RetryableError
+// says otherwise.
 //
 // What maps to 400, 401, 403, 405 or 429 is an answer, and stands. So does a request whose own client
-// hung up, which says nothing about a store. ErrStreamingStarted and ErrStreamingUnsupported map to
-// 5xx and are taken in here too, and it is Stream that then keeps their answers (answerRetryOnly). A
-// consumer's error the mapping does not know is taken for a failure, so an interceptor refusing with
-// one of its own answers the request itself, or the client is told to come back.
+// hung up, which says nothing about a store. A cancelled context is what a client's leaving looks like
+// here: a deadline that ended the context is a server's, with its client still there, and hanging up
+// has no deadline to pass. A consumer's error the mapping does not know is taken for a failure, so an
+// interceptor refusing with one of its own answers the request itself, sets RetryableError, or the
+// client is told to come back.
 func (e *sessionSignals) isDependencyFailure(ex *Exchange, err error) bool {
-	return !hangup.ByCaller(ex.Context(), err) && StatusForError(err) >= http.StatusInternalServerError
+	ctx := ex.Context()
+
+	if errors.Is(ctx.Err(), context.Canceled) && hangup.ByCaller(ctx, err) {
+		return false
+	}
+
+	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ctx, err)
+}
+
+// retryable asks a consumer's SessionSignals.RetryableError about err. A panic in it is logged as a
+// stream's is, without its value, and the failure is retried, since it has said nothing to the
+// contrary and a final answer would stop a browser for good.
+func (e *sessionSignals) retryable(ctx context.Context, err error) (retry bool) {
+	if e.cfg.RetryableError == nil {
+		return true
+	}
+
+	defer func() {
+		if v := recover(); v != nil {
+			e.logStreamPanic(ctx, panicPhaseStream, id.ID{}, v)
+
+			retry = true
+		}
+	}()
+
+	return e.cfg.RetryableError(err)
 }
 
 // logRetryOnly writes one of the records above, with sampling. A flood of requests over a cap or

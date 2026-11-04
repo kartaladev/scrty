@@ -447,9 +447,10 @@ func (h *signalHub) close() {
 // stats is whether a consumer's bus subscription is up, how many signals its bus could not
 // take because the queue for it was full (dropped), how many a stream's own full queue dropped
 // (streamDropped, which a default bus counts too), and how many Publish calls failed, a timeout
-// or a panic included. It backs Chain.SessionSignalStats, so all are counters read with no lock.
+// or a panic included. It backs Chain.SessionSignalStats, so all are counters read with no lock. A
+// subscription close ended is not up, even while a bus that ignores its context has not returned.
 func (h *signalHub) stats() (subscribed bool, dropped, streamDropped, failures uint64) {
-	return h.subscribed.Load(), h.dropped.Load(), h.streamDropped.Load(), h.failures.Load()
+	return h.subscribed.Load() && !h.closed.Load(), h.dropped.Load(), h.streamDropped.Load(), h.failures.Load()
 }
 
 // logDropped logs an envelope deliver refused, with nothing from the envelope.

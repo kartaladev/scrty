@@ -2,9 +2,13 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httptrace"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +24,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -635,6 +640,20 @@ func TestSessionSignals_Close_Streams(t *testing.T) {
 			},
 		},
 		{
+			name: "a request after a close with its store down is still told what a closing replica tells",
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				require.NoError(t, <-r.closing(t.Context()))
+				r.failLoad()
+
+				late := r.open(t, s.ID)
+
+				assert.Equal(t, "close", late.w.header.Get("Connection"), "a keep-alive connection comes back here")
+				requireOnlyRetry(t, late, time.Second, 15*time.Second)
+				assert.Zero(t, r.chain.SessionSignalStats().ReloadFailures, "closing is no failure to report")
+			},
+		},
+		{
 			name: "each stream draws its own closing retry",
 			assert: func(t *testing.T, r *streamRig) {
 				var streams []*riggedStream
@@ -895,7 +914,7 @@ func TestSessionSignals_Close_ServerShutdown(t *testing.T) {
 
 			if tc.register {
 				r.srv.Config.RegisterOnShutdown(func() {
-					ctx, cancel := context.WithTimeout(context.Background(), tc.bound)
+					ctx, cancel := context.WithTimeout(t.Context(), tc.bound)
 					defer cancel()
 
 					closed <- r.chain.CloseSessionSignals(ctx)
@@ -1010,6 +1029,40 @@ func TestSessionSignals_Caps_Stats(t *testing.T) {
 				assert.Equal(t, 2, stats.Open)
 				assert.EqualValues(t, 2, stats.RefusedByCap)
 				assert.False(t, stats.BusSubscribed, "the default bus has no subscription")
+			},
+		},
+		{
+			name: "a read that panics on an open stream counts, as one at admission does",
+			assert: func(t *testing.T, r *streamRig) {
+				stream := r.open(t, r.signIn(t).ID)
+
+				r.userAnswers(func(context.Context) (*identity.Details, error) { panic(errors.New(streamSecret)) })
+				advanceUntil(t, 20*time.Second, "the panic", stream.closed)
+
+				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
+		{
+			name: "a read that panics after its timeout has already counted, and counts once",
+			assert: func(t *testing.T, r *streamRig) {
+				stream := r.open(t, r.signIn(t).ID)
+
+				let := make(chan struct{})
+				r.userAnswers(func(context.Context) (*identity.Details, error) {
+					<-let
+
+					panic(errors.New(streamSecret))
+				})
+
+				advanceUntil(t, 30*time.Second, "the timeout", func() bool {
+					return r.chain.SessionSignalStats().ReloadFailures > 0
+				})
+
+				close(let)
+				synctest.Wait()
+
+				assert.True(t, stream.closed())
+				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
 			},
 		},
 		{
@@ -1192,6 +1245,7 @@ func TestSessionSignals_Heartbeat_AnswerWithTheTimeout(t *testing.T) {
 				close(writing)
 				synctest.Wait()
 
+				advance(httpsec.StreamReportGrace)
 				r.requireEnded(t, stream, "ended")
 
 				failures, _ := httpsec.SignalReloadCounts(r.chain)
@@ -1742,5 +1796,641 @@ func TestSessionSignals_Caps_Places(t *testing.T) {
 
 		resp, _ := f.openStream(t, s.ID)
 		requireStreamHead(t, resp)
+	})
+}
+
+// TestSessionSignals_Caps_RequestContextEnded is a request whose context ended and whose client is
+// still there, which a request for the stream answers as any other: a retry written whatever ended it.
+// Only a client's own leaving is no failure.
+func TestSessionSignals_Caps_RequestContextEnded(t *testing.T) {
+	t.Parallel()
+
+	// withDeferredCancel is a consumer's interceptor with the ordinary deferred cancel, inside the step.
+	withDeferredCancel := func(*streamRig) []httpsec.Option {
+		return []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+			func(ex *httpsec.Exchange, next httpsec.Next) error {
+				ctx, cancel := context.WithTimeout(ex.Context(), time.Minute)
+				defer cancel()
+
+				ex.SetContext(ctx)
+
+				return next(ex)
+			}), httpsec.After(httpsec.OrderCSRF))}
+	}
+
+	// serverDeadline is a request deadline a server sets, with its client still there. The parent's
+	// cancel, which every stream of the rig has, ends its timer.
+	serverDeadline := func(ctx context.Context) context.Context {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		context.AfterFunc(ctx, cancel)
+
+		return ctx
+	}
+
+	loadWaitsForItsContext := func(r *streamRig) {
+		hook := func(ctx context.Context) error {
+			<-ctx.Done()
+
+			return ctx.Err()
+		}
+		r.loadHook.Store(&hook)
+	}
+
+	runStreamCases(t, []streamCase{
+		{
+			name:  "an interceptor's deferred cancel leaves a cap's retry",
+			setup: streamSetup{signals: httpsec.SessionSignals{MaxPerSignIn: 1}, opts: withDeferredCancel},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				r.openN(t, s, 1)
+				requireOnlyRetry(t, r.open(t, s.ID), busyLeast, busyMost)
+			},
+		},
+		{
+			name:  "an interceptor's deferred cancel leaves a dependency failure's retry",
+			setup: streamSetup{opts: withDeferredCancel},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				r.failLoad()
+				requireOnlyRetry(t, r.open(t, s.ID), busyLeast, busyMost)
+			},
+		},
+		{
+			name:  "an interceptor's deferred cancel leaves a closing replica's retry",
+			setup: streamSetup{opts: withDeferredCancel},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				require.NoError(t, <-r.closing(t.Context()))
+				requireOnlyRetry(t, r.open(t, s.ID), time.Second, 15*time.Second)
+			},
+		},
+		{
+			name:  "a server's request deadline is a dependency failure, and its client gets a retry",
+			setup: streamSetup{requestCtx: serverDeadline},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				loadWaitsForItsContext(r)
+
+				stream := r.open(t, s.ID)
+				advance(3 * time.Second)
+
+				require.Equal(t, http.StatusOK, stream.status(), "a live client's EventSource stops for good on this")
+				requireOnlyRetry(t, stream, busyLeast, busyMost)
+				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
+		{
+			name:  "a server's deadline with an interceptor's deferred cancel is the same failure",
+			setup: streamSetup{requestCtx: serverDeadline, opts: withDeferredCancel},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				loadWaitsForItsContext(r)
+
+				stream := r.open(t, s.ID)
+				advance(3 * time.Second)
+
+				requireOnlyRetry(t, stream, busyLeast, busyMost)
+				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
+		{
+			name: "a client that leaves is told nothing, and is no failure",
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				loadWaitsForItsContext(r)
+
+				stream := r.open(t, s.ID)
+				stream.cancel()
+				synctest.Wait()
+
+				assert.True(t, stream.closed())
+				assert.Empty(t, stream.frames(), "a retry for a client that has gone")
+				assert.Zero(t, r.chain.SessionSignalStats().ReloadFailures, "a hang-up says nothing about a store")
+			},
+		},
+	})
+}
+
+// errGeoBlocked is a consumer's own refusal, which StatusForError does not know and maps to 500.
+var errGeoBlocked = errors.New("consumer: refused by geography")
+
+// TestSessionSignals_Caps_RetryableError is a failure a consumer knows is no outage. By default every
+// 5xx-mapped failure on the stream's path is retried; RetryableError lets one through to the chain's
+// error mapping.
+func TestSessionSignals_Caps_RetryableError(t *testing.T) {
+	t.Parallel()
+
+	// watched is what a row sees of the consumer's side.
+	type watched struct {
+		handled atomic.Pointer[error]
+		asked   atomic.Int64
+		logs    lockedBuffer
+	}
+
+	type testCase struct {
+		name      string
+		signals   httpsec.SessionSignals
+		refuse    error
+		wrap      func(http.Handler) http.Handler
+		retryable func(error) bool
+		assert    func(t *testing.T, f *signalsFixture, w *watched)
+	}
+
+	never := func(error) bool { return false }
+	always := func(error) bool { return true }
+
+	notHandled := func(t *testing.T, w *watched) {
+		t.Helper()
+
+		assert.Nil(t, w.handled.Load(), "the error handler was called")
+	}
+
+	cases := []testCase{
+		{
+			name:   "by default a consumer's own refusal is retried",
+			refuse: errGeoBlocked,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+				notHandled(t, w)
+				assert.EqualValues(t, 1, f.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
+		{
+			name:      "RetryableError returning false reaches the error handler, and counts no failure",
+			refuse:    errGeoBlocked,
+			retryable: never,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				requireNoStream(t, resp, http.StatusForbidden)
+				require.NotNil(t, w.handled.Load(), "the consumer's error handler never heard of its own refusal")
+				assert.ErrorIs(t, *w.handled.Load(), errGeoBlocked)
+				assert.EqualValues(t, 1, w.asked.Load())
+				assert.Zero(t, f.chain.SessionSignalStats().ReloadFailures, "a refusal was counted as a store's failure")
+				assert.NotContains(t, w.logs.String(), "a dependency failed")
+			},
+		},
+		{
+			name:      "RetryableError returning true is retried, and is told the error",
+			refuse:    errGeoBlocked,
+			retryable: func(err error) bool { return errors.Is(err, errGeoBlocked) },
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+				notHandled(t, w)
+				assert.EqualValues(t, 1, f.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
+		{
+			name:   "a RetryableError that panics is logged without its value, and the failure retried",
+			refuse: errGeoBlocked,
+			retryable: func(error) bool {
+				panic(errors.New(streamSecret))
+			},
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+				notHandled(t, w)
+				assert.NotContains(t, w.logs.String(), streamSecret)
+				assert.Contains(t, w.logs.String(), "a panic was recovered")
+			},
+		},
+		{
+			name:      "it is not asked about what a cap answers",
+			signals:   httpsec.SessionSignals{MaxPerSignIn: 1},
+			retryable: never,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				s := f.signIn(t, "u-1")
+
+				first, _ := f.openStream(t, s.ID)
+				require.Equal(t, http.StatusOK, first.StatusCode)
+
+				line := make([]byte, 16)
+				_, err := first.Body.Read(line)
+				require.NoError(t, err)
+
+				second, _ := f.openStream(t, s.ID)
+				requireOnlyRetryResponse(t, second, busyLeast, busyMost)
+				assert.Zero(t, w.asked.Load())
+			},
+		},
+		{
+			name:      "it is not asked about what maps below a 5xx",
+			refuse:    policy.ErrTooManySessions,
+			retryable: always,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				requireNoStream(t, resp, http.StatusForbidden)
+				assert.Zero(t, w.asked.Load())
+				assert.ErrorIs(t, *w.handled.Load(), policy.ErrTooManySessions)
+			},
+		},
+		{
+			name: "it is not asked about a writer that cannot stream",
+			wrap: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					next.ServeHTTP(unflushableWriter{w}, r)
+				})
+			},
+			retryable: always,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+				assert.Zero(t, w.asked.Load())
+				assert.ErrorIs(t, *w.handled.Load(), httpsec.ErrStreamingUnsupported)
+			},
+		},
+		{
+			name:      "it is not asked on any other path",
+			refuse:    errGeoBlocked,
+			retryable: always,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp := f.send(t, t.Context(), http.MethodGet, "/orders", f.signIn(t, "u-1").ID)
+
+				requireNoStream(t, resp, http.StatusForbidden)
+				assert.Zero(t, w.asked.Load())
+			},
+		},
+		{
+			name:      "after a close, a refusal it lets through stays a refusal",
+			refuse:    errGeoBlocked,
+			retryable: never,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				s := f.signIn(t, "u-1")
+				require.NoError(t, f.chain.CloseSessionSignals(t.Context()))
+
+				resp, _ := f.openStream(t, s.ID)
+
+				requireNoStream(t, resp, http.StatusForbidden)
+				assert.ErrorIs(t, *w.handled.Load(), errGeoBlocked)
+			},
+		},
+		{
+			name:      "after a close, what it retries is told what a closing replica tells",
+			refuse:    errGeoBlocked,
+			retryable: always,
+			assert: func(t *testing.T, f *signalsFixture, _ *watched) {
+				s := f.signIn(t, "u-1")
+				require.NoError(t, f.chain.CloseSessionSignals(t.Context()))
+
+				resp, _ := f.openStream(t, s.ID)
+
+				assert.True(t, resp.Close, "a keep-alive connection comes back here")
+				requireOnlyRetryResponse(t, resp, time.Second, 15*time.Second)
+				assert.Zero(t, f.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := &watched{}
+
+			signals := tc.signals
+			if tc.retryable != nil {
+				signals.RetryableError = func(err error) bool {
+					w.asked.Add(1)
+
+					return tc.retryable(err)
+				}
+			}
+
+			f := newSignalsFixture(t, signalsSetup{
+				signals:     signals,
+				wrapHandler: tc.wrap,
+				opts: func(*signalsFixture) []httpsec.Option {
+					opts := []httpsec.Option{
+						httpsec.WithLogger(slog.New(slog.NewJSONHandler(&w.logs, nil))),
+						httpsec.WithErrorHandler(func(rw http.ResponseWriter, _ *http.Request, err error) {
+							w.handled.Store(&err)
+							rw.WriteHeader(http.StatusForbidden)
+						}),
+					}
+
+					if tc.refuse == nil {
+						return opts
+					}
+
+					return append(opts, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+						func(*httpsec.Exchange, httpsec.Next) error { return tc.refuse },
+					), httpsec.After(httpsec.OrderBearerToken)))
+				},
+			})
+
+			tc.assert(t, f, w)
+		})
+	}
+}
+
+// TestSessionSignals_Caps_AtTheStream is what shares the call to the stream with no store failing: the
+// slot the answer's step takes, and a place taken for a stream that never ran.
+func TestSessionSignals_Caps_AtTheStream(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  signalsSetup
+		assert func(t *testing.T, f *signalsFixture, resp *http.Response)
+	}
+
+	cases := []testCase{
+		{
+			name: "a stream that never ran frees its place",
+			setup: signalsSetup{wrapHandler: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					next.ServeHTTP(unflushableWriter{w}, r)
+				})
+			}},
+			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+				assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+				assert.Zero(t, f.chain.SessionSignalStats().Open, "a stream that never ran kept its place")
+			},
+		},
+		{
+			name: "a failure just inside CSRF is answered with a retry",
+			setup: signalsSetup{opts: func(*signalsFixture) []httpsec.Option {
+				return []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+					func(*httpsec.Exchange, httpsec.Next) error { return errors.New(storeDownText) },
+				), httpsec.After(httpsec.OrderCSRF))}
+			}},
+			assert: func(t *testing.T, _ *signalsFixture, resp *http.Response) {
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSignalsFixture(t, tc.setup)
+			resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+			tc.assert(t, f, resp)
+		})
+	}
+}
+
+// closeAtHead is a writer that starts a close while the head is going out, which is after the place
+// was taken and before the body ran. The close has done all it can when the wait returns: it waits on
+// the body.
+type closeAtHead struct {
+	*streamWriter
+
+	chain *httpsec.Chain
+}
+
+func (w closeAtHead) WriteHeader(status int) {
+	go func() { _ = w.chain.CloseSessionSignals(context.Background()) }() //nolint:gosec // it returns when the body it waits on has
+
+	synctest.Wait()
+
+	w.streamWriter.WriteHeader(status)
+}
+
+// TestSessionSignals_Close_AStreamAdmittedBeforeItSendsNoEvent is a stream that has a place when a close
+// comes, and has sent nothing yet: it closes without an event as every other does.
+func TestSessionSignals_Close_AStreamAdmittedBeforeItSendsNoEvent(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		r := newStreamRig(t, streamSetup{})
+		s := r.signIn(t)
+
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, httpsec.DefaultSessionSignalsPath, nil)
+		req.RemoteAddr = streamClient + ":4242"
+		req.Header.Set("Authorization", "Bearer "+s.ID)
+
+		w := &streamWriter{header: http.Header{}}
+		done := make(chan struct{})
+		before := r.counted.loads.Load()
+
+		go func() {
+			defer close(done)
+
+			r.handler.ServeHTTP(closeAtHead{streamWriter: w, chain: r.chain}, req)
+		}()
+
+		<-done
+		r.loadsByTest.Add(r.counted.loads.Load() - before)
+
+		stream := &riggedStream{w: w, cancel: func() {}, done: done}
+
+		assert.Empty(t, stream.sent(), "a stream told to close before its first byte sent an event")
+		lastRetry(t, stream)
+		synctest.Wait()
+		assert.Zero(t, r.openStreams())
+	})
+}
+
+// closedOverAServer is a closed chain behind a real server of either protocol, and a credential.
+func closedOverAServer(t *testing.T, h2 bool, downstream http.Handler) (*httptest.Server, *httpsec.Chain, string) {
+	t.Helper()
+
+	sessions := must.Must(session.New(
+		session.WithStore(must.Must(session.NewMemoryStore())),
+		session.WithIdleTimeout(30*time.Minute),
+		session.WithAbsoluteTimeout(12*time.Hour),
+	))
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().Return(storedUser(), nil)
+
+	chain := must.Must(httpsec.New(
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+		httpsec.EnableSessionSignals(httpsec.SessionSignals{}),
+	))
+
+	srv := httptest.NewUnstartedServer(chain.Middleware()(downstream))
+
+	if h2 {
+		srv.EnableHTTP2 = true
+		srv.StartTLS()
+		srv.Client().Transport.(*http.Transport).TLSClientConfig = &tls.Config{ //nolint:gosec // the test's own server
+			InsecureSkipVerify: true, NextProtos: []string{"h2"},
+		}
+	} else {
+		srv.Start()
+	}
+
+	t.Cleanup(srv.Close)
+
+	s := must.Must(sessions.Create(t.Context(), identity.UserID("u-1"), session.WithFirstFactor(factor.Password)))
+
+	return srv, chain, s.ID
+}
+
+// TestSessionSignals_Close_ConnectionOnTheWire is what Connection: close does to a closing replica's
+// connection, on each protocol. Go's HTTP/2 server takes it as a graceful end of the whole connection: a
+// GOAWAY, so a client's next request of any kind goes on a new connection, which a load balancer can send
+// elsewhere.
+func TestSessionSignals_Close_ConnectionOnTheWire(t *testing.T) {
+	t.Parallel()
+
+	type asked struct {
+		resp   *http.Response
+		reused bool
+	}
+
+	type testCase struct {
+		name   string
+		h2     bool
+		assert func(t *testing.T, stream asked, next func() asked)
+	}
+
+	cases := []testCase{
+		{
+			name: "HTTP/1.1: the connection closes with the response",
+			assert: func(t *testing.T, stream asked, next func() asked) {
+				assert.Equal(t, "HTTP/1.1", stream.resp.Proto)
+				assert.True(t, stream.resp.Close, "Connection: close")
+				assert.False(t, next().reused, "the connection came back")
+			},
+		},
+		{
+			name: "HTTP/2: the header is not sent, and a GOAWAY gives up the connection",
+			h2:   true,
+			assert: func(t *testing.T, stream asked, next func() asked) {
+				assert.Equal(t, "HTTP/2.0", stream.resp.Proto)
+				assert.Empty(t, stream.resp.Header.Get("Connection"), "forbidden on HTTP/2")
+				assert.True(t, stream.reused, "the stream's own request did not share the connection, so this row shows nothing")
+
+				// The client hears a GOAWAY when it hears it, so ask until a request has a new connection.
+				deadline := time.Now().Add(streamBound)
+
+				for next().reused {
+					require.True(t, time.Now().Before(deadline), "the connection was never given up")
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv, chain, sid := closedOverAServer(t, tc.h2, http.NotFoundHandler())
+
+			ask := func(target string) asked {
+				var reused bool
+
+				ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+					GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+				})
+
+				req := must.Must(http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+target, nil))
+				req.Header.Set("Authorization", "Bearer "+sid)
+
+				resp, err := srv.Client().Do(req)
+				require.NoError(t, err)
+
+				defer func() { _ = resp.Body.Close() }()
+
+				_, err = io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
+				return asked{resp: resp, reused: reused}
+			}
+
+			// A connection already there, which the close's answer then goes out on.
+			ask("/orders")
+			require.NoError(t, chain.CloseSessionSignals(t.Context()))
+
+			tc.assert(t, ask(httpsec.DefaultSessionSignalsPath), func() asked { return ask("/orders") })
+		})
+	}
+}
+
+// TestSessionSignals_Close_HTTP2GoAwaySparesARequestInFlight is what that GOAWAY does to another
+// request on the connection: nothing, however long it then takes.
+func TestSessionSignals_Close_HTTP2GoAwaySparesARequestInFlight(t *testing.T) {
+	t.Parallel()
+
+	// A wait and not an order of events: Go's server allows a closing connection a second before it
+	// would cut what is left, so the row has to outlast that.
+	const pastGoAwayTimeout = 1500 * time.Millisecond
+
+	entered, release := make(chan struct{}), make(chan struct{})
+
+	srv, chain, sid := closedOverAServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+
+		_, _ = w.Write([]byte("done"))
+	}))
+
+	require.NoError(t, chain.CloseSessionSignals(t.Context()))
+
+	slow := make(chan string, 1)
+
+	go func() {
+		req := must.Must(http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/orders", nil))
+		req.Header.Set("Authorization", "Bearer "+sid)
+
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			slow <- err.Error()
+
+			return
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+
+		body, _ := io.ReadAll(resp.Body)
+		slow <- string(body)
+	}()
+
+	<-entered
+
+	req := must.Must(http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+httpsec.DefaultSessionSignalsPath, nil))
+	req.Header.Set("Authorization", "Bearer "+sid)
+
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	assert.Equal(t, "HTTP/2.0", resp.Proto)
+
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	time.Sleep(pastGoAwayTimeout)
+	close(release)
+
+	assert.Equal(t, "done", <-slow)
+}
+
+// TestSessionSignals_Caps_StatsBusSubscribedAfterClose is BusSubscribed's godoc for a bus that ignores
+// its context, which the port's godoc allows for: its Subscribe has not returned, and what a close
+// ended is not up.
+func TestSessionSignals_Caps_StatsBusSubscribedAfterClose(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		stuck := make(chan struct{})
+		defer close(stuck)
+
+		bus := NewMockSignalBus(gomock.NewController(t))
+		bus.EXPECT().Subscribe(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(context.Context, func(httpsec.SignalEnvelope)) error {
+				<-stuck
+
+				return nil
+			})
+
+		r := newStreamRig(t, streamSetup{signals: httpsec.SessionSignals{Bus: bus}})
+		r.open(t, r.signIn(t).ID)
+		require.True(t, r.chain.SessionSignalStats().BusSubscribed)
+
+		require.NoError(t, r.chain.CloseSessionSignals(t.Context()))
+		synctest.Wait()
+
+		assert.False(t, r.chain.SessionSignalStats().BusSubscribed)
 	})
 }

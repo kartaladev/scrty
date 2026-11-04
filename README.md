@@ -1282,6 +1282,7 @@ refused when the chain is built.
 | `Users` | the built-in bearer's user loader; a chain with no built-in bearer must set it |
 | `ReloadContext` | none: reads run on a context with none of the request's values |
 | `ReloadTimeout` | half of `Heartbeat`, within 2 to 10 seconds |
+| `RetryableError` | none: every failure the chain would answer with a 5xx on `Path` is retried |
 | `Bus` | in-process, so with several replicas `session_ended` arrives within a heartbeat, and other signals reach only the replica that raised them |
 | `BusQueue` | 1024, for a consumer's `Bus` only |
 | `BusTimeout` | 5 seconds, for a consumer's `Bus` only |
@@ -1310,7 +1311,11 @@ is sent.
 
 A reason on the bus names the end only if the store says gone within two heartbeats of its arrival,
 and a report of `reuse` is not relabelled by a later one. With no such report the reason is `expired`
-if a deadline the stream holds has passed, and `ended` otherwise.
+if a deadline the stream holds has passed. Otherwise the stream waits half a second for a report,
+because a session manager reports an end only after the store's write has returned, and a read can land
+in between: a logout must not read as `ended` for that. It goes on sending comments meanwhile, holds
+back what is queued, and then says `ended`. An end with no report to come, as on another replica with
+the default bus, pays that half second on top of its heartbeat.
 
 While the store cannot answer, a stream stays open and goes on sending comments, says nothing else,
 and ends only at the sign-in's absolute deadline, with `expired`: the idle deadline may have moved in
@@ -1402,7 +1407,10 @@ handlers. Keep the timeout inside `Shutdown`'s own deadline.
 Each stream closes with no event. Its last bytes are a `retry` of its own between 1 second and 3 ×
 `ReconnectDelay`, so a drained replica's clients spread out, and your load balancer can send them
 elsewhere. A stream requested afterwards gets 200 with only such a `retry`, and `Connection: close`,
-and is not registered: a 503 would stop an `EventSource` for good. The call returns when every body has
+and is not registered: a 503 would stop an `EventSource` for good. A store failing on that request
+changes none of this. On HTTP/1.1 that closes the connection. On HTTP/2 Go's server takes it as a
+graceful GOAWAY for the whole connection: requests already on it finish, and the client's next request
+of any kind opens a new one. The call returns when every body has
 returned, or with its context's error. A body blocked in a write to a stalled client does not stop it
 returning, and a second call ends nothing new and waits on its own context.
 
@@ -1419,7 +1427,7 @@ untrusted caller.
 | --- | --- |
 | `Open` | streams holding a place on this replica |
 | `RefusedByCap` | requests a cap answered with only a `retry` |
-| `ReloadFailures` | reads on open streams that failed or timed out, and requests a failing dependency answered with only a `retry`, which is where a tenant-scoped store with no `ReloadContext` shows |
+| `ReloadFailures` | reads on open streams that failed, timed out or panicked, and requests a failing dependency answered with only a `retry`, which is where a tenant-scoped store with no `ReloadContext` shows |
 | `ConsecutiveReloadFailures` | reads in a row that failed, added up over the open streams, so judge it against `Open` |
 | `BusSubscribed` | a consumer's bus has its subscription up |
 | `BusDropped` | signals a consumer's bus could not take, its queue being full |
@@ -1439,7 +1447,11 @@ untrusted caller.
   because a browser gives up for good on a 5xx. Only `GET` on `Path` is answered so, and every other
   5xx of the chain stands. It takes the same WARN, and counts in `ReloadFailures`. A rate limit of
   yours on this path stays yours when it writes its own answer, or returns an error
-  `httpsec.StatusForError` maps; any other error it returns is taken for a failing dependency.
+  `httpsec.StatusForError` maps below a 5xx. Any other error is taken for a failing dependency,
+  because a store failing inside your authenticator must not end an `EventSource` for good. A
+  refusal of your own that maps to a 5xx can say so through `RetryableError`: returning false sends
+  it through the chain's error mapping and your error handler, and counts no failure. A 5xx is final
+  for a browser, so return false only for what a retry would not change.
 - **A provider's logout.** A back-channel logout that ends sessions through the session manager
   reaches their streams as `session_ended` with the reason `provider_logout`. Streams are matched by a
   digest of the issuer and the upstream session, and the raw values stay out of a stream, the bus and

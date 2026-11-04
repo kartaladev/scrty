@@ -356,10 +356,10 @@ type responseWriter struct {
 	streamWindow time.Duration
 }
 
-// SetHeader has no effect once a stream has started, because every adapter sends
-// the head when Stream is called, even though fiber would still send this.
+// SetHeader has no effect once a response has begun, a stream included, as net/http's
+// has none once its head has gone, even though fiber would still send this.
 func (w *responseWriter) SetHeader(name, value string) {
-	if w.streaming {
+	if w.wrote {
 		return
 	}
 

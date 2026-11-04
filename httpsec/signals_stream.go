@@ -23,7 +23,8 @@ import (
 // the time, and the loop only reads, writes and waits. The store decides whether a sign-in
 // ended, so nothing here ends a stream on a message or on a deadline alone: every path to
 // session_ended goes through streamRules.judge, on an answer the store just gave or, for a store
-// that has not answered, at the absolute deadline alone.
+// that has not answered, at the absolute deadline alone. A stream that judge told to wait for a
+// report ends on that same answer, at most streamReportGrace later (streamLoop.waitForReport).
 
 const (
 	// streamBeatJitter and streamAgeJitter spread heartbeats and maximum ages, ±10%, so that
@@ -47,6 +48,16 @@ const (
 	// streamReasonBeats is how many nominal heartbeats a reported reason stays good for, counted
 	// from its local receipt, so that a report whose end never happened cannot name a later one.
 	streamReasonBeats = 2
+
+	// streamReportGrace is how long a stream whose read said gone, holding no report, waits for one
+	// before it says ended. A session manager reports an end only after the store's write has
+	// returned, so a read can land in between and take a logout for an end nobody reported. A report
+	// from the same process follows in microseconds to a few milliseconds, and one over a healthy
+	// broker in tens of them, so half a second holds both, a loaded machine's scheduling too. An end
+	// no report will follow, as on another replica with the default bus, pays all of it, on top of a
+	// heartbeat: so a longer wait would cover only a bus already in trouble, for a label, at the
+	// price of every such end. It protects a label and not a consumer's policy, so it is a constant.
+	streamReportGrace = 500 * time.Millisecond
 
 	// streamFlow is the flow attribute of a stream's records, and what their sampling keys start
 	// with.
@@ -135,6 +146,10 @@ type streamVerdict struct {
 	// alive says the session store holds the sign-in, so that its answer replaces what the
 	// stream holds. failed says a store failed, which counts as a failed reload.
 	alive, failed bool
+
+	// unreported says end is what a gone sign-in gets when nothing named a reason, for which a
+	// report may still be on its way (streamReportGrace).
+	unreported bool
 }
 
 // streamEvent is one event a stream sends, its data ready for writeEvent.
@@ -189,7 +204,9 @@ func (r streamRules) judge(h heldSignIn, read streamRead, reuse, notice *endNoti
 	case read.userGone:
 		return streamVerdict{end: reasonEnded}
 	case read.gone:
-		return streamVerdict{end: r.goneReason(h, reuse, notice, now)}
+		end, unreported := r.goneReason(h, reuse, notice, now)
+
+		return streamVerdict{end: end, unreported: unreported}
 	}
 
 	// A user store that cannot answer leaves the session store's answer standing, deadlines
@@ -197,22 +214,31 @@ func (r streamRules) judge(h heldSignIn, read streamRead, reuse, notice *endNoti
 	return streamVerdict{alive: true, failed: read.userErr != nil}
 }
 
-// goneReason is why a sign-in the store says is gone ended. A report names it only inside its
-// window, and reuse outranks a later report there, so a logout that finds its family just
-// revoked for reuse does not relabel a theft. Otherwise expired is decided locally, from the
-// deadlines held.
-func (r streamRules) goneReason(h heldSignIn, reuse, notice *endNotice, now time.Time) string {
+// goneReason is why a sign-in the store says is gone ended, and whether that is only for want of a
+// report. Otherwise expired is decided locally, from the deadlines held.
+func (r streamRules) goneReason(h heldSignIn, reuse, notice *endNotice, now time.Time) (string, bool) {
+	if why := r.reported(reuse, notice, now); why != "" {
+		return why, false
+	}
+
+	if _, at := earlierDeadline(h.state); !now.Before(at) {
+		return reasonExpired, false
+	}
+
+	return reasonEnded, true
+}
+
+// reported is the reason a report names now, "" for none. A report names one only inside its window,
+// and reuse outranks a later report there, so a logout that finds its family just revoked for reuse
+// does not relabel a theft.
+func (r streamRules) reported(reuse, notice *endNotice, now time.Time) string {
 	for _, n := range []*endNotice{reuse, notice} {
 		if n != nil && now.Sub(n.at) <= r.reasonWindow {
 			return n.reason
 		}
 	}
 
-	if _, at := earlierDeadline(h.state); !now.Before(at) {
-		return reasonExpired
-	}
-
-	return reasonEnded
+	return ""
 }
 
 // speak is what the state held says is due now, recording it as sent, or for a warning that is no
@@ -428,8 +454,9 @@ type streamLoop struct {
 	parked      *queuedSignal
 
 	// speakAt is the time the timer reloads at, the zero time for none. ageAt is when MaxAge
-	// closes the stream, the zero time with NoMaxAge. wakeOpensAt is when the gap ends.
-	speakAt, ageAt, wakeOpensAt time.Time
+	// closes the stream, the zero time with NoMaxAge. wakeOpensAt is when the gap ends. graceAt is
+	// when a stream a read said gone stops waiting for a report, the zero time when it is not.
+	speakAt, ageAt, wakeOpensAt, graceAt time.Time
 
 	// failuresInRow is this stream's share of streamReloadCounts.inRow.
 	failuresInRow uint64
@@ -493,9 +520,9 @@ func (l *streamLoop) run(ctx context.Context) string {
 	st := l.start.stream
 
 	// A chain that refused after Stream leaves a body on an ended context, where what it writes
-	// goes nowhere.
-	if ctx.Err() != nil {
-		return closeClientLeft
+	// goes nowhere. A stream told to close between taking its place and getting here says nothing.
+	if reason := l.told(ctx); reason != "" {
+		return reason
 	}
 
 	defer func() {
@@ -527,10 +554,15 @@ func (l *streamLoop) run(ctx context.Context) string {
 			answer, timedOut, wake = l.reading.answer, l.reading.timedOut, nil
 		}
 
+		// What a report wakes while one is waited for costs the store nothing, so no gap applies.
+		if l.awaitingReport() {
+			wake = st.wake
+		}
+
 		queue := (<-chan queuedSignal)(st.queue)
 
 		switch {
-		case l.holding():
+		case l.queueHeld():
 			queue = nil
 		case l.parked != nil:
 			sig := *l.parked
@@ -555,9 +587,7 @@ func (l *streamLoop) run(ctx context.Context) string {
 		case <-l.timer:
 			reason = l.onTimer(ctx)
 		case <-wake:
-			l.wake = nil
-			l.wakeOpensAt = l.e.clock.Now().Add(streamWakeGap)
-			l.startRead() //nolint:contextcheck // a read runs on what ReloadContext made, and not on the request's
+			reason = l.onWake(ctx)
 		case read := <-answer:
 			reason = l.onAnswer(ctx, read)
 		case <-timedOut:
@@ -570,6 +600,42 @@ func (l *streamLoop) run(ctx context.Context) string {
 			return reason
 		}
 	}
+}
+
+// queueHeld says nothing is sent from the queue for now: a stream that end closes says session_ended
+// instead of what was raised behind it.
+func (l *streamLoop) queueHeld() bool {
+	return l.awaitingReport() || l.holding()
+}
+
+// awaitingReport says a read has said gone with no report held, and the stream is waiting for one.
+func (l *streamLoop) awaitingReport() bool {
+	return !l.graceAt.IsZero()
+}
+
+// onWake is a wake. While a report is waited for it can be the one waited for, and the store has
+// already said gone, so no read is needed to act on it. With a read in flight, what the wake asks is
+// asked again after it, in case that read answers alive.
+func (l *streamLoop) onWake(ctx context.Context) string {
+	if l.awaitingReport() {
+		st := l.start.stream
+
+		if why := l.rules.reported(st.reuse.Load(), st.notice.Load(), l.e.clock.Now()); why != "" {
+			return l.end(ctx, why)
+		}
+
+		if l.reading != nil {
+			l.again = true
+		}
+
+		return ""
+	}
+
+	l.wake = nil
+	l.wakeOpensAt = l.e.clock.Now().Add(streamWakeGap)
+	l.startRead() //nolint:contextcheck // a read runs on what ReloadContext made, and not on the request's
+
+	return ""
 }
 
 // holding says an end notice has had no answer from the store, so the stream sends nothing from its
@@ -608,7 +674,7 @@ func (l *streamLoop) settleHold(notes uint64) {
 // onSignal is a signal from the queue. One taken with a notice already noted, which the select could
 // not know of, waits for that notice's answer, and goes ahead of the rest of the queue then.
 func (l *streamLoop) onSignal(ctx context.Context, sig queuedSignal) string {
-	if l.holding() {
+	if l.queueHeld() {
 		l.parked = &sig
 
 		return ""
@@ -670,8 +736,8 @@ func (l *streamLoop) armBeat() {
 }
 
 // armTimer arms the one timer for the earliest of what is left. A timer armed before is dropped,
-// and the runtime collects it. What is left of the wake gap is cut back to the gap's own length, so
-// that a clock with no monotonic reading stepped back holds a pending wake for at most two gaps,
+// and the runtime collects it. What is left of the wake gap and of a wait for a report is cut back to
+// its own length, so that a clock with no monotonic reading stepped back holds a pending wake for at most two gaps,
 // and not until that clock catches up. clock.System's monotonic reading sees no such step.
 func (l *streamLoop) armTimer(now time.Time) {
 	if l.wake == nil {
@@ -685,9 +751,17 @@ func (l *streamLoop) armTimer(now time.Time) {
 
 	l.speakAt = l.rules.nextSpeech(l.held, now)
 
+	// Cut back as the gap is, for the same clock.
+	if l.awaitingReport() && l.graceAt.Sub(now) > streamReportGrace {
+		l.graceAt = now.Add(streamReportGrace)
+	}
+
 	at := l.speakAt
-	if !l.ageAt.IsZero() && (at.IsZero() || l.ageAt.Before(at)) {
-		at = l.ageAt
+
+	for _, other := range []time.Time{l.ageAt, l.graceAt} {
+		if !other.IsZero() && (at.IsZero() || other.Before(at)) {
+			at = other
+		}
 	}
 
 	var gated time.Duration
@@ -733,6 +807,13 @@ func (l *streamLoop) onTimer(ctx context.Context) string {
 
 	if !l.ageAt.IsZero() && !now.Before(l.ageAt) {
 		return closeMaxAge
+	}
+
+	if l.awaitingReport() && !now.Before(l.graceAt) {
+		st := l.start.stream
+		why, _ := l.rules.goneReason(l.held, st.reuse.Load(), st.notice.Load(), now)
+
+		return l.end(ctx, why)
 	}
 
 	if !l.speakAt.IsZero() && !now.Before(l.speakAt) {
@@ -817,6 +898,11 @@ func (l *streamLoop) onAnswer(ctx context.Context, read streamRead) string {
 	l.reading = nil
 
 	if read.panicked {
+		// An overdue read was counted when its timeout passed.
+		if !reading.overdue {
+			l.e.reloads.failures.Add(1)
+		}
+
 		return closePanicked
 	}
 
@@ -865,6 +951,12 @@ func (l *streamLoop) answer(ctx context.Context, read streamRead) string {
 
 	l.count(ctx, read, verdict, now)
 
+	if l.waitForReport(verdict, now) {
+		l.armTimer(now)
+
+		return ""
+	}
+
 	if verdict.end != "" {
 		return l.end(ctx, verdict.end)
 	}
@@ -886,6 +978,27 @@ func (l *streamLoop) answer(ctx context.Context, read streamRead) string {
 	l.armTimer(now)
 
 	return ""
+}
+
+// waitForReport says the stream should not act yet on verdict, which is a sign-in gone with no report
+// held, and starts the one wait for one. A read that says gone again changes nothing of that wait, nor
+// does one that fails, since the store has said what it said. Only a store that holds the sign-in again
+// takes it back, which is an end rolled back. Nothing else is held up meanwhile: a heartbeat, MaxAge,
+// closing, a client leaving, a read and its answer all go on, and only the queue waits.
+func (l *streamLoop) waitForReport(verdict streamVerdict, now time.Time) bool {
+	if verdict.alive {
+		l.graceAt = time.Time{}
+	}
+
+	if !verdict.unreported {
+		return false
+	}
+
+	if !l.awaitingReport() {
+		l.graceAt = now.Add(streamReportGrace)
+	}
+
+	return now.Before(l.graceAt)
 }
 
 // end sends session_ended, and is why the stream closes.

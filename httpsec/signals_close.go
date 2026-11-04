@@ -18,8 +18,8 @@ type SessionSignalStats struct {
 	// every dashboard that counts statuses, so this is where a cap being hit shows.
 	RefusedByCap uint64
 
-	// ReloadFailures is every read of a sign-in or its user that failed or timed out on an open
-	// stream, and every request for the stream that a dependency failure answered with only a retry.
+	// ReloadFailures is every read of a sign-in or its user that failed, timed out or panicked on an
+	// open stream, and every request for the stream that a dependency failure answered with only a retry.
 	// The second is 200 on a dashboard too, and it is where a tenant-scoped store with no
 	// SessionSignals.ReloadContext shows, since no stream of that chain ever opens.
 	ReloadFailures uint64

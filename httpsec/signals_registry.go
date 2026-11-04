@@ -295,6 +295,14 @@ func (r *signalRegistry) shut() {
 	}
 }
 
+// isClosed says close has been called, so that nothing more is admitted.
+func (r *signalRegistry) isClosed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.closed
+}
+
 // stats is how many streams are open and how many a cap has refused. It backs
 // Chain.SessionSignalStats, which takes no lock on the delivery path, so both are counters.
 func (r *signalRegistry) stats() (open int, refused uint64) {

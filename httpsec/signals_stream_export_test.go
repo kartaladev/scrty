@@ -36,12 +36,15 @@ type StreamRead struct {
 
 // StreamVerdict is streamVerdict, what a reload decides.
 type StreamVerdict struct {
-	End           string
-	Alive, Failed bool
+	End                       string
+	Alive, Failed, Unreported bool
 }
 
 // StreamEvent is one event a stream's held state says is due, its data as JSON.
 type StreamEvent struct{ Name, Data string }
+
+// StreamReportGrace is how long a stream waits for an end's report once a read has said gone.
+const StreamReportGrace = streamReportGrace
 
 // Jittered is jittered.
 func Jittered(d time.Duration, fraction, roll float64) time.Duration {
@@ -82,7 +85,7 @@ func (r StreamRules) Judge(h HeldSignIn, read StreamRead, reuse, notice *EndNoti
 		sessionErr: read.SessionErr, userErr: read.UserErr,
 	}, reuse.in(), notice.in(), now)
 
-	return StreamVerdict{End: v.end, Alive: v.alive, Failed: v.failed}
+	return StreamVerdict{End: v.end, Alive: v.alive, Failed: v.failed, Unreported: v.unreported}
 }
 
 // EndNotice is endNotice.
@@ -105,11 +108,13 @@ func SignalReloadCounts(c *Chain) (total, consecutive uint64) {
 	return c.signalsEndpoint().reloadCounts()
 }
 
-// StreamAnswer hands a stream's body a read's answer saying the sign-in is gone, with its stream
-// told to close first when closing is true, and returns why it closed.
+// StreamAnswer hands a stream's body a read's answer saying the sign-in is gone, with a report of
+// ended held, and its stream told to close first when closing is true, and returns why it closed.
 func StreamAnswer(ctx context.Context, c *Chain, w EventWriter, closing bool) string {
 	e := c.signalsEndpoint()
 	st := newSignalStream("u-1", id.ID{}, "", "", signalFilter{})
+
+	st.noteEnd(endNotice{reason: reasonEnded, at: e.clock.Now()})
 
 	if closing {
 		close(st.closing)

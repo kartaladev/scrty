@@ -268,6 +268,21 @@ type SessionSignals struct {
 	// data.
 	ReloadContext func(context.Context) context.Context
 
+	// RetryableError decides whether a failure on the stream's path is one a client should
+	// come back from. It is asked only about an error StatusForError maps to a 5xx, returned
+	// to the chain on GET at Path, and not about what a client's hang-up or a writer that
+	// cannot stream returned. Returning true answers 200 with only a retry, as a dependency
+	// failure is, counted in SessionSignalStats.ReloadFailures. Returning false sends the
+	// error through the chain's error mapping, as any other request's, and counts nothing:
+	// use it for a refusal of your own that maps to a 5xx. Mind what that answer does: a 5xx
+	// stops a browser's EventSource for good, and no later request of that page is made.
+	//
+	// A panic in it is recovered and logged without its value, and the failure is retried.
+	//
+	// Default: nil, every such failure is retried, because a store failure in a consumer's
+	// authenticator cannot be told from any other and must not end an EventSource for good.
+	RetryableError func(error) bool
+
 	// ReloadTimeout bounds one reload, the session read and the user read sharing it. A
 	// reload runs beside the stream, so that a store that hangs stops neither the heartbeat,
 	// MaxAge, CloseSessionSignals nor a client leaving, and past this timeout it counts as a
