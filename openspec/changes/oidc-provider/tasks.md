@@ -401,8 +401,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 - [x] 12.1 Write the security-state migration that creates the provider's nine tables and every lookup index (grants by user, by user and client, by sign-in, by upstream session; held codes and browser sessions by user, by sign-in and by upstream session), test-first, with a populated-database test and a rollback test. Verify: `go test -run 'TestMigrations' ./...` in the `test` module, against PostgreSQL 15 and 18.
 - [x] 12.2 Implement every provider store in `sqlstore`, and `NewRefreshTokenStore` over the fixed `op_refresh_tokens` table (T7), test-first, driven by the suites. Include the "lineage identifier not found through the session store" case and the "no credential in any column" case. Verify: `go test -race -run 'TestSQLStore' ./sqlstore/...` in the `test` module.
-- [ ] 12.3 Implement the same in `pgxstore`, test-first. Verify: `go test -race -run 'TestPgxStore' ./pgxstore/...` in the `test` module.
-- [ ] 12.4 Implement the same in `gormstore`, test-first. Verify: `go test -race -run 'TestGormStore' ./gormstore/...` in the `test` module.
+- [x] 12.3 Implement the same in `pgxstore`, test-first. Verify: `go test -race -run 'TestPgxStore' ./pgxstore/...` in the `test` module.
+- [x] 12.4 Implement the same in `gormstore`, test-first. Verify: `go test -race -run 'TestGormStore' ./gormstore/...` in the `test` module.
 - [ ] 12.5 Add the expiry tasks, test-first:
   - code records swept only a minute past their expiry, so an exchange in flight keeps the record an end needs (R7);
   - pending requests, browser sessions, codes (the onetime purge), opaque tokens and assertion identifiers;

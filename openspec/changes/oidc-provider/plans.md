@@ -669,9 +669,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red rows on `TestProvider_ExchangeCode`:
   - a store failure during the spend, and a transient failure of the read after it, for the owner and for another client: `oidcprovider: dependency failure`, with the cause wrapped, and no `invalid_grant`;
   - a caller hanging up at the check and at the spend: the error matches `context.Canceled`, and no ERROR line is logged, including from `token/onetime`.
+- [ ] A spend or check failure wraps the fixed `errCodeStoreUnanswered`, or `ctx.Err()` when the caller has gone, and not the store's own error, which `token/onetime` keeps to itself and logs at ERROR. A failure of the read after it wraps the real error.
 - [ ] FAIL; implement:
   - `refuseSpentCode` revokes only when `record.ClientID == rc.ID` and `codeBindingsHold` passes; once the secret matches, an unspent and unexpired token is a dependency failure carrying `ctx.Err()` when the caller has gone;
-  - `sweepingCodeTokens.sweepIfDue` and `MemoryCodeStore.Create` sweep at `now.Add(-time.Minute)`;
+  - the default stores keep a code a minute past its expiry, through one constant, `codeKeptPastExpiry`. `MemoryCodeStore.Create` sweeps at `now.Add(-codeKeptPastExpiry)`. `DeleteExpiredBefore`'s argument is a cutoff on when a token was *issued*, and it removes only what has also expired by the store's clock, so moving the cutoff keeps nothing past expiry: the default token store's inner `MemoryStore` reads a clock lagging by that minute, which it reads only when sweeping;
   - `token/onetime` logs a store failure the caller caused below ERROR, through `internal/hangup.ByCaller`.
 
   Run with `go test -race`: PASS. Commit.
@@ -1101,7 +1102,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 **Files:** Create `oidcprovider/expiry.go`; Test `test/expirytasks_test.go`
 - [ ] `func ExpiryTasks(p *Provider) []expiry.Task`, with these task names:
   - `oidc-provider.pending-requests`, `oidc-provider.codes` (the onetime purge plus the code records), `oidc-provider.access-tokens` and `oidc-provider.assertion-ids`;
-  - `oidc-provider.codes`, sweeping a record only one minute past its expiry, so an exchange in flight keeps what an end needs;
+  - `oidc-provider.codes`, sweeping a record only one minute past its expiry, so an exchange in flight keeps what an end needs. The onetime purge must keep the code's token as long (R17). `DeleteExpiredBefore`'s argument is a cutoff on when a token was issued, so a durable purge passes `now - codeLifetime - 1 minute`, not `now - 1 minute`. Prove it on each backend with a replay inside the minute after the task has run;
   - `oidc-provider.grants`, with `keepRevoked` one minute past the longest code lifetime, as the memory store keeps it, so a code spent as it expires cannot land after its tombstone is swept;
   - `oidc-provider.refresh-tokens` (the lineage `DeleteExpired`);
   - `oidc-provider.orphaned-grants`, with a 10 min cutoff.
