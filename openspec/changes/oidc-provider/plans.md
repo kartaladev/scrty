@@ -767,7 +767,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 **Files:** Create `oidcprovider/userinfo.go`, `claims.go`
 - [ ] Red `TestProvider_UserInfo`:
   - `openid profile` for a user named "Ada" → `{"sub", "name", "preferred_username"}`, with no `email`;
-  - `openid email` with the default source → `{"sub"}` only, because `identity.Details` has no email field;
+  - `openid email` with the default source, for the username `ada@example.com` → `{"sub", "email", "email_verified": false}`;
+  - `openid email` for the username `ada`, or `Ada <ada@example.com>` → `{"sub"}` only: the username must be exactly an address (`mail.ParseAddress`, with its `Address` equal to the username);
   - a consumer source releasing `department` for `org` → returned unchanged;
   - a token without `openid` → `insufficient_scope`;
   - a disabled user → `invalid_token`;

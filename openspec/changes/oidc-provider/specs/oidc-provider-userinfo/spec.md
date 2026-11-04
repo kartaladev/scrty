@@ -77,12 +77,24 @@ A claim the user does not have SHALL be omitted, never sent as null or an empty 
 - **WHEN** a consumer's claim source returns `groups` as an empty list
 - **THEN** the response holds `groups` as an empty list
 
-### Requirement: The default claim source has no email
-The default claim source has no email to read, because `identity.Details` holds none, so `email` and `email_verified` SHALL come only from a consumer's claim source.
+### Requirement: The default claim source reads an email from the username
+With the `email` scope, the default claim source SHALL release a username that is exactly an email address as `email`, and `email_verified` as false, because a username proves nothing about who controls that address. A username that is not exactly an email address SHALL release neither claim. A consumer who knows better MAY supply its own claim source.
 
-#### Scenario: The email scope with the default source
-- **WHEN** a token for `openid email` is presented, on a provider using the default claim source
-- **THEN** the response holds `sub`, and no `email`
+#### Scenario: A username that is an email address
+- **WHEN** a token for `openid email` is presented for the user `ada@example.com`, on a provider using the default claim source
+- **THEN** the response holds `sub`, `email` as `ada@example.com`, and `email_verified` as false
+
+#### Scenario: A username that is not an email address
+- **WHEN** a token for `openid email` is presented for the user `ada`, or for one whose username is `Ada <ada@example.com>`
+- **THEN** the response holds `sub`, and neither `email` nor `email_verified`
+
+#### Scenario: The scope not granted
+- **WHEN** a token for `openid profile` is presented for the user `ada@example.com`
+- **THEN** the response holds no `email`
+
+#### Scenario: A consumer's own source
+- **WHEN** a consumer's claim source returns `email` with `email_verified` as true
+- **THEN** the response holds them unchanged
 
 ### Requirement: Claims come from a replaceable claim source
 The provider SHALL obtain a user's claims from a claim source. By default it SHALL read them from the identity store's user: the display name as `name`, and the username as `preferred_username`. A consumer MAY supply its own claim source, for any standard or custom claim and the scopes that release them, and its values SHALL be returned unchanged. A user who no longer exists or is disabled SHALL be refused with `invalid_token`.

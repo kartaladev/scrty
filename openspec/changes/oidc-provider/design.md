@@ -1207,7 +1207,12 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **A resource server's identifier cannot be the issuer (`REPRODUCED`).** The issuer is in every default-audience `openid` token, so that value would show a client nearly every token at introspection. `ResourceIdentifier` must be an absolute URI with no fragment, not the issuer, on a confidential client, or the client fails construction.
 - **Ending a sign-in budgets each store on its own (`REPRODUCED`).** A hanging grant store would otherwise spare the browser sessions, and nothing retries an observer.
 - **Empty claims (OIDC Core §5.3.2).** A null or an empty string is omitted. Any other value of a consumer's stays, as a consumer's `groups: []` is its own (`library-design` rule 5).
-- **The default claim source has no email.** `identity.Details` holds none, so the `email` scope releases nothing by default, and a consumer supplies `email` and `email_verified` through `WithClaimSource`. Adding an email to `identity` is a change of its own, and it can come later without breaking a consumer.
+- **The default claim source reads an email from the username, decided by the user.** `identity.Details` holds no email, and the default stores discard one by a settled decision. A username that is exactly an email address is released as `email`, as recovery's contact resolver already defaults to the username, and just-in-time provisioning uses the email as the username.
+  - **`email_verified` is always false from this source.** A username proves nothing about who controls that address, even for a just-in-time user whose upstream proved it, as nothing records that. Claiming true would be a false statement a relying party might trust.
+  - **The default and the override.** A consumer's `WithClaimSource` replaces it, and is how a true `email_verified`, or an address apart from the username, is released.
+  - **Not an account key.** The address stays out of every lookup, as matching on it would let a caller take over an account by claiming it.
+  - **Rejected:** email columns on `users`, with a true verified state, which reverse the settled decision and touch a migration and three adapters for a column nothing else reads; and both together.
+  - **Options left for later.** Those columns can be added without breaking a consumer, with a stored email taking precedence over the username.
 - **Accepted:** a superseded token is inactive at introspection even inside its grace, and a disabled user's token stays active there until its grant is revoked, bounded by its lifetime. A caller who hangs up before the first read at revocation revokes nothing, as no credential was yet judged. All of this ran on the memory stores; task 12.6 carries the durable round trip.
 
 #### R8. A family identifier is not a credential (H6)
@@ -1572,4 +1577,8 @@ Reasoned from scrty's own settled specs and the established design.
 - [Ory Hydra, graceful token refresh](https://www.ory.com/docs/hydra/guides/graceful-token-refresh): a new token on each use, in one chain, described as a workaround for clients that cannot be fixed.
 - [Okta, refresh tokens](https://developer.okta.com/docs/guides/refresh-tokens/main/): the previous token stays valid for a grace period, 30 seconds by default.
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), [OAuth 2.1, draft-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt) and [browser-based apps, draft-26](https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-26.txt): searched for concurrent refresh, and silent on it.
+
+### R21: an email from the username
+
+Reasoned from scrty's own settled specs and the user's decision. [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §5.1 and §5.4, accessed 2026-11-04: `email` and `email_verified` are the `email` scope's claims; §5.3.2: a claim not returned is omitted, not a null or an empty string.
 
