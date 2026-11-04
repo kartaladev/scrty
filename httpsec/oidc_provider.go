@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -223,12 +224,20 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     sign with. A provider of any other type, such as a wrapper, cannot be
 //     compared, and builds;
 //   - enabling it twice;
-//   - two of its paths equal, or one equal to another endpoint of the chain;
+//   - two of its paths equal, or one equal to, or under a prefix claimed by, another
+//     endpoint of the chain: the login, logout, key set, session renewal, session
+//     management, password change, recovery, passkey, MFA, re-authentication,
+//     magic-link and OIDC login endpoints;
 //   - a session manager on the chain that does not report sign-in ends to p
 //     (session.WithEndObserver), because grants would then outlive a logout;
 //   - oidcprovider.WithDPoP disagreeing with EnableDPoP;
 //   - an oidcprovider.WithAssertionTokenEndpoint audience other than the path the
 //     token endpoint is served on;
+//   - a client requiring DPoP while EnableDPoP is off, or one requiring a certificate
+//     binding while EnableCertificateBinding is off. A client of the consumer's own
+//     registry cannot be listed here, and is judged as it is read;
+//   - no EnableCSRFProtection while the provider keeps a browser session, which
+//     oidcprovider.WithoutBrowserSessions turns off;
 //   - no EnableSecurityHeaders, unless WithOIDCPagesCarryFrameAncestors states the
 //     consumer's pages protect themselves.
 func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
@@ -332,6 +341,8 @@ func (op *oidcEndpoints) check(c *config) error {
 		op.checkJWKS,
 		op.checkCollisions,
 		op.checkDPoP,
+		op.checkBindings,
+		op.checkCSRF,
 		op.checkAssertionEndpoint,
 		op.checkFrameAncestors,
 	} {
@@ -461,6 +472,31 @@ func (c *config) oidcForeignPaths() map[string]string {
 		}
 	}
 
+	if m := c.mfaOf(); m != nil && m.listing != nil {
+		taken[m.listing.path] = "the MFA method listing path"
+	}
+
+	_ = eachInterceptor(c, func(l *magicLinkInterceptor) error {
+		taken[l.requestPath] = "the magic-link request path"
+		taken[l.consumePath] = "the magic-link consume path"
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(o *oidcInterceptor) error {
+		if o.handoffs != nil || o.handoffRedeemerSet {
+			taken[o.handoffPath] = "the OIDC login handoff path"
+		}
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(i *reauthInterceptor) error {
+		p := i.paths()
+		taken[p.methods] = "the re-authentication listing path"
+		taken[p.password] = "the re-authentication password path"
+
+		return nil
+	})
+
 	return taken
 }
 
@@ -474,6 +510,25 @@ func (c *config) oidcForeignPrefixes() []string {
 
 	_ = eachInterceptor(c, func(i *enrolmentInterceptor) error {
 		prefixes = append(prefixes, i.prefixes()...)
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(o *oidcInterceptor) error {
+		// A prefix written with its trailing slash claims what the slash-free form does.
+		for _, prefix := range []string{o.authorizePath, o.callbackPath, o.backchannelPath} {
+			prefixes = append(prefixes, strings.TrimRight(prefix, "/"))
+		}
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(i *reauthInterceptor) error {
+		p := i.paths()
+		prefixes = append(prefixes, p.begin, p.verify)
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(m *sessionManagement) error {
+		prefixes = append(prefixes, m.prefix)
 
 		return nil
 	})
@@ -496,6 +551,39 @@ func (op *oidcEndpoints) checkDPoP(c *config) error {
 	}
 
 	return nil
+}
+
+// checkBindings refuses a client the chain could not verify. A client requiring
+// DPoP needs EnableDPoP to verify the proofs, and one requiring a certificate
+// binding needs EnableCertificateBinding, or every token it was issued would be
+// refused wherever it was presented. The provider answers only for the clients it
+// can list; a client of the consumer's own registry is judged as it is read.
+func (op *oidcEndpoints) checkBindings(c *config) error {
+	if op.provider.RequiresBinding(oidcprovider.BindingDPoP) && !c.dpopEnabled {
+		return newConfigError("%s was given a provider with a client requiring DPoP on a chain without "+
+			"EnableDPoP, so no proof would be verified: add EnableDPoP, with oidcprovider.WithDPoP on the "+
+			"provider, or drop the client's RequireBinding", optionOIDCProvider)
+	}
+
+	if op.provider.RequiresBinding(oidcprovider.BindingMTLS) && c.certBinding == nil {
+		return newConfigError("%s was given a provider with a client requiring a certificate binding on a "+
+			"chain without EnableCertificateBinding, so no certificate would be verified: add "+
+			"EnableCertificateBinding, or drop the client's RequireBinding", optionOIDCProvider)
+	}
+
+	return nil
+}
+
+// checkCSRF requires CSRF protection while the provider keeps a browser session,
+// because the consent stage may then answer from a cookie.
+func (op *oidcEndpoints) checkCSRF(c *config) error {
+	if !op.provider.BrowserSessionsEnabled() || hasInterceptor[*csrfLayer](c) {
+		return nil
+	}
+
+	return newConfigError("%s keeps a browser session, whose cookie can answer a consent, so it needs "+
+		"EnableCSRFProtection; a provider built with oidcprovider.WithoutBrowserSessions needs none",
+		optionOIDCProvider)
 }
 
 // checkAssertionEndpoint refuses an assertion audience the token endpoint is not

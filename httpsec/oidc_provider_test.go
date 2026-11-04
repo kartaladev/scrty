@@ -10,6 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -37,18 +40,26 @@ func newOPFixture(t *testing.T) *opFixture {
 	}
 }
 
-// provider builds a provider over the fixture's keys.
+// provider builds a provider over the fixture's keys, with one client.
 func (f *opFixture) provider(t *testing.T, opts ...oidcprovider.Option) *oidcprovider.Provider {
+	t.Helper()
+
+	return f.providerFor(t, nil, opts...)
+}
+
+// providerFor builds a provider over the fixture's keys. With clients it holds
+// them, besides the one every other provider has.
+func (f *opFixture) providerFor(t *testing.T, clients []oidcprovider.Client, opts ...oidcprovider.Option) *oidcprovider.Provider {
 	t.Helper()
 
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer: opIssuer,
-		Clients: []oidcprovider.Client{{
+		Clients: append([]oidcprovider.Client{{
 			ID:           "billing-web",
 			Type:         oidcprovider.Confidential,
 			Secret:       []byte("0123456789abcdef0123456789abcdef"),
 			RedirectURIs: []string{"https://rp.example.com/cb"},
-		}},
+		}}, clients...),
 		Keys:         f.keys,
 		Users:        NewMockUserLoader(gomock.NewController(t)),
 		LoginURL:     opIssuer + "/login",
@@ -66,6 +77,80 @@ func reporting(t *testing.T, p *oidcprovider.Provider) *session.Sessions {
 	t.Helper()
 
 	return must.Must(session.New(session.WithEndObserver(p)))
+}
+
+// requiring is a client whose tokens must carry the sender constraint b.
+func requiring(id string, b oidcprovider.BindingRequirement) oidcprovider.Client {
+	return oidcprovider.Client{
+		ID:             id,
+		Type:           oidcprovider.Confidential,
+		Secret:         []byte("0123456789abcdef0123456789abcdef"),
+		RedirectURIs:   []string{"https://rp.example.com/cb"},
+		RequireBinding: b,
+	}
+}
+
+// The chain's other endpoints, each built over a session manager that reports to
+// the provider, so that only a path can refuse the chain.
+
+func magicLinkOn(t *testing.T, m *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	h := newMagicLinkHarness(t)
+
+	return []httpsec.Option{httpsec.EnableMagicLink(h.manager,
+		httpsec.WithMagicLinkSessions(m))}
+}
+
+func oidcLoginOn(t *testing.T, m *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	flows, err := oidc.NewMemoryFlowStore()
+	require.NoError(t, err)
+
+	return []httpsec.Option{httpsec.EnableOIDCLogin(
+		httpsec.OIDCDeps{RelyingParty: oidcManagerOver(t, flows), Handoff: newTestHandoffManager(t)},
+		httpsec.WithOIDCSessions(m))}
+}
+
+// totpLike is an enrolled second factor, for a chain that only needs one.
+func totpLike(t *testing.T) mfa.Method {
+	t.Helper()
+
+	method := NewMockMethod(gomock.NewController(t))
+	method.EXPECT().Name().Return("totp").AnyTimes()
+	method.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
+	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+
+	return method
+}
+
+func mfaOn(t *testing.T, opts ...httpsec.MFAOption) httpsec.Option {
+	t.Helper()
+
+	return httpsec.EnableMFA([]mfa.Method{totpLike(t)}, opts...)
+}
+
+func reauthOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{
+		mfaOn(t),
+		httpsec.EnableReauthentication(),
+	}
+}
+
+func managementOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{httpsec.EnableSessionManagement()}
+}
+
+func mfaListingOn(t *testing.T, _ *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{mfaOn(t, httpsec.WithMFAMethodListing())}
 }
 
 func (f *opFixture) bearer(t *testing.T, m *session.Sessions) httpsec.Option {
@@ -86,6 +171,7 @@ func (f *opFixture) wired(t *testing.T, p *oidcprovider.Provider) []httpsec.Opti
 		f.bearer(t, reporting(t, p)),
 		httpsec.EnableJWKSEndpoint(f.keys),
 		httpsec.EnableSecurityHeaders(),
+		httpsec.EnableCSRFProtection(),
 	}
 }
 
@@ -170,6 +256,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					formLogin(t, reporting(t, p), newMockGenerator(gomock.NewController(t))),
 					httpsec.EnableJWKSEndpoint(f.keys),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p),
 				}
 			},
@@ -185,6 +272,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return []httpsec.Option{
 					f.bearer(t, reporting(t, p)),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p),
 				}
 			},
@@ -286,6 +374,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					f.bearer(t, must.Must(session.New())),
 					httpsec.EnableJWKSEndpoint(f.keys),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(f.provider(t)),
 				}
 			},
@@ -327,6 +416,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					f.bearer(t, m),
 					httpsec.EnableJWKSEndpoint(f.keys),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: m, Users: NewMockUserLoader(gomock.NewController(t))}),
 					httpsec.EnableOIDCProvider(p),
 				}
@@ -346,6 +436,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					f.bearer(t, must.Must(session.New())),
 					httpsec.EnableJWKSEndpoint(f.keys),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(f.provider(t)),
 					httpsec.WiredStep(func() { wired = true }),
 				}
@@ -394,6 +485,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: opIssuer}),
 					httpsec.EnableJWKSEndpoint(f.keys),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p),
 				}
 			},
@@ -460,6 +552,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					f.bearer(t, reporting(t, p)),
 					httpsec.EnableJWKSEndpoint(f.otherKeys),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p),
 				}
 			},
@@ -475,6 +568,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return []httpsec.Option{
 					f.bearer(t, reporting(t, p)),
 					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p),
 				}
 			},
@@ -490,6 +584,7 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return []httpsec.Option{
 					f.bearer(t, reporting(t, p)),
 					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCPagesCarryFrameAncestors()),
 				}
 			},
@@ -506,11 +601,144 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					f.bearer(t, reporting(t, p)),
 					httpsec.EnableJWKSEndpoint(NewMockKeySetProvider(gomock.NewController(t))),
 					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableCSRFProtection(),
 					httpsec.EnableOIDCProvider(p),
 				}
 			},
 			assert: built,
 		},
+
+		{
+			name: "browser sessions on and no CSRF protection",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableOIDCProvider(p),
+				}
+			},
+			assert: refused("EnableOIDCProvider", "EnableCSRFProtection", "WithoutBrowserSessions"),
+		},
+		{
+			name: "browser sessions on and CSRF protection opted out of",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return []httpsec.Option{
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableSecurityHeaders(),
+					httpsec.WithoutCSRFProtection(),
+					httpsec.EnableOIDCProvider(p),
+				}
+			},
+			assert: refused("EnableOIDCProvider", "EnableCSRFProtection"),
+		},
+		{
+			name: "no browser sessions and no CSRF protection builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t, oidcprovider.WithoutBrowserSessions())
+
+				return []httpsec.Option{
+					f.bearer(t, reporting(t, p)),
+					httpsec.EnableJWKSEndpoint(f.keys),
+					httpsec.EnableSecurityHeaders(),
+					httpsec.EnableOIDCProvider(p),
+				}
+			},
+			assert: built,
+		},
+		{
+			name: "a client requiring DPoP and no EnableDPoP",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerFor(t, []oidcprovider.Client{requiring("dpop-app", oidcprovider.BindingDPoP)})
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			assert: refused("EnableOIDCProvider", "EnableDPoP"),
+		},
+		{
+			name: "a client requiring DPoP, with DPoP on the provider and the chain",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerFor(t, []oidcprovider.Client{requiring("dpop-app", oidcprovider.BindingDPoP)},
+					oidcprovider.WithDPoP())
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p),
+					httpsec.EnableDPoP(httpsec.DPoP{PublicURL: opIssuer}))
+			},
+			assert: built,
+		},
+		{
+			name: "a client requiring a certificate binding and no EnableCertificateBinding",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerFor(t, []oidcprovider.Client{requiring("mtls-app", oidcprovider.BindingMTLS)})
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			assert: refused("EnableOIDCProvider", "EnableCertificateBinding"),
+		},
+		{
+			name: "a client requiring a certificate binding, with it enabled",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.providerFor(t, []oidcprovider.Client{requiring("mtls-app", oidcprovider.BindingMTLS)})
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p), httpsec.EnableCertificateBinding())
+			},
+			assert: built,
+		},
+	}
+
+	// Each endpoint family of the chain that the provider's paths must stay clear of,
+	// whatever the order of the options: the provider is given the family's path.
+	for _, fam := range []struct {
+		name     string
+		endpoint httpsec.OIDCEndpoint
+		path     string
+		enable   func(t *testing.T, m *session.Sessions) []httpsec.Option
+	}{
+		{"the magic-link request path", httpsec.OIDCToken, httpsec.DefaultMagicLinkRequestPath, magicLinkOn},
+		{"the magic-link consume path", httpsec.OIDCRevoke, httpsec.DefaultMagicLinkConsumePath, magicLinkOn},
+		{"an OIDC login authorization path", httpsec.OIDCToken, httpsec.DefaultOIDCAuthorizePath + "idp", oidcLoginOn},
+		{"an OIDC login callback path", httpsec.OIDCToken, httpsec.DefaultOIDCCallbackPath + "idp", oidcLoginOn},
+		{"an OIDC login back-channel logout path", httpsec.OIDCToken, httpsec.DefaultOIDCBackchannelPath + "idp", oidcLoginOn},
+		{"the OIDC login handoff path", httpsec.OIDCToken, httpsec.DefaultOIDCHandoffPath, oidcLoginOn},
+		{"the re-authentication listing path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/methods", reauthOn},
+		{"a re-authentication begin path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/begin/totp", reauthOn},
+		{"a re-authentication verify path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/verify/totp", reauthOn},
+		{"the re-authentication password path", httpsec.OIDCToken, httpsec.DefaultReauthenticationPrefix + "/password", reauthOn},
+		{"the session management prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix, managementOn},
+		{"a session management path under its prefix", httpsec.OIDCToken, httpsec.DefaultSessionManagementPrefix + "/s-1", managementOn},
+		{"the MFA method listing path", httpsec.OIDCToken, httpsec.DefaultMFAMethodListingPath, mfaListingOn},
+	} {
+		cases = append(cases, testCase{
+			name: "the provider's path set to " + fam.name,
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(f.wired(t, p), append(fam.enable(t, reporting(t, p)),
+					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(fam.endpoint, fam.path)))...)
+			},
+			assert: refused("EnableOIDCProvider", fam.path),
+		})
 	}
 
 	for _, tc := range cases {

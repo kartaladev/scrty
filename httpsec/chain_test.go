@@ -2091,6 +2091,7 @@ func builtInSlots() []namedSlot {
 	return []namedSlot{
 		{"JWKS", httpsec.OrderJWKS},
 		{"OIDC", httpsec.OrderOIDC},
+		{"OIDCProvider", httpsec.OrderOIDCProvider},
 		{"FormLogin", httpsec.OrderFormLogin},
 		{"MagicLink", httpsec.OrderMagicLink},
 		{"AccountRecoveryEndpoints", httpsec.OrderAccountRecoveryEndpoints},
@@ -2106,6 +2107,7 @@ func builtInSlots() []namedSlot {
 		{"SessionRenewal", httpsec.OrderSessionRenewal},
 		{"Logout", httpsec.OrderLogout},
 		{"SessionTouch", httpsec.OrderSessionTouch},
+		{"OIDCProviderSession", httpsec.OrderOIDCProviderSession},
 		{"Authorizer", httpsec.OrderAuthorizer},
 	}
 }
