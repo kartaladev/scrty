@@ -11,6 +11,15 @@
 // migrate.Identity for the identity store): nothing here creates or alters a
 // table, and no store calls AutoMigrate.
 //
+// It also keeps the OIDC provider's state: parked requests, codes, consents,
+// grants, access tokens, assertion identifiers, browser sessions, clients and
+// refresh-token lineages, the last in a table of their own that no session
+// store reads. These stores run pgschema's statements as they stand, on the
+// handle's connection or transaction, not through gorm's SQL building, which
+// would read an "@" in a statement as a named argument. GrantStore's
+// many-grant writes run as one unit, in a transaction of their own or under a
+// savepoint inside a caller's.
+//
 // # Construction
 //
 // Every constructor takes the *gorm.DB and options, and returns the store or

@@ -31,6 +31,10 @@ type config struct {
 	clock        clock.Clock
 	resealOnRead bool
 
+	// lineage binds a session store to the fixed lineage table. Only
+	// NewRefreshTokenStore sets it, and no option can.
+	lineage bool
+
 	// honours is the set of optionKinds the constructing store declared.
 	honours optionKind
 
@@ -86,10 +90,11 @@ func WithTxResolver(r TxResolver) Option {
 }
 
 // WithIDGenerator replaces the source of the identifiers a store mints for
-// records that carry none of their own. It is honoured by the seven minting
-// stores: sessions, signing keys, login attempts, MFA enrolments, OIDC flows,
-// saved recovery codes and the identity store (users, role grants and
-// password-history entries).
+// records that carry none of their own. It is honoured by the minting stores:
+// sessions, signing keys, login attempts, MFA enrolments, OIDC flows, saved
+// recovery codes, the identity store (users, role grants and password-history
+// entries), and the OpenID Provider's consent, assertion identifier, browser
+// session, client and refresh-token lineage stores.
 // The default is id.NewV7Generator, whose identifiers sort by the moment they
 // were minted. The identity store never orders by identifier, so a generator
 // whose identifiers do not sort in creation order changes no order it returns.
@@ -115,6 +120,8 @@ func WithIDGenerator(g id.Generator) Option {
 // (the expiry condition of Complete), the one-time token store's reaper, and
 // the MFA enrolment store (whether an emailed code's EmailCodeUntil has
 // passed, so it is no longer opened on read). The default is clock.System().
+// The OpenID Provider's refresh-token lineage store honours it as the session
+// store does.
 //
 // For the MFA enrolment store, give it the same clock as the enrolling method
 // (mfa.WithClock for TOTP), which sets the code's expiry and charges each

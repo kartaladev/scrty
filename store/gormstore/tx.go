@@ -88,6 +88,16 @@ func WithTx(ctx context.Context, tx *gorm.DB) context.Context {
 // The handle returned is a fresh session on the resolved one's connection
 // (see opSession), never the resolved handle itself.
 func (c *config) conn(ctx context.Context) (q *gorm.DB, ambient bool, err error) {
+	q, ambient, err = c.resolveConn(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return c.boundTo(q), ambient, nil
+}
+
+// resolveConn is conn's resolution, before the handle is bound to the store's table.
+func (c *config) resolveConn(ctx context.Context) (q *gorm.DB, ambient bool, err error) {
 	if c.resolver != nil {
 		h, ok := c.resolver(ctx)
 		if !ok {
