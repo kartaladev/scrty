@@ -218,6 +218,7 @@ func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
 	}
 
 	emitEvent(ex.Context(), sessionEvent(event.PasskeyRemoved, event.OutcomeSuccess, s))
+	ex.credentialChanged(s.UserID, CredentialPasskey)
 
 	return p.respondRemove(ex, cid)
 }

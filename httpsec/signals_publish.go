@@ -51,14 +51,31 @@ func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, 
 		return fmt.Errorf("%w: unknown credential kind", ErrInvalidSignal)
 	}
 
-	data, err := json.Marshal(struct {
-		Kind CredentialKind `json:"kind"`
-	}{kind})
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidSignal, err)
-	}
+	return e.raiseCredentialChange(user, kind)
+}
+
+// raiseCredentialChange hands a credential_changed of a known kind to the hub, which never blocks.
+func (e *sessionSignals) raiseCredentialChange(user identity.UserID, kind CredentialKind) error {
+	// The kind is one of the three constants, so it needs no escaping.
+	data := json.RawMessage(`{"kind":"` + string(kind) + `"}`)
 
 	return e.hub.raise(SignalEnvelope{User: user, Name: string(SignalCredentialChanged), Data: data}) //nolint:contextcheck // detached on purpose: a bus outlives the request
+}
+
+// credentialChanged tells the open streams of user that a credential of the given kind changed,
+// for an endpoint of the chain this exchange runs through that has just written it. It is called
+// after the write, never before and never on a refusal. The change has happened whatever the
+// signal does, so a full or closed bus changes nothing the endpoint answers, and a chain without
+// signals, or an exchange of none, does nothing.
+func (ex *Exchange) credentialChanged(user identity.UserID, kind CredentialKind) {
+	ph := ex.perRequest
+	if ph == nil || ph.chain == nil {
+		return
+	}
+
+	if e := ph.chain.signalsEndpoint(); e != nil {
+		_ = e.raiseCredentialChange(user, kind)
+	}
 }
 
 // PublishSignal sends the consumer's own signal to every open stream of user, whose client hears

@@ -233,6 +233,7 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 
 	// The password is changed by now, whether or not the session then saves.
 	emitEvent(ctx, sessionEvent(event.AuthnPasswordChange, event.OutcomeSuccess, s))
+	ex.credentialChanged(s.UserID, CredentialPassword)
 
 	g.clearFailures(ctx, username)
 

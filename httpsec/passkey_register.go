@@ -51,6 +51,7 @@ func (p *passkeyInterceptor) finish(ex *Exchange, s *session.Session) error {
 
 	if res.Activated {
 		emitEvent(ctx, sessionEvent(event.PasskeyRegistered, event.OutcomeSuccess, s))
+		ex.credentialChanged(s.UserID, CredentialPasskey)
 
 		if err := p.bound(ctx, s); err != nil {
 			return err
@@ -233,6 +234,7 @@ func (p *passkeyInterceptor) confirm(ex *Exchange, s *session.Session, run confi
 
 	if activated != nil {
 		emitEvent(ctx, sessionEvent(event.PasskeyRegistered, event.OutcomeSuccess, s))
+		ex.credentialChanged(s.UserID, CredentialPasskey)
 
 		if err := p.bound(ctx, s); err != nil {
 			return err

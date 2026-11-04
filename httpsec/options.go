@@ -638,6 +638,7 @@ func (c *config) build() (*Chain, error) {
 		now:               c.now,
 		dpop:              c.dpop,
 		certBinding:       c.certBinding,
+		chain:             chain,
 	}
 
 	// The built-ins are wired last, because each of them reads settings — the

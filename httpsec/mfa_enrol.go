@@ -893,6 +893,7 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, metho
 	// The binding is written whether or not the session then saves, so it is
 	// reported either way, as the notification is.
 	emitEvent(ctx, sessionEvent(event.MFAEnrolled, event.OutcomeSuccess, s))
+	ex.credentialChanged(s.UserID, CredentialSecondFactor)
 
 	if saveErr != nil {
 		s.MFA = was
