@@ -3,6 +3,7 @@ package gormstore_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
@@ -144,11 +146,6 @@ func TestGormStore_HandleTimeoutBoundsProviderStores(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// A backstop only: a call the handle's bound does not reach waits on the lock until
-			// this fires, and the case reports how long it took.
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			time.AfterFunc(6*time.Second, cancel)
 			d := migratedDB(t)
 			g := openGormWith(t, d.conn.DSN, &gormdb.Config{DefaultContextTimeout: handleBound})
 			base := openGormWith(t, d.conn.DSN, &gormdb.Config{})
@@ -160,6 +157,12 @@ func TestGormStore_HandleTimeoutBoundsProviderStores(t *testing.T) {
 			_, err = blocker.ExecContext(t.Context(), "LOCK TABLE "+tc.table+" IN "+tc.mode+" MODE")
 			require.NoError(t, err)
 
+			// A backstop only: a call the handle's bound does not reach waits on the lock until
+			// this fires, and the case reports how long it took. It starts here, after the
+			// database and the lock, so a slow container start does not use it up.
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			time.AfterFunc(6*time.Second, cancel)
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
 			}
@@ -187,8 +190,17 @@ func TestGormStore_HandleTimeoutLeavesReadsWhole(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, got, 3)
 
-	_, err = newCodeStore(t, g).UnspentByClient(ctx, "u-1", "c-1")
+	codes := newCodeStore(t, g)
+	for n := 1; n <= 3; n++ {
+		require.NoError(t, codes.Create(ctx, &oidcprovider.CodeRecord{
+			TokenID: opID(n), ClientID: "c-1", RedirectURI: "https://rp.example.com/cb",
+			SignIn:      oidcprovider.SignIn{User: "u-1", Family: opID(10 + n)},
+			GrantFamily: opID(20 + n), ExpiresAt: opTime.Add(time.Hour),
+		}))
+	}
+	families, err := codes.UnspentByClient(ctx, "u-1", "c-1")
 	require.NoError(t, err)
+	assert.ElementsMatch(t, []id.ID{opID(21), opID(22), opID(23)}, families)
 }
 
 // deadlineLog records, for each statement that reached it, whether the context it ran under
@@ -198,7 +210,14 @@ type deadlineLog struct {
 	deadline []bool
 }
 
-func (l *deadlineLog) note(ctx context.Context) {
+// note records a statement's context. A savepoint's own statements are not the unit's
+// statements, and are left out.
+func (l *deadlineLog) note(ctx context.Context, query string) {
+	for _, prefix := range []string{"SAVEPOINT", "RELEASE", "ROLLBACK"} {
+		if strings.HasPrefix(query, prefix) {
+			return
+		}
+	}
 	_, ok := ctx.Deadline()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -221,13 +240,13 @@ type deadlinePool struct {
 }
 
 func (p *deadlinePool) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	p.seen.note(ctx)
+	p.seen.note(ctx, query)
 
 	return p.DB.ExecContext(ctx, query, args...)
 }
 
 func (p *deadlinePool) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	p.seen.note(ctx)
+	p.seen.note(ctx, query)
 
 	return p.DB.QueryContext(ctx, query, args...)
 }
@@ -247,38 +266,78 @@ type deadlineTx struct {
 }
 
 func (x *deadlineTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	x.seen.note(ctx)
+	x.seen.note(ctx, query)
 
 	return x.Tx.ExecContext(ctx, query, args...)
 }
 
 func (x *deadlineTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	x.seen.note(ctx)
+	x.seen.note(ctx, query)
 
 	return x.Tx.QueryContext(ctx, query, args...)
 }
 
+// recordingGorm returns a handle on d's database with DefaultContextTimeout bound, whose
+// pool records the context of every statement into seen.
+func recordingGorm(t *testing.T, d database, bound time.Duration, seen *deadlineLog) *gormdb.DB {
+	t.Helper()
+
+	sqlDB, err := d.db.DB()
+	require.NoError(t, err)
+	g, err := gormdb.Open(postgres.New(postgres.Config{Conn: &deadlinePool{DB: sqlDB, seen: seen}}),
+		&gormdb.Config{DefaultContextTimeout: bound, DisableAutomaticPing: true})
+	require.NoError(t, err)
+
+	return g
+}
+
 // TestGormStore_HandleTimeoutReachesEachStatementOfAUnit runs a many-grant call, which sends
-// two statements to the pool in a transaction of its own, on a handle with a bound and
-// a pool that records the context each statement ran under: both must have run bounded, the
-// second as much as the first.
+// two statements to the pool, on a handle with a bound and a pool that records the context
+// each statement ran under. Both must have run under the bound of the handle the call
+// resolved to: the store's own, a caller's transaction, or a resolver's handle, whose bound
+// may differ from the store's own.
 func TestGormStore_HandleTimeoutReachesEachStatementOfAUnit(t *testing.T) {
 	t.Parallel()
 
-	d := migratedDB(t)
-	sqlDB, err := d.db.DB()
-	require.NoError(t, err)
-	seen := &deadlineLog{}
-	g, err := gormdb.Open(postgres.New(postgres.Config{Conn: &deadlinePool{DB: sqlDB, seen: seen}}),
-		&gormdb.Config{DefaultContextTimeout: time.Minute, DisableAutomaticPing: true})
-	require.NoError(t, err)
+	type testCase struct {
+		name string
+		// storeBound and txBound are the DefaultContextTimeout of the handle the store is built
+		// on, and of the handle the caller's transaction is begun on (zero for none).
+		storeBound, txBound time.Duration
+		// inTx runs the call inside a transaction begun on the second handle, attached by a
+		// resolver.
+		inTx bool
+		want []bool
+	}
 
-	s := newGrantStore(t, g)
-	require.NoError(t, s.UseCodes(must.Must(oidcprovider.NewMemoryCodeStore())))
-	_, err = s.EndSignIns(t.Context(), oidcprovider.SignInSelector{User: "u-1"}, opTime)
-	require.NoError(t, err)
+	cases := []testCase{
+		{name: "the store's own handle", storeBound: time.Minute, want: []bool{true, true}},
+		{name: "the store's own handle without a bound", want: []bool{false, false}},
+		{name: "a caller's transaction bounded, the store's handle not", txBound: time.Minute, inTx: true, want: []bool{true, true}},
+		{name: "a caller's transaction not bounded, the store's handle bounded", storeBound: time.Minute, inTx: true, want: []bool{false, false}},
+	}
 
-	assert.Equal(t, []bool{true, true}, seen.all(), "the hold read and the write each ran under the handle's bound")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := migratedDB(t)
+			seen := &deadlineLog{}
+			g := recordingGorm(t, d, tc.storeBound, seen)
+
+			var opts []gormstore.Option
+			if tc.inTx {
+				tx := beginGorm(t.Context(), t, recordingGorm(t, d, tc.txBound, seen))
+				opts = append(opts, gormstore.WithTxResolver(resolving(tx)))
+			}
+			s := newGrantStore(t, g, opts...)
+			require.NoError(t, s.UseCodes(must.Must(oidcprovider.NewMemoryCodeStore())))
+			_, err := s.EndSignIns(t.Context(), oidcprovider.SignInSelector{User: "u-1"}, opTime)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.want, seen.all(), "the hold read and the write each ran under the bound of the resolved handle")
+		})
+	}
 }
 
 // TestGormStore_RawRowReadsStayOnGormsPath reads a login streak, one of the stores' raw

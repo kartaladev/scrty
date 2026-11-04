@@ -41,7 +41,14 @@ func scanRow(q *gorm.DB, dest ...any) error {
 		return sql.ErrNoRows
 	}
 
-	return rows.Scan(dest...)
+	// The close is part of the read: a write with RETURNING outside a transaction commits
+	// as its statement ends, after its row was sent, so a commit that fails is reported
+	// only here. sql.Row.Scan returns it the same way.
+	if err := rows.Scan(dest...); err != nil {
+		return err
+	}
+
+	return rows.Close()
 }
 
 // deleteWhere runs one DELETE of the rows of model T matching query and args,

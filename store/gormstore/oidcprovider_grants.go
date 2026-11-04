@@ -295,6 +295,11 @@ func (s *GrantStore) atomically(ctx context.Context, op string, fn func(q *gorm.
 	if err != nil {
 		return failed(op, err)
 	}
+	// Its statements go to the handle's pool directly, where gorm's DryRun check is not
+	// reached: see config.pool.
+	if q.DryRun {
+		return failed(op, gorm.ErrDryRunModeUnsupported)
+	}
 
 	return storekit.Atomically(ctx, &grantUnit{s: s, op: op}, q, ambient, fn)
 }

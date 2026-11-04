@@ -91,16 +91,27 @@
 //
 // # Time limits
 //
-// A *gorm.DB configured with gorm.Config.DefaultContextTimeout bounds every
+// A *gorm.DB configured with gorm.Config.DefaultContextTimeout bounds each
 // statement the stores run, the provider stores' included. The bound applies
 // to one statement at a time, only when the operation's context carries no
 // deadline of its own (a context with a deadline keeps it, as in gorm), and it
 // is the bound of the handle the operation resolves to: the caller's
 // transaction, or the handle a resolver reports, rather than the store's own
 // *gorm.DB when they differ. A call of several statements, a many-grant call
-// for one, bounds each statement and not the call as a whole. The stores have
-// no time-limit option of their own; set none on the *gorm.DB and the context
-// alone decides.
+// for one, bounds each statement separately and not the call as a whole.
+//
+// Limit, stated: DefaultContextTimeout covers statements, not a store's own
+// transaction. When a store begins a transaction of its own, its BEGIN and its
+// COMMIT are not bounded by it; a call waiting for a free connection in order
+// to begin, or a commit held up by a deferred constraint check, waits for the
+// context. gorm.Config.DefaultTransactionTimeout does reach them: when the
+// operation's context carries no deadline, gorm's Begin gives the transaction
+// that timeout, and it then bounds the whole transaction, BEGIN to COMMIT, not
+// each statement. A consumer who needs those bounded and sets none gives the
+// operation a context with a deadline.
+//
+// The stores have no time-limit option of their own; set none on the
+// *gorm.DB and the context alone decides.
 //
 // # Read replicas
 //

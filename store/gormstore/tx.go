@@ -42,8 +42,10 @@ type txKey struct{}
 // stores never commit or roll back tx: its outcome belongs to the caller, and
 // so does the outcome of every store write made inside it.
 //
-// The stores run on tx's connection only. Conditions, a logger or any other
-// session state chained on tx do not carry into their statements.
+// The stores run on tx's connection, with tx's handle configuration: its
+// gorm.Config, such as DefaultContextTimeout, and its callbacks and plugins.
+// Statement state chained on tx (conditions, a model, selected columns) and
+// its logger do not carry into their statements.
 //
 // A nil tx attaches nothing: ctx is returned unchanged, so a transaction an
 // outer WithTx attached still applies. A store configured with WithTxResolver

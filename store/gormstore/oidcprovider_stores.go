@@ -107,16 +107,31 @@ func scanOne(ctx context.Context, q gorm.ConnPool, query string, args []any, des
 		return sql.ErrNoRows
 	}
 
-	return rows.Scan(dest...)
+	// The close is part of the read, as it is for sql.Row.Scan: a write with RETURNING
+	// outside a transaction commits as its statement ends, so a failed commit is reported
+	// only when the rows close.
+	if err := rows.Scan(dest...); err != nil {
+		return err
+	}
+
+	return rows.Close()
 }
 
 // pool is the connection pool, or the transaction, the handle ctx resolves to runs its
 // statements on, with the DefaultContextTimeout of that handle: a caller's transaction or
 // a resolver's handle may carry a different one than the store's own.
+//
+// A handle in gorm's DryRun mode is refused with gorm.ErrDryRunModeUnsupported: gorm checks
+// DryRun only on the statements it builds, and these go to the pool directly, so they would
+// otherwise write. The same holds for every other statement that goes to a handle's
+// Statement.ConnPool (see GrantStore.atomically).
 func (c *config) pool(ctx context.Context) (gorm.ConnPool, time.Duration, error) {
 	q, _, err := c.conn(ctx)
 	if err != nil {
 		return nil, 0, err
+	}
+	if q.DryRun {
+		return nil, 0, gorm.ErrDryRunModeUnsupported
 	}
 
 	return q.Statement.ConnPool, q.DefaultContextTimeout, nil
