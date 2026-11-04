@@ -62,8 +62,6 @@ The UserInfo response SHALL be a JSON object, unsigned by default. It SHALL alwa
 - `phone`: `phone_number` and `phone_number_verified`;
 - `address`: `address`.
 
-A claim the user does not have SHALL be omitted, never sent as null or an empty string.
-
 #### Scenario: Profile scope only
 - **WHEN** a token for `openid profile` is presented for a user with a name and an email
 - **THEN** the response holds `sub` and `name`, and no `email`
@@ -73,7 +71,7 @@ A claim the user does not have SHALL be omitted, never sent as null or an empty 
 - **THEN** the response holds `sub` only
 
 ### Requirement: A consumer's claim values stay its own
-Any value a consumer's claim source returns, other than a null or an empty string, SHALL be returned unchanged, an empty list included.
+A claim the user does not have SHALL be omitted, never sent as null or an empty string. Any value a consumer's claim source returns, other than a null or an empty string, SHALL be returned unchanged, an empty list included.
 
 #### Scenario: An empty list
 - **WHEN** a consumer's claim source returns `groups` as an empty list
