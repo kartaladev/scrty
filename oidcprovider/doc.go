@@ -203,6 +203,37 @@
 // and revokes that user's and client's grants, a first-party client's included though it holds no
 // consent, and [Provider.Consents] lists what a user has allowed.
 //
+// # Back-channel logout
+//
+// When a sign-in ends, each client holding a grant from it and registering a [Client].BackChannelLogoutURI
+// is told, once. A client holding several grants is told once, a client holding grants from two ended
+// sign-ins is told of each, and the same end reported again tells no one, because the grant store returns
+// only what it newly marked. What a client registered is read when it is told, so a registry outage
+// costs the end nothing, and is reported as a failed delivery.
+//
+// A logout token has header typ logout+jwt, is signed with [Client].IDTokenAlg, and carries iss, aud the
+// client, iat, exp at most 2 minutes later (less, for keys whose usable window is shorter), jti, sub, sid
+// equal to the sid of the sign-in's ID tokens, and events holding the logout event with an empty object.
+// [Provider.VerifyAccessToken] refuses it.
+//
+// Delivery is one form POST of logout_token, through a client confined as [WithLogoutOutbound] or
+// [WithOutbound] says, following no redirect, with 200 and 204 as success, on a context keeping the
+// caller's values and not its cancellation. [WithLogoutDelivery] replaces the POST. A failure is logged
+// and reported, with no token and no text of its cause, is not tried again, and never undoes the end.
+//
+// It runs on a pool of 8 workers with a queue of 1024 ([WithLogoutDeliveryPool]), and each delivery has
+// 5 seconds ([WithLogoutDeliveryTimeout]). An end never waits for it: a full queue drops and reports. The
+// pool needs no starting and no configuration, so the minimum wiring delivers. Workers come at the first
+// ended sign-in and leave when the queue is empty, so a provider never shut down holds no goroutine once
+// its deliveries are over. [Provider.Start] is optional and launches nothing. [Provider.Shutdown] waits
+// for what is queued for as long as its context allows, then reports what is left. Deliveries are in
+// memory, and a process ending without Shutdown loses what is queued.
+//
+// A delivery panicking or ending its goroutine is reported, and costs the pool nothing, because each runs
+// on a goroutine of its own. One ignoring its context holds a worker no longer than its bound, and then
+// holds only its goroutine, until it returns. At most as many as there are workers can be left behind
+// like that, and past those a delivery fails at once. Shutdown does not return nil while one remains.
+//
 // # Errors
 //
 // A refusal the protocol names is an [*Error], whose text is its code and holds no

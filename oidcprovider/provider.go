@@ -74,6 +74,11 @@ type Provider struct {
 	keySets *clientKeySets
 	stores  providerStores
 
+	// logoutDelivery tells a client that a sign-in has ended.
+	logoutDelivery LogoutDelivery
+	// logouts runs the deliveries.
+	logouts *logoutPool
+
 	loginURL, consentURL, logoutURL, loggedOutURL string
 }
 
@@ -92,6 +97,10 @@ type Provider struct {
 // source, and New fails with an error matching ErrConfig if the source cannot supply it. ID and
 // access tokens last 5 minutes, and an access token is a JWT, each settable per client. Each option
 // names its default and its bound.
+//
+// New starts no goroutine, and there is nothing to start for the defaults to work: back-channel
+// delivery, on at most 8 workers with a queue of 1024 and 5 seconds per delivery, starts itself at the
+// first ended sign-in, and its workers leave when the queue is empty. Shutdown stops it.
 func New(d Deps, opts ...Option) (*Provider, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -136,8 +145,12 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	logoutDelivery, err := cfg.buildLogoutDelivery()
+	if err != nil {
+		return nil, err
+	}
 
-	return &Provider{
+	p := &Provider{
 		cfg:            cfg,
 		issuers:        issuers,
 		accessVerifier: accessVerifier,
@@ -150,14 +163,18 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 			ttl:      cfg.keysTTL,
 			cooldown: cfg.keysRefetchCooldown,
 		},
-		issuer:       d.Issuer,
-		keys:         d.Keys,
-		users:        d.Users,
-		loginURL:     d.LoginURL,
-		consentURL:   d.ConsentURL,
-		logoutURL:    d.LogoutURL,
-		loggedOutURL: d.LoggedOutURL,
-	}, nil
+		logoutDelivery: logoutDelivery,
+		issuer:         d.Issuer,
+		keys:           d.Keys,
+		users:          d.Users,
+		loginURL:       d.LoginURL,
+		consentURL:     d.ConsentURL,
+		logoutURL:      d.LogoutURL,
+		loggedOutURL:   d.LoggedOutURL,
+	}
+	p.logouts = newLogoutPool(&cfg, p)
+
+	return p, nil
 }
 
 // buildRegistry returns the registry to read clients from. Everything the library

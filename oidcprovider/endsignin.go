@@ -71,10 +71,15 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 	return clients, dependencyFailure(ctx, errors.Join(grantErr, browserErr), "oidcprovider: end the sign-ins")
 }
 
-// handOn is where the clients of an ended sign-in leave for back-channel delivery.
+// handOn is where the clients of an ended sign-in leave for back-channel delivery. It never waits for a
+// delivery, however many clients there are and however their deliveries fare, so it spends none of the
+// logout's time on them.
 func (p *Provider) handOn(ctx context.Context, clients []ClientToNotify) {
 	if len(clients) > 0 && p.cfg.logoutNotices != nil {
 		p.cfg.logoutNotices(ctx, clients)
+	}
+	for _, c := range clients {
+		p.logouts.enqueue(ctx, c)
 	}
 }
 
@@ -106,7 +111,8 @@ func clientsToNotify(ended []Grant) []ClientToNotify {
 // logged.
 //
 // It runs inside the session manager's call, on a context its caller cannot cancel, and each store
-// has its own budget of 10 seconds, so hanging stores can delay a logout's answer by up to 30 seconds.
+// has its own budget of 10 seconds, so hanging stores can delay a logout's answer by up to 20 seconds.
+// Back-channel delivery adds nothing to that, as handing it on never waits.
 //
 // It has no error to return, and the sign-in has already ended, so a failure is logged and leaves the
 // sign-in ended, with the grants left as they stand until the next end selecting them.

@@ -99,12 +99,22 @@ type config struct {
 	outboundSet     bool
 	claimSource     ClaimSource
 	claimSourceSet  bool
-	// logoutNotices is told the clients of each ended sign-in. It is where back-channel delivery
-	// takes over, and until then nothing but a test sets it.
-	logoutNotices func(context.Context, []ClientToNotify)
-	clock         clock.Clock
-	logger        *slog.Logger
-	random        io.Reader
+	// logoutNotices watches the clients of each ended sign-in leave for delivery, and nothing but a test
+	// sets it.
+	logoutNotices     func(context.Context, []ClientToNotify)
+	logoutDelivery    LogoutDelivery
+	logoutDeliverySet bool
+	logoutOutbound    []outbound.Option
+	logoutOutboundSet bool
+	logoutWorkers     int
+	logoutQueue       int
+	logoutTimeout     time.Duration
+	// logoutFailed is told each failed delivery. It is where the security event belongs, and until then
+	// nothing but a test sets it.
+	logoutFailed func(context.Context, logoutFailure)
+	clock        clock.Clock
+	logger       *slog.Logger
+	random       io.Reader
 	// ids names the records the provider creates. validate builds it, over the clock and
 	// randomness the options gave.
 	ids id.Generator
@@ -135,6 +145,9 @@ func defaultConfig() config {
 		keysRefetchCooldown: defaultKeysRefetchCooldown,
 		keysTTL:             defaultKeysTTL,
 		successorWindow:     defaultSuccessorWindow,
+		logoutWorkers:       defaultLogoutWorkers,
+		logoutQueue:         defaultLogoutQueue,
+		logoutTimeout:       defaultLogoutTimeout,
 		clock:               clock.System(),
 		logger:              slog.Default(),
 		random:              rand.Reader,
@@ -207,6 +220,9 @@ func (c *config) validate() error {
 	if c.outboundSet && c.outbound == nil {
 		return fmt.Errorf("%w: WithOutbound: must not be nil", ErrConfig)
 	}
+	if err := c.validateLogoutDelivery(); err != nil {
+		return err
+	}
 	if c.claimSourceSet && nilcheck.IsNil(c.claimSource) {
 		return fmt.Errorf("%w: WithClaimSource: must not be nil", ErrConfig)
 	}
@@ -225,6 +241,23 @@ func (c *config) validate() error {
 	}
 
 	return c.bounds.resolve()
+}
+
+func (c *config) validateLogoutDelivery() error {
+	if c.logoutDeliverySet && nilcheck.IsNil(c.logoutDelivery) {
+		return fmt.Errorf("%w: WithLogoutDelivery: must not be nil", ErrConfig)
+	}
+	if c.logoutDeliverySet && c.logoutOutboundSet {
+		return fmt.Errorf("%w: WithLogoutOutbound: has no meaning beside WithLogoutDelivery, which posts nothing through it", ErrConfig)
+	}
+	if c.logoutWorkers <= 0 || c.logoutQueue <= 0 {
+		return fmt.Errorf("%w: WithLogoutDeliveryPool: workers and queue must be positive, got %d and %d", ErrConfig, c.logoutWorkers, c.logoutQueue)
+	}
+	if c.logoutTimeout <= 0 {
+		return fmt.Errorf("%w: WithLogoutDeliveryTimeout: must be positive, got %s", ErrConfig, c.logoutTimeout)
+	}
+
+	return nil
 }
 
 func checkBound(option string, d, limit time.Duration) error {
@@ -336,6 +369,12 @@ func WithClientKeysRefetchCooldown(d time.Duration) Option {
 // WithOutbound replaces the client that fetches clients' key sets, and so what confines
 // those fetches. The default is outbound.New with no options: https only, redirects
 // staying on the origin, and the time and size bounds it names. It must not be nil.
+//
+// It also posts logout tokens, so that they stay inside what it confines, unless WithLogoutOutbound
+// gives delivery a client of its own. The limit: a client built elsewhere cannot be told to follow no
+// redirect, so one that may redirect follows a relying party's redirect on its own origin, and the
+// delivery counts as the final answer does. Build it with outbound.WithMaxRedirects(0), or use
+// WithLogoutOutbound, to keep what delivery otherwise guarantees.
 func WithOutbound(o *outbound.Client) Option {
 	return func(c *config) { c.outbound, c.outboundSet = o, true }
 }
@@ -350,6 +389,41 @@ func WithOutbound(o *outbound.Client) Option {
 // unchanged. See ClaimSource. It must not be nil.
 func WithClaimSource(s ClaimSource) Option {
 	return func(c *config) { c.claimSource, c.claimSourceSet = s, true }
+}
+
+// WithLogoutDelivery replaces how a logout token reaches a client, such as with a queue that retries.
+// The default posts it to the client's BackChannelLogoutURI as a form, once, through a client that
+// follows no redirect, and counts 200 and 204 as success. A consumer's delivery still runs on the
+// provider's pool and within its bound. It must not be nil, and given with WithLogoutOutbound, which it
+// would not use, it fails construction.
+func WithLogoutDelivery(d LogoutDelivery) Option {
+	return func(c *config) { c.logoutDelivery, c.logoutDeliverySet = d, true }
+}
+
+// WithLogoutOutbound confines the default delivery, with the options of the outbound client it builds
+// for itself: a transport (outbound.WithHTTPClient), the origins it may reach, a response bound. The
+// default is outbound.New with a transport keeping no connection, and with WithOutbound given, that
+// client instead. A follow-no-redirect cap is applied last, so outbound.WithMaxRedirects given here
+// cannot bring redirects back. Options the outbound client refuses fail construction.
+func WithLogoutOutbound(opts ...outbound.Option) Option {
+	return func(c *config) { c.logoutOutbound, c.logoutOutboundSet = opts, true }
+}
+
+// WithLogoutDeliveryPool replaces how many deliveries run at once and how many may wait. The defaults
+// are 8 and 1024, and both must be positive. A delivery finding the queue full is dropped, logged and
+// reported as failed, and its logout is unaffected. A client that registered no URI takes a place too,
+// because what a client registered is read only when it is told.
+func WithLogoutDeliveryPool(workers, queue int) Option {
+	return func(c *config) { c.logoutWorkers, c.logoutQueue = workers, queue }
+}
+
+// WithLogoutDeliveryTimeout replaces the bound on one delivery, reading the client and signing the token
+// included. The default is 5 seconds, and it must be positive. At the bound the delivery is reported as
+// failed, and its worker takes the next. A consumer's call ignoring its context keeps a goroutine until
+// it returns, of at most as many as there are workers: with that many left behind, a delivery fails at
+// once, reported as busy, rather than start another.
+func WithLogoutDeliveryTimeout(d time.Duration) Option {
+	return func(c *config) { c.logoutTimeout = d }
 }
 
 // WithClock replaces the time source. The default is clock.System(), and it must

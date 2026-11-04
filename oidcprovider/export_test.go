@@ -2,6 +2,7 @@ package oidcprovider
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -51,3 +52,19 @@ func (m *MemoryAssertionIDStore) HeldForTest(clientID, jti string) bool {
 func WithLogoutNoticesForTest(notices func(context.Context, []ClientToNotify)) Option {
 	return func(c *config) { c.logoutNotices = notices }
 }
+
+// LogoutTokenForTest signs what a client would be sent, for a key source a row chooses.
+func (p *Provider) LogoutTokenForTest(ctx context.Context, c ClientToNotify, rc *RegisteredClient) (string, error) {
+	return p.mintLogoutToken(ctx, c, rc)
+}
+
+// LogoutFailure is what the seam for a failed delivery is told.
+type LogoutFailure = logoutFailure
+
+// WithLogoutFailuresForTest watches what the seam for a failed delivery is told.
+func WithLogoutFailuresForTest(failed func(context.Context, LogoutFailure)) Option {
+	return func(c *config) { c.logoutFailed = failed }
+}
+
+// LogoutTransportForTest is the transport the default delivery posts over.
+func LogoutTransportForTest() *http.Transport { return newLogoutTransport() }
