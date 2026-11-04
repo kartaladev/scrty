@@ -476,9 +476,9 @@ A stream SHALL free its place exactly once, as soon as its client leaves or the 
 - **WHEN** a sign-in has 4 open streams and one client closes its tab
 - **THEN** a new stream for that sign-in opens
 
-#### Scenario: Refused after the stream started, on any adapter
-- **WHEN** an interceptor outside the stream's slot refuses a request after the stream was started
-- **THEN** the client gets the refusal, and the stream's place is freed
+#### Scenario: Refused after the stream started
+- **WHEN** an interceptor outside the stream's slot refuses a request after the stream was started, on any of the three adapters
+- **THEN** the stream's place is freed exactly once, and on fiber, whose stream has not begun, the client gets the refusal
 
 ### Requirement: A slow stream never holds back the others
 A signal raised for a user SHALL be offered to each of the user's streams without waiting for any of them. A stream that cannot keep up SHALL drop its own pending signals, and SHALL NOT delay another stream or the request that raised the signal. `session_ended` SHALL never be dropped this way.

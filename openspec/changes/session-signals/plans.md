@@ -81,7 +81,19 @@
 | 7 | D | 8.1 | `test/httpsecconformance/signals_scenarios.go` | Sonnet: conformance cases in an existing suite |
 | 8 | main | 8.2–8.3 | — | Opus reviewer for 8.3 |
 
-- **Why this order.** C1–C5 are one lane, sequential, because each extends the `signals*.go` files the previous one created, and C1 compiles against A's `Stream` and B's `EndObserver`. A and B touch different packages and run together.
+- **Parallel waves** (revised 2026-11-04; these supersede the Order column and the C rows' task lists). Dispatches in one wave run at the same time, and writers in one Go package each get their own git worktree, so a half-edited file cannot break another's build. The main session integrates a wave, and verifies and reviews it, before the next starts. At most three writers run at once, and the main session runs timing-sensitive load rounds one suite at a time, because the machine is shared.
+
+  | Wave | Dispatches, in parallel | Tasks | Why it cannot go earlier |
+  |---|---|---|---|
+  | 0 | A; B2 | 1.2–1.6; 2.3–2.4 | Different packages. B2's one edit in `httpsec` is `logout.go`, which A does not own |
+  | 1 | C1 | 3.1–3.2, 4.1–4.3 | Declares the types, the sentinels and the test helpers every later file compiles against, and alone owns `options.go` and `errors_test.go`'s registry |
+  | 2 | C2a wire format; C2b cross-site check and README; C4a registry and caps; C4b bus and publisher | 4.4–4.5; 4.6; 6.4's and 6.5's registry rows; 6.1's bus rows, 6.3 | Each is a new file behind a signature C1 fixes, unit-tested without a stream |
+  | 3 | C3, then C4c (sequential) | 5.1–5.6; 6.1, 6.2, 6.4–6.6's stream rows | The stream loop consumes all of wave 2, and is one goroutine's logic that does not split. 5.x then 6.x extend one file |
+  | 4 | C5a | 7.2–7.3 | Needs the stream to show a signal arriving. D's consumer-signal row needs `PublishSignal` |
+  | 5 | C5b; D | 7.1, 7.4; 8.1 | Different modules. **Check with `oidc-provider` before C5b**, which shares `httpsec/password_change.go`, `recovery.go` and `passkey_manage.go` with its group 11 |
+  | 6 | main, then one reviewer | 8.2–8.3 | The final gate |
+
+  A task spanning waves is ticked only when all its rows pass. In wave 2, a dispatch writes only its own new files and tests, and any change to a shared file goes back to the main session.
 - **Reviews.** Each dispatch gets a fresh reviewer that edits nothing: Opus for A, B2, C1, C2, C3 and C4, and Sonnet for B, C5 and D. Tasks 5.1–5.6 and 6.1–6.6 are the lane's largest dispatches: if either proves too large, split it at a seam, as the delegation rule allows. The next dispatch of a lane starts only when verification is green and the review is clean.
 
 ---
@@ -116,6 +128,8 @@ const StreamWriteWindow = 2 * time.Minute // twice the largest heartbeat; every 
   - `Cache-Control` and `Access-Control-Allow-Origin` set before `Stream` arrive with the response;
   - `Stream` after `Write`, and a second `Stream`, return `ErrStreamingStarted` and add no bytes.
 
+  Also: a run-time `ErrNotSupported` leaves nothing written and an ordinary answer possible; a body's panic under a recovery middleware, `gin.Recovery` included, leaves a response that does not look complete; a wrapper whose `Unwrap` returns itself does not hang; a `Flush`-only wrapper is accepted.
+
   **Green:** `Stream` runs `body` inline. `Stream`, each `Write` and each `Flush` first call `rc.SetWriteDeadline(now + StreamWriteWindow)`; `Flush` then calls `rc.Flush()`. `ctx` is the request context. A started flag guards against a second start.
 - [ ] **1.4:** `TestGin_Stream` asserts the same rows through `ginsec.Middleware`. Expect green with no new production code, because gin uses `NewHTTPResponseWriter`. If it is red, fix it in `nethttp.go`.
 - [ ] **1.5 Red:** `TestFiber_Stream`, with the same rows, client loss detected within one flush interval, and a server `ShutdownWithTimeout` that ends an open stream. **Green:**
@@ -126,7 +140,7 @@ const StreamWriteWindow = 2 * time.Minute // twice the largest heartbeat; every 
   - the closure's start, each `Write` and each `Flush` set the connection deadline to `now + StreamWriteWindow` (from 1.2); `Flush` then calls `w.Flush()`;
   - the closure holds the connection and the `Done()` channel, copied while the chain runs, and never the fiber `Ctx` or the `*fasthttp.RequestCtx`, which are pooled.
 
-  Also: `TestFiber_Stream` shows a stream outliving several short windows through `NewResponseWriterWithStreamWindow` (with the moves removed, it must fail), and the body ending within one heartbeat of the client leaving, over plain TCP and TLS.
+  Also: a body that calls `runtime.Goexit` ends the response as cut; a `Stream` after the chain has returned keeps the promise, running the body or returning an error; and `TestFiber_Stream` shows a stream outliving several short windows through `NewResponseWriterWithStreamWindow` (with the moves removed, it must fail), and the body ending within one heartbeat of the client leaving, over plain TCP and TLS.
 - [ ] **1.6:** Add conformance scenarios named `stream: …` for every `framework-adapters` scenario, plus a consumer writer returning `ErrStreamingUnsupported` that yields 501 (exercised from Task 4.1). The client-leaves row asserts a time, within one heartbeat, and says so in its name; the outlives row uses a window shorter than its gaps. Godoc `Stream`, `EventWriter`, `StreamWriteWindow` and both errors: a body must copy what it needs from the exchange before `Stream`, strings included; a nil `Flush` hands the event on and does not promise delivery; and how long a client that stops reading can hold a stream, naming the server's `HTTP2.WriteByteTimeout`.
 - [ ] Verify each task's command from `tasks.md`, then `go test -race -count=1 ./...` in the root, `httpsec/ginsec`, `httpsec/fibersec` and `test`. Commit `feat(httpsec)!: response writers can stream`.
 

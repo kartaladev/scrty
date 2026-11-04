@@ -21,15 +21,19 @@ A response writer that cannot flush, such as a consumer's wrapper hiding the und
 - **THEN** the response is 501, nothing else is written, and no reconnection loop follows
 
 ### Requirement: Starting a stream sends the response head once
-Starting a stream SHALL send the status and every header set before it, on every adapter. Starting a stream after the response has begun, or a second time, SHALL fail and write nothing. Once a stream has started successfully, its body SHALL run exactly once, on an already-ended context if the chain then refused, so that what it holds is always released.
+Starting a stream SHALL send the status and every header set before it, on every adapter. Starting a stream after the response has begun, or a second time, SHALL fail and write nothing. Once a stream has started successfully, its body SHALL run exactly once, so that what it holds is always released. On an adapter that runs the body after the chain has returned, a chain that refused SHALL get its refusal sent, and the body SHALL run on an already-ended context.
 
 #### Scenario: Headers set before streaming are sent
 - **WHEN** an interceptor sets `Cache-Control: no-store` and a CORS header, and then starts a stream, on any of the three adapters
 - **THEN** the client receives both headers with the streamed response
 
-#### Scenario: Refused after starting
-- **WHEN** an interceptor refuses the request after a stream was started, on any of the three adapters
+#### Scenario: Refused after starting, where the body runs later
+- **WHEN** an interceptor refuses the request after a stream was started, on fiber
 - **THEN** the client receives the refusal and no stream, and the body runs once on an already-ended context
+
+#### Scenario: Refused after starting, where the body runs inline
+- **WHEN** an interceptor refuses the request after a stream was started, on net/http or gin
+- **THEN** the body has already run once and its stream has been sent, and the refusal changes nothing the client received
 
 #### Scenario: Stream after the response began
 - **WHEN** an interceptor has already written a body and then starts a stream
