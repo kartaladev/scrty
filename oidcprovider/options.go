@@ -60,6 +60,14 @@ type config struct {
 	keysTTL                   time.Duration
 	assertionIDs              AssertionIDStore
 	assertionIDsSet           bool
+	pendingRequests           PendingRequestStore
+	pendingRequestsSet        bool
+	codes                     CodeStore
+	codesSet                  bool
+	consents                  ConsentStore
+	consentsSet               bool
+	grants                    GrantStore
+	grantsSet                 bool
 	outbound                  *outbound.Client
 	outboundSet               bool
 	clock                     clock.Clock
@@ -122,6 +130,18 @@ func (c *config) validate() error {
 	}
 	if c.assertionIDsSet && nilcheck.IsNil(c.assertionIDs) {
 		return fmt.Errorf("%w: WithAssertionIDStore: must not be nil", ErrConfig)
+	}
+	if c.pendingRequestsSet && nilcheck.IsNil(c.pendingRequests) {
+		return fmt.Errorf("%w: WithPendingRequestStore: must not be nil", ErrConfig)
+	}
+	if c.codesSet && nilcheck.IsNil(c.codes) {
+		return fmt.Errorf("%w: WithCodeStore: must not be nil", ErrConfig)
+	}
+	if c.consentsSet && nilcheck.IsNil(c.consents) {
+		return fmt.Errorf("%w: WithConsentStore: must not be nil", ErrConfig)
+	}
+	if c.grantsSet && nilcheck.IsNil(c.grants) {
+		return fmt.Errorf("%w: WithGrantStore: must not be nil", ErrConfig)
 	}
 	if c.outboundSet && c.outbound == nil {
 		return fmt.Errorf("%w: WithOutbound: must not be nil", ErrConfig)
@@ -290,4 +310,34 @@ func WithClientKeysTTL(d time.Duration) Option {
 // ignored.
 func WithAssertionTokenEndpoint(url string) Option {
 	return func(c *config) { c.assertionTokenEndpoint, c.assertionTokenEndpointSet = url, true }
+}
+
+// WithPendingRequestStore replaces where parked requests are kept. The default is a
+// MemoryPendingRequestStore, which is lost with the process and not shared between
+// instances. It must not be nil.
+func WithPendingRequestStore(s PendingRequestStore) Option {
+	return func(c *config) { c.pendingRequests, c.pendingRequestsSet = s, true }
+}
+
+// WithCodeStore replaces where code records are kept. The default is a MemoryCodeStore,
+// which is lost with the process and not shared between instances. It must not be nil.
+// New gives it to the grant store through GrantStore.UseCodes.
+func WithCodeStore(s CodeStore) Option {
+	return func(c *config) { c.codes, c.codesSet = s, true }
+}
+
+// WithConsentStore replaces where consents are kept. The default is a
+// MemoryConsentStore, which is lost with the process and not shared between instances.
+// It must not be nil.
+func WithConsentStore(s ConsentStore) Option {
+	return func(c *config) { c.consents, c.consentsSet = s, true }
+}
+
+// WithGrantStore replaces where grants are kept. The default is a MemoryGrantStore,
+// which is lost with the process and not shared between instances. It must not be nil.
+// New calls its UseCodes with the provider's code store, and returns its refusal: a grant
+// store reads one code store for good, so providers sharing a grant store must share a
+// code store too, through WithCodeStore, or New fails with an error matching ErrConfig.
+func WithGrantStore(s GrantStore) Option {
+	return func(c *config) { c.grants, c.grantsSet = s, true }
 }
