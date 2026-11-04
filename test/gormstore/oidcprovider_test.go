@@ -444,6 +444,9 @@ func TestGormStore_Unstorable(t *testing.T) {
 			{"grant text", func() error {
 				return newGrantStore(t, g).Create(ctx, &oidcprovider.Grant{Family: opID(4), ClientID: bad})
 			}},
+			{"grant certificate binding", func() error {
+				return newGrantStore(t, g).Create(ctx, &oidcprovider.Grant{Family: opID(4), CertBinding: bad})
+			}},
 			{"grant list", func() error {
 				return newGrantStore(t, g).Create(ctx, &oidcprovider.Grant{Family: opID(4), AMR: []string{bad}})
 			}},

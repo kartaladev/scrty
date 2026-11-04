@@ -168,6 +168,7 @@ CREATE TABLE op_grants (
     amr                 jsonb NOT NULL DEFAULT '[]',
     acr                 text NOT NULL DEFAULT '',
     key_binding         text NOT NULL DEFAULT '',
+    cert_binding        text NOT NULL DEFAULT '',
     code_id             uuid NULL,
     sign_in_family      uuid NULL,
     external_issuer     text NOT NULL DEFAULT '',

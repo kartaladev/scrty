@@ -315,6 +315,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("amr", colJSONB, defEmptyArray),
 		defaulted("acr", colText, defEmptyText),
 		defaulted("key_binding", colText, defEmptyText),
+		defaulted("cert_binding", colText, defEmptyText),
 		optional("code_id", colUUID),
 		optional("sign_in_family", colUUID),
 		defaulted("external_issuer", colText, defEmptyText),
@@ -2057,7 +2058,7 @@ var providerRecordColumns = []recordColumns{
 		columns: map[string]string{
 			"Family": "family", "User": "user_ref", "ClientID": "client_id", "Scopes": "scopes",
 			"Resources": "resources", "AuthTime": "auth_time", "AMR": "amr", "ACR": "acr",
-			"KeyBinding": "key_binding", "CodeID": "code_id", "SignInFamily": "sign_in_family",
+			"KeyBinding": "key_binding", "CertBinding": "cert_binding", "CodeID": "code_id", "SignInFamily": "sign_in_family",
 			"ExternalIssuer": "external_issuer", "ExternalSessionID": "external_session_id",
 			"Offline": "offline", "EndsWithSignIn": "ends_with_sign_in", "HoldsLineage": "holds_lineage",
 			"CreatedAt": "created_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
@@ -2391,11 +2392,11 @@ func TestMigrations(t *testing.T) {
 					require.NoError(t, err)
 
 					got := queryStrings(t, db, `SELECT concat_ws('|', user_ref = '', client_id = '', scopes = '[]', resources = '[]',
-							amr = '[]', acr = '', key_binding = '', external_issuer = '', external_session_id = '',
+							amr = '[]', acr = '', key_binding = '', cert_binding = '', external_issuer = '', external_session_id = '',
 							NOT offline, NOT ends_with_sign_in, NOT holds_lineage,
 							auth_time IS NULL, code_id IS NULL, sign_in_family IS NULL, created_at IS NULL, expires_at IS NULL)
 						FROM op_grants`)
-					assert.Equal(t, []string{"t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t"}, got,
+					assert.Equal(t, []string{"t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t"}, got,
 						"no value is invented, and a NULL created_at is what tells it from a stored grant")
 				},
 			},

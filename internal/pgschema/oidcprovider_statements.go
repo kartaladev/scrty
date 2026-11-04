@@ -69,11 +69,12 @@ ON CONFLICT (user_ref, client_id) DO UPDATE SET
 	// record, keeping the revocation and any sign-in-ended mark. Over a stored grant it
 	// affects no row, and that is the refusal.
 	GrantInsert = `INSERT INTO op_grants (` + grantColumns + `)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
 ON CONFLICT (family) DO UPDATE SET
   user_ref = EXCLUDED.user_ref, client_id = EXCLUDED.client_id, scopes = EXCLUDED.scopes,
   resources = EXCLUDED.resources, auth_time = EXCLUDED.auth_time, amr = EXCLUDED.amr, acr = EXCLUDED.acr,
-  key_binding = EXCLUDED.key_binding, code_id = EXCLUDED.code_id, sign_in_family = EXCLUDED.sign_in_family,
+  key_binding = EXCLUDED.key_binding, cert_binding = EXCLUDED.cert_binding, code_id = EXCLUDED.code_id,
+  sign_in_family = EXCLUDED.sign_in_family,
   external_issuer = EXCLUDED.external_issuer, external_session_id = EXCLUDED.external_session_id,
   offline = EXCLUDED.offline, ends_with_sign_in = EXCLUDED.ends_with_sign_in,
   holds_lineage = EXCLUDED.holds_lineage, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at
@@ -200,7 +201,7 @@ const (
 
 	consentColumns = `user_ref, client_id, scopes, offline, last_given_at`
 
-	grantColumns = `family, user_ref, client_id, scopes, resources, auth_time, amr, acr, key_binding, code_id,
+	grantColumns = `family, user_ref, client_id, scopes, resources, auth_time, amr, acr, key_binding, cert_binding, code_id,
   sign_in_family, external_issuer, external_session_id, offline, ends_with_sign_in, holds_lineage, created_at,
   expires_at, revoked, revoked_at, revoke_cause, sign_in_ended_at`
 

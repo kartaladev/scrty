@@ -146,7 +146,11 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 //  1. a token of no shape the provider mints is refused with no lookup;
 //  2. the grant row is read, and one missing, revoked, past its expiry or another client's is
 //     refused;
-//  3. a grant bound to a key needs that key, or the answer is invalid_dpop_proof;
+//  3. a grant bound to a key needs that key, or the answer is invalid_dpop_proof. One bound to a
+//     certificate needs that certificate and no proof beside it, or the answer is invalid_request. A
+//     public client's unbound grant refuses a proof as invalid_dpop_proof, because a token issued beside
+//     one would have to be bound to its key (RFC 9449 section 5), and the client's way back is a new
+//     authorization. None of these reads the token, so a token refused here stays usable;
 //  4. a secret that is no record of that family is refused, which is also how a lineage missing
 //     behind a live row reads: as revoked, with nothing recorded, since a family is no credential;
 //  5. the token is judged. Superseded and past its grace, it is reuse: the row is marked, then the
@@ -222,7 +226,7 @@ func repeatedParam(form url.Values) bool {
 // stands ahead of both grants, so what it refuses has read no code and no refresh token, spent
 // nothing, rotated nothing, and as a replay revokes nothing.
 //
-// A proof refused is invalid_dpop_proof (RFC 9449 section 7.1). RFC 8705 names no code for a missing
+// A proof refused is invalid_dpop_proof (RFC 9449 section 5). RFC 8705 names no code for a missing
 // certificate, so that is invalid_request, which tells the client to send what is missing and not to
 // discard its grant. A request with a proof and a certificate carries the proof's key alone, because a
 // token carries one confirmation, so a client required to use its certificate is refused there too.
@@ -230,7 +234,7 @@ func requireBinding(rc *RegisteredClient, b Binding) error {
 	switch {
 	case rc.RequireBinding == BindingDPoP && b.JKT == "":
 		return &Error{Code: CodeInvalidDPoPProof}
-	case rc.RequireBinding == BindingMTLS && b.X5T == "":
+	case rc.RequireBinding == BindingMTLS && (b.X5T == "" || b.JKT != ""):
 		return refuseRequest()
 	}
 
@@ -425,8 +429,9 @@ func (p *Provider) judgeCodeNow(ctx context.Context, record *CodeRecord) error {
 // newGrant builds the row a code's exchange writes. Its authentication facts are the
 // sign-in's, copied from the code and never taken from the current time, because auth_time
 // overstated by an exchange would mislead a relying party checking max_age. A public client's
-// grant is bound to the key of the proof its first request carried, and a confidential
-// client's is bound by its client authentication instead.
+// grant is bound to the key of the proof its first request carried, or with no proof to its
+// certificate, because a token carries one confirmation, and a confidential client's is bound
+// by its client authentication instead.
 func newGrant(
 	record *CodeRecord, rc *RegisteredClient, binding Binding, holdsLineage bool, now, expiresAt time.Time,
 ) *Grant {
@@ -452,6 +457,9 @@ func newGrant(
 	}
 	if rc.Type == Public {
 		grant.KeyBinding = binding.JKT
+		if binding.JKT == "" {
+			grant.CertBinding = binding.X5T
+		}
 	}
 
 	return grant
@@ -518,7 +526,7 @@ func (p *Provider) writeLineage(ctx context.Context, grant *Grant, rc *Registere
 		s.FamilyID = grant.Family
 		s.AuthenticatedAt = grant.AuthTime
 		s.AbsoluteExpiresAt = grant.ExpiresAt
-		s.KeyBinding = session.KeyBinding{JKT: grant.KeyBinding}
+		s.KeyBinding = session.KeyBinding{JKT: grant.KeyBinding, X5TS256: grant.CertBinding}
 	})
 	if err != nil {
 		return "", dependencyFailure(ctx, err, "oidcprovider: store the lineage")

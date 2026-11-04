@@ -31,6 +31,7 @@ func grantRecord(n int, signIn oidcprovider.SignIn) *oidcprovider.Grant {
 		AMR:               slices.Clone(signIn.AMR),
 		ACR:               signIn.ACR,
 		KeyBinding:        "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs",
+		CertBinding:       "bwcK0esc3ACC3DB2Y5_lESsXE8o9ltc05O89jdN-dg4",
 		CodeID:            suiteID(500 + n),
 		SignInFamily:      signIn.Family,
 		ExternalIssuer:    signIn.ExternalIssuer,

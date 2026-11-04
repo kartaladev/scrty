@@ -316,3 +316,55 @@ func TestLineageStatement(t *testing.T) {
 	assert.Equal(t, "SELECT sessions_x, op_refresh_tokens.a FROM op_refresh_tokens",
 		pgschema.LineageStatement("SELECT sessions_x, sessions.a FROM sessions"))
 }
+
+// TestGrantArgs_Bindings pins that both of a grant's bindings are written, and that one PostgreSQL text
+// could not hold is refused by name before a statement runs, without repeating the value.
+func TestGrantArgs_Bindings(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		grant  oidcprovider.Grant
+		assert func(t *testing.T, args []any, err error)
+	}
+
+	refused := func(field string) func(*testing.T, []any, error) {
+		return func(t *testing.T, _ []any, err error) {
+			t.Helper()
+			require.ErrorContains(t, err, field)
+			assert.NotContains(t, err.Error(), "secret")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:  "both are written",
+			grant: oidcprovider.Grant{KeyBinding: "the-key", CertBinding: "the-cert"},
+			assert: func(t *testing.T, args []any, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Contains(t, args, "the-key")
+				assert.Contains(t, args, "the-cert")
+			},
+		},
+		{
+			name:   "a NUL in the key binding",
+			grant:  oidcprovider.Grant{KeyBinding: "secret\x00"},
+			assert: refused("key binding"),
+		},
+		{
+			name:   "a NUL in the certificate binding",
+			grant:  oidcprovider.Grant{CertBinding: "secret\x00"},
+			assert: refused("certificate binding"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			args, err := pgschema.GrantArgs(&tc.grant)
+			tc.assert(t, args, err)
+		})
+	}
+}

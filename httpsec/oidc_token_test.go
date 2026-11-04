@@ -2,7 +2,9 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +24,9 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -70,6 +75,10 @@ type tokenSetup struct {
 	cert     bool
 	chain    []httpsec.Option
 	endpoint func(t *testing.T) []httpsec.OIDCProviderOption
+	// clients are registered beside the fixture's own.
+	clients []oidcprovider.Client
+	// loopback builds the provider on an http issuer on a loopback host.
+	loopback bool
 }
 
 // tokenEndpoint is a provider's token endpoint on a chain, with what a code is issued from.
@@ -121,10 +130,17 @@ func newTokenEndpoint(t *testing.T, setup tokenSetup) *tokenEndpoint {
 		},
 	}
 
+	clients = append(clients, setup.clients...)
+
+	issuer := opIssuer
 	popts := []oidcprovider.Option{
 		oidcprovider.WithClock(clk),
 		oidcprovider.WithConsentStore(consents),
 		oidcprovider.WithoutBrowserSessions(),
+	}
+	if setup.loopback {
+		issuer = "http://127.0.0.1:8080"
+		popts = append(popts, oidcprovider.WithLoopbackHTTPIssuer())
 	}
 	chainOpts := []httpsec.Option{httpsec.WithClock(clk)}
 	if setup.dpop != nil {
@@ -144,14 +160,14 @@ func newTokenEndpoint(t *testing.T, setup tokenSetup) *tokenEndpoint {
 	}
 
 	p, err := oidcprovider.New(oidcprovider.Deps{
-		Issuer:       opIssuer,
+		Issuer:       issuer,
 		Clients:      clients,
 		Keys:         tokenKeys(),
 		Users:        users,
-		LoginURL:     opIssuer + "/login",
-		ConsentURL:   opIssuer + "/consent",
-		LogoutURL:    opIssuer + "/logout-page",
-		LoggedOutURL: opIssuer + "/bye",
+		LoginURL:     issuer + "/login",
+		ConsentURL:   issuer + "/consent",
+		LogoutURL:    issuer + "/logout-page",
+		LoggedOutURL: issuer + "/bye",
 	}, popts...)
 	require.NoError(t, err)
 
@@ -665,6 +681,21 @@ func TestOIDCToken(t *testing.T) {
 			assert: refused(oidcprovider.CodeInvalidRequest),
 		},
 		{
+			name: "client_assertion_type in the query",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tokenURL+"?client_assertion_type=x",
+					strings.NewReader(exchangeOf(e.issue(t, tokenWeb, nil)).Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+				r.SetBasicAuth(tokenWeb, tokenSecret)
+
+				return e.serve(t, r)
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
 			name: "client_id in the query authenticates no one",
 			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
 				t.Helper()
@@ -740,6 +771,44 @@ func TestOIDCToken(t *testing.T) {
 			},
 		},
 		{
+			name:  "a loopback issuer is served over plain HTTP",
+			setup: tokenSetup{loopback: true},
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				return exchangeWeb(t, e, func(r *http.Request) { r.TLS = nil })
+			},
+			assert: func(t *testing.T, _ *tokenEndpoint, a tokenAnswer) {
+				t.Helper()
+				assertTokenIssued(t, a, "Bearer")
+			},
+		},
+		{
+			name:  "a loopback issuer is served over TLS too",
+			setup: tokenSetup{loopback: true},
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				return exchangeWeb(t, e)
+			},
+			assert: func(t *testing.T, _ *tokenEndpoint, a tokenAnswer) {
+				t.Helper()
+				assertTokenIssued(t, a, "Bearer")
+			},
+		},
+		{
+			name:  "plain HTTP is refused ahead of the throttle, whose answer would hide it",
+			setup: tokenSetup{endpoint: limitedTo(1)},
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				wrongSecrets(t, e, 1)
+
+				return exchangeWeb(t, e, func(r *http.Request) { r.TLS = nil })
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
 			name:  "a deployment declared HTTPS is served behind its proxy",
 			setup: tokenSetup{chain: []httpsec.Option{httpsec.WithHTTPSDeployment()}},
 			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
@@ -811,6 +880,55 @@ func TestOIDCToken(t *testing.T) {
 				wrongSecrets(t, e, 10)
 
 				return exchangeWeb(t, e)
+			},
+			assert: refused(oidcprovider.CodeInvalidClient),
+		},
+		{
+			name: "one short of the default limit, the right secret is served",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				wrongSecrets(t, e, 9)
+
+				return exchangeWeb(t, e)
+			},
+			assert: func(t *testing.T, _ *tokenEndpoint, a tokenAnswer) {
+				t.Helper()
+				assertTokenIssued(t, a, "Bearer")
+			},
+		},
+		{
+			name: "the default limit holds to the end of its window, and no further",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				wrongSecrets(t, e, 10)
+
+				e.clk.Advance(15*time.Minute - time.Second)
+				assertTokenRefused(t, exchangeWeb(t, e), oidcprovider.CodeInvalidClient)
+
+				e.clk.Advance(2 * time.Second)
+
+				return exchangeWeb(t, e)
+			},
+			assert: func(t *testing.T, _ *tokenEndpoint, a tokenAnswer) {
+				t.Helper()
+				assertTokenIssued(t, a, "Bearer")
+			},
+		},
+		{
+			name:  "a throttled source's body is never read",
+			setup: tokenSetup{endpoint: limitedTo(1)},
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				wrongSecrets(t, e, 1)
+
+				var read atomic.Int64
+				a := exchangeWeb(t, e, func(r *http.Request) { r.Body = countingBody{Reader: r.Body, read: &read} })
+				assert.Zero(t, read.Load(), "the source is asked before anything is read")
+
+				return a
 			},
 			assert: refused(oidcprovider.CodeInvalidClient),
 		},
@@ -954,6 +1072,94 @@ func TestOIDCToken(t *testing.T) {
 
 			e := newTokenEndpoint(t, tc.setup)
 			tc.assert(t, e, tc.send(t, e))
+		})
+	}
+}
+
+// countingBody counts the bytes read of a request's body.
+type countingBody struct {
+	io.Reader
+
+	read *atomic.Int64
+}
+
+func (b countingBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	b.read.Add(int64(n))
+
+	return n, err
+}
+
+func (countingBody) Close() error { return nil }
+
+// TestOIDCToken_ChargeOutlivesTheCaller pins that a failure is charged whether or not its caller is still
+// there to hear about it, or a guesser could evade the limit by hanging up: the caller leaves here as the
+// source is admitted, and the charge is judged by the context it reaches the limiter on.
+func TestOIDCToken_ChargeOutlivesTheCaller(t *testing.T) {
+	t.Parallel()
+
+	k := newDPoPKey(t, elliptic.P256())
+
+	type testCase struct {
+		name   string
+		change func(t *testing.T, e *tokenEndpoint) []tokenChange
+		code   string
+	}
+
+	cases := []testCase{
+		{
+			name: "a wrong secret",
+			change: func(*testing.T, *tokenEndpoint) []tokenChange {
+				return []tokenChange{withSecret(tokenWeb, "wrong")}
+			},
+			code: oidcprovider.CodeInvalidClient,
+		},
+		{
+			name: "an invalid proof",
+			change: func(t *testing.T, e *tokenEndpoint) []tokenChange {
+				t.Helper()
+
+				return []tokenChange{
+					asClient(tokenWeb),
+					e.withProof(t, k, "j1", map[string]any{"htu": opIssuer + "/elsewhere"}),
+				}
+			},
+			code: oidcprovider.CodeInvalidDPoPProof,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, leave := context.WithCancel(t.Context())
+			defer leave()
+
+			limiter := NewMockLimiter(gomock.NewController(t))
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(context.Context, string) (bool, error) {
+					leave()
+
+					return false, nil
+				},
+			).Times(1)
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(ctx context.Context, _ string) error {
+					assert.NoError(t, ctx.Err(), "the charge is made on a context the caller cannot end")
+
+					return nil
+				},
+			).Times(1)
+
+			e := newTokenEndpoint(t, tokenSetup{
+				dpop: plainDPoP,
+				endpoint: func(*testing.T) []httpsec.OIDCProviderOption {
+					return []httpsec.OIDCProviderOption{httpsec.WithOIDCTokenLimiter(limiter)}
+				},
+			})
+
+			change := append(tc.change(t, e), func(r *http.Request) { *r = *r.WithContext(ctx) })
+			assertTokenRefused(t, e.send(t, refreshOf("rt.none"), change...), tc.code)
 		})
 	}
 }
@@ -1118,6 +1324,64 @@ func sealFailingDPoP(t *testing.T) *httpsec.DPoP {
 	return &httpsec.DPoP{PublicURL: opIssuer, Nonce: true, NonceCipher: cipher}
 }
 
+// failingReplay is DPoP whose replay store fails while failing is set.
+func failingReplay(failing *atomic.Bool) func(t *testing.T) *httpsec.DPoP {
+	return func(t *testing.T) *httpsec.DPoP {
+		t.Helper()
+
+		store := NewMockReplayStore(gomock.NewController(t))
+		store.EXPECT().Record(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+			func(context.Context, string, time.Time) (bool, error) {
+				if failing.Load() {
+					return false, errors.New("replay store secret text")
+				}
+
+				return true, nil
+			},
+		).AnyTimes()
+
+		return &httpsec.DPoP{PublicURL: opIssuer, Replay: store}
+	}
+}
+
+// assertionClientID is the client tokenAssertionClient registers.
+const assertionClientID = "keyed"
+
+// tokenAssertionClient is a client authenticating by private_key_jwt, and what signs for it.
+func tokenAssertionClient(t *testing.T) (oidcprovider.Client, *ecdsa.PrivateKey) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	public, err := jwk.PublicKeyOf(key)
+	require.NoError(t, err)
+	set := jwk.NewSet()
+	require.NoError(t, set.AddKey(public))
+	keys, err := json.Marshal(set)
+	require.NoError(t, err)
+
+	return oidcprovider.Client{
+		ID: assertionClientID, Type: oidcprovider.Confidential, AuthMethod: oidcprovider.PrivateKeyJWT, JWKS: keys,
+		RedirectURIs: []string{rpCallback}, Scopes: []string{"openid", "profile", "offline_access"},
+		GrantTypes: []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
+	}, key
+}
+
+// assertionExchange is the form exchanging code, authenticated by an assertion signed with key under jti.
+func assertionExchange(t *testing.T, e *tokenEndpoint, key *ecdsa.PrivateKey, code, jti string) url.Values {
+	t.Helper()
+
+	claims, err := jwt.NewBuilder().Issuer(assertionClientID).Subject(assertionClientID).Audience([]string{opIssuer}).
+		JwtID(jti).Expiration(e.clk.Now().Add(time.Minute)).Build()
+	require.NoError(t, err)
+	signed, err := jwt.Sign(claims, jwt.WithKey(jwa.ES256(), key))
+	require.NoError(t, err)
+
+	return exchangeOf(code,
+		"client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+		"client_assertion", string(signed))
+}
+
 // TestOIDCToken_SenderConstrained pins what the endpoint binds, and the order the binding rests on: a proof
 // is judged before a code is spent or a token rotated. Each "unspent" and "unrotated" is proved by a later
 // request with the same code or token succeeding.
@@ -1141,7 +1405,176 @@ func TestOIDCToken_SenderConstrained(t *testing.T) {
 		return e.send(t, exchangeOf(e.issue(t, tokenPublic, nil), "client_id", tokenPublic), change...)
 	}
 
+	assertionClient, assertionKey := tokenAssertionClient(t)
+	otherCert := newClientCert(t, "client-d")
+
+	var replayFails atomic.Bool
+
 	cases := []testCase{
+		{
+			name:  "a public client's unbound grant refuses a proof, with the token left usable past its windows",
+			setup: tokenSetup{dpop: plainDPoP},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				raw := assertTokenIssued(t, publicExchange(t, e), "Bearer")["refresh_token"].(string)
+
+				withProof := e.send(t, refreshOf(raw, "client_id", tokenPublic), e.withProof(t, k1, "j1", nil))
+				assertTokenRefused(t, withProof, oidcprovider.CodeInvalidDPoPProof)
+
+				e.clk.Advance(tokenPastGrace)
+
+				bare := e.send(t, refreshOf(raw, "client_id", tokenPublic))
+				assert.NotEqual(t, raw, assertTokenIssued(t, bare, "Bearer")["refresh_token"])
+				assert.Nil(t, bare.confirmation(t))
+			},
+		},
+		{
+			name:  "a public client binds to its certificate, across a rotation",
+			setup: tokenSetup{cert: true},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				first := publicExchange(t, e, withCertificate(cert.cert))
+				raw := assertTokenIssued(t, first, "Bearer")["refresh_token"].(string)
+				assert.Equal(t, map[string]any{"x5t#S256": cert.thumb}, first.confirmation(t))
+
+				assertTokenRefused(t, e.send(t, refreshOf(raw, "client_id", tokenPublic)), oidcprovider.CodeInvalidRequest)
+				assertTokenRefused(t, e.send(t, refreshOf(raw, "client_id", tokenPublic), withCertificate(otherCert.cert)),
+					oidcprovider.CodeInvalidRequest)
+
+				e.clk.Advance(tokenPastGrace)
+
+				again := e.send(t, refreshOf(raw, "client_id", tokenPublic), withCertificate(cert.cert))
+				next := assertTokenIssued(t, again, "Bearer")["refresh_token"].(string)
+				assert.NotEqual(t, raw, next)
+				assert.Equal(t, map[string]any{"x5t#S256": cert.thumb}, again.confirmation(t))
+
+				assertTokenRefused(t, e.send(t, refreshOf(next, "client_id", tokenPublic)), oidcprovider.CodeInvalidRequest)
+			},
+		},
+		{
+			name:  "a public client's certificate-bound grant refuses a proof beside its certificate",
+			setup: tokenSetup{dpop: plainDPoP, cert: true},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				raw := assertTokenIssued(t, publicExchange(t, e, withCertificate(cert.cert)), "Bearer")["refresh_token"].(string)
+
+				both := e.send(t, refreshOf(raw, "client_id", tokenPublic), withCertificate(cert.cert), e.withProof(t, k1, "j1", nil))
+				assertTokenRefused(t, both, oidcprovider.CodeInvalidRequest)
+
+				e.clk.Advance(tokenPastGrace)
+
+				assertTokenIssued(t, e.send(t, refreshOf(raw, "client_id", tokenPublic), withCertificate(cert.cert)), "Bearer")
+			},
+		},
+		{
+			name:  "a public client's proof beside a certificate binds to the key alone",
+			setup: tokenSetup{dpop: plainDPoP, cert: true},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				first := publicExchange(t, e, withCertificate(cert.cert), e.withProof(t, k1, "j1", nil))
+				raw := assertTokenIssued(t, first, "DPoP")["refresh_token"].(string)
+
+				assertTokenRefused(t, e.send(t, refreshOf(raw, "client_id", tokenPublic), withCertificate(cert.cert)),
+					oidcprovider.CodeInvalidDPoPProof)
+
+				e.clk.Advance(tokenPastGrace)
+
+				assertTokenIssued(t, e.send(t, refreshOf(raw, "client_id", tokenPublic), e.withProof(t, k1, "j2", nil)), "DPoP")
+			},
+		},
+		{
+			name:  "a bad proof at a refresh is charged, and leaves the token unrotated",
+			setup: tokenSetup{dpop: plainDPoP, endpoint: limitedTo(2)},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				raw := assertTokenIssued(t, e.send(t, exchangeOf(e.issue(t, tokenWeb, nil)), asClient(tokenWeb)), "Bearer")["refresh_token"].(string)
+				e.clk.Advance(tokenPastGrace)
+
+				for i := range 2 {
+					bad := e.send(t, refreshOf(raw), asClient(tokenWeb),
+						e.withProof(t, k1, "j"+strconv.Itoa(i), map[string]any{"htu": opIssuer + "/elsewhere"}))
+					assertTokenRefused(t, bad, oidcprovider.CodeInvalidDPoPProof)
+				}
+
+				throttled := e.send(t, refreshOf(raw), asClient(tokenWeb), e.withProof(t, k1, "j-next", nil))
+				assertTokenRefused(t, throttled, oidcprovider.CodeInvalidClient)
+
+				e.clk.Advance(tokenPastGrace)
+
+				good := e.send(t, refreshOf(raw), asClient(tokenWeb), fromAddr(tokenOtherAddr), e.withProof(t, k1, "j-other", nil))
+				assert.NotEqual(t, raw, assertTokenIssued(t, good, "DPoP")["refresh_token"])
+			},
+		},
+		{
+			name:  "a replay store that fails is a failure with no text, and no one is charged for it",
+			setup: tokenSetup{dpop: failingReplay(&replayFails), endpoint: limitedTo(1)},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				code := e.issue(t, tokenWeb, nil)
+
+				replayFails.Store(true)
+				for i := range 2 {
+					a := e.send(t, exchangeOf(code), asClient(tokenWeb), e.withProof(t, k1, "j"+strconv.Itoa(i), nil))
+					assertTokenFailed(t, a)
+					assert.NotContains(t, a.body, oidcprovider.CodeInvalidDPoPProof)
+					assert.NotContains(t, a.body, "error")
+				}
+				replayFails.Store(false)
+
+				assertTokenIssued(t, e.send(t, exchangeOf(code), asClient(tokenWeb), e.withProof(t, k1, "j-good", nil)), "DPoP")
+			},
+		},
+		{
+			name:  "an assertion survives a nonce round trip and a bad proof, and only then is spent",
+			setup: tokenSetup{dpop: noncedDPoP, clients: []oidcprovider.Client{assertionClient}},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				code := e.issue(t, assertionClientID, nil)
+				form := assertionExchange(t, e, assertionKey, code, "a1")
+
+				asked := e.send(t, form, e.withProof(t, k1, "j1", nil))
+				assertTokenRefused(t, asked, oidcprovider.CodeUseDPoPNonce)
+				nonce := asked.header.Get("DPoP-Nonce")
+				require.NotEmpty(t, nonce)
+
+				bad := e.send(t, form, e.withProof(t, k1, "j2", map[string]any{"nonce": nonce, "htu": opIssuer + "/elsewhere"}))
+				assertTokenRefused(t, bad, oidcprovider.CodeInvalidDPoPProof)
+
+				assertTokenIssued(t, e.send(t, form, e.withProof(t, k1, "j3", map[string]any{"nonce": nonce})), "DPoP")
+
+				replayed := assertionExchange(t, e, assertionKey, e.issue(t, assertionClientID, nil), "a1")
+				assertTokenRefused(t, e.send(t, replayed, e.withProof(t, k1, "j4", map[string]any{"nonce": nonce})),
+					oidcprovider.CodeInvalidClient)
+			},
+		},
+		{
+			name:  "a refused exchange spends its assertion, and a new one retries the same code",
+			setup: tokenSetup{clients: []oidcprovider.Client{assertionClient}},
+			run: func(t *testing.T, e *tokenEndpoint) {
+				t.Helper()
+
+				code := e.issue(t, assertionClientID, nil)
+				form := assertionExchange(t, e, assertionKey, code, "a1")
+
+				wrong := url.Values{}
+				for name, values := range form {
+					wrong[name] = values
+				}
+				wrong.Set("code_verifier", strings.Repeat("x", 43))
+				assertTokenRefused(t, e.send(t, wrong), oidcprovider.CodeInvalidGrant)
+
+				assertTokenRefused(t, e.send(t, form), oidcprovider.CodeInvalidClient)
+
+				assertTokenIssued(t, e.send(t, assertionExchange(t, e, assertionKey, code, "a2")), "Bearer")
+			},
+		},
 		{
 			name:  "a public client binds to its key: another key cannot refresh, and its own can",
 			setup: tokenSetup{dpop: plainDPoP},

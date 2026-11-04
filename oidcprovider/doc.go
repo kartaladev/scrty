@@ -153,8 +153,9 @@
 // A refresh may narrow scope within the grant, and name another of its resources. A scope the
 // client is no longer allowed is left out and reported, and returns when it is allowed again. The
 // refresh token stays bound to the whole grant. A refreshed ID token keeps auth_time, amr, acr
-// and sid, and has no nonce. A bound grant needs its key, and a confidential client's refresh
-// token is bound by its client authentication rather than to a key.
+// and sid, and has no nonce. A bound grant needs its key or its certificate, a public client's
+// unbound grant refuses a proof, and a confidential client's refresh token is bound by its client
+// authentication rather than to a key.
 //
 // # Revocation and introspection
 //

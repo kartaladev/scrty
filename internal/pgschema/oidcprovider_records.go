@@ -844,7 +844,8 @@ func (r *ConsentRow) Record() (*oidcprovider.Consent, error) {
 func GrantArgs(g *oidcprovider.Grant) ([]any, error) {
 	if err := checkFields(
 		opField{"user reference", string(g.User)}, opField{"client identifier", g.ClientID}, opField{"acr", g.ACR},
-		opField{"key binding", g.KeyBinding}, opField{"upstream issuer", g.ExternalIssuer},
+		opField{"key binding", g.KeyBinding}, opField{"certificate binding", g.CertBinding},
+		opField{"upstream issuer", g.ExternalIssuer},
 		opField{"upstream session", g.ExternalSessionID}, opField{"revocation cause", string(g.RevokeCause)},
 	); err != nil {
 		return nil, err
@@ -864,7 +865,7 @@ func GrantArgs(g *oidcprovider.Grant) ([]any, error) {
 
 	return []any{
 		g.Family.String(), string(g.User), g.ClientID, scopes, resources, opNullTime(g.AuthTime), amr, g.ACR, g.KeyBinding,
-		opNullID(g.CodeID), opNullID(g.SignInFamily), g.ExternalIssuer, g.ExternalSessionID, g.Offline, g.EndsWithSignIn,
+		g.CertBinding, opNullID(g.CodeID), opNullID(g.SignInFamily), g.ExternalIssuer, g.ExternalSessionID, g.Offline, g.EndsWithSignIn,
 		g.HoldsLineage, opTime(g.CreatedAt), opTime(g.ExpiresAt), g.Revoked, opNullTime(g.RevokedAt), string(g.RevokeCause),
 		opNullTime(g.SignInEndedAt),
 	}, nil
@@ -883,7 +884,7 @@ type GrantRow struct {
 func (r *GrantRow) Dest() []any {
 	return []any{
 		&r.rec.Family, &r.user, &r.rec.ClientID, &r.scopes, &r.resources, &r.authTime, &r.amr, &r.rec.ACR, &r.rec.KeyBinding,
-		&r.code, &r.signIn, &r.rec.ExternalIssuer, &r.rec.ExternalSessionID, &r.rec.Offline, &r.rec.EndsWithSignIn,
+		&r.rec.CertBinding, &r.code, &r.signIn, &r.rec.ExternalIssuer, &r.rec.ExternalSessionID, &r.rec.Offline, &r.rec.EndsWithSignIn,
 		&r.rec.HoldsLineage, &r.created, &r.expires, &r.rec.Revoked, &r.revoked, &r.cause, &r.ended,
 	}
 }

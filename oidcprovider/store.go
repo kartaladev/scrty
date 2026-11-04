@@ -298,6 +298,10 @@ type Grant struct {
 	ACR string
 	// KeyBinding is the thumbprint of the key the grant is bound to, if any.
 	KeyBinding string
+	// CertBinding is the thumbprint of the client certificate the grant is bound to, if any. A
+	// public client's exchange sets this or KeyBinding, and never both, because a request with a
+	// proof and a certificate binds to the proof's key alone.
+	CertBinding string
 	// CodeID is the identifier of the code that created the grant.
 	CodeID id.ID
 

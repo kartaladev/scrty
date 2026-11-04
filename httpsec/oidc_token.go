@@ -101,7 +101,8 @@ type oidcTokenDocument struct {
 //
 //  1. no answer may be cached, whatever follows, the chain's error handling included;
 //  2. anything but POST is refused, and so is a request not made over TLS, as the chain
-//     reports the connection, each with nothing read from it;
+//     reports the connection, unless the provider was built with the loopback issuer, each
+//     with nothing read from it;
 //  3. the source is asked before anything else is read, so a throttled source costs no
 //     parsing, no proof and no secret comparison;
 //  4. the body is read, bounded, and the query only for credentials to refuse it for;
@@ -125,7 +126,7 @@ func (g *oidcTokenGroup) serve(ex *Exchange, _ Next) error {
 		return nil
 	}
 
-	if !ex.Request.Secure() {
+	if !ex.Request.Secure() && !g.op.plainHTTPAllowed() {
 		return writeOIDCRefusal(ex, oidcprovider.CodeInvalidRequest)
 	}
 

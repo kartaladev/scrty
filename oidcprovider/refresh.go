@@ -109,8 +109,8 @@ func (p *Provider) refresh(ctx context.Context, r TokenRequest, rc *RegisteredCl
 	}
 	// From here a reuse is the grant's, and is reported once, whichever of the paths below finds it.
 	ctx = withReuseNote(ctx, grant)
-	if grant.KeyBinding != "" && r.Binding.JKT != grant.KeyBinding {
-		return nil, &Error{Code: CodeInvalidDPoPProof}
+	if err := requireGrantBinding(grant, rc, r.Binding); err != nil {
+		return nil, err
 	}
 	record, err := p.requireFamilyMember(ctx, secret, family)
 	if err != nil {
@@ -214,6 +214,32 @@ func (p *Provider) liveGrant(ctx context.Context, family id.ID, rc *RegisteredCl
 	}
 
 	return grant, nil
+}
+
+// requireGrantBinding refuses a refresh that does not prove what its grant holds it to. It reads no
+// token, so what it refuses is neither rotated nor judged as reuse: whoever stole a token without
+// what binds it ends nothing, and the client may send the token again as it should have.
+//
+// A public client's unbound grant is refused a proof rather than bound by it. RFC 9449 section 5 has a
+// refresh token issued beside a valid proof bound to its key, and binding here would be a write racing
+// the grant's other refreshes, for a client whose way back is a new authorization. A certificate is not
+// refused there, because the grant holds the client to none: that access token carries the certificate,
+// and the grant stays as its exchange left it.
+func requireGrantBinding(grant *Grant, rc *RegisteredClient, b Binding) error {
+	switch {
+	case grant.KeyBinding != "":
+		if b.JKT != grant.KeyBinding {
+			return &Error{Code: CodeInvalidDPoPProof}
+		}
+	case grant.CertBinding != "":
+		if b.X5T != grant.CertBinding || b.JKT != "" {
+			return refuseRequest()
+		}
+	case rc.Type == Public && b.JKT != "":
+		return &Error{Code: CodeInvalidDPoPProof}
+	}
+
+	return nil
 }
 
 // requireFamilyMember refuses a secret that is no record of family, writing nothing. It reads
