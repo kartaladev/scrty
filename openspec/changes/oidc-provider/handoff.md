@@ -257,3 +257,17 @@ Record in `design.md`:
 - `EndSignIn`'s order is grants, browser delete, hand-on, then `reportEnded`, so a hung synchronous sink holds the response but not the deletes.
 - A consumer delivery cut off by `Shutdown` also reports `shutdown`. Status, panic and goexit keep their real reason, at the bound as well.
 - An event's `At` is stamped on reaching the sink. `WithOutbound`'s own time bound still applies. `Shutdown` is not callable from a log handler or sink. A sink panic with a panicking log handler still escapes `EndSignIn`, after the work is done.
+
+### 8.1 to 8.3 review, reported finished
+
+Commit `2d086532`: 5 `REPRODUCED`, none fixed, none in routing, slots or `StatusForError`. Proofs: `review-h1/httpsec/oidc_provider_review_test.go`, `go test -count=1 -run 'TestReview_' ./httpsec/`. Sketch fixes, not code to take: `review-h1-fix/`. Mutants: `review-h1-mut/`, `review-h1-scripts/`. Some may be affected by the uncommitted rest of 8.1 in `lane-h1`; rerun them there.
+1. A consumer's wrapper around the same `*signingkey.Keys` as `Deps.Keys` is falsely refused (`oidc_provider.go:375`). Refuse only when the provider's source is itself a `*signingkey.Keys`.
+2. **Needs a decision.** An issuer with a path behind `http.StripPrefix` is falsely refused by the assertion endpoint check (`:512`), with no workable override. Accept issuer path + served path (loosens the check for an unstripped chain), or add an explicit public-path option. 10.1's endpoint URLs depend on this.
+3. `WithoutHeader("Content-Security-Policy")`, `WithCSPReportOnly()` and `frame-ancestors *` still build (`:524`). Add a check that the document profile forbids framing; state that a route-matched profile cannot be seen at construction.
+4. `WithMFAMethodListing`'s path is not in the collision check (`:422`). The rest of 8.1 reports adding this: confirm.
+5. Paths holding `?`, `#` or `%` are accepted and never match (`oidc_provider_options.go:80`, `:105`).
+- `UNREPRODUCED`, no token endpoint yet: a percent-encoded assertion URL passes the check; compare `u.EscapedPath()`.
+- 21 mutants survive: slot positions need ordering assertions, plus collision rows, a provider-first option order, and a `ChallengeError` wrapping a dependency failure.
+- Artifacts: plans 8.1 says `c.wire`, the code uses `checkAfterWiring`. A refused `id_token_hint` has no sentinel or status row: R3 says 400, so 11.1 must add one to `errors.go`.
+
+For later lanes: `routes()` must be pure, as it runs twice before `settle`. No CSRF seam exists: `settleExemptions` overwrites `l.exempt`, so 11.7 needs a helper or a `csrfExempt` field on `oidcRoute`, and until then group 9's endpoints refuse cross-site browser POSTs on a CSRF chain. Calling `next` passes the request on to the application, so answer a wrong method yourself. Outer routes run before `certificateSlot`, so call `ex.presentedThumbprint()`. `opFixture.wired` changes with the CSRF row.
