@@ -908,6 +908,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red rows on `TestOIDCToken` (R11): `client_secret` in a POST's query → 400 `invalid_request`; an empty parameter counts as omitted; `Secure()` false is refused. FAIL; implement; PASS; commit.
 
 ### Task 9.2: Binding at the token endpoint
+
+**Where the check lives:** `RequireBinding` is enforced in `Provider.Token`, before the spend and before a rotation, and not only in `httpsec`, so a direct caller of `Provider.Token` cannot get a Bearer token for a client that requires binding.
 - [ ] Red `TestOIDCToken_SenderConstrained`:
   - a public client with a `k1` proof → `cnf.jkt(k1)` and `token_type` `DPoP`, and a refresh with a `k2` proof → `invalid_dpop_proof`;
   - a proof with another `htu` → 400 `invalid_dpop_proof`, and the code still exchanges;
@@ -989,7 +991,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 11.1: The end-session endpoint (R3)
 **Files:** Create `httpsec/oidc_endsession.go`; Test `httpsec/oidc_endsession_test.go`
 - [ ] Red `TestOIDCEndSession`, a table:
-  - a hint naming the browser session's sign-in, expired included → `p.EndSignIn({Family: sid})` then `sessions.RevokeFamily`, and a 303 to the logged-out page;
+  - a hint naming the browser session's sign-in, expired included → `p.EndSignIn({Family: sid})` then `sessions.RevokeFamily`, and a 303 to the logged-out page. `session-signals` changes that call to `Logout(ctx, user, family)` at its rebase, as `Logout` is on its branch and this change merges first;
   - with a registered `post_logout_redirect_uri` and `state=s-1` → 303 there with `state=s-1`; no `state` → none added; an unregistered URI, or one with a query added → the logged-out page, the sign-in still ended;
   - `WithLogoutConfirmation` → 303 to the logout page with a handle, nothing ended;
   - no hint, a hint with an unpublished `kid`, or a valid hint for another sign-in → the same, with `StageLogout` parked;

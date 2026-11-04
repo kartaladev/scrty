@@ -1172,6 +1172,9 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **The order.** Signing has no side effect, so it joins the refusal checks, and the spend stays last among them, as every one-time credential in scrty does. The exchange judges `resource`, mints the JWTs for the grant family the code already names, then spends, then writes the grant row and the lineage in T9's order, and only then stores an opaque access token. A key failure is a dependency failure with the code unspent, and the client may retry.
 - **What it costs.** Two racing exchanges both sign, and the loser discards its tokens unreturned. Reaching that needs the client's authentication and the code's bindings, so an outsider cannot use it to spend signing work. A store failure after the spend still burns the code and leaves records nobody holds. They fail safe, as no token was returned.
 - **The default and the override.** This is an order, not a policy, so there is no option. Reasoned from scrty's own settled specs and the established design.
+- **Limits accepted with minting:**
+  - **A token can outlive its grant at a resource server.** `exp` is `iat` plus the lifetime, as the spec fixes, and `expires_in` matches it, even when the grant or sign-in ends sooner. The provider's own endpoints refuse it from that moment, while a resource server verifying offline accepts it until `exp`. Short lifetimes are what bound that, as for any self-contained token.
+  - **A very large registered audience.** The verifier's size bound follows the request bounds, so a client registering audiences totalling tens of kilobytes would get tokens the provider's own endpoints refuse. It fails closed, and needs a configuration no real client has.
 
 #### R8. A family identifier is not a credential (H6)
 
