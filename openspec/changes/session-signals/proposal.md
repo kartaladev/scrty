@@ -61,13 +61,14 @@ This change gives the front end a feed of its own: few signals, typed, and only 
   - `httpsec`: the endpoint, the stream writer, the signal types, the bus port and its in-process default.
   - `httpsec/ginsec` and `httpsec/fibersec`: flushing and streaming.
   - `session`: the end-of-sign-in report.
+  - `recovery` and `authenticate/passkey`: `Result.Removed`, saying what a recovery removed, and `RecoveryKindName`.
   - `test/httpsecconformance`: stream scenarios on all three adapters.
 - **API:**
   - new: `EnableSessionSignals` and `SessionSignals`, the signal names, `PublishSignal` for the consumer's signals, `ReportCredentialChange`, `CloseSessionSignals`, the bus port, and `session.WithEndObserver` with `(*Sessions).AddEndObserver`, the option shared with `oidc-provider`;
   - **breaking:** `ResponseWriter.Stream`, with `ErrStreamingUnsupported` and `ErrStreamingStarted`.
 - **Dependencies:** none new. The stream uses net/http's `http.ResponseController`.
   - *Unverified:* fiber v3 streams through fasthttp's body stream writer, a different model from net/http. Its fit is the first thing the design must establish.
-- **Order:** after `close-security-gaps`, whose security-event emission points (D13) and session-management endpoints this change raises signals beside; before `release-readiness` tags `v0.1.0`. `bff-resource-server` is not required. Its cookie session will work with the stream when it lands.
+- **Order:** after `close-security-gaps`, whose security-event emission points (D13) and session-management endpoints this change raises signals beside; before `release-readiness` tags `v0.1.0`. `bff-resource-server` is not required. Its cookie session will work with the stream when it lands. Against `oidc-provider`, whichever is ready first merges first (agreed 2026-11-05, and the user may overrule it).
 - **Operations:**
   - one long-lived connection per open stream;
   - a proxy in front must not buffer `text/event-stream`;

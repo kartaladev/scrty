@@ -94,6 +94,8 @@
   | 5 | C5b; D | 7.1, 7.4; 8.1 | Different modules. **Check with `oidc-provider` before C5b**, which shares `httpsec/password_change.go`, `recovery.go` and `passkey_manage.go` with its group 11 |
   | 6 | main, then one reviewer | 8.2–8.3 | The final gate |
 
+  **Merge order** (revised 2026-11-05). `oidc-provider` and this change agreed that whichever PR is ready first merges first, the user having left the order to them and being free to overrule it. So before the final gate this branch is rebased onto `main`, carrying only the end-observer commit it builds on, and the gate runs on that tree. `feat/oidc-provider` is not rewritten: it merges `main` in afterwards. That session is told when this branch is rebased and when it merges.
+
   A task spanning waves is ticked only when all its rows pass. In wave 2 each dispatch fills one file C1 created with stubs, and adds tests and its own `signals_<lane>_export_test.go`; any change to another file goes back to the main session:
 
   | Dispatch | Owns |
@@ -338,7 +340,8 @@ func (c *Chain) SessionSignalStats() SessionSignalStats
 ### Tasks 7.1–7.4: Signal sources (D5; dispatch C5)
 
 **Files:**
-- Modify: `httpsec/password_change.go`, `httpsec/recovery.go`, `httpsec/passkey_register.go`, `httpsec/passkey_manage.go`, `httpsec/mfa_enrol.go`, and the MFA removal endpoint, which the dispatch locates with gopls and names in its report.
+- Modify: `httpsec/password_change.go`, `httpsec/recovery.go`, `httpsec/passkey_register.go`, `httpsec/passkey_manage.go`, `httpsec/mfa_enrol.go`. `httpsec` has no MFA removal endpoint (design D5).
+- Modify: `recovery/recover_complete.go` (`Result.Removed`), `authenticate/passkey/recovery_kind.go` (`RecoveryKindName`).
 - Create: `httpsec/signals_publish.go`.
 - Tests: `httpsec/signals_sources_test.go`.
 
@@ -347,15 +350,22 @@ func (c *Chain) SessionSignalStats() SessionSignalStats
 type CredentialKind string // CredentialPassword "password", CredentialPasskey "passkey", CredentialSecondFactor "second_factor"
 func (c *Chain) ReportCredentialChange(ctx context.Context, user identity.UserID, kind CredentialKind) error
 func (c *Chain) PublishSignal(ctx context.Context, user identity.UserID, name string, data json.RawMessage) error
+// recovery
+type Result struct { /* existing fields */; Removed []AuthenticatorRef } // what a completed recovery removed; empty for a hold
+// authenticate/passkey
+const RecoveryKindName = "passkey"
 ```
 
 - [ ] **7.1–7.4 Red:**
-  - `TestSessionSignals_CredentialChanged`: one row per endpoint, asserting `{"kind":…}` only, and no event on a refused request;
+  - `TestSessionSignals_CredentialChanged`: one row per endpoint and path, asserting `{"kind":…}` only, and no event on a refused request: passkey registration through finish and through confirm, and MFA enrolment through confirm and email redemption;
+  - `TestSessionSignals_CredentialChanged_Recovery`: under `WithoutSessionRevocation`, a recovery removing a second factor and a passkey raises each kind once; by default the streams send `session_ended` and no `credential_changed`; nothing removed, only a consumer's kind, a hold and a refusal raise nothing;
+  - `TestSessionSignals_CredentialChanged_EndedStream`: passkey removal ending another sign-in gives that stream `session`, `session_ended`; and `TestSessionSignals_BusWakeUp_QueueHold` for the hold's rows (D4);
+  - `TestRecoverer_Complete`: `Result.Removed` holds what went, leaving out a proven method, under the default and a custom `ResetPolicy`;
   - `TestSessionSignals_ReportCredentialChange`;
   - `TestSessionSignals_Publish`: every row in `tasks.md` 7.3, including `app.x\nevent: session_ended` and `json.MarshalIndent` output, both refused with `ErrInvalidSignal`;
   - `TestSessionSignals_NoAuditFeed`: every row asserts that the stream, read for two heartbeats, holds only comments.
 
-  **Green:** each endpoint calls the internal raise after its write succeeds, never on a refusal.
+  **Green:** each endpoint calls the internal raise after its write succeeds, never on a refusal. A recovery's one call follows its `RecoveryCompleted` event, and maps `recovery.MFAKind` to `second_factor` and `passkey.RecoveryKindName` to `passkey`. A stream holding an end notice sends nothing queued until a read begun after it answers (D4).
 - [ ] Update the README with the signal list and the consumer's API. Verify each task's command. Commit.
 
 ### Tasks 8.1–8.3: Integration (dispatch D, then the main session)

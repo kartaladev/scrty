@@ -195,7 +195,11 @@ By default a stream SHALL send a comment every 15 seconds. At each one, it SHALL
 
 #### Scenario: Ended on another replica without a bus
 - **WHEN** a stream is open on replica A, no bus is configured, and the sign-in is ended by a request on replica B
-- **THEN** within one heartbeat interval the stream on A sends `session_ended` and closes
+- **THEN** within one heartbeat interval and half a second the stream on A sends `session_ended` and closes
+
+#### Scenario: A logout's report behind the check
+- **WHEN** a stream's check finds its sign-in gone just before the report of that logout arrives
+- **THEN** the stream sends `session_ended` with the reason `logout`
 
 #### Scenario: Consumer sets the interval
 - **WHEN** the consumer sets the heartbeat to 30 seconds
@@ -386,6 +390,18 @@ With `credential_changed` in its set, every stream of the user still open after 
 - **WHEN** the consumer reports a credential change of a kind other than password, passkey or second factor
 - **THEN** reporting fails and no stream sends anything
 
+#### Scenario: A recovery that leaves sign-ins open
+- **WHEN** `credential_changed` is enabled, the consumer keeps other sessions on recovery, and a recovery removes a second factor and a passkey
+- **THEN** a stream of the user still open sends `credential_changed` with the kind `second_factor` and with the kind `passkey`, once each
+
+#### Scenario: A recovery that ends the other sign-ins
+- **WHEN** `credential_changed` is enabled and a recovery ends the user's other sign-ins, as it does by default
+- **THEN** their streams send `session_ended` and no `credential_changed`
+
+#### Scenario: A recovery that removes nothing the signal names
+- **WHEN** a recovery removes nothing, or only a consumer's own kind of authenticator, or is held, or is refused
+- **THEN** no stream sends `credential_changed` for it
+
 ### Requirement: The consumer can publish its own signals
 The consumer SHALL be able to publish its own signal to every open stream of one user. Its name SHALL be `app.` followed by 1 to 63 characters, the first a lowercase letter or digit and the rest lowercase letters, digits, `.`, `_` or `-`; any other name SHALL be refused. Its data SHALL be the consumer's own JSON, of at most 8 KiB, on one line, valid UTF-8, delivered unchanged; other data SHALL be refused when it is published. A client's narrowing SHALL apply to it as to the library's signals.
 
@@ -464,6 +480,14 @@ The chain SHALL cap open streams at 4 per sign-in, 16 per user and 10 000 in tot
 #### Scenario: A dependency failure at admission
 - **WHEN** the session store fails while a stream is being admitted
 - **THEN** the response is 200 with only a longer reconnection delay, so a browser tries again
+
+#### Scenario: A consumer's own refusal, by default
+- **WHEN** a consumer's interceptor refuses a stream with an error the chain maps to a server failure, and the consumer has not said which failures to retry
+- **THEN** the response is 200 with only a longer reconnection delay, and no stream opens
+
+#### Scenario: A consumer says a failure is final
+- **WHEN** the consumer's function says that error is not to be retried
+- **THEN** the error goes through the chain's error mapping, and no failure is counted
 
 #### Scenario: Seventeenth stream of a user
 - **WHEN** a user has 16 open streams across several sign-ins and opens another on a sign-in with fewer than 4
