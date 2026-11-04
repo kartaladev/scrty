@@ -29,7 +29,21 @@ var reportedElsewhere = map[string]string{
 	event.AuthnLoginLock:    "the lockout observer's report (TestSecurityEvents_Observers)",
 	event.AuthnTokenReuse:   "the session-reuse observer's report (TestSecurityEvents_Observers)",
 	event.SigningKeyRotated: "token/signingkey TestSecurityEvents_SigningKeyRotated",
+
+	// The OpenID provider decides these below any chain of its own, and they carry no factor or session.
+	event.GrantCreated:         providerEventsPinned,
+	event.ConsentGiven:         providerEventsPinned,
+	event.ConsentDenied:        providerEventsPinned,
+	event.ConsentRevoked:       providerEventsPinned,
+	event.ClientAuthRefused:    providerEventsPinned,
+	event.CodeReplayed:         providerEventsPinned,
+	event.RefreshReused:        providerEventsPinned,
+	event.GrantRevoked:         providerEventsPinned,
+	event.LogoutDeliveryFailed: providerEventsPinned,
 }
+
+// providerEventsPinned is where the OpenID provider's events are pinned.
+const providerEventsPinned = "oidcprovider TestProvider_Events, and TestProvider_Events_ThroughChain through a chain"
 
 // accessToken is the access_token member of a JSON success document.
 func accessToken(t *testing.T, out served) string {

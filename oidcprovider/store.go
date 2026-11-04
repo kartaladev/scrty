@@ -413,9 +413,12 @@ type GrantStore interface {
 	Load(ctx context.Context, family id.ID) (*Grant, error)
 
 	// Revoke marks the grant revoked, recording the revocation first when no record
-	// exists. A second revocation changes nothing. A zero at is refused with an error
-	// matching ErrConfig.
-	Revoke(ctx context.Context, family id.ID, cause RevocationCause, at time.Time) error
+	// exists, and reports whether this call is what revoked it. A second revocation
+	// changes nothing and reports false. It must decide with one conditional write, so
+	// that of any number of concurrent calls for one family exactly one reports true, as
+	// the provider reports a revocation only to the call that made it. A zero at is
+	// refused with an error matching ErrConfig.
+	Revoke(ctx context.Context, family id.ID, cause RevocationCause, at time.Time) (bool, error)
 
 	// RevokeByUser revokes every grant of user, offline_access included, and records a
 	// revocation for the family of each of user's outstanding codes, offline_access

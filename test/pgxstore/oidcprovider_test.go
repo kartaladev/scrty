@@ -555,7 +555,7 @@ func TestPgxStore_Unstorable(t *testing.T) {
 				return newGrantStore(t, pool).Create(ctx, &oidcprovider.Grant{Family: opID(4), AMR: []string{bad}})
 			}},
 			{"grant cause", func() error {
-				return newGrantStore(t, pool).Revoke(ctx, opID(4), oidcprovider.RevocationCause(bad), at)
+				return revokeErr(newGrantStore(t, pool).Revoke(ctx, opID(4), oidcprovider.RevocationCause(bad), at))
 			}},
 			{"access token text", func() error {
 				return newAccessTokenStore(t, pool).Create(ctx, &oidcprovider.AccessTokenRecord{ID: opID(5), ClientID: bad})
@@ -751,7 +751,7 @@ func TestPgxStore_GrantRows(t *testing.T) {
 			name: "a tombstone holds only its revocation, with created_at NULL",
 			assert: func(t *testing.T, ctx context.Context, conn database) {
 				s := joined(t, conn.Pool)
-				require.NoError(t, s.Revoke(ctx, opID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, opID(1), oidcprovider.CauseCodeReplay, at)))
 
 				var created, signIn, code sql.NullString
 				var holds bool
@@ -907,7 +907,7 @@ FOR EACH ROW EXECUTE FUNCTION test_refuse_grant_write()`)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	txCtx := pgxstore.WithTx(ctx, tx)
-	require.NoError(t, s.Revoke(txCtx, earlier, oidcprovider.CauseReuse, at))
+	require.NoError(t, revokeErr(s.Revoke(txCtx, earlier, oidcprovider.CauseReuse, at)))
 
 	err = call(txCtx, s)
 	require.ErrorContains(t, err, "refused by the test", "the statement must have failed on the server")
@@ -1200,7 +1200,7 @@ func TestPgxStore_GrantLockOrderStaged(t *testing.T) {
 	seedRevocation := func(t *testing.T, ctx context.Context, f orderFixture) id.ID {
 		t.Helper()
 		require.NoError(t, f.s.Create(ctx, stored(middle)))
-		require.NoError(t, f.s.Revoke(ctx, after, oidcprovider.CauseReuse, at))
+		require.NoError(t, revokeErr(f.s.Revoke(ctx, after, oidcprovider.CauseReuse, at)))
 		require.NoError(t, f.codes.Create(ctx, outstanding(0, before)))
 		require.NoError(t, f.codes.Create(ctx, outstanding(1, after)))
 
@@ -1549,3 +1549,7 @@ func TestPgxStore_RecordsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// revokeErr is what a call to GrantStore.Revoke failed with, for a case that does not ask whether the
+// call is what revoked the grant.
+func revokeErr(_ bool, err error) error { return err }

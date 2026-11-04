@@ -200,11 +200,12 @@ func (c *MockGrantStoreLoadCall) DoAndReturn(f func(context.Context, id.ID) (*oi
 }
 
 // Revoke mocks base method.
-func (m *MockGrantStore) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+func (m *MockGrantStore) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Revoke", ctx, family, cause, at)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // Revoke indicates an expected call of Revoke.
@@ -220,19 +221,19 @@ type MockGrantStoreRevokeCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockGrantStoreRevokeCall) Return(arg0 error) *MockGrantStoreRevokeCall {
-	c.Call = c.Call.Return(arg0)
+func (c *MockGrantStoreRevokeCall) Return(arg0 bool, arg1 error) *MockGrantStoreRevokeCall {
+	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockGrantStoreRevokeCall) Do(f func(context.Context, id.ID, oidcprovider.RevocationCause, time.Time) error) *MockGrantStoreRevokeCall {
+func (c *MockGrantStoreRevokeCall) Do(f func(context.Context, id.ID, oidcprovider.RevocationCause, time.Time) (bool, error)) *MockGrantStoreRevokeCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockGrantStoreRevokeCall) DoAndReturn(f func(context.Context, id.ID, oidcprovider.RevocationCause, time.Time) error) *MockGrantStoreRevokeCall {
+func (c *MockGrantStoreRevokeCall) DoAndReturn(f func(context.Context, id.ID, oidcprovider.RevocationCause, time.Time) (bool, error)) *MockGrantStoreRevokeCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

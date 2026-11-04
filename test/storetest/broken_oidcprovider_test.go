@@ -599,6 +599,24 @@ func (f *browserFake) DeleteExpired(_ context.Context, before time.Time) (int, e
 	return held - len(f.records), nil
 }
 
+// revokeSaysNewAgain says every revocation is the one that revoked the grant.
+type revokeSaysNewAgain struct {
+	*oidcprovider.MemoryGrantStore
+}
+
+func newRevokeSaysNewAgain(t *testing.T) *revokeSaysNewAgain {
+	t.Helper()
+
+	return &revokeSaysNewAgain{MemoryGrantStore: must.Must(oidcprovider.NewMemoryGrantStore())}
+}
+
+// Revoke implements oidcprovider.GrantStore.
+func (s *revokeSaysNewAgain) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
+	_, err := s.MemoryGrantStore.Revoke(ctx, family, cause, at)
+
+	return err == nil, err
+}
+
 // clearsRevocation is the store the conformance spec names: a grant stored over a
 // revocation recorded first loads as though nothing had been revoked.
 type clearsRevocation struct {
@@ -655,6 +673,10 @@ const (
 	grantEndSkipsCodes
 	grantCreateDropsMark
 	grantRevokeOverwrites
+	// grantRevokeTellsEveryone says every revocation is the one that revoked the grant.
+	grantRevokeTellsEveryone
+	// grantRevokeTellsNoOne says no revocation is the one that revoked the grant.
+	grantRevokeTellsNoOne
 )
 
 // grantEntry is what a grantFake holds, and whether a create has stored it.
@@ -741,7 +763,7 @@ func (f *grantFake) Load(_ context.Context, family id.ID) (*oidcprovider.Grant, 
 	return &out, nil
 }
 
-func (f *grantFake) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+func (f *grantFake) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
 	switch f.defect {
 	case grantCreateReadThenWrite:
 		f.gate.await(ctx, grantRead(family))
@@ -760,11 +782,12 @@ func (f *grantFake) Revoke(ctx context.Context, family id.ID, cause oidcprovider
 		held = &grantEntry{Grant: oidcprovider.Grant{Family: family}}
 		f.grants[family] = held
 	}
-	if !held.Revoked {
+	newly := !held.Revoked
+	if newly {
 		held.Revoked, held.RevokedAt, held.RevokeCause = true, at, cause
 	}
 
-	return nil
+	return (newly || f.defect == grantRevokeTellsEveryone) && f.defect != grantRevokeTellsNoOne, nil
 }
 
 func (f *grantFake) EndSignIns(ctx context.Context, sel oidcprovider.SignInSelector, at time.Time) ([]oidcprovider.Grant, error) {
@@ -1062,6 +1085,10 @@ var providerVariants = []storefix.BrokenVariant{
 		storetest.RevocationCreateRaceName, "a revocation raced its create and was lost"),
 	grantRaceVariant("revoke-overwrites", grantRevokeOverwrites,
 		storetest.RevocationCreateRaceName, "the grant's own fields were lost"),
+	grantRaceVariant("revoke-tells-everyone", grantRevokeTellsEveryone,
+		storetest.RevokedOnceRaceName, "more than one successful first revocation"),
+	grantRaceVariant("revoke-tells-no-one", grantRevokeTellsNoOne,
+		storetest.RevokedOnceRaceName, "no successful first revocation"),
 	grantRaceVariant("end-read-then-write", grantEndReadThenWrite,
 		storetest.EndReportedOnceRaceName, "more than one successful report"),
 	grantRaceVariant("end-create-read-then-write", grantCreateReadThenWrite,
@@ -1071,6 +1098,13 @@ var providerVariants = []storefix.BrokenVariant{
 	grantRaceVariant("create-drops-the-mark", grantCreateDropsMark,
 		storetest.EndCreateRaceName, "a second report of the end returned"),
 
+	{
+		Name: "grant-revoke-says-new-again",
+		Run: inBackend(func(t *testing.T) {
+			storetest.GrantSuite(t, func(t *testing.T) oidcprovider.GrantStore { return newRevokeSaysNewAgain(t) })
+		}),
+		FailsCase: "revoke says whether this call revoked the grant, with and without a row",
+	},
 	{
 		Name: "grant-clears-a-revocation",
 		Run: inBackend(func(t *testing.T) {

@@ -83,7 +83,8 @@ WHERE op_grants.created_at IS NULL`
 	GrantSelect = `SELECT ` + grantColumns + ` FROM op_grants WHERE family = $1`
 
 	// GrantRevoke revokes family $1 at $2 with cause $3, recording the revocation first
-	// when no record exists. A second revocation affects no row, and changes nothing.
+	// when no record exists. A second revocation affects no row, and changes nothing, so
+	// a row affected is what says this statement is the one that revoked the grant.
 	GrantRevoke = `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause) VALUES ($1, true, $2, $3)
 ON CONFLICT (family) DO UPDATE SET
   revoked = true, revoked_at = EXCLUDED.revoked_at, revoke_cause = EXCLUDED.revoke_cause

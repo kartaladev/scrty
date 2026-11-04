@@ -139,7 +139,7 @@ func TestExpiryTasks(t *testing.T) {
 				ctx := t.Context()
 				g := newGrant(x, false)
 				require.NoError(t, x.p.GrantsForTest().Create(ctx, g))
-				require.NoError(t, x.p.GrantsForTest().Revoke(ctx, g.Family, oidcprovider.CauseCodeReplay, x.clk.Now()))
+				require.NoError(t, revokeErr(x.p.GrantsForTest().Revoke(ctx, g.Family, oidcprovider.CauseCodeReplay, x.clk.Now())))
 
 				x.clk.Advance(10*time.Minute + 30*time.Second)
 				res := runExpiry(t, x.p)

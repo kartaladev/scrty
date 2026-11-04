@@ -162,7 +162,8 @@ func selectorOf(r session.EndReport) (SignInSelector, bool) {
 // passkey clone. No sign-in ended, so no client is told one did.
 //
 // cause is a string, one of the RevocationCause values or the consumer's own, so that a package
-// declaring its own one-method port needs no import of this one. It is recorded unchanged. An empty
+// declaring its own one-method port needs no import of this one. It is recorded, and carried by the
+// event.GrantRevoked each grant reports, unchanged. An empty
 // user or cause is refused with an error matching ErrConfig, before anything is written.
 //
 // The write does not depend on the caller still listening, and failing matches ErrDependency: the

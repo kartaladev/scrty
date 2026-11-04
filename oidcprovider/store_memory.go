@@ -533,11 +533,14 @@ func cloneGrant(g *Grant) Grant {
 	return out
 }
 
-// revokeGrant marks g revoked, unless it already is.
-func revokeGrant(g *Grant, cause RevocationCause, at time.Time) {
-	if !g.Revoked {
-		g.Revoked, g.RevokedAt, g.RevokeCause = true, at, cause
+// revokeGrant marks g revoked, unless it already is, and reports whether it did.
+func revokeGrant(g *Grant, cause RevocationCause, at time.Time) bool {
+	if g.Revoked {
+		return false
 	}
+	g.Revoked, g.RevokedAt, g.RevokeCause = true, at, cause
+
+	return true
 }
 
 var (
@@ -656,9 +659,9 @@ func (m *MemoryGrantStore) Load(_ context.Context, family id.ID) (*Grant, error)
 }
 
 // Revoke implements GrantStore.
-func (m *MemoryGrantStore) Revoke(_ context.Context, family id.ID, cause RevocationCause, at time.Time) error {
+func (m *MemoryGrantStore) Revoke(_ context.Context, family id.ID, cause RevocationCause, at time.Time) (bool, error) {
 	if err := requireTime("Revoke", at); err != nil {
-		return err
+		return false, err
 	}
 
 	m.mu.Lock()
@@ -670,9 +673,8 @@ func (m *MemoryGrantStore) Revoke(_ context.Context, family id.ID, cause Revocat
 		held = &memoryGrant{Grant: Grant{Family: family}}
 		m.grants[family] = held
 	}
-	revokeGrant(&held.Grant, cause, at)
 
-	return nil
+	return revokeGrant(&held.Grant, cause, at), nil
 }
 
 // requireTime refuses a zero time, which could not be told from no time at all.
@@ -734,7 +736,7 @@ func (m *MemoryGrantStore) revokeMatching(
 ) ([]Grant, error) {
 	revoked := m.revokeSelected(selected, cause, at)
 	for _, family := range families {
-		if err := m.Revoke(ctx, family, cause, at); err != nil {
+		if _, err := m.Revoke(ctx, family, cause, at); err != nil {
 			return nil, err
 		}
 	}

@@ -256,12 +256,17 @@
 // (event.RefreshReused); each grant revoked, with its cause (event.GrantRevoked); and a back-channel
 // logout token not delivered to a client that registered a URI (event.LogoutDeliveryFailed). A reuse and
 // a replay each yield two events, the outcome and the revocation it caused, and each is reported once the
-// revocation is stored, and once however many paths find it. A dependency that failed decided nothing and
-// reports nothing.
+// revocation is stored, and once however many paths find it. A grant is reported revoked once, by what
+// revoked it first, so a code replayed again, or a grant something else had already revoked, yields the
+// outcome alone, and the first cause stands. A reuse on a chain's request is those two and no more: the
+// lineage's manager is kept from reporting it as a session's reuse too. A grant is reported created once
+// everything its exchange answers with is stored. A dependency that failed decided nothing and reports
+// nothing.
 //
 // Each event names the client in Client and the user in User when known, and a revocation or a failed
-// delivery says why in Cause, a fixed word. None carries a code, handle, flow secret, token, assertion
-// or secret, and none carries the text of an error.
+// delivery says why in Cause: a fixed word, or the consumer's own for the cause it gave
+// [Provider.RevokeUserGrants], unchanged. None carries a code, handle, flow secret, token, assertion or
+// secret, and none carries the text of an error.
 //
 // The sink is called on the request that decided the outcome, and cannot change it: a panic in it is
 // recovered and logged without the event. A failed delivery is the exception: no request decided it, so it

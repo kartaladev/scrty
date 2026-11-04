@@ -448,7 +448,7 @@ func TestGormStore_Unstorable(t *testing.T) {
 				return newGrantStore(t, g).Create(ctx, &oidcprovider.Grant{Family: opID(4), AMR: []string{bad}})
 			}},
 			{"grant cause", func() error {
-				return newGrantStore(t, g).Revoke(ctx, opID(4), oidcprovider.RevocationCause(bad), at)
+				return revokeErr(newGrantStore(t, g).Revoke(ctx, opID(4), oidcprovider.RevocationCause(bad), at))
 			}},
 			{"access token text", func() error {
 				return newAccessTokenStore(t, g).Create(ctx, &oidcprovider.AccessTokenRecord{ID: opID(5), ClientID: bad})
@@ -638,7 +638,7 @@ func TestGormStore_GrantRows(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				db := d.conn.DB
 				s := joined(t, d.db)
-				require.NoError(t, s.Revoke(ctx, opID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, opID(1), oidcprovider.CauseCodeReplay, at)))
 
 				var created, signIn, code sql.NullString
 				var holds bool
@@ -797,7 +797,7 @@ FOR EACH ROW EXECUTE FUNCTION test_refuse_grant_write()`)
 	require.NoError(t, tx.Error)
 	defer func() { tx.Rollback() }()
 	txCtx := gormstore.WithTx(ctx, tx)
-	require.NoError(t, s.Revoke(txCtx, earlier, oidcprovider.CauseReuse, at))
+	require.NoError(t, revokeErr(s.Revoke(txCtx, earlier, oidcprovider.CauseReuse, at)))
 
 	err = call(txCtx, s)
 	require.ErrorContains(t, err, "refused by the test", "the statement must have failed on the server")
@@ -1090,7 +1090,7 @@ func TestGormStore_GrantLockOrderStaged(t *testing.T) {
 	seedRevocation := func(t *testing.T, ctx context.Context, f orderFixture) id.ID {
 		t.Helper()
 		require.NoError(t, f.s.Create(ctx, stored(middle)))
-		require.NoError(t, f.s.Revoke(ctx, after, oidcprovider.CauseReuse, at))
+		require.NoError(t, revokeErr(f.s.Revoke(ctx, after, oidcprovider.CauseReuse, at)))
 		require.NoError(t, f.codes.Create(ctx, outstanding(0, before)))
 		require.NoError(t, f.codes.Create(ctx, outstanding(1, after)))
 
@@ -1597,7 +1597,7 @@ func TestGormStore_RoundTripsAsSQLStore(t *testing.T) {
 				CreatedAt: at, ExpiresAt: at.Add(time.Hour), HoldsLineage: i == 2,
 			}
 			require.NoError(t, a.grants.Create(ctx, grant))
-			require.NoError(t, a.grants.Revoke(ctx, opID(n+1), oidcprovider.CauseReuse, at))
+			require.NoError(t, revokeErr(a.grants.Revoke(ctx, opID(n+1), oidcprovider.CauseReuse, at)))
 			require.NoError(t, a.pending.Create(ctx, &oidcprovider.PendingRequest{
 				ID: opID(n + 2), HandleDigest: []byte{byte(n)}, FlowDigest: []byte{byte(n), 1}, ClientID: "c-1", Scopes: amr,
 				Prompt: amr, UILocales: amr, MaxAge: &maxAge, ParkedAt: at, ExpiresAt: at.Add(time.Minute),
@@ -1677,3 +1677,7 @@ func TestGormStore_LineageSupersedeInATransactionOnAPreparedHandle(t *testing.T)
 	assert.Equal(t, 2, inLineage)
 	assert.Zero(t, inSessions)
 }
+
+// revokeErr is what a call to GrantStore.Revoke failed with, for a case that does not ask whether the
+// call is what revoked the grant.
+func revokeErr(_ bool, err error) error { return err }

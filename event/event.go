@@ -49,8 +49,10 @@ type Event struct {
 
 	// Cause is why the outcome came about, in a fixed word, and empty where
 	// the name says it all. It is the cause a grant was revoked for, or the
-	// reason a back-channel logout delivery failed. It is never free text, and
-	// never a value a request supplied.
+	// reason a back-channel logout delivery failed. It is never the text of an
+	// error, and never a value a request supplied. The one exception to the
+	// fixed word is a cause a consumer named when it revoked a user's grants:
+	// that is the consumer's own, and is carried unchanged.
 	Cause string
 }
 
@@ -273,7 +275,9 @@ const (
 	SigningKeyRotated = "scrty_signing_key_rotated"
 
 	// GrantCreated is a grant stored for an authorization code exchanged, by
-	// the OpenID provider. It names the client and the user.
+	// the OpenID provider, reported once everything the exchange answers with
+	// is stored too, so that a failure handing out nothing reports nothing. It
+	// names the client and the user.
 	GrantCreated = "scrty_grant_created"
 
 	// ConsentGiven is a user's consent to a client answered at the consent
@@ -299,22 +303,25 @@ const (
 	ClientAuthRefused = "scrty_client_auth_refused"
 
 	// CodeReplayed is an authorization code presented after it was spent, by
-	// the client it was issued to, reported once the grant it created is
-	// revoked, beside GrantRevoked with the cause code_replay. It names the
-	// client and the user.
+	// the client it was issued to, reported once the grant it created stands
+	// revoked. Each such presentation is one, and the one that revoked the
+	// grant is reported beside GrantRevoked with the cause code_replay. It names
+	// the client and the user.
 	CodeReplayed = "scrty_code_replayed"
 
 	// RefreshReused is a refresh token presented after its successor took
-	// over and its grace window ended, reported once the grant is revoked,
-	// beside GrantRevoked with the cause reuse. It names the client and the
-	// user, never the token.
+	// over and its grace window ended, reported once the grant stands revoked,
+	// beside GrantRevoked with the cause reuse unless something else had
+	// revoked it first. It names the client and the user, never the token. A
+	// refresh token is no session, so it never reports AuthnTokenReuse too.
 	RefreshReused = "scrty_refresh_reused"
 
 	// GrantRevoked is a grant of the OpenID provider revoked, one event per
-	// grant, with its cause in Cause: reuse, code_replay, sign_in_ended,
+	// grant, by the first revocation alone, as a later one changes nothing,
+	// with its cause in Cause: reuse, code_replay, sign_in_ended,
 	// consent_revoked, revoked_by_client, user_disabled, or the cause a
-	// consumer named when it revoked a user's grants. It names the client and
-	// the user.
+	// consumer named when it revoked a user's grants, which it carries
+	// unchanged. It names the client and the user.
 	GrantRevoked = "scrty_grant_revoked"
 
 	// LogoutDeliveryFailed is a back-channel logout token the OpenID provider

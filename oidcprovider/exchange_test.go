@@ -1590,12 +1590,12 @@ type watchedGrants struct {
 }
 
 // Revoke implements oidcprovider.GrantStore.
-func (w *watchedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+func (w *watchedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if w.failing.Load() {
-		return errOutage
+		return false, errOutage
 	}
 
 	return w.GrantStore.Revoke(ctx, family, cause, at)
@@ -2522,11 +2522,11 @@ type hangingGrants struct {
 }
 
 // Revoke implements oidcprovider.GrantStore.
-func (h *hangingGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+func (h *hangingGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
 	if h.armed.Load() {
 		<-ctx.Done()
 
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 
 	return h.GrantStore.Revoke(ctx, family, cause, at)

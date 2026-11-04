@@ -70,6 +70,8 @@ func (p *Provider) readTokenRequest(ctx context.Context, c ClientCredentials, fo
 		return nil, "", err
 	}
 	if refusePublic && rc.Type == Public {
+		p.reportClientRefused(ctx, rc.ID)
+
 		return nil, "", refuseClient()
 	}
 	raw := form.Get(paramToken)
@@ -83,7 +85,7 @@ func (p *Provider) readTokenRequest(ctx context.Context, c ClientCredentials, fo
 // revokeRefreshToken runs the secret's check before the client's, so a client naming another's
 // family beside a made-up secret hears what any unknown token hears, and cannot tell that the
 // family is real. A row already revoked is ended again, as that is how a family left behind by an
-// earlier failure goes.
+// earlier failure goes, and is not reported again, as the store says nothing newly happened to it.
 func (p *Provider) revokeRefreshToken(ctx context.Context, raw string, rc *RegisteredClient) error {
 	family, secret, ok := parseRefreshToken(raw)
 	if !ok {
@@ -108,10 +110,13 @@ func (p *Provider) revokeRefreshToken(ctx context.Context, raw string, rc *Regis
 
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if err := p.stores.grants.Revoke(detached, family, CauseRevokedByClient, now); err != nil {
+	newly, err := p.stores.grants.Revoke(detached, family, CauseRevokedByClient, now)
+	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the refresh token's grant")
 	}
-	p.reportGrantRevoked(ctx, grant.ClientID, grant.User, CauseRevokedByClient)
+	if newly {
+		p.reportGrantRevoked(ctx, grant.ClientID, grant.User, CauseRevokedByClient)
+	}
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")

@@ -75,10 +75,14 @@ func (p *Provider) reportRevoked(ctx context.Context, ended []Grant, cause Revoc
 
 // reportEnded reports the grants a sign-in's end revoked. The store marks each grant it returns as having
 // outlived its sign-in, and revokes those that do not: without offline_access, or tied to the sign-in.
-// A grant that survives is not a revocation, and is not reported.
+// A grant that survives is not a revocation, and is not reported. Nor is one that an earlier revocation
+// had already ended: it keeps that first cause, and was reported when it happened.
 func (p *Provider) reportEnded(ctx context.Context, ended []Grant) {
 	for i := range ended {
-		if g := &ended[i]; !g.Offline || g.EndsWithSignIn {
+		g := &ended[i]
+		survives := g.Offline && !g.EndsWithSignIn
+		endedEarlier := g.Revoked && g.RevokeCause != CauseSignInEnded
+		if !survives && !endedEarlier {
 			p.reportGrantRevoked(ctx, g.ClientID, g.User, CauseSignInEnded)
 		}
 	}
@@ -103,10 +107,12 @@ func (p *Provider) reportClientRefused(ctx context.Context, clientID string) {
 // reuseNote carries what a refresh request knows of its grant to wherever the lineage manager's
 // verdict is acted on, and makes sure the reuse it finds is reported once whichever path finds it
 // first: the row marked ahead of the manager, the manager's observer, or the failure path that
-// marks the row when the family cannot be deleted.
+// marks the row when the family cannot be deleted. It also holds the request's own context, which
+// is what the report goes out on, as the observer is handed the one quietLineage made.
 type reuseNote struct {
 	client string
 	user   identity.UserID
+	origin context.Context
 	done   atomic.Bool
 }
 
@@ -114,31 +120,47 @@ type reuseNoteKey struct{}
 
 // withReuseNote returns ctx carrying a note for the grant a refresh presents.
 func withReuseNote(ctx context.Context, g *Grant) context.Context {
-	return context.WithValue(ctx, reuseNoteKey{}, &reuseNote{client: g.ClientID, user: g.User})
+	return context.WithValue(ctx, reuseNoteKey{}, &reuseNote{client: g.ClientID, user: g.User, origin: ctx})
 }
 
-// reportReuse reports a refresh token reused and the grant revoked for it, once per request, after
-// the revocation is stored. Without a note, which no path of a refresh lacks, only the user the
-// manager's report names is known.
-func (p *Provider) reportReuse(ctx context.Context, fallback identity.UserID) {
+// quietLineage is the context a lineage manager's renewal runs on: ctx with no chain to report through.
+// One reuse is the provider's to report, as a reused refresh token and the grant revoked for it. The
+// manager would also find a chain's delivery and report it as authn_token_reuse, of a session no one
+// signed in with, and it has no sink of its own for that to reach here. Everything else on ctx stays,
+// a consumer's transaction among it.
+func quietLineage(ctx context.Context) context.Context {
+	return eventsink.With(ctx, nil)
+}
+
+// reportReuse reports a refresh token reused, once per request, and the grant revoked for it when newly
+// says this request is what revoked it, after the revocation is stored. Without a note, which no path
+// of a refresh lacks, only the user the manager's report names is known.
+func (p *Provider) reportReuse(ctx context.Context, fallback identity.UserID, newly bool) {
 	note, _ := ctx.Value(reuseNoteKey{}).(*reuseNote)
 	if note == nil {
-		note = &reuseNote{user: fallback}
+		note = &reuseNote{user: fallback, origin: ctx}
 	}
 	if !note.done.CompareAndSwap(false, true) {
 		return
 	}
 
-	p.report(ctx, event.Event{Name: event.RefreshReused, Outcome: event.OutcomeFailure, User: note.user, Client: note.client})
-	p.reportGrantRevoked(ctx, note.client, note.user, CauseReuse)
+	//nolint:contextcheck // the request's own context, which quietLineage derived what ctx may be from
+	p.report(note.origin, event.Event{Name: event.RefreshReused, Outcome: event.OutcomeFailure, User: note.user, Client: note.client})
+	if newly {
+		//nolint:contextcheck // as above
+		p.reportGrantRevoked(note.origin, note.client, note.user, CauseReuse)
+	}
 }
 
-// reportCodeReplay reports a code replayed and the grant revoked for it.
-func (p *Provider) reportCodeReplay(ctx context.Context, record *CodeRecord) {
+// reportCodeReplay reports a code replayed, which every valid presentation is, and the grant revoked
+// for it when newly says this one is what revoked it.
+func (p *Provider) reportCodeReplay(ctx context.Context, record *CodeRecord, newly bool) {
 	p.report(ctx, event.Event{
 		Name: event.CodeReplayed, Outcome: event.OutcomeFailure, User: record.SignIn.User, Client: record.ClientID,
 	})
-	p.reportGrantRevoked(ctx, record.ClientID, record.SignIn.User, CauseCodeReplay)
+	if newly {
+		p.reportGrantRevoked(ctx, record.ClientID, record.SignIn.User, CauseCodeReplay)
+	}
 }
 
 // dropReasons are the failures that may leave before anything is read of the client, so the report cannot
@@ -168,8 +190,8 @@ func (p *Provider) reportLogoutFailed(ctx context.Context, f logoutFailure) {
 
 // hasSomeoneToTell reads the client as it stands, within the delivery's own bound. A client that has
 // gone, or registered no URI, has no one to tell. A registry that cannot answer leaves it unknown,
-// and unknown is reported: an event for a client that could not be told is better lost to a registry's
-// outage than silent about a client that should have been.
+// and unknown is reported: an event about a client with no one to tell costs less than silence about
+// a client that should have been told.
 func (p *Provider) hasSomeoneToTell(ctx context.Context, clientID string) bool {
 	bounded, cancel := context.WithTimeout(ctx, p.cfg.logoutTimeout)
 	defer cancel()

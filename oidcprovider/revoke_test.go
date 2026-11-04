@@ -1181,7 +1181,7 @@ func TestProvider_Introspect(t *testing.T) {
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
 				t.Helper()
 
-				require.NoError(t, f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now()))
+				require.NoError(t, revokeErr(f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now())))
 
 				return credsOf("billing-web"), tokenForm(s.first.RefreshToken)
 			},

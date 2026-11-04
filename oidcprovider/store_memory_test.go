@@ -450,7 +450,7 @@ func TestMemoryGrantStore_ForgetsRevocations(t *testing.T) {
 			name: "a revocation recorded first",
 			write: func(t *testing.T, s *oidcprovider.MemoryGrantStore, n int) {
 				t.Helper()
-				require.NoError(t, s.Revoke(t.Context(), memoryID(n), oidcprovider.CauseCodeReplay, start))
+				require.NoError(t, revokeErr(s.Revoke(t.Context(), memoryID(n), oidcprovider.CauseCodeReplay, start)))
 			},
 		},
 	}
@@ -463,7 +463,7 @@ func TestMemoryGrantStore_ForgetsRevocations(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(start)
 			s, err := oidcprovider.NewMemoryGrantStore(oidcprovider.WithMemoryStoreClock(clk))
 			require.NoError(t, err)
-			require.NoError(t, s.Revoke(ctx, memoryID(1), oidcprovider.CauseCodeReplay, start))
+			require.NoError(t, revokeErr(s.Revoke(ctx, memoryID(1), oidcprovider.CauseCodeReplay, start)))
 
 			clk.Advance(longestCode)
 			w.write(t, s, 2)

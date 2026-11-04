@@ -308,7 +308,7 @@ func grantCases() []suiteCase[grantWorld] {
 		{
 			name: "a revocation recorded first loads revoked, before and after create (H2)",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
 
 				early := loadGrant(ctx, t, s, 1)
 				assert.True(t, early.Revoked, "the exchange reads it and refuses")
@@ -327,7 +327,7 @@ func grantCases() []suiteCase[grantWorld] {
 		{
 			name: "a revocation recorded first keeps its own time and cause over a revoked create",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
 
 				g := grantRecord(1, opSignIn("u-1", 1))
 				g.Revoked, g.RevokedAt, g.RevokeCause = true, later, oidcprovider.CauseUserRequest
@@ -343,7 +343,7 @@ func grantCases() []suiteCase[grantWorld] {
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				g := grantRecord(1, opSignIn("u-1", 1))
 				createGrants(ctx, t, s, g)
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at)))
 
 				other := grantRecord(1, opSignIn("u-2", 2))
 				other.ClientID = opOtherClient
@@ -357,7 +357,7 @@ func grantCases() []suiteCase[grantWorld] {
 		{
 			name: "a revocation recorded first can be filled in once only",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
 				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
 
 				require.Error(t, s.Create(ctx, grantRecord(1, opSignIn("u-2", 2))))
@@ -382,7 +382,7 @@ func grantCases() []suiteCase[grantWorld] {
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
 
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseRevokedByClient, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseRevokedByClient, at)))
 
 				got := loadGrant(ctx, t, s, 1)
 				assert.True(t, got.Revoked)
@@ -396,8 +396,8 @@ func grantCases() []suiteCase[grantWorld] {
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
 				for _, family := range []id.ID{suiteID(1), suiteID(2)} {
-					require.NoError(t, s.Revoke(ctx, family, oidcprovider.CauseCodeReplay, at))
-					require.NoError(t, s.Revoke(ctx, family, oidcprovider.CauseUserRequest, later))
+					require.NoError(t, revokeErr(s.Revoke(ctx, family, oidcprovider.CauseCodeReplay, at)))
+					require.NoError(t, revokeErr(s.Revoke(ctx, family, oidcprovider.CauseUserRequest, later)))
 				}
 
 				for _, n := range []int{1, 2} {
@@ -408,9 +408,73 @@ func grantCases() []suiteCase[grantWorld] {
 			},
 		},
 		{
+			name: "revoke says whether this call revoked the grant, with and without a row",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
+				for _, family := range []id.ID{suiteID(1), suiteID(2)} {
+					newly, err := s.Revoke(ctx, family, oidcprovider.CauseCodeReplay, at)
+					require.NoError(t, err)
+					assert.True(t, newly, "the first revocation is this call's")
+
+					newly, err = s.Revoke(ctx, family, oidcprovider.CauseUserRequest, later)
+					require.NoError(t, err)
+					assert.False(t, newly, "the second changed nothing")
+				}
+			},
+		},
+		{
+			name: "revoke says false for a revocation recorded first and then filled in",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
+				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
+
+				newly, err := s.Revoke(ctx, suiteID(1), oidcprovider.CauseUserRequest, later)
+				require.NoError(t, err)
+				assert.False(t, newly)
+			},
+		},
+		{
+			name: "revoke says false for a grant another write revoked",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)), grantRecord(2, opSignIn("u-2", 2)))
+				_, err := s.RevokeByUser(ctx, "u-1", oidcprovider.CauseRecovery, at)
+				require.NoError(t, err)
+				_, err = s.EndSignIns(ctx, oidcprovider.SignInSelector{User: "u-2"}, at)
+				require.NoError(t, err)
+
+				for _, n := range []int{1, 2} {
+					newly, err := s.Revoke(ctx, suiteID(n), oidcprovider.CauseReuse, later)
+					require.NoError(t, err)
+					assert.False(t, newly, "grant %d", n)
+				}
+			},
+		},
+		{
+			name: "revoke says true for an offline grant an end only marked",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				g := grantRecord(1, opSignIn("u-1", 1))
+				g.Offline = true
+				createGrants(ctx, t, s, g)
+				_, err := s.EndSignIns(ctx, oidcprovider.SignInSelector{User: "u-1"}, at)
+				require.NoError(t, err)
+
+				newly, err := s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, later)
+				require.NoError(t, err)
+				assert.True(t, newly, "it outlived its sign-in, and nothing had revoked it")
+			},
+		},
+		{
+			name: "revoke says false when it is refused",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				newly, err := s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, time.Time{})
+				require.ErrorIs(t, err, oidcprovider.ErrConfig)
+				assert.False(t, newly)
+			},
+		},
+		{
 			name: "revoke with a zero time is refused, and records nothing",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.ErrorIs(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, time.Time{}), oidcprovider.ErrConfig)
+				require.ErrorIs(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, time.Time{})), oidcprovider.ErrConfig)
 
 				_, err := s.Load(ctx, suiteID(1))
 				require.ErrorIs(t, err, oidcprovider.ErrNotFound)
@@ -454,7 +518,7 @@ func grantCases() []suiteCase[grantWorld] {
 			name: "revoke by user returns only what it newly revoked, and keeps the first cause",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)), grantRecord(2, opSignIn("u-1", 1)))
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at)))
 
 				got, err := s.RevokeByUser(ctx, "u-1", oidcprovider.CauseRecovery, later)
 				require.NoError(t, err)
@@ -524,7 +588,7 @@ func grantCases() []suiteCase[grantWorld] {
 		{
 			name: "a revocation recorded first is no one's until its grant is stored",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
 
 				got, err := s.RevokeByUser(ctx, "u-1", oidcprovider.CauseRecovery, later)
 				require.NoError(t, err)
@@ -539,7 +603,7 @@ func grantCases() []suiteCase[grantWorld] {
 		{
 			name: "revoking by an empty user or client is refused rather than matching what names none",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
 				createGrants(ctx, t, s, grantRecord(2, opSignIn("u-1", 1)))
 
 				_, err := s.RevokeByUser(ctx, "", oidcprovider.CauseRecovery, later)
@@ -778,7 +842,7 @@ func grantEndCases() []suiteCase[grantWorld] {
 			name: "an already revoked grant is marked and returned, and keeps its first cause",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at)))
 
 				got, err := s.EndSignIns(ctx, family, later)
 				require.NoError(t, err)
@@ -794,7 +858,7 @@ func grantEndCases() []suiteCase[grantWorld] {
 				g := grantRecord(1, opSignIn("u-1", 1))
 				g.Offline = true
 				createGrants(ctx, t, s, g)
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, at)))
 
 				got, err := s.EndSignIns(ctx, family, later)
 				require.NoError(t, err)
@@ -942,7 +1006,7 @@ func grantEndCases() []suiteCase[grantWorld] {
 				ended, err := s.EndSignIns(ctx, family, at)
 				require.NoError(t, err)
 				assert.Empty(t, ended)
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, later))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, later)))
 
 				createGrants(ctx, t, s, grantRecord(1, signIn))
 				stored := loadGrant(ctx, t, s, 1)
@@ -977,7 +1041,7 @@ func grantEndCases() []suiteCase[grantWorld] {
 				causes := []oidcprovider.RevocationCause{oidcprovider.CauseCodeReplay, oidcprovider.CauseSignInEnded}
 				for i, cause := range causes {
 					n := i + 1
-					require.NoError(t, s.Revoke(ctx, suiteID(n), cause, at))
+					require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(n), cause, at)))
 					createGrants(ctx, t, s, grantRecord(n, opSignIn("u-1", 1)))
 					assert.True(t, loadGrant(ctx, t, s, n).SignInEndedAt.IsZero(), "cause %s", cause)
 				}
@@ -997,7 +1061,7 @@ func grantEndCases() []suiteCase[grantWorld] {
 			name: "an end reaching a plain revocation through its code leaves it unmarked",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				signIn := opSignIn("u-1", 1)
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, at)))
 				s.outstanding(ctx, t, 1, signIn)
 
 				got, err := s.EndSignIns(ctx, family, later)
@@ -1143,7 +1207,7 @@ func grantSweepCases() []suiteCase[grantWorld] {
 				live := grantRecord(2, opSignIn("u-1", 1))
 				createGrants(ctx, t, s, expired, live)
 				for _, family := range []id.ID{suiteID(1), suiteID(2)} {
-					require.NoError(t, s.Revoke(ctx, family, oidcprovider.CauseReuse, revokedAt))
+					require.NoError(t, revokeErr(s.Revoke(ctx, family, oidcprovider.CauseReuse, revokedAt)))
 				}
 
 				n, err := s.DeleteExpired(ctx, revokedAt.Add(keep), keep)
@@ -1160,7 +1224,7 @@ func grantSweepCases() []suiteCase[grantWorld] {
 		{
 			name: "delete expired keeps a revocation recorded first until keepRevoked passes (H2)",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, revokedAt))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, revokedAt)))
 
 				n, err := s.DeleteExpired(ctx, revokedAt.Add(keep), keep)
 				require.NoError(t, err)
@@ -1194,7 +1258,7 @@ func grantSweepCases() []suiteCase[grantWorld] {
 		{
 			name: "delete expired refuses to keep revocations for no time",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, revokedAt))
+				require.NoError(t, revokeErr(s.Revoke(ctx, suiteID(1), oidcprovider.CauseCodeReplay, revokedAt)))
 
 				for _, bad := range []time.Duration{0, -time.Second} {
 					_, err := s.DeleteExpired(ctx, revokedAt.Add(time.Hour), bad)
@@ -1205,3 +1269,7 @@ func grantSweepCases() []suiteCase[grantWorld] {
 		},
 	}
 }
+
+// revokeErr is what a call to GrantStore.Revoke failed with, for a case that does not ask whether the
+// call is what revoked the grant.
+func revokeErr(_ bool, err error) error { return err }

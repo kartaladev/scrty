@@ -658,7 +658,7 @@ func TestProvider_AccessToken_Verify(t *testing.T) {
 	revoke := func(t *testing.T, x *exchangeFixture, c issuedCode) id.ID {
 		t.Helper()
 		family := grantOf(t, x, c).Family
-		require.NoError(t, x.p.GrantsForTest().Revoke(t.Context(), family, oidcprovider.CauseCodeReplay, x.clk.Now()))
+		require.NoError(t, revokeErr(x.p.GrantsForTest().Revoke(t.Context(), family, oidcprovider.CauseCodeReplay, x.clk.Now())))
 
 		return family
 	}

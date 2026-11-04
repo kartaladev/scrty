@@ -82,18 +82,18 @@ func (s *GrantStore) Load(ctx context.Context, family id.ID) (*oidcprovider.Gran
 }
 
 // Revoke implements oidcprovider.GrantStore.
-func (s *GrantStore) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+func (s *GrantStore) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
 	const op = "revoke grant"
 
 	if err := pgschema.RequireTime("GrantStore.Revoke", at); err != nil {
-		return failed(op, err)
+		return false, failed(op, err)
 	}
 	if err := pgschema.CheckText("revocation cause", string(cause)); err != nil {
-		return failed(op, err)
+		return false, failed(op, err)
 	}
-	_, err := s.c.exec(ctx, op, pgschema.GrantRevoke, family.String(), storekit.Time(at), string(cause))
+	n, err := s.c.exec(ctx, op, pgschema.GrantRevoke, family.String(), storekit.Time(at), string(cause))
 
-	return err
+	return n > 0, err
 }
 
 // RevokeByUser implements oidcprovider.GrantStore.

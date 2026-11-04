@@ -124,7 +124,7 @@ func (p *Provider) refresh(ctx context.Context, r TokenRequest, rc *RegisteredCl
 	if err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")
 	}
-	current, err := manager.LoadForRenewal(ctx, secret)
+	current, err := manager.LoadForRenewal(quietLineage(ctx), secret)
 	if err != nil {
 		return nil, p.answerLineage(ctx, err, family, now, "oidcprovider: read the refresh token")
 	}
@@ -252,10 +252,11 @@ func (p *Provider) markReuse(ctx context.Context, record *session.Session, now t
 	}
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if err := p.stores.grants.Revoke(detached, record.FamilyID, CauseReuse, now); err != nil {
+	newly, err := p.stores.grants.Revoke(detached, record.FamilyID, CauseReuse, now)
+	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a reused refresh token's grant")
 	}
-	p.reportReuse(ctx, record.UserID)
+	p.reportReuse(ctx, record.UserID, newly)
 
 	return nil
 }
@@ -300,9 +301,9 @@ func (p *Provider) answerLineage(ctx context.Context, err error, family id.ID, n
 		detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 		defer cancel()
 
-		revokeErr := p.stores.grants.Revoke(detached, family, CauseReuse, now)
+		newly, revokeErr := p.stores.grants.Revoke(detached, family, CauseReuse, now)
 		if revokeErr == nil {
-			p.reportReuse(ctx, "")
+			p.reportReuse(ctx, "", newly)
 		}
 
 		return dependencyFailure(ctx, errors.Join(err, revokeErr), "oidcprovider: revoke a reused refresh token's family")
@@ -321,7 +322,7 @@ func (p *Provider) answerLineage(ctx context.Context, err error, family id.ID, n
 // the family alone, since a family gone would refuse the next presentation before it could mark the
 // row, and nothing else would, so presenting the token again finishes the work. A row marked with
 // the delete failing is a dependency failure too, and no token works from then on, as the row
-// refuses them; its lineage stays until it expires or is swept. This differs from revokeGrant's order on purpose: a replayed code can
+// refuses them; its lineage stays until it expires or is swept. This differs from revokeReplayed's order on purpose: a replayed code can
 // retry through its code record, and a refresh token has no such record.
 func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Time) error {
 	details, err := p.users.LoadByUserID(ctx, grant.User)
@@ -335,10 +336,13 @@ func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Ti
 
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if err := p.stores.grants.Revoke(detached, grant.Family, CauseUserDisabled, now); err != nil {
+	newly, err := p.stores.grants.Revoke(detached, grant.Family, CauseUserDisabled, now)
+	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a grant whose user has gone")
 	}
-	p.reportGrantRevoked(ctx, grant.ClientID, grant.User, CauseUserDisabled)
+	if newly {
+		p.reportGrantRevoked(ctx, grant.ClientID, grant.User, CauseUserDisabled)
+	}
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")
@@ -512,7 +516,7 @@ func (p *Provider) rotateLineage(
 		if err != nil {
 			return "", dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")
 		}
-		next, _, _, err := rotator.RotateWithGraceIssuing(ctx, record, rc.RefreshGrace, step)
+		next, _, _, err := rotator.RotateWithGraceIssuing(quietLineage(ctx), record, rc.RefreshGrace, step)
 		switch {
 		case mint.err != nil:
 			return "", mint.err
@@ -522,7 +526,7 @@ func (p *Provider) rotateLineage(
 			return "", p.answerLineage(ctx, err, current.FamilyID, now, "oidcprovider: rotate the refresh token")
 		}
 
-		if record, err = manager.LoadForRenewal(ctx, current.ID); err != nil {
+		if record, err = manager.LoadForRenewal(quietLineage(ctx), current.ID); err != nil {
 			return "", p.answerLineage(ctx, err, current.FamilyID, now, "oidcprovider: read the refresh token")
 		}
 	}
@@ -669,11 +673,12 @@ func (p *Provider) revokeOnReuse(ctx context.Context, r session.ReuseReport) {
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
 
-	if err := p.stores.grants.Revoke(detached, r.Family, CauseReuse, r.DetectedAt); err != nil {
+	newly, err := p.stores.grants.Revoke(detached, r.Family, CauseReuse, r.DetectedAt)
+	if err != nil {
 		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a reused refresh token's grant could not be marked revoked",
 			append(diag.Failure("revoke_grant", err), slog.String("family", r.Family.String()))...)
 
 		return
 	}
-	p.reportReuse(ctx, r.User)
+	p.reportReuse(ctx, r.User, newly)
 }

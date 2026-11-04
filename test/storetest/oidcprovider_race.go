@@ -38,6 +38,7 @@ const (
 	CodeSpendRaceName        = "exactly one spend wins per code"
 	AssertionRecordRaceName  = "exactly one record wins per assertion identifier"
 	RevocationCreateRaceName = "a revocation racing a grant's create is kept"
+	RevokedOnceRaceName      = "a revocation raced from many callers tells one it revoked the grant"
 	EndReportedOnceRaceName  = "an end raced from many callers reports each grant once"
 	EndCreateRaceName        = "a sign-in's end racing its code's exchange leaves the grant revoked"
 	TouchRaceName            = "a touch racing a longer one leaves the longer deadline"
@@ -204,7 +205,7 @@ func RunTouchRace(t *testing.T, h DurableHarness[oidcprovider.BrowserSessionStor
 }
 
 // RunGrantRaces holds a grant store to its promises under concurrency, against one code
-// store it joins to through UseCodes, in three races:
+// store it joins to through UseCodes, in four races:
 //
 //   - a revocation racing the create of the same grant, one of each for each record, as
 //     a code's replay meets the exchange that stores its grant. Whichever goes first the
@@ -213,6 +214,8 @@ func RunTouchRace(t *testing.T, h DurableHarness[oidcprovider.BrowserSessionStor
 //     followed by an INSERT would, loses it;
 //   - ProviderRaceRacers callers ending one sign-in at once. Exactly one must be told of
 //     its grant, as a client is notified at most once, and a later report returns nothing;
+//   - one family revoked from many callers, a stored grant's and one with no row yet, of whom
+//     exactly one is told it is the one that revoked it, as the provider reports only that one;
 //   - a sign-in's end racing the exchange of its outstanding code, one of each for each
 //     record, some of them codes with offline_access of a client tied to its sign-in.
 //     Whichever goes first the grant must end revoked and marked, and a later report of
@@ -229,6 +232,7 @@ func RunGrantRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
 	h, codes := joinedGrantHarness(t, h)
 
 	runRace(t, h, revocationCreateRace(), raceRule{name: RevocationCreateRaceName, noun: "create", racers: 2})
+	runRace(t, h, revokedOnceRace(), raceRule{name: RevokedOnceRaceName, noun: "first revocation", racers: ProviderRaceRacers})
 	runRace(t, h, endReportedOnceRace(), raceRule{name: EndReportedOnceRaceName, noun: "report", racers: ProviderRaceRacers})
 	runRace(t, h, endCreateRace(codes), raceRule{name: EndCreateRaceName, noun: "create", racers: 2})
 }
@@ -457,7 +461,7 @@ func revocationCreateRace() Race[oidcprovider.GrantStore] {
 				return true, s.Create(ctx, raceGrant(n))
 			}
 
-			return false, s.Revoke(ctx, suiteID(n), oidcprovider.CauseCodeReplay, suiteStart)
+			return false, revokeErr(s.Revoke(ctx, suiteID(n), oidcprovider.CauseCodeReplay, suiteStart))
 		},
 		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
 			t.Helper()
@@ -469,6 +473,34 @@ func revocationCreateRace() Race[oidcprovider.GrantStore] {
 			if got.User != raceSignIn(raceN(key)).User {
 				t.Errorf("grant %s: the grant's own fields were lost, its user is %q", key, got.User)
 			}
+		},
+	}
+}
+
+// revokedOnceRace revokes one family from every racer, a stored grant's on even records and a
+// family with no row on odd ones. Each racer is told whether it is the one that revoked it, which
+// is the one win the engine counts.
+func revokedOnceRace() Race[oidcprovider.GrantStore] {
+	const firstFamily = 90000
+
+	return Race[oidcprovider.GrantStore]{
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, i int) string {
+			t.Helper()
+			n := firstFamily + i
+			if i%2 == 0 {
+				require.NoError(t, s.Create(ctx, raceGrant(n)))
+			}
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.GrantStore, key string, _ int) (bool, error) {
+			return s.Revoke(ctx, suiteID(raceN(key)), oidcprovider.CauseCodeReplay, suiteStart)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
+			t.Helper()
+			got := loadGrant(ctx, t, s, raceN(key))
+			assert.True(t, got.Revoked, "grant %s", key)
+			assert.Equal(t, oidcprovider.CauseCodeReplay, got.RevokeCause, "grant %s", key)
 		},
 	}
 }

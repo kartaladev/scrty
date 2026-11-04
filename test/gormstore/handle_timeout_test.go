@@ -64,7 +64,7 @@ func TestGormStore_HandleTimeoutBoundsProviderStores(t *testing.T) {
 		{
 			name: "a write through the pool", table: pgschema.GrantTable, mode: "ACCESS EXCLUSIVE",
 			call: func(ctx context.Context, t *testing.T, g, _ *gormdb.DB) error {
-				return newGrantStore(t, g).Revoke(ctx, opID(901), oidcprovider.CauseReuse, opTime)
+				return revokeErr(newGrantStore(t, g).Revoke(ctx, opID(901), oidcprovider.CauseReuse, opTime))
 			},
 			assert: bounded,
 		},
@@ -119,7 +119,7 @@ func TestGormStore_HandleTimeoutBoundsProviderStores(t *testing.T) {
 				tx := beginGorm(ctx, t, g)
 				s := newGrantStore(t, base, gormstore.WithTxResolver(resolving(tx)))
 
-				return s.Revoke(ctx, opID(901), oidcprovider.CauseReuse, opTime)
+				return revokeErr(s.Revoke(ctx, opID(901), oidcprovider.CauseReuse, opTime))
 			},
 			assert: bounded,
 		},
@@ -132,7 +132,7 @@ func TestGormStore_HandleTimeoutBoundsProviderStores(t *testing.T) {
 				return c
 			},
 			call: func(ctx context.Context, t *testing.T, g, _ *gormdb.DB) error {
-				return newGrantStore(t, g).Revoke(ctx, opID(901), oidcprovider.CauseReuse, opTime)
+				return revokeErr(newGrantStore(t, g).Revoke(ctx, opID(901), oidcprovider.CauseReuse, opTime))
 			},
 			assert: func(t *testing.T, elapsed time.Duration, err error) {
 				require.Error(t, err)

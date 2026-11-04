@@ -822,7 +822,7 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 				now := e.clk.Now()
 				revoked := e.grant(false, now, now.Add(365*24*time.Hour))
 				require.NoError(t, e.st.grants.Create(ctx, revoked))
-				require.NoError(t, e.st.grants.Revoke(ctx, revoked.Family, oidcprovider.CauseCodeReplay, now))
+				require.NoError(t, revokeErr(e.st.grants.Revoke(ctx, revoked.Family, oidcprovider.CauseCodeReplay, now)))
 				expired := e.grant(false, now.Add(-2*time.Hour), now.Add(-time.Hour))
 				require.NoError(t, e.st.grants.Create(ctx, expired))
 
@@ -922,3 +922,7 @@ func TestExpiryTasks_OIDCProvider(t *testing.T) {
 		}
 	}
 }
+
+// revokeErr is what a call to GrantStore.Revoke failed with, for a case that does not ask whether the
+// call is what revoked the grant.
+func revokeErr(_ bool, err error) error { return err }

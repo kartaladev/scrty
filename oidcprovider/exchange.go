@@ -286,7 +286,6 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 	if err := p.stores.grants.Create(ctx, grant); err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: store the grant")
 	}
-	p.reportGrantCreated(ctx, grant)
 	if holdsLineage {
 		if res.RefreshToken, err = p.writeLineage(ctx, grant, rc); err != nil {
 			return nil, err
@@ -297,6 +296,8 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 			return nil, dependencyFailure(ctx, err, "oidcprovider: store the access token")
 		}
 	}
+	// Only now is there a credential: a failure above burns the code and hands nothing out.
+	p.reportGrantCreated(ctx, grant)
 
 	return res, nil
 }
@@ -573,10 +574,9 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()
 	}
-	if err := p.revokeGrant(detached, record.GrantFamily, CauseCodeReplay, now); err != nil {
+	if err := p.revokeReplayed(ctx, detached, record, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed code issued")
 	}
-	p.reportCodeReplay(ctx, record)
 
 	return refuseGrant()
 }
@@ -605,19 +605,23 @@ func splitCode(code string) (id.ID, string, bool) {
 	return tokenID, secret, true
 }
 
-// revokeGrant revokes a grant and its lineage. The grant's row comes first, as the tombstone a
-// grant not stored yet is created over, and which every refresh reads first, so it alone ends
-// the grant. Each write is tried whatever became of the other. A failure answers an error, and
-// what caused the revocation can be presented again to try both again. Opaque access tokens
-// need nothing here, because their grant is checked when they are read.
-func (p *Provider) revokeGrant(ctx context.Context, family id.ID, cause RevocationCause, now time.Time) error {
-	grantErr := p.stores.grants.Revoke(ctx, family, cause, now)
+// revokeReplayed revokes what a replayed code issued, its grant and its lineage, on detached. The
+// grant's row comes first, as the tombstone a grant not stored yet is created over, and which every
+// refresh reads first, so it alone ends the grant, and the replay is reported as soon as it is stored,
+// on ctx, whatever then becomes of the lineage. Each write is tried whatever became of the other. A
+// failure answers an error, and what caused the revocation can be presented again to try both again.
+// Opaque access tokens need nothing here, because their grant is checked when they are read.
+func (p *Provider) revokeReplayed(ctx, detached context.Context, record *CodeRecord, now time.Time) error {
+	newly, grantErr := p.stores.grants.Revoke(detached, record.GrantFamily, CauseCodeReplay, now)
+	if grantErr == nil {
+		p.reportCodeReplay(ctx, record, newly)
+	}
 
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return errors.Join(grantErr, err)
 	}
-	_, lineageErr := manager.RevokeFamily(ctx, family)
+	_, lineageErr := manager.RevokeFamily(detached, record.GrantFamily)
 
 	return errors.Join(grantErr, lineageErr)
 }

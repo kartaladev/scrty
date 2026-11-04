@@ -67,7 +67,7 @@ type hookedLineage struct {
 	sawDelete   func(context.Context)
 	afterDelete func()
 
-	failLoad, failSupersede, failDelete atomic.Bool
+	failLoad, failCreate, failSupersede, failDelete atomic.Bool
 	// failLoadOf fails a read of the secrets it says, and is set before the request starts.
 	failLoadOf func(secret string) bool
 	// nothingOf makes a read of the secrets it says answer with neither a record nor an error, and
@@ -105,6 +105,15 @@ func (h *hookedLineage) Load(ctx context.Context, secret string) (*session.Sessi
 	}
 
 	return record, err
+}
+
+// Create implements session.Store.
+func (h *hookedLineage) Create(ctx context.Context, s *session.Session) error {
+	if h.failCreate.Load() {
+		return errOutage
+	}
+
+	return h.Store.Create(ctx, s)
 }
 
 // MarkPresented implements session.Store.
@@ -284,16 +293,16 @@ func (h *hookedGrants) Load(ctx context.Context, family id.ID) (*oidcprovider.Gr
 }
 
 // Revoke implements oidcprovider.GrantStore.
-func (h *hookedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+func (h *hookedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) (bool, error) {
 	h.revokes.Add(1)
 	if h.beforeRevoke != nil {
 		h.beforeRevoke()
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if h.failRevoke.Load() {
-		return errOutage
+		return false, errOutage
 	}
 
 	return h.GrantStore.Revoke(ctx, family, cause, at)
@@ -834,7 +843,7 @@ func TestProvider_Refresh(t *testing.T) {
 			name: "a revoked grant is refused, with nothing written to the lineage",
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
-				require.NoError(t, f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now()))
+				require.NoError(t, revokeErr(f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now())))
 			},
 			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
 				t.Helper()
@@ -1946,7 +1955,7 @@ func TestProvider_Refresh(t *testing.T) {
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
 				newest := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
-				require.NoError(t, f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now()))
+				require.NoError(t, revokeErr(f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now())))
 				s.request = s.again(newest)
 			},
 			assert: refusedGrant,
@@ -3082,7 +3091,7 @@ func goDone(step func()) <-chan struct{} {
 func revokeWhole(t *testing.T, f *refreshFixture, s *refreshScene) {
 	t.Helper()
 
-	require.NoError(t, f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now()))
+	require.NoError(t, revokeErr(f.grants.GrantStore.Revoke(t.Context(), s.grant.Family, oidcprovider.CauseUserRequest, f.clk.Now())))
 	_, err := f.lineage.Store.DeleteFamily(t.Context(), s.grant.Family)
 	require.NoError(t, err)
 }
