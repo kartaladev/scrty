@@ -25,8 +25,10 @@ const (
 	// EndReuse is a family revoked for reuse (see ErrReused). It names the user
 	// and the family.
 	EndReuse EndCause = iota + 1
-	// EndFamilyRevoked is Sessions.RevokeFamily. It names the family, and no
-	// user, because the call reads no session.
+	// EndFamilyRevoked is Sessions.RevokeFamily, ending a family for a reason
+	// the manager is not told, such as an administrator's revocation. It names
+	// the family, and no user, because the call reads no session. A user's own
+	// logout is EndLogout.
 	EndFamilyRevoked
 	// EndDeleted is Sessions.Delete. It names the user and the family the
 	// session was read to have, or neither when the read failed or found
@@ -59,6 +61,9 @@ const (
 	// EndOtherSignIns is Sessions.EndOtherSignIns. It names the user, no family,
 	// and as KeptFamily the current session's family.
 	EndOtherSignIns
+	// EndLogout is Sessions.Logout, a user logging out of a sign-in. It names
+	// the user, as the caller gave it, and the family.
+	EndLogout
 )
 
 // EndReport describes one explicit end of sign-ins, for an EndObserver. A bulk

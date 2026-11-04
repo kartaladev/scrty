@@ -72,7 +72,7 @@ func (l *logout) wire(c *Chain) {
 
 // Intercept ends the caller's sign-in and answers the request itself.
 //
-// The sign-in is the session's whole family (Sessions.RevokeFamily), so a
+// The sign-in is the session's whole family (Sessions.Logout), so a
 // logout bearing an identifier that was renewed inside its window also ends
 // its successor. A family already gone is not an error.
 //
@@ -146,7 +146,7 @@ func (l *logout) end(ctx context.Context, s *session.Session) error {
 	// Detached so a client hanging up cannot leave the family live;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
 	// still joined.
-	n, err := l.sessions.RevokeFamily(context.WithoutCancel(ctx), s.FamilyID)
+	n, err := l.sessions.Logout(context.WithoutCancel(ctx), s.UserID, s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
 	}

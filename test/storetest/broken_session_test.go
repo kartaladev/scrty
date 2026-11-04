@@ -259,6 +259,13 @@ const (
 	// ListByUser also lists sessions past a deadline, as a query that does
 	// not judge expiry would.
 	sessionListIncludesExpired sessionDefect = "list-includes-expired"
+	// ListByUser leaves out what a sign-in's state reads: the upstream
+	// identifiers and the authentication time, as a query naming only the
+	// columns a listing of sign-ins shows would.
+	sessionListOmitsState sessionDefect = "list-omits-state"
+	// ListByUser lists a strictly rotated record alongside its successor, as a
+	// query filtering superseded rows by their grace window would.
+	sessionListIncludesStrict sessionDefect = "list-includes-strict"
 	// Save writes the caller's sign-in metadata rather than keeping the
 	// stored one, as columns left in the UPDATE would.
 	sessionSaveWritesMetadata sessionDefect = "save-writes-metadata"
@@ -673,10 +680,15 @@ func (s *sessionStore) ListByUser(_ context.Context, user identity.UserID, now t
 		case sessionListIgnoresUser:
 			match = true
 		}
-		live := sess.SupersededAt.IsZero() || s.defect == sessionListIncludesSuperseded
+		live := sess.SupersededAt.IsZero() || s.defect == sessionListIncludesSuperseded ||
+			(s.defect == sessionListIncludesStrict && sess.RotatedStrictly)
 		unexpired := !expiredSession(sess, now) || s.defect == sessionListIncludesExpired
 		if match && live && unexpired {
-			listed = append(listed, cloneSession(sess))
+			entry := cloneSession(sess)
+			if s.defect == sessionListOmitsState {
+				entry.ExternalIssuer, entry.ExternalSessionID, entry.AuthenticatedAt = "", "", time.Time{}
+			}
+			listed = append(listed, entry)
 		}
 	}
 	return listed, nil

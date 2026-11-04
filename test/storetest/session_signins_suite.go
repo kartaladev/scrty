@@ -172,6 +172,127 @@ func sessionSignInCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			// A long-lived observer follows a sign-in by this listing alone
+			// (session.Sessions.SignInState), so each field it reads must be
+			// listed, on a session from a provider too.
+			name: "listing carries a sign-in's deadlines, authentication time and upstream identifiers",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := federatedSession("sess-a", "u-1", "https://idp.example.com", "upstream-session")
+				require.NoError(t, s.Create(ctx, want))
+
+				listed, err := s.ListByUser(ctx, "u-1", suiteStart)
+				require.NoError(t, err)
+				require.Len(t, listed, 1)
+				assertTimeEqual(t, want.IdleExpiresAt, listed[0].IdleExpiresAt, "IdleExpiresAt")
+				assertTimeEqual(t, want.AbsoluteExpiresAt, listed[0].AbsoluteExpiresAt, "AbsoluteExpiresAt")
+				assertTimeEqual(t, want.AuthenticatedAt, listed[0].AuthenticatedAt, "AuthenticatedAt")
+				assert.Equal(t, want.ExternalIssuer, listed[0].ExternalIssuer, "ExternalIssuer")
+				assert.Equal(t, want.ExternalSessionID, listed[0].ExternalSessionID, "ExternalSessionID")
+			},
+		},
+		{
+			name: "listing follows a family through a strict rotation, inside and past its window",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(2601))
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Minute)
+				successor := successorOf(old, "sess-b", at)
+				successor.AuthenticatedAt = at
+				window := at.Add(30 * time.Second)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: window, RetainUntil: window, Successor: successor, Now: at, Strict: true,
+				}))
+
+				for name, now := range map[string]time.Time{"inside": at, "past": window.Add(time.Minute)} {
+					listed, err := s.ListByUser(ctx, "u-1", now)
+					require.NoError(t, err, name)
+					require.Len(t, listed, 1, "%s the window, the family is listed once, by its new session", name)
+					assertListed(t, successor, listed[0])
+				}
+			},
+		},
+		{
+			// The read the listing exists to serve, through a manager, so a
+			// backend's renewal and rotation are what it follows.
+			name: "a manager's sign-in state follows a family and leaves it as it was",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				const issuer, upstream = "https://idp.example.com", "upstream-session"
+
+				told := 0
+				m, err := session.New(session.WithStore(s), session.WithClock(clk),
+					session.WithReuseObserver(func(context.Context, session.ReuseReport) { told++ }))
+				require.NoError(t, err)
+
+				first, err := m.Create(ctx, "u-1", session.WithExternalSession("idp", issuer, upstream, "an-id-token"))
+				require.NoError(t, err)
+
+				state, err := m.SignInState(ctx, "u-1", first.FamilyID)
+				require.NoError(t, err, "a session never presented")
+				assertTimeEqual(t, first.IdleExpiresAt, state.IdleDeadline, "IdleDeadline")
+				assertTimeEqual(t, first.AbsoluteExpiresAt, state.AbsoluteDeadline, "AbsoluteDeadline")
+				assertTimeEqual(t, first.AuthenticatedAt, state.AuthenticatedAt, "AuthenticatedAt")
+				assert.Equal(t, issuer, state.ExternalIssuer)
+				assert.Equal(t, upstream, state.ExternalSessionID)
+				stored, err := s.Load(ctx, first.ID)
+				require.NoError(t, err)
+				assert.True(t, stored.FirstPresentedAt.IsZero(), "the read recorded a presentation")
+
+				// A renewal past its grace window.
+				clk.Advance(5 * time.Minute)
+				renewed, _, err := m.RotateWithGrace(ctx, first, session.DefaultRenewalGrace)
+				require.NoError(t, err)
+				clk.Advance(session.DefaultRenewalGrace + time.Second)
+
+				state, err = m.SignInState(ctx, "u-1", first.FamilyID)
+				require.NoError(t, err, "a renewed sign-in past its grace window")
+				assertTimeEqual(t, renewed.IdleExpiresAt, state.IdleDeadline, "IdleDeadline after a renewal")
+				assert.Equal(t, upstream, state.ExternalSessionID, "a renewal keeps the upstream session")
+				stored, err = s.Load(ctx, renewed.ID)
+				require.NoError(t, err)
+				assert.True(t, stored.FirstPresentedAt.IsZero(), "the read presented the successor")
+				_, err = m.Load(ctx, renewed.ID)
+				require.NoError(t, err, "the read must leave the renewed sign-in live")
+
+				// A strict rotation, as a step-up makes.
+				clk.Advance(time.Minute)
+				reproved := *renewed
+				reproved.AuthenticatedAt = clk.Now()
+				rotated, err := m.Rotate(ctx, &reproved)
+				require.NoError(t, err)
+
+				state, err = m.SignInState(ctx, "u-1", first.FamilyID)
+				require.NoError(t, err, "a strictly rotated sign-in")
+				assertTimeEqual(t, rotated.AuthenticatedAt, state.AuthenticatedAt, "AuthenticatedAt after a step-up")
+
+				_, err = m.SignInState(ctx, "someone-else", first.FamilyID)
+				require.ErrorIs(t, err, session.ErrNotFound, "another user's family")
+				assert.Zero(t, told, "the read reported reuse")
+
+				// Ended.
+				_, err = m.Logout(ctx, "u-1", first.FamilyID)
+				require.NoError(t, err)
+				_, err = m.SignInState(ctx, "u-1", first.FamilyID)
+				require.ErrorIs(t, err, session.ErrNotFound, "an ended sign-in")
+			},
+		},
+		{
+			name: "a manager's sign-in state ends at a deadline, by the manager's clock",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				m, err := session.New(session.WithStore(s), session.WithClock(clk))
+				require.NoError(t, err)
+
+				created, err := m.Create(ctx, "u-1")
+				require.NoError(t, err)
+				clk.Advance(m.IdleTimeout() - time.Second)
+				_, err = m.SignInState(ctx, "u-1", created.FamilyID)
+				require.NoError(t, err, "a second before the idle deadline")
+
+				clk.Advance(time.Second)
+				_, err = m.SignInState(ctx, "u-1", created.FamilyID)
+				require.ErrorIs(t, err, session.ErrNotFound, "at the idle deadline")
+			},
+		},
+		{
 			name: "sign-in metadata, a DPoP key binding and the CSRF token round trip",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := withSignInState(sessionRecord("sess-a", "u-1"))

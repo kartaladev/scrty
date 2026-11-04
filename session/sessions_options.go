@@ -205,8 +205,9 @@ func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } 
 //
 //   - a family revoked for reuse (EndReuse) and a family revoked
 //     (EndFamilyRevoked, from RevokeFamily);
-//   - a session deleted (EndDeleted, from Delete) and a sign-in ended by its
-//     handle (EndByHandle, from EndSignIn);
+//   - a session deleted (EndDeleted, from Delete), a sign-in logged out
+//     (EndLogout, from Logout) and a sign-in ended by its handle (EndByHandle,
+//     from EndSignIn);
 //   - a user's sessions deleted (EndUserSessions, from DeleteByUser), with one
 //     kept (EndUserSessionsExcept, from DeleteByUserExcept), and a user's other
 //     sign-ins ended (EndOtherSignIns, from EndOtherSignIns);

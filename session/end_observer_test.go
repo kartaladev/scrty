@@ -539,6 +539,22 @@ func TestSessions_EndObserver(t *testing.T) {
 			},
 		},
 		{
+			name: "Logout names the user and the family",
+			act: func(ctx context.Context, f *observedFixture) error {
+				_, err := f.m.Logout(ctx, endUser, f.a.FamilyID)
+				return err
+			},
+			assert: func(t *testing.T, f *observedFixture, got session.EndReport, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, session.EndReport{
+					Cause: session.EndLogout, User: endUser, Family: f.a.FamilyID, At: f.clk.Now(),
+				}, got)
+			},
+			failWrite: func(store *MockStore, a *session.Session) {
+				store.EXPECT().DeleteFamily(gomock.Any(), a.FamilyID).Return(0, errStoreQuotes)
+			},
+		},
+		{
 			name: "Delete names the user and the family it read",
 			act: func(ctx context.Context, f *observedFixture) error {
 				return f.m.Delete(ctx, f.a.ID)
@@ -826,6 +842,15 @@ func TestSessions_EndObserver_NotReported(t *testing.T) {
 			assert: refused,
 		},
 		{
+			name: "Logout refusing the nil family",
+			act: func(ctx context.Context, _ *testing.T, f *observedFixture) error {
+				_, err := f.m.Logout(ctx, endUser, id.Nil)
+
+				return err
+			},
+			assert: refused,
+		},
+		{
 			name: "EndSignIn given a malformed handle",
 			act: func(ctx context.Context, _ *testing.T, f *observedFixture) error {
 				return f.m.EndSignIn(ctx, endUser, "not-a-handle")
@@ -938,6 +963,18 @@ func TestSessions_EndObserver_ZeroRows(t *testing.T) {
 			},
 			assert: func(t *testing.T, f *observedFixture, got session.EndReport) {
 				assert.Equal(t, session.EndReport{Cause: session.EndFamilyRevoked, Family: unknownFamily, At: f.clk.Now()}, got)
+			},
+		},
+		{
+			name: "Logout of a family already gone",
+			act: func(ctx context.Context, t *testing.T, f *observedFixture) error {
+				n, err := f.m.Logout(ctx, endUser, unknownFamily)
+				assert.Zero(t, n)
+
+				return err
+			},
+			assert: func(t *testing.T, f *observedFixture, got session.EndReport) {
+				assert.Equal(t, session.EndReport{Cause: session.EndLogout, User: endUser, Family: unknownFamily, At: f.clk.Now()}, got)
 			},
 		},
 		{
@@ -1351,6 +1388,171 @@ func TestSessions_EndObserver_BesideReuseObserver(t *testing.T) {
 
 			require.Len(t, f.calls, 2, "the end observers were not told")
 			assert.Equal(t, session.EndReuse, f.calls[0].report.Cause)
+		})
+	}
+}
+
+// TestSessions_Logout pins what a logout ends and what it answers. What it
+// reports, and when, is in TestSessions_EndObserver's rows.
+func TestSessions_Logout(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		ctx  func(ctx context.Context) context.Context
+		// arrange gives the family to log out, and may change what the store
+		// holds first.
+		arrange func(ctx context.Context, t *testing.T, f *observedFixture) (family id.ID, ended []string)
+		assert  func(t *testing.T, f *observedFixture, n int, err error)
+	}
+
+	endedAll := func(want int) func(*testing.T, *observedFixture, int, error) {
+		return func(t *testing.T, f *observedFixture, n int, err error) {
+			t.Helper()
+
+			require.NoError(t, err)
+			assert.Equal(t, want, n, "the count of sessions that went")
+			require.Len(t, f.calls, 2, "one report to each of the two observers")
+			assert.Equal(t, session.EndLogout, f.calls[0].report.Cause)
+			assert.Equal(t, endUser, f.calls[0].report.User)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a family of one session",
+			arrange: func(_ context.Context, _ *testing.T, f *observedFixture) (id.ID, []string) {
+				return f.a.FamilyID, []string{f.a.ID}
+			},
+			assert: endedAll(1),
+		},
+		{
+			name: "a renewal's successor goes too, logging out with the predecessor inside its window",
+			arrange: func(ctx context.Context, t *testing.T, f *observedFixture) (id.ID, []string) {
+				next := f.renew(ctx, t, f.a)
+
+				return f.a.FamilyID, []string{f.a.ID, next.ID}
+			},
+			assert: endedAll(2),
+		},
+		{
+			name: "every member of a family renewed twice goes",
+			arrange: func(ctx context.Context, t *testing.T, f *observedFixture) (id.ID, []string) {
+				first := f.renew(ctx, t, f.a)
+				f.clk.Advance(5 * time.Minute)
+				second := f.renew(ctx, t, first)
+
+				return f.a.FamilyID, []string{f.a.ID, first.ID, second.ID}
+			},
+			assert: endedAll(3),
+		},
+		{
+			name: "a family that is not there ends nothing and is not an error",
+			arrange: func(_ context.Context, _ *testing.T, _ *observedFixture) (id.ID, []string) {
+				return id.MustParse("0192d2a0-0000-7000-8000-00000000beef"), nil
+			},
+			assert: endedAll(0),
+		},
+		{
+			name: "the nil family is refused, ends nothing and reports nothing",
+			arrange: func(_ context.Context, _ *testing.T, _ *observedFixture) (id.ID, []string) {
+				return id.Nil, nil
+			},
+			assert: func(t *testing.T, f *observedFixture, n int, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.Zero(t, n)
+				assert.Empty(t, f.calls)
+			},
+		},
+		{
+			name: "a caller that has hung up still ends the family, on a store that does not refuse it",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			arrange: func(_ context.Context, _ *testing.T, f *observedFixture) (id.ID, []string) {
+				return f.a.FamilyID, []string{f.a.ID}
+			},
+			assert: endedAll(1),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f, store := newObservedFixture(t, recordingObservers)
+			family, ended := tc.arrange(t.Context(), t, f)
+			f.calls = nil
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			n, err := f.m.Logout(ctx, endUser, family)
+
+			tc.assert(t, f, n, err)
+			for _, sid := range ended {
+				_, loadErr := store.Load(t.Context(), sid)
+				assert.ErrorIs(t, loadErr, session.ErrNotFound, "a member of the family outlived the logout")
+			}
+			_, loadErr := store.Load(t.Context(), f.b.ID)
+			assert.NoError(t, loadErr, "the user's other sign-in must not end")
+		})
+	}
+}
+
+// TestSessions_LogoutStoreFailure pins that a store failure is returned behind
+// fixed text, the store's error still reachable, and reports nothing.
+func TestSessions_LogoutStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		answer error
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a store's own words stay out of the error",
+			answer: errStoreQuotes,
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, errStoreQuotes)
+				assert.NotContains(t, err.Error(), "alice@example.com")
+			},
+		},
+		{
+			name:   "a store's answer to a caller that hung up is an error, and no report",
+			answer: context.Canceled,
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.Canceled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := mockedObservedFixture(t, func(store *MockStore, a *session.Session) {
+				store.EXPECT().DeleteFamily(gomock.Any(), a.FamilyID).Return(0, tc.answer)
+			})
+
+			n, err := f.m.Logout(t.Context(), endUser, f.a.FamilyID)
+
+			tc.assert(t, err)
+			assert.Zero(t, n)
+			assert.Empty(t, f.calls, "a write that failed was reported")
 		})
 	}
 }

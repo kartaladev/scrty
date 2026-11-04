@@ -641,7 +641,37 @@ func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user ident
 // issue through rotation and renewal, so this ends that sign-in without
 // touching the user's sessions from other sign-ins. An unknown family ends
 // nothing and is not an error.
+//
+// End observers hear EndFamilyRevoked, which names the family and no user. It
+// is the end for a reason the manager is not told, such as an administrator's
+// revocation; a user logging out goes through Logout, which ends the same
+// sessions and says so.
 func (m *Sessions) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
+	return m.endFamily(ctx, family, EndReport{Cause: EndFamilyRevoked, Family: family})
+}
+
+// Logout ends the sign-in user is logging out of: every session of family,
+// superseded ones and a renewal's successor included, so logging out with an
+// identifier inside its renewal window leaves no live successor behind. It
+// ends what RevokeFamily ends and answers as RevokeFamily answers: the count of
+// sessions that went, an error for the nil family, a store failure behind fixed
+// text, and for a family that is not there, nothing ended and no error.
+//
+// End observers hear EndLogout naming user and family, which is what tells a
+// logout from a revocation. As with RevokeFamily, a write matching nothing is
+// still reported (see WithEndObserver).
+//
+// The manager reads no session here, so it does not check that family is
+// user's: user is what the report says and nothing else. A caller passes the
+// user and family of the session it authenticated. To end a sign-in a client
+// names by its handle, where ownership has to be judged, use EndSignIn.
+func (m *Sessions) Logout(ctx context.Context, user identity.UserID, family id.ID) (int, error) {
+	return m.endFamily(ctx, family, EndReport{Cause: EndLogout, User: user, Family: family})
+}
+
+// endFamily deletes family's sessions and, once the write has returned no
+// error, tells the end observers report.
+func (m *Sessions) endFamily(ctx context.Context, family id.ID, report EndReport) (int, error) {
 	if family.IsZero() {
 		return 0, errors.New("session: the nil family names no sessions to revoke")
 	}
@@ -650,7 +680,7 @@ func (m *Sessions) RevokeFamily(ctx context.Context, family id.ID) (int, error) 
 	if err != nil {
 		return n, storeFailed(err, "session: the family's sessions could not be deleted")
 	}
-	m.reportEnd(ctx, EndReport{Cause: EndFamilyRevoked, Family: family})
+	m.reportEnd(ctx, report)
 
 	return n, nil
 }
