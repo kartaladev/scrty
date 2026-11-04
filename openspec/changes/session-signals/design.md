@@ -545,6 +545,21 @@ The user asked that each decision the sweep made be checked for compliance with 
 
 **Where no standard was found:** the queue size, the publish timeout, the reload fraction, the `retry` spread, and whether a notification stream stays open during an outage. These are judgments, labelled as such.
 
+## Whole-branch review (2026-11-05)
+
+Task 8.3, by a reviewer that wrote none of it, against all 53 requirements of the five spec deltas, D1 to D10 and the three tables above, on the tree rebased onto `main`. No high-severity defect. What it found, and where each went:
+
+| Finding | Status | Resolution |
+|---|---|---|
+| A user store's text reached a returned error at a stream's first read, against the library's promise | REPRODUCED | Fixed: `TestSessionSignals_Caps_FirstReadReturnsNoDependencyText` |
+| A consumer authenticator's `authenticate.ErrUnavailable` is final for a browser on the stream's path | REPRODUCED | A stated limit (D7), and documented |
+| A back-channel logout of every session says `all_ended`, where the README said `provider_logout` | UNREPRODUCED, from reading the code | The README states both |
+| Artifacts and the README had drifted from the code | Reading | Corrected |
+
+Real conditions, which earlier reviews showed find what doubles do not: `gzhttp`, httpsnoop, otelhttp, chi and gin in `TestReal_`; the README's clients through their harness; and 58 checks with Node's real `EventSource` and `fetch` against real listeners on all three adapters. All passed. **Not run:** a real browser, so Fetch Metadata is covered by Go tests only.
+
+The final gate then passed on the final tree: every module's suite with `-race`, at `-parallel 4` because PostgreSQL cleanup times out at the default on a heavily loaded machine; `go vet`, `gofmt` and `go mod tidy -diff`; and `govulncheck`, which finds no reachable vulnerable code. It reports advisories in required modules that are not called, at versions this change did not touch.
+
 ## Risks / Trade-offs
 
 - **[Store load]** 10 000 streams at 15 s is about 670 session reads and 670 user reads per second per replica.
