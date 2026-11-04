@@ -132,3 +132,90 @@ func TestProvider_Accessors(t *testing.T) {
 		})
 	}
 }
+
+func TestProvider_Capabilities(t *testing.T) {
+	t.Parallel()
+
+	refreshing := func(id string, scopes ...string) oidcprovider.Client {
+		c := webClient()
+		c.ID = id
+		c.Scopes = scopes
+		c.GrantTypes = []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken}
+
+		return c
+	}
+
+	type testCase struct {
+		name   string
+		deps   func(t *testing.T, d *oidcprovider.Deps)
+		assert func(t *testing.T, c oidcprovider.Capabilities)
+	}
+
+	cases := []testCase{
+		{
+			name: "defaults: the standard scopes, no offline access, and RS256",
+			assert: func(t *testing.T, c oidcprovider.Capabilities) {
+				assert.Equal(t, []string{"openid", "profile", "email"}, c.Scopes)
+				assert.Equal(t, []string{"RS256"}, c.IDTokenAlgs)
+				assert.Contains(t, c.Claims, "sub")
+				assert.Contains(t, c.Claims, "auth_time")
+				assert.Contains(t, c.Claims, "email_verified")
+				assert.NotContains(t, c.IDTokenAlgs, "none")
+			},
+		},
+		{
+			name: "every algorithm a client assertion may use, and never none",
+			assert: func(t *testing.T, c oidcprovider.Capabilities) {
+				assert.Equal(t, []string{
+					"ES256", "ES384", "ES512", "EdDSA", "PS256", "PS384", "PS512", "RS256", "RS384", "RS512",
+				}, c.AssertionAlgs)
+			},
+		},
+		{
+			name: "a client with a refresh grant that lists offline_access offers it, and its other scopes follow, sorted",
+			deps: func(_ *testing.T, d *oidcprovider.Deps) {
+				d.Clients = []oidcprovider.Client{refreshing("a", "openid", "offline_access", "billing", "accounts")}
+			},
+			assert: func(t *testing.T, c oidcprovider.Capabilities) {
+				assert.Equal(t, []string{"openid", "profile", "email", "offline_access", "accounts", "billing"}, c.Scopes)
+			},
+		},
+		{
+			name: "offline_access listed by a client with no refresh grant is not offered",
+			deps: func(_ *testing.T, d *oidcprovider.Deps) {
+				c := refreshing("a", "openid", "offline_access")
+				c.GrantTypes = nil
+				d.Clients = []oidcprovider.Client{c}
+			},
+			assert: func(t *testing.T, c oidcprovider.Capabilities) {
+				assert.NotContains(t, c.Scopes, "offline_access")
+			},
+		},
+		{
+			name: "a consumer's own registry cannot be listed, so offline_access is offered",
+			deps: func(t *testing.T, d *oidcprovider.Deps) {
+				d.Clients = nil
+				d.Registry = NewMockClientRegistry(gomock.NewController(t))
+			},
+			assert: func(t *testing.T, c oidcprovider.Capabilities) {
+				assert.Equal(t, []string{"openid", "profile", "email", "offline_access"}, c.Scopes)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := validDeps(t)
+			if tc.deps != nil {
+				tc.deps(t, &d)
+			}
+
+			p, err := oidcprovider.New(d)
+			require.NoError(t, err)
+
+			tc.assert(t, p.Capabilities())
+		})
+	}
+}
