@@ -409,7 +409,9 @@ func (e *durEnv) requireScanSeesCredentials(t *testing.T) {
 	t.Helper()
 
 	const scratch = "scan_control"
-	planted := "planted-known-credential-0123456789"
+	// Its bytes are chosen so the standard and URL alphabets differ, and the length so that padded
+	// and unpadded forms differ: all six spellings below are distinct.
+	planted := "planted-known-credential-?>>?>>012345678"
 	_, err := e.conn.DB.ExecContext(t.Context(), "CREATE TABLE "+scratch+" (v text NOT NULL)")
 	require.NoError(t, err)
 	for _, spelling := range spellings(planted) {
@@ -428,7 +430,17 @@ func (e *durEnv) requireScanSeesCredentials(t *testing.T) {
 		assert.Equal(t, scratch, hit.table, "only the scratch table holds the planted credential")
 		found = append(found, hit.spelling)
 	}
-	require.ElementsMatch(t, spellings(planted), found, "the scan finds the credential in every spelling")
+	// The spellings are listed literally, not taken from spellings(), so that a spelling dropped
+	// from spellings() is noticed rather than agreed with.
+	want := []string{
+		planted,
+		"706c616e7465642d6b6e6f776e2d63726564656e7469616c2d3f3e3e3f3e3e303132333435363738",
+		"cGxhbnRlZC1rbm93bi1jcmVkZW50aWFsLT8+Pj8+PjAxMjM0NTY3OA==",
+		"cGxhbnRlZC1rbm93bi1jcmVkZW50aWFsLT8+Pj8+PjAxMjM0NTY3OA",
+		"cGxhbnRlZC1rbm93bi1jcmVkZW50aWFsLT8-Pj8-PjAxMjM0NTY3OA==",
+		"cGxhbnRlZC1rbm93bi1jcmVkZW50aWFsLT8-Pj8-PjAxMjM0NTY3OA",
+	}
+	require.ElementsMatch(t, want, found, "the scan finds the credential in every spelling")
 }
 
 // lastSegment is a token's secret: the part after its final dot.
@@ -802,12 +814,14 @@ func TestOIDCProvider_Durable(t *testing.T) {
 
 				p := e.build(t, nil)
 				credentials := make(map[string]string)
+				families := make(map[string]string)
 				for _, c := range []durClient{durWeb, durOpaque} {
 					issued := e.issue(t, p, c)
 					refreshed := e.mustRefresh(t, p, c, issued.tokens.RefreshToken)
 
 					// The scan sees the rows: the grant's family, which is no secret, is found.
 					family := familyOf(t, issued.tokens.RefreshToken)
+					families[c.id] = family.String()
 					require.NotEmpty(t, findCredentials(dumpDatabase(t, e.conn.DB), map[string]string{"family": family.String()}),
 						"the scan finds the grant's rows")
 
@@ -837,6 +851,22 @@ func TestOIDCProvider_Durable(t *testing.T) {
 					// A client's secret is kept as a digest, so the secret itself is a credential too.
 					credentials[c.id+" client secret"] = c.secret
 				}
+
+				// Every table that holds a credential is read, too: each is found to hold a row, by a
+				// key that is no secret. The opaque client's access token is the only one stored.
+				for table, key := range map[string]string{
+					"op_refresh_tokens":      families[durWeb.id],
+					"op_access_tokens":       families[durOpaque.id],
+					"op_authorization_codes": families[durWeb.id],
+					"op_grants":              families[durOpaque.id],
+					"op_pending_requests":    string(durUser),
+					"op_browser_sessions":    string(durUser),
+				} {
+					assert.Contains(t, dump[table], key, "the scan reads %s", table)
+				}
+				// No client here authenticates by assertion, so this table is empty at scan time.
+				// The scan still names it, which a scan that skipped it would not.
+				assert.Contains(t, dump, "op_client_assertions", "the scan reads the assertion identifiers")
 
 				for _, hit := range findCredentials(dump, credentials) {
 					assert.Failf(t, "a credential is kept in clear", "table %s holds the %s", hit.table, hit.label)
