@@ -99,12 +99,18 @@ type EventWriter interface {
 
 - **net/http and gin:**
   - `Stream` runs `body` inline, so `Stream` returns when the stream ends;
-  - `Flush` uses `http.ResponseController.Flush`, and before each write calls `SetWriteDeadline(now + 2 × heartbeat)`;
+  - `Flush` uses `http.ResponseController.Flush`, and `Stream`, each `Write` and each `Flush` first call `SetWriteDeadline(now + StreamWriteWindow)`;
   - the client leaving ends `body`'s context.
 - **fiber:**
   - `Stream` registers `body` with `SendStreamWriter` and returns at once;
   - `body` runs after the chain has unwound, on a context detached from the chain's end-of-request cancellation, and cancelled when fasthttp's `Done()` fires at shutdown or when a flush fails;
-  - each `Flush` sets the connection's write deadline to `now + 2 × heartbeat` through `RequestCtx.Conn()`, so the deadline fasthttp set once for the whole response does not cut the stream. *Unverified:* this rests on a later `SetWriteDeadline` on the `net.Conn` replacing the one fasthttp set. Task 1.2's first test establishes it on fiber before anything else is built.
+  - the body's start, each `Write` and each `Flush` set the connection's write deadline to `now + StreamWriteWindow` through `RequestCtx.Conn()`, so the deadline fasthttp set once for the whole response does not cut the stream. *Unverified:* this rests on a later `SetWriteDeadline` on the `net.Conn` replacing the one fasthttp set. Task 1.2's first test establishes it on fiber before anything else is built.
+- **The write window is one fixed constant** (corrected 2026-11-04, before implementation; this draft said `2 × heartbeat`, and the plan `now + 10s`). `httpsec.StreamWriteWindow` is 2 minutes, twice the largest heartbeat D2 allows, and every adapter uses it.
+  - The adapter is never told the heartbeat: `Stream(ctx, body)` does not carry it, so `2 × heartbeat` could not be built.
+  - The window must outlast the gap between two writes, not only cover a write in flight. On HTTP/2, Go's server resets the stream when its write-deadline timer fires, even with no write in flight (`onWriteTimeout`, read in `net/http/internal/http2/server.go` at Go 1.27.3). So a 10-second window would end every idle stream on the default 15-second heartbeat. That is UNREPRODUCED until task 1.3's HTTP/2 row fails against a shorter window; if the row cannot be made to fail, this reason is removed and the window reconsidered.
+  - *Trade-off:* a client that stops reading holds its stream and its place for up to 2 minutes, not 30 seconds at the default heartbeat. The caps bound what that costs, and a client that reads can hold a place anyway. `CloseSessionSignals` is bounded by its own context (D8).
+  - *Rejected:* a window parameter on `Stream`, which every consumer adapter would have to honour for a value only the stream endpoint chooses.
+  - **Override:** none, as for the rest of the adapter contract.
 
 ```
  net/http, gin                                   fiber
@@ -435,6 +441,7 @@ Each decision was checked against the standards and practice listed under Refere
 - [fiber v3 `Ctx.SendStreamWriter`](https://pkg.go.dev/github.com/gofiber/fiber/v3), read through `go doc` at v3.5.0: a body stream writer that fiber runs after the handlers return.
 - [fasthttp](https://pkg.go.dev/github.com/valyala/fasthttp), read through `go doc` and its source at v1.73.0: `RequestCtx.Done` closes only at shutdown, and `server.go` sets one write deadline per response.
 - [net/http `ResponseController`](https://pkg.go.dev/net/http#ResponseController): `Flush` and `SetWriteDeadline` per response.
+- [net/http HTTP/2 server](https://cs.opensource.google/go/go/+/refs/tags/go1.27.3:src/net/http/internal/http2/server.go), read in the local Go 1.27.3 tree on 2026-11-04: `onWriteTimeout` and `SetWriteDeadline`, the reason the write window outlasts the largest heartbeat.
 
 **D4, D7: the stream and its wire format** (accessed 2026-11-02)
 - [WHATWG HTML: server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html): the event format, `retry`, no custom headers on `EventSource`, a non-200 response failing the connection, comment heartbeats every 15 seconds or so, and the per-server connection limit.

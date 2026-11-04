@@ -90,23 +90,26 @@ type ResponseWriter interface { /* SetHeader, AddHeader, SetCookie, WriteHeader,
 type EventWriter interface { io.Writer; Flush() error }
 var ErrStreamingUnsupported = errors.New("httpsec: response writer cannot stream")
 var ErrStreamingStarted = errors.New("httpsec: response already started")
+const StreamWriteWindow = 2 * time.Minute // twice the largest heartbeat; every adapter uses it (design D1)
 ```
 
-- [ ] **1.2 Red:** `TestFiber_StreamOutlivesWriteTimeout`. A fasthttp server with `WriteTimeout: 3*time.Second` serves a fiber route whose `SendStreamWriter` body writes `:\n\n`, flushes, and calls `fc.RequestCtx().Conn().SetWriteDeadline(time.Now().Add(10*time.Second))` every 5 s for 30 s. The client reads with `bufio.Reader` and counts 6 comments. First run it without the deadline call, and expect the read to fail near 3 s. With the call it should pass. If it never passes, stop and report to the main session (design D1 risk). Record the fiber and fasthttp versions in the report.
+- [ ] **1.2 Red:** `TestFiber_StreamOutlivesWriteTimeout`. A fasthttp server with `WriteTimeout: 3*time.Second` serves a fiber route whose `SendStreamWriter` body writes `:\n\n`, flushes, and calls `fc.RequestCtx().Conn().SetWriteDeadline(time.Now().Add(httpsec.StreamWriteWindow))` every 5 s for 30 s. The client reads with `bufio.Reader` and counts 6 comments. First run it without the deadline call, and expect the read to fail near 3 s. With the call it should pass. If it never passes, stop and report to the main session (design D1 risk). Record the fiber and fasthttp versions in the report.
 - [ ] **1.3 Red:** `TestHTTPResponseWriter_Stream`, a table over `httptest.NewUnstartedServer` with `Config.WriteTimeout = 3s`:
   - the client receives the first event before the body returns;
-  - the stream lives 30 s with 5 s flushes;
+  - the stream lives 30 s with 5 s flushes, over HTTP/1.1 and over HTTP/2 (`EnableHTTP2` with `StartTLS`);
+  - over HTTP/2, a stream idle for longer than the write window survives, shown against a shortened window: first run the row with a window shorter than the gap and record the stream reset (the red for design D1's UNREPRODUCED reason), then with `StreamWriteWindow`;
   - an ordinary handler sleeping 4 s is cut;
   - closing the client ends the body's `ctx` within 1 s;
   - `Cache-Control` and `Access-Control-Allow-Origin` set before `Stream` arrive with the response;
   - `Stream` after `Write`, and a second `Stream`, return `ErrStreamingStarted` and add no bytes.
 
-  **Green:** `Stream` runs `body` inline. `Flush` calls `rc.SetWriteDeadline(now + 10s)`, then writes, then `rc.Flush()`. `ctx` is the request context. A started flag guards against a second start.
+  **Green:** `Stream` runs `body` inline. `Stream`, each `Write` and each `Flush` first call `rc.SetWriteDeadline(now + StreamWriteWindow)`; `Flush` then calls `rc.Flush()`. `ctx` is the request context. A started flag guards against a second start.
 - [ ] **1.4:** `TestGin_Stream` asserts the same rows through `ginsec.Middleware`. Expect green with no new production code, because gin uses `NewHTTPResponseWriter`. If it is red, fix it in `nethttp.go`.
 - [ ] **1.5 Red:** `TestFiber_Stream`, with the same rows, client loss detected within one flush interval, and a server `ShutdownWithTimeout` that ends an open stream. **Green:**
   - `Stream` calls `fc.SendStreamWriter` with a closure that builds `ctx` from `context.WithoutCancel(chainCtx)`;
   - the closure cancels it on a `Flush` error, or when `RequestCtx.Done()` closes;
-  - each `Flush` sets the connection deadline (from 1.2), then calls `w.Flush()`.
+  - the closure's start, each `Write` and each `Flush` set the connection deadline to `now + StreamWriteWindow` (from 1.2); `Flush` then calls `w.Flush()`;
+  - the closure holds the `*fasthttp.RequestCtx` and never the fiber `Ctx`, which is released when the handlers return.
 - [ ] **1.6:** Add conformance scenarios named `stream: …` for every `framework-adapters` scenario, plus a consumer writer returning `ErrStreamingUnsupported` that yields 501 (exercised from Task 4.1). Godoc `Stream`, `EventWriter` and both errors.
 - [ ] Verify each task's command from `tasks.md`, then `go test -race -count=1 ./...` in the root, `httpsec/ginsec`, `httpsec/fibersec` and `test`. Commit `feat(httpsec)!: response writers can stream`.
 
