@@ -217,8 +217,8 @@
 // [Provider.VerifyAccessToken] refuses it.
 //
 // Delivery is one form POST of logout_token, through a client confined as [WithLogoutOutbound] or
-// [WithOutbound] says, following no redirect, with 200 and 204 as success, on a context keeping the
-// caller's values and not its cancellation. [WithLogoutDelivery] replaces the POST. A failure is logged
+// [WithOutbound] says, following no redirect, with 200 and 204 as success whatever body comes with them,
+// none of which is read, on a context keeping the caller's values and not its cancellation. [WithLogoutDelivery] replaces the POST. A failure is logged
 // and reported, with no token and no text of its cause, is not tried again, and never undoes the end.
 //
 // It runs on a pool of 8 workers with a queue of 1024 ([WithLogoutDeliveryPool]), and each delivery has
@@ -226,13 +226,21 @@
 // pool needs no starting and no configuration, so the minimum wiring delivers. Workers come at the first
 // ended sign-in and leave when the queue is empty, so a provider never shut down holds no goroutine once
 // its deliveries are over. [Provider.Start] is optional and launches nothing. [Provider.Shutdown] waits
-// for what is queued for as long as its context allows, then reports what is left. Deliveries are in
-// memory, and a process ending without Shutdown loses what is queued.
+// for what is queued for as long as its context allows, then reports what is left, and any post it cut
+// off. Deliveries are in memory, and a process ending without Shutdown loses what is queued.
 //
 // A delivery panicking or ending its goroutine is reported, and costs the pool nothing, because each runs
 // on a goroutine of its own. One ignoring its context holds a worker no longer than its bound, and then
-// holds only its goroutine, until it returns. At most as many as there are workers can be left behind
-// like that, and past those a delivery fails at once. Shutdown does not return nil while one remains.
+// holds only its goroutine, until it returns. At most twice the workers can be left behind like that, and
+// past those a delivery fails at once. Shutdown does not return nil while one remains.
+//
+// Reports stay off the logout and off the workers. A failure's log line waits for one goroutine, in order,
+// and its event for one of 64, so a log handler or sink that is slow, panics or never returns delays no
+// logout, keeps no worker, and holds no Shutdown past its context. At most 1024 wait for each, besides what
+// Shutdown finds still queued, which has room of its own. The newest past that loses its event and keeps
+// its log line, or, where the log handler is held too or a burst outruns it, loses both, and how many is
+// logged once the handler can take it. A log line cannot outlive a handler that never returns, which is the
+// one thing that can log it.
 //
 // # Security events
 //
@@ -256,10 +264,10 @@
 // or secret, and none carries the text of an error.
 //
 // The sink is called on the request that decided the outcome, and cannot change it: a panic in it is
-// recovered and logged without the event. A failed delivery is the exception. A worker reports its own
-// failure, and a drop, which would run on the goroutine of the logout that handed the client on, is
-// reported on a goroutine of its own, at most 64 at once, after reading the client, so that a client
-// with no URI is not reported as a failure and a sink that blocks never holds a logout.
+// recovered and logged without the event. A failed delivery is the exception: no request decided it, so it
+// is reported on a goroutine of its own, at most 64 at once, as [Provider.Shutdown] and the section on
+// back-channel logout state. A drop's report reads the client first, so that a client with no URI is not
+// reported as a failure.
 //
 // # Errors
 //

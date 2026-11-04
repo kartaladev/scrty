@@ -68,3 +68,24 @@ func WithLogoutFailuresForTest(failed func(context.Context, LogoutFailure)) Opti
 
 // LogoutTransportForTest is the transport the default delivery posts over.
 func LogoutTransportForTest() *http.Transport { return newLogoutTransport() }
+
+// JudgeLogoutAttemptForTest runs what a worker comes to with a delivery's context as a row has it, and its
+// answer already in, if answered says so. It names the failure's reason, or says it was only cut off.
+func JudgeLogoutAttemptForTest(ctx context.Context, posting bool, answer *LogoutFailure, answered bool) (reason string, cutOff bool) {
+	done := make(chan *logoutFailure, 1)
+	if answered {
+		done <- answer
+	}
+	got, ok := awaitCall(ctx, done)
+	failure, cutOff := judgeAttempt(ctx, ClientToNotify{}, posting, got, ok)
+	if failure != nil {
+		reason = failure.Reason
+	}
+
+	return reason, cutOff
+}
+
+// AttemptLogoutForTest runs a job as a worker that has just taken it does.
+func (p *Provider) AttemptLogoutForTest(ctx context.Context, c ClientToNotify) {
+	p.logouts.attempt(logoutJob{client: c, ctx: ctx}) //nolint:contextcheck // the job carries it, as a worker's does
+}

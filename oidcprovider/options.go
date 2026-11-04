@@ -110,8 +110,8 @@ type config struct {
 	logoutWorkers     int
 	logoutQueue       int
 	logoutTimeout     time.Duration
-	// logoutFailed is told each failed delivery, before its security event is reported, and nothing but a
-	// test sets it.
+	// logoutFailed is told each failed delivery, once its log line has been written, and nothing but a test
+	// sets it.
 	logoutFailed func(context.Context, logoutFailure)
 	// events is the provider's own security-event sink, which a chain's delivery replaces on a request
 	// the chain reports for.
@@ -378,10 +378,9 @@ func WithClientKeysRefetchCooldown(d time.Duration) Option {
 // staying on the origin, and the time and size bounds it names. It must not be nil.
 //
 // It also posts logout tokens, so that they stay inside what it confines, unless WithLogoutOutbound
-// gives delivery a client of its own. The limit: a client built elsewhere cannot be told to follow no
-// redirect, so one that may redirect follows a relying party's redirect on its own origin, and the
-// delivery counts as the final answer does. Build it with outbound.WithMaxRedirects(0), or use
-// WithLogoutOutbound, to keep what delivery otherwise guarantees.
+// gives delivery a client of its own. A logout token follows no redirect whatever this client's cap is, as
+// a copy of it carries the POST. The limit: its own time bound still applies, so a WithLogoutDeliveryTimeout
+// longer than that ends a post under the reason "post" and not "timeout".
 func WithOutbound(o *outbound.Client) Option {
 	return func(c *config) { c.outbound, c.outboundSet = o, true }
 }
@@ -409,9 +408,10 @@ func WithLogoutDelivery(d LogoutDelivery) Option {
 
 // WithLogoutOutbound confines the default delivery, with the options of the outbound client it builds
 // for itself: a transport (outbound.WithHTTPClient), the origins it may reach, a response bound. The
-// default is outbound.New with a transport keeping no connection, and with WithOutbound given, that
-// client instead. A follow-no-redirect cap is applied last, so outbound.WithMaxRedirects given here
-// cannot bring redirects back. Options the outbound client refuses fail construction.
+// default is outbound.New with a transport keeping no connection and a time bound past the delivery's, and
+// with WithOutbound given, that client instead. A follow-no-redirect cap is applied last, so
+// outbound.WithMaxRedirects given here cannot bring redirects back. Options the outbound client refuses fail
+// construction.
 func WithLogoutOutbound(opts ...outbound.Option) Option {
 	return func(c *config) { c.logoutOutbound, c.logoutOutboundSet = opts, true }
 }
@@ -427,8 +427,9 @@ func WithLogoutDeliveryPool(workers, queue int) Option {
 // WithLogoutDeliveryTimeout replaces the bound on one delivery, reading the client and signing the token
 // included. The default is 5 seconds, and it must be positive. At the bound the delivery is reported as
 // failed, and its worker takes the next. A consumer's call ignoring its context keeps a goroutine until
-// it returns, of at most as many as there are workers: with that many left behind, a delivery fails at
-// once, reported as busy, rather than start another.
+// it returns, with at most twice the workers' calls left behind: with that many, a delivery fails at
+// once, reported as busy, rather than start another. A post through a client given by WithOutbound is also
+// held to that client's own time bound.
 func WithLogoutDeliveryTimeout(d time.Duration) Option {
 	return func(c *config) { c.logoutTimeout = d }
 }

@@ -851,3 +851,179 @@ func TestOutboundAllowsScheme(t *testing.T) {
 		})
 	}
 }
+
+func TestOutboundWithoutRedirects(t *testing.T) {
+	t.Parallel()
+
+	moved := func(status int, hits *atomic.Int64) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			if r.URL.Path == "/moved" {
+				return
+			}
+			w.Header().Set("Location", "/moved")
+			w.WriteHeader(status)
+		}
+	}
+
+	type testCase struct {
+		name   string
+		status int
+		opts   []outbound.Option
+		// call sends with what WithoutRedirects returned, and the client it was called on.
+		call   func(t *testing.T, target string, strict, original *outbound.Client) (*outbound.Response, error)
+		assert func(t *testing.T, res *outbound.Response, err error, hits int64)
+	}
+
+	refused := func(t *testing.T, res *outbound.Response, err error, hits int64) {
+		t.Helper()
+		require.ErrorIs(t, err, outbound.ErrRefused)
+		assert.Nil(t, res)
+		assert.Equal(t, int64(1), hits, "one request, and nothing sent again")
+	}
+	throughStrict := func(t *testing.T, target string, strict, _ *outbound.Client) (*outbound.Response, error) {
+		t.Helper()
+
+		return strict.PostForm(t.Context(), target, url.Values{"secret": {"s"}}, nil)
+	}
+
+	cases := []testCase{
+		{name: "a 302 on the same origin is not followed", status: http.StatusFound, call: throughStrict, assert: refused},
+		{name: "a 307 on the same origin is not followed", status: http.StatusTemporaryRedirect, call: throughStrict, assert: refused},
+		{name: "a 308 on the same origin is not followed", status: http.StatusPermanentRedirect, call: throughStrict, assert: refused},
+		{
+			name:   "whatever cap the client was built with",
+			status: http.StatusFound,
+			opts:   []outbound.Option{outbound.WithMaxRedirects(5)},
+			call:   throughStrict,
+			assert: refused,
+		},
+		{
+			name:   "and the client it was called on keeps its own",
+			status: http.StatusFound,
+			call: func(t *testing.T, target string, _, original *outbound.Client) (*outbound.Response, error) {
+				t.Helper()
+
+				return original.PostForm(t.Context(), target, url.Values{"secret": {"s"}}, nil)
+			},
+			assert: func(t *testing.T, res *outbound.Response, err error, hits int64) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusOK, res.Status)
+				assert.Equal(t, int64(2), hits)
+			},
+		},
+		{
+			name:   "every other confinement stays",
+			status: http.StatusOK,
+			opts:   []outbound.Option{outbound.WithAllowedOrigins("https://elsewhere.example.com")},
+			call:   throughStrict,
+			assert: func(t *testing.T, res *outbound.Response, err error, hits int64) {
+				t.Helper()
+				require.ErrorIs(t, err, outbound.ErrRefused)
+				assert.Nil(t, res)
+				assert.Zero(t, hits)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var hits atomic.Int64
+			srv := httptest.NewTLSServer(moved(tc.status, &hits))
+			t.Cleanup(srv.Close)
+			original, err := outbound.New(append([]outbound.Option{outbound.WithHTTPClient(trusting(t, srv))}, tc.opts...)...)
+			require.NoError(t, err)
+
+			res, err := tc.call(t, srv.URL+"/logout", original.WithoutRedirects(), original)
+			tc.assert(t, res, err, hits.Load())
+		})
+	}
+}
+
+// TestOutboundWithoutRedirects_ZeroValue pins that the zero value, which sends nothing, stays that way.
+func TestOutboundWithoutRedirects_ZeroValue(t *testing.T) {
+	t.Parallel()
+
+	var zero outbound.Client
+	strict := zero.WithoutRedirects()
+
+	_, err := strict.Get(t.Context(), "https://idp.example.com/", nil)
+	assert.ErrorIs(t, err, outbound.ErrRefused)
+}
+
+func TestOutboundPostFormStatus(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		handler http.HandlerFunc
+		opts    []outbound.Option
+		assert  func(t *testing.T, status int, err error)
+	}
+
+	statusOf := func(want int) func(t *testing.T, status int, err error) {
+		return func(t *testing.T, status int, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, want, status)
+		}
+	}
+
+	cases := []testCase{
+		{name: "a status is reported as it came", handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }, assert: statusOf(http.StatusTeapot)},
+		{
+			name: "a body past the bound is not read, so it fails nothing",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(make([]byte, 64))
+			},
+			opts:   []outbound.Option{outbound.WithMaxResponseBytes(8)},
+			assert: statusOf(http.StatusOK),
+		},
+		{
+			name: "a body that breaks off fails nothing",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Length", "100")
+				_, _ = w.Write([]byte("short"))
+			},
+			assert: statusOf(http.StatusOK),
+		},
+		{
+			name: "a redirect off the origin is refused, as everywhere else",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "https://elsewhere.example.com/", http.StatusFound)
+			},
+			assert: func(t *testing.T, status int, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, outbound.ErrRefused)
+				assert.Zero(t, status)
+			},
+		},
+		{
+			name:    "a target off the declared origins is refused before it is sent",
+			handler: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+			opts:    []outbound.Option{outbound.WithAllowedOrigins("https://elsewhere.example.com")},
+			assert: func(t *testing.T, status int, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, outbound.ErrRefused)
+				assert.Zero(t, status)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewTLSServer(tc.handler)
+			t.Cleanup(srv.Close)
+			c, err := outbound.New(append([]outbound.Option{outbound.WithHTTPClient(trusting(t, srv))}, tc.opts...)...)
+			require.NoError(t, err)
+
+			status, err := c.PostFormStatus(t.Context(), srv.URL+"/logout", url.Values{"a": {"b"}}, nil)
+			tc.assert(t, status, err)
+		})
+	}
+}

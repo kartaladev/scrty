@@ -612,14 +612,31 @@ func TestProvider_BackChannelDelivery(t *testing.T) {
 			assert: failedAs("post", 1),
 		},
 		{
-			name:   "the stated limit: such a client that may redirect does, on its origin, as WithOutbound says",
+			name:   "and, free to redirect everywhere else, follows none here",
 			answer: redirecting(http.StatusFound),
 			opts:   func(t *testing.T, rp *relyingParty) []oidcprovider.Option { return throughOutbound(t, rp) },
-			assert: func(t *testing.T, rp *relyingParty, x *ending) {
-				t.Helper()
-				assert.Len(t, rp.received(), 2)
-				assert.Empty(t, x.failed())
+			assert: failedAs("post", 1),
+		},
+		{
+			name:   "nor, at a 307, sends the token again",
+			answer: redirecting(http.StatusTemporaryRedirect),
+			opts:   func(t *testing.T, rp *relyingParty) []oidcprovider.Option { return throughOutbound(t, rp) },
+			assert: failedAs("post", 1),
+		},
+		{
+			name: "a 200 whose body is past the response bound is a success, as nothing of it is read",
+			answer: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(make([]byte, 2<<20))
 			},
+			assert: delivered,
+		},
+		{
+			name: "so is one whose body breaks off",
+			answer: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Length", "100")
+				_, _ = w.Write([]byte("short"))
+			},
+			assert: delivered,
 		},
 		{
 			name:   "options given for delivery win over such a client",
@@ -782,6 +799,25 @@ func TestProvider_BackChannelDelivery_NoSecretInStatusFailure(t *testing.T) {
 	assert.NotContains(t, logged, answered)
 	assert.NotContains(t, logged, "in-the-uri")
 	assert.Contains(t, logged, "status=500")
+}
+
+// TestProvider_BackChannelDelivery_PostErrorHidesItsTarget pins that a transport's error, whose text names
+// the URI, reaches nothing with that text, the seam told of the failure included.
+func TestProvider_BackChannelDelivery_PostErrorHidesItsTarget(t *testing.T) {
+	t.Parallel()
+
+	refusing := roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errOutage })
+	x := newEnding(t, []oidcprovider.Client{listeningClient("billing-web", billingBackChannel+"?secret=in-the-uri")}, nil,
+		oidcprovider.WithLogoutOutbound(outbound.WithHTTPClient(&http.Client{Transport: refusing})))
+
+	x.end(t.Context(), t, "billing-web")
+	drained(t, x.p)
+
+	require.Len(t, x.failed(), 1)
+	failure := x.failed()[0]
+	assert.Equal(t, "post", failure.Reason)
+	assert.NotContains(t, failure.Err.Error(), "in-the-uri")
+	assert.ErrorIs(t, failure.Err, errOutage, "with the cause still reachable")
 }
 
 // TestProvider_BackChannelDelivery_Who pins who is told of an end, once each, with the back-channel URI

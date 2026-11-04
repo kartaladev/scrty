@@ -54,28 +54,30 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 	if err := sel.Validate(); err != nil {
 		return nil, err
 	}
-	// Each store, and the hand-on, spends a budget of its own, so that one hanging until its budget ends
-	// leaves the others a live context.
+	// Each store spends a budget of its own, so that one hanging until its budget ends leaves the other a
+	// live context. Both come before anything that reports, so that nothing a report does can leave the
+	// browser sessions of an ended sign-in valid.
 	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	ended, grantErr := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
 	endGrants()
-	p.reportEnded(ctx, ended)
-	clients := clientsToNotify(ended)
 
+	browserCtx, endBrowsers := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	_, browserErr := p.stores.browserSessions.DeleteBySignIn(browserCtx, sel)
+	endBrowsers()
+
+	clients := clientsToNotify(ended)
+	// The budget here is for the test seam, the only thing on this context to wait: a delivery drops it.
 	handCtx, endHandOn := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	p.handOn(handCtx, clients)
 	endHandOn()
-
-	browserCtx, endBrowsers := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
-	defer endBrowsers()
-	_, browserErr := p.stores.browserSessions.DeleteBySignIn(browserCtx, sel)
+	p.reportEnded(ctx, ended)
 
 	return clients, dependencyFailure(ctx, errors.Join(grantErr, browserErr), "oidcprovider: end the sign-ins")
 }
 
 // handOn is where the clients of an ended sign-in leave for back-channel delivery. It never waits for a
-// delivery, however many clients there are and however their deliveries fare, so it spends none of the
-// logout's time on them.
+// delivery or for a report of one, and calls no consumer's code, however many clients there are and however
+// their deliveries fare, so it spends none of the logout's time on them.
 func (p *Provider) handOn(ctx context.Context, clients []ClientToNotify) {
 	if len(clients) > 0 && p.cfg.logoutNotices != nil {
 		p.cfg.logoutNotices(ctx, clients)

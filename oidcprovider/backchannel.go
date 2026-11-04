@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -33,13 +34,23 @@ const (
 	defaultLogoutWorkers = 8
 	defaultLogoutQueue   = 1024
 	defaultLogoutTimeout = 5 * time.Second
+
+	// logoutOutboundMargin is how far past a delivery's bound the outbound client's own default deadline
+	// lies, so that the bound is what ends a post, and says so. Equal deadlines would each win some of the time.
+	logoutOutboundMargin = time.Second
+
+	// maxLogoutSinkReports bounds the goroutines at the sink, and with it what a sink that does not return
+	// can hold. A log handler has one goroutine, so that its records keep their order.
+	maxLogoutSinkReports = 64
+	// maxLogoutReportsWaiting bounds what waits for a goroutine, for the sink and for the log each.
+	maxLogoutReportsWaiting = 1024
 )
 
 // The fixed words a failed delivery is logged and reported under.
 const (
 	failureClient    = "client"     // the registry could not say who the client is
 	failureSign      = "sign"       // the keys could not sign the token
-	failurePost      = "post"       // the default delivery got no answer
+	failurePost      = "post"       // the default delivery got no answer it could judge, or was refused where it was sent
 	failureStatus    = "status"     // the default delivery got an answer that is no success
 	failureDelivery  = "delivery"   // a consumer's delivery answered an error
 	failureTimeout   = "timeout"    // the bound on one delivery ended it
@@ -47,7 +58,7 @@ const (
 	failureGoexit    = "goexit"     // a delivery ended its goroutine
 	failureBusy      = "busy"       // calls left behind take every place a new one could run in
 	failureQueueFull = "queue_full" // nothing could take it, and the queue had no room
-	failureShutdown  = "shutdown"   // Shutdown came first
+	failureShutdown  = "shutdown"   // Shutdown came first, before the token was on its way or as it was
 )
 
 // logoutFailure is one client not told, as the seam for a failed delivery is told of it.
@@ -108,7 +119,9 @@ func (p *Provider) mintLogoutToken(ctx context.Context, c ClientToNotify, rc *Re
 
 // deliverLogout tells one client, reading it as it stands now. A client deleted since, or one that
 // registered no URI, has no one to tell, so that is no failure.
-func (p *Provider) deliverLogout(ctx context.Context, c ClientToNotify) *logoutFailure {
+//
+// posting is set as the token leaves, for a worker with no answer to know how deep the delivery got.
+func (p *Provider) deliverLogout(ctx context.Context, c ClientToNotify, posting *atomic.Bool) *logoutFailure {
 	rc, err := p.client(ctx, c.ClientID)
 	switch {
 	case errors.Is(err, ErrClientNotFound):
@@ -123,6 +136,7 @@ func (p *Provider) deliverLogout(ctx context.Context, c ClientToNotify) *logoutF
 	if err != nil {
 		return failureOf(c, failureSign, err)
 	}
+	posting.Store(true)
 	if err := p.logoutDelivery.Deliver(ctx, rc.BackChannelLogoutURI, raw); err != nil {
 		return failureOf(c, deliveryReason(err), err)
 	}
@@ -143,9 +157,20 @@ func deliveryReason(err error) string {
 	}
 }
 
-// reportLogoutFailure logs a failed delivery with fixed text and no value of its cause, tells the test seam,
-// and reports it as a security event (reportLogoutFailed). It undoes nothing.
+// reportLogoutFailure hands a failed delivery to the log and to the sink, and returns at once: nothing here
+// calls a consumer's code on the goroutine that found the failure. It undoes nothing.
 func (p *Provider) reportLogoutFailure(ctx context.Context, f logoutFailure) {
+	p.logouts.toLog(func() {
+		if p.cfg.logoutFailed != nil {
+			defer p.cfg.logoutFailed(ctx, f)
+		}
+		p.logLogoutFailure(ctx, f)
+	})
+	p.reportLogoutFailed(ctx, f)
+}
+
+// logLogoutFailure logs a failed delivery with fixed text and no value of its cause.
+func (p *Provider) logLogoutFailure(ctx context.Context, f logoutFailure) {
 	attrs := []slog.Attr{slog.String("client_id", f.ClientID)}
 	if f.Err != nil {
 		attrs = append(attrs, diag.Failure(f.Reason, f.Err)...)
@@ -160,23 +185,30 @@ func (p *Provider) reportLogoutFailure(ctx context.Context, f logoutFailure) {
 		attrs = append(attrs, slog.Int("status", status.status))
 	}
 	p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a logout token was not delivered", attrs...)
-
-	if p.cfg.logoutFailed != nil {
-		p.cfg.logoutFailed(ctx, f)
-	}
-	p.reportLogoutFailed(ctx, f)
 }
 
-// logCutOffLogout notes a delivery Shutdown ended part way, which is no failure, so it is not reported.
+// logCutOffLogout notes a read of a client or a signature Shutdown ended, before any token left, which is no
+// failure, so it is not reported.
 func (p *Provider) logCutOffLogout(ctx context.Context, clientID string) {
-	p.cfg.logger.LogAttrs(ctx, slog.LevelInfo, "oidcprovider: shutdown cut off a logout token's delivery",
-		slog.String("client_id", clientID))
+	p.logouts.toLog(func() {
+		p.cfg.logger.LogAttrs(ctx, slog.LevelInfo, "oidcprovider: shutdown cut off a logout token's delivery",
+			slog.String("client_id", clientID))
+	})
 }
 
 // logLateLogoutFailure notes how a delivery ended after its bound had already reported it failed.
 func (p *Provider) logLateLogoutFailure(ctx context.Context, f *logoutFailure) {
-	p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a logout token's delivery ended its goroutine after its bound",
-		slog.String("client_id", f.ClientID), slog.String("reason", f.Reason), slog.String("value_type", f.PanicType))
+	p.logouts.toLog(func() {
+		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a logout token's delivery ended its goroutine after its bound",
+			slog.String("client_id", f.ClientID), slog.String("reason", f.Reason), slog.String("value_type", f.PanicType))
+	})
+}
+
+// logLostLogoutReports says how many reports of failed deliveries found no room: those that lost their log
+// line and their event, and those that lost only their event.
+func (p *Provider) logLostLogoutReports(records, events int) {
+	p.cfg.logger.LogAttrs(context.Background(), slog.LevelError, "oidcprovider: reports of failed logout deliveries found no room",
+		slog.Int("lost_records", records), slog.Int("lost_events", events))
 }
 
 // outboundLogoutDelivery is the default: one form POST through a confined client.
@@ -184,23 +216,24 @@ type outboundLogoutDelivery struct {
 	out *outbound.Client
 }
 
-// Deliver implements LogoutDelivery. 200 and 204 are success (Back-Channel Logout §2.8).
+// Deliver implements LogoutDelivery. 200 and 204 are success (Back-Channel Logout §2.8), whatever body
+// comes with them, none of which is read.
 func (d outboundLogoutDelivery) Deliver(ctx context.Context, uri, logoutToken string) error {
-	res, err := d.out.PostForm(ctx, uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
+	status, err := d.out.PostFormStatus(ctx, uri, url.Values{logoutTokenParam: {logoutToken}}, nil)
 	if err != nil {
 		return diag.Wrap(err, logoutPostText, errLogoutPost)
 	}
-	if res.Status != http.StatusOK && res.Status != http.StatusNoContent {
-		return &logoutStatusError{status: res.Status}
+	if status != http.StatusOK && status != http.StatusNoContent {
+		return &logoutStatusError{status: status}
 	}
 
 	return nil
 }
 
-// logoutPostText is what a logout token getting no answer says, as a transport's error names its target.
+// logoutPostText is what a logout token that was not answered says, as a transport's error names its target.
 const logoutPostText = "oidcprovider: post the logout token"
 
-// errLogoutPost says a logout token got no answer.
+// errLogoutPost says a logout token got no answer that could be judged, or was refused where it was sent.
 var errLogoutPost = errors.New(logoutPostText)
 
 // logoutStatusError is an answer that is no success.
@@ -213,18 +246,22 @@ func (e *logoutStatusError) Error() string {
 }
 
 // buildLogoutDelivery returns what tells a client: the consumer's delivery, or a POST through the client
-// that WithOutbound gave, or through a client of its own that follows no redirect. A client built
-// elsewhere cannot be changed from here, which is the limit WithOutbound states.
+// that WithOutbound gave, or through a client of its own. Either way the POST follows no redirect.
 func (c *config) buildLogoutDelivery() (LogoutDelivery, error) {
 	switch {
 	case c.logoutDeliverySet:
 		return c.logoutDelivery, nil
 	case c.outboundSet && !c.logoutOutboundSet:
-		return outboundLogoutDelivery{out: c.outbound}, nil
+		return outboundLogoutDelivery{out: c.outbound.WithoutRedirects()}, nil
 	}
 
-	// Later options win, so the cap goes last, and what a consumer gives cannot bring redirects back.
-	opts := append([]outbound.Option{outbound.WithHTTPClient(&http.Client{Transport: newLogoutTransport()})}, c.logoutOutbound...)
+	// Later options win, so the cap goes last, and what a consumer gives cannot bring redirects back. The
+	// time bound goes first, so that a consumer can shorten it, and its default does not cut a longer
+	// delivery short.
+	opts := append([]outbound.Option{
+		outbound.WithHTTPClient(&http.Client{Transport: newLogoutTransport()}),
+		outbound.WithTimeout(c.logoutTimeout + logoutOutboundMargin),
+	}, c.logoutOutbound...)
 	out, err := outbound.New(append(opts, outbound.WithMaxRedirects(0))...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: WithLogoutOutbound: %w", ErrConfig, err)
@@ -251,16 +288,17 @@ type logoutJob struct {
 // ended a sign-in for runs no goroutine, and one that is never shut down holds none once its deliveries
 // are over. No channel carries the queue, so there is none to close under a late enqueue.
 //
-// Each delivery runs on a goroutine of its own, which a worker waits for no longer than the bound. So
-// nothing a consumer's code does, a panic and a call that never returns included, can take a worker or
-// keep it, and a replaced goroutine is what every delivery has anyway. A call left behind holds its
-// goroutine until it returns, as Go has no way to stop one, so the calls are counted, and at twice the
-// workers a delivery fails at once rather than start another.
+// Each delivery runs on a goroutine of its own, which a worker waits for no longer than the bound, and
+// each report runs on a reportLane. So nothing a consumer's code does, a panic and a call that never
+// returns included, can take a worker or keep it, and a replaced goroutine is what every delivery has
+// anyway. A call left behind holds its goroutine until it returns, as Go has no way to stop one, so the
+// calls are counted, and at twice the workers a delivery fails at once rather than start another.
 type logoutPool struct {
-	deliver func(context.Context, ClientToNotify) *logoutFailure
+	deliver func(context.Context, ClientToNotify, *atomic.Bool) *logoutFailure
 	report  func(context.Context, logoutFailure)
 	cutOff  func(context.Context, string)
 	late    func(context.Context, *logoutFailure)
+	lost    func(records, events int)
 
 	workers, capacity int
 	timeout           time.Duration
@@ -269,19 +307,33 @@ type logoutPool struct {
 	stopped context.Context //nolint:containedctx // what Shutdown ends, read by each delivery's context
 	stop    context.CancelFunc
 
-	// drained closes once Shutdown has been asked and nothing is left running.
-	drained chan struct{}
-
 	// mu guards everything below, and is never held across a call out. A delivery either lands in the
 	// queue before closed is set, and the drain delivers it, or it sees closed and is reported.
-	mu       sync.Mutex
-	queue    []logoutJob
-	running  int
-	calls    int
-	reports  int
-	started  bool
-	closed   bool
+	mu      sync.Mutex
+	queue   []logoutJob
+	running int
+	calls   int
+	started bool
+	closed  bool
+
+	// records runs what is logged, and events what reaches a sink. They are apart so that a sink that does
+	// not return costs no failure its log line, and a log handler that does not return costs none its event.
+	records, events reportLane
+	// lostRecords and lostEvents count what found no room, until records can log how many.
+	lostRecords, lostEvents int
+
+	// drained is closed while Shutdown has been asked and nothing is left running, which a report of a
+	// later drop reopens with a new channel, so that nil from Shutdown goes on meaning nothing is left.
+	drained  chan struct{}
 	finished bool
+}
+
+// reportLane runs what a report calls out to, on goroutines of its own, which come as they are needed and
+// leave when nothing waits. What finds no room is the newest, as what is waiting has been promised a place.
+type reportLane struct {
+	limit, capacity int
+	running         int
+	waiting         []func()
 }
 
 func newLogoutPool(cfg *config, p *Provider) *logoutPool {
@@ -292,17 +344,20 @@ func newLogoutPool(cfg *config, p *Provider) *logoutPool {
 		report:   p.reportLogoutFailure,
 		cutOff:   p.logCutOffLogout,
 		late:     p.logLateLogoutFailure,
+		lost:     p.logLostLogoutReports,
 		workers:  cfg.logoutWorkers,
 		capacity: cfg.logoutQueue,
 		timeout:  cfg.logoutTimeout,
 		stopped:  stopped,
 		stop:     stop,
+		records:  reportLane{limit: 1, capacity: maxLogoutReportsWaiting},
+		events:   reportLane{limit: maxLogoutSinkReports, capacity: maxLogoutReportsWaiting},
 		drained:  make(chan struct{}),
 	}
 }
 
 // enqueue never waits. A full queue, or one that Shutdown has closed, drops and reports, and the report
-// runs with no lock held.
+// waits for nothing either.
 func (q *logoutPool) enqueue(ctx context.Context, c ClientToNotify) {
 	job := logoutJob{client: c, ctx: context.WithoutCancel(ctx)}
 	if reason := q.accept(job); reason != "" { //nolint:contextcheck // a worker's context is the job's
@@ -329,23 +384,12 @@ func (q *logoutPool) accept(job logoutJob) (refused string) {
 	return ""
 }
 
-// work takes jobs until there are none. Nothing a delivery does reaches it, but a report runs a
-// consumer's log handler, and so will its event sink: a report ending this goroutine has it replaced
-// by another, which takes up the running count this one held.
+// work takes jobs until there are none. Nothing a delivery or a report does runs on this goroutine, so
+// nothing reaches it.
 func (q *logoutPool) work() {
-	finished := false
-	defer func() {
-		if !finished {
-			_ = recover() //nolint:errcheck // whatever a report panicked with is not looked at
-			go q.work()
-		}
-	}()
-
 	for {
 		job, ok := q.next()
 		if !ok {
-			finished = true
-
 			return
 		}
 		q.attempt(job)
@@ -374,15 +418,114 @@ func (q *logoutPool) next() (logoutJob, bool) {
 
 // settle closes drained once there is nothing left to wait for, and needs mu held.
 func (q *logoutPool) settle() {
-	if q.closed && !q.finished && q.running == 0 && q.calls == 0 && q.reports == 0 {
+	if q.closed && !q.finished && q.running == 0 && q.calls == 0 && q.records.running == 0 && q.events.running == 0 {
 		q.finished = true
 		close(q.drained)
 	}
 }
 
-// attempt runs one delivery, waiting no longer than its bound. A failure ending with the delivery's own
-// context, however it arrives, comes to one verdict: the bound's, or that Shutdown cut it off.
+// toLog hands what logs a failure to the records lane. Past its room the failure is counted.
+func (q *logoutPool) toLog(task func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if !q.push(&q.records, task) {
+		q.lostRecords++
+	}
+}
+
+// toSink hands what reports a failure to the events lane. Past its room the failure is counted, and the
+// records lane is started to log how many, which is how a lost event still gets said.
+func (q *logoutPool) toSink(task func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if !q.push(&q.events, task) {
+		q.lostEvents++
+		q.startLane(&q.records)
+	}
+}
+
+// push adds a task unless the lane has no room, and needs mu held.
+func (q *logoutPool) push(lane *reportLane, task func()) bool {
+	if len(lane.waiting) >= lane.capacity {
+		return false
+	}
+	lane.waiting = append(lane.waiting, task)
+	q.startLane(lane)
+
+	return true
+}
+
+// startLane starts a goroutine on the lane if it may have another, and needs mu held.
+func (q *logoutPool) startLane(lane *reportLane) {
+	if lane.running >= lane.limit {
+		return
+	}
+	lane.running++
+	if q.finished {
+		q.finished = false
+		q.drained = make(chan struct{})
+	}
+	go q.runLane(lane)
+}
+
+// runLane takes tasks until there are none. A task that panics or ends its goroutine, as a consumer's log
+// handler or sink may, has it replaced by another, which takes up the running count this one held.
+func (q *logoutPool) runLane(lane *reportLane) {
+	finished := false
+	defer func() {
+		if !finished {
+			_ = recover() //nolint:errcheck // whatever a report panicked with is not looked at
+			go q.runLane(lane)
+		}
+	}()
+
+	for {
+		task, ok := q.nextTask(lane)
+		if !ok {
+			finished = true
+
+			return
+		}
+		task()
+	}
+}
+
+// nextTask takes the oldest task, or takes this goroutine off the count. The records lane says how many
+// reports found no room before it leaves, so that the count is the last thing said of a burst.
+func (q *logoutPool) nextTask(lane *reportLane) (func(), bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if len(lane.waiting) > 0 {
+		task := lane.waiting[0]
+		lane.waiting[0] = nil // A task's context should not stay reachable from the lane.
+		lane.waiting = lane.waiting[1:]
+
+		return task, true
+	}
+	if lane == &q.records && q.lostRecords+q.lostEvents > 0 {
+		records, events := q.lostRecords, q.lostEvents
+		q.lostRecords, q.lostEvents = 0, 0
+
+		return func() { q.lost(records, events) }, true
+	}
+	lane.waiting = nil
+	lane.running--
+	q.settle()
+
+	return nil, false
+}
+
+// attempt runs one delivery, waiting no longer than its bound. A job taken as Shutdown stopped everything
+// is not started: its client is one more not told, as those left in the queue are.
 func (q *logoutPool) attempt(job logoutJob) {
+	if q.stopped.Err() != nil {
+		q.report(job.ctx, *failureOf(job.client, failureShutdown, nil))
+
+		return
+	}
 	if !q.enterCall() {
 		q.report(job.ctx, *failureOf(job.client, failureBusy, nil))
 
@@ -394,33 +537,67 @@ func (q *logoutPool) attempt(job logoutJob) {
 	defer context.AfterFunc(q.stopped, cancel)()
 
 	done := make(chan *logoutFailure, 1)
-	go q.call(ctx, job.client, done)
+	var posting atomic.Bool
+	go q.call(ctx, job.client, &posting, done)
 
-	var failure *logoutFailure
+	answer, answered := awaitCall(ctx, done)
+	failure, cutOff := judgeAttempt(ctx, job.client, posting.Load(), answer, answered)
+	switch {
+	case cutOff:
+		q.cutOff(job.ctx, job.client.ClientID)
+	case failure != nil:
+		q.report(job.ctx, *failure)
+	}
+}
+
+// awaitCall waits for a delivery's answer, no longer than its context. An answer that has arrived by then
+// stands, even if the context ended with it: a delivery finishing as the bound fires is no timeout.
+func awaitCall(ctx context.Context, done <-chan *logoutFailure) (answer *logoutFailure, answered bool) {
 	select {
-	case failure = <-done:
+	case answer = <-done:
+		return answer, true
 	case <-ctx.Done():
 		select {
-		case failure = <-done:
+		case answer = <-done:
+			return answer, true
 		default:
-			failure = failureOf(job.client, failureTimeout, ctx.Err())
+			return nil, false
 		}
 	}
+}
 
-	switch {
-	case failure == nil:
-	case ctx.Err() == nil:
-		q.report(job.ctx, *failure)
-	case errors.Is(ctx.Err(), context.Canceled):
-		q.cutOff(job.ctx, job.client.ClientID)
-	default:
-		q.report(job.ctx, *failureOf(job.client, failureTimeout, ctx.Err()))
+// judgeAttempt comes to one verdict on a delivery, however it ended. A delivery answering of itself, with a
+// status, a panic or its goroutine ending, keeps what it said, whatever its context did. Any other failure
+// with its context ended, or no answer, is the context's: the bound's, or Shutdown's. What Shutdown cut off
+// before the token left is no failure, and is only noted, and cutOff says so. Past that it is a client not
+// told, and is reported as one.
+func judgeAttempt(ctx context.Context, c ClientToNotify, posting bool, answer *logoutFailure, answered bool) (failure *logoutFailure, cutOff bool) {
+	if answered && answer == nil {
+		return nil, false
 	}
+	ended := ctx.Err()
+	switch {
+	case ended == nil:
+		return answer, false
+	case answered && answersOfItself(answer):
+		return answer, false
+	case errors.Is(ended, context.DeadlineExceeded):
+		return failureOf(c, failureTimeout, ended), false
+	case !posting:
+		return nil, true
+	default:
+		return failureOf(c, failureShutdown, ended), false
+	}
+}
+
+// answersOfItself says a failure is what the delivery came to, and no effect of its context ending.
+func answersOfItself(f *logoutFailure) bool {
+	return f.Reason == failureStatus || f.Reason == failurePanic || f.Reason == failureGoexit
 }
 
 // call is one delivery's own goroutine. Its place is given back before it answers, so that a worker
 // moving on cannot find it still taken.
-func (q *logoutPool) call(ctx context.Context, c ClientToNotify, done chan<- *logoutFailure) {
+func (q *logoutPool) call(ctx context.Context, c ClientToNotify, posting *atomic.Bool, done chan<- *logoutFailure) {
 	var failure *logoutFailure
 	returned := false
 	defer func() {
@@ -430,22 +607,15 @@ func (q *logoutPool) call(ctx context.Context, c ClientToNotify, done chan<- *lo
 				failure.Reason, failure.PanicType = failurePanic, fmt.Sprintf("%T", r)
 			}
 			if ctx.Err() != nil {
-				q.noteLate(ctx, failure)
+				q.late(context.WithoutCancel(ctx), failure)
 			}
 		}
 		q.leaveCall()
 		done <- failure
 	}()
 
-	failure = q.deliver(ctx, c)
+	failure = q.deliver(ctx, c, posting)
 	returned = true
-}
-
-// noteLate logs what a call left behind ended with, as no worker is left to report it. Nothing is
-// above this goroutine to survive a log handler's panic, so it stops here.
-func (q *logoutPool) noteLate(ctx context.Context, failure *logoutFailure) {
-	defer func() { _ = recover() }() //nolint:errcheck // whatever a log handler panicked with is not looked at
-	q.late(context.WithoutCancel(ctx), failure)
 }
 
 func (q *logoutPool) enterCall() bool {
@@ -487,9 +657,10 @@ func (q *logoutPool) shutdown(ctx context.Context) error {
 	q.mu.Lock()
 	q.closed = true
 	q.settle()
+	drained := q.drained
 	q.mu.Unlock()
 
-	err := lifecycle.Await(ctx, q.drained)
+	err := lifecycle.Await(ctx, drained)
 	if err == nil {
 		return nil
 	}
@@ -497,6 +668,9 @@ func (q *logoutPool) shutdown(ctx context.Context) error {
 	q.mu.Lock()
 	left := q.queue
 	q.queue = nil
+	// What was queued takes no one's room: the queue's own bound already held it, and this is once.
+	q.records.capacity += len(left)
+	q.events.capacity += len(left)
 	q.mu.Unlock()
 	q.stop()
 	for _, job := range left {
@@ -529,20 +703,24 @@ func (p *Provider) Start(ctx context.Context) error {
 	return p.logouts.start()
 }
 
-// Shutdown stops back-channel delivery, for no longer than ctx allows. A sign-in ending after it still
-// ends, and its delivery is dropped and reported. It returns nil once what was queued has been delivered
-// and every delivery's goroutine has ended, so nil means no goroutine of the provider's is left. When
-// that is already so, it returns nil even if ctx is done.
+// Shutdown stops back-channel delivery, for no longer than ctx allows, and no report it starts holds it
+// past that. A sign-in ending after it still ends, and its delivery is dropped and reported. It returns nil
+// once what was queued has been delivered, every delivery's goroutine has ended and every report has been
+// made, so nil means no goroutine of the provider's is left. When that is already so, it returns nil even if
+// ctx is done.
 //
-// If ctx ends first, Shutdown returns its error, reports what is still queued as failed, and cuts off
-// what is running, which is logged and not reported, as signingkey treats a store call it cuts off. A
-// consumer's delivery ignoring its context cannot be stopped, and holds its goroutine until it returns.
-// A later Shutdown waits again under its own context, and returns nil once it has.
+// If ctx ends first, Shutdown returns its error, and cuts off what is running. What is still queued, and a
+// delivery cut off with its token on the way, are reported as failed under the reason "shutdown". A read of
+// the client or a signature it cut off told no one anything was coming, and is logged and not reported, as
+// signingkey treats a store call it cuts off. A consumer's delivery ignoring its context, or a log handler or
+// sink that does not return, cannot be stopped, and holds its goroutine until it returns. Their reports go on
+// after Shutdown has returned, as they wait for a goroutine. A later Shutdown waits again under its own
+// context, and returns nil once it has.
 //
 // Shutdown is terminal, and safe to call more than once and at the same time as anything else: the first
 // context to end cuts off the rest for all of them. Never having started the provider changes nothing. A
 // nil ctx is refused with an error matching ErrConfig, and changes nothing. Do not call it from inside a
-// LogoutDelivery, which would wait for itself until ctx ends.
+// LogoutDelivery, or a log handler or sink a report runs, which would wait for itself until ctx ends.
 func (p *Provider) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("%w: Shutdown needs a non-nil context", ErrConfig)

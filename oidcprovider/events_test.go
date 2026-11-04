@@ -65,7 +65,7 @@ func namesOf(got []event.Event) []string {
 	return out
 }
 
-// awaitEvent waits for n events with this name, for those a worker or a detached goroutine reports.
+// awaitEvent waits for n events with this name, for those reported on a goroutine of their own.
 func awaitEvent(t *testing.T, l *eventLog, name string, n int) {
 	t.Helper()
 
