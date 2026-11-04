@@ -54,6 +54,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
 - `framework-adapters`: `ResponseWriter` gains a required `Stream` method, and each adapter supports streaming. A streamed response flushes each event, holds no response buffer, and has its write deadline extended.
 - `http-security-chain`: the stream endpoint's place in the chain. It answers only authenticated requests and records no session activity. CORS governs a cross-origin read.
 - `sessions`: the manager reports when a sign-in ends, is revoked with its family or is ended with the user's other sign-ins, so signals can be raised where sessions are ended rather than inferred.
+- `account-recovery`: a completed recovery says what it removed, so a stream still open can hear of it.
 
 ## Impact
 
