@@ -1128,6 +1128,13 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
   - **No default store grows without bound, and none needs a consumer to sweep it.** The provider's defaults for lineages, code tokens and assertion identifiers sweep on write, at most once a minute, by the provider's clock.
   - **Browser sessions.** `Put` refuses a digest already held, an empty digest or a zero deadline, and lowers an idle deadline past the absolute one. `Touch` only extends, by one conditional write. `WithBrowserSessionStore` with `WithoutBrowserSessions` is a configuration error.
   - **`AccessTokenStore.Revoke` answers `ErrNotFound` for a missing token,** which the provider maps to success (task 7.6, RFC 7009).
+  - **The schema (task 12.1).**
+    - `op_clients`, `op_consents`, `op_client_assertions` and `op_browser_sessions` have a uuid key with no default plus a unique natural key, as the settled spec requires, so adapters mint the uuid.
+    - In `op_grants`, a NULL `created_at` marks a tombstone. An adapter writes a stored grant's time even when it is zero, never NULL, and the suite pins a second `Create` being refused over such a grant.
+    - `holds_lineage` defaults to false, as the memory store's tombstone has it, and `Create` writes it explicitly.
+    - `max_age` is `bigint`, and lists and maps are `jsonb`, as on sessions.
+  - **Text a request can carry.** PostgreSQL refuses a NUL byte or invalid UTF-8 in text and jsonb, and the memory store accepts them, so a request carrying them would answer 500 only on durable stores. The authorization request refuses them as `invalid_request` before anything is parked.
+  - **A `jti` over 1024 bytes is refused as `invalid_client`** before the store, because a unique index has a row-size limit (`index row size 3016 exceeds btree version 4 maximum 2704`). The bound is a proposed value.
   - **`Advance` moves strictly forward:** login, consent, done, with login to done allowed. Nothing leaves done, and a logout request moves only to done.
   - **What no store can close:** a code created after `EndSignIns` has listed the codes. The resume loads the sign-in immediately before issuing, which narrows that window to the gap between the load and the code's write. It is not closed.
 

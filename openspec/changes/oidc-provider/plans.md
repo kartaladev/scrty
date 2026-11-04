@@ -1054,7 +1054,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 
 ### Task 12.1: The migration
 **Files:** Create `store/migrate/securitystate/20261103000000_oidc_provider.sql`, `internal/pgschema/oidcprovider.go`; Test `test/migrate_securitystate_test.go`
-- [ ] Tables: `op_clients`, `op_pending_requests`, `op_authorization_codes`, `op_consents`, `op_grants`, `op_refresh_tokens` (the `sessions` schema), `op_access_tokens` and `op_client_assertions`.
+- [ ] Tables: `op_clients`, `op_pending_requests`, `op_authorization_codes`, `op_consents`, `op_grants`, `op_refresh_tokens` (the `sessions` schema), `op_access_tokens`, `op_client_assertions` and `op_browser_sessions`.
 - [ ] Indexes on `op_grants`: `(user_ref)`, `(user_ref, client_id)`, `(sign_in_family)` and `(external_issuer, external_session_id)`. Unique `(client_id, jti)` on assertions. Unique `handle_digest` on pending requests.
 - [ ] Red `TestMigrations/oidc_provider`:
   - applied over a database holding sessions → the tables exist and the session rows are unchanged;
