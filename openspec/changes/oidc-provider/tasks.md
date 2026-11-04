@@ -107,16 +107,16 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - expired grants are deleted, and revoked ones are kept until the codes that could name them expire.
 
   Verify: `go test -run 'TestMemory/Grants' ./storetest/` in the `test` module.
-- [ ] 5.5 Add `RefreshTokenStore` as a type with only an unexported field, built through a scrty `internal` package (T7), with a private in-memory default, test-first. A test outside scrty's import path cannot build one from a `session.Store`, shown by an example that fails to compile and is kept out of the build. Verify: `go test -run 'TestRefreshTokenStore' -count=1 ./oidcprovider/`.
-- [ ] 5.6 Add the opaque access-token store (digests; revoke one; delete expired) and the assertion-identifier store (insert-if-absent per client until `exp`) with their in-memory defaults and suites, test-first. Verify: `go test -run 'TestMemory/(AccessTokens|AssertionIDs)' ./storetest/` in the `test` module.
-- [ ] 5.7 Extend the exported race suite, test-first, so each case fails against a deliberately broken store:
+- [x] 5.5 Add `RefreshTokenStore` as a type with only an unexported field, built through a scrty `internal` package (T7), with a private in-memory default, test-first. A test outside scrty's import path cannot build one from a `session.Store`, shown by an example that fails to compile and is kept out of the build. Verify: `go test -run 'TestRefreshTokenStore' -count=1 ./oidcprovider/`.
+- [x] 5.6 Add the opaque access-token store (digests; revoke one; delete expired) and the assertion-identifier store (insert-if-absent per client until `exp`) with their in-memory defaults and suites, test-first. Verify: `go test -run 'TestMemory/(AccessTokens|AssertionIDs)' ./storetest/` in the `test` module.
+- [x] 5.7 Extend the exported race suite, test-first, so each case fails against a deliberately broken store:
   - single spend of a code, a handle stage and an assertion identifier under concurrency;
   - a tombstone surviving a concurrent create, including one recorded by a sign-in's end racing its code's exchange (R7);
   - an end reported twice returning nothing the second time.
 
   Run it against every in-memory default. Verify: `go test -race -run 'TestMemory|TestRace|TestBroken' ./storetest/` in the `test` module.
 
-- [ ] 5.8 Add the browser-session store port and its in-memory default, test-first, with its suite (R2): digest only; load by digest judged at the caller's time; touch extending the idle deadline, never past the absolute one; replace; delete by T3's selectors. Verify: `go test -run 'TestMemory/BrowserSessions' ./storetest/` in the `test` module.
+- [x] 5.8 Add the browser-session store port and its in-memory default, test-first, with its suite (R2): digest only; load by digest judged at the caller's time; touch extending the idle deadline, never past the absolute one; replace; delete by T3's selectors. Verify: `go test -run 'TestMemory/BrowserSessions' ./storetest/` in the `test` module.
 
 ## 6. Authorization and consent (`oidcprovider`, `oidc-provider-authorization`, `oidc-provider-consent`)
 
@@ -270,7 +270,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - an assertion token endpoint differing from the chain's real token path is refused (P7);
   - a JWKS endpoint serving a different signing-key manager from the provider's key source is refused, while a wrapped provider, which cannot be compared, builds (R6);
   - enabling it twice is refused, and so are path collisions;
-  - every session manager on the chain must report to the provider (T4);
+  - every session manager on the chain must report to the provider (T4), judged after the chain's own wiring has run, because a manager can gain an observer at construction;
   - a client requiring DPoP while DPoP is not enabled is refused;
   - CSRF protection required while browser sessions are on, and security headers required unless the consumer states its pages carry `frame-ancestors` (R2, R11);
   - the provider joins the internal set of features that verify bound credentials, so a provider-only chain can enable DPoP.

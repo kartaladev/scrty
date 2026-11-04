@@ -6,8 +6,9 @@
 The conformance suites SHALL cover every provider store, and every scrty adapter and in-memory default SHALL pass them. They SHALL be exported for consumers' own stores. The race suite SHALL prove:
 - single use of codes, handles and assertion identifiers under concurrency;
 - a revocation recorded before a grant is stored survives the store;
-- reuse of a refresh token after its grace window revokes the whole grant;
 - a sign-in's end that races its code's exchange leaves the grant revoked.
+
+Reuse of a refresh token after its grace window revoking the whole grant SHALL be proved over the in-memory lineage store and each scrty adapter's. It is not in the exported suite, because no consumer can supply a lineage store.
 
 #### Scenario: Consumer store fails the tombstone case
 - **WHEN** a consumer's grant store lets a later write clear a grant's revoked mark, and the suite runs against it

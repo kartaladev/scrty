@@ -800,7 +800,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - enabled twice;
   - the end-session path set to the chain's logout path;
   - two provider paths equal;
-  - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`;
+  - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`, checked in a `c.wire` step so an observer added during wiring counts;
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
   - `(*Provider).AssertionTokenEndpoint()` not empty and differing from the chain's token URL, after the prefix and path options → `ErrConfig` naming `WithAssertionTokenEndpoint`;
   - `EnableJWKSEndpoint` given a `*signingkey.Keys` for which `(*Provider).SignsWith` answers false → `ErrConfig`, and a consumer's wrapped provider of any other type, which cannot be compared → built, as the godoc says;
