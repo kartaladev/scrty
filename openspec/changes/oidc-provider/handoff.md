@@ -283,3 +283,9 @@ Helpers for 9.3 and 9.4, in `httpsec/oidc_client_auth.go`: `readOIDCClientReques
 Record in `design.md`: new options `WithOIDCTokenLimiter` and `WithOIDCTokenBodyLimit` (64 KiB, 413 above it); a throttle of 10 failures per source in 15 minutes (*proposed*), failing as `invalid_client`; invalid proofs charged to the source; a missing required certificate answers `invalid_request`; a proof plus a certificate from a client requiring mTLS is refused; a repeated `Authorization` header answers `invalid_request`; the proof is judged before client authentication, so a valid proof with a wrong secret still records its `jti`.
 
 **All five agents have now reported.** Merge order: g9, g10, g9fix, a fold of 7.10's findings, h1, a fold of its findings, h2.
+
+### Merge order with `session-signals` (supersedes "merges after")
+
+Agreed with `session-signal` on 2026-11-05: whichever of #72 and #73 is ready first merges first, probably #73. That session reported that the user delegated the order, which this session did not hear directly, so #73's description states the change for the user to see. Neither session merges; the merge stays the user's click. `session-signal` rebases #73 onto `main`, carrying the end-observer commit `442c9f19`, and messages when it has rebased and when it merges. `feat/oidc-provider` is still not rewritten: when #73 lands, merge `main` in. Group 11 still gets its notice first, and 11.1 uses `Logout` only if it is on `main` by then, otherwise `RevokeFamily`.
+
+**Pushes:** the user asked for PR #72 to be updated for each commit, so each commit landing on `feat/oidc-provider` is pushed and the PR body kept current. Lane branches stay local until their review is clean. While the user is away, a decision is researched first and takes the option closest to standard security practice, then listed for the user's review.
