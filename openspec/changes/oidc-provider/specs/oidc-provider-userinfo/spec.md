@@ -41,7 +41,7 @@ A request not made over TLS, as the chain reports the connection, SHALL be refus
 - **THEN** it is refused
 
 ### Requirement: UserInfo refusals are bearer challenges
-A refused UserInfo request SHALL be answered with 401 and a `WWW-Authenticate` challenge naming the error: `invalid_token` for a bad, expired or revoked token, `invalid_request` for a malformed request, and no error code when no token was sent. A token without the needed scope SHALL be answered 403 with `insufficient_scope`. The challenge SHALL use the `DPoP` scheme for a bound token. By default no `error_description` SHALL be sent.
+A refused UserInfo request SHALL be answered with 401 and a `WWW-Authenticate` challenge naming the error: `invalid_token` for a bad, expired or revoked token, and no error code when no token was sent. A malformed request SHALL be answered with 400 and `invalid_request`. A token without the needed scope SHALL be answered 403 with `insufficient_scope`. The challenge SHALL use the `DPoP` scheme for a bound token. By default no `error_description` SHALL be sent.
 
 #### Scenario: Expired token
 - **WHEN** a client calls UserInfo with an expired access token
