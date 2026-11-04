@@ -152,7 +152,7 @@ func codeCases() []suiteCase[oidcprovider.CodeStore] {
 				require.NoError(t, s.Create(ctx, future))
 				n, err = s.DeleteExpired(ctx, suiteStart.Add(time.Hour))
 				require.NoError(t, err)
-				assert.Equal(t, 2, n, "at the caller's time both have expired, though the wall clock has not reached one")
+				assert.Equal(t, 2, n, "at the caller's time both have expired, wherever the wall clock is")
 			},
 		},
 		{

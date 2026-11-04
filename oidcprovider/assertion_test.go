@@ -30,6 +30,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 const (
@@ -1217,19 +1218,74 @@ func TestAuthenticateClient_PrivateKeyJWT_RecordsTheIdentifier(t *testing.T) {
 	}
 }
 
+// stallingClock reads as the fake it wraps, and once told to, moves to a later time right
+// after its next read: the exp check reads the old time and everything after it the new
+// one, as a request stalled between the two would see.
+type stallingClock struct {
+	*clockwork.FakeClock
+
+	to atomic.Pointer[time.Time]
+}
+
+// stallAfterNextRead moves the clock to to, right after its next read.
+func (c *stallingClock) stallAfterNextRead(to time.Time) { c.to.Store(&to) }
+
+func (c *stallingClock) Now() time.Time {
+	now := c.FakeClock.Now()
+	if to := c.to.Swap(nil); to != nil {
+		c.Advance(to.Sub(now))
+	}
+
+	return now
+}
+
 // The provider's default store, with no store wired.
 func TestAuthenticateClient_PrivateKeyJWT_DefaultStore(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
-		assert func(t *testing.T, p *oidcprovider.Provider, clk *clockwork.FakeClock)
+		assert func(t *testing.T, p *oidcprovider.Provider, clk *stallingClock)
+	}
+
+	// exp is when claimsFor's assertions expire.
+	exp := authNow.Add(time.Minute)
+
+	// replayStallingTo accepts an assertion, then replays it from just before its exp, to
+	// a request that reads the clock as to from its exp check on.
+	replayStallingTo := func(to time.Time) func(*testing.T, *oidcprovider.Provider, *stallingClock) {
+		return func(t *testing.T, p *oidcprovider.Provider, clk *stallingClock) {
+			t.Helper()
+			tok := es256(t, claimsFor(keyClientID))
+
+			_, err := p.AuthenticateClient(t.Context(), presenting(tok))
+			require.NoError(t, err)
+
+			clk.Advance(exp.Add(-time.Second).Sub(clk.FakeClock.Now()))
+			clk.stallAfterNextRead(to)
+			rc, err := p.AuthenticateClient(t.Context(), presenting(tok))
+			refusedAs(t, oidcprovider.CodeInvalidClient, rc, err)
+		}
+	}
+	// replayAt accepts an assertion, then replays it at at.
+	replayAt := func(at time.Time) func(*testing.T, *oidcprovider.Provider, *stallingClock) {
+		return func(t *testing.T, p *oidcprovider.Provider, clk *stallingClock) {
+			t.Helper()
+			tok := es256(t, claimsFor(keyClientID))
+
+			_, err := p.AuthenticateClient(t.Context(), presenting(tok))
+			require.NoError(t, err)
+
+			clk.Advance(at.Sub(clk.FakeClock.Now()))
+			rc, err := p.AuthenticateClient(t.Context(), presenting(tok))
+			refusedAs(t, oidcprovider.CodeInvalidClient, rc, err)
+		}
 	}
 
 	cases := []testCase{
 		{
 			name: "a replay of an accepted assertion is refused",
-			assert: func(t *testing.T, p *oidcprovider.Provider, _ *clockwork.FakeClock) {
+			assert: func(t *testing.T, p *oidcprovider.Provider, _ *stallingClock) {
 				t.Helper()
 				tok := es256(t, claimsFor(keyClientID))
 
@@ -1242,7 +1298,7 @@ func TestAuthenticateClient_PrivateKeyJWT_DefaultStore(t *testing.T) {
 		},
 		{
 			name: "a refused assertion's jti stays unspent",
-			assert: func(t *testing.T, p *oidcprovider.Provider, _ *clockwork.FakeClock) {
+			assert: func(t *testing.T, p *oidcprovider.Provider, _ *stallingClock) {
 				t.Helper()
 				claims := claimsFor(keyClientID)
 
@@ -1256,7 +1312,7 @@ func TestAuthenticateClient_PrivateKeyJWT_DefaultStore(t *testing.T) {
 		},
 		{
 			name: "the same jti from another client is its own",
-			assert: func(t *testing.T, p *oidcprovider.Provider, _ *clockwork.FakeClock) {
+			assert: func(t *testing.T, p *oidcprovider.Provider, _ *stallingClock) {
 				t.Helper()
 				first := claimsFor(keyClientID)
 				second := claimsFor("second-key-client")
@@ -1269,32 +1325,51 @@ func TestAuthenticateClient_PrivateKeyJWT_DefaultStore(t *testing.T) {
 			},
 		},
 		{
-			name: "a jti is free again once its assertion has expired",
-			assert: func(t *testing.T, p *oidcprovider.Provider, clk *clockwork.FakeClock) {
+			name:   "a replay straddling exp is refused, reaching the store at exp",
+			assert: replayStallingTo(exp),
+		},
+		{
+			name:   "a replay straddling exp is refused, reaching the store just past it",
+			assert: replayStallingTo(exp.Add(time.Second)),
+		},
+		{
+			name:   "a replay straddling exp is refused, stalled so long that its pair was swept",
+			assert: replayStallingTo(exp.Add(10 * time.Minute)),
+		},
+		{
+			name:   "a replay at exp is refused",
+			assert: replayAt(exp),
+		},
+		{
+			name:   "a replay after expiry is refused",
+			assert: replayAt(exp.Add(10 * time.Minute)),
+		},
+		{
+			name: "a jti stays held for a minute past its assertion's exp, with a sweep due",
+			assert: func(t *testing.T, p *oidcprovider.Provider, clk *stallingClock) {
 				t.Helper()
 				claims := claimsFor(keyClientID)
 
 				_, err := p.AuthenticateClient(t.Context(), presenting(es256(t, claims)))
 				require.NoError(t, err)
 
-				clk.Advance(2 * time.Minute)
-				claims["exp"] = clk.Now().Add(time.Minute).Unix()
-				_, err = p.AuthenticateClient(t.Context(), presenting(es256(t, claims)))
-				require.NoError(t, err)
+				clk.Advance(exp.Add(time.Minute).Sub(clk.FakeClock.Now()))
+				claims["exp"] = clk.FakeClock.Now().Add(time.Minute).Unix()
+				rc, err := p.AuthenticateClient(t.Context(), presenting(es256(t, claims)))
+				refusedAs(t, oidcprovider.CodeInvalidClient, rc, err)
 			},
 		},
 		{
-			name: "a jti is free the moment its assertion expires, between sweeps",
-			assert: func(t *testing.T, p *oidcprovider.Provider, clk *clockwork.FakeClock) {
+			name: "a jti is free again once a minute past its assertion's exp has gone",
+			assert: func(t *testing.T, p *oidcprovider.Provider, clk *stallingClock) {
 				t.Helper()
 				claims := claimsFor(keyClientID)
-				claims["exp"] = clk.Now().Add(time.Second).Unix()
 
 				_, err := p.AuthenticateClient(t.Context(), presenting(es256(t, claims)))
 				require.NoError(t, err)
 
-				clk.Advance(2 * time.Second)
-				claims["exp"] = clk.Now().Add(time.Minute).Unix()
+				clk.Advance(exp.Add(time.Minute + time.Second).Sub(clk.FakeClock.Now()))
+				claims["exp"] = clk.FakeClock.Now().Add(time.Minute).Unix()
 				_, err = p.AuthenticateClient(t.Context(), presenting(es256(t, claims)))
 				require.NoError(t, err)
 			},
@@ -1305,7 +1380,7 @@ func TestAuthenticateClient_PrivateKeyJWT_DefaultStore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := clockwork.NewFakeClockAt(authNow)
+			clk := &stallingClock{FakeClock: clockwork.NewFakeClockAt(authNow)}
 			d := validDeps(t)
 			d.Clients = []oidcprovider.Client{
 				keyClient(keyClientID, clientKeys(t)),
@@ -1319,8 +1394,154 @@ func TestAuthenticateClient_PrivateKeyJWT_DefaultStore(t *testing.T) {
 	}
 }
 
-// The default store forgets what has expired, so what it holds is bounded by the
-// assertions accepted within their lifetime and not by the life of the process.
+// forgetsAtUntil is what a consumer's store may do for all the library controls: it holds
+// a pair only while its own clock is before the pair's until, and so answers new for a
+// pair it has held, from that moment on.
+func forgetsAtUntil(now func() time.Time) func(context.Context, string, string, time.Time) (bool, error) {
+	var (
+		mu   sync.Mutex
+		held = make(map[string]time.Time)
+	)
+
+	return func(_ context.Context, clientID, jti string, until time.Time) (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		key := clientID + "\x00" + jti
+		if first, ok := held[key]; ok && now().Before(first) {
+			return false, nil
+		}
+		held[key] = until
+
+		return true, nil
+	}
+}
+
+// A store the library does not control may forget a pair the moment it expires, and the
+// provider's second read of the clock is what refuses the replay that finds it so.
+func TestAuthenticateClient_PrivateKeyJWT_StoreForgettingAtExpiry(t *testing.T) {
+	t.Parallel()
+
+	exp := authNow.Add(time.Minute)
+
+	type testCase struct {
+		name   string
+		to     time.Time
+		assert func(t *testing.T, rc *oidcprovider.RegisteredClient, err error)
+	}
+
+	refused := func(t *testing.T, rc *oidcprovider.RegisteredClient, err error) {
+		t.Helper()
+		refusedAs(t, oidcprovider.CodeInvalidClient, rc, err)
+	}
+
+	cases := []testCase{
+		{name: "reaching the store at exp", to: exp, assert: refused},
+		{name: "reaching the store past exp", to: exp.Add(time.Hour), assert: refused},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := &stallingClock{FakeClock: clockwork.NewFakeClockAt(authNow)}
+			store := NewMockAssertionIDStore(gomock.NewController(t))
+			store.EXPECT().Record(gomock.Any(), keyClientID, gomock.Any(), gomock.Any()).
+				DoAndReturn(forgetsAtUntil(clk.FakeClock.Now)).Times(2)
+			p := assertionProvider(t, clientKeys(t), oidcprovider.WithClock(clk), oidcprovider.WithAssertionIDStore(store))
+			tok := es256(t, claimsFor(keyClientID))
+
+			_, err := p.AuthenticateClient(t.Context(), presenting(tok))
+			require.NoError(t, err)
+
+			clk.Advance(exp.Add(-time.Second).Sub(clk.FakeClock.Now()))
+			clk.stallAfterNextRead(tc.to)
+			rc, err := p.AuthenticateClient(t.Context(), presenting(tok))
+			tc.assert(t, rc, err)
+		})
+	}
+}
+
+// One assertion presented by many callers across its exp, on the system clock with nothing
+// injected, where the gap between the exp check and the store is the signature check.
+func TestAuthenticateClient_PrivateKeyJWT_ReplayAcrossExpiry(t *testing.T) {
+	t.Parallel()
+
+	const (
+		callers = 8
+		// pastExp is how long the callers keep presenting after exp.
+		pastExp = 150 * time.Millisecond
+	)
+
+	type testCase struct {
+		name  string
+		store func(t *testing.T) []oidcprovider.Option
+	}
+
+	cases := []testCase{
+		{
+			name:  "the default store",
+			store: func(*testing.T) []oidcprovider.Option { return nil },
+		},
+		{
+			name: "a consumer's store forgetting at expiry",
+			store: func(t *testing.T) []oidcprovider.Option {
+				t.Helper()
+				store := NewMockAssertionIDStore(gomock.NewController(t))
+				store.EXPECT().Record(gomock.Any(), keyClientID, gomock.Any(), gomock.Any()).
+					DoAndReturn(forgetsAtUntil(clock.System().Now)).AnyTimes()
+
+				return []oidcprovider.Option{oidcprovider.WithAssertionIDStore(store)}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := append([]oidcprovider.Option{oidcprovider.WithClock(clock.System())}, tc.store(t)...)
+			p := assertionProvider(t, clientKeys(t), opts...)
+
+			// exp is a whole second, between one and two seconds off, so the first
+			// presentation is well before it and the loop stays short.
+			exp := time.Now().Add(2 * time.Second).Truncate(time.Second)
+			claims := claimsFor(keyClientID)
+			claims["exp"] = exp.Unix()
+			tok := es256(t, claims)
+
+			var (
+				wg       sync.WaitGroup
+				accepted atomic.Int64
+				others   atomic.Int64
+			)
+			for range callers {
+				wg.Go(func() {
+					for time.Now().Before(exp.Add(pastExp)) {
+						_, err := p.AuthenticateClient(t.Context(), presenting(tok))
+
+						var refusal *oidcprovider.Error
+						switch {
+						case err == nil:
+							accepted.Add(1)
+						case errors.As(err, &refusal) && refusal.Code == oidcprovider.CodeInvalidClient:
+						default:
+							others.Add(1)
+						}
+					}
+				})
+			}
+			wg.Wait()
+
+			assert.EqualValues(t, 1, accepted.Load(), "one assertion, accepted this many times")
+			assert.Zero(t, others.Load())
+		})
+	}
+}
+
+// The default store forgets what expired more than its margin ago, so what it holds is
+// bounded by the assertions accepted within their lifetime and not by the life of the
+// process.
 func TestAuthenticateClient_PrivateKeyJWT_DefaultStoreForgets(t *testing.T) {
 	t.Parallel()
 

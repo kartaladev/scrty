@@ -1,0 +1,394 @@
+package storetest
+
+import (
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/token/onetime"
+)
+
+const (
+	// ProviderRaceRacers is how many callers the provider's single-winner races release
+	// together per record, and so the least DurableHarness.PoolSize they accept.
+	ProviderRaceRacers = 32
+
+	// meetingRaceRecords is how many records a race of two operations runs, each record
+	// one meeting of the two. A meeting is decided by a very short window, so it takes
+	// many of them; more callers per record would hide a lost write, because a revocation
+	// arriving later puts back what a racing create overwrote.
+	meetingRaceRecords = 512
+
+	// codeTokenPurpose is the token/onetime purpose of an authorization code (T2).
+	codeTokenPurpose = "oidc-provider.code" //nolint:gosec // a purpose's name, and no credential
+)
+
+// The names the provider's races report under.
+const (
+	AdvanceRaceName          = "exactly one advance wins per pending request"
+	CodeSpendRaceName        = "exactly one spend wins per code"
+	AssertionRecordRaceName  = "exactly one record wins per assertion identifier"
+	RevocationCreateRaceName = "a revocation racing a grant's create is kept"
+	EndReportedOnceRaceName  = "an end raced from many callers reports each grant once"
+	EndCreateRaceName        = "a sign-in's end racing its code's exchange leaves the grant revoked"
+	TouchRaceName            = "a touch racing a longer one leaves the longer deadline"
+)
+
+// raceDigest is the digest a race holds for key.
+func raceDigest(key string) []byte {
+	sum := sha256.Sum256([]byte(key))
+
+	return sum[:]
+}
+
+// raceN recovers the number a race seeded its key from.
+func raceN(key string) int {
+	n, _ := strconv.Atoi(key)
+
+	return n
+}
+
+// RunAdvanceRace holds a pending-request store to spending a stage by the write:
+// ProviderRaceRacers callers move each record from StageLogin to StageConsent at once,
+// and exactly one of each must succeed, every other caller receiving
+// oidcprovider.ErrNotFound. Its inputs are checked as RunConsumeRace checks them, so
+// h.PoolSize must be at least ProviderRaceRacers.
+func RunAdvanceRace(t *testing.T, h DurableHarness[oidcprovider.PendingRequestStore]) {
+	t.Helper()
+
+	signIn := opSignIn("u-1", 1)
+
+	runRace(t, h, Race[oidcprovider.PendingRequestStore]{
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.PendingRequestStore, i int) string {
+			t.Helper()
+			key := "pending-" + strconv.Itoa(i)
+			r := pendingRecord(1)
+			r.ID, r.HandleDigest = suiteID(80000+i), raceDigest(key)
+			require.NoError(t, s.Create(ctx, r))
+
+			return key
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.PendingRequestStore, key string, _ int) (bool, error) {
+			err := s.Advance(ctx, raceDigest(key), oidcprovider.StageLogin, oidcprovider.StageConsent, &signIn)
+			if errors.Is(err, oidcprovider.ErrNotFound) {
+				return false, nil
+			}
+
+			return err == nil, err
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.PendingRequestStore, key string) {
+			t.Helper()
+			got, err := s.Load(ctx, raceDigest(key))
+			require.NoError(t, err)
+			assert.Equal(t, oidcprovider.StageConsent, got.Stage)
+			assert.NotNil(t, got.SignIn, "the winner's sign-in must be stored")
+		},
+	}, raceRule{name: AdvanceRaceName, noun: "advance", racers: ProviderRaceRacers})
+}
+
+// RunCodeSpendRace holds the store a provider spends its codes in to spending each
+// once: ProviderRaceRacers callers consume each token of the provider's purpose at once,
+// and exactly one of each must succeed, every other caller receiving
+// onetime.ErrTokenNotFound. Its inputs are checked as RunConsumeRace checks them.
+func RunCodeSpendRace(t *testing.T, h DurableHarness[onetime.Store]) {
+	t.Helper()
+
+	const firstToken = 70000
+
+	runRace(t, h, Race[onetime.Store]{
+		Seed: func(ctx context.Context, t *testing.T, s onetime.Store, i int) string {
+			t.Helper()
+			n := firstToken + i
+			require.NoError(t, s.Insert(ctx, onetime.Token{
+				ID:         suiteID(n),
+				Purpose:    codeTokenPurpose,
+				Subject:    opClient,
+				SecretHash: raceDigest(strconv.Itoa(n)),
+				IssuedAt:   suiteStart,
+				ExpiresAt:  suiteStart.Add(time.Minute),
+			}))
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s onetime.Store, key string, _ int) (bool, error) {
+			err := s.Consume(ctx, suiteID(raceN(key)), suiteStart)
+			if errors.Is(err, onetime.ErrTokenNotFound) {
+				return false, nil
+			}
+
+			return err == nil, err
+		},
+	}, raceRule{name: CodeSpendRaceName, noun: "spend", racers: ProviderRaceRacers})
+}
+
+// RunAssertionRecordRace holds an assertion-identifier store to deciding by the write:
+// ProviderRaceRacers callers record each identifier at once, and exactly one of each must
+// be told it is new. Its inputs are checked as RunConsumeRace checks them.
+func RunAssertionRecordRace(t *testing.T, h DurableHarness[oidcprovider.AssertionIDStore]) {
+	t.Helper()
+
+	runRace(t, h, Race[oidcprovider.AssertionIDStore]{
+		Seed: func(_ context.Context, _ *testing.T, _ oidcprovider.AssertionIDStore, i int) string {
+			return "jti-" + strconv.Itoa(i)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.AssertionIDStore, key string, _ int) (bool, error) {
+			return s.Record(ctx, opClient, key, assertionUntil)
+		},
+	}, raceRule{name: AssertionRecordRaceName, noun: "record", racers: ProviderRaceRacers})
+}
+
+// RunTouchRace holds a browser-session store to deciding a touch by its one conditional
+// write: two touches of each session at once, one moving the idle deadline further than
+// the other, and the further one must be what the session holds, as a slower request
+// cannot undo a later one. A store that reads the deadline and writes separately, as a
+// SELECT followed by an UPDATE with no condition would, shortens it when the nearer touch
+// writes last. Its inputs are checked as RunConsumeRace checks them.
+//
+// BrowserSessionSuite runs this race on the one store its factory returns. A harness run
+// here splits the racers between two instances, and so also catches a store serialising
+// under a lock of one instance.
+func RunTouchRace(t *testing.T, h DurableHarness[oidcprovider.BrowserSessionStore]) {
+	t.Helper()
+
+	nearer, further := browserIdle.Add(time.Minute), browserIdle.Add(2*time.Minute)
+
+	runRace(t, h, Race[oidcprovider.BrowserSessionStore]{
+		Records: meetingRaceRecords,
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.BrowserSessionStore, i int) string {
+			t.Helper()
+			key := "browser-" + strconv.Itoa(i)
+			r := browserRecord(1, opSignIn("u-1", 1))
+			r.Digest = raceDigest(key)
+			require.NoError(t, s.Put(ctx, r))
+
+			return key
+		},
+		// The further touch is the one the engine counts as the win: both always succeed.
+		Attempt: func(ctx context.Context, s oidcprovider.BrowserSessionStore, key string, racer int) (bool, error) {
+			if racer == 0 {
+				return true, s.Touch(ctx, raceDigest(key), further)
+			}
+
+			return false, s.Touch(ctx, raceDigest(key), nearer)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.BrowserSessionStore, key string) {
+			t.Helper()
+			got, err := s.Load(ctx, raceDigest(key), suiteStart)
+			require.NoError(t, err)
+			if !further.Equal(got.IdleExpiresAt) {
+				t.Errorf("session %s: a touch shortened the idle deadline to %v, and %v was written", key, got.IdleExpiresAt, further)
+			}
+		},
+	}, raceRule{name: TouchRaceName, noun: "touch", racers: 2})
+}
+
+// RunGrantRaces holds a grant store to its promises under concurrency, against one code
+// store it joins to through UseCodes, in three races:
+//
+//   - a revocation racing the create of the same grant, one of each for each record, as
+//     a code's replay meets the exchange that stores its grant. Whichever goes first the
+//     grant must end revoked, with the first revocation's cause and every field the
+//     create gave. A store that reads for a revocation and writes separately, as a SELECT
+//     followed by an INSERT would, loses it;
+//   - ProviderRaceRacers callers ending one sign-in at once. Exactly one must be told of
+//     its grant, as a client is notified at most once, and a later report returns nothing;
+//   - a sign-in's end racing the exchange of its outstanding code, one of each for each
+//     record, some of them codes with offline_access of a client tied to its sign-in.
+//     Whichever goes first the grant must end revoked and marked, and a later report of
+//     that end returns nothing.
+//
+// Its inputs are checked as RunConsumeRace checks them, so h.PoolSize must be at least
+// ProviderRaceRacers. It uses the in-memory code store whatever the grant store is, as
+// the two meet only through the port.
+func RunGrantRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
+	t.Helper()
+
+	h.Require(t)
+
+	codes, err := oidcprovider.NewMemoryCodeStore()
+	require.NoError(t, err)
+
+	joined := func(build func(t *testing.T) oidcprovider.GrantStore) func(t *testing.T) oidcprovider.GrantStore {
+		return func(t *testing.T) oidcprovider.GrantStore {
+			t.Helper()
+			s := build(t)
+			require.NoError(t, s.UseCodes(codes))
+
+			return s
+		}
+	}
+	h.New, h.NewReplica = joined(h.New), joined(h.NewReplica)
+
+	runRace(t, h, revocationCreateRace(), raceRule{name: RevocationCreateRaceName, noun: "create", racers: 2})
+	runRace(t, h, endReportedOnceRace(), raceRule{name: EndReportedOnceRaceName, noun: "report", racers: ProviderRaceRacers})
+	runRace(t, h, endCreateRace(codes), raceRule{name: EndCreateRaceName, noun: "create", racers: 2})
+}
+
+// raceGrant is the grant of family n, from a sign-in of a user of its own.
+func raceGrant(n int) *oidcprovider.Grant {
+	return grantRecord(n, raceSignIn(n))
+}
+
+// raceSignIn is the sign-in of the grant of family n.
+func raceSignIn(n int) oidcprovider.SignIn {
+	return opSignIn("race-u-"+strconv.Itoa(n), n+100000)
+}
+
+// endOf selects the sign-in of the grant of family n.
+func endOf(n int) oidcprovider.SignInSelector {
+	return oidcprovider.SignInSelector{Family: raceSignIn(n).Family}
+}
+
+// revocationCreateRace is a create as racer 0 against a revocation as racer 1. The
+// create is the one that wins, so the engine counts it, and any error fails the record.
+func revocationCreateRace() Race[oidcprovider.GrantStore] {
+	const firstFamily = 10000
+
+	return Race[oidcprovider.GrantStore]{
+		Records: meetingRaceRecords,
+		Seed: func(_ context.Context, _ *testing.T, _ oidcprovider.GrantStore, i int) string {
+			return strconv.Itoa(firstFamily + i)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.GrantStore, key string, racer int) (bool, error) {
+			n := raceN(key)
+			if racer == 0 {
+				return true, s.Create(ctx, raceGrant(n))
+			}
+
+			return false, s.Revoke(ctx, suiteID(n), oidcprovider.CauseCodeReplay, suiteStart)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
+			t.Helper()
+			got := loadGrant(ctx, t, s, raceN(key))
+			if !got.Revoked {
+				t.Errorf("grant %s: a revocation raced its create and was lost", key)
+			}
+			assert.Equal(t, oidcprovider.CauseCodeReplay, got.RevokeCause)
+			if got.User != raceSignIn(raceN(key)).User {
+				t.Errorf("grant %s: the grant's own fields were lost, its user is %q", key, got.User)
+			}
+		},
+	}
+}
+
+// reportOf is what one end returned of the grant of family n: whether it reported it,
+// and an error for anything but that grant, or for that grant twice.
+func reportOf(got []oidcprovider.Grant, n int) (bool, error) {
+	switch {
+	case len(got) == 0:
+		return false, nil
+	case len(got) > 1:
+		return true, fmt.Errorf("one end reported %d grants, and one was selected", len(got))
+	case got[0].Family != suiteID(n):
+		return true, errors.New("an end reported a grant it did not select")
+	default:
+		return true, nil
+	}
+}
+
+// assertEndedOnce requires the grant of family n to be revoked and marked by an end, and
+// a later report of that end to return nothing.
+func assertEndedOnce(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, n int) {
+	t.Helper()
+
+	got := loadGrant(ctx, t, s, n)
+	if !got.Revoked {
+		t.Errorf("grant %d: the sign-in ended, and the grant was left live", n)
+	}
+	if got.SignInEndedAt.IsZero() {
+		t.Errorf("grant %d: the sign-in ended, and the grant was left unmarked", n)
+	}
+	assert.Equal(t, oidcprovider.CauseSignInEnded, got.RevokeCause)
+	if got.User != raceSignIn(n).User {
+		t.Errorf("grant %d: the grant's own fields were lost, its user is %q", n, got.User)
+	}
+
+	again, err := s.EndSignIns(ctx, endOf(n), suiteStart.Add(time.Minute))
+	require.NoError(t, err)
+	if len(again) != 0 {
+		t.Errorf("grant %d: a second report of the end returned %d grants", n, len(again))
+	}
+}
+
+// endReportedOnceRace ends one sign-in from every racer. A selected grant is reported by
+// one racer alone, which is the one win the engine counts.
+func endReportedOnceRace() Race[oidcprovider.GrantStore] {
+	const firstFamily = 20000
+
+	return Race[oidcprovider.GrantStore]{
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, i int) string {
+			t.Helper()
+			n := firstFamily + i
+			require.NoError(t, s.Create(ctx, raceGrant(n)))
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.GrantStore, key string, _ int) (bool, error) {
+			n := raceN(key)
+			got, err := s.EndSignIns(ctx, endOf(n), suiteStart)
+			if err != nil {
+				return false, err
+			}
+
+			return reportOf(got, n)
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
+			t.Helper()
+			assertEndedOnce(ctx, t, s, raceN(key))
+		},
+	}
+}
+
+// endCreateRace is an exchange's create as racer 0 against an end of the sign-in as
+// racer 1, over an outstanding code. The create always succeeds, so the engine counts it.
+func endCreateRace(codes *oidcprovider.MemoryCodeStore) Race[oidcprovider.GrantStore] {
+	const firstFamily = 30000
+
+	// tied is every third record: a code with offline_access of a client tied to its
+	// sign-in, which ends with it as any other.
+	tied := func(n int) bool { return n%3 == 0 }
+
+	return Race[oidcprovider.GrantStore]{
+		Records: meetingRaceRecords,
+		Seed: func(ctx context.Context, t *testing.T, _ oidcprovider.GrantStore, i int) string {
+			t.Helper()
+			n := firstFamily + i
+			r := codeRecord(n, raceSignIn(n))
+			r.GrantFamily = suiteID(n)
+			r.Offline, r.EndsWithSignIn = tied(n), tied(n)
+			require.NoError(t, codes.Create(ctx, r))
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.GrantStore, key string, racer int) (bool, error) {
+			n := raceN(key)
+			if racer == 0 {
+				g := raceGrant(n)
+				g.Offline, g.EndsWithSignIn = tied(n), tied(n)
+
+				return true, s.Create(ctx, g)
+			}
+			got, err := s.EndSignIns(ctx, endOf(n), suiteStart)
+			if err != nil {
+				return false, err
+			}
+			if _, err := reportOf(got, n); err != nil {
+				return false, err
+			}
+
+			return false, nil
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
+			t.Helper()
+			assertEndedOnce(ctx, t, s, raceN(key))
+		},
+	}
+}

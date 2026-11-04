@@ -453,3 +453,107 @@ type GrantStore interface {
 	// matching ErrConfig.
 	DeleteOrphans(ctx context.Context, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error)
 }
+
+// AccessTokenRecord is one opaque access token. The token's secret is held only as a
+// digest. Its authorization is its grant's, so a revoked grant ends it without this
+// record changing.
+type AccessTokenRecord struct {
+	// ID is the record's identifier, which the token carries in the clear.
+	ID id.ID
+	// Digest is the digest of the token's secret, compared by the provider.
+	Digest []byte
+	// GrantFamily is the grant the token was issued from.
+	GrantFamily id.ID
+	// ClientID is the client the token was issued to.
+	ClientID string
+	// User is the user the token speaks for.
+	User identity.UserID
+	// Scopes and Audience are what the token allows, and where.
+	Scopes, Audience []string
+	// Confirmation is the token's cnf claim: the key it is bound to, if any.
+	Confirmation map[string]string
+	// IssuedAt and ExpiresAt bound the token's life.
+	IssuedAt, ExpiresAt time.Time
+	// Revoked is the mark no later write clears.
+	Revoked bool
+}
+
+// AccessTokenStore keeps opaque access tokens. WithAccessTokenStore supplies one; with
+// none, the provider keeps them in a MemoryAccessTokenStore. No method's error may
+// carry a digest.
+//
+// A store does not judge expiry or revocation: Load returns an expired or revoked
+// record, and the provider decides.
+type AccessTokenStore interface {
+	// Create stores r, keyed by its ID, with its Digest unchanged. An identifier already
+	// held is refused with an error, and the stored record is left unchanged.
+	Create(ctx context.Context, r *AccessTokenRecord) error
+
+	// Load returns a copy of the record for id, or ErrNotFound.
+	Load(ctx context.Context, id id.ID) (*AccessTokenRecord, error)
+
+	// Revoke marks this one token revoked, and no other of its grant. A second call
+	// changes nothing. A token not held is ErrNotFound, and nothing is inserted.
+	Revoke(ctx context.Context, id id.ID) error
+
+	// DeleteExpired removes the records whose ExpiresAt is strictly before before,
+	// revoked or not, and returns how many it removed. It judges only by before, never
+	// by a clock of its own.
+	DeleteExpired(ctx context.Context, before time.Time) (int, error)
+}
+
+// BrowserSession is what the provider remembers of a browser that signed in, so it can
+// answer later requests from it (R2). It holds the digest of the cookie's secret, and
+// never the secret. It is read only by the provider, and no sign-in path reads it. It
+// does not see a marker placed on the sign-in afterwards, such as a required password
+// change: an administrator's change that matters ends the sign-in, which reaches it.
+type BrowserSession struct {
+	// Digest is the digest of the cookie's secret, and the record's key.
+	Digest []byte
+	// SignIn is the sign-in the browser holds, with its authentication facts.
+	SignIn SignIn
+	// IdleExpiresAt is when the session ends without use.
+	IdleExpiresAt time.Time
+	// AbsoluteExpiresAt is when it ends regardless, and no later than its sign-in.
+	AbsoluteExpiresAt time.Time
+}
+
+// BrowserSessionStore keeps browser sessions. WithBrowserSessionStore supplies one;
+// with none, the provider keeps them in a MemoryBrowserSessionStore. No method's error
+// may carry a digest.
+//
+// To replace a session, Put the new digest and then Delete the old, so a failure
+// between the two leaves the browser signed in rather than not.
+type BrowserSessionStore interface {
+	// Put stores s, keyed by its Digest, with the idle deadline at most the absolute
+	// one. A digest already held is refused with an error, and the stored record is left
+	// unchanged. An empty digest or a zero deadline is refused with an error matching
+	// ErrConfig, as a record no load could find or judge.
+	Put(ctx context.Context, s *BrowserSession) error
+
+	// Load returns a copy of the record for digest while now is before both of its
+	// deadlines, and ErrNotFound otherwise, also for an empty digest. It judges by now
+	// alone, never by a clock of its own. A zero now, which would keep every session
+	// alive, is refused with an error matching ErrConfig.
+	Load(ctx context.Context, digest []byte, now time.Time) (*BrowserSession, error)
+
+	// Touch moves the idle deadline to idleUntil, or to the absolute deadline if that
+	// is sooner. It only ever extends it, so a slower request cannot shorten what a
+	// later one wrote, and it writes nothing else. It must decide with one conditional
+	// write. A digest not held is ErrNotFound, and nothing is inserted. A zero idleUntil
+	// is refused with an error matching ErrConfig. It takes no current time, so a caller
+	// touches only what its Load has just returned.
+	Touch(ctx context.Context, digest []byte, idleUntil time.Time) error
+
+	// Delete removes the record for digest. One not held is not an error.
+	Delete(ctx context.Context, digest []byte) error
+
+	// DeleteBySignIn removes every record whose sign-in sel selects, expired ones
+	// included, and returns how many it removed. A selector of no valid shape is refused
+	// with an error matching ErrConfig before anything is read or written.
+	DeleteBySignIn(ctx context.Context, sel SignInSelector) (int, error)
+
+	// DeleteExpired removes the records with either deadline strictly before before, and
+	// returns how many it removed. It judges only by before, never by a clock of its own.
+	DeleteExpired(ctx context.Context, before time.Time) (int, error)
+}

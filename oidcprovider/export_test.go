@@ -27,7 +27,7 @@ func (c *RegisteredClient) MatchesSecretForTest(secret []byte, now time.Time) bo
 
 // AssertionIDsHeldForTest counts what the default assertion identifier store holds.
 func (p *Provider) AssertionIDsHeldForTest() int {
-	memory, ok := p.assertionIDs.(*memoryAssertionIDs)
+	memory, ok := p.stores.assertionIDs.(*MemoryAssertionIDStore)
 	if !ok {
 		return -1
 	}
@@ -35,4 +35,14 @@ func (p *Provider) AssertionIDsHeldForTest() int {
 	defer memory.mu.Unlock()
 
 	return len(memory.held)
+}
+
+// HeldForTest reports whether the pair is held, without recording it.
+func (m *MemoryAssertionIDStore) HeldForTest(clientID, jti string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, ok := m.held[assertionIDKey{client: clientID, jti: jti}]
+
+	return ok
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // providerStores are the stores a provider settled on.
@@ -23,6 +24,11 @@ type providerStores struct {
 	codes           CodeStore
 	consents        ConsentStore
 	grants          GrantStore
+	codeTokens      onetime.Store
+	accessTokens    AccessTokenStore
+	assertionIDs    AssertionIDStore
+	browserSessions BrowserSessionStore
+	lineage         RefreshTokenStore
 }
 
 // buildStores returns the stores the options gave, with an in-memory default for each
@@ -31,7 +37,17 @@ type providerStores struct {
 // that can fail: a New refused later would leave a consumer's grant store joined to a
 // default code store nothing else can reach, and refuse the retry.
 func (c *config) buildStores() (providerStores, error) {
-	stores := providerStores{pendingRequests: c.pendingRequests, codes: c.codes, consents: c.consents, grants: c.grants}
+	stores := providerStores{
+		pendingRequests: c.pendingRequests,
+		codes:           c.codes,
+		consents:        c.consents,
+		grants:          c.grants,
+		codeTokens:      c.codeTokens,
+		accessTokens:    c.accessTokens,
+		assertionIDs:    c.assertionIDs,
+		browserSessions: c.browserStore,
+		lineage:         c.lineage,
+	}
 	clk := WithMemoryStoreClock(c.clock)
 
 	var err error
@@ -55,6 +71,29 @@ func (c *config) buildStores() (providerStores, error) {
 			return providerStores{}, err
 		}
 	}
+	if !c.codeTokensSet {
+		if stores.codeTokens, err = newDefaultCodeTokens(c.clock); err != nil {
+			return providerStores{}, err
+		}
+	}
+	if !c.accessTokensSet {
+		if stores.accessTokens, err = NewMemoryAccessTokenStore(clk); err != nil {
+			return providerStores{}, err
+		}
+	}
+	if !c.assertionIDsSet {
+		stores.assertionIDs = newDefaultAssertionIDs(c.clock)
+	}
+	if !c.browserStoreSet {
+		if stores.browserSessions, err = NewMemoryBrowserSessionStore(clk); err != nil {
+			return providerStores{}, err
+		}
+	}
+	if !c.lineageSet {
+		if stores.lineage, err = newDefaultLineages(c.clock); err != nil {
+			return providerStores{}, err
+		}
+	}
 	if err := stores.grants.UseCodes(stores.codes); err != nil {
 		return providerStores{}, err
 	}
@@ -73,6 +112,8 @@ type memoryConfig struct {
 // sweeps what has expired. The default is clock.System(), and a nil clock, typed nil
 // included, fails the constructor with an error matching ErrConfig. It decides only
 // what is forgotten: every time a store judges a caller's request by is the caller's.
+// A MemoryConsentStore and a MemoryAssertionIDStore forget nothing of their own accord,
+// so neither reads it, and each accepts it like the other stores.
 func WithMemoryStoreClock(clk clock.Clock) MemoryStoreOption {
 	return func(c *memoryConfig) { c.clock = clk }
 }
@@ -838,4 +879,405 @@ func (m *MemoryGrantStore) deleteOrphan(family id.ID, olderThan time.Time) bool 
 // revocation is delete expired's, because it must outlive any code naming it.
 func (g *memoryGrant) orphanable(olderThan time.Time) bool {
 	return g.stored && !g.Revoked && g.HoldsLineage && g.CreatedAt.Before(olderThan)
+}
+
+// codeTokenPurpose is the token/onetime purpose an authorization code's token is issued
+// under.
+const codeTokenPurpose = "oidc-provider.code" //nolint:gosec // a purpose's name, and no credential
+
+// sweepingCodeTokens is the provider's default code-token store: an onetime.MemoryStore
+// of its own, which no consumer can reach to purge, kept bounded by its writes. A write
+// that adds a record forgets the codes expired by the provider's clock, at most once per
+// minute. A code record goes at the same time, so a replay past a code's expiry finds
+// neither.
+type sweepingCodeTokens struct {
+	*onetime.MemoryStore
+
+	mu    sync.Mutex
+	sweep memorySweep
+}
+
+// newDefaultCodeTokens builds the default code-token store on clk.
+func newDefaultCodeTokens(clk clock.Clock) (*sweepingCodeTokens, error) {
+	memory, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	if err != nil {
+		return nil, err
+	}
+
+	return &sweepingCodeTokens{MemoryStore: memory, sweep: memorySweep{clock: clk}}, nil
+}
+
+// sweepIfDue forgets what has expired, when a sweep is due. A token issued at this very
+// instant stays, as DeleteExpiredBefore keeps what was not issued strictly before it.
+func (s *sweepingCodeTokens) sweepIfDue(ctx context.Context) error {
+	s.mu.Lock()
+	now, due := s.sweep.due()
+	s.mu.Unlock()
+	if !due {
+		return nil
+	}
+	_, err := s.DeleteExpiredBefore(ctx, codeTokenPurpose, now)
+
+	return err
+}
+
+// Insert implements onetime.Store.
+func (s *sweepingCodeTokens) Insert(ctx context.Context, tok onetime.Token) error {
+	if err := s.sweepIfDue(ctx); err != nil {
+		return err
+	}
+
+	return s.MemoryStore.Insert(ctx, tok)
+}
+
+// InsertWithin implements onetime.Store.
+func (s *sweepingCodeTokens) InsertWithin(ctx context.Context, tok onetime.Token, since time.Time, limit int) (bool, error) {
+	if err := s.sweepIfDue(ctx); err != nil {
+		return false, err
+	}
+
+	return s.MemoryStore.InsertWithin(ctx, tok, since, limit)
+}
+
+// cloneAccessToken returns a record sharing nothing with r.
+func cloneAccessToken(r *AccessTokenRecord) *AccessTokenRecord {
+	out := *r
+	out.Digest = bytes.Clone(r.Digest)
+	out.Scopes = slices.Clone(r.Scopes)
+	out.Audience = slices.Clone(r.Audience)
+	out.Confirmation = maps.Clone(r.Confirmation)
+
+	return &out
+}
+
+// errAccessTokenHeld is fixed text, so it can carry no digest.
+var errAccessTokenHeld = errors.New("oidcprovider: an access token with this identifier is already stored")
+
+// MemoryAccessTokenStore is the default AccessTokenStore, safe for concurrent use. It
+// holds its own copies of records, on the way in and on the way out.
+//
+// It is per process and not durable, so a restart ends every opaque token, and a
+// deployment of more than one instance needs a shared store. What it holds stays
+// bounded: a Create forgets every token already expired by the store's clock, at most
+// once per minute, and so does DeleteExpired, with the caller's time.
+type MemoryAccessTokenStore struct {
+	mu      sync.Mutex
+	sweep   memorySweep
+	records map[id.ID]*AccessTokenRecord
+}
+
+// NewMemoryAccessTokenStore returns an empty store on the system clock, unless
+// WithMemoryStoreClock replaces it.
+func NewMemoryAccessTokenStore(opts ...MemoryStoreOption) (*MemoryAccessTokenStore, error) {
+	cfg, err := newMemoryConfig(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MemoryAccessTokenStore{
+		sweep:   memorySweep{clock: cfg.clock},
+		records: make(map[id.ID]*AccessTokenRecord),
+	}, nil
+}
+
+// Create implements AccessTokenStore.
+func (m *MemoryAccessTokenStore) Create(_ context.Context, r *AccessTokenRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if now, due := m.sweep.due(); due {
+		m.deleteExpiredLocked(now)
+	}
+	if _, held := m.records[r.ID]; held {
+		return errAccessTokenHeld
+	}
+	m.records[r.ID] = cloneAccessToken(r)
+
+	return nil
+}
+
+// Load implements AccessTokenStore.
+func (m *MemoryAccessTokenStore) Load(_ context.Context, tokenID id.ID) (*AccessTokenRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	r, ok := m.records[tokenID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+
+	return cloneAccessToken(r), nil
+}
+
+// Revoke implements AccessTokenStore.
+func (m *MemoryAccessTokenStore) Revoke(_ context.Context, tokenID id.ID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	r, ok := m.records[tokenID]
+	if !ok {
+		return ErrNotFound
+	}
+	r.Revoked = true
+
+	return nil
+}
+
+// DeleteExpired implements AccessTokenStore.
+func (m *MemoryAccessTokenStore) DeleteExpired(_ context.Context, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.deleteExpiredLocked(before), nil
+}
+
+func (m *MemoryAccessTokenStore) deleteExpiredLocked(before time.Time) int {
+	held := len(m.records)
+	maps.DeleteFunc(m.records, func(_ id.ID, r *AccessTokenRecord) bool { return r.ExpiresAt.Before(before) })
+
+	return held - len(m.records)
+}
+
+// assertionSweepMargin is how long past its until the provider's default store keeps a
+// pair. A request can stall between its exp check and its Record, and one whose pair had
+// been swept would be told new. Keeping the pair this much longer means such a request
+// still finds it, and is refused by the store, for any ordinary stall; the provider's own
+// second read of its clock answers a longer one.
+const assertionSweepMargin = time.Minute
+
+// assertionIDKey is what a recorded identifier is held under, so one client's jti is
+// never another's.
+type assertionIDKey struct {
+	client, jti string
+}
+
+// MemoryAssertionIDStore is the default AssertionIDStore, safe for concurrent use.
+//
+// It is per process and not durable, so a restart forgets what was accepted, and a
+// deployment of more than one instance needs a shared store to refuse a replay across
+// them. A pair stays held, whatever its until and whatever any clock says, until
+// DeleteExpired removes it at the caller's time. Only assertions that passed every check
+// reach it, so it grows with accepted requests until then: a consumer supplying one
+// through WithAssertionIDStore calls DeleteExpired. The provider's own default, which no
+// consumer can reach, is kept bounded by its writes instead.
+type MemoryAssertionIDStore struct {
+	mu sync.Mutex
+	// sweep is set only on the provider's own default.
+	sweep *memorySweep
+	held  map[assertionIDKey]time.Time
+}
+
+// NewMemoryAssertionIDStore returns an empty store. Nothing in it reads a clock, as a
+// pair goes only when DeleteExpired removes it; WithMemoryStoreClock is accepted, like
+// the other stores', and a nil clock is refused all the same.
+func NewMemoryAssertionIDStore(opts ...MemoryStoreOption) (*MemoryAssertionIDStore, error) {
+	if _, err := newMemoryConfig(opts); err != nil {
+		return nil, err
+	}
+
+	return &MemoryAssertionIDStore{held: make(map[assertionIDKey]time.Time)}, nil
+}
+
+// newDefaultAssertionIDs builds the provider's default: a store which, since no consumer
+// can reach it to call DeleteExpired, sweeps itself on a Record, by the provider's clock
+// and at most once per minute, removing the pairs more than assertionSweepMargin past
+// their until.
+func newDefaultAssertionIDs(clk clock.Clock) *MemoryAssertionIDStore {
+	return &MemoryAssertionIDStore{
+		sweep: &memorySweep{clock: clk},
+		held:  make(map[assertionIDKey]time.Time),
+	}
+}
+
+// Record implements AssertionIDStore.
+func (m *MemoryAssertionIDStore) Record(_ context.Context, clientID, jti string, until time.Time) (bool, error) {
+	key := assertionIDKey{client: clientID, jti: jti}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.sweep != nil {
+		m.sweepIfDue()
+	}
+	if _, ok := m.held[key]; ok {
+		return false, nil
+	}
+	m.held[key] = until
+
+	return true, nil
+}
+
+// DeleteExpired implements AssertionIDStore.
+func (m *MemoryAssertionIDStore) DeleteExpired(_ context.Context, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.deleteExpiredLocked(before), nil
+}
+
+// sweepIfDue is the provider's default forgetting by the provider's clock, before a
+// Record. The caller holds m.mu.
+func (m *MemoryAssertionIDStore) sweepIfDue() {
+	if now, due := m.sweep.due(); due {
+		m.deleteExpiredLocked(now.Add(-assertionSweepMargin))
+	}
+}
+
+func (m *MemoryAssertionIDStore) deleteExpiredLocked(before time.Time) int {
+	held := len(m.held)
+	maps.DeleteFunc(m.held, func(_ assertionIDKey, until time.Time) bool { return until.Before(before) })
+
+	return held - len(m.held)
+}
+
+// cloneBrowserSession returns a session sharing nothing with s.
+func cloneBrowserSession(s *BrowserSession) *BrowserSession {
+	out := *s
+	out.Digest = bytes.Clone(s.Digest)
+	out.SignIn = cloneSignIn(s.SignIn)
+
+	return &out
+}
+
+// errBrowserSessionHeld is fixed text, so it can carry no digest.
+var errBrowserSessionHeld = errors.New("oidcprovider: a browser session with this digest is already stored")
+
+// MemoryBrowserSessionStore is the default BrowserSessionStore, safe for concurrent
+// use. It holds its own copies of records, on the way in and on the way out.
+//
+// It is per process and not durable, so a restart asks every browser to sign in again,
+// and a deployment of more than one instance needs a shared store. What it holds stays
+// bounded: a Put forgets every session already expired by the store's clock, at most
+// once per minute, and so does DeleteExpired, with the caller's time. That clock decides
+// only what is forgotten: a Load is judged at the time its caller gives.
+type MemoryBrowserSessionStore struct {
+	mu      sync.Mutex
+	sweep   memorySweep
+	records map[string]*BrowserSession
+}
+
+// NewMemoryBrowserSessionStore returns an empty store on the system clock, unless
+// WithMemoryStoreClock replaces it.
+func NewMemoryBrowserSessionStore(opts ...MemoryStoreOption) (*MemoryBrowserSessionStore, error) {
+	cfg, err := newMemoryConfig(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MemoryBrowserSessionStore{
+		sweep:   memorySweep{clock: cfg.clock},
+		records: make(map[string]*BrowserSession),
+	}, nil
+}
+
+// Put implements BrowserSessionStore.
+func (m *MemoryBrowserSessionStore) Put(_ context.Context, s *BrowserSession) error {
+	if len(s.Digest) == 0 {
+		return fmt.Errorf("%w: BrowserSessionStore.Put: the digest must not be empty", ErrConfig)
+	}
+	if s.IdleExpiresAt.IsZero() || s.AbsoluteExpiresAt.IsZero() {
+		return fmt.Errorf("%w: BrowserSessionStore.Put: a deadline must not be zero", ErrConfig)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if now, due := m.sweep.due(); due {
+		m.deleteExpiredLocked(now)
+	}
+	key := string(s.Digest)
+	if _, held := m.records[key]; held {
+		return errBrowserSessionHeld
+	}
+	stored := cloneBrowserSession(s)
+	if stored.IdleExpiresAt.After(stored.AbsoluteExpiresAt) {
+		stored.IdleExpiresAt = stored.AbsoluteExpiresAt
+	}
+	m.records[key] = stored
+
+	return nil
+}
+
+// Load implements BrowserSessionStore.
+func (m *MemoryBrowserSessionStore) Load(_ context.Context, digest []byte, now time.Time) (*BrowserSession, error) {
+	if now.IsZero() {
+		return nil, fmt.Errorf("%w: BrowserSessionStore.Load: the time must not be zero", ErrConfig)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.records[string(digest)]
+	if !ok || !now.Before(s.IdleExpiresAt) || !now.Before(s.AbsoluteExpiresAt) {
+		return nil, ErrNotFound
+	}
+
+	return cloneBrowserSession(s), nil
+}
+
+// Touch implements BrowserSessionStore.
+func (m *MemoryBrowserSessionStore) Touch(_ context.Context, digest []byte, idleUntil time.Time) error {
+	if idleUntil.IsZero() {
+		return fmt.Errorf("%w: BrowserSessionStore.Touch: the time must not be zero", ErrConfig)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.records[string(digest)]
+	if !ok {
+		return ErrNotFound
+	}
+	if idleUntil.After(s.AbsoluteExpiresAt) {
+		idleUntil = s.AbsoluteExpiresAt
+	}
+	if idleUntil.After(s.IdleExpiresAt) {
+		s.IdleExpiresAt = idleUntil
+	}
+
+	return nil
+}
+
+// Delete implements BrowserSessionStore.
+func (m *MemoryBrowserSessionStore) Delete(_ context.Context, digest []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	delete(m.records, string(digest))
+
+	return nil
+}
+
+// DeleteBySignIn implements BrowserSessionStore.
+func (m *MemoryBrowserSessionStore) DeleteBySignIn(_ context.Context, sel SignInSelector) (int, error) {
+	if err := sel.Validate(); err != nil {
+		return 0, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	held := len(m.records)
+	maps.DeleteFunc(m.records, func(_ string, s *BrowserSession) bool {
+		return sel.matches(s.SignIn.User, s.SignIn.Family, s.SignIn.ExternalIssuer, s.SignIn.ExternalSessionID)
+	})
+
+	return held - len(m.records), nil
+}
+
+// DeleteExpired implements BrowserSessionStore.
+func (m *MemoryBrowserSessionStore) DeleteExpired(_ context.Context, before time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.deleteExpiredLocked(before), nil
+}
+
+func (m *MemoryBrowserSessionStore) deleteExpiredLocked(before time.Time) int {
+	held := len(m.records)
+	maps.DeleteFunc(m.records, func(_ string, s *BrowserSession) bool {
+		return s.IdleExpiresAt.Before(before) || s.AbsoluteExpiresAt.Before(before)
+	})
+
+	return held - len(m.records)
 }

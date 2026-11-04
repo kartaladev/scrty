@@ -41,6 +41,45 @@ func (m *MockAssertionIDStore) EXPECT() *MockAssertionIDStoreMockRecorder {
 	return m.recorder
 }
 
+// DeleteExpired mocks base method.
+func (m *MockAssertionIDStore) DeleteExpired(ctx context.Context, before time.Time) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteExpired", ctx, before)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteExpired indicates an expected call of DeleteExpired.
+func (mr *MockAssertionIDStoreMockRecorder) DeleteExpired(ctx, before any) *MockAssertionIDStoreDeleteExpiredCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteExpired", reflect.TypeOf((*MockAssertionIDStore)(nil).DeleteExpired), ctx, before)
+	return &MockAssertionIDStoreDeleteExpiredCall{Call: call}
+}
+
+// MockAssertionIDStoreDeleteExpiredCall wrap *gomock.Call
+type MockAssertionIDStoreDeleteExpiredCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockAssertionIDStoreDeleteExpiredCall) Return(arg0 int, arg1 error) *MockAssertionIDStoreDeleteExpiredCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockAssertionIDStoreDeleteExpiredCall) Do(f func(context.Context, time.Time) (int, error)) *MockAssertionIDStoreDeleteExpiredCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockAssertionIDStoreDeleteExpiredCall) DoAndReturn(f func(context.Context, time.Time) (int, error)) *MockAssertionIDStoreDeleteExpiredCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Record mocks base method.
 func (m *MockAssertionIDStore) Record(ctx context.Context, clientID, jti string, until time.Time) (bool, error) {
 	m.ctrl.T.Helper()

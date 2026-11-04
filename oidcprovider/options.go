@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
-
+	"github.com/kartaladev/scrty/internal/oplineage"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // AudienceRule selects which audience a client assertion may name.
@@ -68,6 +69,14 @@ type config struct {
 	consentsSet               bool
 	grants                    GrantStore
 	grantsSet                 bool
+	codeTokens                onetime.Store
+	codeTokensSet             bool
+	accessTokens              AccessTokenStore
+	accessTokensSet           bool
+	browserStore              BrowserSessionStore
+	browserStoreSet           bool
+	lineage                   RefreshTokenStore
+	lineageSet                bool
 	outbound                  *outbound.Client
 	outboundSet               bool
 	clock                     clock.Clock
@@ -142,6 +151,21 @@ func (c *config) validate() error {
 	}
 	if c.grantsSet && nilcheck.IsNil(c.grants) {
 		return fmt.Errorf("%w: WithGrantStore: must not be nil", ErrConfig)
+	}
+	if c.codeTokensSet && nilcheck.IsNil(c.codeTokens) {
+		return fmt.Errorf("%w: WithCodeTokenStore: must not be nil", ErrConfig)
+	}
+	if c.accessTokensSet && nilcheck.IsNil(c.accessTokens) {
+		return fmt.Errorf("%w: WithAccessTokenStore: must not be nil", ErrConfig)
+	}
+	if c.browserStoreSet && nilcheck.IsNil(c.browserStore) {
+		return fmt.Errorf("%w: WithBrowserSessionStore: must not be nil", ErrConfig)
+	}
+	if c.browserStoreSet && !c.browserSessions {
+		return fmt.Errorf("%w: WithBrowserSessionStore: has no meaning under WithoutBrowserSessions", ErrConfig)
+	}
+	if c.lineageSet && oplineage.Sessions(c.lineage) == nil {
+		return fmt.Errorf("%w: WithRefreshTokenStore: must be built by a scrty store adapter, and not be the zero value", ErrConfig)
 	}
 	if c.outboundSet && c.outbound == nil {
 		return fmt.Errorf("%w: WithOutbound: must not be nil", ErrConfig)
@@ -282,9 +306,11 @@ func WithRandom(r io.Reader) Option {
 }
 
 // WithAssertionIDStore replaces where accepted client assertion identifiers are
-// recorded. The default keeps them in memory, which is lost with the process and not
-// shared between instances, so a deployment of more than one instance needs a shared
-// store to refuse a replay across them. It must not be nil.
+// recorded. The default is a MemoryAssertionIDStore of the provider's own, which forgets
+// what has expired by the provider's clock on a write, at most once per minute. It is
+// lost with the process and not shared between instances, so a deployment of more than
+// one instance needs a shared store to refuse a replay across them. A store given here is
+// the consumer's to sweep, through DeleteExpired. It must not be nil.
 func WithAssertionIDStore(s AssertionIDStore) Option {
 	return func(c *config) { c.assertionIDs, c.assertionIDsSet = s, true }
 }
@@ -340,4 +366,37 @@ func WithConsentStore(s ConsentStore) Option {
 // code store too, through WithCodeStore, or New fails with an error matching ErrConfig.
 func WithGrantStore(s GrantStore) Option {
 	return func(c *config) { c.grants, c.grantsSet = s, true }
+}
+
+// WithCodeTokenStore replaces where authorization codes' one-time tokens are kept, which
+// is what decides a code's single spend. The default is an onetime.MemoryStore of the
+// provider's own, which forgets expired codes by the provider's clock on a write, at most
+// once per minute. It is lost with the process and not shared between instances. A store
+// given here is the consumer's to purge. It must not be nil.
+func WithCodeTokenStore(s onetime.Store) Option {
+	return func(c *config) { c.codeTokens, c.codeTokensSet = s, true }
+}
+
+// WithAccessTokenStore replaces where opaque access tokens are kept. The default is a
+// MemoryAccessTokenStore, which is lost with the process and not shared between
+// instances. It must not be nil.
+func WithAccessTokenStore(s AccessTokenStore) Option {
+	return func(c *config) { c.accessTokens, c.accessTokensSet = s, true }
+}
+
+// WithBrowserSessionStore replaces where browser sessions are kept. The default is a
+// MemoryBrowserSessionStore, which is lost with the process and not shared between
+// instances. It must not be nil, and given with WithoutBrowserSessions, which uses no
+// such store, it fails construction rather than being ignored.
+func WithBrowserSessionStore(s BrowserSessionStore) Option {
+	return func(c *config) { c.browserStore, c.browserStoreSet = s, true }
+}
+
+// WithRefreshTokenStore replaces where refresh-token lineages are kept. The default is
+// a private session.MemoryStore of the provider's own, which is lost with the process
+// and not shared between instances. A SQL adapter's NewRefreshTokenStore builds a
+// durable one, and nothing outside scrty can build one from a session.Store. The zero
+// RefreshTokenStore holds nothing, and fails construction.
+func WithRefreshTokenStore(s RefreshTokenStore) Option {
+	return func(c *config) { c.lineage, c.lineageSet = s, true }
 }

@@ -59,9 +59,8 @@ type Provider struct {
 	registry ClientRegistry
 	limits   keyLimits
 
-	assertionIDs AssertionIDStore
-	keySets      *clientKeySets
-	stores       providerStores
+	keySets *clientKeySets
+	stores  providerStores
 
 	loginURL, consentURL, logoutURL, loggedOutURL string
 }
@@ -73,8 +72,9 @@ type Provider struct {
 // With no options: an https issuer, browser sessions on, logout asking only when no
 // valid hint names the browser's own sign-in, pending requests living 10 minutes, codes
 // 60 seconds, client assertions at most 5 minutes with the issuer as their sole audience,
-// assertion identifiers, pending requests, code records, consents and grants kept in
-// memory, client key sets fetched through a default outbound.Client, kept 15 minutes and
+// assertion identifiers, pending requests, code records and their one-time tokens,
+// consents, grants, refresh-token lineages, opaque access tokens and browser sessions
+// kept in memory, client key sets fetched through a default outbound.Client, kept 15 minutes and
 // refetched for an unknown kid at most every 30 seconds, the system clock, slog.Default
 // and crypto/rand. Each option names its default and its bound.
 func New(d Deps, opts ...Option) (*Provider, error) {
@@ -107,21 +107,16 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 			return nil, fmt.Errorf("%w: the default outbound client: %w", ErrConfig, err)
 		}
 	}
-	assertionIDs := cfg.assertionIDs
-	if !cfg.assertionIDsSet {
-		assertionIDs = newMemoryAssertionIDs(cfg.clock)
-	}
 	stores, err := cfg.buildStores()
 	if err != nil {
 		return nil, err
 	}
 
 	return &Provider{
-		cfg:          cfg,
-		stores:       stores,
-		registry:     registry,
-		limits:       limits,
-		assertionIDs: assertionIDs,
+		cfg:      cfg,
+		stores:   stores,
+		registry: registry,
+		limits:   limits,
 		keySets: &clientKeySets{
 			out:      out,
 			clock:    cfg.clock,

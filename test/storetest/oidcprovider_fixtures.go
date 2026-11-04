@@ -12,10 +12,10 @@ import (
 	"github.com/kartaladev/scrty/oidcprovider"
 )
 
-// The provider suites' fixtures. Every instant is dated from suiteStart, so a store
-// judging anything by the wall clock, which is years before it, is caught. The cases
-// that must also catch the opposite date their records long before the wall clock
-// (longAgo).
+// The provider suites' fixtures. Most instants are dated from suiteStart, which holds
+// nothing about the wall clock: a suite must pass whichever side of it the wall clock is
+// on. A case about a store judging by a clock of its own dates its records from longAgo,
+// which the wall clock has passed for good, so that it catches such a store at any date.
 const (
 	opClient      = "billing-web"
 	opOtherClient = "billing-ios"
@@ -77,7 +77,8 @@ type selectorShape struct {
 	in, out oidcprovider.SignIn
 }
 
-// selectorShapes returns the five valid shapes.
+// selectorShapes returns the five valid shapes, the upstream one twice: a store comparing
+// only the session, and a store comparing only the issuer, are each caught by one of them.
 func selectorShapes() []selectorShape {
 	federated := func(user string, n int, issuer, session string) oidcprovider.SignIn {
 		s := opSignIn(user, n)
@@ -110,6 +111,12 @@ func selectorShapes() []selectorShape {
 			sel:  oidcprovider.SignInSelector{ExternalIssuer: opIssuer, ExternalSessionID: opUpstream},
 			in:   federated("u-1", 1, opIssuer, opUpstream),
 			out:  federated("u-1", 1, opIssuer, opOtherStream),
+		},
+		{
+			name: "upstream issuer and session, under another issuer",
+			sel:  oidcprovider.SignInSelector{ExternalIssuer: opIssuer, ExternalSessionID: opUpstream},
+			in:   federated("u-1", 1, opIssuer, opUpstream),
+			out:  federated("u-1", 1, opOtherIssuer, opUpstream),
 		},
 		{
 			name: "user and upstream issuer",

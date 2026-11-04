@@ -8,8 +8,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 func TestNew_StoreOptions(t *testing.T) {
@@ -20,7 +22,14 @@ func TestNew_StoreOptions(t *testing.T) {
 		nilCodes    *oidcprovider.MemoryCodeStore
 		nilConsents *oidcprovider.MemoryConsentStore
 		nilGrants   *oidcprovider.MemoryGrantStore
+		nilTokens   *onetime.MemoryStore
+		nilAccess   *oidcprovider.MemoryAccessTokenStore
+		nilBrowser  *oidcprovider.MemoryBrowserSessionStore
 	)
+	suppliedTokens := must.Must(onetime.NewMemoryStore())
+	suppliedAccess := must.Must(oidcprovider.NewMemoryAccessTokenStore())
+	suppliedAssertions := must.Must(oidcprovider.NewMemoryAssertionIDStore())
+	suppliedBrowser := must.Must(oidcprovider.NewMemoryBrowserSessionStore())
 	refused := func(setting string) func(*testing.T, *oidcprovider.Provider, error) {
 		return func(t *testing.T, _ *oidcprovider.Provider, err error) {
 			t.Helper()
@@ -42,6 +51,37 @@ func TestNew_StoreOptions(t *testing.T) {
 		{name: "typed nil consent store", opts: []oidcprovider.Option{oidcprovider.WithConsentStore(nilConsents)}, assert: refused("WithConsentStore")},
 		{name: "nil grant store", opts: []oidcprovider.Option{oidcprovider.WithGrantStore(nil)}, assert: refused("WithGrantStore")},
 		{name: "typed nil grant store", opts: []oidcprovider.Option{oidcprovider.WithGrantStore(nilGrants)}, assert: refused("WithGrantStore")},
+		{name: "nil code-token store", opts: []oidcprovider.Option{oidcprovider.WithCodeTokenStore(nil)}, assert: refused("WithCodeTokenStore")},
+		{name: "typed nil code-token store", opts: []oidcprovider.Option{oidcprovider.WithCodeTokenStore(nilTokens)}, assert: refused("WithCodeTokenStore")},
+		{name: "nil access-token store", opts: []oidcprovider.Option{oidcprovider.WithAccessTokenStore(nil)}, assert: refused("WithAccessTokenStore")},
+		{name: "typed nil access-token store", opts: []oidcprovider.Option{oidcprovider.WithAccessTokenStore(nilAccess)}, assert: refused("WithAccessTokenStore")},
+		{name: "nil browser-session store", opts: []oidcprovider.Option{oidcprovider.WithBrowserSessionStore(nil)}, assert: refused("WithBrowserSessionStore")},
+		{name: "typed nil browser-session store", opts: []oidcprovider.Option{oidcprovider.WithBrowserSessionStore(nilBrowser)}, assert: refused("WithBrowserSessionStore")},
+		{
+			name: "a browser-session store under WithoutBrowserSessions is refused, not ignored",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithoutBrowserSessions(),
+				oidcprovider.WithBrowserSessionStore(must.Must(oidcprovider.NewMemoryBrowserSessionStore())),
+			},
+			assert: refused("WithBrowserSessionStore"),
+		},
+		{
+			name: "the consumer's stores replace the defaults",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithCodeTokenStore(suppliedTokens),
+				oidcprovider.WithAccessTokenStore(suppliedAccess),
+				oidcprovider.WithAssertionIDStore(suppliedAssertions),
+				oidcprovider.WithBrowserSessionStore(suppliedBrowser),
+			},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Same(t, suppliedTokens, p.CodeTokensForTest())
+				assert.Same(t, suppliedAccess, p.AccessTokensForTest())
+				assert.Same(t, suppliedAssertions, p.AssertionIDsForTest())
+				assert.Same(t, suppliedBrowser, p.BrowserSessionStoreForTest())
+			},
+		},
 		{
 			name: "with no option, each store is the in-memory default",
 			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
@@ -51,6 +91,10 @@ func TestNew_StoreOptions(t *testing.T) {
 				assert.IsType(t, &oidcprovider.MemoryCodeStore{}, p.CodesForTest())
 				assert.IsType(t, &oidcprovider.MemoryConsentStore{}, p.ConsentsForTest())
 				assert.IsType(t, &oidcprovider.MemoryGrantStore{}, p.GrantsForTest())
+				assert.Implements(t, (*onetime.Reaper)(nil), p.CodeTokensForTest(), "the default code tokens are in memory, and can be purged")
+				assert.IsType(t, &oidcprovider.MemoryAccessTokenStore{}, p.AccessTokensForTest())
+				assert.IsType(t, &oidcprovider.MemoryAssertionIDStore{}, p.AssertionIDsForTest())
+				assert.IsType(t, &oidcprovider.MemoryBrowserSessionStore{}, p.BrowserSessionStoreForTest())
 			},
 		},
 	}

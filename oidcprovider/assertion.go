@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
@@ -17,7 +15,6 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/hangup"
-	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 //go:generate mockgen -source=assertion.go -package=oidcprovider_test -destination=assertion_mock_test.go -typed
@@ -26,12 +23,22 @@ import (
 // accepted twice. The provider records an identifier only after the assertion's
 // signature and every other check have passed, so nobody who cannot sign for a client
 // can fill the store. WithAssertionIDStore supplies one; with none, the provider keeps
-// them in memory.
+// them in a MemoryAssertionIDStore.
 type AssertionIDStore interface {
 	// Record notes jti for clientID until until. It answers true when the pair was
-	// not held, and false when it was. It must decide with one conditional write, so
-	// that of any number of concurrent calls exactly one answers true.
+	// not held, and false when it was, and a pair is one client's alone. It must decide
+	// with one conditional write, so that of any number of concurrent calls exactly one
+	// answers true. A refused call leaves the first until as it was, in either direction.
+	//
+	// A pair stays held until DeleteExpired removes it, whatever its until: Record judges
+	// by no clock of its own. The provider refuses an expired assertion before it gets here,
+	// and again after a Record that answers true, so a pair past its until is either a new
+	// assertion reusing an old identifier or a replay that stalled on the way here.
 	Record(ctx context.Context, clientID, jti string, until time.Time) (bool, error)
+
+	// DeleteExpired removes the pairs whose until is strictly before before, and returns
+	// how many it removed. It judges only by before, never by a clock of its own.
+	DeleteExpired(ctx context.Context, before time.Time) (int, error)
 }
 
 const (
@@ -214,11 +221,19 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 		return nil, refuseClient()
 	}
 
-	fresh, err := p.assertionIDs.Record(ctx, rc.ID, a.jti, a.expires)
+	fresh, err := p.stores.assertionIDs.Record(ctx, rc.ID, a.jti, a.expires)
 	switch {
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: record client assertion")
 	case !fresh:
+		return nil, refuseClient()
+	}
+
+	// Time has passed since assertionClaimsHold read the clock, over the signature and the
+	// store. A store may forget a pair once its until is reached, and then a replay that
+	// passed that check just before exp is told new here. No store's sweep can be relied on
+	// to close that, so the expiry is judged again, after the answer.
+	if !a.expires.After(p.cfg.clock.Now()) {
 		return nil, refuseClient()
 	}
 
@@ -300,50 +315,6 @@ func dependencyFailure(ctx context.Context, err error, text string) error {
 	}
 
 	return diag.Wrap(err, text, ErrDependency)
-}
-
-// assertionIDKey is what a recorded identifier is held under, so one client's jti is
-// never another's.
-type assertionIDKey struct {
-	client, jti string
-}
-
-// assertionIDSweepEvery is how often the memory store forgets what has expired.
-const assertionIDSweepEvery = time.Minute
-
-// memoryAssertionIDs is the default AssertionIDStore. Only assertions that passed every
-// check reach it, so it grows with accepted requests, and it forgets each once its
-// assertion has expired.
-type memoryAssertionIDs struct {
-	clock clock.Clock
-
-	mu        sync.Mutex
-	held      map[assertionIDKey]time.Time
-	nextSweep time.Time
-}
-
-func newMemoryAssertionIDs(clk clock.Clock) *memoryAssertionIDs {
-	return &memoryAssertionIDs{clock: clk, held: make(map[assertionIDKey]time.Time)}
-}
-
-// Record implements AssertionIDStore.
-func (m *memoryAssertionIDs) Record(_ context.Context, clientID, jti string, until time.Time) (bool, error) {
-	now := m.clock.Now()
-	key := assertionIDKey{client: clientID, jti: jti}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !now.Before(m.nextSweep) {
-		maps.DeleteFunc(m.held, func(_ assertionIDKey, expires time.Time) bool { return !now.Before(expires) })
-		m.nextSweep = now.Add(assertionIDSweepEvery)
-	}
-	if expires, ok := m.held[key]; ok && now.Before(expires) {
-		return false, nil
-	}
-	m.held[key] = until
-
-	return true, nil
 }
 
 // AssertionTokenEndpoint returns the token endpoint URL an assertion may name as its
