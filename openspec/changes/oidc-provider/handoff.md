@@ -139,11 +139,71 @@ The session's scratchpad, which a new session may not be able to rely on, holds 
 
 ## Update: second session
 
-This supersedes "Where we stopped", "Branches", "Lanes not yet merged" and "Next steps" where they differ. `openspec instructions apply --change oidc-provider --json` remains the source of truth.
+This supersedes every section above wherever they differ. In particular the top's progress, branches, lanes and next steps are stale; "What each later dispatch must carry" is still useful for groups 8 to 12. `openspec instructions apply --change oidc-provider --json` is the source of truth for progress.
 
-- **Merged and ticked:** 7.1, 7.3, 7.4, 12.3, 12.4. Each was verified and reviewed. Task 7.2's code is merged, and it is ticked once 7.5 adds the refresh-refused assertions.
-- **In lanes, not merged:** `feat/oidc-provider-g5` (task 7.5, refresh) and `feat/oidc-provider-exp` (task 12.5, expiry tasks and the removal of the orphan pass).
-- **Settled with the user, in `design.md`:** R15 (a resource named only at the authorization request), R17 (only a valid replay revokes, for a stated window), R19 (no orphan pass). R18 (sign before the spend) follows the check-then-consume rule.
-- **Pushed:** `feat/oidc-provider` is on the remote, with a draft pull request. It is still not rewritten, as `feat/session-signals` is stacked on it.
-- **`session-signals`:** it rebases onto this branch and changes task 11.1's `RevokeFamily` to `Logout` then. Message it before group 11. Group 8's test doubles need `ResponseWriter.Stream` after its `ResponseWriter` change lands.
-- **Next, once the lanes merge:** tick 7.2 and 12.5, then 7.6 to 7.8 (Opus) and 7.9 to 7.10 (Sonnet), then group 8.
+### State
+
+- **46 of 79 tasks ticked** on `feat/oidc-provider`. Merged: groups 1 to 6, 7.1 to 7.8, 12.1 to 12.5.
+- **Pushed:** the branch is on `origin`, with **draft PR #72** against `main`. Its body lists what is in and left, so update it when asked. CI skips drafts (`ci.yml`), so **no CI has run**. The commits after the last push are docs only. The user asks before each push.
+- **Do not rewrite `feat/oidc-provider`**: `feat/session-signals` is stacked on it.
+- **SSH** to GitHub failed for a while with `Permission denied (publickey)`, then recovered, cause unknown. Try SSH first. If it fails, ask the user: they approved one HTTPS push through `gh` once, and that does not carry over.
+
+### Lanes committed, not merged, not ticked
+
+**`feat/oidc-provider-g9` (`69b90db4`), task 7.9, back-channel logout: verified by its agent and by the main session's run, NOT reviewed.** Next: a fresh Opus reviewer, because it is concurrency. Open items:
+- **Decide:** the spec's "SHALL follow no redirect" under a consumer's `WithOutbound(o)`. `outbound.Client` cannot be copied with a redirect cap, so such a client may follow same-origin redirects, and a final 200 counts as success. The default and `WithLogoutOutbound` are strict. A one-method addition to `outbound` would close it.
+- **Worth challenging:** workers start on demand, so `Start` launches nothing and only enforces `signingkey`'s sentinels.
+- **Record in `design.md`:** `WithLogoutOutbound`, `WithLogoutDeliveryTimeout`, `WithLogoutDeliveryPool`, the `busy` reason and the cap on calls left behind. R21's "up to 30 seconds" is now 20, as the hand-on never waits. R14's "a consumer delivery takes over all of it" is not what was built: it runs on the pool and within the bound. Plans 7.9's `Close(ctx)` step is superseded by its own `Start`/`Shutdown` steps.
+- **Carried to group 8:** `EnableOIDCProvider`'s godoc names `Start` and `Shutdown`.
+- **Carried to 7.10:** the seam is `config.logoutFailed`, called from `reportLogoutFailure`. A drop's report runs on the caller's goroutine, inside the logout, so the sink must not block. A client with no URI also takes a queue place, so a drop may report a client with no one to tell. `SignInsEnded` has a comment for its failure event.
+
+**`feat/oidc-provider-dur` (`45eeecc9`), task 12.6, `test/oidcprovider_durable_test.go`: reviewed, findings open; no backend defect found.** It proves restart, the reuse race and the stale read on all three adapters and PostgreSQL 15 and 18. Fold first (Sonnet), then cherry-pick and tick:
+- The credential scan's positive control only checks a non-secret UUID, so a blind scan passes (`REPRODUCED`). Plant a known credential and expect a hit.
+- Case 8's hard-coded load count passes with the defect present if it drifts too low (`REPRODUCED`). Also assert the other tab's write landed between the rotation's read and its `Supersede`.
+- Revoke asserts the lineage rows are gone but not the `op_grants.revoked` mark.
+- Gaps: consents and clients use memory stores, so `op_consents` and `op_clients` stay empty, and no sealed column is exercised. Use the adapters' `NewConsentStore` and `NewClientStore`.
+- Uppercase hex is unscanned; negligible, as no store writes it.
+
+### Next, in order
+
+1. **Worktree:** add one for `feat/oidc-provider` under the new session's scratchpad. Run `/golang-how-to`.
+2. Review 7.9 (Opus), fold, cherry-pick, tick. Fold 12.6 (Sonnet), cherry-pick, tick.
+3. 7.10 events (Sonnet is what the plan says; it touches every provider path, so it runs alone in that package).
+4. Group 8 (Opus), then groups 9 and 10 in parallel worktrees, then group 11, then 13 to 15. Before group 11, message `session-signal` (see below).
+
+### Decisions the user made this session
+
+All are in `design.md`, with sources. Read R15 and R17 to R21 before touching those paths.
+- **R17:** only a valid replay revokes, until at least a minute past the code's expiry.
+- **R15:** a code granted one resource and exchanged with none named gets exactly that resource, with no issuer, as in RFC 9068's example. Several: `invalid_target`, code unspent.
+- **R19:** no orphan sweep; a grant stays until its own deadline. `DeleteOrphans` is gone.
+- **R20:** a token re-presented within 10 seconds of its rotation answers the same successor, derived under `WithRefreshSuccessorKey`, with `WithRefreshSuccessorWindow`. **Not the whole grace**: across it, a thief staying inside the grace was never caught. This is our own design, as no vendor documents it, and the PR flags it.
+- **R21:** the default `email` claim comes from a username that is exactly an address, with `email_verified` always false. Email columns are the `user-email` follow-up in the Non-Goals and `config.yaml`.
+- **The user wants a quicker release.** They were offered, and have not chosen, trimming the follow-up review rounds on small fixes, or dropping scope such as 11.4 or the logout plans in the conformance gate. Do neither without asking. Opus reviews of first-time security code stay, as they found real bugs every time.
+- R18 (sign before the spend) follows the check-then-consume rule.
+
+### Decided by the main session, open to the user's challenge
+
+A store hung past the request's own deadline logs at DEBUG through `hangup.ByCaller`. A spend failure wraps fixed text. A token's own idle deadline still rules inside the window. A failed second read after rotating fails closed. The memory stores hold refresh identifiers in process memory. `refreshAttempts` is 8 and the walk's bound is 8 links, both proposed.
+
+### Carried to later tasks
+
+- **9.2:** `RequireBinding` is enforced in `Provider.Token`, before the spend and before a rotation, not only in `httpsec`. A marker sits in `exchange.go`.
+- **11.1:** `EndSignIn` returns `([]ClientToNotify, error)`. The end-session call stays `RevokeFamily`, and `session-signals` changes it to `Logout` at its rebase.
+- **13.1 and 14.1:** the conformance OP's users need a `ClaimSource` for `email_verified` true, phone and address.
+- **Whole-branch review:** `httpsec`, `authenticate` and `recovery` last ran when `token/onetime` changed. `authorize.go` shares `validResource`.
+
+### Coordination with `session-signals`
+
+Find it with `ListAgents` and tell it this session's name; it may have been reset too, and its handoff is `openspec/changes/session-signals/handoff.md`.
+- It is cleared to run dispatch C5b, which edits `httpsec/password_change.go`, `recovery.go`, `passkey_manage.go`, `passkey_register.go`, `mfa_enrol.go` and the MFA removal endpoint, on its own branch. Conflicts surface at its rebase onto this branch.
+- We promised to message it before group 11 starts. Its "after each successful write" call must sit after our revoke-before-write in `password_change.go`.
+- Group 8's `httpsec.ResponseWriter` test doubles gain a `Stream` method at its rebase; leave them alone here.
+- **The user asked it for a draft PR, stacked on `feat/oidc-provider`. It was waiting for the user's direct confirmation, and had not created it at last report.**
+
+### Details that caught us this session
+
+- `golangci-lint` refuses to run in parallel, and prints "parallel golangci-lint is running" as its last line, which looks like nothing happened. Check for `0 issues.` before trusting a lint run.
+- Reviewers should mutate in a scratch copy and never count a build failure or a timeout as a kill. Agents' reports of what they saw failing have been worth checking: `tail` or a filter can hide a package's `FAIL`.
+- `git push` needs the branch named, as this worktree has no upstream set.
+- Proofs from this session's reviews, if the scratchpad survives, are under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/bff13c6d-670e-4235-af08-e711bde90918/scratchpad`: `review-g9` does not exist yet; `review-dur`, `review-g68b`, `review-g5c`.
