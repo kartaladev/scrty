@@ -277,6 +277,10 @@ type perRequestPhase struct {
 	// endpoint binds a sign-in to a client certificate through, and nil while
 	// it is off.
 	certBinding *certBinding
+
+	// signalsPath is where the chain's signal stream answers, "" without one. It is here
+	// because this is what an exchange holds of its chain (RecordsSessionActivity).
+	signalsPath string
 }
 
 // evaluatePerRequest runs the per-request phase for s and p on ex under ph,

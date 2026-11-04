@@ -481,6 +481,11 @@ const (
 	// OrderSessionTouch records activity, and runs after the handler has
 	// returned so a refused request is recorded too.
 	//
+	// An endpoint in an earlier slot that answers a request itself never reaches
+	// it, so such a request records nothing. The signal stream (OrderSessionSignals)
+	// relies on that. A consumer's interceptor in an earlier slot that records activity
+	// itself asks RecordsSessionActivity first.
+	//
 	// Recording activity persists only the session's last-access time and idle
 	// deadline. A handler that changes any other field of the session, such as
 	// its Data, must persist it with Sessions.Save (or the store's Save): this
