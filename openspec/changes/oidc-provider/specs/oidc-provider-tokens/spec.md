@@ -139,7 +139,7 @@ An ID token SHALL be a signed JWT with header `typ` `JWT`, carrying:
 
 #### Scenario: Claims after a password and TOTP sign-in
 - **WHEN** a user signs in with a password and a TOTP code, and the client exchanges its code from a request carrying `nonce=n-1`
-- **THEN** the ID token carries `nonce` `n-1`, `amr` naming both factors, `aud` and `azp` the client, and `auth_time` the time of that sign-in
+- **THEN** the ID token carries `nonce` `n-1`, `amr` holding `pwd` and `mfa`, `aud` and `azp` the client, and `auth_time` the time of that sign-in
 
 #### Scenario: Authentication time is not the exchange time
 - **WHEN** the user signed in at 10:00, and the code is exchanged at 10:04

@@ -627,7 +627,7 @@ Cache-Control: no-store
 header  {"typ":"at+jwt","alg":"RS256","kid":"..."}
 claims  {"iss":"https://id.example.com","sub":"u-1","aud":"https://api.example.com",
          "client_id":"billing-web","scope":"openid profile","iat":..,"exp":iat+300,
-         "jti":"...","auth_time":..,"acr":"..","amr":["pwd","otp"],"cnf":{"jkt":".."}}
+         "jti":"...","auth_time":..,"acr":"..","amr":["pwd","mfa"],"cnf":{"jkt":".."}}
 ```
 
 - **Claims:** the RFC 9068 set, plus `auth_time`, `acr` and `amr` copied from the grant (H3). `cnf` is present when the token is sender-constrained (P6).
@@ -1361,6 +1361,7 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **Framing.** Security headers must restrict framing in the document profile, not only be enabled. `frame-ancestors` may hold `'none'`, `'self'` and named `https` origins, in a typed policy or a raw header. RFC 9700 §4.16's own example names an origin, and OWASP accepts one where framing is needed, so refusing them was stricter than the standard. `*`, a scheme, a wildcard host, a plain `http` origin, an empty or missing directive, and report-only are refused. RFC 9700 §4.16 asks for the older measures too unless a server explicitly drops browsers without CSP level 2. The chain's settled profile sends no `X-Frame-Options`, and this is that explicit choice: a consumer who needs them adds the header with `WithHeader`. `WithOIDCPagesCarryFrameAncestors` remains the override. A route-matched profile cannot be seen at construction, as the godoc says.
 - **Paths.** `WithOIDCProviderPath` takes the whole request path, and the prefix does not apply to it. A path holding a character that needs escaping, such as a space, `?`, `#` or `%`, could not be published and compared as served, and is refused.
 - **Status.** `ErrDependency` answers 500 before the challenge and table checks, whatever it wraps.
+- **`amr` for a local sign-in.** Values follow RFC 8176, asserted only when known. A password gives `pwd`, a satisfied second factor adds `mfa`, and a federated sign-in keeps the upstream's values. A session records that a second factor was met, not which, and RFC 8176 lets `mfa` stand without naming methods, so TOTP is not named; recording the method would change the session schema. A passkey or magic link alone asserts no method, as no registered value can be truthfully claimed: a passkey cannot be told apart as `hwk` or `swk`. A local sign-in has no `acr`, as scrty defines no levels. `WithOIDCSignInAssurance` replaces the mapping whole.
 
 #### R24. What the token endpoint settled
 
@@ -1629,6 +1630,10 @@ Reasoned from scrty's own settled specs and the established design.
 - [OpenTelemetry, trace SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/): the batching processor's `maxQueueSize`, default 2048, drops spans when reached, and `Shutdown` includes a flush.
 
 ### R23 to R25
+
+**Researched (accessed 2026-11-05), for R23's `amr`:**
+- [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176.txt), §2: the registered values, and that `mfa` may stand with or without the specific methods.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §2: `amr` and `acr` are optional, and `amr` values should come from that registry.
 
 **Researched (accessed 2026-11-05), for R23's framing:**
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §4.16: authorization servers must prevent clickjacking, and its example allows one named origin in `frame-ancestors`.
