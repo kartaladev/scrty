@@ -16,6 +16,10 @@ With DPoP enabled, a token request carrying a valid proof without `ath` SHALL re
 - **WHEN** a public client exchanges its code with a valid proof from key `k1`
 - **THEN** the access token carries `cnf.jkt` of `k1`, `token_type` is `DPoP`, and a later refresh with a proof from `k2` is refused
 
+#### Scenario: Public client's first proof at a refresh
+- **WHEN** a public client whose code exchange carried no proof refreshes with a valid proof
+- **THEN** the request is refused with `invalid_dpop_proof`, and the refresh token is not rotated
+
 #### Scenario: Bad proof at the token endpoint
 - **WHEN** a code exchange carries a proof whose `htu` is another URL
 - **THEN** the request is refused with `invalid_dpop_proof`, and the code can still be exchanged
@@ -41,11 +45,15 @@ With DPoP enabled, a token request carrying a valid proof without `ath` SHALL re
 - **THEN** the refresh succeeds, and the new access token carries `cnf.jkt` of `k2`
 
 ### Requirement: The provider's token endpoint binds to a client certificate
-With certificate binding enabled, a token request with a client certificate and no DPoP proof SHALL receive access tokens carrying `cnf.x5t#S256` of that certificate.
+With certificate binding enabled, a token request with a client certificate and no DPoP proof SHALL receive access tokens carrying `cnf.x5t#S256` of that certificate. A public client's grant SHALL be bound to that certificate, and a refresh SHALL present it.
 
 #### Scenario: Certificate-bound access token
 - **WHEN** a client exchanges its code over a connection presenting certificate `C`, without a proof
 - **THEN** the access token carries `cnf.x5t#S256` of `C`
+
+#### Scenario: Public client refreshes without its certificate
+- **WHEN** a public client exchanged its code presenting certificate `C`, and refreshes presenting none
+- **THEN** the request is refused, and the refresh token is not rotated
 
 ### Requirement: A code can be bound to a key at the authorization request
 An authorization request MAY carry `dpop_jkt`. The code SHALL then be exchanged only with a proof whose key thumbprint equals it. A missing or different proof SHALL be answered with `invalid_grant`. A request carrying `dpop_jkt` while DPoP is not enabled SHALL be answered with `invalid_request`, because the client would otherwise hold an unbound code it believes is bound.

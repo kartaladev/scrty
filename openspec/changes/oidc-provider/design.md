@@ -1279,6 +1279,11 @@ The user confirmed on 2026-11-04 that DPoP support is required. P6 stands, and D
 | A `DPoP` header while DPoP is off | ignored; `token_type` `Bearer` tells the client | RFC 9449 §5 |
 | A bound sign-in at the resume | refused without its proof, as anywhere on the chain | `sender-constrained-tokens` |
 | CORS for browser clients | `DPoP` allowed, `DPoP-Nonce` exposed | RFC 9449 §8 |
+| A public client's first proof at a refresh, on a grant unbound at the exchange | `invalid_dpop_proof` before any rotation, leaving the token usable (`REPRODUCED` 2026-11-05: it was answered `DPoP`, and the next refresh with no proof succeeded). A refresh token issued beside a proof must be bound, and the RFC does not say a client may start DPoP later. Binding there takes a store write and a race. A client recovers with a new authorization | RFC 9449 §5 |
+| A public client's certificate | the grant stores its thumbprint, and a refresh must present the same certificate, refused before any rotation (`REPRODUCED` 2026-11-05: it refreshed with none, and downgraded to `Bearer`) | RFC 8705 §4 |
+| Proofs from an unauthenticated source | accepted. A proof is judged before the client, so such a request writes one replay row with nothing charged. RFC 9449 §4.3 lets the checks run in any order. A row is small and lives for the proof's window, nothing is amplified, and `DPoP.Replay` already states that the store is bounded only by the admitted request rate. A client signs a new proof for each request, so burning one costs it nothing | RFC 9449 §4.3, §11.1 |
+| A limiter that cannot answer | fails closed as `invalid_client`, as the chain's other flows do. A healthy client is then told its credentials are wrong during the outage, which is accepted so an outage does not lift the guess limit | reasoned |
+| A shared source | a proxy not declared as trusted makes every client one source, so 10 bad requests limit them all. The chain's trusted-proxy setting is the override | reasoned |
 
 #### R13. Clients over time
 
