@@ -271,3 +271,15 @@ Commit `2d086532`: 5 `REPRODUCED`, none fixed, none in routing, slots or `Status
 - Artifacts: plans 8.1 says `c.wire`, the code uses `checkAfterWiring`. A refused `id_token_hint` has no sentinel or status row: R3 says 400, so 11.1 must add one to `errors.go`.
 
 For later lanes: `routes()` must be pure, as it runs twice before `settle`. No CSRF seam exists: `settleExemptions` overwrites `l.exempt`, so 11.7 needs a helper or a `csrfExempt` field on `oidcRoute`, and until then group 9's endpoints refuse cross-site browser POSTs on a CSRF chain. Calling `next` passes the request on to the application, so answer a wrong method yourself. Outer routes run before `certificateSlot`, so call `ex.presentedThumbprint()`. `opFixture.wired` changes with the CSRF row.
+
+### 9.1 and 9.2, reported finished
+
+`lane-h2`: uncommitted, not verified by the main session, not reviewed (Opus: first-time security logic). Its `httpsec` is red only on 7.10's `TestSecurityEvents_Emitted`. 9.1 and 9.2 went red together against the stub, so the agent inverted 20 guarantees instead (`mutate_h2.py` in the scratchpad). Rows proving "unrotated" advance the clock past the grace, as R20's window hides a rotation otherwise.
+
+Unfinished: `Provider` needs a loopback accessor, so `WithLoopbackHTTPIssuer` over plain HTTP is refused for now, which fails safe; 9.4 needs the same. The DPoP and certificate construction refusals it reports are in `lane-h1`'s uncommitted work, which this lane does not hold.
+
+Helpers for 9.3 and 9.4, in `httpsec/oidc_client_auth.go`: `readOIDCClientRequest`, `setOIDCNoStore`, `writeOIDCRefusal`, and `oidcClientThrottle`. Never call `AuthenticateClient` before `Token`: an assertion is single-use.
+
+Record in `design.md`: new options `WithOIDCTokenLimiter` and `WithOIDCTokenBodyLimit` (64 KiB, 413 above it); a throttle of 10 failures per source in 15 minutes (*proposed*), failing as `invalid_client`; invalid proofs charged to the source; a missing required certificate answers `invalid_request`; a proof plus a certificate from a client requiring mTLS is refused; a repeated `Authorization` header answers `invalid_request`; the proof is judged before client authentication, so a valid proof with a wrong secret still records its `jti`.
+
+**All five agents have now reported.** Merge order: g9, g10, g9fix, a fold of 7.10's findings, h1, a fold of its findings, h2.
