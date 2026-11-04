@@ -1141,6 +1141,13 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
   - **`Advance` moves strictly forward:** login, consent, done, with login to done allowed. Nothing leaves done, and a logout request moves only to done.
   - **What no store can close:** a code created after `EndSignIns` has listed the codes. The resume loads the sign-in immediately before issuing, which narrows that window to the gap between the load and the code's write. It is not closed.
 
+#### R17. Replay detection: valid requests only, for a stated window
+
+- **The gap (`REPRODUCED` 2026-11-04, by `TestProvider_CodeReplay` rows added with the fix).** The spec promised that a replay revokes, with no limit and no condition. The default stores forget a spent code at its expiry, so a replay soon after 60 seconds revoked nothing. And any replay revoked, so a wrong verifier, or another client, could end a grant while holding only a leaked code.
+- **Revocation needs a valid request.** A replay revokes only when it comes from the client the code was issued to, authenticated, with the code's redirect URI, verifier and key binding holding. OAuth 2.1 §7.5.3 names the alternative as a denial of service. An invalid replay is still `invalid_grant`.
+- **Detection lasts until at least a minute past the code's expiry.** The user chose this over keeping spent codes for a day or for the grant's lifetime. Both of those store a row per exchange, to detect a replay of a code that can no longer yield tokens, and they lengthen the time a leaked public-client code and verifier can end a grant. RFC 6749 §4.1.2 asks for revocation "when possible". The default token store and record store therefore both sweep a minute past expiry, matching the durable stores' tasks, and past that a valid replay is `invalid_grant` with nothing revoked. What is lost is a compromise signal, not protection.
+- **The default and the override.** The minute is a floor stated in the spec, not an option. A consumer's own code stores may retain spent codes longer, and detection then lasts as long as they hold them.
+
 #### R8. A family identifier is not a credential (H6)
 
 - **The gap.** The refresh token's family is not a secret, yet H4's "missing lineage reads as revoked" could be read as writing a revocation, and the revocation endpoint could revoke by the family alone. Either way, a value holding a real family and a made-up secret would end someone's grant: from any client's own grants, or from a public client that needs no secret. `UNREPRODUCED`.
@@ -1455,3 +1462,13 @@ The decision that a green run gates the tag (P9) is reasoned from decision 1: no
 R6, R7, R8, R9, R10 and R16 are otherwise reasoned from scrty's own settled specs and code at `501a1a6`, and from `session-signals`' design.
 
 The user chose D+ and sub-decisions 2 to 6 on 2026-11-02, and confirmed P1 to P9 the same day. The code paths, the option failure modes and H2 to H4 come from an independent review of scrty's own code (`session`, `httpsec`, the SQL stores, `expiry`) and of `close-security-gaps` D8 and D12. They are reasoned from the code, not reproduced.
+
+### R17: replay detection
+
+**Researched (accessed 2026-11-04):**
+- [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.txt), §4.1.2: deny a code used more than once, and "SHOULD revoke (when possible)" what it issued.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §4.2.4: invalidate a code after first use, and SHOULD revoke on a second attempt.
+- [OAuth 2.1, draft-ietf-oauth-v2-1-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt), §7.5.3: revoke only on a valid request, and why an invalid one must not. It is a draft.
+- [node-oidc-provider, `authorization_code.js`](https://raw.githubusercontent.com/panva/node-oidc-provider/main/lib/actions/grants/authorization_code.js): an expired code is refused before its consumed check, so that path revokes nothing.
+- [ory/fosite, `flow_authorize_code_token.go`](https://raw.githubusercontent.com/ory/fosite/master/handler/oauth2/flow_authorize_code_token.go): a used code revokes, and a code the store cannot find is `invalid_grant` with nothing revoked.
+

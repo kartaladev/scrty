@@ -660,6 +660,22 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red `after_exchange`: a replay → `invalid_grant`, then the refresh token → `invalid_grant`.
 - [ ] Red `concurrent`: 16 goroutines exchanging one code get exactly one success.
 - [ ] FAIL; implement. A replay (onetime reports the code consumed) calls `GrantStore.Revoke(record.GrantFamily, CauseCodeReplay)` and the lineage manager's `RevokeFamily`. Revoking opaque tokens is handled by their grant check in 7.4. Run with `go test -race`: PASS. Commit.
+- [ ] Red rows on `TestProvider_CodeReplay` (R17), each seen failing first:
+  - `invalid_replay`, as a table of a wrong verifier, no verifier, and another client: `invalid_grant`, and `Load(F).Revoked` stays false. The earlier row saying another client's replay revokes is replaced by this one;
+  - `valid_within_the_minute`: 30 s past the code's expiry, after another issue has run the default stores' sweeps, a valid replay gets `invalid_grant` and `Load(F).Revoked` is true;
+  - `valid_past_the_minute`: 2 min past expiry, after a sweep, a valid replay gets `invalid_grant` and `Load(F).Revoked` stays false;
+  - `consumer_store_retains`: code stores that keep the spent code past the minute revoke on a later valid replay;
+  - `end_reaches_exchange_in_flight`: a code spent, `Create` held at a barrier, the clock 61 s on, another issue sweeps, `EndSignIns` runs, `Create` released: the grant ends revoked.
+- [ ] Red rows on `TestProvider_ExchangeCode`:
+  - a store failure during the spend, and a transient failure of the read after it, for the owner and for another client: `oidcprovider: dependency failure`, with the cause wrapped, and no `invalid_grant`;
+  - a caller hanging up at the check and at the spend: the error matches `context.Canceled`, and no ERROR line is logged, including from `token/onetime`.
+- [ ] FAIL; implement:
+  - `refuseSpentCode` revokes only when `record.ClientID == rc.ID` and `codeBindingsHold` passes; once the secret matches, an unspent and unexpired token is a dependency failure carrying `ctx.Err()` when the caller has gone;
+  - `sweepingCodeTokens.sweepIfDue` and `MemoryCodeStore.Create` sweep at `now.Add(-time.Minute)`;
+  - `token/onetime` logs a store failure the caller caused below ERROR, through `internal/hangup.ByCaller`.
+
+  Run with `go test -race`: PASS. Commit.
+- [ ] **Task 7.2 stays unticked until 7.5** adds the refresh-refused assertions to `racing_commit` and `after_exchange`. Tick 7.1 when this lane merges.
 
 ### Task 7.3: ID tokens
 **Files:** Create `oidcprovider/idtoken.go`

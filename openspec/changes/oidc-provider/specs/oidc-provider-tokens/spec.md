@@ -85,7 +85,7 @@ A code exchange SHALL be answered with `invalid_grant` when the code's user no l
 - **THEN** the response is `invalid_grant`
 
 ### Requirement: A code is used once, and its replay revokes what it issued
-A code SHALL be exchanged at most once, also under concurrent requests. A code presented again after its exchange SHALL be answered with `invalid_grant`, and SHALL revoke the grant the first exchange created, with its refresh tokens and opaque access tokens. When the replay arrives while the first exchange is still being completed, the grant SHALL still end revoked, and no refresh token from it SHALL work afterwards.
+A code SHALL be exchanged at most once, also under concurrent requests. A code presented again after its exchange SHALL be answered with `invalid_grant`, and a valid replay SHALL revoke the grant the first exchange created, with its refresh tokens and opaque access tokens. When the replay arrives while the first exchange is still being completed, the grant SHALL still end revoked, and no refresh token from it SHALL work afterwards.
 
 #### Scenario: Concurrent exchanges
 - **WHEN** two exchanges of one code arrive at once
@@ -98,6 +98,25 @@ A code SHALL be exchanged at most once, also under concurrent requests. A code p
 #### Scenario: Replay racing the first exchange
 - **WHEN** a replay of a code arrives after the first exchange has spent the code, and before the first exchange has stored its grant
 - **THEN** once both requests finish, the grant is revoked, and the refresh token the first exchange returned is refused
+
+### Requirement: Only a valid replay revokes, for a stated window
+A replay is valid when it comes from the client the code was issued to, authenticated, with the code's redirect URI, verifier and key binding all holding. An invalid replay SHALL revoke nothing, because whoever holds only a leaked code could otherwise end the user's grant. Detection SHALL last until at least one minute past the code's expiry.
+
+#### Scenario: Invalid replay
+- **WHEN** a spent code is presented with a wrong verifier, with no verifier, or by another client
+- **THEN** the request receives `invalid_grant`, and the grant the first exchange created stays live
+
+#### Scenario: Replay within the detection window, after a sweep
+- **WHEN** a valid replay arrives less than one minute past the code's expiry, after the default stores have swept
+- **THEN** the request receives `invalid_grant`, and the grant is revoked
+
+#### Scenario: Replay past the detection window
+- **WHEN** a valid replay arrives after the default stores have forgotten the code, later than one minute past its expiry
+- **THEN** the request receives `invalid_grant`, no token is issued, and the grant stays live
+
+#### Scenario: A store that keeps spent codes longer
+- **WHEN** a consumer's code stores keep a spent code past that minute, and a valid replay arrives while they hold it
+- **THEN** the request receives `invalid_grant`, and the grant is revoked
 
 ### Requirement: Token responses are JSON and never cached
 A successful token response SHALL be 200 with a JSON body holding `access_token`, `token_type`, `expires_in` and `scope`. It SHALL add `id_token` when the grant's scopes include `openid`, and `refresh_token` when the client is registered for the refresh grant. Every token endpoint response, success or error, SHALL carry `Cache-Control: no-store`.
