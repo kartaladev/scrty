@@ -491,6 +491,7 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	// A completed recovery is a sign-in as well, of the recovery factor.
 	ctx := ex.Context()
 	emitEvent(ctx, sessionEvent(event.RecoveryCompleted, event.OutcomeSuccess, res.Session))
+	ex.credentialsRemoved(res.Session.UserID, res.Removed)
 	emitEvent(ctx, sessionEvent(event.SessionCreated, event.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(event.AuthnLoginSuccess, event.OutcomeSuccess, res.Session))

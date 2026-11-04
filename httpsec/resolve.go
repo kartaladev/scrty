@@ -282,9 +282,9 @@ type perRequestPhase struct {
 	// because this is what an exchange holds of its chain (RecordsSessionActivity).
 	signalsPath string
 
-	// chain is the chain this phase belongs to, which an endpoint raises a credential_changed
-	// through (Exchange.credentialChanged). It is set once the chain is built.
-	chain *Chain
+	// signals is the chain's signal stream endpoint, which an endpoint raises a
+	// credential_changed through (Exchange.credentialChanged), and nil without one.
+	signals *sessionSignals
 }
 
 // evaluatePerRequest runs the per-request phase for s and p on ex under ph,

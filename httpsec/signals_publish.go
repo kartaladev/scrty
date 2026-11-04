@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/recovery"
 )
 
 // CredentialKind names the kind of credential a credential_changed signal reports.
@@ -69,12 +71,46 @@ func (e *sessionSignals) raiseCredentialChange(user identity.UserID, kind Creden
 // signals, or an exchange of none, does nothing.
 func (ex *Exchange) credentialChanged(user identity.UserID, kind CredentialKind) {
 	ph := ex.perRequest
-	if ph == nil || ph.chain == nil {
+	if ph == nil || ph.signals == nil {
 		return
 	}
 
-	if e := ph.chain.signalsEndpoint(); e != nil {
-		_ = e.raiseCredentialChange(user, kind)
+	_ = ph.signals.raiseCredentialChange(user, kind)
+}
+
+// credentialsRemoved tells the open streams of user which kinds of credential a completed
+// recovery removed, one credential_changed for each kind, in the order the recovery removed them.
+// removed is recovery.Result.Removed. Only the kinds the signal names are told: recovery.MFAKind
+// is a second_factor and the passkey kind is a passkey, and a consumer's own kind raises
+// nothing, since the signal's set of kinds is closed. Nothing of the references reaches a stream.
+// The recovery never removes a password: one bound afterwards is raised by the password-change
+// endpoint. Like credentialChanged, it changes nothing the endpoint answers.
+func (ex *Exchange) credentialsRemoved(user identity.UserID, removed []recovery.AuthenticatorRef) {
+	var told [2]bool
+
+	for _, ref := range removed {
+		var kind CredentialKind
+
+		switch ref.Kind {
+		case recovery.MFAKind:
+			kind = CredentialSecondFactor
+			if told[0] {
+				continue
+			}
+
+			told[0] = true
+		case passkey.RecoveryKindName:
+			kind = CredentialPasskey
+			if told[1] {
+				continue
+			}
+
+			told[1] = true
+		default:
+			continue
+		}
+
+		ex.credentialChanged(user, kind)
 	}
 }
 

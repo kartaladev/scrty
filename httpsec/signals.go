@@ -875,6 +875,7 @@ func (e *sessionSignals) wire(c *config, ch *Chain) {
 	})
 
 	ch.perRequest.signalsPath = e.cfg.Path
+	ch.perRequest.signals = e
 
 	// It refuses only a nil observer, and the hub is not one.
 	_ = e.sessions.AddEndObserver(e.hub)

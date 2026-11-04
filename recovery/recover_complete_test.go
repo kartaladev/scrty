@@ -344,6 +344,72 @@ func TestRecoverer_Complete(t *testing.T) {
 			},
 		},
 		{
+			name: "the result names what the default reset removed",
+			req:  savedAndIssuedReq,
+			assert: func(t *testing.T, _ *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.AuthenticatorRef{refTOTP, refEmail}, res.Removed)
+			},
+		},
+		{
+			name: "the result leaves out a proven method, as the notice does",
+			setup: func(_ *testing.T, e *completeEnv) {
+				e.totp.EXPECT().Enrolled(gomock.Any(), anaID).Return(true, nil).AnyTimes()
+				e.totp.EXPECT().Verify(gomock.Any(), anaID, []byte("123456")).Return(nil)
+			},
+			req: func(e *completeEnv) recovery.Request {
+				return recovery.Request{Username: anaUsername, Saved: e.saved[0], MFAMethod: "totp", MFACode: "123456"}
+			},
+			assert: func(t *testing.T, _ *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.AuthenticatorRef{refEmail}, res.Removed)
+			},
+		},
+		{
+			name: "the result names what a consumer's reset policy removed, and nothing when it keeps all",
+			opts: func(*completeEnv) []recovery.Option {
+				return []recovery.Option{recovery.WithResetPolicy(
+					func(context.Context, recovery.ResetInput) ([]recovery.AuthenticatorRef, error) {
+						return []recovery.AuthenticatorRef{refTOTP}, nil
+					})}
+			},
+			req: savedAndIssuedReq,
+			assert: func(t *testing.T, _ *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.AuthenticatorRef{refTOTP}, res.Removed)
+			},
+		},
+		{
+			name: "a reset policy that keeps everything leaves the result's removed list empty",
+			opts: func(*completeEnv) []recovery.Option {
+				return []recovery.Option{recovery.WithResetPolicy(
+					func(context.Context, recovery.ResetInput) ([]recovery.AuthenticatorRef, error) { return nil, nil })}
+			},
+			req: savedAndIssuedReq,
+			assert: func(t *testing.T, _ *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				assert.Empty(t, res.Removed)
+			},
+		},
+		{
+			name: "a held recovery names nothing removed, and its finish names what it removed",
+			opts: func(*completeEnv) []recovery.Option { return holdFor(time.Hour) },
+			act: func(ctx context.Context, t *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {
+				held, err := r.Recover(ctx, savedAndIssuedReq(e))
+				require.NoError(t, err)
+				require.NotNil(t, held.Held)
+				assert.Empty(t, held.Removed, "nothing is removed at the hold")
+
+				e.clock.Advance(time.Hour)
+
+				return r.Finish(ctx, held.Held.CompletionToken)
+			},
+			assert: func(t *testing.T, _ *completeEnv, res *recovery.Result, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.AuthenticatorRef{refTOTP, refEmail}, res.Removed)
+			},
+		},
+		{
 			name: "a reset failure is returned, with no session and nothing revoked",
 			setup: func(t *testing.T, e *completeEnv) {
 				e.prior = e.priorSessions(t, 2)

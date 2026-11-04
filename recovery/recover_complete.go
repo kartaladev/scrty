@@ -121,6 +121,22 @@ type Result struct {
 	// lost with the response. Nil when the recovery is held.
 	Details *identity.Details
 
+	// Removed is the authenticators the recovery removed, the same list the
+	// notice to the user names: what the reset policy chose, less nothing
+	// the user held back, so an authenticator the user proved in this
+	// recovery is not in it. It is set on the result of a recovery that
+	// completes at once and on the result of Finish, and is empty when the
+	// recovery is held (Held is set), when the reset removed nothing, and
+	// when a ResetPolicy kept everything.
+	//
+	// A reference carries the Kind of the authenticator kind that removed
+	// it, MFAKind for an MFA method and a consumer's own kind name for one
+	// registered with WithAuthenticatorKinds. Its ID and Channel are the
+	// kind's own, and a consumer's kind may put an identifier of a device
+	// or an address in them: handle them with the care the notice is
+	// given, and do not send them to a client or a log.
+	Removed []AuthenticatorRef
+
 	// Held is set, and nothing else is, when the recovery is held: it carries
 	// the completion token Finish takes and the instant it can be presented.
 	Held *Hold
@@ -343,7 +359,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		}
 	}
 
-	res := &Result{Details: c.details}
+	res := &Result{Details: c.details, Removed: slices.Clone(c.plan)}
 
 	switch {
 	case c.savedSpent:

@@ -1,5 +1,7 @@
 package httpsec_test
 
+//go:generate mockgen -destination=authenticatorkind_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/recovery AuthenticatorKind
+
 import (
 	"context"
 	"encoding/json"
@@ -28,6 +30,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -72,7 +75,10 @@ func (r *streamRig) callBody(t *testing.T, sid, path, contentType, body string) 
 	r.act(func() {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", contentType)
-		req.Header.Set("Authorization", "Bearer "+sid)
+		if sid != "" {
+			req.Header.Set("Authorization", "Bearer "+sid)
+		}
+
 		req.RemoteAddr = streamClient + ":4242"
 
 		rec := httptest.NewRecorder()
@@ -112,6 +118,10 @@ type credentialRig struct {
 	// sign-in sid, which is the first of the user's two open streams.
 	refuse func(t *testing.T, r *streamRig, sid string)
 	change func(t *testing.T, r *streamRig, sid string)
+
+	// partial, when set, runs between the two: the first half of a change that takes two
+	// requests, after which nothing has changed yet and no stream hears anything.
+	partial func(t *testing.T, r *streamRig, sid string)
 }
 
 func TestSessionSignals_CredentialChanged(t *testing.T) {
@@ -158,9 +168,19 @@ func TestSessionSignals_CredentialChanged(t *testing.T) {
 			build: passkeyRemoved("&other_sessions=keep"),
 		},
 		{
+			name:  "a passkey pending until its saved code is confirmed",
+			kind:  httpsec.CredentialPasskey,
+			build: passkeyConfirmed,
+		},
+		{
 			name:  "a second factor enrolled",
 			kind:  httpsec.CredentialSecondFactor,
-			build: secondFactorEnrolled,
+			build: secondFactorEnrolled(false),
+		},
+		{
+			name:  "a second factor enrolled, proved by the code emailed to the user",
+			kind:  httpsec.CredentialSecondFactor,
+			build: secondFactorEnrolled(true),
 		},
 	}
 
@@ -178,6 +198,11 @@ func TestSessionSignals_CredentialChanged(t *testing.T) {
 				rig.refuse(t, r, first.ID)
 				requireNoneSent(t, streams)
 
+				if rig.partial != nil {
+					rig.partial(t, r, first.ID)
+					requireNoneSent(t, streams)
+				}
+
 				rig.change(t, r, first.ID)
 				heardOnly(t, tc.kind, streams)
 			})
@@ -187,13 +212,21 @@ func TestSessionSignals_CredentialChanged(t *testing.T) {
 
 // passkeyOptions wires the passkey endpoints over a stub verifier and the store h holds.
 func passkeyOptions(r *streamRig, v *passkeyVerifierStub, creds *passkey.MemoryCredentialStore) []httpsec.Option {
+	return passkeyOptionsWith(r, v, creds, nil, passkey.WithOptionalRecoveryCodes())
+}
+
+// passkeyOptionsWith is passkeyOptions with the saved-code wiring rec and further manager options.
+func passkeyOptionsWith(
+	r *streamRig, v *passkeyVerifierStub, creds *passkey.MemoryCredentialStore, rec *passkey.RecoveryDeps, opts ...passkey.Option,
+) []httpsec.Option {
 	m, err := passkey.New(passkey.Deps{
 		Verifier:    v.mock,
 		Credentials: creds,
 		Users:       r.users,
 		Sender:      &capturingSender{},
 		Sessions:    r.sessions,
-	}, passkey.WithRepudiationContact("help@example.com"), passkey.WithOptionalRecoveryCodes())
+		Recovery:    rec,
+	}, append([]passkey.Option{passkey.WithRepudiationContact("help@example.com")}, opts...)...)
 	if err != nil {
 		panic(err)
 	}
@@ -216,6 +249,53 @@ func passkeyRegistered(t *testing.T) credentialRig {
 		change: func(t *testing.T, r *streamRig, sid string) {
 			require.Equal(t, http.StatusOK, r.callAs(t, sid, passkeyBeginPath, ""))
 			require.Equal(t, http.StatusOK, r.callJSONAs(t, sid, passkeyFinishPath, registrationBody(v.lastCreation(t), "cred-1")))
+		},
+	}
+}
+
+// passkeyConfirmed is the registration of a passkey that waits for the user to confirm a new
+// set of saved codes: its finish is answered with the codes and activates nothing, and the
+// confirm, given one of them, activates it.
+func passkeyConfirmed(t *testing.T) credentialRig {
+	v := newPasskeyVerifierStub(t)
+	creds := passkey.NewMemoryCredentialStore()
+
+	// saved is the code the finish handed out, which the confirm presents.
+	var saved string
+
+	return credentialRig{
+		opts: func(r *streamRig) []httpsec.Option {
+			codes, err := recovery.NewCodes()
+			require.NoError(t, err)
+
+			wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{Users: r.users, Codes: codes})
+			require.NoError(t, err)
+
+			return passkeyOptionsWith(r, v, creds, &passkey.RecoveryDeps{Codes: codes, WayBack: wayBack})
+		},
+		refuse: func(t *testing.T, r *streamRig, sid string) {
+			require.Equal(t, http.StatusOK, r.callAs(t, sid, passkeyBeginPath, ""))
+			assert.NotEqual(t, http.StatusOK, r.callJSONAs(t, sid, passkeyFinishPath, registrationBody("not-issued", "cred-0")))
+		},
+		partial: func(t *testing.T, r *streamRig, sid string) {
+			require.Equal(t, http.StatusOK, r.callAs(t, sid, passkeyBeginPath, ""))
+
+			status, body := r.callBody(t, sid, passkeyFinishPath, "application/json", registrationBody(v.lastCreation(t), "cred-1"))
+			require.Equal(t, http.StatusOK, status)
+
+			var doc struct {
+				State         string   `json:"state"`
+				RecoveryCodes []string `json:"recovery_codes"`
+			}
+
+			require.NoError(t, json.Unmarshal(body, &doc))
+			require.Equal(t, "pending", doc.State, "the finish activated nothing")
+			require.NotEmpty(t, doc.RecoveryCodes)
+
+			saved = doc.RecoveryCodes[0]
+		},
+		change: func(t *testing.T, r *streamRig, sid string) {
+			require.Equal(t, http.StatusNoContent, r.callAs(t, sid, passkeyConfirmPath, "code="+url.QueryEscape(saved)))
 		},
 	}
 }
@@ -356,59 +436,93 @@ func TestSessionSignals_CredentialChanged_UserWideEnd(t *testing.T) {
 }
 
 // secondFactorEnrolled is the enrolment's confirm, which a confined sign-in of the same user
-// makes: a wrong code is refused and the right one binds the TOTP method.
-func secondFactorEnrolled(t *testing.T) credentialRig {
-	store := mfa.NewMemoryEnrolmentStore()
-	method, err := mfa.NewTOTP(store, "scrty-test")
-	require.NoError(t, err)
-
-	// confirm begins an enrolment on a new confined sign-in of the user and posts code, which
-	// is taken from the secret the begin provisioned.
-	confirm := func(t *testing.T, r *streamRig, wrong bool) int {
-		var pending *session.Session
-
-		r.act(func() {
-			var err error
-
-			pending, err = r.sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
-			require.NoError(t, err)
-
-			r.sessions.MarkEnrolmentPending(pending, 15*time.Minute)
-			require.NoError(t, r.sessions.Save(t.Context(), pending))
-		})
-
-		status, body := r.callBody(t, pending.ID, enrolBeginPath, "application/x-www-form-urlencoded", "")
-		require.Equal(t, http.StatusOK, status)
-
-		var begun beginBody
-		require.NoError(t, json.Unmarshal(body, &begun))
-
-		code, err := totp.GenerateCode(begun.Secret, time.Now())
+// makes: a wrong code is refused and the right one binds the TOTP method. With emailed, the
+// right code only starts the proof, by emailing the user a code, and the enrolment completes
+// when that code is redeemed.
+func secondFactorEnrolled(emailed bool) func(t *testing.T) credentialRig {
+	return func(t *testing.T) credentialRig {
+		store := mfa.NewMemoryEnrolmentStore()
+		method, err := mfa.NewTOTP(store, "scrty-test")
 		require.NoError(t, err)
 
-		if wrong {
-			code = map[bool]string{true: "111111", false: "000000"}[code == "000000"]
+		sender := &capturingSender{}
+
+		// confirm begins an enrolment on a new confined sign-in of the user and posts code,
+		// which is taken from the secret the begin provisioned. It returns that sign-in.
+		confirm := func(t *testing.T, r *streamRig, wrong bool) (int, string) {
+			var pending *session.Session
+
+			r.act(func() {
+				var err error
+
+				pending, err = r.sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+				require.NoError(t, err)
+
+				r.sessions.MarkEnrolmentPending(pending, 15*time.Minute)
+				require.NoError(t, r.sessions.Save(t.Context(), pending))
+			})
+
+			status, body := r.callBody(t, pending.ID, enrolBeginPath, "application/x-www-form-urlencoded", "")
+			require.Equal(t, http.StatusOK, status)
+
+			var begun beginBody
+			require.NoError(t, json.Unmarshal(body, &begun))
+
+			code, err := totp.GenerateCode(begun.Secret, time.Now())
+			require.NoError(t, err)
+
+			if wrong {
+				code = map[bool]string{true: "111111", false: "000000"}[code == "000000"]
+			}
+
+			return r.callAs(t, pending.ID, enrolConfirmPath, "code="+code), pending.ID
 		}
 
-		return r.callAs(t, pending.ID, enrolConfirmPath, "code="+code)
-	}
+		// pendingSID is the sign-in the partial step confirmed on, which the redeem continues.
+		var pendingSID string
 
-	return credentialRig{
-		opts: func(r *streamRig) []httpsec.Option {
-			return []httpsec.Option{
-				httpsec.WithPolicyEngine(enrolmentPathEngine(t, method)),
-				httpsec.EnableMFA([]mfa.Method{method}),
-				httpsec.EnableMFAEnrolment(
-					httpsec.EnrolmentDeps{Users: r.users, Sender: queuedSender{NewMockSender(gomock.NewController(t))}},
-					httpsec.WithoutEnrolmentEmailConfirmation(), httpsec.WithoutEnrolmentNotification()),
+		enrolOpts := []httpsec.EnrolmentOption{httpsec.WithoutEnrolmentEmailConfirmation(), httpsec.WithoutEnrolmentNotification()}
+		if emailed {
+			enrolOpts = []httpsec.EnrolmentOption{httpsec.WithoutEnrolmentNotification()}
+		}
+
+		rig := credentialRig{
+			opts: func(r *streamRig) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(enrolmentPathEngine(t, method)),
+					httpsec.EnableMFA([]mfa.Method{method}),
+					httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: r.users, Sender: sender}, enrolOpts...),
+				}
+			},
+			refuse: func(t *testing.T, r *streamRig, _ string) {
+				status, _ := confirm(t, r, true)
+				assert.NotEqual(t, http.StatusNoContent, status)
+			},
+		}
+
+		if !emailed {
+			rig.change = func(t *testing.T, r *streamRig, _ string) {
+				status, _ := confirm(t, r, false)
+				require.Equal(t, http.StatusNoContent, status)
 			}
-		},
-		refuse: func(t *testing.T, r *streamRig, _ string) {
-			assert.NotEqual(t, http.StatusNoContent, confirm(t, r, true))
-		},
-		change: func(t *testing.T, r *streamRig, _ string) {
-			require.Equal(t, http.StatusNoContent, confirm(t, r, false))
-		},
+
+			return rig
+		}
+
+		rig.partial = func(t *testing.T, r *streamRig, _ string) {
+			status, sid := confirm(t, r, false)
+			require.Equal(t, http.StatusNoContent, status, "the device is proved and the code is emailed")
+			require.NotEmpty(t, sender.sent)
+
+			pendingSID = sid
+		}
+		rig.change = func(t *testing.T, r *streamRig, _ string) {
+			code := sixDigits.FindString(sender.sent[len(sender.sent)-1].TextBody)
+			require.NotEmpty(t, code)
+			require.Equal(t, http.StatusNoContent, r.callAs(t, pendingSID, enrolEmailPath, "code="+code))
+		}
+
+		return rig
 	}
 }
 
@@ -454,48 +568,380 @@ func TestSessionSignals_CredentialChanged_AnswerUnchanged(t *testing.T) {
 			}))}
 	}
 
-	t.Run("a hub that refuses the signal", func(t *testing.T) {
-		t.Parallel()
+	type testCase struct {
+		name string
+		// withoutSignals builds the chain without EnableSessionSignals, so there is no stream.
+		withoutSignals bool
+		assert         func(t *testing.T, status int, stream *riggedStream)
+	}
 
-		synctest.Test(t, func(t *testing.T) {
-			r := newStreamRig(t, streamSetup{signals: sourcesSignals, opts: changeOpts})
-			s := r.signIn(t)
-			stream := r.open(t, s.ID)
-
+	cases := []testCase{
+		{
 			// A closed hub refuses with ErrSignalsBusy, as a full bus does.
-			httpsec.SignalHubProbeOf(r.chain).Close()
+			name: "a hub that refuses the signal",
+			assert: func(t *testing.T, status int, stream *riggedStream) {
+				assert.Equal(t, http.StatusNoContent, status)
+				assert.Empty(t, stream.events("credential_changed"))
+			},
+		},
+		{
+			name:           "a chain without signals",
+			withoutSignals: true,
+			assert: func(t *testing.T, status int, _ *riggedStream) {
+				assert.Equal(t, http.StatusNoContent, status)
+			},
+		},
+	}
 
-			assert.Equal(t, http.StatusNoContent, r.callAs(t, s.ID, changePath, "change"))
-			assert.Empty(t, stream.events("credential_changed"))
-		})
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("a chain without signals", func(t *testing.T) {
-		t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				if tc.withoutSignals {
+					tc.assert(t, withoutSignalsStatus(t, changeOpts, changePath), nil)
 
-		synctest.Test(t, func(t *testing.T) {
-			sessions, err := session.New()
-			require.NoError(t, err)
+					return
+				}
 
-			r := &streamRig{sessions: sessions}
-			chain, err := httpsec.New(append(changeOpts(r),
-				httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: newUsers(t)}))...)
-			require.NoError(t, err)
+				r := newStreamRig(t, streamSetup{signals: sourcesSignals, opts: changeOpts})
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
 
-			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
-			require.NoError(t, err)
+				httpsec.SignalHubProbeOf(r.chain).Close()
 
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, changePath, strings.NewReader("change"))
-			req.Header.Set("Authorization", "Bearer "+s.ID)
-
-			rec := httptest.NewRecorder()
-
-			assert.NotPanics(t, func() {
-				chain.Middleware()(http.NotFoundHandler()).ServeHTTP(rec, req)
+				tc.assert(t, r.callAs(t, s.ID, changePath, "change"), stream)
 			})
-			assert.Equal(t, http.StatusNoContent, rec.Code)
 		})
+	}
+}
+
+// withoutSignalsStatus serves one request to path, as a fresh sign-in of u-1, on a chain built
+// from opts without session signals, and returns the status. It fails on a panic.
+func withoutSignalsStatus(t *testing.T, opts func(r *streamRig) []httpsec.Option, path string) int {
+	t.Helper()
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	r := &streamRig{sessions: sessions, users: newUsers(t)}
+	chain, err := httpsec.New(append(opts(r),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: r.users}))...)
+	require.NoError(t, err)
+
+	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader("change"))
+	req.Header.Set("Authorization", "Bearer "+s.ID)
+
+	rec := httptest.NewRecorder()
+
+	require.NotPanics(t, func() {
+		chain.Middleware()(http.NotFoundHandler()).ServeHTTP(rec, req)
 	})
+
+	return rec.Code
+}
+
+// recoveryHolds is which authenticators the recovering user holds, each of a different kind.
+type recoveryHolds struct{ secondFactor, passkey, device bool }
+
+// everything is the user holding one of each.
+var everything = recoveryHolds{secondFactor: true, passkey: true, device: true}
+
+// recoveryWorld is the stores a recovery row's chain reads: a real MFA kind and a real passkey
+// kind, and a consumer's own kind, each holding or not as the row says.
+type recoveryWorld struct {
+	codes  *recovery.Codes
+	sender *capturingSender
+	kinds  []recovery.AuthenticatorKind
+}
+
+func newRecoveryWorld(t *testing.T, holds recoveryHolds) *recoveryWorld {
+	t.Helper()
+
+	w := &recoveryWorld{sender: &capturingSender{}}
+
+	var err error
+
+	w.codes, err = recovery.NewCodes()
+	require.NoError(t, err)
+
+	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "scrty-test")
+	require.NoError(t, err)
+
+	if holds.secondFactor {
+		prov, err := method.BeginEnrolment(t.Context(), "u-1", testUsername)
+		require.NoError(t, err)
+
+		code, err := totp.GenerateCode(prov.Secret, time.Now())
+		require.NoError(t, err)
+		require.NoError(t, method.ConfirmEnrolment(t.Context(), "u-1", code))
+	}
+
+	mfaKind, err := recovery.MFAEnrolments(method)
+	require.NoError(t, err)
+
+	creds := passkey.NewMemoryCredentialStore()
+
+	if holds.passkey {
+		cid, err := id.NewV7Generator().NewID()
+		require.NoError(t, err)
+
+		require.NoError(t, creds.Insert(t.Context(), &passkey.Credential{
+			ID: cid, User: "u-1", CredentialID: []byte("cred-r"), PublicKey: []byte("key"),
+			Name: "Laptop", CreatedAt: time.Now().UTC().Truncate(time.Second), State: passkey.StateActive,
+		}))
+	}
+
+	device := NewMockAuthenticatorKind(gomock.NewController(t))
+	device.EXPECT().Kind().Return("app-device").AnyTimes()
+	device.EXPECT().Remove(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	device.EXPECT().Held(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, identity.UserID) ([]recovery.AuthenticatorRef, error) {
+			if !holds.device {
+				return nil, nil
+			}
+
+			return []recovery.AuthenticatorRef{{Kind: "app-device", ID: "device-1"}}, nil
+		}).AnyTimes()
+
+	w.kinds = []recovery.AuthenticatorKind{mfaKind, passkey.NewRecoveryKind(creds), device}
+
+	return w
+}
+
+// opts are the chain options of a recovery over the world, with core as further core options.
+func (w *recoveryWorld) opts(core ...recovery.Option) func(r *streamRig) []httpsec.Option {
+	return func(r *streamRig) []httpsec.Option {
+		r.users.EXPECT().LoadByUsername(gomock.Any(), testUsername).AnyTimes().
+			DoAndReturn(func(context.Context, string) (*identity.Details, error) { return storedUser(), nil })
+
+		// The recovered session is bound by a password change, which no row here makes.
+		bind := httpsec.EnablePasswordChangeGate(r.sessions,
+			httpsec.WithPasswordChangeEndpoint("/account/password", func(*httpsec.Exchange) error { return errSourceRefused }))
+
+		return []httpsec.Option{bind, httpsec.EnableAccountRecovery(
+			httpsec.RecoveryDeps{Users: r.users, Sessions: r.sessions, Sender: w.sender, Codes: w.codes},
+			httpsec.WithRecoveryCore(append([]recovery.Option{
+				recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
+				recovery.WithRepudiationContact("Write to security@example.com if this was not you."),
+				recovery.WithAuthenticatorKinds(w.kinds...),
+				recovery.WithMessages(recoveryMessages{}),
+			}, core...)...))}
+	}
+}
+
+// form is a complete request's body, with a saved code of the user's set and the issued code a
+// start sent, or a code that is neither when wrong.
+func (w *recoveryWorld) form(t *testing.T, r *streamRig, wrong bool) string {
+	t.Helper()
+
+	set, err := w.codes.Generate(t.Context(), "u-1")
+	require.NoError(t, err)
+
+	require.Equal(t, http.StatusAccepted, r.callAs(t, "", httpsec.DefaultRecoveryStartPath,
+		url.Values{httpsec.RecoveryUsernameParam: {testUsername}}.Encode()))
+	require.NotEmpty(t, w.sender.sent)
+
+	saved, issued := set[0], w.sender.sent[len(w.sender.sent)-1].TextBody
+	if wrong {
+		saved = "not-a-saved-code"
+	}
+
+	return url.Values{
+		httpsec.RecoveryUsernameParam: {testUsername}, httpsec.RecoverySavedCodeParam: {saved},
+		httpsec.RecoveryIssuedCodeParam: {issued},
+	}.Encode()
+}
+
+// TestSessionSignals_CredentialChanged_Recovery shows a recovery tells the streams that stay
+// open which kinds of credential it removed, once each and only the kinds the signal names,
+// and tells them nothing when it removed nothing, was held or was refused.
+func TestSessionSignals_CredentialChanged_Recovery(t *testing.T) {
+	t.Parallel()
+
+	keep := recovery.WithoutSessionRevocation()
+
+	type testCase struct {
+		name  string
+		holds recoveryHolds
+		core  []recovery.Option
+		// wrong sends a saved code that is not the user's.
+		wrong bool
+		// closeHub closes the signal hub before the request, so a raise is refused.
+		closeHub bool
+		// withoutSignals builds the chain without EnableSessionSignals, so there is no stream.
+		withoutSignals bool
+		assert         func(t *testing.T, status int, streams []*riggedStream)
+	}
+
+	cases := []testCase{
+		{
+			name:  "a second factor and a passkey removed, on streams the recovery leaves open",
+			holds: everything,
+			core:  []recovery.Option{keep},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+
+				for i, s := range streams {
+					got := s.events("credential_changed")
+					require.Len(t, got, 2, "stream %d", i)
+					assert.JSONEq(t, `{"kind":"second_factor"}`, got[0].Data, "stream %d", i)
+					assert.JSONEq(t, `{"kind":"passkey"}`, got[1].Data, "stream %d", i)
+					assert.Equal(t, []string{"session", "credential_changed", "credential_changed"}, s.sent(), "stream %d", i)
+				}
+			},
+		},
+		{
+			name:  "by default the other sign-ins end, and their streams hear session_ended only",
+			holds: everything,
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+
+				for i, s := range streams {
+					assert.Empty(t, s.events("credential_changed"), "stream %d", i)
+					assert.Equal(t, []string{"session", "session_ended"}, s.sent(), "stream %d", i)
+					assert.True(t, s.closed(), "stream %d", i)
+				}
+			},
+		},
+		{
+			name: "a recovery that removes nothing raises nothing",
+			core: []recovery.Option{keep},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+				requireNoneSent(t, streams)
+			},
+		},
+		{
+			name:  "only a consumer's own kind removed raises nothing",
+			holds: recoveryHolds{device: true},
+			core:  []recovery.Option{keep},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+				requireNoneSent(t, streams)
+			},
+		},
+		{
+			name:  "a reset policy that keeps everything raises nothing",
+			holds: everything,
+			core: []recovery.Option{keep, recovery.WithResetPolicy(
+				func(context.Context, recovery.ResetInput) ([]recovery.AuthenticatorRef, error) { return nil, nil })},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusOK, status)
+				requireNoneSent(t, streams)
+			},
+		},
+		{
+			name:  "a held recovery raises nothing at the hold",
+			holds: everything,
+			core: []recovery.Option{keep, recovery.WithHoldDelay(time.Hour),
+				recovery.WithCancelLink("https://app.example.com/cancel")},
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				require.Equal(t, http.StatusAccepted, status)
+				requireNoneSent(t, streams)
+			},
+		},
+		{
+			name:  "a refused recovery raises nothing",
+			holds: everything,
+			core:  []recovery.Option{keep},
+			wrong: true,
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				assert.NotEqual(t, http.StatusOK, status)
+				requireNoneSent(t, streams)
+			},
+		},
+		{
+			name:     "a signal that cannot be raised changes no answer",
+			holds:    everything,
+			core:     []recovery.Option{keep},
+			closeHub: true,
+			assert: func(t *testing.T, status int, streams []*riggedStream) {
+				assert.Equal(t, http.StatusOK, status)
+				assert.Empty(t, streams[0].events("credential_changed"))
+			},
+		},
+		{
+			name:           "a chain without signals changes no answer",
+			holds:          everything,
+			core:           []recovery.Option{keep},
+			withoutSignals: true,
+			assert: func(t *testing.T, status int, _ []*riggedStream) {
+				assert.Equal(t, http.StatusOK, status)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				w := newRecoveryWorld(t, tc.holds)
+
+				if tc.withoutSignals {
+					tc.assert(t, recoveryStatusWithoutSignals(t, w, tc.core), nil)
+
+					return
+				}
+
+				r := newStreamRig(t, streamSetup{signals: sourcesSignals, opts: w.opts(tc.core...)})
+				first, second := r.signIn(t), r.signIn(t)
+				streams := []*riggedStream{r.open(t, first.ID), r.open(t, second.ID)}
+
+				if tc.closeHub {
+					httpsec.SignalHubProbeOf(r.chain).Close()
+				}
+
+				body := w.form(t, r, tc.wrong)
+
+				tc.assert(t, r.callAs(t, "", httpsec.DefaultRecoveryCompletePath, body), streams)
+			})
+		})
+	}
+}
+
+// recoveryStatusWithoutSignals serves a complete request on a recovery chain with no session
+// signals, and returns its status.
+func recoveryStatusWithoutSignals(t *testing.T, w *recoveryWorld, core []recovery.Option) int {
+	t.Helper()
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	r := &streamRig{sessions: sessions, users: newUsers(t)}
+	chain, err := httpsec.New(append(w.opts(core...)(r),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: r.users}))...)
+	require.NoError(t, err)
+
+	serve := func(path string, values url.Values) (int, string) {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(values.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = streamClient + ":4242"
+
+		rec := httptest.NewRecorder()
+
+		require.NotPanics(t, func() { chain.Middleware()(http.NotFoundHandler()).ServeHTTP(rec, req) })
+
+		return rec.Code, rec.Body.String()
+	}
+
+	set, err := w.codes.Generate(t.Context(), "u-1")
+	require.NoError(t, err)
+
+	user := url.Values{httpsec.RecoveryUsernameParam: {testUsername}}
+	status, _ := serve(httpsec.DefaultRecoveryStartPath, user)
+	require.Equal(t, http.StatusAccepted, status)
+
+	user.Set(httpsec.RecoverySavedCodeParam, set[0])
+	user.Set(httpsec.RecoveryIssuedCodeParam, w.sender.sent[len(w.sender.sent)-1].TextBody)
+
+	status, _ = serve(httpsec.DefaultRecoveryCompletePath, user)
+
+	return status
 }
 
 // newUsers is a user loader that knows u-1.

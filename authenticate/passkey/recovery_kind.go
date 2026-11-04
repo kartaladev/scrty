@@ -11,9 +11,10 @@ import (
 	"github.com/kartaladev/scrty/recovery"
 )
 
-// recoveryKindName is the passkey authenticator kind's name, the "passkey" of
-// a reference such as "passkey:<library id>".
-const recoveryKindName = "passkey"
+// RecoveryKindName is the passkey authenticator kind's name, the "passkey" of
+// a reference such as "passkey:<library id>". A caller that reads
+// recovery.Result.Removed compares a reference's Kind with it.
+const RecoveryKindName = "passkey"
 
 // errNoRecoveryStore is what a kind built over a nil store returns.
 var errNoRecoveryStore = fmt.Errorf("%w: the passkey recovery kind has no credential store", ErrConfig)
@@ -68,7 +69,7 @@ func NewRecoveryKind(credentials CredentialStore) recovery.AuthenticatorKind {
 }
 
 // Kind reports "passkey".
-func (recoveryKind) Kind() string { return recoveryKindName }
+func (recoveryKind) Kind() string { return RecoveryKindName }
 
 // Held lists every passkey user holds, in every state.
 func (k recoveryKind) Held(ctx context.Context, user identity.UserID) ([]recovery.AuthenticatorRef, error) {
@@ -120,7 +121,7 @@ func (k recoveryKind) Remove(ctx context.Context, user identity.UserID, refs []r
 	}
 
 	for _, ref := range refs {
-		if ref.Kind != recoveryKindName {
+		if ref.Kind != RecoveryKindName {
 			continue
 		}
 
@@ -143,7 +144,7 @@ func refsOf(creds []*Credential) []recovery.AuthenticatorRef {
 
 	for _, c := range creds {
 		if c != nil {
-			refs = append(refs, recovery.AuthenticatorRef{Kind: recoveryKindName, ID: c.ID.String()})
+			refs = append(refs, recovery.AuthenticatorRef{Kind: RecoveryKindName, ID: c.ID.String()})
 		}
 	}
 
