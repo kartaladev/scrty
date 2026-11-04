@@ -1102,7 +1102,25 @@ func TestAuthenticateClient_PrivateKeyJWT_RecordsTheIdentifier(t *testing.T) {
 			},
 		},
 
+		{
+			name: "an identifier of exactly the longest accepted length",
+			tok:  claimsRow(map[string]any{"jti": strings.Repeat("j", 1024)}),
+			expect: func(s *MockAssertionIDStore) {
+				s.EXPECT().Record(gomock.Any(), keyClientID, strings.Repeat("j", 1024), gomock.Any()).Return(true, nil).Times(1)
+			},
+			assert: func(t *testing.T, rc *oidcprovider.RegisteredClient, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, keyClientID, rc.ID)
+			},
+		},
+
 		// Nothing below may reach the store.
+		{
+			name:   "an identifier one byte over the longest accepted length",
+			tok:    claimsRow(map[string]any{"jti": strings.Repeat("j", 1025)}),
+			assert: refused,
+		},
 		{
 			name: "a stranger's signature",
 			tok: func(t *testing.T) string {

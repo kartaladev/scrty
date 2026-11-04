@@ -365,6 +365,19 @@ func grantCases() []suiteCase[grantWorld] {
 			},
 		},
 		{
+			name: "a stored grant whose CreatedAt is the zero time is still stored, and a second create is refused",
+			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
+				first := grantRecord(1, opSignIn("u-1", 1))
+				first.CreatedAt = time.Time{}
+				createGrants(ctx, t, s, first)
+
+				require.Error(t, s.Create(ctx, grantRecord(1, opSignIn("u-2", 2))))
+				got := loadGrant(ctx, t, s, 1)
+				assert.Equal(t, userID("u-1"), got.User)
+				assert.True(t, got.CreatedAt.IsZero(), "the row is unchanged")
+			},
+		},
+		{
 			name: "revoke marks a stored grant",
 			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
 				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))

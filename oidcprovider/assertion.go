@@ -49,6 +49,13 @@ const (
 	// client whose clock runs ahead.
 	assertionNotBeforeLeeway = 60 * time.Second
 
+	// assertionIDMaxLen is the longest jti, in bytes, an assertion may carry. The client
+	// signs its own identifier, so without a bound a long one could reach a store's index
+	// limit (a PostgreSQL btree row is capped near 2.7 kB) and fail as an outage rather
+	// than a refusal. The value is proposed: 1024 leaves room for any identifier a client
+	// library generates, and is for the maintainers to confirm.
+	assertionIDMaxLen = 1024
+
 	// tokenEndpointPath is where the token endpoint sits under the issuer by default,
 	// and so the audience AudienceIssuerOrTokenEndpoint accepts unless told otherwise.
 	tokenEndpointPath = "/oauth2/token" //nolint:gosec // a path, and no credential
@@ -243,7 +250,7 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 // assertionClaimsHold checks what the signature does not. The caller has already found
 // the client iss names.
 func (p *Provider) assertionClaimsHold(a *assertion) bool {
-	if a.subject != a.issuer || a.jti == "" || !p.assertionAudienceHolds(a.audience) {
+	if a.subject != a.issuer || a.jti == "" || len(a.jti) > assertionIDMaxLen || !p.assertionAudienceHolds(a.audience) {
 		return false
 	}
 
