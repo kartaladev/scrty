@@ -239,21 +239,27 @@ func (p *Provider) Consents(ctx context.Context, user identity.UserID) ([]Consen
 // are ended all the same, and RevokeUserGrants is only for ending every client's.
 //
 // The grants go first, so that a failure leaves the consent listed, to be revoked again. Neither write
-// depends on the caller still listening. A failure matches ErrDependency, and an empty user or client
+// depends on the caller still listening, and each has a budget of its own, so that a security-event sink
+// spending the grants' time does not fail the consent's write. A failure matches ErrDependency, and an empty user or client
 // is refused with an error matching ErrConfig.
 func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clientID string) error {
 	if user == "" || clientID == "" {
 		return fmt.Errorf("%w: RevokeConsent: a user and a client are required", ErrConfig)
 	}
 
-	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
-	defer cancel()
-	ended, err := p.stores.grants.RevokeByUserAndClient(detached, user, clientID, CauseConsentRevoked, p.cfg.clock.Now())
+	// Each write has a budget of its own, as in EndSignIn: the report between them calls a sink, which
+	// may spend a budget, and the grants' time must not be what the consent's write is left with.
+	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	ended, err := p.stores.grants.RevokeByUserAndClient(grantCtx, user, clientID, CauseConsentRevoked, p.cfg.clock.Now())
+	endGrants()
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the consent's grants")
 	}
 	p.reportRevoked(ctx, ended, CauseConsentRevoked)
-	forgotten, err := p.stores.consents.Revoke(detached, user, clientID)
+
+	consentCtx, endConsent := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	defer endConsent()
+	forgotten, err := p.stores.consents.Revoke(consentCtx, user, clientID)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: forget the consent")
 	}

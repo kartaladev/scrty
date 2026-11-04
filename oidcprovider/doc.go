@@ -271,10 +271,11 @@
 // [Provider.RevokeUserGrants], unchanged. None carries a code, handle, flow secret, token, assertion or
 // secret, and none carries the text of an error.
 //
-// The sink is called on the request that decided the outcome, and cannot change it: a panic in it is
-// recovered and logged without the event. A failed delivery is the exception: no request decided it, so it
-// is reported on a goroutine of its own, at most 64 at once, as [Provider.Shutdown] and the section on
-// back-channel logout state. A drop's report reads the client first, so that a client with no URI is not
+// The sink is called on the request that decided the outcome. It cannot change what was stored: a panic
+// in it is recovered and logged without the event. A sink that blocks holds that request, and can spend
+// the budget a revocation has for its writes, and so change the answer it gives. A failed delivery is the
+// exception: no request decided it, so it is reported on a goroutine of its own, at most 64 at once, as
+// [Provider.Shutdown] and the section on back-channel logout state. A drop's report reads the client first, so that a client with no URI is not
 // reported as a failure.
 //
 // # Errors

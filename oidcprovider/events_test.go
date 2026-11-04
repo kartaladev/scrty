@@ -704,6 +704,36 @@ func TestProvider_Events(t *testing.T) {
 			},
 		},
 		{
+			name: "a reuse only the lineage manager sees, of a grant revoked since it was read, is no revocation of its own",
+			run: func(t *testing.T, sink event.Sink) {
+				t.Helper()
+				f := newRefreshFixture(t, oidcprovider.WithSecurityEvents(sink))
+				s := movedOn(t, f)
+				f.grants.beforeRevoke = revokeFirst(t, f, s.grant.Family, oidcprovider.CauseUserRequest)
+				assertRefreshRefused(t, f, s, s.first.RefreshToken)
+			},
+			assert: func(t *testing.T, got []event.Event) {
+				t.Helper()
+				assert.Equal(t, []string{event.GrantCreated, event.RefreshReused}, namesOf(got))
+			},
+		},
+		{
+			name: "a reuse whose family cannot be deleted, of a grant revoked since it was read, is no revocation of its own",
+			run: func(t *testing.T, sink event.Sink) {
+				t.Helper()
+				f := newRefreshFixture(t, oidcprovider.WithSecurityEvents(sink))
+				s := movedOn(t, f)
+				f.lineage.failDelete.Store(true)
+				f.grants.beforeRevoke = revokeFirst(t, f, s.grant.Family, oidcprovider.CauseUserRequest)
+				_, err := f.p.Token(t.Context(), s.again(s.first.RefreshToken))
+				assertDependencyFailure(t, err)
+			},
+			assert: func(t *testing.T, got []event.Event) {
+				t.Helper()
+				assert.Equal(t, []string{event.GrantCreated, event.RefreshReused}, namesOf(got))
+			},
+		},
+		{
 			name: "a reuse only the lineage manager sees, whose family cannot be deleted, is still reported once",
 			run: func(t *testing.T, sink event.Sink) {
 				t.Helper()

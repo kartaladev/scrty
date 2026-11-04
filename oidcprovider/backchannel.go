@@ -478,12 +478,26 @@ func (q *logoutPool) endReporting() {
 	q.settle()
 }
 
-// toLog hands what logs a failure to the records lane. Past its room the failure is counted.
+// toLog hands what logs a failure to the records lane. Past its room the failure is counted, and so is
+// one whose task did not finish, as a log handler that panics or ends its goroutine leaves no line.
 func (q *logoutPool) toLog(refused bool, task func()) {
+	logged := func() {
+		finished := false
+		defer func() {
+			if !finished {
+				q.mu.Lock()
+				q.unsaid.records++
+				q.mu.Unlock()
+			}
+		}()
+		task()
+		finished = true
+	}
+
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if !q.push(&q.records, refused, task) {
+	if !q.push(&q.records, refused, logged) {
 		q.unsaid.records++
 	}
 }
@@ -538,13 +552,14 @@ func (q *logoutPool) push(lane *reportLane, refused bool, task func()) bool {
 	return true
 }
 
-// startLane starts a goroutine on the lane if it may have another, and needs mu held.
+// startLane starts a goroutine on the lane if it may have another, and needs mu held. It does not reopen
+// Shutdown's answer: every caller is already counted, as a report begun, a worker or a delivery, or a lane
+// goroutine, none of which leaves nil standing.
 func (q *logoutPool) startLane(lane *reportLane) {
 	if lane.running >= lane.limit {
 		return
 	}
 	lane.running++
-	q.reopen()
 	go q.runLane(lane)
 }
 
@@ -814,7 +829,8 @@ func (p *Provider) Start(ctx context.Context) error {
 // Shutdown stops back-channel delivery, for no longer than ctx allows, and no report it starts holds it
 // past that. A sign-in ending after it still ends, and its delivery is dropped and reported. It returns nil
 // once what was queued has been delivered, every delivery's goroutine has ended and every report has been
-// made, so nil means no goroutine of the provider's is left. When that is already so, it returns nil even if
+// made, so nil means no goroutine of the provider's is left. A report is made, not guaranteed to be heard:
+// a log handler that panics on a failure's line loses that line, and the loss is counted in lost_records. When that is already so, it returns nil even if
 // ctx is done.
 //
 // If ctx ends first, Shutdown returns its error, and cuts off what is running. What is still queued, and a

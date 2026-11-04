@@ -23,15 +23,18 @@ import (
 // called, so an outcome is reported once.
 //
 // The sink is called synchronously, on the request that decided the outcome, with a context from which
-// that request's cancellation has been removed, and cannot change the outcome: a panic in it is recovered
-// and logged through WithLogger without the event's contents. A sink that blocks holds that request, which
-// is the consumer's to manage. The failed delivery of a logout token is the exception, because no request
-// decided it, and neither a logout nor a worker may wait for a sink: it reaches the sink on a goroutine of
-// its own, at most 64 at once, with at most 1024 more waiting, and is stamped when it reaches it. Past those
-// the newest loses its event and keeps its log line, and how many did so is logged. What Shutdown finds still
-// queued has room of its own, as does a post it cuts off, which an end arriving after it cannot take. Shutdown waits for those goroutines, as it does for every delivery, and returns
-// its context's error if the sink still holds one then. The limit has no option, as it protects the provider
-// from the sink: a consumer who cannot afford it gives a sink that returns promptly, onto a queue of its own.
+// that request's cancellation has been removed. It cannot change what was stored: a panic in it is
+// recovered and logged through WithLogger without the event's contents. A sink that blocks holds that
+// request, which is the consumer's to manage, and on a revocation it can spend the budget the request has
+// for its writes, and so change the answer. RevokeConsent gives its grants' write and its consent's write
+// a budget each, so a sink cannot spend the one from the other. The failed delivery of a logout token is the exception, because no request decided it, and neither a logout nor a worker may
+// wait for a sink: it reaches the sink on a goroutine of its own, at most 64 at once, with at most 1024
+// more waiting, and is stamped when it reaches it. Past those the newest loses its event and keeps its log
+// line, and how many did so is logged. What Shutdown finds still queued has room of its own, as does a
+// post it cuts off, which an end arriving after it cannot take. Shutdown waits for those goroutines, as it
+// does for every delivery, and returns its context's error if the sink still holds one then. The limit has
+// no option, as it protects the provider from the sink: a consumer who cannot afford it gives a sink that
+// returns promptly, onto a queue of its own.
 //
 // A nil sink, or the option given twice, is a configuration error wrapping ErrConfig from New.
 func WithSecurityEvents(sink event.Sink) Option {
@@ -76,12 +79,14 @@ func (p *Provider) reportRevoked(ctx context.Context, ended []Grant, cause Revoc
 // reportEnded reports the grants a sign-in's end revoked. The store marks each grant it returns as having
 // outlived its sign-in, and revokes those that do not: without offline_access, or tied to the sign-in.
 // A grant that survives is not a revocation, and is not reported. Nor is one that an earlier revocation
-// had already ended: it keeps that first cause, and was reported when it happened.
+// had already ended: it keeps that first cause, and was reported when it happened. A revocation of
+// the consumer's, whatever it spelled its cause as, is told from the end's own by its time: an end
+// revokes at the time it marks the grant, which an earlier revocation cannot have done.
 func (p *Provider) reportEnded(ctx context.Context, ended []Grant) {
 	for i := range ended {
 		g := &ended[i]
 		survives := g.Offline && !g.EndsWithSignIn
-		endedEarlier := g.Revoked && g.RevokeCause != CauseSignInEnded
+		endedEarlier := g.Revoked && (g.RevokeCause != CauseSignInEnded || !g.RevokedAt.Equal(g.SignInEndedAt))
 		if !survives && !endedEarlier {
 			p.reportGrantRevoked(ctx, g.ClientID, g.User, CauseSignInEnded)
 		}
