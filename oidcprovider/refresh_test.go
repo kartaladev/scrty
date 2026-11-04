@@ -705,6 +705,20 @@ func billingClient(t *testing.T, f *refreshFixture, change func(*oidcprovider.Cl
 	require.NoError(t, f.registry.Put(t.Context(), client))
 }
 
+// presentCertificate has the scene's requests present a certificate from here on, as a client
+// required to use one must for its refreshes to be judged at all.
+func presentCertificate(s *refreshScene) {
+	s.request.Binding.X5T = boundCert
+
+	again := s.again
+	s.again = func(raw string) oidcprovider.TokenRequest {
+		req := again(raw)
+		req.Binding.X5T = boundCert
+
+		return req
+	}
+}
+
 // asksScope is a refresh of the scene's token asking for scope.
 func asksScope(s *refreshScene, scope string) oidcprovider.TokenRequest {
 	req := s.again(s.first.RefreshToken)
@@ -1283,8 +1297,9 @@ func TestProvider_Refresh(t *testing.T) {
 		},
 		{
 			name: "a client whose refreshes are not rotated gets its own token back",
-			arrange: func(t *testing.T, f *refreshFixture, _ *refreshScene) {
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
+				presentCertificate(s)
 				billingClient(t, f, func(c *oidcprovider.Client) {
 					c.DisableRotation = true
 					c.RequireBinding = oidcprovider.BindingMTLS
@@ -1308,6 +1323,7 @@ func TestProvider_Refresh(t *testing.T) {
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
 				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				presentCertificate(s)
 				billingClient(t, f, func(c *oidcprovider.Client) {
 					c.DisableRotation = true
 					c.RequireBinding = oidcprovider.BindingMTLS
@@ -1358,8 +1374,9 @@ func TestProvider_Refresh(t *testing.T) {
 		},
 		{
 			name: "an idle timeout shortened since reaches a client whose refreshes are not rotated",
-			arrange: func(t *testing.T, f *refreshFixture, _ *refreshScene) {
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
+				presentCertificate(s)
 				billingClient(t, f, func(c *oidcprovider.Client) {
 					c.DisableRotation = true
 					c.RequireBinding = oidcprovider.BindingMTLS
@@ -1373,6 +1390,7 @@ func TestProvider_Refresh(t *testing.T) {
 			name: "an absolute lifetime shortened since reaches a client whose refreshes are not rotated",
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
+				presentCertificate(s)
 				billingClient(t, f, func(c *oidcprovider.Client) {
 					c.DisableRotation = true
 					c.RequireBinding = oidcprovider.BindingMTLS

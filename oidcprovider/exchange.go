@@ -105,6 +105,10 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // ErrDependency behind fixed text, and a caller who left matches its own context's error.
 // None of these carries a code, a secret or a token.
 //
+// A client registered with Client.RequireBinding is refused without that binding before either
+// grant is read, whichever grant it asks for: invalid_dpop_proof for want of a proof's key, and
+// invalid_request for want of a certificate. The code stays unspent, and the token unrotated.
+//
 // An authorization_code request runs in the order the guarantees rest on, and where a request
 // earns two refusals, the earlier step's is the one answered:
 //
@@ -193,8 +197,9 @@ func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, e
 	if !slices.Contains(rc.GrantTypes, grantType) {
 		return nil, &Error{Code: CodeUnauthorizedClient}
 	}
-	// Client.RequireBinding belongs here, ahead of both grants, so that what it refuses has
-	// neither spent a code nor rotated a refresh token. Nothing enforces it yet.
+	if err := requireBinding(rc, r.Binding); err != nil {
+		return nil, err
+	}
 	if grantType == GrantRefreshToken {
 		return p.refresh(ctx, r, rc)
 	}
@@ -211,6 +216,25 @@ func repeatedParam(form url.Values) bool {
 	}
 
 	return false
+}
+
+// requireBinding refuses a request without the binding its client is registered to require. It
+// stands ahead of both grants, so what it refuses has read no code and no refresh token, spent
+// nothing, rotated nothing, and as a replay revokes nothing.
+//
+// A proof refused is invalid_dpop_proof (RFC 9449 section 7.1). RFC 8705 names no code for a missing
+// certificate, so that is invalid_request, which tells the client to send what is missing and not to
+// discard its grant. A request with a proof and a certificate carries the proof's key alone, because a
+// token carries one confirmation, so a client required to use its certificate is refused there too.
+func requireBinding(rc *RegisteredClient, b Binding) error {
+	switch {
+	case rc.RequireBinding == BindingDPoP && b.JKT == "":
+		return &Error{Code: CodeInvalidDPoPProof}
+	case rc.RequireBinding == BindingMTLS && b.X5T == "":
+		return refuseRequest()
+	}
+
+	return nil
 }
 
 func refuseGrant() error { return &Error{Code: CodeInvalidGrant} }
