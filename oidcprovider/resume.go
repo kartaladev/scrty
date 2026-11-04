@@ -286,6 +286,10 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 		return ResumeResult{}, ErrReauthenticate
 	}
 
+	if err := p.confirmBrowserSession(ctx, session, in.IdleTimeout, now); err != nil {
+		return ResumeResult{}, err
+	}
+
 	target, err := p.issueCode(ctx, r, rc, s, granted)
 	if err != nil {
 		return ResumeResult{}, err
@@ -298,7 +302,6 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 	if err := p.stores.consents.Give(ctx, s.User, r.ClientID, granted, offline, now); err != nil {
 		p.logFailedAfterSpend(ctx, "oidcprovider: a consent the user gave could not be remembered", err)
 	}
-	p.touchBrowserSession(ctx, session, in.IdleTimeout, now)
 
 	return ResumeResult{RedirectTo: target}, nil
 }
@@ -326,7 +329,35 @@ func (p *Provider) consentSignIn(ctx context.Context, in ResumeInput, now time.T
 		return SignIn{}, nil, dependencyFailure(ctx, err, "oidcprovider: load the browser session")
 	}
 
+	active, err := p.userActive(ctx, session.SignIn.User)
+	switch {
+	case err != nil:
+		return SignIn{}, nil, err
+	case !active:
+		return SignIn{}, nil, ErrReauthenticate
+	}
+
 	return session.SignIn, digest, nil
+}
+
+// confirmBrowserSession takes the last look at the session an answer rests on, and records
+// its use, before the stage is spent: a session gone by now has ended, so the answer is a
+// browser that must authenticate, and no code is written. A session the answer rested on
+// none (digest nil) needs no look. Any failure other than the session being gone is a
+// dependency failure, since nothing is spent yet to lose.
+func (p *Provider) confirmBrowserSession(ctx context.Context, digest []byte, idle time.Duration, now time.Time) error {
+	if digest == nil {
+		return nil
+	}
+	err := p.stores.browserSessions.Touch(ctx, digest, now.Add(browserSessionIdle(idle)))
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return ErrReauthenticate
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: touch the browser session")
+	}
+
+	return nil
 }
 
 // grantedScopesOf returns the scopes an answer granted, once each and in the request's

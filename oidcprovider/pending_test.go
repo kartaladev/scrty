@@ -72,7 +72,7 @@ func newParkFixtureKeys(t *testing.T, loginURL string, keys signingkey.KeySource
 		Issuer:       issuer,
 		Registry:     registry,
 		Keys:         keys,
-		Users:        users(t),
+		Users:        activeUsers(t),
 		LoginURL:     loginURL,
 		ConsentURL:   issuer + "/consent",
 		LogoutURL:    issuer + "/logout",
@@ -438,9 +438,8 @@ func TestProvider_Park(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *parkFixture, res oidcprovider.AuthorizeResult, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrDependency)
-				assert.NotContains(t, err.Error(), "store secret text")
-				assert.Empty(t, res.Location)
+				serverError(t, res, err)
+				assert.NotContains(t, res.Location, "store secret text")
 				assert.Empty(t, res.FlowSecret)
 			},
 		},
@@ -475,9 +474,8 @@ func TestProvider_Park(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *parkFixture, res oidcprovider.AuthorizeResult, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, oidcprovider.ErrDependency)
-				assert.NotContains(t, err.Error(), "entropy secret text")
-				assert.Empty(t, res.Location)
+				serverError(t, res, err)
+				assert.NotContains(t, res.Location, "entropy secret text")
 				assert.Empty(t, res.FlowSecret)
 			},
 		},
@@ -1071,4 +1069,17 @@ func TestProvider_Park_Resume(t *testing.T) {
 			assert.Equal(t, want.nonce, recordOf(t, f, answer.Get("code")).Nonce)
 		}
 	})
+}
+
+// activeUsers is a user loader whose every user exists and may sign in, for the rows whose
+// browser session is judged against its user.
+func activeUsers(t *testing.T) identity.UserLoader {
+	t.Helper()
+
+	loader := NewMockUserLoader(gomock.NewController(t))
+	loader.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, user identity.UserID) (*identity.Details, error) { return activeUser(user) },
+	).AnyTimes()
+
+	return loader
 }

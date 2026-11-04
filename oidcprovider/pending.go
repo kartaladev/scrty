@@ -86,19 +86,29 @@ func (p *Provider) flowFor(given string) (string, []byte, error) {
 }
 
 // park stores a validated request under a new handle, and answers with the login page.
-// The handle and the flow secret leave here and are stored only as digests.
 func (p *Provider) park(ctx context.Context, req *PendingRequest, flowSecret string) (AuthorizeResult, error) {
+	handle, flow, err := p.parkRequest(ctx, req, flowSecret)
+	if err != nil {
+		return AuthorizeResult{}, err
+	}
+
+	return AuthorizeResult{Location: withQuery(p.loginURL, url.Values{HandleParam: {handle}}), FlowSecret: flow}, nil
+}
+
+// parkRequest stores a validated request at the login stage under a new handle, and returns
+// the handle and the browser's flow secret, which leave here and are stored only as digests.
+func (p *Provider) parkRequest(ctx context.Context, req *PendingRequest, flowSecret string) (string, string, error) {
 	secret, handleDigest, err := p.mintSecret()
 	if err != nil {
-		return AuthorizeResult{}, dependencyFailure(ctx, err, "oidcprovider: mint a handle")
+		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a handle")
 	}
 	flow, flowDigest, err := p.flowFor(flowSecret)
 	if err != nil {
-		return AuthorizeResult{}, dependencyFailure(ctx, err, "oidcprovider: mint a flow secret")
+		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a flow secret")
 	}
 	recordID, err := p.cfg.ids.NewID()
 	if err != nil {
-		return AuthorizeResult{}, dependencyFailure(ctx, err, "oidcprovider: mint a pending request identifier")
+		return "", "", dependencyFailure(ctx, err, "oidcprovider: mint a pending request identifier")
 	}
 
 	now := p.cfg.clock.Now()
@@ -109,15 +119,10 @@ func (p *Provider) park(ctx context.Context, req *PendingRequest, flowSecret str
 	req.ExpiresAt = now.Add(p.cfg.pendingLifetime)
 	req.Stage = StageLogin
 	if err := p.stores.pendingRequests.Create(ctx, req); err != nil {
-		return AuthorizeResult{}, dependencyFailure(ctx, err, "oidcprovider: park the authorization request")
+		return "", "", dependencyFailure(ctx, err, "oidcprovider: park the authorization request")
 	}
 
-	handle := handlePrefix + "." + recordID.String() + "." + secret
-
-	return AuthorizeResult{
-		Location:   withQuery(p.loginURL, url.Values{HandleParam: {handle}}),
-		FlowSecret: flow,
-	}, nil
+	return handlePrefix + "." + recordID.String() + "." + secret, flow, nil
 }
 
 // splitHandle reads a handle into its identifier and its secret's digest.

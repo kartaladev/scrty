@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
@@ -87,10 +88,21 @@ type AuthorizeInput struct {
 	// One the provider could have minted is kept, so a browser's parallel requests can
 	// each be resumed. Anything else is replaced.
 	FlowSecret string
+
+	// BrowserSessionSecret is the value of the browser-session cookie, or empty. It is
+	// used to answer this request and for nothing else, and only its digest reaches the
+	// store. A value the provider could not have minted counts as no session.
+	BrowserSessionSecret string
+
+	// IdleTimeout is how long a browser session lives without use, which is the sign-in
+	// manager's IdleTimeout. The provider holds no manager, so the chain states it. Zero
+	// means a session manager's default of 30 minutes, and a negative value is refused with
+	// an error matching ErrConfig.
+	IdleTimeout time.Duration
 }
 
-// Format writes the redacted form under every verb. The input holds the browser's flow
-// secret, so it prints and logs redacted too; read its fields to use it.
+// Format writes the redacted form under every verb. The input holds the browser's secrets,
+// so it prints and logs redacted too; read its fields to use it.
 func (AuthorizeInput) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(redacted)) }
 
 // LogValue is the redacted form.
@@ -100,7 +112,7 @@ func (AuthorizeInput) LogValue() slog.Value { return slog.StringValue(redacted) 
 // secret, so it prints and logs redacted; read its fields to use it.
 type AuthorizeResult struct {
 	// Location is where to send the browser, with status 303: the client's redirect URI
-	// carrying the answer, or the consumer's login page carrying the handle.
+	// carrying the answer, or the consumer's login or consent page carrying the handle.
 	Location string
 
 	// FlowSecret is the value to set the flow cookie to, and is empty unless the request
@@ -117,18 +129,46 @@ func (AuthorizeResult) LogValue() slog.Value { return slog.StringValue(redacted)
 // Authorize answers an authorization request. It refuses with ErrInvalidAuthorization
 // when the client or the redirect URI cannot be trusted, which the chain reports with no
 // redirect whatever else the request holds, and fails with a dependency failure when a
-// store, registry or key source does. Once the client and redirect URI are valid, every
-// other refusal comes back as a Location at that redirect URI carrying error, the
-// request's state and iss, and no error_description.
+// store, registry, key source or user loader does. A negative IdleTimeout is refused with
+// an error matching ErrConfig. Once the client and redirect URI are valid, every other
+// refusal comes back as a Location at that redirect URI carrying error, the request's state
+// and iss, and no error_description.
 //
-// A valid request is parked, and the Location is the consumer's login page with the
+// A valid request is answered from the browser's session when it holds one that can answer:
+//
+//   - A code, at the client's redirect URI, when no consent is needed. It carries the facts
+//     of the sign-in the session came from, never a value from the current time.
+//   - The consumer's consent page carrying the handle, when consent is needed, which the
+//     page answers through Resume with the same cookie. Under prompt=none it is
+//     consent_required instead.
+//   - login_required, parking nothing, when id_token_hint names another subject.
+//
+// Otherwise the request is parked, and the Location is the consumer's login page with the
 // handle in its req parameter. The page reads the request with PendingRequest, signs the
-// user in, and hands the sign-in to Resume, whose answer says where the browser goes next. A
-// prompt=none request is answered login_required, because nothing can answer it silently.
+// user in, and hands the sign-in to Resume, whose answer says where the browser goes next.
+// Under prompt=none no page is ever shown, and it is answered login_required instead.
+//
+// A session cannot answer when prompt=login or max_age asks for an authentication it has
+// not got; when prompt=select_account asks for a choice only the consumer's page can offer; when it has ended, run out or is unknown; when its secret could not be one the
+// provider minted, which never reaches the store; when its sign-in could not resume; or when
+// its user is missing, disabled or not the one it names. WithoutBrowserSessions means there
+// is never one. Each of those is a browser with no session, and a failing store or user
+// loader is none of them: it is answered at the redirect URI with server_error, showing no
+// page and deciding nothing about the user. A caller who left gets its own context's error.
+//
+// A session is used only here and at the consent stage: nothing else in the library reads
+// it, so it signs no one in to anything but the provider's own endpoints. Answering from it
+// extends its idle deadline, up to its absolute one, and a request it did not answer does
+// not. It does not see a marker placed on the sign-in afterwards, such as a required password
+// change: an administrator's change that matters ends the sign-in, which ends the session.
 //
 // Authorize does not judge TLS, and renders nothing: both are the chain's.
 func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {
-	req, _, err := p.validate(ctx, in.Params)
+	if in.IdleTimeout < 0 {
+		return AuthorizeResult{}, fmt.Errorf("%w: AuthorizeInput.IdleTimeout: must not be negative", ErrConfig)
+	}
+
+	req, rc, err := p.validate(ctx, in.Params)
 	if err != nil {
 		var refusal *redirectRefusal
 		if errors.As(err, &refusal) {
@@ -138,13 +178,36 @@ func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeR
 		return AuthorizeResult{}, err
 	}
 
-	if slices.Contains(req.Prompt, promptNone) {
-		refusal := redirectRefusal{code: CodeLoginRequired, redirectURI: req.RedirectURI, state: req.State}
+	res, err := p.answer(ctx, in, req, rc)
+	if errors.Is(err, ErrDependency) {
+		// The client and redirect URI are valid, so the requester is owed an answer where
+		// it can hear it. Only the error's type is logged: a store's text is not ours to repeat.
+		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: the authorization request could not be answered",
+			slog.String("error_type", fmt.Sprintf("%T", err)))
 
-		return AuthorizeResult{Location: refusal.location(p.issuer)}, nil
+		return p.refuseAtRedirectURI(req, codeServerError), nil
 	}
 
-	return p.park(ctx, req, in.FlowSecret)
+	return res, err
+}
+
+// codeServerError is the code a validated request is answered with when a dependency fails
+// (RFC 6749 section 4.1.2.1).
+const codeServerError = "server_error"
+
+// answer answers a validated request from the browser's session, or by parking it.
+func (p *Provider) answer(ctx context.Context, in AuthorizeInput, req *PendingRequest, rc *RegisteredClient) (AuthorizeResult, error) {
+	res, answered, err := p.answerFromSession(ctx, in, req, rc)
+	switch {
+	case err != nil:
+		return AuthorizeResult{}, err
+	case answered:
+		return res, nil
+	case isSilent(req):
+		return p.refuseAtRedirectURI(req, CodeLoginRequired), nil
+	default:
+		return p.park(ctx, req, in.FlowSecret)
+	}
 }
 
 // DPoPEnabled reports whether WithDPoP was given, so that the chain can check it agrees

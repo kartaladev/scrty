@@ -650,7 +650,7 @@ func rebuilt(t *testing.T, f *parkFixture, opts ...oidcprovider.Option) *oidcpro
 		Issuer:       issuer,
 		Registry:     f.registry,
 		Keys:         plainKeys(t),
-		Users:        users(t),
+		Users:        activeUsers(t),
 		LoginURL:     issuer + "/login",
 		ConsentURL:   issuer + "/consent",
 		LogoutURL:    issuer + "/logout",
