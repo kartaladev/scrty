@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/oplineage"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -30,7 +31,8 @@ const (
 
 // RequestBounds limits the size in bytes of authorization parameters, which
 // anyone can park, and which are stored and reflected in redirects. A zero field
-// keeps its default, and a negative one fails construction.
+// keeps its default, and a negative one fails construction. Every other parameter the
+// provider reads is held to a fixed 4 KiB, and at most 10 resource values are read.
 type RequestBounds struct {
 	// State bounds state. The default is 2048.
 	State int
@@ -42,16 +44,22 @@ type RequestBounds struct {
 	Resource int
 	// Scope bounds scope. The default is 4096.
 	Scope int
+	// IDTokenHint bounds id_token_hint, a signed token that grows with the claims its
+	// issuer adds. The default is 8192, a proposed value that has not been measured
+	// against real claim sets; widen it if a genuine hint is refused.
+	IDTokenHint int
 }
 
 type config struct {
 	loopbackHTTPIssuer bool
 	browserSessions    bool
 	logoutConfirmation bool
-	bounds             RequestBounds
-	pendingLifetime    time.Duration
-	codeLifetime       time.Duration
-	assertionAudience  AudienceRule
+	// dpopEnabled says the chain verifies DPoP proofs, so a request's dpop_jkt can be honoured.
+	dpopEnabled       bool
+	bounds            RequestBounds
+	pendingLifetime   time.Duration
+	codeLifetime      time.Duration
+	assertionAudience AudienceRule
 	// assertionTokenEndpoint is the audience URL AudienceIssuerOrTokenEndpoint accepts.
 	// New fills it in from the issuer when the option is not given.
 	assertionTokenEndpoint    string
@@ -82,6 +90,9 @@ type config struct {
 	clock                     clock.Clock
 	logger                    *slog.Logger
 	random                    io.Reader
+	// ids names the records the provider creates. validate builds it, over the clock and
+	// randomness the options gave.
+	ids id.Generator
 }
 
 // The defaults New applies and the bounds it enforces, each named on its option.
@@ -96,6 +107,7 @@ const (
 	defaultKeysTTL             = 15 * time.Minute
 	defaultParamBound          = 2048
 	defaultScopeBound          = 4096
+	defaultIDTokenHintBound    = 8192
 )
 
 func defaultConfig() config {
@@ -179,6 +191,7 @@ func (c *config) validate() error {
 	if nilcheck.IsNil(c.random) {
 		return fmt.Errorf("%w: WithRandom: must not be nil", ErrConfig)
 	}
+	c.ids = id.NewV7Generator(id.WithClock(c.clock), id.WithRandom(c.random))
 
 	return c.bounds.resolve()
 }
@@ -202,6 +215,7 @@ func (b *RequestBounds) resolve() error {
 		{&b.LoginHint, defaultParamBound},
 		{&b.Resource, defaultParamBound},
 		{&b.Scope, defaultScopeBound},
+		{&b.IDTokenHint, defaultIDTokenHintBound},
 	}
 	for _, f := range fields {
 		switch {
@@ -239,6 +253,14 @@ func WithoutBrowserSessions() Option {
 // question when a valid hint names the browser's own sign-in.
 func WithLogoutConfirmation() Option {
 	return func(c *config) { c.logoutConfirmation = true }
+}
+
+// WithDPoP states that the chain verifies DPoP proofs (httpsec.EnableDPoP), so an
+// authorization request may name a dpop_jkt. The default is off, and such a request is
+// answered invalid_request, because ignoring the parameter would leave a client holding an
+// unbound code it believes is bound.
+func WithDPoP() Option {
+	return func(c *config) { c.dpopEnabled = true }
 }
 
 // WithRequestBounds replaces the default parameter bounds. See RequestBounds.

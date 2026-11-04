@@ -340,6 +340,11 @@ func TestNew_Construction(t *testing.T) {
 			opts:   []oidcprovider.Option{oidcprovider.WithRequestBounds(oidcprovider.RequestBounds{State: -1})},
 			assert: refused("WithRequestBounds"),
 		},
+		{
+			name:   "negative id_token_hint bound",
+			opts:   []oidcprovider.Option{oidcprovider.WithRequestBounds(oidcprovider.RequestBounds{IDTokenHint: -1})},
+			assert: refused("WithRequestBounds"),
+		},
 
 		// Ports replaced with nothing.
 		{name: "nil clock", opts: []oidcprovider.Option{oidcprovider.WithClock(nil)}, assert: refused("WithClock")},
@@ -364,7 +369,7 @@ func TestNew_Construction(t *testing.T) {
 				assert.Equal(t, oidcprovider.AudienceIssuerOnly, p.AssertionAudienceForTest())
 				assert.Equal(t, 30*time.Second, p.RefetchCooldownForTest())
 				assert.Equal(t, oidcprovider.RequestBounds{
-					State: 2048, Nonce: 2048, LoginHint: 2048, Resource: 2048, Scope: 4096,
+					State: 2048, Nonce: 2048, LoginHint: 2048, Resource: 2048, Scope: 4096, IDTokenHint: 8192,
 				}, p.BoundsForTest())
 				assert.True(t, p.BrowserSessionsForTest())
 				assert.False(t, p.LogoutConfirmationForTest())
@@ -414,7 +419,7 @@ func TestNew_Construction(t *testing.T) {
 				assert.True(t, p.LogoutConfirmationForTest())
 				assert.Equal(t, oidcprovider.AudienceIssuerOrTokenEndpoint, p.AssertionAudienceForTest())
 				assert.Equal(t, oidcprovider.RequestBounds{
-					State: 100, Nonce: 2048, LoginHint: 2048, Resource: 2048, Scope: 4096,
+					State: 100, Nonce: 2048, LoginHint: 2048, Resource: 2048, Scope: 4096, IDTokenHint: 8192,
 				}, p.BoundsForTest())
 			},
 		},
