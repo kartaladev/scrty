@@ -264,6 +264,150 @@ no assurance, so a required user is challenged or refused on every request.
 The full list, with the reasoning behind each one, is in the `oidc` package's "Limits" godoc
 (`go doc github.com/kartaladev/scrty/authenticate/oidc`).
 
+## OpenID Provider
+
+`httpsec.EnableOIDCProvider` makes the chain an OpenID Provider for the authorization code flow.
+The provider itself is `oidcprovider.Provider`, and the login and consent pages are yours: the
+library parks each authorization request under a handle, sends the browser to your page, and your
+page resumes the request once the user has signed in.
+
+### Wiring
+
+```go
+op, err := oidcprovider.New(oidcprovider.Deps{
+    Issuer:       "https://id.example.com",
+    Clients:      clients,
+    Keys:         keys, // the same *signingkey.Keys EnableJWKSEndpoint publishes
+    Users:        users,
+    LoginURL:     "https://id.example.com/login",
+    ConsentURL:   "https://id.example.com/consent",
+    LogoutURL:    "https://id.example.com/logout",
+    LoggedOutURL: "https://id.example.com/bye",
+})
+if err != nil {
+    return err
+}
+// When the application stops, op.Shutdown(ctx) ends back-channel delivery. The chain
+// neither starts nor stops the provider, and op.Start is optional.
+
+// Every session manager on the chain reports sign-in ends to the provider, or grants
+// would outlive a logout. New refuses a chain with one that does not.
+sessions, err := session.New(session.WithStore(store), session.WithEndObserver(op))
+if err != nil {
+    return err
+}
+
+chain, err := httpsec.New(
+    httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+    httpsec.EnableJWKSEndpoint(keys),
+    httpsec.EnableCSRFProtection(),
+    httpsec.EnableSecurityHeaders(),
+    httpsec.EnableOIDCProvider(op),
+)
+```
+
+`EnableOIDCProvider`'s godoc lists every wiring mistake `New` refuses. Its endpoints answer under
+`/oauth2` (`WithOIDCProviderPrefix`, `WithOIDCProviderPath`).
+
+### The login and consent pages
+
+Both pages are on the issuer's origin: the same scheme, host and port. `oidcprovider.New` refuses a
+URL on another, because the flow cookie, `__Host-scrty-op-flow`, is not sent to it.
+
+A page receives the handle as the `req` query parameter. To show the user who is asking, it reads
+the pending request, which holds the client's name and the scopes and no secret:
+
+```go
+view, err := httpsec.PendingOIDCRequest(ctx, op, httpsec.NewHTTPRequest(r), r.URL.Query().Get(oidcprovider.HandleParam))
+```
+
+A page in the browser resumes with `fetch`, with the sign-in in the `Authorization` header, and then
+navigates. The resume answers 200 with the next URL, and never a redirect, so that the browser's
+navigation is the page's own:
+
+```js
+const res = await fetch("/oauth2/authorize/resume", {
+  method: "POST",
+  headers: { "Authorization": `Bearer ${credential}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ req: handle }),
+});
+if (res.ok) window.location = (await res.json()).redirect_to;
+```
+
+The consent page posts to the same endpoint, `{"req": handle, "scopes": ["openid", "profile"]}` to
+grant or `{"req": handle, "deny": true}` to deny. It needs no `Authorization` header, because the
+browser session answers for the user who signed in.
+
+| Answer | Means | What the page does |
+|---|---|---|
+| 200 `{"redirect_to": ...}` | the next page, or the client with a code or an error | navigates there |
+| 400, `ErrOIDCUnknownHandle` | the handle is unknown, expired, spent or bound to another browser | the user starts again from the relying party |
+| 400, `ErrOIDCConsentMalformed` | the answer does not fit the request | answers again; the handle is unspent |
+| 401, `ErrAuthenticationRequired` | no sign-in, or something else than one: an API key and Basic credentials are refused | signs the user in, and resumes again |
+| 401, `ErrOIDCReauthenticate` | the sign-in is too old for the request's `prompt` or `max_age` | authenticates the user again, and resumes again |
+| the chain's refusal for that state | the session owes a second factor, an enrolment, a recovery or a password change, or a bound sign-in came without its proof | finishes that step, and resumes again |
+
+The sign-in is read only from the `Authorization` header, through the chain's bearer, never from the
+query. A session a late renewal alone could recover cannot resume.
+
+A server-rendered page can skip the `fetch`, and resume through the Go API: `op.Resume`, with
+`ResumeInput` built from the cookies `httpsec.OIDCFlowCookie` and `httpsec.OIDCBrowserSessionCookie`.
+It then answers for what the chain would have judged: `SignIn` cannot say a session owes a step, so
+the page must not pass one that does.
+
+Under an issuer built with `oidcprovider.WithLoopbackHTTPIssuer`, for local development, both cookies
+lose the `__Host-` prefix and `Secure`, because a browser refuses the prefix over plain http.
+
+### Pages served outside the chain
+
+`New` requires `EnableSecurityHeaders`, with a document profile forbidding framing, because the login
+and consent pages must not be framed. If your pages are served outside the chain, have them carry
+`frame-ancestors` themselves, and state that with `httpsec.WithOIDCPagesCarryFrameAncestors()`. The
+chain takes the statement on trust, as it cannot see those pages.
+
+### A login finished in another browser
+
+The flow cookie binds a request to the browser that started it, so a resume from any other browser
+is an unknown handle. A magic link opened elsewhere, or a recovery completed on another device, signs
+the user in there, but cannot finish the request. The user starts again from the relying party. This
+is deliberate: the binding is what stops someone else's browser completing a request.
+
+One browser's tabs share one flow cookie, so requests parked in several tabs can each be resumed.
+
+### The browser session
+
+After a login stage resumes, the provider sets `__Host-scrty-op-session`. While it is valid, an
+authorization in that browser skips the login page, unless `prompt` asks for `login` or
+`select_account` or `max_age` is not met; `prompt=none` answers from it; and the consent stage may
+rest on it. That is single sign-on between your relying parties.
+
+It lives no longer than the sign-in as far as the provider can tell: it takes the sign-in's absolute
+deadline and the session manager's `IdleTimeout()` without use, and it ends when the sign-in ends.
+Activity elsewhere does not extend it, which errs short.
+
+What it does not see is a marker placed on the sign-in afterwards, such as a required password
+change. An admin's forced change that matters must end the sign-in, which does reach it. It issues no
+first-party credential, and only the provider reads it.
+
+`oidcprovider.WithoutBrowserSessions()` turns it off, and CSRF protection stops being required. Every
+request then shows the login page, `prompt=none` always answers `login_required`, and every logout
+asks. **This fails the OpenID Foundation's Basic OP conformance plan**, whose `prompt=none` modules
+expect a second request in the same browser to succeed.
+
+### Defaults
+
+| Setting | Default | Replace with |
+|---|---|---|
+| Endpoint paths | under `/oauth2` | `WithOIDCProviderPrefix`, `WithOIDCProviderPath` |
+| Authorization throttle | 300 parked or invalid-client requests per source a minute | `WithOIDCAuthorizeLimiter`, `WithRateLimiterFactory` |
+| Resume throttle | 30 unknown handles per source a minute | `WithOIDCResumeLimiter`, `WithRateLimiterFactory` |
+| Authorization form body | `DefaultLoginBodyLimit` | `WithOIDCAuthorizeBodyLimit` |
+| Resume body | `DefaultLoginBodyLimit` | `WithOIDCResumeBodyLimit` |
+| Browser session | on | `oidcprovider.WithoutBrowserSessions` |
+| Cookie names | `__Host-scrty-op-flow`, `__Host-scrty-op-session` | none: the prefix is what stops another host planting one |
+
+The throttles are per process unless the limiter is shared between replicas.
+
 ## Letting required users enrol
 
 By default, a user who must use a second factor and has none is refused outright: enrolment is a

@@ -211,10 +211,37 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 	}
 }
 
-// EnableOIDCProvider puts the OpenID Provider p on the chain.
+// EnableOIDCProvider puts the OpenID Provider p on the chain. The provider answers
+// the authorization code flow; the login and consent pages are the consumer's, and
+// resume a parked request through the OIDCResume endpoint (see PendingOIDCRequest,
+// and the README's "OpenID Provider").
 //
-// Default: its endpoints under DefaultOIDCProviderPrefix, at the paths the
-// OIDCEndpoint constants give (WithOIDCProviderPrefix, WithOIDCProviderPath).
+// Defaults, each with what replaces it:
+//
+//   - Paths: its endpoints under DefaultOIDCProviderPrefix, at the paths the
+//     OIDCEndpoint constants give (WithOIDCProviderPrefix, WithOIDCProviderPath).
+//   - Cookies: OIDCFlowCookie and OIDCBrowserSessionCookie, HttpOnly, Secure,
+//     SameSite=Lax and Path=/. Their names have no override, because the __Host-
+//     prefix is what stops another host planting one; they lose it and Secure only
+//     under oidcprovider.WithLoopbackHTTPIssuer, where a browser would refuse it.
+//   - Browser session: on, which skips the login page for a browser signed in
+//     already (oidcprovider.WithoutBrowserSessions turns it off, and fails the Basic
+//     OP conformance plan).
+//   - Authorization throttle: 300 parked or invalid-client requests per source a
+//     minute (WithOIDCAuthorizeLimiter, or the chain's WithRateLimiterFactory).
+//   - Resume throttle: 30 unknown handles per source a minute (WithOIDCResumeLimiter,
+//     or the chain's WithRateLimiterFactory).
+//   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
+//     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit).
+//
+// # The provider's lifecycle
+//
+// The chain neither starts nor stops p. oidcprovider.Provider.Start is optional and
+// launches nothing, because back-channel delivery starts itself at the first ended
+// sign-in. Call oidcprovider.Provider.Shutdown when the application stops, which is
+// what ends that delivery; a provider that has delivered nothing has nothing to end.
+//
+// # What refuses the chain
 //
 // A chain that could not serve the provider correctly does not build. Each of
 // these is a configuration error naming this option:
