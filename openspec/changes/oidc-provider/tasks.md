@@ -220,7 +220,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - idle timeout 30 days and absolute lifetime 90 days by default, set per client.
 
   The red test for H4 comes first: a lineage missing while the grant row is live reads as revoked. Verify: `go test -race -run 'TestProvider_Refresh' -count=1 ./oidcprovider/`.
-- [ ] 7.6 Revoke and introspect, test-first:
+- [x] 7.6 Revoke and introspect, test-first:
   - revoking a refresh token ends its grant; an opaque token ends itself;
   - a public client may revoke by naming its `client_id` (R13);
   - a JWT, an unknown or an expired token answers success with nothing revoked; so does a real family with a forged secret (R8);
@@ -229,14 +229,14 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - introspection follows the visibility rule, refuses a public client, reports a JWT of a revoked grant inactive (R4), and an active answer carries the full field list.
 
   Verify: `go test -run 'TestProvider_Revoke|TestProvider_Introspect' -count=1 ./oidcprovider/`.
-- [ ] 7.7 Answer UserInfo, test-first. Cover:
+- [x] 7.7 Answer UserInfo, test-first. Cover:
   - only this provider's access tokens with `openid`, whose audience includes the issuer and whose grant is not revoked (R4);
   - claims released by scope, and absent claims omitted;
   - a replaceable claim source, defaulting to the identity store (`name`, `preferred_username`, and for the `email` scope a username that is exactly an email address as `email`, with `email_verified` false), with consumer values returned unchanged;
   - a missing or disabled user answered `invalid_token`.
 
   Verify: `go test -run 'TestProvider_UserInfo' -count=1 ./oidcprovider/`.
-- [ ] 7.8 End grants, test-first:
+- [x] 7.8 End grants, test-first:
   - `EndSignIn` by T3's selectors, returning the clients to notify;
   - the provider as a session end observer, whose failure is logged and reported and never returned;
   - `RevokeUserGrants` with a cause, satisfying T8's ports;
