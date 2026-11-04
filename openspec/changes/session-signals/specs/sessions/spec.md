@@ -36,7 +36,7 @@ The manager SHALL call each observer with a context keeping the caller's values 
 - **THEN** the second is still called, and the end is unchanged
 
 ### Requirement: An end report says what ended and why, without identifiers
-The report SHALL name the cause, the user when known, the family when known, the family kept when one was kept, and the upstream issuer and session when the end was selected by them. It SHALL NOT carry any session identifier.
+The report SHALL name the cause, the user when known, the family when known, the family kept when one was kept and could be read, and the upstream issuer and session when the end was selected by them. It SHALL NOT carry any session identifier.
 
 #### Scenario: User's other sessions deleted
 - **WHEN** the manager deletes user `u-1`'s sessions except the one in family `f-2`
