@@ -31,11 +31,7 @@ Building a chain with the provider SHALL fail with a configuration error naming 
 - the JWKS endpoint is not enabled;
 - the provider is enabled more than once;
 - a session manager the chain is wired with does not report sign-in ends to the provider (`sessions`), because grants would then outlive a logout;
-- two of its paths collide with each other or with another endpoint of the chain;
-- one of its paths holds a character that would need escaping in a URL path, because it could then not be published and compared as served;
-- the JWKS endpoint publishes a different signing-key manager from the one the provider signs with. A wrapper on either side cannot be compared, and builds;
-- the provider accepts assertions naming a token endpoint other than its public URL;
-- a client the provider can list requires a binding the chain does not verify, or the provider and the chain disagree on whether DPoP is on.
+- two of its paths collide with each other or with another endpoint of the chain.
 
 #### Scenario: No bearer mode
 - **WHEN** the provider is enabled on a chain with form login and no bearer mode
@@ -48,6 +44,32 @@ Building a chain with the provider SHALL fail with a configuration error naming 
 #### Scenario: Path collision
 - **WHEN** the consumer sets the provider's end-session path to the chain's logout path
 - **THEN** construction fails with a configuration error
+
+### Requirement: A provider path is one that can be published as served
+Building a chain SHALL fail with a configuration error naming the option when a provider path or prefix holds a character that would need escaping in a URL path, because it could then not be published and compared as served.
+
+#### Scenario: A space in the prefix
+- **WHEN** the consumer sets the provider's prefix to `/o p`
+- **THEN** construction fails with a configuration error naming the option
+
+### Requirement: The provider and the chain must agree
+Building a chain with the provider SHALL fail with a configuration error naming the provider when:
+- the JWKS endpoint publishes a different signing-key manager from the one the provider signs with;
+- the provider accepts assertions naming a token endpoint other than its public URL;
+- a client the provider can list requires a binding the chain does not verify;
+- the provider and the chain disagree on whether DPoP is on.
+
+#### Scenario: A consumer's own registry
+- **WHEN** a client in a consumer's own registry requires a binding the chain does not verify
+- **THEN** the chain builds, as such a registry cannot be listed, and the client is refused at the token endpoint
+
+#### Scenario: Keys that differ
+- **WHEN** the provider signs with one `*signingkey.Keys`, and the JWKS endpoint publishes another
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: A wrapped key source
+- **WHEN** the consumer wraps the signing-key manager the JWKS endpoint publishes, and gives the wrapper to the provider
+- **THEN** the chain builds
 
 ### Requirement: The provider requires the protections its pages rest on
 The provider also requires two protections its pages rest on. CSRF protection SHALL be enabled while browser sessions are on, because the consent stage and the logout confirmation then rest on a cookie. Security headers SHALL be enabled, unless the consumer states that its login and consent pages carry `frame-ancestors` themselves. Otherwise construction SHALL fail with a configuration error naming the provider.
