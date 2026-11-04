@@ -1812,6 +1812,342 @@ func TestSessionSignals_BusWakeUp(t *testing.T) {
 	})
 }
 
+// raiseOnQueue delivers a consumer's signal as a bus would, onto every stream of u-1.
+func (r *streamRig) raiseOnQueue(names ...string) {
+	for _, name := range names {
+		httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{User: "u-1", Name: name, Data: json.RawMessage(`{}`)})
+	}
+
+	synctest.Wait()
+}
+
+// TestSessionSignals_BusWakeUp_QueueHold pins that a stream holding an end notice whose reload has
+// not answered sends nothing from its queue, so that a signal raised just after an end does not
+// overtake the session_ended it may have become moot by, and that a hold always ends.
+func TestSessionSignals_BusWakeUp_QueueHold(t *testing.T) {
+	t.Parallel()
+
+	const firstHeard, secondHeard = "app.first", "app.second"
+
+	heardBoth := []string{"session", firstHeard, secondHeard}
+
+	noBeat := streamSetup{
+		idle:    3 * time.Hour,
+		signals: httpsec.SessionSignals{Heartbeat: 60 * time.Second, MaxAge: httpsec.NoMaxAge, Signals: endedOnly},
+	}
+
+	// The default ReloadTimeout at that heartbeat.
+	const reloadTimeout = 10 * time.Second
+
+	runStreamCases(t, []streamCase{
+		{
+			name:  "a forged end holds the queue until the store says alive, and nothing held is lost",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				require.EqualValues(t, 1, held.entered.Load())
+
+				r.raiseOnQueue(firstHeard, secondHeard)
+				assert.Equal(t, []string{"session"}, stream.sent(), "a signal overtook the reload")
+
+				held.letGo()
+				synctest.Wait()
+
+				assert.Equal(t, heardBoth, stream.sent())
+				r.requireLive(t, stream)
+				r.requireHarmless(t, 0, 0)
+			},
+		},
+		{
+			name:  "the store saying gone sends session_ended, and what was queued goes with the close",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard, secondHeard)
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held.letGo()
+				synctest.Wait()
+
+				assert.Equal(t, []string{"session", "session_ended"}, stream.sent())
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			name:  "a wake within the gap holds the queue until its reload answers, in the order raised",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "")
+				advance(100 * time.Millisecond)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard, secondHeard)
+				advance(800 * time.Millisecond)
+				assert.Equal(t, []string{"session"}, stream.sent(), "the gap let a signal through")
+
+				advance(100 * time.Millisecond)
+				assert.Equal(t, heardBoth, stream.sent())
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a read that began before the end does not answer for it",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "")
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				held.letGo()
+				synctest.Wait()
+				assert.Equal(t, []string{"session"}, stream.sent(), "a read older than the end released the queue")
+
+				advance(time.Second)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent())
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a failing read releases the queue",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "")
+				advance(100 * time.Millisecond)
+
+				r.failListing(true)
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+				assert.Equal(t, []string{"session"}, stream.sent())
+
+				advance(900 * time.Millisecond)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "a failed read left the queue held")
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a timed-out read releases the queue",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.honouringStore()
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				advance(reloadTimeout - time.Millisecond)
+				assert.Equal(t, []string{"session"}, stream.sent())
+
+				advance(time.Millisecond)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "a timed-out read left the queue held")
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a store ignoring its context does not hold the queue past the read's timeout",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				advance(reloadTimeout - time.Millisecond)
+				assert.Equal(t, []string{"session"}, stream.sent())
+
+				advance(time.Millisecond)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "a hung read left the queue held")
+				assert.EqualValues(t, 1, held.entered.Load())
+
+				// Its timeout answered the notice, so its return in the end does not hold again.
+				held.letGo()
+				synctest.Wait()
+
+				r.raiseOnQueue(secondHeard)
+				assert.Equal(t, heardBoth, stream.sent(), "a late return held the queue again")
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "an end noted while a read hangs past its timeout holds nothing, for no read can answer it",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "")
+				advance(reloadTimeout)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "a hung read held the queue with no end in sight")
+				assert.EqualValues(t, 1, held.entered.Load())
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a flood of forged ends does not hold the queue for ever",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				// Every read is overtaken by another notice, so that no read answers the latest.
+				hub := httpsec.SignalHubProbeOf(r.chain)
+				flood := func(context.Context) error {
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"})
+
+					return nil
+				}
+				r.listHook.Store(&flood)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				advanceUntil(t, 5*time.Second, "the signal behind the flood", func() bool { return len(stream.events(firstHeard)) == 1 })
+				r.requireLive(t, stream)
+
+				r.raiseOnQueue(secondHeard)
+				assert.Equal(t, heardBoth, stream.sent(), "the flood held the queue again")
+			},
+		},
+		{
+			name:  "the store saying alive with no end left unanswered lets the next end hold again",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				// Past the bound on a hold, as a flood takes it.
+				hub := httpsec.SignalHubProbeOf(r.chain)
+				flood := func(context.Context) error {
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"})
+
+					return nil
+				}
+				r.listHook.Store(&flood)
+				r.wakeWith(s, "logout")
+				advance(5 * time.Second)
+
+				// The flood stops, and one more read answers everything noted.
+				r.listHook.Store(nil)
+				advance(2 * time.Second)
+
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+				assert.Equal(t, []string{"session"}, stream.sent(), "the end of a flood left the stream unable to hold")
+
+				held.letGo()
+				synctest.Wait()
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent())
+			},
+		},
+		{
+			name:  "a wake with no end notice holds nothing",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "a reason this replica does not know")
+				require.EqualValues(t, 1, held.entered.Load())
+
+				r.raiseOnQueue(firstHeard)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "a wake with no end notice held the queue")
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "closing during a hold closes with no event",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				require.NoError(t, httpsec.SignalHubProbeOf(r.chain).Registry().Close(t.Context()))
+				synctest.Wait()
+
+				assert.True(t, stream.closed())
+				assert.Equal(t, []string{"session"}, stream.sent())
+			},
+		},
+		{
+			name:  "a client leaving during a hold closes with no event",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				stream.cancel()
+				synctest.Wait()
+
+				assert.True(t, stream.closed())
+				assert.Equal(t, []string{"session"}, stream.sent())
+				assert.Zero(t, r.openStreams())
+			},
+		},
+		{
+			name: "a heartbeat goes out during a hold",
+			setup: streamSetup{
+				idle:    3 * time.Hour,
+				signals: httpsec.SessionSignals{Heartbeat: 10 * time.Second, MaxAge: httpsec.NoMaxAge, Signals: endedOnly},
+			},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				advanceUntil(t, 12*time.Second, "the first beat", func() bool { return len(stream.comments()) == 1 })
+
+				// The next beat is 9 to 11 seconds after the first, and a read here has 5.
+				advance(6 * time.Second)
+
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+				advance(5*time.Second - time.Millisecond)
+
+				assert.Len(t, stream.comments(), 2, "the hold stopped the heartbeat")
+				assert.Equal(t, []string{"session"}, stream.sent())
+				assert.EqualValues(t, 1, held.entered.Load())
+			},
+		},
+	})
+}
+
 // heldRead makes a store's read wait until it is let go, whatever its context says: a store that
 // ignores its context, as a consumer's loader is likely to. The test's end lets it go, since a
 // bubble cannot end around a goroutine that never returns.

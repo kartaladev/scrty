@@ -253,11 +253,6 @@ func passkeyRemoved(other string) func(t *testing.T) credentialRig {
 func TestSessionSignals_CredentialChanged_EndedStream(t *testing.T) {
 	t.Parallel()
 
-	// REPRODUCED, and waiting on a decision: a stream told to end is woken and reloads, and its
-	// queue is still read meanwhile, so it sends the credential_changed queued behind the end
-	// before it sends session_ended. Remove this skip when a stream the change ended skips it.
-	t.Skip("a stream the change ended still hears credential_changed before session_ended")
-
 	cases := []struct {
 		name  string
 		build func(t *testing.T) credentialRig
@@ -288,6 +283,76 @@ func TestSessionSignals_CredentialChanged_EndedStream(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestSessionSignals_CredentialChanged_UserWideEnd pins what a stream that outlives a user-wide end
+// hears of a credential change raised just after it.
+func TestSessionSignals_CredentialChanged_UserWideEnd(t *testing.T) {
+	t.Parallel()
+
+	const kind = `{"kind":"passkey"}`
+
+	change := func(r *streamRig) {
+		httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+			User: "u-1", Name: string(httpsec.SignalCredentialChanged), Data: json.RawMessage(kind),
+		})
+		synctest.Wait()
+	}
+
+	runStreamCases(t, []streamCase{
+		{
+			name:  "the family a report kept is not woken, and hears at once, where the others end",
+			setup: streamSetup{signals: sourcesSignals},
+			assert: func(t *testing.T, r *streamRig) {
+				mine, other := r.signIn(t), r.signIn(t)
+				own, ended := r.open(t, mine.ID), r.open(t, other.ID)
+
+				// The kept stream's read is what this holds, were it to read at all.
+				held := r.holdListings(t)
+
+				r.act(func() {
+					_, err := r.sessions.EndOtherSignIns(t.Context(), "u-1", mine)
+					require.NoError(t, err)
+				})
+				change(r)
+
+				assert.Equal(t, []string{"session", "credential_changed"}, own.sent(), "the kept stream")
+				assert.False(t, own.closed())
+				assert.Equal(t, []string{"session"}, ended.sent(), "the ended stream, before its reload answers")
+				assert.EqualValues(t, 1, held.entered.Load(), "only the ended stream reloads")
+
+				held.letGo()
+				synctest.Wait()
+
+				assert.Equal(t, []string{"session", "session_ended"}, ended.sent(), "the ended stream")
+				assert.True(t, ended.closed())
+				assert.Equal(t, []string{"session", "credential_changed"}, own.sent(), "the kept stream")
+			},
+		},
+		{
+			name:  "a report that kept nothing holds a stream the store still holds, until its reload says alive",
+			setup: streamSetup{signals: sourcesSignals},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+					User: "u-1", Name: string(httpsec.SignalSessionEnded), Reason: "all_ended",
+				})
+				synctest.Wait()
+				change(r)
+
+				assert.Equal(t, []string{"session"}, stream.sent(), "a signal overtook the reload")
+
+				held.letGo()
+				synctest.Wait()
+
+				assert.Equal(t, []string{"session", "credential_changed"}, stream.sent())
+				assert.False(t, stream.closed())
+			},
+		},
+	})
 }
 
 // secondFactorEnrolled is the enrolment's confirm, which a confined sign-in of the same user

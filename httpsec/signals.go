@@ -94,7 +94,8 @@ var (
 	ErrCrossSiteStream = errors.New("httpsec: cross-site signal stream refused")
 
 	// ErrSignalsBusy is what a consumer's signal returns when a consumer's bus has
-	// fallen so far behind that the signal was dropped.
+	// fallen so far behind that the signal was dropped. It is also what one returns after
+	// CloseSessionSignals, on either bus, because nil would say the signal was sent.
 	ErrSignalsBusy = errors.New("httpsec: session signals are busy, and the signal was dropped")
 )
 
@@ -980,10 +981,14 @@ type signalStream struct {
 	// wake is filled with a non-blocking send to make the stream reload at once, and
 	// several coalesce into one. noteEnd sets notice or reuse first, so the reload can read
 	// them. reuse is kept apart, so that a later report cannot overwrite it: within its
-	// window it outranks whatever else arrived, which the stream's loop decides.
+	// window it outranks whatever else arrived, which the stream's loop decides. notes counts
+	// the reports that kept a reason, which is how the loop knows one has not been answered
+	// (streamLoop.holding). It is added to before the wake is sent, so a read that starts on
+	// the wake counts the report.
 	wake   chan struct{}
 	notice atomic.Pointer[endNotice]
 	reuse  atomic.Pointer[endNotice]
+	notes  atomic.Uint64
 
 	// closing is closed once by the registry when CloseSessionSignals ends the stream.
 	closing chan struct{}
@@ -1004,15 +1009,19 @@ func newSignalStream(user identity.UserID, family id.ID, upstream, source string
 }
 
 // noteEnd keeps what an end report said, reuse apart from every other reason, and then wakes
-// the stream without blocking. A report with no reason keeps nothing, and still wakes.
+// the stream without blocking. A report with no reason keeps nothing, and still wakes, and holds
+// nothing on the queue: every end the session manager reports has a reason, so only a bus's
+// sender sends one without.
 func (s *signalStream) noteEnd(n endNotice) {
 	switch n.reason {
 	case "":
 		// An unknown reason says nothing, so it must not erase one that was kept.
 	case reasonReuse:
 		s.reuse.Store(&n)
+		s.notes.Add(1)
 	default:
 		s.notice.Store(&n)
+		s.notes.Add(1)
 	}
 
 	select {

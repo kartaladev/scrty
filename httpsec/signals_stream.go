@@ -37,6 +37,13 @@ const (
 	// from a message and not a consumer's policy, so it is a constant.
 	streamWakeGap = time.Second
 
+	// streamHoldAnswers is how many answered reads an end notice can hold a stream's queue across
+	// while later notices keep arriving, one for a read older than the first and one for the read
+	// that answers it. So a shared bus's holder who forges ends faster than a stream may read
+	// cannot silence its queue. It protects a guarantee and not a consumer's policy, so it is a
+	// constant.
+	streamHoldAnswers = 2
+
 	// streamReasonBeats is how many nominal heartbeats a reported reason stays good for, counted
 	// from its local receipt, so that a report whose end never happened cannot name a later one.
 	streamReasonBeats = 2
@@ -379,6 +386,10 @@ type streamReading struct {
 	// the read's goroutine never does, or the timeout could not be told from an answer.
 	cancel context.CancelFunc
 
+	// notes is signalStream.notes when the read started: the end notices its answer can speak for,
+	// since the store had already ended whatever they report.
+	notes uint64
+
 	// overdue says the read is past its timeout, already counted as a failure, so that any answer
 	// it still gives is discarded.
 	overdue bool
@@ -408,6 +419,13 @@ type streamLoop struct {
 	// runs, so that later wakes wait in the channel and are not lost.
 	beat, timer <-chan time.Time
 	wake        <-chan struct{}
+
+	// answered is the end notices a read has answered, of signalStream.notes. heldAnswers is the
+	// reads answered while a later notice stayed unanswered, and parked is a signal taken from the
+	// queue before a notice was seen, which goes first when the hold ends. See holding.
+	answered    uint64
+	heldAnswers int
+	parked      *queuedSignal
 
 	// speakAt is the time the timer reloads at, the zero time for none. ageAt is when MaxAge
 	// closes the stream, the zero time with NoMaxAge. wakeOpensAt is when the gap ends.
@@ -509,6 +527,22 @@ func (l *streamLoop) run(ctx context.Context) string {
 			answer, timedOut, wake = l.reading.answer, l.reading.timedOut, nil
 		}
 
+		queue := (<-chan queuedSignal)(st.queue)
+
+		switch {
+		case l.holding():
+			queue = nil
+		case l.parked != nil:
+			sig := *l.parked
+			l.parked = nil
+
+			if reason := l.sendSignal(ctx, sig); reason != "" {
+				return reason
+			}
+
+			continue
+		}
+
 		var reason string
 
 		select {
@@ -528,14 +562,64 @@ func (l *streamLoop) run(ctx context.Context) string {
 			reason = l.onAnswer(ctx, read)
 		case <-timedOut:
 			reason = l.onReadTimeout(ctx)
-		case sig := <-st.queue:
-			reason = l.send(ctx, streamEvent{name: sig.name, data: sig.data})
+		case sig := <-queue:
+			reason = l.onSignal(ctx, sig)
 		}
 
 		if reason != "" {
 			return reason
 		}
 	}
+}
+
+// holding says an end notice has had no answer from the store, so the stream sends nothing from its
+// queue: a stream that end closes says session_ended instead of what was raised behind it. Nothing
+// else waits on this, so a heartbeat, MaxAge, closing and a client leaving all still act.
+//
+// Every notice has a wake behind it, and a read has a timeout, so a hold ends with the read that
+// answers it: within two wake gaps, which armTimer keeps to, and ReloadTimeout. Whatever that read
+// says short of gone lets the queue go: alive, because the notice was forged, rolled back or about
+// another sign-in, and a failure or timeout, because the store cannot say and an outage must not
+// silence a stream. Two things end a hold sooner. A read past its timeout cannot answer, however
+// long it hangs, and no other read starts beside it. And notices that keep outrunning the reads
+// (streamHoldAnswers) are not waited for, until a read answers all there are.
+func (l *streamLoop) holding() bool {
+	if l.answered == l.start.stream.notes.Load() || l.heldAnswers >= streamHoldAnswers {
+		return false
+	}
+
+	return l.reading == nil || !l.reading.overdue
+}
+
+// settleHold is a read, which started with the given notes noted, answering. A signal raised from
+// here on is no longer held for those.
+func (l *streamLoop) settleHold(notes uint64) {
+	waited := l.holding()
+	l.answered = notes
+
+	switch {
+	case notes == l.start.stream.notes.Load():
+		l.heldAnswers = 0
+	case waited:
+		l.heldAnswers++
+	}
+}
+
+// onSignal is a signal from the queue. One taken with a notice already noted, which the select could
+// not know of, waits for that notice's answer, and goes ahead of the rest of the queue then.
+func (l *streamLoop) onSignal(ctx context.Context, sig queuedSignal) string {
+	if l.holding() {
+		l.parked = &sig
+
+		return ""
+	}
+
+	return l.sendSignal(ctx, sig)
+}
+
+// sendSignal sends a signal from the queue.
+func (l *streamLoop) sendSignal(ctx context.Context, sig queuedSignal) string {
+	return l.send(ctx, streamEvent{name: sig.name, data: sig.data})
 }
 
 // told is why the stream must close now that it has been told to end, "" when it has not.
@@ -693,10 +777,11 @@ func (l *streamLoop) askStore(ctx context.Context, now time.Time) string {
 func (l *streamLoop) startRead() {
 	timed, cancel := context.WithTimeout(l.start.reload, l.e.cfg.ReloadTimeout)
 
-	answer := make(chan streamRead, 1)
-	l.reading = &streamReading{answer: answer, timedOut: timed.Done(), cancel: cancel}
-
 	e, st := l.e, l.start.stream
+
+	answer := make(chan streamRead, 1)
+	l.reading = &streamReading{answer: answer, timedOut: timed.Done(), cancel: cancel, notes: st.notes.Load()}
+
 	user, family := st.user, st.family
 
 	go func() {
@@ -736,6 +821,8 @@ func (l *streamLoop) onAnswer(ctx context.Context, read streamRead) string {
 	}
 
 	if !reading.overdue {
+		l.settleHold(reading.notes)
+
 		if reason := l.answer(ctx, read); reason != "" {
 			return reason
 		}
@@ -758,6 +845,7 @@ func (l *streamLoop) onReadTimeout(ctx context.Context) string {
 	default:
 	}
 
+	l.settleHold(l.reading.notes)
 	l.reading.timedOut, l.reading.overdue = nil, true
 
 	return l.answer(ctx, streamRead{sessionErr: context.DeadlineExceeded, timedOut: true})
