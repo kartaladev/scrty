@@ -32,6 +32,7 @@ func requestScenarios() []Scenario {
 		verifyBodyCodeWinsOverTheQuery(),
 		formFieldInBodyAndQueryAnswersTheBody(),
 		formFieldOnlyInTheQueryAnswersTheQuery(),
+		theRawQueryIsAsSent(),
 		multipartFormFieldInBodyAndQueryAnswersTheBody(),
 		aGETWithABodyReadsTheQuery(),
 		readingAFieldLeavesTheBodyReadable(),
@@ -233,6 +234,45 @@ func formFieldOnlyInTheQueryAnswersTheQuery() Scenario {
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
 			assert.Equal(t, "query", res.Body)
+		},
+	}
+}
+
+// rawQueryEchoBuild wires an interceptor that answers with the request's raw
+// query, as the adapter hands it to the chain.
+func rawQueryEchoBuild(t *testing.T) ChainSpec {
+	effects := newEffects(t)
+
+	echo := httpsec.RegisterInterceptor(
+		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
+			ex.Writer.WriteHeader(http.StatusOK)
+			_, _ = ex.Writer.Write([]byte(ex.Request.RawQuery()))
+
+			return nil
+		}),
+		httpsec.OrderJWKS,
+	)
+
+	return ChainSpec{Options: []httpsec.Option{echo}, Effects: effects}
+}
+
+// theRawQueryIsAsSent is the row that stands behind the token endpoints'
+// refusal of a credential in the query: each adapter must hand the chain the
+// query exactly as sent, including the pairs its own parser would drop.
+func theRawQueryIsAsSent() Scenario {
+	const query = "client%5Fsecret=%zz;a=1&b=%41"
+
+	return Scenario{
+		Name:  "the raw query is exactly as the client sent it",
+		Build: rawQueryEchoBuild,
+		Request: sending(RequestSpec{
+			Method:        http.MethodGet,
+			Path:          formFieldPath + "?" + query,
+			ClientAddress: ClientAddress,
+		}),
+		Assert: func(t *testing.T, res Result) {
+			assert.NoError(t, res.Refusal)
+			assert.Equal(t, query, res.Body)
 		},
 	}
 }

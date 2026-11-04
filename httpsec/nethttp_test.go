@@ -61,6 +61,24 @@ func TestHTTPRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "the raw query is as sent, a pair Go cannot parse included",
+			build: func(t *testing.T) *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/cb?client%5Fsecret=%zz;a=1&b=%41", nil)
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Equal(t, "client%5Fsecret=%zz;a=1&b=%41", r.RawQuery())
+			},
+		},
+		{
+			name: "no query is an empty raw query",
+			build: func(t *testing.T) *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/cb", nil)
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Empty(t, r.RawQuery())
+			},
+		},
+		{
 			name: "a present cookie is reported present",
 			build: func(t *testing.T) *http.Request {
 				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)

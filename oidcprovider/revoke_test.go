@@ -1115,6 +1115,20 @@ func TestProvider_Introspect(t *testing.T) {
 			},
 		},
 		{
+			name: "a grant bound to a certificate says so on its refresh token",
+			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				f.grants.rewrite = func(g *oidcprovider.Grant) { g.CertBinding = keyTwo }
+
+				return credsOf("billing-web"), tokenForm(s.first.RefreshToken)
+			},
+			assert: func(t *testing.T, _ *refreshFixture, _ *refreshScene, got introspected) {
+				t.Helper()
+
+				require.NoError(t, got.err)
+				assert.Equal(t, map[string]string{"x5t#S256": keyTwo}, got.answer["cnf"])
+			},
+		},
+		{
 			name: "a hint names no type a token is read as",
 			arrange: func(_ *testing.T, _ *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
 				return credsOf("billing-web"), hinted(s.first.RefreshToken, "access_token")

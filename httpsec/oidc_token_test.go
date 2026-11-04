@@ -696,6 +696,81 @@ func TestOIDCToken(t *testing.T) {
 			assert: refused(oidcprovider.CodeInvalidRequest),
 		},
 		{
+			name: "a client_secret in the query that does not parse",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tokenURL+"?client_secret=%zz",
+					strings.NewReader(exchangeOf(e.issue(t, tokenWeb, nil)).Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+				r.SetBasicAuth(tokenWeb, tokenSecret)
+
+				return e.serve(t, r)
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
+			name: "a client_secret in the query followed by a semicolon pair",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tokenURL+"?client_secret=abc;x=1",
+					strings.NewReader(exchangeOf(e.issue(t, tokenWeb, nil)).Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+				r.SetBasicAuth(tokenWeb, tokenSecret)
+
+				return e.serve(t, r)
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
+			name: "a client_secret in the query with an escaped name",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tokenURL+"?client%5Fsecret=%zz",
+					strings.NewReader(exchangeOf(e.issue(t, tokenWeb, nil)).Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+				r.SetBasicAuth(tokenWeb, tokenSecret)
+
+				return e.serve(t, r)
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
+			name: "a client_secret in the query after a semicolon pair",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tokenURL+"?a=1;client_secret=abc",
+					strings.NewReader(exchangeOf(e.issue(t, tokenWeb, nil)).Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+				r.SetBasicAuth(tokenWeb, tokenSecret)
+
+				return e.serve(t, r)
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
+			name: "a client_secret in the query with no value",
+			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
+				t.Helper()
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tokenURL+"?client_secret",
+					strings.NewReader(exchangeOf(e.issue(t, tokenWeb, nil)).Encode()))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+				r.SetBasicAuth(tokenWeb, tokenSecret)
+
+				return e.serve(t, r)
+			},
+			assert: refused(oidcprovider.CodeInvalidRequest),
+		},
+		{
 			name: "client_id in the query authenticates no one",
 			send: func(t *testing.T, e *tokenEndpoint) tokenAnswer {
 				t.Helper()

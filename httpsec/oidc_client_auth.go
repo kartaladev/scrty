@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -29,6 +31,27 @@ const oidcAuthorizationHeader = "Authorization"
 // all an endpoint hands the provider of the query, so that it can refuse them. Nothing
 // is ever read from there to authenticate with.
 var oidcQueryCredentials = []string{"client_secret", "client_assertion", "client_assertion_type"}
+
+// queryNamesCredential reports whether the raw query names a client credential, however
+// the pairs parse. It splits on "&" and ";" both, so a pair one framework reads and
+// another drops is judged alike, takes each piece's name before "=", and compares it
+// decoded when it decodes and as sent when it does not. A name with no "=" counts, and a
+// value that merely holds a credential's name does not.
+func queryNamesCredential(raw string) bool {
+	for piece := range strings.FieldsFuncSeq(raw, func(r rune) bool { return r == '&' || r == ';' }) {
+		name, _, _ := strings.Cut(piece, "=")
+
+		if decoded, err := url.QueryUnescape(name); err == nil {
+			name = decoded
+		}
+
+		if slices.Contains(oidcQueryCredentials, name) {
+			return true
+		}
+	}
+
+	return false
+}
 
 // oidcClientThrottle counts an endpoint's failed client authentications by source. It
 // is a group's own, with a limiter the consumer may replace.
@@ -107,14 +130,15 @@ func (t *oidcClientThrottle) answer(ex *Exchange, src ratelimit.Source, err erro
 // and the query carries over only what oidcQueryCredentials names.
 //
 // It answers an *oidcprovider.Error holding invalid_request when the body is not a form
-// that parses or when the Authorization header is repeated, and ErrRequestTooLarge for a
+// that parses, when the Authorization header is repeated, or when the raw query names a
+// credential, which it finds whether or not the framework parsed the pair, and ErrRequestTooLarge for a
 // body over limit, which is read before anything is parsed.
 func readOIDCClientRequest(r Request, limit int64) (oidcprovider.ClientCredentials, error) {
 	refused := func() (oidcprovider.ClientCredentials, error) {
 		return oidcprovider.ClientCredentials{}, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
 
-	if len(r.HeaderValues(oidcAuthorizationHeader)) > 1 {
+	if len(r.HeaderValues(oidcAuthorizationHeader)) > 1 || queryNamesCredential(r.RawQuery()) {
 		return refused()
 	}
 

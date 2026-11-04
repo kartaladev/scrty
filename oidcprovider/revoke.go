@@ -277,7 +277,10 @@ func (p *Provider) introspectRefreshToken(ctx context.Context, raw string, rc *R
 		"aud":        []string{p.issuer},
 		"token_type": tokenTypeRefresh,
 	}
-	if grant.KeyBinding != "" {
+	switch {
+	case grant.CertBinding != "":
+		answer["cnf"] = map[string]string{"x5t#S256": grant.CertBinding}
+	case grant.KeyBinding != "":
 		answer["cnf"] = map[string]string{"jkt": grant.KeyBinding}
 	}
 

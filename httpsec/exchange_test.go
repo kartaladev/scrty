@@ -97,6 +97,12 @@ func (r *miniRequest) Query(name string) string {
 	return r.ex.query.Get(name)
 }
 
+func (r *miniRequest) RawQuery() string {
+	_, raw, _ := strings.Cut(r.ex.target, "?")
+
+	return raw
+}
+
 func (r *miniRequest) QueryValues(name string) []string {
 	r.Query(name) // parses the query on first use
 
