@@ -232,7 +232,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 - [ ] 7.7 Answer UserInfo, test-first. Cover:
   - only this provider's access tokens with `openid`, whose audience includes the issuer and whose grant is not revoked (R4);
   - claims released by scope, and absent claims omitted;
-  - a replaceable claim source, defaulting to the identity store (`preferred_username`, `email`, `email_verified`), with consumer values returned unchanged;
+  - a replaceable claim source, defaulting to the identity store (`name`, `preferred_username`), with `email` and `email_verified` only from a consumer's source, and consumer values returned unchanged;
   - a missing or disabled user answered `invalid_token`.
 
   Verify: `go test -run 'TestProvider_UserInfo' -count=1 ./oidcprovider/`.

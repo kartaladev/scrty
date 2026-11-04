@@ -62,7 +62,7 @@ The UserInfo response SHALL be a JSON object, unsigned by default. It SHALL alwa
 - `phone`: `phone_number` and `phone_number_verified`;
 - `address`: `address`.
 
-A claim the user does not have SHALL be omitted, never sent as null or empty.
+A claim the user does not have SHALL be omitted, never sent as null or an empty string.
 
 #### Scenario: Profile scope only
 - **WHEN** a token for `openid profile` is presented for a user with a name and an email
@@ -72,8 +72,22 @@ A claim the user does not have SHALL be omitted, never sent as null or empty.
 - **WHEN** a token for `openid email` is presented for a user without an email
 - **THEN** the response holds `sub` only
 
+### Requirement: A consumer's claim values stay its own
+Any value a consumer's claim source returns, other than a null or an empty string, SHALL be returned unchanged, an empty list included.
+
+#### Scenario: An empty list
+- **WHEN** a consumer's claim source returns `groups` as an empty list
+- **THEN** the response holds `groups` as an empty list
+
+### Requirement: The default claim source has no email
+The default claim source has no email to read, because `identity.Details` holds none, so `email` and `email_verified` SHALL come only from a consumer's claim source.
+
+#### Scenario: The email scope with the default source
+- **WHEN** a token for `openid email` is presented, on a provider using the default claim source
+- **THEN** the response holds `sub`, and no `email`
+
 ### Requirement: Claims come from a replaceable claim source
-The provider SHALL obtain a user's claims from a claim source. By default it SHALL read them from the identity store's user: the username as `preferred_username`, and the email and its verified state when supplied. A consumer MAY supply its own claim source, for any standard or custom claim and the scopes that release them, and its values SHALL be returned unchanged. A user who no longer exists or is disabled SHALL be refused with `invalid_token`.
+The provider SHALL obtain a user's claims from a claim source. By default it SHALL read them from the identity store's user: the display name as `name`, and the username as `preferred_username`. A consumer MAY supply its own claim source, for any standard or custom claim and the scopes that release them, and its values SHALL be returned unchanged. A user who no longer exists or is disabled SHALL be refused with `invalid_token`.
 
 #### Scenario: Consumer adds a custom claim
 - **WHEN** the consumer's claim source releases `department` for the scope `org`, and a token for `openid org` is presented

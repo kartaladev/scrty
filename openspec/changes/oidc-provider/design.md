@@ -1200,10 +1200,20 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **A refresh stores an opaque token first.** Unlike the exchange (R18), a refresh stores it in the signing step, before the rotation's write, so an access-token store outage cannot burn the presented token and raise a false reuse alarm at a retry past the grace. Any error answer then revokes that one record, detached, and a failure of that is logged.
 - **Reuse marks the grant row first.** A reuse the provider judges itself marks the row, then deletes the family, so a failed mark answers a dependency failure with the lineage intact, and presenting the token again retries. A reuse the manager finds on the re-rotation path deletes first, and only the observer marks the row. If that write fails it is logged: the grant reads as revoked at every refresh (H4), but its opaque tokens stay valid until their own expiry, as nothing is left to present. In practice that needs mismatched keys and a failing store together.
 
+#### R21. What ending, revoking and claims settled
+
+- **A disabled user's refresh marks the row first (`REPRODUCED` 2026-11-04).** Deleting the family when the mark failed left nothing to retry through: the next refresh was refused before it could mark the row, and access tokens read as live until they expired. A replayed code keeps its old order, because it can retry through the code record.
+- **A first-party client's grants can be ended (`REPRODUCED`).** Such a client skips consent, so requiring a remembered consent left a user no way to end one client's grants, short of every client's. The refusal now needs neither a consent nor a grant.
+- **A resource server's identifier cannot be the issuer (`REPRODUCED`).** The issuer is in every default-audience `openid` token, so that value would show a client nearly every token at introspection. `ResourceIdentifier` must be an absolute URI with no fragment, not the issuer, on a confidential client, or the client fails construction.
+- **Ending a sign-in budgets each store on its own (`REPRODUCED`).** A hanging grant store would otherwise spare the browser sessions, and nothing retries an observer.
+- **Empty claims (OIDC Core §5.3.2).** A null or an empty string is omitted. Any other value of a consumer's stays, as a consumer's `groups: []` is its own (`library-design` rule 5).
+- **The default claim source has no email.** `identity.Details` holds none, so the `email` scope releases nothing by default, and a consumer supplies `email` and `email_verified` through `WithClaimSource`. Adding an email to `identity` is a change of its own, and it can come later without breaking a consumer.
+- **Accepted:** a superseded token is inactive at introspection even inside its grace, and a disabled user's token stays active there until its grant is revoked, bounded by its lifetime. A caller who hangs up before the first read at revocation revokes nothing, as no credential was yet judged. All of this ran on the memory stores; task 12.6 carries the durable round trip.
+
 #### R8. A family identifier is not a credential (H6)
 
 - **The gap.** The refresh token's family is not a secret, yet H4's "missing lineage reads as revoked" could be read as writing a revocation, and the revocation endpoint could revoke by the family alone. Either way, a value holding a real family and a made-up secret would end someone's grant: from any client's own grants, or from a public client that needs no secret. `UNREPRODUCED`.
-- **The decision.** A secret that matches no record of the grant refuses with `invalid_grant` and writes nothing, at refresh and at revocation. Presenting a superseded secret at revocation or introspection is not a reuse, which only a refresh detects. No override.
+- **The decision.** A secret that matches no record of the grant writes nothing: a refresh refuses it with `invalid_grant`, and revocation answers success, as RFC 7009 has it. Presenting a superseded secret at revocation or introspection is not a reuse, which only a refresh detects. No override.
 
 #### R9. The flow cookie across tabs, hosts and browsers
 

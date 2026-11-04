@@ -630,9 +630,9 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `type ClaimSource interface { Claims(ctx context.Context, user identity.UserID, scopes []string) (map[string]any, error) }`, set with `WithClaimSource`;
   - `func (p *Provider) UserInfo(ctx context.Context, at *AccessToken) (map[string]any, error)`.
 - **Ending grants:**
-  - `func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) error`;
+  - `func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientToNotify, error)`;
   - `func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport)`, which implements `session.EndObserver`;
-  - `func (p *Provider) RevokeUserGrants(ctx context.Context, user identity.UserID, cause RevocationCause) error`;
+  - `func (p *Provider) RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error`, a plain `string` so a port needs no import of `oidcprovider`;
   - `func (p *Provider) Consents(ctx context.Context, user identity.UserID) ([]ConsentView, error)`;
   - `func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clientID string) error`.
 - **Back-channel delivery:** `type LogoutDelivery interface { Deliver(ctx context.Context, uri string, logoutToken string) error }`, set with `WithLogoutDelivery`. The default posts through the outbound client with a 5 s timeout.
@@ -789,6 +789,14 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red `TestProvider_RevokeUserGrants`: every grant of `u-1` is revoked with the cause, and `RevokeConsent` revokes only `(u-1, billing-web)` grants and forgets the consent.
 - [ ] FAIL; implement; PASS; commit.
 - [ ] Red row (R2): `EndSignIn` by each selector also deletes the browser sessions, through `DeleteBySignIn`, and a failure there fails the call. FAIL; implement; PASS; commit.
+
+- [ ] Rows from R21, each seen failing first:
+  - `TestProvider_Refresh`: a disabled user's refresh whose row cannot be marked answers a dependency failure with the family intact, and presenting again marks the row and ends its access tokens;
+  - `TestProvider_RevokeUserGrants_Consent`: no consent but a grant ends that client's grants only; neither is `ErrForeignConsent`;
+  - `TestClient_Validation`: a `ResourceIdentifier` equal to the issuer, not an absolute URI, with a fragment, or on a public client fails construction, named;
+  - `TestProvider_EndSignIn`: a hanging grant store does not spare the browser sessions, each store on its own `revocationBudget`; a report with a session and no issuer selects only that session;
+  - `TestProvider_Introspect`: a refresh token's `exp` honours a shortened idle timeout and absolute lifetime; a public client naming no token is `invalid_client`;
+  - `TestProvider_UserInfo`: `json.RawMessage("null")` is left out; a consumer's `[]` and `{}` stay.
 
 ### Task 7.9: Logout tokens and delivery
 **Files:** Create `oidcprovider/backchannel.go`
@@ -1063,7 +1071,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 
 ### Task 11.6: Revocation on security events (T8)
 **Files:** Modify `recovery/hold.go`, `authenticate/mfa/reset.go`, `httpsec/password_change.go`, `httpsec/session_management.go`, the passkey assertion path in `httpsec`
-- [ ] Ports, each declared in its own package: `interface{ RevokeUserGrants(ctx context.Context, user identity.UserID, cause oidcprovider.RevocationCause) error }`. The cause is a string type, so the packages take a `string` alias to avoid importing `oidcprovider`. Options:
+- [ ] Ports, each declared in its own package: `interface{ RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error }`, importing nothing from `oidcprovider`. Options:
   - `recovery`: `WithGrantRevoker(r)` and `WithoutRecoveryGrantRevocation()`;
   - `mfa`: `ResetDeps.Grants` and `WithoutResetGrantRevocation()`;
   - `httpsec`: `WithPasswordChangeGrantRevocation()` (off by default), `WithoutPasskeyCloneGrantRevocation()`, and the session-management body field `"revoke_application_access": true`.
