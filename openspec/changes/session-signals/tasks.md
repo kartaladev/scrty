@@ -91,7 +91,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 5. Stream lifecycle against the store (D4)
 
-- [ ] 5.1 Reload the sign-in at each heartbeat with ±10% jitter, through `SignInState` and `Users`, test-first, one row per line of D4's reload table. The first read at admission also reads the user, so a tenant-scoped user store with no hook and a disabled user on a cookie authenticator both fail there:
+- [x] 5.1 Reload the sign-in at each heartbeat with ±10% jitter, through `SignInState` and `Users`, test-first, one row per line of D4's reload table. The first read at admission also reads the user, so a tenant-scoped user store with no hook and a disabled user on a cookie authenticator both fail there:
   - gone after `logout`, `ended`, `reuse`, `all_ended` or `provider_logout` → `session_ended` with that reason, then close;
   - the user not found or no longer active → `ended`;
   - gone with no report → `ended`; gone, a held deadline passed → `expired`;
@@ -138,7 +138,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 7. Where signals come from (D5)
 
-- [ ] 7.1 Raise `credential_changed` from the chain's endpoints after their write succeeds, test-first, one row per endpoint: password-change resolve (`password`), passkey registration through finish and through confirm (`passkey`), passkey removal (`passkey`), and MFA enrolment confirmation and email redemption (`second_factor`). Add `recovery.Result.Removed` and `passkey.RecoveryKindName`, and raise one signal per distinct kind a recovery removed: `mfa` → `second_factor`, the passkey kind → `passkey`; a consumer's own kinds, nothing removed, a hold and a refusal raise nothing. Check the kind, that no credential detail appears, that a refused request raises nothing, that a failed raise changes no answer, and that a stream the same change ended sends `session_ended` and not `credential_changed`, including while its queue is held and when a forged end lets the signal through after all (D4). Verify: `go test -run 'TestSessionSignals_CredentialChanged|TestSessionSignals_BusWakeUp' -count=1 -race -v ./httpsec/` and `go test -run 'TestRecoverer_Complete' -count=1 -race -v ./recovery/`.
+- [x] 7.1 Raise `credential_changed` from the chain's endpoints after their write succeeds, test-first, one row per endpoint: password-change resolve (`password`), passkey registration through finish and through confirm (`passkey`), passkey removal (`passkey`), and MFA enrolment confirmation and email redemption (`second_factor`). Add `recovery.Result.Removed` and `passkey.RecoveryKindName`, and raise one signal per distinct kind a recovery removed: `mfa` → `second_factor`, the passkey kind → `passkey`; a consumer's own kinds, nothing removed, a hold and a refusal raise nothing. Check the kind, that no credential detail appears, that a refused request raises nothing, that a failed raise changes no answer, and that a stream the same change ended sends `session_ended` and not `credential_changed`, including while its queue is held and when a forged end lets the signal through after all (D4). Verify: `go test -run 'TestSessionSignals_CredentialChanged|TestSessionSignals_BusWakeUp' -count=1 -race -v ./httpsec/` and `go test -run 'TestRecoverer_Complete' -count=1 -race -v ./recovery/`.
 - [x] 7.2 Add `ReportCredentialChange` for changes made outside the chain, test-first: a consumer's password change reaches every stream of the user; signals disabled; an unknown kind. Verify: `go test -run 'TestSessionSignals_ReportCredentialChange' -count=1 ./httpsec/`.
 - [x] 7.3 Add `PublishSignal`, test-first:
   - `app.` names reach every stream of the user unchanged;
@@ -148,11 +148,11 @@ Every implementation task is test-first: write the failing test, run it and conf
   - a client's narrowing applies.
 
   Verify: `go test -run 'TestSessionSignals_Publish' -count=1 ./httpsec/`.
-- [ ] 7.4 Show that the stream never carries the audit feed, test-first, with one row each for: a failed login, a lockout, a rate-limit, CSRF, host and DPoP refusal, and another user's sign-in, lockout and password change. The stream sends nothing for any of them. Update the README with the signal list and the consumer's API. Verify: `go test -run 'TestSessionSignals_NoAuditFeed' -count=1 ./httpsec/`.
+- [x] 7.4 Show that the stream never carries the audit feed, test-first, with one row each for: a failed login, a lockout, a rate-limit, CSRF, host and DPoP refusal, and another user's sign-in, lockout and password change. The stream sends nothing for any of them. Update the README with the signal list and the consumer's API. Verify: `go test -run 'TestSessionSignals_NoAuditFeed' -count=1 ./httpsec/`.
 
 ## 8. Integration
 
-- [ ] 8.1 Run the stream scenarios end to end on all three adapters in conformance: snapshot, ended from another sign-in, logout naming `logout`, a renewal that leaves the stream open, narrowing, caps, a chain refusing after `Stream`, a cross-site refusal, a gzip wrapper in front, a fiber stream's copied values staying correct as later requests reuse the buffers, and a consumer signal. Verify: `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/signals' ./...` in the `test` module.
+- [x] 8.1 Run the stream scenarios end to end on all three adapters in conformance: snapshot, ended from another sign-in, logout naming `logout`, a renewal that leaves the stream open, narrowing, caps, a chain refusing after `Stream`, a cross-site refusal, a gzip wrapper in front, a fiber stream's copied values staying correct as later requests reuse the buffers, and a consumer signal. Verify: `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/signals' ./...` in the `test` module.
 - [ ] 8.2 Run every module's full suite with the race detector, one module at a time, then `govulncheck`, `gofmt -l` and `go vet` on every module. Verify: every command's output is clean.
 - [ ] 8.3 Review the whole branch against every requirement in this change's spec deltas, every design decision and the security review table, with each finding reproduced or labelled UNREPRODUCED. Verify: the review is recorded and its findings are resolved.
 
