@@ -207,3 +207,23 @@ Find it with `ListAgents` and tell it this session's name; it may have been rese
 - Reviewers should mutate in a scratch copy and never count a build failure or a timeout as a kill. Agents' reports of what they saw failing have been worth checking: `tail` or a filter can hide a package's `FAIL`.
 - `git push` needs the branch named, as this worktree has no upstream set.
 - Proofs from this session's reviews, if the scratchpad survives, are under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/bff13c6d-670e-4235-af08-e711bde90918/scratchpad`: `review-g9` does not exist yet; `review-dur`, `review-g68b`, `review-g5c`.
+
+## Update: third session
+
+Supersedes the sections above where they differ. Stopped at a usage limit with agents still running, so their results are unknown: check each worktree's `git status` before trusting it. Uncommitted work there may be partial.
+
+**47 of 79 ticked; 12.6 merged.** Nothing else from this session is on `feat/oidc-provider`. The user asked to parallelize subagents wherever possible. This session's name for `session-signal` was `oidc-provider [fc109e]`; tell it the new one.
+
+Worktrees are under `/private/tmp/claude-501/-Users-zakyalvan-Documents-RND-scrty/06d48fe0-a406-44d7-b082-ed4b34ef1f3e/scratchpad/`. Branch stack, cherry-pick in this order: `feat/oidc-provider-g9` (`69b90db4`, 7.9), `-g10` (`3613358f`, 7.10), `-g9fix`, `-h1` (`2d086532`, 8.1 to 8.3 so far), `-h2`.
+
+- **`lane-g9fix`, 7.9's review fold (Opus), uncommitted, not verified.** F1 `WithoutRedirects`, F2 to F4 one report mechanism, F5 report a POST cut off by `Shutdown`, F6 to F8, three mutant gaps. Re-review it: it changes a concurrency mechanism. Proofs: `review-g9/`.
+- **7.10 review (Opus), report not received.** Proofs, if any: `review-g10/`. Known open: a chain's refresh reuse also emits the lineage manager's `authn_token_reuse`, three events in all.
+- **`lane-h1`, the rest of 8.1 (Sonnet), uncommitted, not verified.** Accessors `BrowserSessionsEnabled`, `Issuer`, `RequiresBinding`, the blocked rows, collisions, `builtInSlots`. The certificate-binding row is scope the main session added; the user has not confirmed it.
+- **8.1 to 8.3 review (Opus), report not received.** Copy: `review-h1/`.
+- **`lane-h2`, 9.1 and 9.2 (Opus), uncommitted, not verified.** Reports the client-credential helper that 9.3 and 9.4 reuse.
+
+**Seam for later `httpsec` lanes:** overwrite the lane's stub, keep its type name, implement `routes()`; see `httpsec/oidc_provider.go`. Delete `oidc_stub.go` with the last stub.
+
+**Next:** gather those five results, then 8.4 to 8.7 and group 10 together, then 9.3 to 9.6, then group 11 after messaging `session-signal`.
+
+**Record in `design.md` when 7.9 and 8.1 merge:** R14's disagreements (`WithLogoutOutbound`, `WithLogoutDeliveryPool`, `WithLogoutDeliveryTimeout`, the `busy` reason, a cap of twice the workers, on-demand workers with `Start` launching nothing, a consumer delivery running on the pool); 7.10's `Event.Client` and `Cause`, nine names, and no event for `SignInsEnded`'s dependency failure; `OrderOIDCProvider` 250 and `OrderOIDCProviderSession` 850, `checkAfterWiring`, the path rules, `ErrDependency` answering 500 first. Fix plans 7.9's `Close(ctx)` and fake clock lines.
