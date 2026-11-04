@@ -15,12 +15,40 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
+)
+
+// The OpenID Provider's refusals the protocol does not let its endpoints answer
+// themselves. Each wraps the oidcprovider refusal it reports, so a consumer matching
+// either identity reaches it, and StatusForError answers the two alike.
+var (
+	// ErrOIDCInvalidAuthorization refuses an authorization request naming an invalid
+	// client or redirect URI, which cannot be answered by redirecting to the client.
+	// It maps to 400.
+	ErrOIDCInvalidAuthorization = fmt.Errorf("httpsec: invalid authorization request: %w",
+		oidcprovider.ErrInvalidAuthorization)
+
+	// ErrOIDCUnknownHandle refuses a pending-request handle that is unknown, expired,
+	// spent or not bound to the browser presenting it. It maps to 400.
+	ErrOIDCUnknownHandle = fmt.Errorf("httpsec: unknown pending request: %w", oidcprovider.ErrUnknownHandle)
+
+	// ErrOIDCConsentMalformed refuses a consent answer that does not fit its request,
+	// such as one granting scopes that were not requested. It maps to 400.
+	ErrOIDCConsentMalformed = fmt.Errorf("httpsec: malformed consent answer: %w", oidcprovider.ErrConsentMalformed)
+
+	// ErrOIDCReauthenticate refuses a resume whose sign-in is not fresh enough for the
+	// request's prompt or max_age. It maps to 401: the user signs in again.
+	ErrOIDCReauthenticate = fmt.Errorf("httpsec: the sign-in must be repeated: %w", oidcprovider.ErrReauthenticate)
+
+	// ErrOIDCForeignConsent refuses a consent listing or revocation for a user other
+	// than the signed-in one. It maps to 404, as another user's passkey does.
+	ErrOIDCForeignConsent = fmt.Errorf("httpsec: no such consent: %w", oidcprovider.ErrForeignConsent)
 )
 
 // The refusals this package defines itself. Every other refusal a consumer
@@ -301,6 +329,15 @@ var statusTable = []statusRow{
 	// once the hold is over, which a 403 would not say.
 	{recovery.ErrNotYetCompletable, http.StatusConflict},
 
+	// The OpenID Provider's refusals its endpoints do not answer themselves. The
+	// provider's own sentinels are the rows, so the chain's, which wrap them, and
+	// the provider's reaching here unwrapped answer alike.
+	{oidcprovider.ErrInvalidAuthorization, http.StatusBadRequest},
+	{oidcprovider.ErrUnknownHandle, http.StatusBadRequest},
+	{oidcprovider.ErrConsentMalformed, http.StatusBadRequest},
+	{oidcprovider.ErrReauthenticate, http.StatusUnauthorized},
+	{oidcprovider.ErrForeignConsent, http.StatusNotFound},
+
 	// A rotation that lost a concurrent renewal of the same session. The
 	// session core's sentinel is the row, so the chain's own, which wraps it,
 	// and the core's reaching here unwrapped answer alike: the client retries
@@ -399,7 +436,8 @@ var statusTable = []statusRow{
 // generator's error stays reachable for a consumer's own handler. An
 // automation-challenge verifier that could not answer (ErrChallengeUnavailable)
 // is 500 in the same way, whatever its own error wraps, while a request the
-// verifier refused (ErrChallengeRequired) is 403.
+// verifier refused (ErrChallengeRequired) is 403. So is a dependency of the
+// OpenID Provider that failed (oidcprovider.ErrDependency).
 //
 // A challenge is checked next, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
@@ -441,6 +479,12 @@ func StatusForError(err error) int {
 	// So is a challenge verifier that could not answer, whatever its own
 	// error wraps: an outage never reads to the client as a refusal.
 	if errors.Is(err, ErrChallengeUnavailable) {
+		return http.StatusInternalServerError
+	}
+
+	// And a dependency of the OpenID Provider that failed, whatever its own error
+	// wraps.
+	if errors.Is(err, oidcprovider.ErrDependency) {
 		return http.StatusInternalServerError
 	}
 

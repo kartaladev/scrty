@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/authorize"
@@ -96,6 +97,11 @@ type config struct {
 	// capture a setting a later option was about to replace.
 	wiring []func(*Chain)
 
+	// afterWiring holds the checks that can judge only what the wiring leaves
+	// behind. They run once every wiring step has, so no option's position
+	// among the others changes what they see.
+	afterWiring []func() error
+
 	// events is the sink EnableSecurityEvents was given, and nil without one.
 	events event.Sink
 
@@ -140,6 +146,13 @@ type config struct {
 	// sessionsExplicit records that WithSessions set sessions, which no
 	// built-in's manager then replaces.
 	sessionsExplicit bool
+
+	// sessionManagers is every session manager the chain was wired with,
+	// whichever built-in it was given to. sessions is one of them.
+	sessionManagers []*session.Sessions
+
+	// oidcProvider is what EnableOIDCProvider configured, and nil without it.
+	oidcProvider *oidcEndpoints
 
 	// sessionBearer records that EnableSessionBearer is on: the chain's bearer
 	// mode is the session reference, so every credential-issuing endpoint
@@ -281,6 +294,20 @@ func (c *config) wire(fn func(*Chain)) {
 	c.wiring = append(c.wiring, fn)
 }
 
+// checkAfterWiring records a check that judges what the wiring leaves behind. A
+// failure refuses the chain.
+func (c *config) checkAfterWiring(check func() error) {
+	c.afterWiring = append(c.afterWiring, check)
+}
+
+// addSessionManager records a manager the chain was wired with. Asking whether
+// every one of them meets a requirement must not depend on which came first.
+func (c *config) addSessionManager(m *session.Sessions) {
+	if m != nil && !slices.Contains(c.sessionManagers, m) {
+		c.sessionManagers = append(c.sessionManagers, m)
+	}
+}
+
 // useSessions records the session manager an enabled built-in was wired to, so
 // the chain's own activity write-back has one without the consumer declaring it
 // twice.
@@ -289,6 +316,8 @@ func (c *config) wire(fn func(*Chain)) {
 // store, and the built-in whose dependency is missing is refused by its own
 // check rather than by this one.
 func (c *config) useSessions(m *session.Sessions) {
+	c.addSessionManager(m)
+
 	if c.sessions == nil && !c.sessionsExplicit && m != nil {
 		c.sessions = m
 	}
@@ -323,6 +352,7 @@ func WithSessions(m *session.Sessions) Option {
 
 		c.sessions = m
 		c.sessionsExplicit = true
+		c.addSessionManager(m)
 		return nil
 	}
 }
@@ -573,6 +603,12 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// The provider's endpoint groups settle here, so that what one registers with
+	// CSRF protection is there when that reads it, below.
+	if err := c.wireOIDCProvider(); err != nil {
+		return nil, err
+	}
+
 	// CSRF protection reads the CORS origins, the OIDC back-channel path and
 	// the cookie authenticators, any of which an option applied after
 	// EnableCSRFProtection may have set, and hands each first factor whether
@@ -645,6 +681,12 @@ func (c *config) build() (*Chain, error) {
 	// still have replaced.
 	for _, w := range c.wiring {
 		w(chain)
+	}
+
+	for _, check := range c.afterWiring {
+		if err := check(); err != nil {
+			return nil, err
+		}
 	}
 
 	return chain, nil

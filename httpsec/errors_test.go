@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -258,6 +260,22 @@ func TestStatusForError(t *testing.T) {
 				&httpsec.ChallengeError{Kind: policy.ChallengeMFA}, authorize.ErrAccessDenied),
 			want: 401,
 		},
+		{name: "an invalid authorization request", err: httpsec.ErrOIDCInvalidAuthorization, want: 400},
+		{name: "the provider's invalid authorization request", err: oidcprovider.ErrInvalidAuthorization, want: 400},
+		{name: "an unknown handle", err: httpsec.ErrOIDCUnknownHandle, want: 400},
+		{name: "the provider's unknown handle", err: oidcprovider.ErrUnknownHandle, want: 400},
+		{name: "a malformed consent", err: httpsec.ErrOIDCConsentMalformed, want: 400},
+		{name: "the provider's malformed consent", err: oidcprovider.ErrConsentMalformed, want: 400},
+		{name: "a sign-in needing re-authentication", err: httpsec.ErrOIDCReauthenticate, want: 401},
+		{name: "the provider's re-authentication", err: oidcprovider.ErrReauthenticate, want: 401},
+		{name: "another user's consent", err: httpsec.ErrOIDCForeignConsent, want: 404},
+		{name: "the provider's foreign consent", err: oidcprovider.ErrForeignConsent, want: 404},
+		{name: "a provider dependency failure", err: oidcprovider.ErrDependency, want: 500},
+		{
+			name: "a provider dependency failure outranks a refusal its cause wraps",
+			err:  fmt.Errorf("%w: %w", oidcprovider.ErrDependency, authenticate.ErrAuthenticationFailed),
+			want: 500,
+		},
 		{
 			name: "an unrecognised error is a server fault",
 			err:  errors.New("connection refused to db-primary:5432"),
@@ -270,6 +288,63 @@ func TestStatusForError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, httpsec.StatusForError(tc.err))
+		})
+	}
+}
+
+// TestStatusForError_OIDCDependencyFailureHasNoBody pins that a provider
+// dependency failure reaching the default handling writes the status and no text.
+func TestStatusForError_OIDCDependencyFailureHasNoBody(t *testing.T) {
+	t.Parallel()
+
+	const secret = "connection refused to db-primary:5432"
+
+	failing := httpsec.InterceptorFunc(func(*httpsec.Exchange, httpsec.Next) error {
+		return fmt.Errorf("%w: %s", oidcprovider.ErrDependency, secret)
+	})
+
+	chain, err := httpsec.New(httpsec.RegisterInterceptor(failing, httpsec.OrderOIDCProvider))
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	chain.Middleware()(http.NotFoundHandler()).ServeHTTP(rec,
+		httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/oauth2/token", nil))
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Empty(t, rec.Body.String())
+}
+
+// TestOIDCRefusalsWrapTheProvidersOwn pins that a consumer matching either
+// identity reaches each refusal.
+func TestOIDCRefusalsWrapTheProvidersOwn(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		err    error
+		assert func(t *testing.T, err error)
+	}
+
+	wraps := func(counterpart error) func(*testing.T, error) {
+		return func(t *testing.T, err error) {
+			t.Helper()
+			require.ErrorIs(t, err, counterpart)
+			assert.Contains(t, err.Error(), "httpsec: ")
+		}
+	}
+
+	cases := []testCase{
+		{name: "invalid authorization", err: httpsec.ErrOIDCInvalidAuthorization, assert: wraps(oidcprovider.ErrInvalidAuthorization)},
+		{name: "unknown handle", err: httpsec.ErrOIDCUnknownHandle, assert: wraps(oidcprovider.ErrUnknownHandle)},
+		{name: "malformed consent", err: httpsec.ErrOIDCConsentMalformed, assert: wraps(oidcprovider.ErrConsentMalformed)},
+		{name: "re-authentication", err: httpsec.ErrOIDCReauthenticate, assert: wraps(oidcprovider.ErrReauthenticate)},
+		{name: "foreign consent", err: httpsec.ErrOIDCForeignConsent, assert: wraps(oidcprovider.ErrForeignConsent)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, tc.err)
 		})
 	}
 }
@@ -474,6 +549,11 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrSessionRenewalConflict":          httpsec.ErrSessionRenewalConflict,
 		"httpsec.ErrSessionHandleNotFound":           httpsec.ErrSessionHandleNotFound,
 		"httpsec.ErrUnknownMFAMethod":                httpsec.ErrUnknownMFAMethod,
+		"httpsec.ErrOIDCInvalidAuthorization":        httpsec.ErrOIDCInvalidAuthorization,
+		"httpsec.ErrOIDCUnknownHandle":               httpsec.ErrOIDCUnknownHandle,
+		"httpsec.ErrOIDCConsentMalformed":            httpsec.ErrOIDCConsentMalformed,
+		"httpsec.ErrOIDCReauthenticate":              httpsec.ErrOIDCReauthenticate,
+		"httpsec.ErrOIDCForeignConsent":              httpsec.ErrOIDCForeignConsent,
 	},
 	"github.com/kartaladev/scrty/session": {
 		"session.ErrConfig":             session.ErrConfig,
