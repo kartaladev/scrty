@@ -2,10 +2,19 @@ package oidcprovider_test
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/jonboulle/clockwork"
@@ -13,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/oplineage"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -26,6 +36,12 @@ const (
 
 	// neverIssued has the shape of a refresh token's secret, and no record behind it.
 	neverIssued = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+)
+
+// successorKeyA and successorKeyB are two deployments' successor keys.
+var (
+	successorKeyA = []byte("successor key A, of 32 bytes, ok")
+	successorKeyB = []byte("successor key B, of 32 bytes, ok")
 )
 
 // hookedLineage is a real lineage store whose writes are counted, and which runs a row's step
@@ -42,7 +58,17 @@ type hookedLineage struct {
 	// onLoad runs after each read that found a record, and is set before the request starts.
 	onLoad func()
 
+	// sawDelete is told the context of each family's deletion, and afterDelete runs once one has
+	// landed. Both are set before the request starts.
+	sawDelete   func(context.Context)
+	afterDelete func()
+
 	failLoad, failSupersede, failDelete atomic.Bool
+	// failLoadOf fails a read of the secrets it says, and is set before the request starts.
+	failLoadOf func(secret string) bool
+	// nothingOf makes a read of the secrets it says answer with neither a record nor an error, and
+	// is set before the request starts.
+	nothingOf func(secret string) bool
 	// answerNothing makes a read answer with neither a record nor an error.
 	answerNothing atomic.Bool
 	// conflict makes every supersession lose its race.
@@ -59,7 +85,10 @@ func (h *hookedLineage) Load(ctx context.Context, secret string) (*session.Sessi
 	if h.failLoad.Load() {
 		return nil, errOutage
 	}
-	if h.answerNothing.Load() {
+	if h.failLoadOf != nil && h.failLoadOf(secret) {
+		return nil, errOutage
+	}
+	if h.answerNothing.Load() || h.nothingOf != nil && h.nothingOf(secret) {
 		return nil, nil //nolint:nilnil // the case a manager reads as no session
 	}
 
@@ -121,6 +150,9 @@ func (h *hookedLineage) Supersede(ctx context.Context, op session.Supersession) 
 // DeleteFamily implements session.Store.
 func (h *hookedLineage) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
 	h.writes.Add(1)
+	if h.sawDelete != nil {
+		h.sawDelete(ctx)
+	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -128,7 +160,12 @@ func (h *hookedLineage) DeleteFamily(ctx context.Context, family id.ID) (int, er
 		return 0, errOutage
 	}
 
-	return h.Store.DeleteFamily(ctx, family)
+	n, err := h.Store.DeleteFamily(ctx, family)
+	if err == nil && h.afterDelete != nil {
+		h.afterDelete()
+	}
+
+	return n, err
 }
 
 // hookedGrants is a real grant store that refuses work on a context that has ended, as a store
@@ -145,6 +182,8 @@ type hookedGrants struct {
 	failRevoke atomic.Bool
 	// rewrite changes what a load answers, and is set before the request starts.
 	rewrite func(*oidcprovider.Grant)
+	// beforeRevoke runs at each revocation, and is set before the request starts.
+	beforeRevoke func()
 	// strictContext makes a load refuse an ended context too.
 	strictContext atomic.Bool
 }
@@ -173,6 +212,9 @@ func (h *hookedGrants) Load(ctx context.Context, family id.ID) (*oidcprovider.Gr
 
 // Revoke implements oidcprovider.GrantStore.
 func (h *hookedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovider.RevocationCause, at time.Time) error {
+	if h.beforeRevoke != nil {
+		h.beforeRevoke()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -187,9 +229,11 @@ func (h *hookedGrants) Revoke(ctx context.Context, family id.ID, cause oidcprovi
 type hookedAccessTokens struct {
 	oidcprovider.AccessTokenStore
 
-	failCreate atomic.Bool
+	failCreate, failRevoke atomic.Bool
 	// creates counts what reached the store.
 	creates atomic.Int32
+	// created is the record last stored.
+	created atomic.Pointer[oidcprovider.AccessTokenRecord]
 }
 
 // Create implements oidcprovider.AccessTokenStore.
@@ -199,7 +243,36 @@ func (h *hookedAccessTokens) Create(ctx context.Context, record *oidcprovider.Ac
 		return errOutage
 	}
 
-	return h.AccessTokenStore.Create(ctx, record)
+	if err := h.AccessTokenStore.Create(ctx, record); err != nil {
+		return err
+	}
+	h.created.Store(record)
+
+	return nil
+}
+
+// Revoke implements oidcprovider.AccessTokenStore.
+func (h *hookedAccessTokens) Revoke(ctx context.Context, tokenID id.ID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h.failRevoke.Load() {
+		return errOutage
+	}
+
+	return h.AccessTokenStore.Revoke(ctx, tokenID)
+}
+
+// assertLastEnded checks the opaque token last stored was stored once, and cannot be used.
+func (h *hookedAccessTokens) assertLastEnded(t *testing.T) {
+	t.Helper()
+
+	assert.Equal(t, int32(1), h.creates.Load(), "stored once, however many attempts")
+	created := h.created.Load()
+	require.NotNil(t, created)
+	held, err := h.Load(t.Context(), created.ID)
+	require.NoError(t, err)
+	assert.True(t, held.Revoked, "a token stored for a rotation that lost must not stay usable")
 }
 
 // refreshFixture is an exchange fixture whose grant and lineage stores a row can watch.
@@ -245,6 +318,128 @@ func (f *refreshFixture) liveHeads(t *testing.T) int {
 	return len(heads)
 }
 
+// replicaGrants lets a replica share a grant store without sharing a code store, which a real
+// replica would and which no refresh reads.
+type replicaGrants struct {
+	oidcprovider.GrantStore
+}
+
+// UseCodes implements oidcprovider.GrantStore.
+func (replicaGrants) UseCodes(oidcprovider.UnspentCodes) error { return nil }
+
+// replica is another provider over the fixture's stores, registry and keys, as a second instance of
+// one deployment is.
+func (f *refreshFixture) replica(t *testing.T, opts ...oidcprovider.Option) *oidcprovider.Provider {
+	t.Helper()
+
+	return f.replicaLoading(t, func(_ context.Context, user identity.UserID) (*identity.Details, error) { return f.users.load(user) }, opts...)
+}
+
+// replicaLoading is replica, reading its users through load.
+func (f *refreshFixture) replicaLoading(
+	t *testing.T, load func(context.Context, identity.UserID) (*identity.Details, error), opts ...oidcprovider.Option,
+) *oidcprovider.Provider {
+	t.Helper()
+
+	loader := NewMockUserLoader(gomock.NewController(t))
+	loader.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).DoAndReturn(load).AnyTimes()
+	p, err := oidcprovider.New(oidcprovider.Deps{
+		Issuer:       issuer,
+		Registry:     f.registry,
+		Keys:         f.keys,
+		Users:        loader,
+		LoginURL:     issuer + "/login",
+		ConsentURL:   issuer + "/consent",
+		LogoutURL:    issuer + "/logout",
+		LoggedOutURL: issuer + "/bye",
+	}, append([]oidcprovider.Option{
+		oidcprovider.WithClock(f.clk),
+		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
+		oidcprovider.WithGrantStore(replicaGrants{GrantStore: f.grants}),
+		oidcprovider.WithRefreshTokenStore(oplineage.New(f.lineage)),
+		oidcprovider.WithAccessTokenStore(f.access),
+	}, opts...)...)
+	require.NoError(t, err)
+
+	return p
+}
+
+// heldAtUserLoad starts req on a replica, and returns once the request is waiting in its user load:
+// the moment between the manager's read of the token and the rotation's own. It stays there until
+// release is called. The timeouts are only there to fail a broken test rather than hang it, and
+// order nothing.
+func (f *refreshFixture) heldAtUserLoad(t *testing.T, req oidcprovider.TokenRequest, opts ...oidcprovider.Option) (<-chan exchanged, func()) {
+	t.Helper()
+
+	entered, released := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	tab := f.replicaLoading(t, func(_ context.Context, user identity.UserID) (*identity.Details, error) {
+		if held.CompareAndSwap(false, true) {
+			close(entered)
+			select {
+			case <-released:
+			case <-time.After(30 * time.Second):
+				t.Error("the held request was never released")
+			}
+		}
+
+		return f.users.load(user)
+	}, opts...)
+
+	answer := make(chan exchanged, 1)
+	go func() {
+		res, err := tab.Token(t.Context(), req)
+		answer <- exchanged{res: res, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the held request never reached its user load")
+	}
+	var release sync.Once
+	stop := func() { release.Do(func() { close(released) }) }
+	t.Cleanup(stop)
+
+	return answer, stop
+}
+
+// chainOf rotates the scene's token n times at this instant, and returns the last token answered.
+func chainOf(t *testing.T, f *refreshFixture, s *refreshScene, n int) string {
+	t.Helper()
+
+	held := s.first.RefreshToken
+	for range n {
+		held = assertRefreshWorks(t, f, s, held).RefreshToken
+	}
+
+	return held
+}
+
+// advanceOnReplica rotates the scene's token twice on a replica holding another key, so the fixture's
+// own provider finds no match for it inside its grace, and a successor that has moved on. It returns
+// the newest access token.
+func advanceOnReplica(t *testing.T, f *refreshFixture, s *refreshScene) string {
+	t.Helper()
+
+	other := f.replica(t, oidcprovider.WithRefreshSuccessorKey(successorKeyB))
+	second, err := other.Token(t.Context(), s.request)
+	require.NoError(t, err)
+	third, err := other.Token(t.Context(), s.again(second.RefreshToken))
+	require.NoError(t, err)
+
+	return third.AccessToken
+}
+
+// successorUnder is the secret HMAC-SHA256(key, family, secret) gives a token's successor.
+func successorUnder(key []byte, family id.ID, secret string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(family.String()))
+	mac.Write([]byte{0})
+	mac.Write([]byte(secret))
+
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
 // refreshRequest is a refresh of raw by a confidential client using its secret.
 func refreshRequest(clientID, raw string, change func(url.Values)) oidcprovider.TokenRequest {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {raw}}
@@ -265,16 +460,20 @@ type refreshScene struct {
 	request oidcprovider.TokenRequest
 	// again is the client's request for another of the grant's tokens.
 	again func(raw string) oidcprovider.TokenRequest
-	// newest is the token a row's arrange last received.
-	newest string
+	// newest is the token a row's arrange last received, and newestAccess the access token with it.
+	newest, newestAccess string
 	// racers answers what a row's arrange set racing the request, and background closes when
 	// what else it set running has finished.
 	racers     []<-chan exchanged
 	background <-chan struct{}
+	// release lets go of a request a row's arrange is holding at its user load.
+	release func()
 	// other is a second grant of the same client.
 	other *refreshScene
 	// signed counts the signatures made.
 	signed atomic.Int32
+	// deleteBudgeted and deleteBounded say a family's deletion was seen, and had a deadline.
+	deleteBudgeted, deleteBounded atomic.Bool
 }
 
 // secretOf is the secret part of a refresh token of the grant.
@@ -664,6 +863,38 @@ func TestProvider_Refresh(t *testing.T) {
 			assert: refusedUserRevokes,
 		},
 		{
+			name: "a loader answering with neither details nor an error is no live user, and the grant is revoked",
+			arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
+				f.users.set(func(u *exchangeUsers) { u.answersNothing = true })
+			},
+			assert: refusedUserRevokes,
+		},
+		{
+			name: "a disabled user's token past its grace is reuse: the lineage is judged before the user",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				f.clk.Advance(30 * time.Second)
+				f.users.set(func(u *exchangeUsers) { u.disabled["u-1"] = true })
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause, "a stated cause: the theft, not the user")
+				assert.Zero(t, f.liveHeads(t))
+			},
+		},
+		{
+			name: "a disabled user's token inside its grace is the user's refusal",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				f.clk.Advance(29 * time.Second)
+				f.users.set(func(u *exchangeUsers) { u.disabled["u-1"] = true })
+			},
+			assert: refusedUserRevokes,
+		},
+		{
 			name: "a forged secret for a disabled user revokes nothing",
 			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) {
 				f.users.set(func(u *exchangeUsers) { u.disabled["u-1"] = true })
@@ -1000,6 +1231,79 @@ func TestProvider_Refresh(t *testing.T) {
 			assert: refusedGrant,
 		},
 		{
+			name: "an idle timeout shortened since reaches a grant issued before it",
+			arrange: func(t *testing.T, f *refreshFixture, _ *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) { c.GrantIdleTimeout = day })
+				f.clk.Advance(day)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Zero(t, f.lineage.supersedes.Load(), "nothing rotated")
+				assert.False(t, grantNow(t, f, s).Revoked, "ended by its deadline, not by a revocation")
+			},
+		},
+		{
+			name: "an idle timeout shortened since reaches a client whose refreshes are not rotated",
+			arrange: func(t *testing.T, f *refreshFixture, _ *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) {
+					c.DisableRotation = true
+					c.RequireBinding = oidcprovider.BindingMTLS
+					c.GrantIdleTimeout = day
+				})
+				f.clk.Advance(day)
+			},
+			assert: refusedGrant,
+		},
+		{
+			name: "an absolute lifetime shortened since reaches a client whose refreshes are not rotated",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) {
+					c.DisableRotation = true
+					c.RequireBinding = oidcprovider.BindingMTLS
+					c.GrantIdleTimeout = day
+					c.GrantAbsoluteLifetime = day
+				})
+				f.clk.Advance(23 * time.Hour)
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				f.clk.Advance(time.Hour)
+			},
+			assert: refusedGrant,
+		},
+		{
+			name: "a lifetime shortened below a disabled user's grant ends it before the user is judged",
+			arrange: func(t *testing.T, f *refreshFixture, _ *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) { c.GrantIdleTimeout = day })
+				f.clk.Advance(day)
+				f.users.set(func(u *exchangeUsers) { u.disabled["u-1"] = true })
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a superseded token inside its grace is not judged idle: the rotation that superseded it was the activity",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				f.clk.Advance(2 * day)
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				billingClient(t, f, func(c *oidcprovider.Client) { c.GrantIdleTimeout = day })
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEmpty(t, res.AccessToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
 			name: "a grant refreshed daily is refused at 90 days",
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
@@ -1275,23 +1579,70 @@ func TestProvider_Refresh(t *testing.T) {
 			},
 		},
 		{
-			name: "reuse whose row cannot be marked is logged, and reads as revoked from then on",
+			name:  "reuse whose row cannot be marked is a dependency failure with the lineage intact, and presenting it again ends the grant",
+			start: startClient(opaqueClient, opaqueRedirect),
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
-				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				second := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				s.newest, s.newestAccess = second.RefreshToken, second.AccessToken
 				f.clk.Advance(30 * time.Second)
 				f.grants.failRevoke.Store(true)
 			},
 			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
 				t.Helper()
-				refusedGrant(t, f, s, res, err)
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
 				assert.False(t, grantNow(t, f, s).Revoked)
-				assert.Contains(t, f.logs.String(), "level=ERROR")
-				assert.NotContains(t, f.logs.String(), errOutage.Error())
-				assertRefreshRefused(t, f, s, s.newest)
-				assert.False(t, grantNow(t, f, s).Revoked, "the missing lineage reads as revoked, and writes nothing")
+				assert.Equal(t, 1, f.liveHeads(t), "nothing is deleted that a later presentation could not mark again")
+
+				f.grants.failRevoke.Store(false)
+				assertRefreshRefused(t, f, s, s.first.RefreshToken)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+				_, verifyErr := f.p.VerifyAccessToken(t.Context(), s.newestAccess)
+				assert.Error(t, verifyErr, "the grant's opaque tokens ended with it")
 			},
 		},
+		func() testCase {
+			deleted, refreshDone := make(chan struct{}), make(chan struct{})
+			var gone atomic.Bool
+			var reuse <-chan exchanged
+
+			return testCase{
+				name: "a refresh racing a reuse answers no tokens for a family already deleted",
+				arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+					t.Helper()
+					newest := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+					f.clk.Advance(30 * time.Second)
+					f.lineage.afterDelete = func() {
+						if gone.CompareAndSwap(false, true) {
+							close(deleted)
+						}
+					}
+					// What follows the deletion waits for the refresh, which reads the row again
+					// with the family gone.
+					f.grants.beforeRevoke = func() {
+						if gone.Load() {
+							<-refreshDone
+						}
+					}
+					stale := s.again(s.first.RefreshToken)
+					f.lineage.afterSupersede = once(func() {
+						reuse = exchangeAsync(context.WithoutCancel(t.Context()), f.exchangeFixture, stale)
+						<-deleted
+					})
+					s.request = s.again(newest)
+				},
+				assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+					t.Helper()
+					close(refreshDone)
+					got := <-reuse
+					assertRefused(t, got.err, oidcprovider.CodeInvalidGrant)
+					refusedGrant(t, f, s, res, err)
+					assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				},
+			}
+		}(),
 		func() testCase {
 			var cancel context.CancelFunc
 
@@ -1386,12 +1737,93 @@ func TestProvider_Refresh(t *testing.T) {
 			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
 				t.Helper()
 				assertDependencyFailure(t, err)
+				assert.ErrorContains(t, err, "store the access token", "the failure names the step, not the rotation it stopped")
 				assert.Nil(t, res)
+				assert.Zero(t, f.lineage.supersedes.Load(), "the token is stored before the rotation's write")
 				f.access.failCreate.Store(false)
+				f.clk.Advance(31 * time.Second)
 				assertRefreshWorks(t, f, s, s.first.RefreshToken)
-				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.False(t, grantNow(t, f, s).Revoked, "an outage is no theft alarm, at a retry past the grace")
 			},
 		},
+		{
+			name:  "a rotation that lost every attempt leaves no opaque token usable",
+			start: startClient(opaqueClient, opaqueRedirect),
+			arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
+				f.access.creates.Store(0)
+				f.lineage.conflict.Store(true)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				f.access.assertLastEnded(t)
+			},
+		},
+		{
+			name:  "a rotation that could not be written leaves no opaque token usable",
+			start: startClient(opaqueClient, opaqueRedirect),
+			arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
+				f.access.creates.Store(0)
+				f.lineage.failSupersede.Store(true)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				f.access.assertLastEnded(t)
+			},
+		},
+		{
+			name:  "a second read that fails leaves no opaque token usable",
+			start: startClient(opaqueClient, opaqueRedirect),
+			arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
+				f.access.creates.Store(0)
+				f.grants.loads.Store(0)
+				f.grants.failLoadAt.Store(2)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				f.access.assertLastEnded(t)
+			},
+		},
+		func() testCase {
+			var cancel context.CancelFunc
+
+			return testCase{
+				name:  "a discarded opaque token is ended when the caller hangs up, and a failure to end it is logged",
+				start: startClient(opaqueClient, opaqueRedirect),
+				ctx: func(ctx context.Context) context.Context {
+					ended, stop := context.WithCancel(ctx) //nolint:gosec // the row calls it during the request
+					cancel = stop
+
+					return ended
+				},
+				arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
+					f.access.creates.Store(0)
+					f.lineage.beforeSupersede = func() { cancel() }
+					f.lineage.failSupersede.Store(true)
+				},
+				assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+					t.Helper()
+					require.Error(t, err)
+					assert.Nil(t, res)
+					f.access.assertLastEnded(t)
+
+					// The token's write stays, unreachable: nobody was given its value, and it
+					// expires with its exp. The failure is the operator's to see.
+					f.access.failRevoke.Store(true)
+					f.access.creates.Store(0)
+					f.lineage.beforeSupersede = nil
+					_, err = f.p.Token(t.Context(), s.request)
+					assertDependencyFailure(t, err)
+					assert.Contains(t, f.logs.String(), "level=ERROR")
+					assert.NotContains(t, f.logs.String(), errOutage.Error())
+				},
+			}
+		}(),
 		{
 			name: "a grant that cannot be read again after the rotation answers no tokens",
 			arrange: func(_ *testing.T, f *refreshFixture, _ *refreshScene) {
@@ -1465,6 +1897,25 @@ func TestProvider_Refresh(t *testing.T) {
 			},
 		},
 		{
+			name: "a reuse's deletion of its family has a budget, once it has stopped listening to its caller",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				f.clk.Advance(30 * time.Second)
+				f.lineage.sawDelete = func(ctx context.Context) {
+					s.deleteBudgeted.Store(true)
+					_, bounded := ctx.Deadline()
+					s.deleteBounded.Store(bounded)
+				}
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				require.True(t, s.deleteBudgeted.Load(), "the family was deleted")
+				assert.True(t, s.deleteBounded.Load(), "a deletion the caller cannot end needs its own deadline")
+			},
+		},
+		{
 			name: "two_tabs_within_grace",
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
@@ -1476,21 +1927,15 @@ func TestProvider_Refresh(t *testing.T) {
 				require.NoError(t, err)
 				other := <-s.racers[0]
 				require.NoError(t, other.err, "the tab that lost the race gets tokens too")
-				assert.NotEqual(t, res.RefreshToken, other.res.RefreshToken)
 				assert.False(t, grantNow(t, f, s).Revoked)
-				assert.Equal(t, 1, f.liveHeads(t), "exactly one successor is left live")
 				for _, answer := range []*oidcprovider.TokenResponse{res, other.res} {
 					_, verifyErr := f.p.VerifyAccessToken(t.Context(), answer.AccessToken)
 					require.NoError(t, verifyErr)
 				}
-
-				live, _ := s.sortByLife(t, f, res.RefreshToken, other.res.RefreshToken)
-				assertRefreshWorks(t, f, s, live)
-				assert.False(t, grantNow(t, f, s).Revoked)
 			},
 		},
 		{
-			name: "two_tabs_the_token_knocked_out_is_reuse",
+			name: "two_tabs_same_successor_raced",
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
 				f.lineage.beforeSupersede = meeting(t, 2)
@@ -1501,16 +1946,720 @@ func TestProvider_Refresh(t *testing.T) {
 				require.NoError(t, err)
 				other := <-s.racers[0]
 				require.NoError(t, other.err)
+				assert.Equal(t, res.RefreshToken, other.res.RefreshToken, "both tabs hold the one successor")
+				assert.Equal(t, 1, f.liveHeads(t))
+				assert.True(t, s.head(t, f, res.RefreshToken).SupersededAt.IsZero())
 
-				live, out := s.sortByLife(t, f, res.RefreshToken, other.res.RefreshToken)
-				assertRefreshRefused(t, f, s, out)
-				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause,
-					"presenting the token a re-rotation knocked out says two parties hold the family")
-				assertRefreshRefused(t, f, s, live)
+				f.clk.Advance(5 * time.Minute)
+				assertRefreshWorks(t, f, s, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked, "whichever tab's write lands last holds a live token")
 			},
 		},
 		{
-			name: "every racer gets tokens, and one head is left",
+			name: "two_tabs_same_successor_one_second_apart",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, s.newest, res.RefreshToken, "the same successor")
+				assert.Zero(t, f.lineage.writes.Load(), "answered with no write")
+				assert.Equal(t, 1, f.liveHeads(t))
+				assert.NotEqual(t, s.first.AccessToken, res.AccessToken, "the access token is its own")
+
+				f.clk.Advance(5 * time.Minute)
+				assertRefreshWorks(t, f, s, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name:  "a re-presentation's opaque token is stored and usable, with no lineage write",
+			start: startClient(opaqueClient, opaqueRedirect),
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, s.newest, res.RefreshToken)
+				assert.Zero(t, f.lineage.writes.Load())
+				_, verifyErr := f.p.VerifyAccessToken(t.Context(), res.AccessToken)
+				require.NoError(t, verifyErr)
+			},
+		},
+		{
+			name: "walks_to_the_head",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				second := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(time.Second)
+				s.newest = assertRefreshWorks(t, f, s, second).RefreshToken
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, s.newest, res.RefreshToken, "a tab storing this answer last holds a live token")
+				assert.Zero(t, f.lineage.writes.Load())
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+
+				f.clk.Advance(5 * time.Minute)
+				assertRefreshWorks(t, f, s, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a walk of as many links as its bound reaches the head",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = chainOf(t, f, s, successorWalkBound)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, s.newest, res.RefreshToken)
+				assert.Zero(t, f.lineage.writes.Load())
+			},
+		},
+		{
+			name: "a walk past its bound stops, and the token presented is what any moved-on successor makes it: reuse",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				chainOf(t, f, s, successorWalkBound+1)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+			},
+		},
+		{
+			name: "a walk stops at a link another key wrote, and the moved-on successor is reuse",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				second := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				_, err := f.replica(t, oidcprovider.WithRefreshSuccessorKey(successorKeyB)).Token(t.Context(), s.again(second))
+				require.NoError(t, err)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+			},
+		},
+		{
+			name: "a same answer that cannot be signed fails, with nothing written",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.keys.failSigning(func(context.Context) error { return errOutage })
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.ErrorContains(t, err, "sign the access token")
+				assert.Nil(t, res)
+				assert.Zero(t, f.lineage.writes.Load())
+				f.keys.failSigning(nil)
+				assert.Equal(t, s.newest, assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name:  "a same answer whose opaque token cannot be stored fails, with nothing written",
+			start: startClient(opaqueClient, opaqueRedirect),
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.access.failCreate.Store(true)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.ErrorContains(t, err, "store the access token")
+				assert.Nil(t, res)
+				assert.Zero(t, f.lineage.writes.Load())
+				f.access.failCreate.Store(false)
+				assert.Equal(t, s.newest, assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken)
+			},
+		},
+		{
+			name: "second_read_after_the_first_write",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				answer, release := f.heldAtUserLoad(t, s.request, oidcprovider.WithRefreshSuccessorKey(successorKeyA))
+				s.racers, s.release = []<-chan exchanged{answer}, release
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err, "tab one's write lands while tab two is held")
+				writes := f.lineage.writes.Load()
+				s.release()
+				other := <-s.racers[0]
+				require.NoError(t, other.err, "tab two read the token live, and is answered regardless")
+				assert.Equal(t, res.RefreshToken, other.res.RefreshToken, "both hold the one successor")
+				assert.Equal(t, writes, f.lineage.writes.Load(), "tab two wrote nothing")
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+			},
+		},
+		{
+			name: "second_read_after_the_successor_moved_on is no theft alarm: it answers the head",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				answer, release := f.heldAtUserLoad(t, s.request, oidcprovider.WithRefreshSuccessorKey(successorKeyA))
+				s.racers, s.release = []<-chan exchanged{answer}, release
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				newest := assertRefreshWorks(t, f, s, res.RefreshToken).RefreshToken
+				s.release()
+				other := <-s.racers[0]
+				require.NoError(t, other.err)
+				assert.Equal(t, newest, other.res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked, "no token past its grace was presented")
+				assert.Equal(t, 1, f.liveHeads(t))
+			},
+		},
+		{
+			name: "a window closing while a request waits is judged as it stands then: the token rotates again",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				answer, release := f.heldAtUserLoad(t, s.request, oidcprovider.WithRefreshSuccessorKey(successorKeyA))
+				s.racers, s.release = []<-chan exchanged{answer}, release
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				f.clk.Advance(defaultSuccessorWindow)
+				s.release()
+				other := <-s.racers[0]
+				require.NoError(t, other.err)
+				assert.NotEqual(t, res.RefreshToken, other.res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+			},
+		},
+		{
+			name: "after_the_window_re_rotates",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(20 * time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err, "inside the grace, it receives tokens")
+				assert.NotEqual(t, s.newest, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+				assert.Equal(t, int32(1), f.lineage.supersedes.Load(), "it is rotated, not answered")
+
+				// Its next rotation stays random too: the derived identifier is stored already, on
+				// the record this one knocked out.
+				f.clk.Advance(time.Second)
+				again := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				assert.NotEqual(t, res.RefreshToken, again.RefreshToken)
+				assert.NotEqual(t, s.newest, again.RefreshToken)
+
+				f.clk.Advance(31 * time.Second)
+				assertRefreshRefused(t, f, s, s.newest)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+			},
+		},
+		{
+			name: "past the window, a successor that has moved on is reuse, though the token is inside its grace",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				second := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				assertRefreshWorks(t, f, s, second)
+				f.clk.Advance(defaultSuccessorWindow)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+			},
+		},
+		{
+			name: "the window's last moment answers the same successor, measured from the rotation",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				f.clk.Advance(time.Minute) // the token's own age is no part of it
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(defaultSuccessorWindow - time.Nanosecond)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, s.newest, res.RefreshToken)
+				assert.Zero(t, f.lineage.writes.Load())
+			},
+		},
+		{
+			name: "the window has ended at exactly its length",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(defaultSuccessorWindow)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEqual(t, s.newest, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a_thief_missing_the_window_is_caught",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				// First cycle: the victim refreshes, and the thief holding r1 refreshes 20 s later.
+				victim := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(20 * time.Second)
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				require.NotEqual(t, victim, s.newest, "they diverged")
+				require.False(t, grantNow(t, f, s).Revoked)
+				// Second cycle: the victim refreshes with what it holds.
+				f.clk.Advance(5 * time.Minute)
+				s.request = s.again(victim)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause, "within two cycles")
+				assert.Zero(t, f.liveHeads(t))
+				assertRefreshRefused(t, f, s, s.newest)
+			},
+		},
+		{
+			name: "window_set_by_the_consumer: zero turns the same successor off, and nothing derives",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				require.NotEqual(t, successorUnder(successorKeyA, s.grant.Family, s.secretOf(t, s.first.RefreshToken)), s.secretOf(t, s.newest),
+					"no rotation needs a derived successor")
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEqual(t, s.newest, res.RefreshToken, "no re-presentation answers the same one")
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+			},
+		},
+		{
+			name: "window_set_by_the_consumer: a wider one answers the same successor for longer",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(time.Minute)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) { c.RefreshGrace = 2 * time.Minute })
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(time.Minute - time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, s.newest, res.RefreshToken)
+				f.clk.Advance(time.Second)
+				assert.NotEqual(t, s.newest, assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken)
+			},
+		},
+		{
+			name: "window_set_by_the_consumer: a shorter one ends the same successor sooner",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(time.Second)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, _ *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEqual(t, s.newest, res.RefreshToken)
+			},
+		},
+		{
+			name: "window_set_by_the_consumer: zero holds on a clock behind the rotation's, with no key to read",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				ahead := f.replica(t, oidcprovider.WithRefreshSuccessorWindow(0),
+					oidcprovider.WithClock(clockwork.NewFakeClockAt(f.clk.Now().Add(5*time.Second))))
+				res, err := ahead.Token(t.Context(), s.request)
+				require.NoError(t, err)
+				s.newest = res.RefreshToken
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEqual(t, s.newest, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a client's grace still bounds the window: past it, the token is reuse",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(session.MaxRenewalGrace)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(session.DefaultRenewalGrace)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+			},
+		},
+		{
+			name: "a shortened idle timeout reaches a token inside its grace, measured from its rotation",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) { c.RefreshGrace = 2 * time.Minute })
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				billingClient(t, f, func(c *oidcprovider.Client) {
+					c.RefreshGrace = 2 * time.Minute
+					c.GrantIdleTimeout = 10 * time.Second
+				})
+				f.clk.Advance(10 * time.Second)
+				assertRefreshRefused(t, f, s, s.newest)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Zero(t, f.lineage.supersedes.Load(), "a token no longer good moves nothing")
+				assert.False(t, grantNow(t, f, s).Revoked, "an ending, and no revocation")
+			},
+		},
+		{
+			name: "diverged_holders_are_caught",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				second := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				s.newest = assertRefreshWorks(t, f, s, second).RefreshToken
+				f.clk.Advance(31 * time.Second)
+				s.request = s.again(second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+				assertRefreshRefused(t, f, s, s.newest)
+			},
+		},
+		{
+			name: "a successor past its own grace ends the same answer: the token presented inside its grace is reuse",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) { c.RefreshGrace = 2 * time.Minute })
+				second := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				billingClient(t, f, func(c *oidcprovider.Client) { c.RefreshGrace = time.Second })
+				assertRefreshWorks(t, f, s, second)
+				f.clk.Advance(2 * time.Second) // inside both windows, and past the successor's grace
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+			},
+		},
+		{
+			name: "a successor past its own deadline, inside the window, is rotated past",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				billingClient(t, f, func(c *oidcprovider.Client) {
+					c.RefreshGrace = 2 * time.Minute
+					c.GrantIdleTimeout = 5 * time.Second
+				})
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				billingClient(t, f, func(c *oidcprovider.Client) { c.RefreshGrace = 2 * time.Minute })
+				f.clk.Advance(6 * time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEqual(t, s.newest, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assertRefreshWorks(t, f, s, res.RefreshToken)
+			},
+		},
+		{
+			name: "a successor that cannot be read is no verdict",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				successor := s.secretOf(t, s.newest)
+				f.lineage.failLoadOf = func(secret string) bool { return secret == successor }
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				f.lineage.failLoadOf = nil
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Zero(t, f.lineage.supersedes.Load(), "and nothing rotated on the strength of it")
+				assert.Equal(t, s.newest, assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken)
+			},
+		},
+		{
+			name: "a store answering nothing for the successor is no answer, and the token is rotated past it",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				successor := s.secretOf(t, s.newest)
+				f.lineage.nothingOf = func(secret string) bool { return secret == successor }
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				f.lineage.nothingOf = nil
+				require.NoError(t, err)
+				assert.NotEqual(t, s.newest, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a first rotation reads no successor: it has none yet",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				derived := successorUnder(successorKeyA, s.grant.Family, s.secretOf(t, s.first.RefreshToken))
+				f.lineage.failLoadOf = func(secret string) bool { return secret == derived }
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				f.lineage.failLoadOf = nil
+				require.NoError(t, err)
+				assert.NotEmpty(t, res.RefreshToken)
+			},
+		},
+		{
+			name: "a token knocked out by a replica whose clock runs ahead is reuse, whatever window it records",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				knockedOut := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				ahead := f.replica(t, oidcprovider.WithRefreshSuccessorKey(successorKeyB),
+					oidcprovider.WithClock(clockwork.NewFakeClockAt(f.clk.Now().Add(5*time.Second))))
+				_, err := ahead.Token(t.Context(), s.request)
+				require.NoError(t, err)
+				s.request = s.again(knockedOut)
+				f.grants.failRevoke.Store(true)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				assert.Equal(t, 1, f.liveHeads(t), "judged reuse before anything was deleted: the row could not be marked")
+			},
+		},
+		func() testCase {
+			var cancel context.CancelFunc
+
+			return testCase{
+				name: "a reuse's row is marked though the caller hangs up before the manager's read",
+				ctx: func(ctx context.Context) context.Context {
+					ended, stop := context.WithCancel(ctx) //nolint:gosec // the row calls it during the request
+					cancel = stop
+
+					return ended
+				},
+				arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+					t.Helper()
+					assertRefreshWorks(t, f, s, s.first.RefreshToken)
+					f.clk.Advance(30 * time.Second)
+					f.lineage.onLoad = func() { cancel() }
+				},
+				assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+					t.Helper()
+					f.lineage.onLoad = nil
+					require.ErrorIs(t, err, context.Canceled)
+					assert.Nil(t, res)
+					assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause, "a hang-up must not spare what it was evidence against")
+				},
+			}
+		}(),
+		{
+			name: "no_key_no_successor",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				// What anyone holding the token could compute with no key at all.
+				s.request = s.again("rt." + s.grant.Family.String() + "." + successorUnder(nil, s.grant.Family, s.secretOf(t, s.first.RefreshToken)))
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assertRefreshRefused(t, f, s, "rt."+s.grant.Family.String()+"."+successorUnder(successorKeyB, s.grant.Family, s.secretOf(t, s.first.RefreshToken)))
+				assert.Zero(t, f.lineage.writes.Load(), "a successor computed under any other key is no record")
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.True(t, s.head(t, f, s.newest).SupersededAt.IsZero(), "the real one is the head still")
+				assertRefreshWorks(t, f, s, s.newest)
+			},
+		},
+		{
+			name: "another_key_re_rotates",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				other := f.replica(t, oidcprovider.WithRefreshSuccessorKey(successorKeyB))
+				res, err := other.Token(t.Context(), s.request)
+				require.NoError(t, err)
+				s.newest = res.RefreshToken
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err, "a key that differs is no reason to refuse")
+				assert.NotEqual(t, s.newest, res.RefreshToken, "it finds no match, and rotates again")
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+				live := s.head(t, f, res.RefreshToken)
+				assert.True(t, live.SupersededAt.IsZero())
+				assertRefreshWorks(t, f, s, res.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a digest another key wrote costs no read of what this key derives",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				_, err := f.replica(t, oidcprovider.WithRefreshSuccessorKey(successorKeyB)).Token(t.Context(), s.request)
+				require.NoError(t, err)
+				derived := successorUnder(successorKeyA, s.grant.Family, s.secretOf(t, s.first.RefreshToken))
+				f.lineage.failLoadOf = func(secret string) bool { return secret == derived }
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, _ *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				f.lineage.failLoadOf = nil
+				require.NoError(t, err)
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "replicas holding different keys keep re-rotating one token, in turn, with no failure",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				other := f.replica(t, oidcprovider.WithRefreshSuccessorKey(successorKeyB))
+				for _, p := range []*oidcprovider.Provider{f.p, other, f.p, other} {
+					_, err := p.Token(t.Context(), s.request)
+					require.NoError(t, err, "a replica returning to a token must not collide with what it derived before")
+					f.clk.Advance(time.Second)
+				}
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Equal(t, 1, f.liveHeads(t))
+				assertRefreshWorks(t, f, s, res.RefreshToken)
+			},
+		},
+		{
+			name:  "a re-rotation refused because the successor moved on is reuse, which the observer marks",
+			start: startClient(opaqueClient, opaqueRedirect),
+			opts:  []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newestAccess = advanceOnReplica(t, f, s)
+				f.clk.Advance(time.Second)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+				_, verifyErr := f.p.VerifyAccessToken(t.Context(), s.newestAccess)
+				assert.Error(t, verifyErr)
+			},
+		},
+		func() testCase {
+			var cancel context.CancelFunc
+
+			return testCase{
+				name: "a re-rotation's reuse by a caller who hangs up still marks the row",
+				opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+				ctx: func(ctx context.Context) context.Context {
+					ended, stop := context.WithCancel(ctx) //nolint:gosec // the row calls it during the request
+					cancel = stop
+
+					return ended
+				},
+				arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+					t.Helper()
+					advanceOnReplica(t, f, s)
+					f.lineage.beforeSupersede = func() { cancel() }
+				},
+				assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+					t.Helper()
+					refusedGrant(t, f, s, res, err)
+					assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause, "a hang-up must not spare what it was evidence against")
+				},
+			}
+		}(),
+		{
+			name: "a re-rotation's reuse whose family cannot be deleted marks the row, and is a dependency failure",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				advanceOnReplica(t, f, s)
+				f.lineage.failDelete.Store(true)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause, "no observer was told, and the row ends the grant regardless")
+			},
+		},
+		{
+			name:  "a re-rotation's reuse whose row cannot be marked is logged, and reads as revoked at a refresh from then on",
+			start: startClient(opaqueClient, opaqueRedirect),
+			opts:  []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				s.newestAccess = advanceOnReplica(t, f, s)
+				f.grants.failRevoke.Store(true)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				refusedGrant(t, f, s, res, err)
+				assert.False(t, grantNow(t, f, s).Revoked)
+				assert.Contains(t, f.logs.String(), "level=ERROR")
+				assert.NotContains(t, f.logs.String(), errOutage.Error())
+				assert.Zero(t, f.liveHeads(t))
+
+				f.grants.failRevoke.Store(false)
+				assertRefreshRefused(t, f, s, s.first.RefreshToken)
+				assert.False(t, grantNow(t, f, s).Revoked, "the missing lineage reads as revoked, and writes nothing")
+				// The stated limit of this one path: nothing is left to present that could mark
+				// the row, so this token lives until its own expiry.
+				_, verifyErr := f.p.VerifyAccessToken(t.Context(), s.newestAccess)
+				require.NoError(t, verifyErr)
+			},
+		},
+		{
+			name: "every racer gets the one successor, and one head is left",
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
 				f.lineage.beforeSupersede = meeting(t, racersWithinBound)
@@ -1527,9 +2676,29 @@ func TestProvider_Refresh(t *testing.T) {
 					require.NoError(t, answer.err)
 					seen[answer.res.RefreshToken] = true
 				}
-				assert.Len(t, seen, racersWithinBound, "each rotation has its own successor")
+				assert.Len(t, seen, 1, "each one derives the same successor")
 				assert.Equal(t, 1, f.liveHeads(t), "exactly one is left live")
 				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "more racers than a rotation's attempts are all served: a loser needs one more read, not a win",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
+				t.Helper()
+				f.lineage.beforeSupersede = meeting(t, 2*racersWithinBound)
+				for range 2*racersWithinBound - 1 {
+					s.racers = append(s.racers, exchangeAsync(t.Context(), f.exchangeFixture, s.request))
+				}
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				for _, racer := range s.racers {
+					answer := <-racer
+					require.NoError(t, answer.err)
+					assert.Equal(t, res.RefreshToken, answer.res.RefreshToken)
+				}
+				assert.Equal(t, 1, f.liveHeads(t))
 			},
 		},
 		{
@@ -1618,7 +2787,7 @@ func TestProvider_Refresh(t *testing.T) {
 			},
 		},
 		{
-			name:  "a revocation landing after the rotation's write stores no opaque token",
+			name:  "a revocation landing after the rotation's write leaves no opaque token usable",
 			start: startClient(opaqueClient, opaqueRedirect),
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
@@ -1628,7 +2797,7 @@ func TestProvider_Refresh(t *testing.T) {
 			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
 				t.Helper()
 				refusedGrant(t, f, s, res, err)
-				assert.Zero(t, f.access.creates.Load(), "an opaque token is stored last")
+				f.access.assertLastEnded(t)
 			},
 		},
 		{
@@ -1751,6 +2920,13 @@ func TestProvider_Refresh(t *testing.T) {
 	}
 }
 
+// defaultSuccessorWindow and successorWalkBound state WithRefreshSuccessorWindow's default, and how
+// many links one walk to the head may read.
+const (
+	defaultSuccessorWindow = 10 * time.Second
+	successorWalkBound     = 8
+)
+
 // racersWithinBound is how many racers a refresh's bounded attempts are sure to serve: each round
 // of racers has one winner, so the last racer wins at the last attempt at worst.
 const racersWithinBound = 8
@@ -1808,18 +2984,6 @@ func revokeWhole(t *testing.T, f *refreshFixture, s *refreshScene) {
 	require.NoError(t, err)
 }
 
-// sortByLife tells the one of two racers' tokens that is the family's head from the one a
-// re-rotation knocked out.
-func (s *refreshScene) sortByLife(t *testing.T, f *refreshFixture, a, b string) (live, out string) {
-	t.Helper()
-
-	if s.head(t, f, a).SupersededAt.IsZero() {
-		return a, b
-	}
-
-	return b, a
-}
-
 // TestProvider_Refresh_MalformedTokens pins that a value of no shape the provider mints is refused
 // with no lookup: the mocks expect no call to either store. It has its own table, because its
 // fixture holds nothing a grant could be read from.
@@ -1870,6 +3034,496 @@ func TestProvider_Refresh_MalformedTokens(t *testing.T) {
 			res, err := x.p.Token(t.Context(), refreshRequest("billing-web", tc.raw, nil))
 			tc.assert(t, res, err)
 		})
+	}
+}
+
+// TestProvider_RefreshSuccessorKey is WithRefreshSuccessorKey's table: what it takes, what it
+// replaces, and how the successor it derives comes out.
+func TestProvider_RefreshSuccessorKey(t *testing.T) {
+	t.Parallel()
+
+	// seed is what a row's provider reads from when it draws its key from its random source.
+	seed := [32]byte{7, 7, 7}
+
+	type testCase struct {
+		name   string
+		opts   func(key []byte) []oidcprovider.Option
+		key    []byte
+		assert func(t *testing.T, f *refreshFixture, s *refreshScene, key []byte)
+	}
+	withKey := func(key []byte) []oidcprovider.Option {
+		return []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(key)}
+	}
+	derivedUnder := func(want []byte) func(*testing.T, *refreshFixture, *refreshScene, []byte) {
+		return func(t *testing.T, f *refreshFixture, s *refreshScene, _ []byte) {
+			t.Helper()
+			res := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+			secret := s.secretOf(t, res.RefreshToken)
+			assert.Equal(t, successorUnder(want, s.grant.Family, s.secretOf(t, s.first.RefreshToken)), secret)
+			assert.True(t, session.ValidIdentifier(secret))
+			raw, err := base64.RawURLEncoding.DecodeString(secret)
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, len(raw)*8, 128, "a successor carries at least 128 bits")
+		}
+	}
+
+	cases := []testCase{
+		{name: "a consumer's key of 32 bytes derives the successor", opts: withKey, key: successorKeyA, assert: derivedUnder(successorKeyA)},
+		{
+			name: "a replica holding the same key answers the successor another derived, with no write",
+			opts: withKey,
+			key:  successorKeyA,
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, key []byte) {
+				t.Helper()
+				first := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				f.lineage.writes.Store(0)
+				res, err := f.replica(t, oidcprovider.WithRefreshSuccessorKey(key)).Token(t.Context(), s.request)
+				require.NoError(t, err)
+				assert.Equal(t, first.RefreshToken, res.RefreshToken)
+				assert.Zero(t, f.lineage.writes.Load())
+			},
+		},
+		{
+			name: "a key changed by its caller afterwards changes nothing: it was copied",
+			opts: withKey,
+			key:  slices.Clone(successorKeyA),
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, key []byte) {
+				t.Helper()
+				clear(key)
+				derivedUnder(successorKeyA)(t, f, s, nil)
+			},
+		},
+		{
+			name: "with no key, 32 bytes drawn once from the provider's random source derive it",
+			opts: func([]byte) []oidcprovider.Option {
+				return []oidcprovider.Option{oidcprovider.WithRandom(rand.NewChaCha8(seed))}
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, _ []byte) {
+				t.Helper()
+				drawn := make([]byte, 32)
+				_, err := rand.NewChaCha8(seed).Read(drawn)
+				require.NoError(t, err)
+				derivedUnder(drawn)(t, f, s, nil)
+				f.clk.Advance(time.Second)
+				again := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				assert.Equal(t, successorUnder(drawn, s.grant.Family, s.secretOf(t, s.first.RefreshToken)), s.secretOf(t, again.RefreshToken),
+					"later reads of the source, which issued this very grant, do not move the key")
+			},
+		},
+		{
+			name: "two providers drawing their own keys derive different successors",
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, _ []byte) {
+				t.Helper()
+				res := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				assert.NotEqual(t, successorUnder(make([]byte, 32), s.grant.Family, s.secretOf(t, s.first.RefreshToken)), s.secretOf(t, res.RefreshToken))
+				other, err := f.replica(t).Token(t.Context(), s.request)
+				require.NoError(t, err)
+				assert.NotEqual(t, res.RefreshToken, other.RefreshToken)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []oidcprovider.Option
+			if tc.opts != nil {
+				opts = tc.opts(tc.key)
+			}
+			f := newRefreshFixture(t, opts...)
+			tc.assert(t, f, startBilling(t, f), tc.key)
+		})
+	}
+}
+
+// TestProvider_RefreshSuccessorKey_Refused is what New makes of a key that cannot do its job.
+func TestProvider_RefreshSuccessorKey_Refused(t *testing.T) {
+	t.Parallel()
+
+	short := []byte("a key one byte short of 32 bytes")[:31]
+	cases := []struct {
+		name string
+		key  []byte
+	}{
+		{name: "nil", key: nil},
+		{name: "empty", key: []byte{}},
+		{name: "one byte short", key: short},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := oidcprovider.New(validDeps(t), oidcprovider.WithRefreshSuccessorKey(tc.key))
+			require.ErrorIs(t, err, oidcprovider.ErrConfig)
+			assert.ErrorContains(t, err, "WithRefreshSuccessorKey")
+			if len(tc.key) > 0 {
+				assert.NotContains(t, err.Error(), string(tc.key), "an error never holds the key")
+			}
+		})
+	}
+}
+
+// TestProvider_RefreshSuccessorKey_DrawFails is what New makes of a random source that cannot supply
+// the key: no provider, where one is needed, since a provider must not degrade silently.
+func TestProvider_RefreshSuccessorKey_DrawFails(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		opts   []oidcprovider.Option
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "with the default key to draw, New fails, and repeats nothing of the source's",
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrConfig)
+				assert.NotErrorIs(t, err, errOutage)
+				assert.NotContains(t, err.Error(), errOutage.Error())
+			},
+		},
+		{
+			name: "a consumer's key draws nothing",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(successorKeyA)},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "a window of zero needs no key, so it draws nothing",
+			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := append([]oidcprovider.Option{oidcprovider.WithRandom(iotest.ErrReader(errOutage))}, tc.opts...)
+			_, err := oidcprovider.New(validDeps(t), opts...)
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestProvider_RefreshSuccessorWindow_Limits is window_set_by_the_consumer's bound, which New states.
+func TestProvider_RefreshSuccessorWindow_Limits(t *testing.T) {
+	t.Parallel()
+
+	refused := func(t *testing.T, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, oidcprovider.ErrConfig)
+		assert.ErrorContains(t, err, "WithRefreshSuccessorWindow")
+	}
+	built := func(t *testing.T, err error) {
+		t.Helper()
+		require.NoError(t, err)
+	}
+	cases := []struct {
+		name   string
+		window time.Duration
+		assert func(t *testing.T, err error)
+	}{
+		{name: "negative", window: -time.Nanosecond, assert: refused},
+		{name: "one over session.MaxRenewalGrace", window: session.MaxRenewalGrace + time.Nanosecond, assert: refused},
+		{name: "session.MaxRenewalGrace itself", window: session.MaxRenewalGrace, assert: built},
+		{name: "zero", window: 0, assert: built},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := oidcprovider.New(validDeps(t), oidcprovider.WithRefreshSuccessorWindow(tc.window))
+			tc.assert(t, err)
+		})
+	}
+}
+
+// TestProvider_RefreshSuccessorKey_WithWindowZero is the contradiction New refuses: a key, which a
+// window of zero has no use for, in either order of the options.
+func TestProvider_RefreshSuccessorKey_WithWindowZero(t *testing.T) {
+	t.Parallel()
+
+	key, off := oidcprovider.WithRefreshSuccessorKey(successorKeyA), oidcprovider.WithRefreshSuccessorWindow(0)
+	cases := []struct {
+		name string
+		opts []oidcprovider.Option
+	}{
+		{name: "key then window", opts: []oidcprovider.Option{key, off}},
+		{name: "window then key", opts: []oidcprovider.Option{off, key}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := oidcprovider.New(validDeps(t), tc.opts...)
+			require.ErrorIs(t, err, oidcprovider.ErrConfig)
+			assert.ErrorContains(t, err, "WithRefreshSuccessorKey")
+			assert.ErrorContains(t, err, "WithRefreshSuccessorWindow")
+			assert.NotContains(t, err.Error(), string(successorKeyA), "an error never holds the key")
+		})
+	}
+}
+
+// onNthRead is a fault for hookedLineage that fires at the nth read of secret, and at no other. A
+// refresh reads its token three times before the rotation writes: the family check, the manager, and
+// the re-read before rotating, which is the third.
+func onNthRead(secret string, n int32) func(string) bool {
+	var reads atomic.Int32
+
+	return func(read string) bool { return read == secret && reads.Add(1) == n }
+}
+
+// TestProvider_Refresh_SlowUserLoad is what a request is answered when its user load outlasts the
+// grace of the token it presented in time. It has its own table, because each row holds a request at
+// its user load, which the main table's single call cannot.
+func TestProvider_Refresh_SlowUserLoad(t *testing.T) {
+	t.Parallel()
+
+	withKey := oidcprovider.WithRefreshSuccessorKey(successorKeyA)
+	type testCase struct {
+		name string
+		// grace is the client's RefreshGrace, and zero leaves the default.
+		grace time.Duration
+		act   func(*testing.T, *refreshFixture, *refreshScene) (*oidcprovider.TokenResponse, error)
+		// assert gets the token the other tab holds, if the row had one.
+		assert func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error)
+	}
+	noVerdict := func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+		t.Helper()
+		assertDependencyFailure(t, err)
+		assert.Nil(t, res)
+		assert.False(t, grantNow(t, f, s).Revoked, "a token presented in time is no reuse")
+		assert.Equal(t, 1, f.liveHeads(t))
+	}
+
+	cases := []testCase{
+		{
+			name: "a live copy whose load outlasts the grace gets no verdict, and the other tab's token works",
+			act: func(t *testing.T, f *refreshFixture, s *refreshScene) (*oidcprovider.TokenResponse, error) {
+				t.Helper()
+				answer, release := f.heldAtUserLoad(t, s.request, withKey)
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(session.DefaultRenewalGrace)
+				release()
+				got := <-answer
+
+				return got.res, got.err
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				noVerdict(t, f, s, res, err)
+				assertRefreshWorks(t, f, s, s.newest)
+			},
+		},
+		{
+			name:  "a superseded copy inside its window, answered past its grace, gets no verdict and not the successor",
+			grace: 5 * time.Second,
+			act: func(t *testing.T, f *refreshFixture, s *refreshScene) (*oidcprovider.TokenResponse, error) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(4 * time.Second)
+				answer, release := f.heldAtUserLoad(t, s.request, withKey)
+				f.clk.Advance(3 * time.Second)
+				release()
+				got := <-answer
+
+				return got.res, got.err
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				noVerdict(t, f, s, res, err)
+				assertRefreshWorks(t, f, s, s.newest)
+			},
+		},
+		{
+			name: "a store failure on the re-read alone is a dependency failure, and nothing is rotated",
+			act: func(t *testing.T, f *refreshFixture, s *refreshScene) (*oidcprovider.TokenResponse, error) {
+				t.Helper()
+				f.lineage.failLoadOf = onNthRead(s.secretOf(t, s.first.RefreshToken), 3)
+				answer, release := f.heldAtUserLoad(t, s.request, withKey)
+				release()
+				got := <-answer
+
+				return got.res, got.err
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				noVerdict(t, f, s, res, err)
+				assert.Zero(t, f.lineage.supersedes.Load(), "the token was not rotated on a read that failed")
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+			},
+		},
+		{
+			name: "a re-read that finds the record gone is refused, and nothing is rotated",
+			act: func(t *testing.T, f *refreshFixture, s *refreshScene) (*oidcprovider.TokenResponse, error) {
+				t.Helper()
+				f.lineage.nothingOf = onNthRead(s.secretOf(t, s.first.RefreshToken), 3)
+				answer, release := f.heldAtUserLoad(t, s.request, withKey)
+				release()
+				got := <-answer
+
+				return got.res, got.err
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.Nil(t, res)
+				assert.Zero(t, f.lineage.supersedes.Load())
+				assert.False(t, grantNow(t, f, s).Revoked)
+			},
+		},
+		{
+			name: "a presentation already past its grace still revokes",
+			act: func(t *testing.T, f *refreshFixture, s *refreshScene) (*oidcprovider.TokenResponse, error) {
+				t.Helper()
+				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+				f.clk.Advance(session.DefaultRenewalGrace)
+
+				return f.p.Token(t.Context(), s.request)
+			},
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.Nil(t, res)
+				assert.Equal(t, oidcprovider.CauseReuse, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newRefreshFixture(t, withKey)
+			if tc.grace != 0 {
+				billingClient(t, f, func(c *oidcprovider.Client) { c.RefreshGrace = tc.grace })
+			}
+			s := startBilling(t, f)
+			res, err := tc.act(t, f, s)
+			tc.assert(t, f, s, res, err)
+		})
+	}
+}
+
+// TestProvider_Refresh_ReplicaClocks is what a replica whose clock is off from the one that rotated
+// answers a token presented again. It has its own table, because the request goes to a replica the
+// row builds, where the main table's goes to the fixture's provider.
+func TestProvider_Refresh_ReplicaClocks(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// behind is how far the replica's clock lags the rotating one's, and after how long it is
+		// presented again, on both clocks.
+		behind, after time.Duration
+		assert        func(t *testing.T, f *refreshFixture, s *refreshScene, r2 string, res *oidcprovider.TokenResponse, err error)
+	}
+	rotatesAgain := func(t *testing.T, f *refreshFixture, s *refreshScene, r2 string, res *oidcprovider.TokenResponse, err error) {
+		t.Helper()
+		require.NoError(t, err)
+		assert.NotEqual(t, r2, res.RefreshToken, "a lag does not stretch the window")
+		assert.False(t, grantNow(t, f, s).Revoked)
+	}
+
+	cases := []testCase{
+		{name: "a replica behind by 20 seconds", behind: time.Hour, after: 20 * time.Second, assert: rotatesAgain},
+		{name: "a replica behind by exactly the window", behind: 10 * time.Second, assert: rotatesAgain},
+		{name: "a replica behind by 59 minutes", behind: time.Hour, after: 59 * time.Minute, assert: rotatesAgain},
+		{
+			name: "replicas 2 seconds apart converge on the same successor", behind: 2 * time.Second,
+			assert: func(t *testing.T, _ *refreshFixture, _ *refreshScene, r2 string, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, r2, res.RefreshToken)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			withKey := oidcprovider.WithRefreshSuccessorKey(successorKeyA)
+			f := newRefreshFixture(t, withKey)
+			billingClient(t, f, func(c *oidcprovider.Client) { c.GrantIdleTimeout = 24 * time.Hour })
+			s := startBilling(t, f)
+			r2 := assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
+
+			lagging := clockwork.NewFakeClockAt(f.clk.Now().Add(-tc.behind))
+			tab := f.replica(t, withKey, oidcprovider.WithClock(lagging))
+			f.clk.Advance(tc.after)
+			lagging.Advance(tc.after)
+
+			res, err := tab.Token(t.Context(), s.request)
+			tc.assert(t, f, s, r2, res, err)
+		})
+	}
+}
+
+// TestProvider_Refresh_NoSecretReachesALogOrAnError runs the failing and refusing paths, and
+// looks for the key and every secret in what they leave.
+func TestProvider_Refresh_NoSecretReachesALogOrAnError(t *testing.T) {
+	t.Parallel()
+
+	f := newRefreshFixture(t, oidcprovider.WithRefreshSuccessorKey(successorKeyA))
+	s := startBilling(t, f)
+	first := s.first.RefreshToken
+
+	var errs []error
+	try := func(raw string) {
+		if _, err := f.p.Token(t.Context(), s.again(raw)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	f.lineage.failLoad.Store(true)
+	try(first)
+	f.lineage.failLoad.Store(false)
+	f.lineage.failSupersede.Store(true)
+	try(first)
+	f.lineage.failSupersede.Store(false)
+
+	second := assertRefreshWorks(t, f, s, first)
+	f.lineage.failLoadOf = func(string) bool { return true }
+	try(first)
+	f.lineage.failLoadOf = nil
+
+	f.clk.Advance(30 * time.Second)
+	f.grants.failRevoke.Store(true)
+	try(first)
+	f.grants.failRevoke.Store(false)
+	f.lineage.failDelete.Store(true)
+	try(first)
+	f.lineage.failDelete.Store(false)
+	require.NotEmpty(t, errs)
+
+	logs := f.logs.String()
+	for _, secret := range []string{
+		s.secretOf(t, first),
+		s.secretOf(t, second.RefreshToken),
+		second.AccessToken,
+		string(successorKeyA),
+		base64.RawURLEncoding.EncodeToString(successorKeyA),
+		base64.StdEncoding.EncodeToString(successorKeyA),
+	} {
+		assert.NotContains(t, logs, secret)
+		for _, err := range errs {
+			assert.NotContains(t, err.Error(), secret)
+		}
+	}
+
+	for _, printed := range []string{fmt.Sprintf("%v", f.p), fmt.Sprintf("%+v", f.p)} {
+		assert.NotContains(t, printed, fmt.Sprintf("%d", successorKeyA), "a provider printed does not print its key")
 	}
 }
 

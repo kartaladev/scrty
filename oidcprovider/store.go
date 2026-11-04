@@ -463,7 +463,8 @@ type GrantStore interface {
 
 // AccessTokenRecord is one opaque access token. The token's secret is held only as a
 // digest. Its authorization is its grant's, so a revoked grant ends it without this
-// record changing.
+// record changing. A refresh stores it before rotating, and revokes this one record when
+// the refresh then answers an error, nobody having been given its secret.
 type AccessTokenRecord struct {
 	// ID is the record's identifier, which the token carries in the clear.
 	ID id.ID

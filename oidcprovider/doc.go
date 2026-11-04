@@ -105,7 +105,9 @@
 //
 // [Client].OpaqueAccessTokens replaces the JWT with at.<id>.<secret>, whose secret carries 256
 // bits and is stored only as a digest, in the [AccessTokenStore] from [WithAccessTokenStore],
-// or a [MemoryAccessTokenStore] by default. It is stored last, after the grant and lineage.
+// or a [MemoryAccessTokenStore] by default. A code's exchange stores it last, after the grant and
+// lineage. A refresh stores it before rotating, so an outage of that store rotates nothing, and
+// ends it again when the refresh then answers an error.
 //
 // [Provider.VerifyAccessToken] reads both kinds, and refuses anything else as invalid_token: a
 // first-party, ID or logout token under the same keys, a refresh token, or a code. A token whose
@@ -116,16 +118,30 @@
 // # Refresh
 //
 // A client registered for the refresh grant gets rt.<family>.<secret>, whose secret carries 256
-// bits and is stored only as a digest, in a [RefreshTokenStore] no sign-in reads. The family is
-// not a secret: a value naming a real family and a secret never issued changes nothing.
+// bits. A durable [RefreshTokenStore], which no sign-in reads, holds only its digest; the default
+// memory store holds it in process memory, where the provider handles it anyway. The family is not
+// a secret: a value naming a real family and a secret never issued changes nothing.
 //
-// Each refresh supersedes the token presented and answers a new one. The old one works again
-// within its grace, 30 seconds by default ([Client].RefreshGrace, at most 5 minutes), for a client
-// that lost the response, and for two tabs presenting it at once. Both of those get tokens and
-// the grant stays live, with one live head left, so the token answered first must not be
-// presented again. A superseded token presented later is reuse, which revokes the whole grant
-// and reports nothing to the presenter but invalid_grant. No option weakens that, and an unused
-// successor is never recovered.
+// Each refresh supersedes the token presented and answers a new one, which is derived from it under
+// a key ([WithRefreshSuccessorKey]). The old one works again within its grace, 30 seconds by default
+// ([Client].RefreshGrace, at most 5 minutes), for a client that lost the response, and for two tabs
+// presenting it at once. Within 10 seconds of its rotation ([WithRefreshSuccessorWindow]), each of
+// those gets tokens and the same successor, or the head it has since rotated to, with nothing written,
+// so one head remains, and a client may store whichever answer lands last.
+//
+// After that window, inside the grace, a token presented again is rotated again under a random
+// successor, with tokens answered and the grant live, which knocks out the successor issued before.
+// So does a replica with no shared key, or a key that has changed, as it derives different successors.
+// Holders then keep the token answered last. The window is short because the same successor hides two
+// holders from each other: a thief staying inside it goes undetected, and one missing it once diverges
+// from the victim, which reveals both.
+//
+// A superseded token presented later is reuse, which revokes the whole grant and reports nothing to
+// the presenter but invalid_grant. So is a token whose successor was knocked out, or has moved on with
+// no same answer to give. A store failure while marking the revocation is a dependency failure instead,
+// and presenting the token again tries again. No option weakens this, and an unused successor is
+// never recovered. A holder keeping a token inside its grace, once another has rotated on, cannot be
+// told from a thief, and is caught when it presents that token past its grace.
 //
 // A grant ends when it goes unrefreshed for 30 days ([Client].GrantIdleTimeout), 90 days after it
 // was created ([Client].GrantAbsoluteLifetime), and by its sign-in's deadline unless it holds

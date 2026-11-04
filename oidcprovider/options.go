@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -12,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
 )
 
@@ -85,11 +87,18 @@ type config struct {
 	browserStoreSet           bool
 	lineage                   RefreshTokenStore
 	lineageSet                bool
-	outbound                  *outbound.Client
-	outboundSet               bool
-	clock                     clock.Clock
-	logger                    *slog.Logger
-	random                    io.Reader
+	// successorKey is what a refresh token's successor is derived under, behind a pointer so that
+	// a provider printed prints no key. It is nil only with a window of zero, which reads no key.
+	successorKey    *successorKey
+	successorKeySet bool
+	// successorWindow is how long after its rotation a token presented again is answered the same
+	// successor, and zero means never.
+	successorWindow time.Duration
+	outbound        *outbound.Client
+	outboundSet     bool
+	clock           clock.Clock
+	logger          *slog.Logger
+	random          io.Reader
 	// ids names the records the provider creates. validate builds it, over the clock and
 	// randomness the options gave.
 	ids id.Generator
@@ -119,6 +128,7 @@ func defaultConfig() config {
 		assertionMax:        defaultAssertionMax,
 		keysRefetchCooldown: defaultKeysRefetchCooldown,
 		keysTTL:             defaultKeysTTL,
+		successorWindow:     defaultSuccessorWindow,
 		clock:               clock.System(),
 		logger:              slog.Default(),
 		random:              rand.Reader,
@@ -179,6 +189,15 @@ func (c *config) validate() error {
 	if c.lineageSet && oplineage.Sessions(c.lineage) == nil {
 		return fmt.Errorf("%w: WithRefreshTokenStore: must be built by a scrty store adapter, and not be the zero value", ErrConfig)
 	}
+	if c.successorKeySet && len(c.successorKey.key) < minSuccessorKeyBytes {
+		return fmt.Errorf("%w: WithRefreshSuccessorKey: must be at least %d bytes", ErrConfig, minSuccessorKeyBytes)
+	}
+	if c.successorWindow < 0 || c.successorWindow > session.MaxRenewalGrace {
+		return fmt.Errorf("%w: WithRefreshSuccessorWindow: must be between 0 and %s", ErrConfig, session.MaxRenewalGrace)
+	}
+	if c.successorKeySet && c.successorWindow == 0 {
+		return fmt.Errorf("%w: WithRefreshSuccessorKey: has no meaning under WithRefreshSuccessorWindow(0), which derives nothing", ErrConfig)
+	}
 	if c.outboundSet && c.outbound == nil {
 		return fmt.Errorf("%w: WithOutbound: must not be nil", ErrConfig)
 	}
@@ -192,6 +211,9 @@ func (c *config) validate() error {
 		return fmt.Errorf("%w: WithRandom: must not be nil", ErrConfig)
 	}
 	c.ids = id.NewV7Generator(id.WithClock(c.clock), id.WithRandom(c.random))
+	if err := c.drawSuccessorKey(); err != nil {
+		return err
+	}
 
 	return c.bounds.resolve()
 }
@@ -327,6 +349,31 @@ func WithRandom(r io.Reader) Option {
 	return func(c *config) { c.random = r }
 }
 
+// WithRefreshSuccessorKey sets the key a rotated refresh token's successor is derived under, as
+// HMAC-SHA256(key, family, presented secret), so that a token presented again inside the
+// same-successor window (WithRefreshSuccessorWindow) is answered the one successor it already has,
+// with no write. Two tabs presenting one token at once therefore both hold a live token. It must be
+// at least 32 bytes, or New fails with an error matching ErrConfig, and it is copied. It is a secret:
+// under it, a successor can only be had by presenting the token to the provider, and its holder can
+// compute the live head from any past token, offline, with nothing fired.
+//
+// The default is 32 random bytes drawn once in New from the provider's random source (WithRandom),
+// which needs no configuration and fits a provider alone over its stores. A source that cannot supply
+// them fails New with an error matching ErrConfig. Replicas sharing their stores share this key too,
+// or the limit below is theirs. With a window of zero, no successor is derived and no default drawn,
+// so a key given together with WithRefreshSuccessorWindow(0) is a contradiction: New fails with an
+// error matching ErrConfig, whichever option comes first.
+//
+// The limit: with no shared key, or after the key changes, a provider derives a different successor,
+// finds no match, and rotates the token again: the client receives tokens with the grant live, under a
+// successor drawn at random, and the successor issued before is knocked out, so a holder presenting it
+// next reads as reuse. Nothing is refused, because a provider cannot know how many replicas it has.
+func WithRefreshSuccessorKey(key []byte) Option {
+	return func(c *config) {
+		c.successorKey, c.successorKeySet = &successorKey{key: slices.Clone(key)}, true
+	}
+}
+
 // WithAssertionIDStore replaces where accepted client assertion identifiers are
 // recorded. The default is a MemoryAssertionIDStore of the provider's own, which forgets
 // what has expired by the provider's clock on a write, at most once per minute. It is
@@ -431,4 +478,34 @@ func WithBrowserSessionStore(s BrowserSessionStore) Option {
 // RefreshTokenStore holds nothing, and fails construction.
 func WithRefreshTokenStore(s RefreshTokenStore) Option {
 	return func(c *config) { c.lineage, c.lineageSet = s, true }
+}
+
+// WithRefreshSuccessorWindow sets how long after its rotation a refresh token presented again is
+// answered the same successor, or the head that successor has rotated to, with no write. Measured on
+// the provider's clock, it is what lets two tabs racing one token both hold a live one.
+//
+// The default is 10 seconds, a proposed value: the race it answers had faded by 100 ms in the
+// measurements, and a tab with shared storage holds the new token after that. It is short on purpose.
+// The same successor removes the divergence reuse detection relies on, so a wider window lets a thief
+// staying inside it go undetected, for as long as it stays. One missing it diverges, and is caught.
+//
+// After the window, inside the client's grace, a token presented again is rotated again under a
+// random successor, with the grant live, and the one issued before is knocked out. A client's grace
+// (Client.RefreshGrace) still bounds the window: past it the token is reuse, whatever this says.
+//
+// Zero turns the same successor off, so that every rotation may use a random successor, and two tabs
+// racing one token must then keep the one answered last. It derives nothing, so a key given with it
+// (WithRefreshSuccessorKey) makes New fail with an error matching ErrConfig, whichever option comes
+// first. A negative value, or one over session.MaxRenewalGrace, makes New fail with an error
+// matching ErrConfig.
+//
+// A replica whose clock lags the one that rotated by the window or more does not stretch it: a
+// rotation stamped that far from the provider's clock, either way, ends the window.
+//
+// The limit: a token's own idle deadline still rules. A superseded token presented inside the window
+// or its grace that also falls past the idle deadline stored with it is refused, with nothing
+// revoked, so a retry or a second tab loses out there. It needs a client dormant for about the idle
+// timeout, 30 days by default, and this option does not reach it.
+func WithRefreshSuccessorWindow(d time.Duration) Option {
+	return func(c *config) { c.successorWindow = d }
 }

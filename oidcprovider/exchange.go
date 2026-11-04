@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"slices"
@@ -32,7 +33,8 @@ const (
 )
 
 // revocationBudget bounds the writes a revocation makes once it has stopped listening to its
-// caller: a replay's, a reuse's and a gone user's. It is a proposed value.
+// caller: a replay's, a reuse's, a gone user's, and those ending an opaque token no refresh
+// answered. It is a proposed value.
 const revocationBudget = 10 * time.Second
 
 // Binding is the key a token request proved it holds, which httpsec fills in after
@@ -84,7 +86,8 @@ type TokenResponse struct {
 	IDToken string
 	// RefreshToken is rt.<family>.<secret>, present when the client is registered for
 	// the refresh grant. A refresh answers a new one, or for a client with rotation off, the
-	// one it presented.
+	// one it presented. A token presented again inside the same-successor window answers the same
+	// new one, or the head it has rotated to.
 	RefreshToken string
 }
 
@@ -142,20 +145,25 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 //  3. a grant bound to a key needs that key, or the answer is invalid_dpop_proof;
 //  4. a secret that is no record of that family is refused, which is also how a lineage missing
 //     behind a live row reads: as revoked, with nothing recorded, since a family is no credential;
-//  5. the token is judged. Superseded and past its grace, it is reuse: the whole grant is revoked,
-//     the newest token with it, and the answer is invalid_grant;
-//  6. a missing or disabled user is refused, and the grant revoked;
+//  5. the token is judged. Superseded and past its grace, it is reuse: the row is marked, then the
+//     whole grant is revoked, the newest token with it, and the answer is invalid_grant. A row that
+//     cannot be marked answers a dependency failure with the lineage intact. A client's lifetime
+//     shortened below the token's age refuses it, with nothing revoked;
+//  6. a missing or disabled user is refused, and the grant revoked. It comes after the token's
+//     judgement, so a stale token of a disabled user states reuse as its cause;
 //  7. a scope outside the grant is invalid_scope, a scope the client has lost is left out and the
 //     response says so, and resource is judged as at a code's exchange, against the whole grant;
-//  8. the tokens are signed, then the token is rotated, so a key failure rotates nothing;
-//  9. the row is read again, and a revocation since step 2 answers no tokens;
-//  10. an opaque access token is stored.
+//  8. the tokens are signed and an opaque access token stored, then the token is rotated, so a key
+//     or access-token store failure rotates nothing;
+//  9. the row is read again, and a revocation since step 2 answers no tokens.
 //
 // The presented token works again within its grace, 30 seconds unless Client.RefreshGrace says
 // otherwise, for a client that lost the response or a second tab presenting it at once: each gets
-// tokens, and the grant stays live. That rotates the token again, which knocks out the successor
-// issued before, and presenting a knocked-out token is reuse, so two tabs must keep the token
-// answered last. A failure after step 8 answers an error, and the presented token retries. See
+// tokens and the grant stays live. Within 10 seconds of its rotation (WithRefreshSuccessorWindow),
+// that answer is the same successor, or the head it has since rotated to, with no write. After that,
+// or on a provider whose key derives another successor (WithRefreshSuccessorKey), it rotates again,
+// which knocks out the one issued before. A failure after step 8 answers an error, and the presented
+// token retries: an opaque access token stored for it is ended. See
 // [session.Sessions.RotateWithGrace] for what the lineage guarantees.
 func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, error) {
 	if repeatedParam(r.Form) {
@@ -434,10 +442,15 @@ func newGrant(
 // calls, and racing renewals are decided by the store's conditional write, as they are across
 // replicas. The manager keeps nothing between calls that a provider's lineages rely on.
 func (p *Provider) lineages(rc *RegisteredClient) (*session.Sessions, error) {
+	return p.lineagesThrough(rc, oplineage.Sessions(p.stores.lineage), p.cfg.random)
+}
+
+// lineagesThrough is lineages, over store, with its new identifiers read from random.
+func (p *Provider) lineagesThrough(rc *RegisteredClient, store session.Store, random io.Reader) (*session.Sessions, error) {
 	opts := []session.Option{
-		session.WithStore(oplineage.Sessions(p.stores.lineage)),
+		session.WithStore(budgetedLineage{Store: store}),
 		session.WithClock(p.cfg.clock),
-		session.WithRandom(p.cfg.random),
+		session.WithRandom(random),
 		session.WithLogger(p.cfg.logger),
 		session.WithTouchInterval(0),
 		session.WithReuseObserver(p.revokeOnReuse),
@@ -450,6 +463,20 @@ func (p *Provider) lineages(rc *RegisteredClient) (*session.Sessions, error) {
 	}
 
 	return session.New(opts...)
+}
+
+// budgetedLineage gives a family's deletion revocationBudget. A manager's reuse verdict deletes on
+// a context its caller can no longer end, and nothing else would bound it.
+type budgetedLineage struct {
+	session.Store
+}
+
+// DeleteFamily implements session.Store.
+func (b budgetedLineage) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	bounded, cancel := context.WithTimeout(ctx, revocationBudget)
+	defer cancel()
+
+	return b.Store.DeleteFamily(bounded, family)
 }
 
 // writeLineage stores the grant's first refresh token, and returns it. The record's family

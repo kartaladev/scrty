@@ -470,7 +470,10 @@ func TestProvider_Park(t *testing.T) {
 		{
 			name: "no randomness, no handle",
 			opts: func(*testing.T) []oidcprovider.Option {
-				return []oidcprovider.Option{oidcprovider.WithRandom(iotest.ErrReader(errors.New("entropy secret text")))}
+				return []oidcprovider.Option{
+					oidcprovider.WithRandom(iotest.ErrReader(errors.New("entropy secret text"))),
+					oidcprovider.WithRefreshSuccessorKey(successorKeyA), // so that New needs no randomness
+				}
 			},
 			assert: func(t *testing.T, _ *parkFixture, res oidcprovider.AuthorizeResult, err error) {
 				t.Helper()

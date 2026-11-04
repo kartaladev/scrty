@@ -71,6 +71,8 @@ type exchangeUsers struct {
 	failing  bool
 	// impostor makes every load answer with another user's details.
 	impostor bool
+	// answersNothing makes every load answer with neither details nor an error.
+	answersNothing bool
 	// onLoad runs at each load: the moment between a code's check and its spend.
 	onLoad func()
 	// username is what every load names the user by, as a chain reading usernames does.
@@ -86,6 +88,9 @@ func (u *exchangeUsers) load(user identity.UserID) (*identity.Details, error) {
 	}
 	if u.failing {
 		return nil, errOutage
+	}
+	if u.answersNothing {
+		return nil, nil //nolint:nilnil // a loader that says nothing has not said the user is live
 	}
 	if u.impostor {
 		return activeUser("someone-else")
@@ -1408,6 +1413,17 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				t.Helper()
 				c := x.issue(t)
 				x.users.set(func(u *exchangeUsers) { u.impostor = true })
+
+				return c, byOwner(c)
+			},
+			assert: refusedAndUnspent,
+		},
+		{
+			name: "a loader answering with neither details nor an error is refused, unspent",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := x.issue(t)
+				x.users.set(func(u *exchangeUsers) { u.answersNothing = true })
 
 				return c, byOwner(c)
 			},
