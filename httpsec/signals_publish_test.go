@@ -233,6 +233,7 @@ func TestSessionSignals_Publish(t *testing.T) {
 		refused("an upper case name is refused", "app.Roles", []byte(`{}`)),
 		refused("a name over 63 characters after the prefix is refused", "app."+strings.Repeat("a", 64), []byte(`{}`)),
 		refused("data over 8 KiB is refused", "app.big", []byte(`"`+strings.Repeat("a", 8<<10)+`"`)),
+		refused("data one byte over 8 KiB is refused", "app.big", []byte(`"`+strings.Repeat("a", 8<<10-1)+`"`)),
 		refused("data that is not JSON is refused", "app.x", []byte(`{not json`)),
 		refused("empty data is refused", "app.x", nil),
 		refused("data that is not valid UTF-8 is refused", "app.x", []byte("\"\xff\xfe\"")),
@@ -308,8 +309,11 @@ func TestSessionSignals_Publish(t *testing.T) {
 				stream := r.open(t, r.signIn(t).ID)
 				buf := []byte(`{"a":1}`)
 
-				r.act(func() { require.NoError(t, r.chain.PublishSignal(t.Context(), "u-1", "app.x", buf)) })
-				copy(buf, `{"b":2}`)
+				// Inside act, so the buffer changes before the stream has written the event.
+				r.act(func() {
+					require.NoError(t, r.chain.PublishSignal(t.Context(), "u-1", "app.x", buf))
+					copy(buf, `{"b":2}`)
+				})
 
 				require.Len(t, stream.events("app.x"), 1)
 				assert.Equal(t, `{"a":1}`, stream.events("app.x")[0].Data)

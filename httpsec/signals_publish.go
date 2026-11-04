@@ -35,7 +35,8 @@ const (
 //
 // It returns ErrSessionSignalsDisabled on a chain without EnableSessionSignals, ErrInvalidSignal
 // for a kind other than the three above, and ErrSignalsBusy when a consumer's bus could not take
-// the signal. A user with no open stream is not an error, and neither is a chain whose set of
+// the signal, or, on either bus, after CloseSessionSignals, since nil would say it was sent. A user
+// with no open stream is not an error, and neither is a chain whose set of
 // signals lacks credential_changed: no stream sends it, so nothing is sent. The signal is raised
 // on a detached context, since a bus outlives the request, and ctx is not used.
 func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, kind CredentialKind) error {
@@ -77,7 +78,8 @@ func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, 
 //
 // It returns ErrSessionSignalsDisabled on a chain without EnableSessionSignals, ErrInvalidSignal
 // for a name or data outside the limits above, and ErrSignalsBusy when a consumer's bus could not
-// take the signal. A user with no open stream is not an error.
+// take the signal, or, on either bus, after CloseSessionSignals, since nil would say it was sent. A
+// user with no open stream is not an error.
 func (c *Chain) PublishSignal(_ context.Context, user identity.UserID, name string, data json.RawMessage) error {
 	e := c.signalsEndpoint()
 	if e == nil {
