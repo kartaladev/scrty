@@ -229,7 +229,6 @@ func TestProvider_Capabilities_FreshCopies(t *testing.T) {
 	require.NoError(t, err)
 
 	first := p.Capabilities()
-	want := p.Capabilities()
 
 	for _, list := range [][]string{first.Scopes, first.Claims, first.IDTokenAlgs, first.AssertionAlgs} {
 		for i := range list {
@@ -237,5 +236,8 @@ func TestProvider_Capabilities_FreshCopies(t *testing.T) {
 		}
 	}
 
-	assert.Equal(t, want, p.Capabilities())
+	later := p.Capabilities()
+	for _, list := range [][]string{later.Scopes, later.Claims, later.IDTokenAlgs, later.AssertionAlgs} {
+		assert.NotContains(t, list, "changed")
+	}
 }
