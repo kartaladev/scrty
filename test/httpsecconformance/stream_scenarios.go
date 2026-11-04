@@ -56,6 +56,11 @@ type StreamServer struct {
 	// returned, as fiber's does: a chain that refuses after Stream is then answered
 	// with the refusal and the client gets no stream.
 	BodyRunsLater bool
+
+	// CompressesStream is set by an adapter whose ChainSpec.Compress wrapper really compresses
+	// the event stream. net/http's and gin's gzhttp does. Fiber's compress middleware does not:
+	// it skips any response marked Cache-Control: no-transform, which the stream always is.
+	CompressesStream bool
 }
 
 // StreamAdapter is an Adapter that can also serve a chain on a real listener,

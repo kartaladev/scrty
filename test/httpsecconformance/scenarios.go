@@ -371,6 +371,11 @@ type ChainSpec struct {
 	// compresses all its responses would. net/http and gin wrap the whole handler in
 	// Gzip, which is gzhttp; fiber, whose middleware has no such slot, uses its own
 	// compress middleware ahead of the chain. Serve ignores it.
+	//
+	// Fiber's middleware skips any response marked Cache-Control: no-transform, and the
+	// signal stream is always marked so. On fiber the stream therefore stays uncompressed,
+	// and the row that uses Compress checks that no-transform is honoured there
+	// (StreamServer.CompressesStream is false), where net/http and gin must compress.
 	Compress bool
 
 	// Built, when set, is called with each chain NewChain builds, so a scenario can reach

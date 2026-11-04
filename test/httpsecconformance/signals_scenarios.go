@@ -73,9 +73,10 @@ func signalsScenarios() []Scenario {
 		{Name: "signals: a panic in a consumer's loader reaches the chain's logger, and neither that logger nor the process's default logger holds its value", Stream: signalsLoaderPanic},
 
 		{Name: "signals: a stream over a cap is answered 200 with only a retry, and the others stay open", Stream: signalsCapReached},
-		{Name: "signals: a dependency failure at admission is answered 200 with only a retry", Stream: signalsDependencyFailureAtAdmission},
+		{Name: "signals: a session store failing while a stream is admitted is answered 200 with only a retry", Stream: signalsDependencyFailureAtAdmission},
+		{Name: "signals: a failure ahead of authentication is answered 200 with only a retry", Stream: signalsDependencyFailureBeforeAuthentication},
 		{Name: "signals: a consumer's signal reaches the user's streams byte for byte, and narrowing drops it", Stream: signalsConsumerSignal},
-		{Name: "signals: a gzip wrapper in front of the chain leaves the stream readable", Stream: signalsGzipInFront},
+		{Name: "signals: a compressing wrapper in front of the chain leaves the stream readable, or honours no-transform", Stream: signalsGzipInFront},
 	}
 }
 
@@ -97,9 +98,29 @@ func newSignalsSpec(t *testing.T, cfg httpsec.SessionSignals, extra ...httpsec.O
 func newSignalsSpecIdle(t *testing.T, idle time.Duration, cfg httpsec.SessionSignals, extra ...httpsec.Option) ChainSpec {
 	t.Helper()
 
+	return newSignalsSpecOver(t, idle, nil, cfg, extra...)
+}
+
+// newSignalsSpecOver is newSignalsSpecIdle with the sessions reading and writing through
+// wrap(store), when wrap is set. Effects.Store stays the memory store itself, so a row can
+// still make sign-ins in it without going through the wrapper.
+func newSignalsSpecOver(
+	t *testing.T,
+	idle time.Duration,
+	wrap func(session.Store) session.Store,
+	cfg httpsec.SessionSignals,
+	extra ...httpsec.Option,
+) ChainSpec {
+	t.Helper()
+
 	store := must.Must(session.NewMemoryStore())
 
-	sessions, err := session.New(session.WithStore(store), session.WithIdleTimeout(idle))
+	var over session.Store = store
+	if wrap != nil {
+		over = wrap(store)
+	}
+
+	sessions, err := session.New(session.WithStore(over), session.WithIdleTimeout(idle))
 	require.NoError(t, err)
 
 	effects := &Effects{Sessions: sessions, Store: store, Attempts: newEffects(t).Attempts}
@@ -1235,7 +1256,86 @@ func signalsCapReached(t *testing.T, listen func(ChainSpec) StreamServer) {
 	again.receivesPing(chain, UserID)
 }
 
+// failingStore is a session store that fails a read while its switch is set. loadFails is the read
+// that authenticates a request (Load); listFails is the read of the sign-in's state the stream's
+// own endpoint makes at admission (ListByUser). Everything else is the wrapped store's.
+type failingStore struct {
+	session.Store
+
+	loadFails, listFails atomic.Bool
+}
+
+func (f *failingStore) Load(ctx context.Context, id string) (*session.Session, error) {
+	if f.loadFails.Load() {
+		return nil, errAdmissionStoreDown
+	}
+
+	return f.Store.Load(ctx, id)
+}
+
+func (f *failingStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	if f.listFails.Load() {
+		return nil, errAdmissionStoreDown
+	}
+
+	return f.Store.ListByUser(ctx, user, now)
+}
+
+// signalsDependencyFailureAtAdmission fails the session store while a stream is being admitted,
+// first in the endpoint's own first read of the sign-in, on a request already authenticated, and
+// then in the read that authenticates the request. Either way the client is told to come back
+// later, and nothing is charged: with one place, the next request takes it.
 func signalsDependencyFailureAtAdmission(t *testing.T, listen func(ChainSpec) StreamServer) {
+	const busy = 10 * time.Second
+
+	type testCase struct {
+		name string
+		fail func(*failingStore) *atomic.Bool
+	}
+
+	cases := []testCase{
+		{"the endpoint's own first read fails after authentication", func(f *failingStore) *atomic.Bool { return &f.listFails }},
+		{"the read that authenticates the request fails", func(f *failingStore) *atomic.Bool { return &f.loadFails }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var (
+				store *failingStore
+				chain *httpsec.Chain
+			)
+
+			spec := newSignalsSpecOver(t, signalsIdleTimeout,
+				func(inner session.Store) session.Store {
+					store = &failingStore{Store: inner}
+
+					return store
+				},
+				httpsec.SessionSignals{MaxPerSignIn: 1, BusyDelay: busy})
+			spec.Built = func(c *httpsec.Chain) { chain = c }
+
+			srv := listen(spec)
+			s := signalsSignIn(t, spec.Effects, UserID)
+
+			fail := tc.fail(store)
+			fail.Store(true)
+
+			requireWithinJitter(t, busy, openSignals(t, srv.URL, s, "").noPlace())
+
+			// The failure charged the sign-in nothing: with one place, the next request, once the
+			// dependency is back, takes it.
+			fail.Store(false)
+
+			open := openSignals(t, srv.URL, s, "")
+			open.opens()
+			open.receivesPing(chain, UserID)
+		})
+	}
+}
+
+// signalsDependencyFailureBeforeAuthentication is the same answer when a failure comes from an
+// interceptor ahead of authentication, which the endpoint's own read never sees.
+func signalsDependencyFailureBeforeAuthentication(t *testing.T, listen func(ChainSpec) StreamServer) {
 	const busy = 10 * time.Second
 
 	var (
@@ -1253,8 +1353,6 @@ func signalsDependencyFailureAtAdmission(t *testing.T, listen func(ChainSpec) St
 
 	requireWithinJitter(t, busy, openSignals(t, srv.URL, s, "").noPlace())
 
-	// The failure charged the sign-in nothing: with one place, the next request, once the
-	// dependency is back, takes it.
 	fail.Store(false)
 
 	open := openSignals(t, srv.URL, s, "")
@@ -1270,43 +1368,63 @@ func signalsConsumerSignal(t *testing.T, listen func(ChainSpec) StreamServer) {
 
 	srv := listen(spec)
 
-	wide, narrow, other := signalsSignIn(t, spec.Effects, UserID), signalsSignIn(t, spec.Effects, UserID),
-		signalsSignIn(t, spec.Effects, "u-2")
-
-	wideStream := openSignals(t, srv.URL, wide, "")
-	narrowStream := openSignals(t, srv.URL, narrow, "?signals=session_ended")
-	otherStream := openSignals(t, srv.URL, other, "")
-
-	for _, c := range []*signalsClient{wideStream, narrowStream, otherStream} {
-		c.opens()
-	}
-
 	// Not canonical JSON: the key order, the spaces and the escapes are the consumer's, and
 	// reach the browser as they are.
 	const data = `{"z": 1,"a":["\u00e9", "é", "</x>"],  "n":1.50}`
 
-	signalsPublish(t, chain, UserID, "app.note", data)
-
-	f := wideStream.nextEvent()
-	assert.Equal(t, "app.note", f.event)
-	assert.Equal(t, data, f.data)
-
-	// Ending the sign-ins ends the streams with nothing else on them: the narrowed one never
-	// heard the signal, nor did another user's.
-	for _, s := range []*session.Session{wide, narrow, other} {
-		_, err := spec.Effects.Sessions.Logout(t.Context(), s.UserID, s.FamilyID)
-		require.NoError(t, err)
+	type testCase struct {
+		name   string
+		user   identity.UserID
+		query  string
+		assert func(t *testing.T, c *signalsClient)
 	}
 
-	t.Run("the narrowed stream is not sent it", func(t *testing.T) {
-		assert.Equal(t, []string{"session_ended"}, narrowStream.eventsToEnd())
-	})
+	receives := func(t *testing.T, c *signalsClient) {
+		f := c.nextEvent()
+		assert.Equal(t, "app.note", f.event)
+		assert.Equal(t, data, f.data)
+	}
 
-	t.Run("another user's stream is not sent it", func(t *testing.T) {
-		assert.Equal(t, []string{"session_ended"}, otherStream.eventsToEnd())
-	})
+	neverHears := func(*testing.T, *signalsClient) {}
+
+	cases := []testCase{
+		{"an unnarrowed stream of the user is sent it", UserID, "", receives},
+		{"a second unnarrowed stream of the user is sent it too", UserID, "", receives},
+		{"a stream narrowed to the signal's name is sent it", UserID, "?signals=app.note", receives},
+		{"a stream narrowed to another name is not sent it", UserID, "?signals=session_ended", neverHears},
+		{"another user's stream is not sent it", "u-2", "", neverHears},
+	}
+
+	signIns := make([]*session.Session, len(cases))
+	clients := make([]*signalsClient, len(cases))
+
+	for i, tc := range cases {
+		signIns[i] = signalsSignIn(t, spec.Effects, tc.user)
+		clients[i] = openSignals(t, srv.URL, signIns[i], tc.query)
+		clients[i].opens()
+	}
+
+	signalsPublish(t, chain, UserID, "app.note", data)
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, clients[i])
+
+			// Ending the sign-in ends the stream with nothing else on it: a stream not sent the
+			// signal has nothing before the end, and one that was has had it already.
+			_, err := spec.Effects.Sessions.Logout(t.Context(), signIns[i].UserID, signIns[i].FamilyID)
+			require.NoError(t, err)
+
+			assert.Equal(t, []string{"session_ended"}, clients[i].eventsToEnd())
+		})
+	}
 }
 
+// signalsGzipInFront puts the framework's response compression in front of the chain. Where the
+// adapter compresses the stream (net/http and gin, StreamServer.CompressesStream), the response
+// must say gzip, and the events are read through the gzip reader as they are flushed. On fiber the
+// compress middleware skips the stream because of Cache-Control: no-transform, so there the row
+// shows that no-transform is honoured: no Content-Encoding, and the events arrive plain.
 func signalsGzipInFront(t *testing.T, listen func(ChainSpec) StreamServer) {
 	var chain *httpsec.Chain
 
@@ -1321,24 +1439,21 @@ func signalsGzipInFront(t *testing.T, listen func(ChainSpec) StreamServer) {
 		r.Header.Set("Accept-Encoding", "gzip")
 	})
 
-	// Nothing arrives as raw gzip without saying so: the first bytes are a gzip header only if
-	// the response is labelled as gzip.
 	encoding := c.resp.Header.Get("Content-Encoding")
-	head, err := c.r.Peek(2)
-	require.NoError(t, err)
 
-	if encoding != "gzip" {
-		require.NotEqual(t, []byte{0x1f, 0x8b}, head, "gzip arrived with no Content-Encoding")
-		require.Empty(t, encoding)
-	}
+	if srv.CompressesStream {
+		require.Equal(t, "gzip", encoding, "the compressing wrapper did not compress the stream")
 
-	t.Logf("the response under a compressing wrapper carries Content-Encoding %q", encoding)
-
-	if encoding == "gzip" {
 		zr, err := gzip.NewReader(c.r)
 		require.NoError(t, err)
 
 		c.r = bufio.NewReader(zr)
+	} else {
+		require.Empty(t, encoding, "the compress middleware compressed a no-transform response")
+
+		head, err := c.r.Peek(2)
+		require.NoError(t, err)
+		require.NotEqual(t, []byte{0x1f, 0x8b}, head, "gzip arrived with no Content-Encoding")
 	}
 
 	// A flushed event arrives readable while the response stays open: the session event
@@ -1346,7 +1461,7 @@ func signalsGzipInFront(t *testing.T, listen func(ChainSpec) StreamServer) {
 	c.opens()
 	c.receivesPing(chain, UserID)
 
-	_, err = spec.Effects.Sessions.Logout(t.Context(), s.UserID, s.FamilyID)
+	_, err := spec.Effects.Sessions.Logout(t.Context(), s.UserID, s.FamilyID)
 	require.NoError(t, err)
 
 	c.requireEnd("logout")

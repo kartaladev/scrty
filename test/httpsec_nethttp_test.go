@@ -124,7 +124,7 @@ func (nethttpAdapter) Listen(
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	return httpsecconformance.StreamServer{URL: srv.URL}
+	return httpsecconformance.StreamServer{URL: srv.URL, CompressesStream: true}
 }
 
 // nethttpGuard builds the guard the scenario named.

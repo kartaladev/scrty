@@ -114,7 +114,7 @@ func (ginAdapter) Listen(
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	return httpsecconformance.StreamServer{URL: srv.URL}
+	return httpsecconformance.StreamServer{URL: srv.URL, CompressesStream: true}
 }
 
 // ginRoute is one application route, preceded by the guard the scenario asked
