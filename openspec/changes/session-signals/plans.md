@@ -271,7 +271,8 @@ func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protectio
 
 **Decisions the implementer cannot make alone:**
 - A timer reloads before it speaks. On a store failure only the absolute deadline ends the stream. Alive per the store while past per the clock re-arms no sooner than the next heartbeat.
-- A reason from a report is kept with its local receipt time, and used only if the store says gone within two heartbeats. It has its own field, since the wake channel carries nothing.
+- A reason from a report is kept with its local receipt time, and used only if the store says gone within two heartbeats. It has its own field, since the wake channel carries nothing. Within that window a later report replaces it, except that `reuse` is never replaced, so a logout reporting a family already revoked for reuse does not relabel it (task 6.2).
+- `SignInState`'s limits stand as the design states them: a stream treats its failure as an outage, including the one undecodable row of a user, and `ConsecutiveReloadFailures` is how an operator sees that.
 - The reload's context comes from `ReloadContext`, called once at admission, and defaults to one with none of the request's values. The first read at admission uses it too, so a missing tenant fails there, as a dependency failure. `ReloadTimeout` covers the session and user reads together.
 - The body's first deferred step recovers a panic and logs through the chain's logger, with the value's type, the phase (`stream`, `reload`, `bus`), the family, and frames as function, file and line. It frees the place. It never logs the value, nor `debug.Stack()`, which quotes arguments.
 - Open and close log at DEBUG with user, family, client address, origin and reason.
