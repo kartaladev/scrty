@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -34,6 +35,10 @@ type Deps struct {
 
 	// Keys signs what the provider issues. It is required, and the provider does not
 	// generate keys of its own. It must be the source the chain's JWKS endpoint publishes.
+	// New builds an issuer per algorithm it lists, RS256 alone for a source that lists none,
+	// so a username-mode generator cannot reach the provider. A source whose usable window,
+	// its key lifetime minus its rotation, is under the 5 minutes a token lasts by default
+	// fails construction, however short the clients set theirs.
 	Keys signingkey.KeySource
 
 	// Users loads the users tokens describe. It is required.
@@ -56,6 +61,11 @@ type Provider struct {
 	keys   signingkey.KeySource
 	users  identity.UserLoader
 
+	// issuers signs what the provider issues, one per algorithm the keys hold.
+	issuers map[signingkey.Alg]*token.Issuer
+	// accessVerifier reads the provider's own JWT access tokens.
+	accessVerifier *token.JWTVerifier
+
 	registry ClientRegistry
 	limits   keyLimits
 
@@ -76,7 +86,8 @@ type Provider struct {
 // consents, grants, refresh-token lineages, opaque access tokens and browser sessions
 // kept in memory, client key sets fetched through a default outbound.Client, kept 15 minutes and
 // refetched for an unknown kid at most every 30 seconds, the system clock, slog.Default
-// and crypto/rand. Each option names its default and its bound.
+// and crypto/rand. ID and access tokens last 5 minutes, and an access token is a JWT,
+// each settable per client. Each option names its default and its bound.
 func New(d Deps, opts ...Option) (*Provider, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -112,11 +123,22 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 		return nil, err
 	}
 
+	issuers, err := buildIssuers(d.Keys, limits, d.Issuer, cfg.clock)
+	if err != nil {
+		return nil, err
+	}
+	accessVerifier, err := buildAccessVerifier(d.Keys, d.Issuer, &cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Provider{
-		cfg:      cfg,
-		stores:   stores,
-		registry: registry,
-		limits:   limits,
+		cfg:            cfg,
+		issuers:        issuers,
+		accessVerifier: accessVerifier,
+		stores:         stores,
+		registry:       registry,
+		limits:         limits,
 		keySets: &clientKeySets{
 			out:      out,
 			clock:    cfg.clock,

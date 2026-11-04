@@ -3,6 +3,7 @@ package oidcprovider_test
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 const (
@@ -41,6 +43,24 @@ const (
 	weekClient     = "week-app"
 	weekRedirect   = "https://week.example.com/cb"
 	nonceRedirect  = "https://nonce.example.com/cb"
+
+	// tunedClient signs ES256, with an ID token of 10 minutes and an access token of 15.
+	tunedClient   = "tuned-app"
+	tunedRedirect = "https://tuned.example.com/cb"
+	// opaqueClient gets opaque access tokens.
+	opaqueClient   = "opaque-app"
+	opaqueRedirect = "https://opaque.example.com/cb"
+	// audienceClient has a default audience, and resources it may ask for.
+	audienceClient   = "audience-app"
+	audienceRedirect = "https://audience.example.com/cb"
+	// issuerAudienceClient's default audience already names the issuer.
+	issuerAudienceClient   = "issuer-audience-app"
+	issuerAudienceRedirect = "https://issuer-audience.example.com/cb"
+
+	defaultAudience = "https://api.example.com"
+	ordersResource  = "https://orders.example.com"
+	invoiceResource = "https://invoices.example.com"
+	otherResource   = "https://other.example.com"
 )
 
 // exchangeUsers is who a fixture's user loader knows, which a row changes.
@@ -53,6 +73,8 @@ type exchangeUsers struct {
 	impostor bool
 	// onLoad runs at each load: the moment between a code's check and its spend.
 	onLoad func()
+	// username is what every load names the user by, as a chain reading usernames does.
+	username string
 }
 
 func (u *exchangeUsers) load(user identity.UserID) (*identity.Details, error) {
@@ -76,6 +98,7 @@ func (u *exchangeUsers) load(user identity.UserID) (*identity.Details, error) {
 		return nil, err
 	}
 	details.Active = !u.disabled[user]
+	details.Username = u.username
 
 	return details, nil
 }
@@ -87,11 +110,85 @@ func (u *exchangeUsers) set(change func(*exchangeUsers)) {
 	change(u)
 }
 
-// exchangeFixture is a parkFixture whose users a row can change, with the clients the
-// exchange's own rows need besides authzClients.
+// exchangeKeys signs with the test's fixed keys, under a generated mock, and fails or hangs
+// up on request.
+type exchangeKeys struct {
+	*MockKeySource
+
+	mu sync.Mutex
+	// onSign and onVerify, when set, run first at each use, and an error they return is
+	// the source's answer.
+	onSign, onVerify func(context.Context) error
+}
+
+func newExchangeKeys(t *testing.T) *exchangeKeys {
+	t.Helper()
+
+	k := &exchangeKeys{MockKeySource: NewMockKeySource(gomock.NewController(t))}
+	k.EXPECT().Signer(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, alg signingkey.Alg) (string, crypto.Signer, error) {
+			if err := k.run(ctx, func() func(context.Context) error { return k.onSign }); err != nil {
+				return "", nil, err
+			}
+			if alg == signingkey.ES256 {
+				return esKid, testECKey(), nil
+			}
+
+			return rsKid, testRSAKey(), nil
+		},
+	).AnyTimes()
+	k.EXPECT().VerificationKeys(gomock.Any()).DoAndReturn(
+		func(ctx context.Context) ([]signingkey.PublicKey, error) {
+			if err := k.run(ctx, func() func(context.Context) error { return k.onVerify }); err != nil {
+				return nil, err
+			}
+
+			return []signingkey.PublicKey{
+				{Kid: rsKid, Alg: signingkey.RS256, Key: testRSAKey().Public()},
+				{Kid: esKid, Alg: signingkey.ES256, Key: testECKey().Public()},
+			}, nil
+		},
+	).AnyTimes()
+
+	return k
+}
+
+func (k *exchangeKeys) run(ctx context.Context, hook func() func(context.Context) error) error {
+	k.mu.Lock()
+	run := hook()
+	k.mu.Unlock()
+	if run == nil {
+		return nil
+	}
+
+	return run(ctx)
+}
+
+// SupportedAlgs reports the algorithms the provider may build issuers for.
+func (*exchangeKeys) SupportedAlgs() []signingkey.Alg {
+	return []signingkey.Alg{signingkey.RS256, signingkey.ES256}
+}
+
+func (k *exchangeKeys) failSigning(run func(context.Context) error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.onSign = run
+}
+
+func (k *exchangeKeys) failVerifying(run func(context.Context) error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.onVerify = run
+}
+
+// exchangeFixture is a parkFixture whose users and keys a row can change, with the clients
+// the exchange's own rows need besides authzClients.
 type exchangeFixture struct {
 	*parkFixture
 	users *exchangeUsers
+	keys  *exchangeKeys
 }
 
 func newExchangeFixture(t *testing.T, opts ...oidcprovider.Option) *exchangeFixture {
@@ -119,6 +216,23 @@ func newExchangeFixture(t *testing.T, opts ...oidcprovider.Option) *exchangeFixt
 			ID: weekClient, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{weekRedirect},
 			Scopes: scopes, GrantTypes: both, GrantAbsoluteLifetime: 7 * 24 * time.Hour,
 		},
+		oidcprovider.Client{
+			ID: tunedClient, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{tunedRedirect},
+			Scopes: scopes, IDTokenAlg: signingkey.ES256, IDTokenLifetime: 10 * time.Minute, AccessTokenLifetime: 15 * time.Minute,
+		},
+		oidcprovider.Client{
+			ID: opaqueClient, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{opaqueRedirect},
+			Scopes: scopes, OpaqueAccessTokens: true, GrantTypes: both,
+		},
+		oidcprovider.Client{
+			ID: audienceClient, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{audienceRedirect},
+			Scopes: []string{"openid", "api.read"}, DefaultAudience: []string{defaultAudience},
+			Resources: []string{ordersResource, invoiceResource, otherResource},
+		},
+		oidcprovider.Client{
+			ID: issuerAudienceClient, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{issuerAudienceRedirect},
+			Scopes: []string{"openid"}, DefaultAudience: []string{issuer, defaultAudience},
+		},
 	)
 	registry, err := oidcprovider.NewMemoryRegistry(clients)
 	require.NoError(t, err)
@@ -130,6 +244,7 @@ func newExchangeFixture(t *testing.T, opts ...oidcprovider.Option) *exchangeFixt
 	).AnyTimes()
 
 	logs := &bytes.Buffer{}
+	keys := newExchangeKeys(t)
 	base := []oidcprovider.Option{
 		oidcprovider.WithClock(clk),
 		oidcprovider.WithPendingRequestStore(store),
@@ -139,7 +254,7 @@ func newExchangeFixture(t *testing.T, opts ...oidcprovider.Option) *exchangeFixt
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer:       issuer,
 		Registry:     registry,
-		Keys:         plainKeys(t),
+		Keys:         keys,
 		Users:        loader,
 		LoginURL:     issuer + "/login",
 		ConsentURL:   issuer + "/consent",
@@ -151,6 +266,7 @@ func newExchangeFixture(t *testing.T, opts ...oidcprovider.Option) *exchangeFixt
 	return &exchangeFixture{
 		parkFixture: &parkFixture{p: p, store: store, consents: consents, registry: registry, clk: clk, logs: logs},
 		users:       users,
+		keys:        keys,
 	}
 }
 
@@ -790,6 +906,11 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.Equal(t, "openid profile", res.Scope)
+				assert.Equal(t, "Bearer", res.TokenType)
+				assert.Equal(t, 300, res.ExpiresIn)
+				assert.NotEmpty(t, res.AccessToken)
+				assert.NotEmpty(t, res.IDToken)
+				assert.NotEmpty(t, res.RefreshToken)
 				assertSpent(t, x, c)
 
 				record := recordOf(t, x.parkFixture, c.code)
@@ -980,15 +1101,15 @@ func TestProvider_ExchangeCode(t *testing.T) {
 
 				return c, oidcprovider.TokenRequest{
 					Form:    exchangeForm(c, nativeRedirect, func(v url.Values) { v.Set("client_id", nativeClient) }),
-					Binding: oidcprovider.Binding{JKT: "k1"},
+					Binding: oidcprovider.Binding{JKT: boundJKT},
 				}
 			},
 			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				grant := grantOf(t, x, c)
-				assert.Equal(t, "k1", grant.KeyBinding)
-				assert.Equal(t, session.KeyBinding{JKT: "k1"}, lineageOf(t, x, grant, res.RefreshToken).KeyBinding)
+				assert.Equal(t, boundJKT, grant.KeyBinding)
+				assert.Equal(t, session.KeyBinding{JKT: boundJKT}, lineageOf(t, x, grant, res.RefreshToken).KeyBinding)
 			},
 		},
 		{
@@ -997,7 +1118,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				t.Helper()
 				c := x.issue(t)
 				req := billingExchange(c, nil)
-				req.Binding = oidcprovider.Binding{JKT: "k1"}
+				req.Binding = oidcprovider.Binding{JKT: boundJKT}
 
 				return c, req
 			},
@@ -1936,6 +2057,10 @@ func TestProvider_CodeReplay(t *testing.T) {
 					assertRefused(t, err, oidcprovider.CodeInvalidGrant)
 				})
 				require.NoError(t, first.err, "the one request that spent the code is the one answered with tokens")
+				require.NotEmpty(t, first.res.IDToken)
+				require.NotEmpty(t, first.res.AccessToken)
+				_, err := x.p.VerifyAccessToken(t.Context(), first.res.AccessToken)
+				assertRefused(t, err, oidcprovider.CodeInvalidToken)
 
 				grant := grantOf(t, x, c)
 				assert.True(t, grant.Revoked, "a live grant survived the replay that should have revoked it")
@@ -1953,9 +2078,13 @@ func TestProvider_CodeReplay(t *testing.T) {
 				live := grantOf(t, x, c)
 				require.False(t, live.Revoked)
 				secret := strings.TrimPrefix(res.RefreshToken, "rt."+live.Family.String()+".")
+				_, err = x.p.VerifyAccessToken(t.Context(), res.AccessToken)
+				require.NoError(t, err, "its access token is good until the replay")
 
 				_, err = x.p.Token(t.Context(), billingExchange(c, nil))
 				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				_, err = x.p.VerifyAccessToken(t.Context(), res.AccessToken)
+				assertRefused(t, err, oidcprovider.CodeInvalidToken)
 
 				grant := grantOf(t, x, c)
 				assert.True(t, grant.Revoked)
@@ -1963,6 +2092,21 @@ func TestProvider_CodeReplay(t *testing.T) {
 				assert.True(t, grant.RevokedAt.Equal(x.clk.Now()))
 				_, err = x.p.LineageForTest().Load(t.Context(), secret)
 				require.ErrorIs(t, err, session.ErrNotFound, "its refresh token is gone with the family")
+			},
+		},
+		{
+			name: "a valid replay asking for a resource outside the grant still revokes",
+			run: func(t *testing.T, x *exchangeFixture, _ *barrierGrants) {
+				t.Helper()
+				c := x.issue(t)
+				_, err := x.p.Token(t.Context(), billingExchange(c, nil))
+				require.NoError(t, err)
+
+				_, err = x.p.Token(t.Context(), billingExchange(c, func(v url.Values) {
+					v.Set("resource", "https://nowhere.example.com")
+				}))
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.True(t, grantOf(t, x, c).Revoked, "resource is no part of what makes a replay valid")
 			},
 		},
 		{
@@ -1988,6 +2132,8 @@ func TestProvider_CodeReplay(t *testing.T) {
 				for answer := range answers {
 					if answer.err == nil {
 						succeeded++
+						assert.NotEmpty(t, answer.res.AccessToken)
+						assert.NotEmpty(t, answer.res.IDToken)
 
 						continue
 					}

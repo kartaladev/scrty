@@ -68,8 +68,11 @@ func (TokenRequest) LogValue() slog.Value { return slog.StringValue(redacted) }
 // TokenResponse is a successful token response. It holds tokens, so it prints and logs
 // redacted; read its fields to use it.
 type TokenResponse struct {
-	// AccessToken and TokenType are the access token and how it is presented.
-	AccessToken, TokenType string
+	// AccessToken is a JWT typed at+jwt, or at.<id>.<secret> for a client registered for
+	// opaque tokens.
+	AccessToken string
+	// TokenType is how it is presented: DPoP when bound to a proof's key, and otherwise Bearer.
+	TokenType string
 	// ExpiresIn is the access token's lifetime in seconds.
 	ExpiresIn int
 	// Scope is what the tokens were granted, space-separated.
@@ -101,20 +104,28 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 //  2. another client's code is spent, then refused, because a code it holds has leaked;
 //  3. a wrong redirect URI, verifier or dpop_jkt is refused with the code unspent, since
 //     the client may still hold what it should have sent;
-//  4. a revocation already recorded for the code's grant, a sign-in that has ended by its
+//  4. a resource outside the client's allowlist or the code's grant is invalid_target, and
+//     more of them than are read is invalid_request, with the code unspent;
+//  5. a revocation already recorded for the code's grant, a sign-in that has ended by its
 //     deadline, and a missing or disabled user are refused, with the code unspent;
-//  5. spend the code, of which exactly one of any number of racing requests succeeds;
-//  6. write the grant row, which keeps any revocation that landed after step 4;
-//  7. write the lineage, when the client may refresh.
+//  6. mint the tokens, for the grant family the code already names. Signing writes nothing,
+//     so a key failure answers a dependency failure and the client may try again;
+//  7. spend the code, of which exactly one of any number of racing requests succeeds, and the
+//     losers discard what they signed;
+//  8. write the grant row, which keeps any revocation that landed after step 5;
+//  9. write the lineage, when the client may refresh;
+//  10. store an opaque access token, whose grant is what it is judged by when it is read.
 //
-// There is no transaction across 6 and 7. A lineage can never exist without its row, which
-// is the state that would fail open, and every refresh reads the row first. A failure
-// between them answers an error, leaving a row with no lineage for the orphan sweep.
+// There is no transaction across 8, 9 and 10. A lineage can never exist without its row, which
+// is the state that would fail open, and every refresh reads the row first. A failure after
+// the spend answers an error and burns the code, leaving records no one holds a token for: a
+// row with no lineage is for the orphan sweep.
 //
 // A code presented after it was spent is refused too, and a valid replay revokes what it
-// issued; see refuseSpentCode. The request that won step 5 never looks again, so of several
+// issued; see refuseSpentCode. The request that won step 7 never looks again, so of several
 // racing requests exactly one is answered with tokens, even though the others' replay leaves
-// those tokens' grant revoked.
+// those tokens' grant revoked. Which is why a resource is no part of what makes a replay valid:
+// it is what a request asks for, and not what the code was issued for.
 func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, error) {
 	if repeatedParam(r.Form) {
 		return nil, refuseRequest()
@@ -199,6 +210,10 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 	if !codeBindingsHold(r, record, rc) {
 		return nil, refuseGrant()
 	}
+	audience, err := resolveAudience(r.Form, record.Resources, rc, p.issuer, record.Scopes)
+	if err != nil {
+		return nil, err
+	}
 	expiresAt, holdsLineage, ok := grantLife(record, rc, now)
 	if !ok {
 		return nil, refuseGrant()
@@ -207,20 +222,38 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 		return nil, err
 	}
 
+	grant := newGrant(record, rc, r.Binding, holdsLineage, now, expiresAt)
+	access, err := p.mintAccessToken(ctx, grant, rc, r.Binding, audience, now)
+	if err != nil {
+		return nil, err
+	}
+	res := &TokenResponse{
+		AccessToken: access.value,
+		TokenType:   access.tokenType,
+		ExpiresIn:   access.expiresIn,
+		Scope:       strings.Join(grant.Scopes, " "),
+	}
+	if slices.Contains(grant.Scopes, scopeOpenID) {
+		if res.IDToken, err = p.mintIDToken(ctx, grant, record.Nonce, rc); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tokens.Consume(ctx, checked); err != nil {
 		return nil, p.refuseSpentCode(ctx, r, rc, code)
 	}
 
-	grant := newGrant(record, rc, r.Binding, holdsLineage, now, expiresAt)
 	if err := p.stores.grants.Create(ctx, grant); err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: store the grant")
 	}
-
-	// The access and ID tokens are not minted yet.
-	res := &TokenResponse{Scope: strings.Join(grant.Scopes, " ")}
 	if holdsLineage {
 		if res.RefreshToken, err = p.writeLineage(ctx, grant, rc); err != nil {
 			return nil, err
+		}
+	}
+	if access.record != nil {
+		if err := p.stores.accessTokens.Create(ctx, access.record); err != nil {
+			return nil, dependencyFailure(ctx, err, "oidcprovider: store the access token")
 		}
 	}
 

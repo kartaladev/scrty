@@ -169,7 +169,8 @@ type Client struct {
 	Scopes []string
 	// Resources are those the client may ask for. There are none by default.
 	Resources []string
-	// DefaultAudience is used when a request names no resource. It is empty by default.
+	// DefaultAudience is used when a request names no resource, with the issuer added for an
+	// openid token. It is empty by default, and a token is then for the issuer alone.
 	DefaultAudience []string
 	// ResourceIdentifier names this client as a resource server. It is empty by
 	// default.
@@ -182,7 +183,8 @@ type Client struct {
 	// OfflineAccess defaults to OfflineAskOnce.
 	OfflineAccess OfflineAccess
 
-	// IDTokenAlg defaults to RS256, and must be one the keys can produce.
+	// IDTokenAlg defaults to RS256, and must be one the keys can produce. The client's
+	// JWT access tokens are signed with it too.
 	IDTokenAlg string
 	// IDTokenLifetime defaults to 5 minutes, within the key cap.
 	IDTokenLifetime time.Duration
