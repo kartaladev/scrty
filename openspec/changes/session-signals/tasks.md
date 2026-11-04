@@ -73,7 +73,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
   Verify: `go test -run 'TestSessionSignals_WireFormat' -count=1 ./httpsec/`.
 - [ ] 4.5 Narrow by the `signals` query parameter, test-first, reading every occurrence through `QueryValues`: narrowed; a widening name ignored; a malformed name dropped; 17 names, or more than 256 bytes, across repeated parameters too → 400; an empty parameter → only what is always sent; no parameter → the chain's set. Verify: `go test -run 'TestSessionSignals_Narrowing' -count=1 ./httpsec/`.
-- [ ] 4.6 Show the early slots and the cross-site rule, test-first. The first case is the red test for D3's UNREPRODUCED claim: a `Sec-Fetch-Site: cross-site` request from an origin CORS does not allow must be refused with 403. That it leaves the sign-in's stream count unchanged is asserted with task 6.4, once the registry exists. Then:
+- [x] 4.6 Show the early slots and the cross-site rule, test-first. The first case is the red test for D3's UNREPRODUCED claim: a `Sec-Fetch-Site: cross-site` request from an origin CORS does not allow must be refused with 403. That it leaves the sign-in's stream count unchanged is asserted with task 6.4, once the registry exists. Then:
   - the same with CSRF protection off;
   - `Origin: null` refused;
   - no `Sec-Fetch-Site` and no `Origin` (a bearer client) → opens;
@@ -87,7 +87,7 @@ Every implementation task is test-first: write the failing test, run it and conf
   - a same-origin cookie stream opens without a CSRF token;
   - a source refused by a consumer's rate-limiting interceptor below the slot gets no stream.
 
-  Add the README section "Session signals": enabling it; the `EventSource` client, which probes an ordinary endpoint before rebuilding, so a 401 stays final, and rebuilds on `visibilitychange`, `pageshow` and `online`; the `fetch()` client, which reads the current credential on every attempt; the defaults table; and the operator's section listing each intermediary and server setting in the design's failure sweep, the concurrent-stream limits and what happens at them (ASVS 7.1.2), how a provider's logout reaches streams (7.1.3), where logs go (16.2.3), and that the chain's authorizer is not re-run until a reconnection. Verify: `go test -run 'TestSessionSignals_EarlySlots|TestSessionSignals_CrossSite' -count=1 ./httpsec/`.
+  Add the README section "Session signals": enabling it; the `EventSource` client, which probes an ordinary endpoint before rebuilding, so a 401 stays final, and rebuilds on `visibilitychange`, `pageshow` and `online`; the `fetch()` client, which reads the current credential on every attempt; the defaults table; and the operator's section listing each intermediary and server setting in the design's failure sweep, the concurrent-stream limits and what happens at them (ASVS 7.1.2), how a provider's logout reaches streams (7.1.3), where logs go (16.2.3), and that the chain's authorizer never runs for a stream, so what is judged below the slot is judged again only at a reconnection. Verify: `go test -run 'TestSessionSignals_EarlySlots|TestSessionSignals_CrossSite' -count=1 ./httpsec/`.
 
 ## 5. Stream lifecycle against the store (D4)
 
