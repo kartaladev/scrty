@@ -28,7 +28,7 @@
   - `ReconnectDelay` 5 s ±30% per stream, `BusyDelay` 30 s ±30% per refusal, and on closing a fresh `retry` between 1 s and 3 × `ReconnectDelay`;
   - `MaxAge` 1 hour ±10%, `NoMaxAge` to turn it off, at least 2 × heartbeat; `MaxPerSource` off;
   - `ReloadTimeout` half the heartbeat, within 2–10 s, shorter than the heartbeat if set, one budget for the session and user reads together;
-  - `BusQueue` 1024 and `BusTimeout` 5 s, for a consumer's bus only;
+  - `BusQueue` 1024, at most 1 048 576, and `BusTimeout` 5 s, for a consumer's bus only;
   - a queue of 32 per stream, and a wake channel of 1;
   - at most 16 `signals` query names and 256 bytes;
   - consumer data up to 8 KiB of valid JSON and valid UTF-8, with no raw CR or LF;
@@ -281,6 +281,7 @@ func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protectio
 
 **Decisions the implementer cannot make alone:**
 - A timer reloads before it speaks. On a store failure only the absolute deadline ends the stream. Alive per the store while past per the clock re-arms no sooner than the next heartbeat.
+- A wake reloads at once if the stream has not reloaded from a wake in the last second. Otherwise it stays pending, and is honoured when the second is up, so a flood costs at most one read a second per stream and the last wake is never lost. The gap is a constant (design D4).
 - A reason from a report is kept with its local receipt time, and used only if the store says gone within two heartbeats. It has its own field, since the wake channel carries nothing. Within that window a later report replaces it, except that `reuse` is never replaced, so a logout reporting a family already revoked for reuse does not relabel it (task 6.2).
 - The hub routes `session_ended` only through `deliverEnd…`, never `deliverSignal`, because `wants` always wants it and it must not land on the queue (D9). `SignInState`'s limits stand as the design states them: a stream treats its failure as an outage, including the one undecodable row of a user, and `ConsecutiveReloadFailures` is how an operator sees that.
 - The reload's context comes from `ReloadContext`, called once at admission, and defaults to one with none of the request's values. The first read at admission uses it too, and reads the user as well as the sign-in, so a missing tenant fails there, as a dependency failure. `ReloadTimeout` covers the session and user reads together.
@@ -312,7 +313,7 @@ type SignalBus interface {
 }
 type SignalEnvelope struct { User identity.UserID; Family, Kept id.ID; Upstream string /* SHA-256 of issuer, a separator and upstream session */; Name, Reason string; Data json.RawMessage }
 func (c *Chain) CloseSessionSignals(ctx context.Context) error
-type SessionSignalStats struct { Open int; RefusedByCap, ReloadFailures, ConsecutiveReloadFailures, BusDropped, BusPublishFailures uint64; BusSubscribed bool }
+type SessionSignalStats struct { Open int; RefusedByCap, ReloadFailures, ConsecutiveReloadFailures, BusDropped, BusPublishFailures, StreamDropped uint64; BusSubscribed bool }
 func (c *Chain) SessionSignalStats() SessionSignalStats
 ```
 
