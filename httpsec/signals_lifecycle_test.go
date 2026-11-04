@@ -390,6 +390,20 @@ func TestSessionSignals_Caps_DependencyFailure(t *testing.T) {
 			},
 		},
 		{
+			name: "a ReloadContext that panics, its value in no log",
+			setup: streamSetup{signals: httpsec.SessionSignals{ReloadContext: func(context.Context) context.Context {
+				panic(errors.New(streamSecret))
+			}}},
+			assert: func(t *testing.T, r *streamRig) {
+				lists := r.lists.Load()
+
+				answeredRetry(t, r, failing(t, r, func() {}))
+				assert.Equal(t, lists, r.lists.Load(), "reads ran with no tenant")
+				assert.NotContains(t, r.logs.String(), streamSecret)
+				assert.Equal(t, "reload", streamLogRecord(t, r.logs.String(), "panic")["phase"])
+			},
+		},
+		{
 			name: "a cross-origin EventSource gets CORS's headers on it, or it could not read it and would give up",
 			setup: streamSetup{opts: func(*streamRig) []httpsec.Option {
 				return []httpsec.Option{httpsec.EnableCORS(httpsec.CORSPolicy{
@@ -514,6 +528,7 @@ func TestSessionSignals_Caps_OtherAnswersStand(t *testing.T) {
 			assert: func(t *testing.T, f *signalsFixture, store *failingLoadStore) {
 				resp := downAt(t, f, store, http.MethodGet, httpsec.DefaultSessionSignalsPath)
 				assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), "text/event-stream", "a refusal is no event stream")
 			},
 		},
 		{
@@ -2151,6 +2166,7 @@ func TestSessionSignals_Caps_AtTheStream(t *testing.T) {
 			}},
 			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
 				assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), "text/event-stream", "a refusal is no event stream")
 				assert.Zero(t, f.chain.SessionSignalStats().Open, "a stream that never ran kept its place")
 			},
 		},

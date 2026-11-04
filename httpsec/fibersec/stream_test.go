@@ -540,6 +540,54 @@ func TestFiber_Stream(t *testing.T) {
 			},
 		},
 		{
+			name: "a chain that refuses after Stream leaves the stream's Content-Type off the refusal",
+			assert: func(t *testing.T) {
+				outer := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+					if err := next(ex); err != nil {
+						return err
+					}
+
+					return httpsec.ErrRequestTooLarge
+				}), httpsec.OrderJWKS)
+
+				url, _ := serveStreamChain(t, outer, streaming(func(ex *httpsec.Exchange) error {
+					ex.Writer.SetHeader("Content-Type", "text/event-stream")
+
+					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+						return writeAndFlush(w)
+					})
+				}))
+
+				resp := openStream(t.Context(), t, url)
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+				assert.Empty(t, body)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), "text/event-stream", "a refusal is no event stream")
+			},
+		},
+		{
+			name: "a stream nothing refused keeps the Content-Type it set",
+			assert: func(t *testing.T) {
+				url, _ := serveStreamChain(t, streaming(func(ex *httpsec.Exchange) error {
+					ex.Writer.SetHeader("Content-Type", "text/event-stream")
+
+					return ex.Writer.Stream(ex.Context(), func(_ context.Context, w httpsec.EventWriter) error {
+						return writeAndFlush(w)
+					})
+				}))
+
+				resp := openStream(t.Context(), t, url)
+
+				body, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+				assert.Contains(t, string(body), streamEvent)
+			},
+		},
+		{
 			name: "fiber's own error handler answers a refusal after Stream with its text, and nothing of the body",
 			assert: func(t *testing.T) {
 				ended := make(chan struct{})

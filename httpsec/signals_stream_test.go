@@ -2538,6 +2538,162 @@ func TestSessionSignals_BusWakeUp_QueueHold(t *testing.T) {
 				assert.EqualValues(t, 1, held.entered.Load())
 			},
 		},
+		{
+			name:  "a reuse notice holds the queue too",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				held := r.holdListings(t)
+
+				r.wakeWith(s, "reuse")
+				r.raiseOnQueue(firstHeard)
+				assert.Equal(t, []string{"session"}, stream.sent(), "a signal overtook the reload a reuse notice asked for")
+
+				held.letGo()
+				synctest.Wait()
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent())
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a notice noted while a read is overdue holds again once that read returns late",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				overdue := r.holdListings(t)
+
+				r.wakeWith(s, "")
+				advance(reloadTimeout)
+
+				// Nothing can answer it while that read hangs, so it holds nothing.
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent())
+
+				// The late return answers nothing, so the notice holds again, for the read it then starts.
+				next := r.holdListings(t)
+
+				overdue.letGo()
+				synctest.Wait()
+				require.EqualValues(t, 1, next.entered.Load())
+
+				r.raiseOnQueue(secondHeard)
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "a late return answered a notice it never read")
+
+				next.letGo()
+				synctest.Wait()
+				assert.Equal(t, heardBoth, stream.sent())
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name: "MaxAge closes with no event during a hold",
+			setup: streamSetup{
+				idle:    3 * time.Hour,
+				signals: httpsec.SessionSignals{Heartbeat: 60 * time.Second, MaxAge: 2 * time.Minute, Signals: endedOnly},
+			},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				// MaxAge lands between 108 and 132 seconds after the open, jittered. A hold is kept
+				// up over all of it: each round raises a notice, so that one is always unanswered, and
+				// lets the read go only after a second has passed with it held.
+				advance(107 * time.Second)
+
+				closedHeld := false
+
+				for range 30 {
+					held := r.holdListings(t)
+
+					r.wakeWith(s, "logout")
+					r.raiseOnQueue(firstHeard)
+					advance(time.Second)
+
+					if stream.closed() {
+						closedHeld = true
+
+						break
+					}
+
+					held.letGo()
+					synctest.Wait()
+				}
+
+				assert.True(t, closedHeld, "MaxAge did not close the stream while a notice was unanswered")
+				assert.NotContains(t, stream.sent(), "session_ended", "MaxAge said the sign-in ended")
+				assert.Zero(t, r.openStreams())
+			},
+		},
+		{
+			name:  "a hold ends within two ReloadTimeouts and a wake gap, though each read hangs to its own timeout",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				// A read older than the notice, slow but within its timeout.
+				older := r.holdListings(t)
+
+				r.wakeWith(s, "")
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+
+				began := time.Now()
+
+				// It answers just inside its timeout, and the read the notice then gets hangs to its own.
+				advance(reloadTimeout - time.Second)
+
+				newer := r.holdListings(t)
+
+				older.letGo()
+				synctest.Wait()
+				advance(time.Second)
+				require.EqualValues(t, 1, newer.entered.Load())
+
+				const bound = 2*reloadTimeout + time.Second
+
+				advance(bound - time.Since(began))
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "held past two ReloadTimeouts and a wake gap, at %s", time.Since(began))
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a flood of forged ends delays the queue across two answered reads, and no more",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				// Every read is overtaken by another notice, so that none answers the latest.
+				var reads atomic.Int64
+
+				hub := httpsec.SignalHubProbeOf(r.chain)
+				flood := func(context.Context) error {
+					reads.Add(1)
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded), Reason: "logout"})
+
+					return nil
+				}
+				r.listHook.Store(&flood)
+
+				r.wakeWith(s, "logout")
+				r.raiseOnQueue(firstHeard)
+				assert.EqualValues(t, 1, reads.Load())
+				assert.Equal(t, []string{"session"}, stream.sent(), "the flood let a signal through after one answered read")
+
+				// The second read opens when the gap after the first does.
+				advance(httpsec.StreamWakeGap)
+				assert.EqualValues(t, 2, reads.Load())
+				assert.Equal(t, []string{"session", firstHeard}, stream.sent(), "the flood held a signal across more than two answered reads")
+
+				r.raiseOnQueue(secondHeard)
+				assert.Equal(t, heardBoth, stream.sent())
+				r.requireLive(t, stream)
+			},
+		},
 	})
 }
 

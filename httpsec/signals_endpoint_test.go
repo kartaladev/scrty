@@ -132,6 +132,7 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 
 				resp, _ := f.openStream(t, s.ID)
 				assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), "text/event-stream", "a refusal is no event stream")
 			},
 		},
 		{
@@ -144,6 +145,7 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 
 				resp, _ := f.openStream(t, s.ID)
 				assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+				assert.NotContains(t, resp.Header.Get("Content-Type"), "text/event-stream", "a refusal is no event stream")
 			},
 		},
 		{
@@ -157,15 +159,19 @@ func TestSessionSignals_Endpoint(t *testing.T) {
 					return nil
 				})
 
+				w := &stubWriter{}
+
 				err := run(httpsec.NewExchange(t.Context(), stubRequest{
 					method:   http.MethodGet,
 					path:     httpsec.DefaultSessionSignalsPath,
 					clientIP: "198.51.100.7",
 					headers:  map[string]string{"Authorization": "Bearer " + s.ID},
-				}, &stubWriter{}))
+				}, w))
 
 				require.ErrorIs(t, err, httpsec.ErrStreamingUnsupported)
 				assert.Equal(t, http.StatusNotImplemented, httpsec.StatusForError(err))
+				assert.NotContains(t, w.header.Get("Content-Type"), "text/event-stream", "a refusal is no event stream")
+				assert.Contains(t, w.header.Get("Cache-Control"), "no-store", "a refusal is never cached")
 			},
 		},
 		{

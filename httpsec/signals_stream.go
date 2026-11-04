@@ -92,8 +92,9 @@ const (
 	msgStreamPanicked = "httpsec: session signal stream: a panic was recovered"
 )
 
-// errStreamReadPanicked is what a panic in a consumer's store or loader at the first read
-// becomes: a dependency failure, with the panic logged and its value nowhere.
+// errStreamReadPanicked is what a panic in a consumer's store or loader at the first read, or in
+// SessionSignals.ReloadContext, becomes: a dependency failure, with the panic logged and its value
+// nowhere.
 var errStreamReadPanicked = errors.New("httpsec: the first read of a signal stream panicked")
 
 // jittered is d spread by ±fraction, where roll is in [0, 1].
@@ -643,12 +644,23 @@ func (l *streamLoop) onWake(ctx context.Context) string {
 // else waits on this, so a heartbeat, MaxAge, closing and a client leaving all still act.
 //
 // Every notice has a wake behind it, and a read has a timeout, so a hold ends with the read that
-// answers it: within two wake gaps, which armTimer keeps to, and ReloadTimeout. Whatever that read
-// says short of gone lets the queue go: alive, because the notice was forged, rolled back or about
-// another sign-in, and a failure or timeout, because the store cannot say and an outage must not
-// silence a stream. Two things end a hold sooner. A read past its timeout cannot answer, however
-// long it hangs, and no other read starts beside it. And notices that keep outrunning the reads
-// (streamHoldAnswers) are not waited for, until a read answers all there are.
+// answers it. That takes two ReloadTimeouts and a wake gap at most: a read older than the notice,
+// which answers just inside its timeout, and the read the notice then gets, which hangs to its own.
+// Whatever that read says short of gone lets the queue go: alive, because the notice was forged,
+// rolled back or about another sign-in, and a failure or timeout, because the store cannot say and
+// an outage must not silence a stream. Two things end a hold sooner. A read past its timeout cannot
+// answer, however long it hangs, and no other read starts beside it. And notices that keep
+// outrunning the reads (streamHoldAnswers) are not waited for, until a read answers all there are.
+//
+// Nothing is sent from the queue during a hold, and the queue holds streamQueueSize signals: one
+// that fills while the hold lasts drops what is offered after, for this stream alone, as any full
+// queue does.
+//
+// The bound has a limit, which is accepted: a notice that ended nothing (a session deleted from a
+// family that stays live, a transaction rolled back, a forgery) can use up the answers the bound
+// allows, so that a real end noted behind it is not held for, and a signal raised after that end
+// can go out ahead of its session_ended. It takes notices that outrun the reads, and a forged flood
+// must stay bounded, so that a holder of a shared bus cannot silence a stream by sending ends.
 func (l *streamLoop) holding() bool {
 	if l.answered == l.start.stream.notes.Load() || l.heldAnswers >= streamHoldAnswers {
 		return false
@@ -660,15 +672,16 @@ func (l *streamLoop) holding() bool {
 // settleHold is a read, which started with the given notes noted, answering. A signal raised from
 // here on is no longer held for those.
 func (l *streamLoop) settleHold(notes uint64) {
-	waited := l.holding()
 	l.answered = notes
 
-	switch {
-	case notes == l.start.stream.notes.Load():
+	if notes == l.start.stream.notes.Load() {
 		l.heldAnswers = 0
-	case waited:
-		l.heldAnswers++
+
+		return
 	}
+
+	// Counted past the bound too, which changes nothing: holding already lets the queue go at it.
+	l.heldAnswers++
 }
 
 // onSignal is a signal from the queue. One taken with a notice already noted, which the select could

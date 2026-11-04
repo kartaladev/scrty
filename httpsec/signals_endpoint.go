@@ -2,10 +2,12 @@ package httpsec
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -85,11 +87,27 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 	})
 	if err != nil {
 		release()
+		unsetStreamType(ex, err)
 
 		return err
 	}
 
 	return nil
+}
+
+// unsetStreamType takes the stream's Content-Type back after Stream refused with err, because
+// the headers had to be set before the call, and a refusal's answer is no event stream. The
+// head has not gone, so the writer still takes it. Where the response had begun (a consumer's
+// interceptor wrote before this one) the headers it chose stand, and are not ours to touch.
+//
+// The writer has no way to remove a header, so the type is left empty, which no client takes
+// for an event stream and a body the chain's error handler then writes is not mislabelled by.
+func unsetStreamType(ex *Exchange, err error) {
+	if errors.Is(err, ErrStreamingStarted) {
+		return
+	}
+
+	ex.Writer.SetHeader("Content-Type", "")
 }
 
 // cancelOnly is a context that ends when its parent does and holds no values. It is what a
@@ -154,10 +172,20 @@ func streamSession(ex *Exchange) (*session.Session, error) {
 // hook carries what it needs over, and the request's cancellation is removed from what it
 // returns, because the stream outlives the handlers on fiber. What else it keeps is the
 // hook's: its godoc says never to return its argument.
-func (e *sessionSignals) reloadContext(ctx context.Context) (context.Context, error) {
+func (e *sessionSignals) reloadContext(ctx context.Context) (_ context.Context, err error) {
 	if e.cfg.ReloadContext == nil {
 		return context.Background(), nil
 	}
+
+	// A panic in the consumer's hook is recovered as one in a store is, and logged without its
+	// value. The request is then a dependency failure, which a retry could fix.
+	defer func() {
+		if v := recover(); v != nil {
+			e.logStreamPanic(ctx, panicPhaseReload, id.ID{}, v)
+
+			err = errStreamReadPanicked
+		}
+	}()
 
 	reload := e.cfg.ReloadContext(ctx)
 	if reload == nil {

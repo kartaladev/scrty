@@ -133,7 +133,7 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 	// The context can have ended without the client leaving: an interceptor's deferred cancel, or a
 	// deadline a server set. So the body writes whatever it says. Where nothing can be written, a client
 	// gone or a chain on fiber that refused after this, the writer fails and this stops.
-	return ex.Writer.Stream(cancelOnly{ex.Context()}, func(_ context.Context, w EventWriter) error {
+	err := ex.Writer.Stream(cancelOnly{ex.Context()}, func(_ context.Context, w EventWriter) error {
 		if err := writeRetry(w, delay); err != nil {
 			return nil //nolint:nilerr // the client has gone, and it was only ever told when to come back
 		}
@@ -142,6 +142,11 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 
 		return nil
 	})
+	if err != nil {
+		unsetStreamType(ex, err)
+	}
+
+	return err
 }
 
 // isDependencyFailure reports whether err is a failure of something the request depends on, and not

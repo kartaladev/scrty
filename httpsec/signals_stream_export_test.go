@@ -46,6 +46,9 @@ type StreamEvent struct{ Name, Data string }
 // StreamReportGrace is how long a stream waits for an end's report once a read has said gone.
 const StreamReportGrace = streamReportGrace
 
+// StreamWakeGap is the least time between two reloads a wake asks for.
+const StreamWakeGap = streamWakeGap
+
 // Jittered is jittered.
 func Jittered(d time.Duration, fraction, roll float64) time.Duration {
 	return jittered(d, fraction, roll)

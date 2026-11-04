@@ -357,7 +357,8 @@ type responseWriter struct {
 }
 
 // SetHeader has no effect once a response has begun, a stream included, as net/http's
-// has none once its head has gone, even though fiber would still send this.
+// has none once its head has gone, even though fiber would still send this. AddHeader and
+// SetCookie have none either, for the same reason: one chain answers one way on both frameworks.
 func (w *responseWriter) SetHeader(name, value string) {
 	if w.wrote {
 		return
@@ -369,9 +370,9 @@ func (w *responseWriter) SetHeader(name, value string) {
 // AddHeader appends a header line, keeping the lines already set. It does not
 // use fiber's Append, which folds the value into one comma-joined line and
 // drops a value already listed, so a list header would read differently from
-// net/http's. It has no effect once a stream has started, as SetHeader has none.
+// net/http's. It has no effect once a response has begun, as SetHeader has none.
 func (w *responseWriter) AddHeader(name, value string) {
-	if w.streaming {
+	if w.wrote {
 		return
 	}
 
@@ -708,11 +709,18 @@ type streamGate struct {
 // chainReturned opens the gate of a stream started on this writer, if any. A
 // refused chain answers through fiber's error handler, so the response is the
 // refusal: the body still runs, because Stream returned nil, but on a context
-// already ended and a writer that reaches nothing.
+// already ended and a writer that reaches nothing. Its Content-Type is the one thing taken back
+// of the stream's head, because that head was never sent and a refusal is no event stream: the
+// status and the other headers stay for fiber's error handler to answer over, as the Middleware
+// godoc says.
 func (w *responseWriter) chainReturned(refused bool) {
 	w.chainDone.Store(true)
 
 	if w.gate != nil {
+		if refused {
+			w.c.Response().Header.Del(fiber.HeaderContentType)
+		}
+
 		w.gate.refused = refused
 		close(w.gate.returned)
 	}
@@ -776,9 +784,9 @@ func (e *eventWriter) Flush() error {
 // which is what net/http writes for the same cookie: no expiry attribute at
 // all.
 //
-// It has no effect once a stream has started, as SetHeader has none.
+// It has no effect once a response has begun, as SetHeader has none.
 func (w *responseWriter) SetCookie(c *httpsec.Cookie) {
-	if c == nil || w.streaming {
+	if c == nil || w.wrote {
 		return
 	}
 
