@@ -282,6 +282,86 @@ func TestSQLStore_LineageIsNotASession(t *testing.T) {
 	}
 }
 
+// TestSQLStore_LineageInCallersTransaction proves a lineage store keeps to the lineage
+// table when it runs on a transaction the caller began, however the transaction reached
+// it, while a plain session store on the same transaction keeps to the sessions table,
+// and that rolling the transaction back takes the lineage's row with it.
+func TestSQLStore_LineageInCallersTransaction(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// supply attaches tx to a context and to a store's options, the way the case's
+		// route does.
+		supply func(ctx context.Context, tx *sql.Tx) (context.Context, []sqlstore.Option)
+	}
+
+	cases := []testCase{
+		{
+			name: "WithTx",
+			supply: func(ctx context.Context, tx *sql.Tx) (context.Context, []sqlstore.Option) {
+				return sqlstore.WithTx(ctx, tx), nil
+			},
+		},
+		{
+			name: "WithTxResolver",
+			supply: func(ctx context.Context, tx *sql.Tx) (context.Context, []sqlstore.Option) {
+				return ctx, []sqlstore.Option{sqlstore.WithTxResolver(func(context.Context) (sqlstore.DBTX, bool) { return tx, true })}
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := migratedDB(t).DB
+			c := storefix.TestCipher(t)
+
+			tx, err := db.BeginTx(t.Context(), nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tx.Rollback() })
+
+			ctx, opts := tc.supply(t.Context(), tx)
+			lineages := lineageSessions(t, db, c, opts...)
+			sessions := newSessionStore(t, db, c, opts...)
+
+			inLineage := opSession(fmt.Sprintf("lineage-in-tx-%d", i), opID(300+2*i))
+			inSessions := opSession(fmt.Sprintf("session-in-tx-%d", i), opID(301+2*i))
+			require.NoError(t, lineages.Create(ctx, inLineage))
+			require.NoError(t, sessions.Create(ctx, inSessions))
+
+			// held counts a family's rows in a table, as the caller's transaction sees them.
+			held := func(table string, family id.ID) int {
+				var n int
+				// table is one of this test's constants.
+				require.NoError(t, tx.QueryRowContext(ctx, "SELECT count(*) FROM "+table+" WHERE family_id = $1", family).Scan(&n))
+
+				return n
+			}
+
+			assert.Equal(t, 1, held(pgschema.RefreshTokenTable, inLineage.FamilyID), "the lineage store wrote to the lineage table")
+			assert.Zero(t, held("sessions", inLineage.FamilyID), "and not to the sessions table")
+			assert.Equal(t, 1, held("sessions", inSessions.FamilyID), "the session store wrote to the sessions table")
+			assert.Zero(t, held(pgschema.RefreshTokenTable, inSessions.FamilyID), "and not to the lineage table")
+
+			_, err = lineages.Load(ctx, inLineage.ID)
+			require.NoError(t, err, "the lineage store reads its own uncommitted write")
+			_, err = lineages.Load(ctx, inSessions.ID)
+			require.ErrorIs(t, err, session.ErrNotFound, "and does not read the sessions table")
+
+			require.NoError(t, tx.Rollback())
+
+			for _, table := range []string{pgschema.RefreshTokenTable, "sessions"} {
+				var n int
+				// table is one of this test's constants.
+				require.NoError(t, db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&n))
+				assert.Zero(t, n, "the rollback removed the row from %s", table)
+			}
+		})
+	}
+}
+
 // opSession is a session a store can hold, with identifier as its credential.
 func opSession(identifier string, family id.ID) *session.Session {
 	return &session.Session{
