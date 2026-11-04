@@ -175,18 +175,19 @@ err = chain.CloseSessionSignals(ctx)
 ```
 
 - **Slot:** a terminal endpoint in a new slot, `OrderSessionSignals = OrderSessionManagement - 1` (673). Everything below it applies as on any protected route: headers, proxies, CORS, CSRF, rate limits, authentication, and the pending-session and re-authentication gates. Session touch (800) and the chain's authorizer (900) are above it and never run for the stream, as for the session-management endpoints beside it.
-- **Construction rules** (`library-design` rule 6):
+- **Construction rules** (`library-design` rule 6). A field left at zero takes its default, because `SessionSignals{}` must work and an explicit zero looks the same as unset, so these refuse negative values rather than zero, as `NoMaxAge` = -1 fits:
   - a signal name outside the four;
   - a heartbeat outside 5–60 seconds;
-  - a warning window of zero or less, or not shorter than the session manager's idle timeout;
-  - an assurance window of zero or less;
-  - a cap below 1, or `MaxPerSignIn` above `MaxPerUser`, or `MaxPerUser` above `MaxStreams`;
+  - a negative warning window, or one not shorter than the session manager's idle timeout; and a warning window set without `session_expiring` in the set, since nothing would use it;
+  - a negative assurance window, and one set without `assurance_lapsed` in the set;
+  - a negative cap, or `MaxPerSignIn` above `MaxPerUser`, or `MaxPerUser` above `MaxStreams`;
   - `assurance_lapsed` without `EnableReauthentication`, because the front end would be told to re-prove with no way to do it;
   - a `Path` that another enabled endpoint already serves;
   - `EnableSessionSignals` given twice;
   - no session manager on the chain, as session management already refuses;
   - no `Users` and no built-in bearer's loader to default to, because a stream could not tell that its user was disabled;
-  - a `Path` that is empty, or lacks its leading slash, or ends in a slash, since it would silently never be served;
+  - a `Path` that lacks its leading slash, ends in a slash, or holds `?`, `#`, `%` or whitespace, since it would silently never be served, because paths are compared decoded;
+  - a `ReconnectDelay` or `BusyDelay` under 1 millisecond, which would be sent as `retry: 0`;
   - a warning window above the idle timeout less the touch interval, since a user who is active but whose activity writes coalesce would be warned;
   - a `MaxAge` below twice the heartbeat, or `MaxPerSource` above `MaxStreams`;
   - a `ReloadTimeout` not shorter than the heartbeat, or a `BusQueue` or `BusTimeout` below 1 when set;
@@ -212,6 +213,7 @@ err = chain.CloseSessionSignals(ctx)
   - `same-site`, `cross-site` or any other value passes only for a trusted origin. This is stricter than web.dev's policy, which allows `same-site`, and than Go's `http.CrossOriginProtection`, which allows every `GET`: neither has a place to lose, and this endpoint does;
   - with no `Sec-Fetch-Site`, a cross-origin `Origin` passes only when trusted, and no `Origin` at all passes, since old browsers and non-browser clients send neither;
   - `Origin: null` never passes, whatever CORS says;
+  - **a request counts as bearer only when the chain recorded a credential and that credential is what its `Authorization` header carries.** A consumer's cookie authenticator is told to call `RecordPresentedToken`, so the recording alone would judge a foreign page's ambient cookie as a bearer token (REPRODUCED). A consumer bearer on a custom header is then judged as a cookie, which is the stricter rule;
   - **trusted depends on how the stream authenticated** (failure sweep, 2026-11-04). A cookie is sent by the browser on its own, so a cookie-authenticated stream needs an origin CORS names, exactly or by pattern, with credentials allowed, and a wildcard never counts. An `Authorization` header is not ambient, and a page can only send one it already holds, so that stream needs only an origin CORS allows, and a wildcard counts (corrected by the standards review, 2026-11-04): a public API on `*` with bearer tokens is a legitimate CORS configuration, and refusing it would protect nothing. `AllowCredentials` defaults to false, so requiring it of every client would refuse a bearer page whose preflight had just passed. *Not reused:* CORS's `allowedOrigin` answers yes for every origin under `*`, `null` included, and the CSRF layer's trusted list ignores credentials and does not exist with CSRF off;
   - a refusal is 403 with its own sentinel, `ErrCrossSiteStream`, before the stream is registered, so it costs no place. It does not reuse `ErrCrossSiteRequest`, which would emit `MaliciousCSRF` for a page that merely tried. It is still logged, with sampling, as an attempt to get past a control (ASVS 5.0 16.3.3);
   - a response that echoes an origin carries `Vary: Origin`.
@@ -222,7 +224,7 @@ err = chain.CloseSessionSignals(ctx)
 
 ### D4. The store is the truth; signals are wake-ups
 
-- Each stream holds `{user, family, handle, idle deadline, absolute deadline, authenticatedAt}` from its first load, and no session identifier or credential.
+- Each stream holds `{user, family, upstream digest, idle deadline, absolute deadline, authenticatedAt}` from its first load, and no session identifier or credential.
 - **The reload reads by user and family, never by identifier** (corrected by the failure sweep, 2026-11-04; the draft said "the read the bearer uses"). `Sessions.Load` is what a presentation goes through, so it cannot be the reload. After a renewal's grace window it revokes the family and raises a false theft alarm, after a strict rotation it answers not found, and it records a first presentation (REPRODUCED: `session/sessions.go:375,383`, `session/reuse.go:496,533`). So a stream that reloaded through it would sign its user out. The raw `Store.Load` fails the other way, answering with stale deadlines after the current session has moved or gone. So:
   - `(*Sessions).SignInState(ctx, user, family) (SignInState, error)` returns the family's current session's two deadlines, `AuthenticatedAt` and upstream identifiers, or `ErrNotFound`. It is built on the existing `Store.ListByUser`, which lists one live current session per family, opens no sealed field, and can judge, revoke or mark nothing. No store method changes.
   - A renewal, a strict rotation or a step-up leaves the family and moves its current session, so the stream carries on and reports the new state. `TestSessions_SignInState` pins this, and the store conformance suite pins it on PostgreSQL through sqlstore, pgxstore and gormstore.
@@ -249,7 +251,7 @@ err = chain.CloseSessionSignals(ctx)
 
   The reason comes from the latest end report the stream was woken with, through D5's mapping, and only if the store says gone within two heartbeats of receiving it (local receipt time). So a report whose end did not happen, a rolled-back transaction or a forged bus message, cannot name a later real end. Within that window `reuse` outranks a later report: a logout that finds its family just revoked for reuse still reports, because a write matching nothing is reported, and must not relabel a theft as a logout. A report for a session deleted from a family that stays live changes nothing, because the store still answers. A user who is not found or not active ends the stream with `ended`.
 - **A reload has a timeout,** and a timeout counts as a store failure (CWE-1088). The session read and the user read share it. Without one, a store that hangs instead of failing stops the heartbeat, the timers and the queue, because they share one goroutine. A store that ignores its context stays unbounded, and the godoc says so. The default is half the heartbeat, within 2 to 10 seconds, because half of 60 seconds is long for a session read, and half of 5 too short under load. No standard sets a fraction: this is a judgment. **Override:** `ReloadTimeout`, which must be shorter than the heartbeat.
-- **A reload does not run on the request's context** (failure sweep, 2026-11-04). The body's context keeps the request's values on every adapter (REPRODUCED). A consumer's transaction attached with `WithTx` would stay open for the stream's life on net/http, pinning a pooled connection, and on fiber be committed when the chain returns, so that every reload failed and an ended sign-in looked alive until its absolute deadline. So reloads and user reads run on a context with none of those values. **Override:** `ReloadContext func(ctx) ctx`, called once at admission, lets a multi-tenant consumer carry its tenant. The first read, at admission, uses the same context. So a tenant-scoped store with no hook fails closed where it can be seen: a dependency failure at admission, logged at WARN, not an open stream that never hears of an end (OWASP's Multi-Tenant cheat sheet: fail closed when the tenant context is missing, and re-establish it for asynchronous work). It cannot read another tenant's data.
+- **A reload does not run on the request's context** (failure sweep, 2026-11-04). The adapters' body context keeps the request's values (REPRODUCED), so the stream hands its own code a cancel-only context, which reads as holding no values, and a `session_ended` or a slip in later code cannot reach the session or its raw identifier through it. What a stream holds of the upstream session is its digest: the raw values are cleared once it is taken. A consumer's transaction attached with `WithTx` would stay open for the stream's life on net/http, pinning a pooled connection, and on fiber be committed when the chain returns, so that every reload failed and an ended sign-in looked alive until its absolute deadline. So reloads and user reads run on a context with none of those values. **Override:** `ReloadContext func(ctx) ctx`, called once at admission, lets a multi-tenant consumer carry its tenant. The first read, at admission, uses the same context, and reads the user as well as the sign-in. So a tenant-scoped store with no hook fails closed where it can be seen: a dependency failure at admission, logged at WARN, not an open stream that never hears of an end (OWASP's Multi-Tenant cheat sheet: fail closed when the tenant context is missing, and re-establish it for asynchronous work). It cannot read another tenant's data.
 - **`MaxAge` also bounds a store outage** (standards review, 2026-11-04). No standard says whether a notification stream stays open while its store is down; ASVS 5.0 16.5.2 and 16.5.3 ask for no fail-open processing, and the stream processes nothing and grants nothing, since every other request is still judged by the store. The stream reconnects at `MaxAge`, and re-admission fails closed, so an outage does not keep a stream past its age unless the consumer chose `NoMaxAge`. The user's choice of 2026-11-03 stands.
 - **A store outage keeps the stream open** (user's choice, 2026-11-03). The store has not said the sign-in ended, and the stream grants no access, so closing would only make every client reconnect at once when the store returns. The stream's own timer still ends it at its absolute deadline.
 - **A `session_ended` arriving from the bus triggers the same reload at once.** It is forwarded only if the store agrees, which removes three problems:
@@ -381,7 +383,7 @@ type SignalEnvelope struct {
 
 ### D7. The wire format
 
-- The first bytes are `retry: <ms>` and then the `session` event. The value is `ReconnectDelay` ±30%, chosen per stream (failure sweep, 2026-11-04): a replica's streams close together on a deploy, and a fixed value would bring them all back at the same moment. The heartbeat's jitter does nothing for that. `retry` is the only delay a server can set on `EventSource`.
+- The first bytes are `retry: <ms>` and then the `session` event. The value is `ReconnectDelay` ±30%, rounded up to at least 1 ms, chosen per stream (failure sweep, 2026-11-04): a replica's streams close together on a deploy, and a fixed value would bring them all back at the same moment. The heartbeat's jitter does nothing for that. `retry` is the only delay a server can set on `EventSource`.
 - Each event is `event: <name>\ndata: <json>\n\n`, with no `id:`. A heartbeat is `:\n\n`.
 - The data:
   - `session`: `{"idle_deadline", "absolute_deadline", "authenticated_at"}` in RFC 3339, UTC;
@@ -427,7 +429,7 @@ type SignalEnvelope struct {
   - a wake channel of capacity 1, which a bus `session_ended` fills without blocking, and which coalesces several wake-ups into one reload;
   - a queue of capacity 32 for `credential_changed` and `app.*`.
 - **The publisher never waits.** Raising a signal sends to each stream's queue with a non-blocking send. A full queue drops that event for that stream only, and logs with sampling. `session_ended` never goes through the queue: it comes from the stream's own reload, so it is never dropped.
-- **The registry is one mutex around three maps:** `user → streams`, `family → streams`, and a per-sign-in count. Admission checks all three caps and registers under the same lock, so two requests racing for the last place cannot both get it. Delivery copies the target streams under the lock and sends after releasing it.
+- **The registry is one mutex around its maps:** `user → streams`, `family → streams`, `upstream digest → streams`, a per-sign-in count and a per-source count. Admission checks every cap and registers under the same lock, so two requests racing for the last place cannot both get it. Delivery copies the target streams under the lock and sends after releasing it.
 - **Writes happen only in the body goroutine,** so no event can interleave with another or with a heartbeat.
 
 ### D10. Status before and after the stream starts

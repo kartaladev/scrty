@@ -344,7 +344,7 @@ With `assurance_lapsed` in its set, a stream SHALL send it once when the time si
 - **THEN** its `session` event states null, and the stream sends no `assurance_lapsed`
 
 ### Requirement: Signal timing settings are checked at construction
-Building the chain SHALL fail with a configuration error when the expiry warning window is zero or less, or leaves less than the session manager's touch interval before the idle timeout; when the assurance window is zero or less; when the maximum age is less than twice the heartbeat; when `assurance_lapsed` is enabled without re-authentication enabled; when the chain has no session manager; when no user loader is available; when the path is malformed; or when the chain's clock cannot wait.
+Building the chain SHALL fail with a configuration error when the expiry warning window is negative, or leaves less than the session manager's touch interval before the idle timeout; when the assurance window is negative; when the maximum age is less than twice the heartbeat; when `assurance_lapsed` is enabled without re-authentication enabled; when the chain has no session manager; when no user loader is available; when the path is malformed; or when the chain's clock cannot wait.
 
 #### Scenario: Window not shorter than the idle timeout
 - **WHEN** the consumer sets the warning window to 30 minutes and the idle timeout is 30 minutes

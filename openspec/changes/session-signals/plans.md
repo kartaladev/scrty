@@ -22,8 +22,8 @@
   - path `/session/signals`;
   - signals `session_ended` and `session_expiring`;
   - heartbeat 15 s, within 5–60 s, with ±10% jitter;
-  - warning window 2 min, greater than 0 and shorter than the idle timeout;
-  - assurance window `DefaultRecentAuthenticationWindow` (15 min), greater than 0;
+  - warning window 2 min, not negative and shorter than the idle timeout, with zero taking the default;
+  - assurance window `DefaultRecentAuthenticationWindow` (15 min), not negative, with zero taking the default;
   - caps 4 per sign-in, 16 per user and 10 000 in total, per replica;
   - `ReconnectDelay` 5 s ±30% per stream, `BusyDelay` 30 s ±30% per refusal, and on closing a fresh `retry` between 1 s and 3 × `ReconnectDelay`;
   - `MaxAge` 1 hour ±10%, `NoMaxAge` to turn it off, at least 2 × heartbeat; `MaxPerSource` off;
@@ -87,13 +87,21 @@
   |---|---|---|---|
   | 0 | A; B2 | 1.2–1.6; 2.3–2.4 | Different packages. B2's one edit in `httpsec` is `logout.go`, which A does not own |
   | 1 | C1 | 3.1–3.2, 4.1–4.3 | Declares the types, the sentinels and the test helpers every later file compiles against, and alone owns `options.go` and `errors_test.go`'s registry |
-  | 2 | C2a wire format; C2b cross-site check and README; C4a registry and caps; C4b bus and publisher | 4.4–4.5; 4.6; 6.4's and 6.5's registry rows; 6.1's bus rows, 6.3 | Each is a new file behind a signature C1 fixes, unit-tested without a stream |
+  | 2 | C2a wire format; C2b cross-site check and README; C4a registry and caps | 4.4–4.5; 4.6; 6.4's and 6.5's registry rows | Each fills one file behind a signature C1 fixes, unit-tested without a stream |
+  | 2b | C4b bus and publisher | 6.1's bus rows, 6.3 | Its routing and `app.` rows need the real registry and validators, so it follows C2a and C4a. It may change `hub.close` to take a context, if its leak checks need that, because it alone calls it so far |
   | 3 | C3, then C4c (sequential) | 5.1–5.6; 6.1, 6.2, 6.4–6.6's stream rows | The stream loop consumes all of wave 2, and is one goroutine's logic that does not split. 5.x then 6.x extend one file |
   | 4 | C5a | 7.2–7.3 | Needs the stream to show a signal arriving. D's consumer-signal row needs `PublishSignal` |
   | 5 | C5b; D | 7.1, 7.4; 8.1 | Different modules. **Check with `oidc-provider` before C5b**, which shares `httpsec/password_change.go`, `recovery.go` and `passkey_manage.go` with its group 11 |
   | 6 | main, then one reviewer | 8.2–8.3 | The final gate |
 
-  A task spanning waves is ticked only when all its rows pass. In wave 2, a dispatch writes only its own new files and tests, and any change to a shared file goes back to the main session.
+  A task spanning waves is ticked only when all its rows pass. In wave 2 each dispatch fills one file C1 created with stubs, and adds tests and its own `signals_<lane>_export_test.go`; any change to another file goes back to the main session:
+
+  | Dispatch | Owns |
+  |---|---|
+  | C2a | `signals_wire.go`, where `wants` is already done: `writeEvent`, `writeRetry`, `writeHeartbeat`, `sessionEventData`, `validAppSignalName`, `validSignalData`, `narrowed` |
+  | C2b | `signals_crosssite.go`: `crossSiteAllowed`; and the README |
+  | C4a | `signals_registry.go`: `newSignalRegistry`, `admit`, the `deliver…` methods, `close`, `stats` |
+  | C4b | `signals_bus.go`: `raise`, `start`, `deliver`, `close`, `stats`, and the default bus |
 - **Reviews.** Each dispatch gets a fresh reviewer that edits nothing: Opus for A, B2, C1, C2, C3 and C4, and Sonnet for B, C5 and D. Tasks 5.1–5.6 and 6.1–6.6 are the lane's largest dispatches: if either proves too large, split it at a seam, as the delegation rule allows. The next dispatch of a lane starts only when verification is green and the review is clean.
 
 ---
@@ -200,6 +208,8 @@ func (m *Sessions) SignInState(ctx context.Context, user identity.UserID, family
 - Modify: `httpsec/options.go` (construction), and the godoc of `CookieAuthenticator` (`httpsec/csrf.go`) and `OrderSessionTouch` (`httpsec/chain.go`).
 - Tests: `httpsec/signals_construction_test.go`, `httpsec/signals_endpoint_test.go`.
 
+Admission judges a request as bearer only when the chain recorded a credential and `Authorization` carries it, so a consumer's cookie authenticator calling `RecordPresentedToken` stays a cookie. The stream's own code gets a cancel-only context, and a stream holds the upstream digest, never the raw values.
+
 **Interfaces produced:**
 ```go
 type Signal string // SignalSessionEnded, SignalSessionExpiring, SignalAssuranceLapsed, SignalCredentialChanged
@@ -219,9 +229,9 @@ var ErrSessionSignalsDisabled, ErrInvalidSignal, ErrTooManyStreams, ErrCrossSite
 ```
 `SignalBus` is declared here as the port's interface only. C4 adds the default and the envelope.
 
-- [ ] **3.1 Red:** `TestSessionSignals_Construction`, with every row in `tasks.md` 3.1. The refusing rows assert `errors.Is(err, ErrConfig)` and that the message names the field. **Green:**
+- [ ] **3.1 Red:** `TestSessionSignals_Construction`, with every row in `tasks.md` 3.1. A field at zero takes its default, and negatives are refused. The refusing rows assert `errors.Is(err, ErrConfig)` and that the message names the field. **Green:**
   - validate after all options have applied, so the idle timeout and re-authentication are known;
-  - add the hub's observer with `AddEndObserver` to the chain's session manager, and do not refuse a manager that already has one. The row with an existing observer asserts that it builds and that the consumer's observer is still told. The hub maps `EndCause` to the wire reason by D5's table in one function, and drops `EndExternalSession`.
+  - add the hub's observer with `AddEndObserver` to the chain's session manager, and do not refuse a manager that already has one. The row with an existing observer asserts that it builds and that the consumer's observer is still told. The hub maps `EndCause` to the wire reason by D5's table in one function, and routes `EndExternalSession` by its digest.
 - [ ] **Note for the endpoint (4.1 onward):** copy everything the body needs from the exchange before calling `Stream`, strings included with `strings.Clone`. On fiber the body runs after the chain has returned, and the request's values are reused buffers (design D1). When `ErrStreamingUnsupported` gets its 501, delete its `unmapped` entry in `httpsec/errors_test.go`.
 - [ ] **3.2:** Godoc each field with its default and range. `AssuranceWindow` says to match the guards' window. Verify with `go doc ./httpsec SessionSignals`.
 - [ ] **4.1–4.3 Red, one table per task:**
@@ -250,7 +260,7 @@ func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protectio
   - there is no `id:` line anywhere, and heartbeats are `:`;
   - `writeEvent` with a name or data holding `\n` or `\r` returns an error and writes nothing.
 - [ ] **4.5 Red:** `TestSessionSignals_Narrowing`: narrowed; widening ignored; `app.Bad` and `app.x:y` dropped; 17 names → 400; 257 bytes → 400; no parameter.
-- [ ] **4.6 Red:** `TestSessionSignals_CrossSite`. The first row: `Sec-Fetch-Site: cross-site` with `Origin: https://evil.example`, CORS allowing only `https://app.example.com`, returns 403, and the sign-in's registered count is still 0. Then:
+- [ ] **4.6 Red:** `TestSessionSignals_CrossSite`. The first row: `Sec-Fetch-Site: cross-site` with `Origin: https://evil.example`, CORS allowing only `https://app.example.com`, returns 403. That the registered count stays 0 is asserted with 6.4. Then:
   - the same with CSRF protection off;
   - `Origin: null` → 403;
   - `same-site` from a disallowed origin → 403;
@@ -273,7 +283,7 @@ func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protectio
 - A timer reloads before it speaks. On a store failure only the absolute deadline ends the stream. Alive per the store while past per the clock re-arms no sooner than the next heartbeat.
 - A reason from a report is kept with its local receipt time, and used only if the store says gone within two heartbeats. It has its own field, since the wake channel carries nothing. Within that window a later report replaces it, except that `reuse` is never replaced, so a logout reporting a family already revoked for reuse does not relabel it (task 6.2).
 - `SignInState`'s limits stand as the design states them: a stream treats its failure as an outage, including the one undecodable row of a user, and `ConsecutiveReloadFailures` is how an operator sees that.
-- The reload's context comes from `ReloadContext`, called once at admission, and defaults to one with none of the request's values. The first read at admission uses it too, so a missing tenant fails there, as a dependency failure. `ReloadTimeout` covers the session and user reads together.
+- The reload's context comes from `ReloadContext`, called once at admission, and defaults to one with none of the request's values. The first read at admission uses it too, and reads the user as well as the sign-in, so a missing tenant fails there, as a dependency failure. `ReloadTimeout` covers the session and user reads together.
 - The body's first deferred step recovers a panic and logs through the chain's logger, with the value's type, the phase (`stream`, `reload`, `bus`), the family, and frames as function, file and line. It frees the place. It never logs the value, nor `debug.Stack()`, which quotes arguments.
 - Open and close log at DEBUG with user, family, client address, origin and reason.
 
@@ -311,7 +321,7 @@ func (c *Chain) SessionSignalStats() SessionSignalStats
   - `TestSessionSignals_BusWakeUp`: a wake-up whose session exists is not forwarded, and the heartbeat ends it later; three wake-ups cause one reload.
   - `TestSessionSignals_BusUntrusted`: an unknown library name, malformed data, a 9 KiB payload, and `app.X` arriving from the bus are all dropped.
   - `TestSessionSignals_BusOutage`: every row in `tasks.md` 6.3, including a `Publish` that hangs while a logout completes; `Subscribe` fails twice and then succeeds, retried at 1 s and 2 s; the default bus does not cross a second chain instance.
-  - `TestSessionSignals_Caps`, including a barrier test where two goroutines request the fourth place at once and exactly one opens, and the other gets 200 with only `retry`. Tell the two apart by the first event, since both are 200.
+  - `TestSessionSignals_Caps`, including a cross-site refusal leaving the count unchanged, and a barrier test where two goroutines request the fourth place at once and exactly one opens, and the other gets 200 with only `retry`. Tell the two apart by the first event, since both are 200.
   - `TestSessionSignals_SlowStream`: a stream that never reads loses its 33rd event, another stream gets all 33, `PublishSignal` returns within 10 ms, and ending the slow stream's sign-in still delivers `session_ended`.
 - [ ] **6.6 Red:** `TestSessionSignals_Close`:
   - streams close with no event;

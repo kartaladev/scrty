@@ -30,19 +30,21 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 3. Configuration and construction (D2)
 
-- [ ] 3.1 Add the `Signal` constants, the `SessionSignals` configuration with its defaults (including `AssuranceWindow`, defaulting to `DefaultRecentAuthenticationWindow`), `EnableSessionSignals` and `OrderSessionSignals`, test-first. One construction table covers:
+- [x] 3.1 Add the `Signal` constants, the `SessionSignals` configuration with its defaults (including `AssuranceWindow`, defaulting to `DefaultRecentAuthenticationWindow`), `EnableSessionSignals` and `OrderSessionSignals`, test-first. One construction table covers:
   - defaults filled;
   - an unknown signal name;
   - a heartbeat of 4 s and of 61 s;
-  - a warning window of zero, and one not shorter than the idle timeout;
-  - an assurance window of zero;
-  - each cap at 0, `MaxPerSignIn` above `MaxPerUser`, and `MaxPerUser` above `MaxStreams`;
+  - a field at zero takes its default;
+  - a negative warning window, and one not shorter than the idle timeout;
+  - a negative assurance window;
+  - each cap negative, `MaxPerSignIn` above `MaxPerUser`, and `MaxPerUser` above `MaxStreams`;
   - `assurance_lapsed` without re-authentication;
   - a path another endpoint serves;
   - enabled twice;
   - a session manager that already has an end observer, which builds, and whose observer is still told;
   - no session manager; no user loader and no built-in bearer's; a consumer's `Users`;
-  - a path that is empty, lacks its leading slash, or ends in a slash;
+  - a path that lacks its leading slash, ends in a slash, or holds `?`, `#`, `%` or whitespace;
+  - a warning window or assurance window set without its signal; a `ReconnectDelay` or `BusyDelay` under 1 ms;
   - a warning window above the idle timeout less the touch interval;
   - a `MaxAge` below twice the heartbeat, `NoMaxAge`, and `MaxPerSource` above `MaxStreams`;
   - a `ReloadTimeout` not shorter than the heartbeat, and its default at heartbeats of 5, 15 and 60 s (2.5, 7.5 and 10 s); a `BusQueue` or `BusTimeout` below 1;
@@ -50,12 +52,12 @@ Every implementation task is test-first: write the failing test, run it and conf
   - a failed build leaves no observer on the manager, because the hub wires in last.
 
   Verify: `go test -run 'TestSessionSignals_Construction' -count=1 ./httpsec/`.
-- [ ] 3.2 Godoc every field with its default and its range: `AssuranceWindow` names the guards' window it should match, and `OrderSessionSignals` its place after the gates and below `OrderSessionTouch`. Verify: `go doc ./httpsec SessionSignals` names each default, and `go vet ./httpsec/` is clean.
+- [x] 3.2 Godoc every field with its default and its range: `AssuranceWindow` names the guards' window it should match, and `OrderSessionSignals` its place after the gates and below `OrderSessionTouch`. Verify: `go doc ./httpsec SessionSignals` names each default, and `go vet ./httpsec/` is clean.
 
 ## 4. The endpoint (D3, D7, D10)
 
-- [ ] 4.1 Answer the endpoint, test-first: not enabled → passes through; `GET` → 200, `text/event-stream`, `no-store, no-transform`, `X-Accel-Buffering: no`; another method → 405 with `Allow: GET`; a consumer path; a consumer adapter that cannot stream → 501, including a wrapper with no `Unwrap` and `http.TimeoutHandler`, and delete `ErrStreamingUnsupported`'s `unmapped` entry in `httpsec/errors_test.go`; a consumer's interceptor that already wrote → the chain's error mapping. The endpoint copies everything its body needs from the exchange before `Stream`. Verify: `go test -run 'TestSessionSignals_Endpoint' -count=1 ./httpsec/`.
-- [ ] 4.2 Admit only a signed-in request, test-first:
+- [x] 4.1 Answer the endpoint, test-first: not enabled → passes through; `GET` → 200, `text/event-stream`, `no-store, no-transform`, `X-Accel-Buffering: no`; another method → 405 with `Allow: GET`; a consumer path; a consumer adapter that cannot stream → 501, including a wrapper with no `Unwrap` and `http.TimeoutHandler`, and delete `ErrStreamingUnsupported`'s `unmapped` entry in `httpsec/errors_test.go`; a consumer's interceptor that already wrote → the chain's error mapping. The endpoint copies everything its body needs from the exchange before `Stream`. Verify: `go test -run 'TestSessionSignals_Endpoint' -count=1 ./httpsec/`.
+- [x] 4.2 Admit only a signed-in request, test-first:
   - no credential → 401;
   - a session reference only in the query → 401;
   - HTTP Basic, an API key, or a token with no session → 403;
@@ -63,7 +65,7 @@ Every implementation task is test-first: write the failing test, run it and conf
   - a consumer `CookieAuthenticator` session → opens.
 
   Verify: `go test -run 'TestSessionSignals_Admission' -count=1 ./httpsec/`.
-- [ ] 4.3 Record no session activity for the stream, test-first: opening a stream and holding it past the manager's touch interval leaves the last-activity time and idle deadline unchanged, because the endpoint sits below `OrderSessionTouch`; and `RecordsSessionActivity(ex)` reports false for the stream to a consumer interceptor. Holding a stream also records no presentation and revokes nothing. Verify: `go test -run 'TestSessionSignals_NoActivity' -count=1 ./httpsec/`.
+- [x] 4.3 Record no session activity for the stream, test-first: opening a stream and holding it past the manager's touch interval leaves the last-activity time and idle deadline unchanged, because the endpoint sits below `OrderSessionTouch`; and `RecordsSessionActivity(ex)` reports false for the stream to a consumer interceptor. Holding a stream also records no presentation and revokes nothing. Verify: `go test -run 'TestSessionSignals_NoActivity' -count=1 ./httpsec/`.
 - [ ] 4.4 Write the wire format, test-first:
   - `retry: <ms>` first, within `ReconnectDelay` ±30% and differing across streams, then the `session` snapshot with the two deadlines and `authenticated_at` in RFC 3339 UTC, null when none is recorded, and no identifier;
   - events as `event:` and `data:` with no `id:`, and heartbeats as comments;
@@ -71,12 +73,13 @@ Every implementation task is test-first: write the failing test, run it and conf
 
   Verify: `go test -run 'TestSessionSignals_WireFormat' -count=1 ./httpsec/`.
 - [ ] 4.5 Narrow by the `signals` query parameter, test-first, reading every occurrence through `QueryValues`: narrowed; a widening name ignored; a malformed name dropped; 17 names, or more than 256 bytes, across repeated parameters too → 400; an empty parameter → only what is always sent; no parameter → the chain's set. Verify: `go test -run 'TestSessionSignals_Narrowing' -count=1 ./httpsec/`.
-- [ ] 4.6 Show the early slots and the cross-site rule, test-first. The first case is the red test for D3's UNREPRODUCED claim: a `Sec-Fetch-Site: cross-site` request from an origin CORS does not allow must be refused with 403 *and leave the sign-in's stream count unchanged*. Then:
+- [ ] 4.6 Show the early slots and the cross-site rule, test-first. The first case is the red test for D3's UNREPRODUCED claim: a `Sec-Fetch-Site: cross-site` request from an origin CORS does not allow must be refused with 403. That it leaves the sign-in's stream count unchanged is asserted with task 6.4, once the registry exists. Then:
   - the same with CSRF protection off;
   - `Origin: null` refused;
   - no `Sec-Fetch-Site` and no `Origin` (a bearer client) → opens;
   - an allowed origin → opens with its CORS headers, including `Vary: Origin`;
   - a cookie stream from an origin named without credentials → 403; a bearer stream from it → opens;
+  - a consumer's cookie authenticator that calls `RecordPresentedToken` is still judged as a cookie, while a cookie with an unclaimed `Authorization` header stays a cookie;
   - `*` with a cookie cross-site → 403; `*` with a bearer token → opens; `Origin: null` with a bearer token under `*` → 403; and no CORS at all with a cross-origin `Origin` → 403;
   - `same-site` from an untrusted origin → 403; the refusal is `ErrCrossSiteStream`, emits no `MaliciousCSRF` event, and is logged with sampling;
   - a `POST` under CSRF protection reaches 405 once CSRF passes;
@@ -88,7 +91,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 5. Stream lifecycle against the store (D4)
 
-- [ ] 5.1 Reload the sign-in at each heartbeat with ±10% jitter, through `SignInState` and `Users`, test-first, one row per line of D4's reload table:
+- [ ] 5.1 Reload the sign-in at each heartbeat with ±10% jitter, through `SignInState` and `Users`, test-first, one row per line of D4's reload table. The first read at admission also reads the user, so a tenant-scoped user store with no hook and a disabled user on a cookie authenticator both fail there:
   - gone after `logout`, `ended`, `reuse`, `all_ended` or `provider_logout` → `session_ended` with that reason, then close;
   - the user not found or no longer active → `ended`;
   - gone with no report → `ended`; gone, a held deadline passed → `expired`;
@@ -119,7 +122,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
   Verify: `go test -run 'TestSessionSignals_BusWakeUp|TestSessionSignals_BusUntrusted' -count=1 -race ./httpsec/`.
 - [ ] 6.3 Handle bus failures, test-first: a failing `Publish` leaves the raising request's outcome unchanged and is logged with sampling; a `Publish` that hangs does not hold up a logout, and is abandoned after 5 s; the queue overflowing drops with a sampled log and a counted drop, and a consumer's signal gets `ErrSignalsBusy`; a consumer's `BusQueue` and `BusTimeout` are used; `Publish` receives none of the request's values; a failing `Subscribe`, one returning early with no error, and a panic in either, logged as the stream's panics are, are all retried with backoff from 1 s up to 30 s; `deliver` called concurrently, or after close, is safe; no goroutine runs before first use, or after close (goleak); the heartbeat still ends streams; with the default bus, a signal raised on another replica is not delivered. Verify: `go test -run 'TestSessionSignals_BusOutage' -count=1 -race ./httpsec/`.
-- [ ] 6.4 Enforce the caps per replica, test-first: a fifth stream per sign-in, a seventeenth per user and one over the total → 200 with only `retry` within `BusyDelay` ±30%, `ErrTooManyStreams` internally, a sampled WARN, nothing charged, no existing stream closed; a dependency failure at admission → the same answer, on this path only, with other paths' 5xx unchanged; two requests racing for the last place → exactly one opens (a barrier test); a client that leaves frees its place; a chain refusing after `Stream`, on all three adapters, frees it once; a panicking body frees it once; consumer caps are used; `MaxPerSource` off by default, and used when set; `SessionSignalStats` counts each, including bus drops, publish failures and reload failures in a row, and its godoc says it is for operators. Verify: `go test -run 'TestSessionSignals_Caps' -count=1 -race ./httpsec/`.
+- [ ] 6.4 Enforce the caps per replica, test-first: a fifth stream per sign-in, a seventeenth per user and one over the total → 200 with only `retry` within `BusyDelay` ±30%, `ErrTooManyStreams` internally, a sampled WARN, nothing charged, no existing stream closed; a dependency failure at admission → the same answer, on this path only, with other paths' 5xx unchanged; two requests racing for the last place → exactly one opens (a barrier test); a client that leaves frees its place; a chain refusing after `Stream`, on all three adapters, frees it once; a cross-site refusal leaves the count unchanged; a panicking body frees it once; consumer caps are used; `MaxPerSource` off by default, and used when set; `SessionSignalStats` counts each, including bus drops, publish failures and reload failures in a row, and its godoc says it is for operators. Verify: `go test -run 'TestSessionSignals_Caps' -count=1 -race ./httpsec/`.
 - [ ] 6.5 Bound each stream's queue at 32, test-first: a slow stream drops its own events, never another stream's, and never blocks the publisher; a slow stream whose sign-in is then ended still sends `session_ended`. Godoc the bus (including that a shared bus should authenticate its transport), the replica limit and the caps. Verify: `go test -run 'TestSessionSignals_SlowStream' -count=1 -race ./httpsec/`.
 - [ ] 6.6 End every open stream on `chain.CloseSessionSignals(ctx)`, test-first:
   - each stream closes without an event and frees its place;
@@ -148,7 +151,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 8. Integration
 
-- [ ] 8.1 Run the stream scenarios end to end on all three adapters in conformance: snapshot, ended from another sign-in, logout naming `logout`, a renewal that leaves the stream open, narrowing, caps, a chain refusing after `Stream`, a cross-site refusal, a gzip wrapper in front, and a consumer signal. Verify: `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/signals' ./...` in the `test` module.
+- [ ] 8.1 Run the stream scenarios end to end on all three adapters in conformance: snapshot, ended from another sign-in, logout naming `logout`, a renewal that leaves the stream open, narrowing, caps, a chain refusing after `Stream`, a cross-site refusal, a gzip wrapper in front, a fiber stream's copied values staying correct as later requests reuse the buffers, and a consumer signal. Verify: `go test -run 'TestConformance(NetHTTP|Gin|Fiber)/signals' ./...` in the `test` module.
 - [ ] 8.2 Run every module's full suite with the race detector, one module at a time, then `govulncheck`, `gofmt -l` and `go vet` on every module. Verify: every command's output is clean.
 - [ ] 8.3 Review the whole branch against every requirement in this change's spec deltas, every design decision and the security review table, with each finding reproduced or labelled UNREPRODUCED. Verify: the review is recorded and its findings are resolved.
 
