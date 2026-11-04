@@ -220,7 +220,7 @@ A consumer MAY register a client for opaque access tokens. They SHALL carry at l
 - **THEN** its unexpired access token is refused at UserInfo and reported inactive by introspection
 
 ### Requirement: Refresh tokens rotate on every use
-A refresh token SHALL carry at least 128 bits from a cryptographically secure source, SHALL be stored only as a digest, and SHALL have a format no sign-in path of the chain accepts. A successful refresh SHALL return a new refresh token and supersede the one presented. The superseded token SHALL be accepted again only within a grace window, 30 seconds by default, for a client retrying a lost response.
+A refresh token SHALL carry at least 128 bits, from a cryptographically secure source or derived under a secret key, SHALL be stored only as a digest, and SHALL have a format no sign-in path of the chain accepts. A successful refresh SHALL return a new refresh token and supersede the one presented. The superseded token SHALL be accepted again only within a grace window, 30 seconds by default, for a client retrying a lost response.
 
 #### Scenario: Rotation
 - **WHEN** a client refreshes with token `r1`
@@ -229,6 +229,14 @@ A refresh token SHALL carry at least 128 bits from a cryptographically secure so
 #### Scenario: Retry within the grace window
 - **WHEN** a client refreshes with `r1`, loses the response, and presents `r1` again 10 seconds later
 - **THEN** it receives tokens, and the grant is not revoked
+
+#### Scenario: Two tabs refresh at once
+- **WHEN** two requests present `r1` together, inside its grace window, on a provider holding its derivation key
+- **THEN** both receive the same successor `r2`, one head remains, and a later refresh with `r2` succeeds with the grant live
+
+#### Scenario: A replica without the shared key
+- **WHEN** `r1` is presented again inside its grace window to a provider whose derivation key differs from the one that derived its successor
+- **THEN** it receives tokens with a new successor, and the grant is not revoked
 
 #### Scenario: Consumer widens the grace window
 - **WHEN** the consumer sets a client's grace window to 2 minutes, and `r1` is presented again 90 seconds after its rotation
@@ -447,7 +455,7 @@ For an active token the introspection answer SHALL hold `active`, `scope`, `clie
 - **THEN** the answer holds `active` true with its `sub`, `scope`, `client_id` and `exp`
 
 ### Requirement: Grant records are durable through the store adapters
-Authorization codes, grants, refresh-token lineages, opaque access tokens, consent and pending requests SHALL each be kept in a store with an in-memory default and durable SQL adapters. No store SHALL hold a code, handle, refresh token, opaque access token or client secret in clear.
+Authorization codes, grants, refresh-token lineages, opaque access tokens, consent and pending requests SHALL each be kept in a store with an in-memory default and durable SQL adapters. No durable store SHALL hold a code, handle, refresh token, opaque access token or client secret in clear.
 
 #### Scenario: Restart with a durable store
 - **WHEN** the provider uses durable stores and is restarted between issuing a refresh token and its use

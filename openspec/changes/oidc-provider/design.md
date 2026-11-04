@@ -333,7 +333,7 @@ D+ keeps D's reuse of `session` unchanged and adds four guards. Together they ma
  [3] binding set and proof key != binding -------------------------> invalid_dpop_proof (C5)
    |
    v
- [4] lineage.LoadForRenewal(secret)
+ [4] a direct read compares the family first, so a client naming its own family beside another grant's secret reaches nothing (`REPRODUCED` 2026-11-04, a departure from the established design); then lineage.LoadForRenewal(secret)
        superseded past grace ==> family revoked; ReuseObserver marks
        the grant row revoked --------------------------------------> invalid_grant (C3, C4)
        s.FamilyID != family ---------------------------------------> invalid_grant
@@ -1176,6 +1176,23 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
   - **A token can outlive its grant at a resource server.** `exp` is `iat` plus the lifetime, as the spec fixes, and `expires_in` matches it, even when the grant or sign-in ends sooner. The provider's own endpoints refuse it from that moment, while a resource server verifying offline accepts it until `exp`. Short lifetimes are what bound that, as for any self-contained token.
   - **A very large registered audience.** The verifier's size bound follows the request bounds, so a client registering audiences totalling tens of kilobytes would get tokens the provider's own endpoints refuse. It fails closed, and needs a configuration no real client has.
 
+#### R20. A re-presented refresh token answers the same successor
+
+- **The gap (`REPRODUCED` 2026-11-04).** Two requests presenting one token inside its grace both received tokens, as the Review Focus asks, but the second re-rotated, knocking out the first's token. With shared storage, whichever write landed last decided: if it kept the knocked-out token, the next refresh read as reuse and revoked the grant. Under simulated timing that was 26% to 47% of pairs starting together, and 0.3% to 38% at 5 ms apart. The jitter is a model, not a browser measurement.
+- **The decision, by the user.** A successor secret is `HMAC-SHA256(key, family, presented secret)`, not random. Re-presenting a token inside its grace derives the same successor, finds its digest already stored, and answers it with no write. One head remains, and whichever tab's write lands last holds a live token.
+- **Why a key.** Deriving with no key would let anyone holding a stale token compute its live successor, with no presentation for reuse detection to see. Under the key, a successor can only be had by presenting the token to the provider.
+- **The default and the override.** The default key is random per process, which needs no configuration and fits the memory stores. `WithRefreshSuccessorKey` supplies at least 32 bytes shared across replicas, and replaces that default.
+- **The limit, stated.** With no shared key, or after the key changes, a replica derives a different successor, finds no match, and re-rotates as before. That is no worse than without this decision, and refusing to build cannot be right, as a provider cannot know how many replicas it has. `seal.Cipher` cannot supply the key, because it only seals, and should give a different value each time.
+- **What it does not change.** A token presented past its grace still revokes the grant. A tab keeping a private copy after the other has rotated and the grace has passed cannot be told from a thief, under any design. Two holders staying within a grace of each other go undetected for longer, as they already do inside the grace.
+- **Our own design.** The vendors consulted tolerate reuse in a window, and none documents a deterministic successor. Rejected: keeping the knocked-out token valid inside the grace, which changes `session`, the memory store, three adapters and conformance, and still fails when the next refresh comes after the grace, as it usually does with 5-minute access tokens; and accepting the limit, which leaves browser clients to serialize their refreshes.
+- **Options left for later.** Deriving the key from a consumer's key management service, or several live sibling tokens per head, can be added without breaking a consumer.
+
+**Other limits accepted on the refresh path:**
+
+- **A failed second read after rotating fails closed.** The client can retry inside the grace. A false reuse alarm needs an outage outlasting the grace, and answering tokens on an unread grant row would be worse.
+- **The memory stores hold refresh identifiers in process memory.** Only a durable store is held to storing digests, and a process's memory holds the secrets while handling them anyway.
+- **`refreshAttempts` is 8, with no override.** Past it the answer is a dependency failure and nothing is revoked. Only a token holder can reach it, and a retry inside the grace works. The value is proposed.
+
 #### R8. A family identifier is not a credential (H6)
 
 - **The gap.** The refresh token's family is not a secret, yet H4's "missing lineage reads as revoked" could be read as writing a revocation, and the revocation endpoint could revoke by the family alone. Either way, a value holding a real family and a made-up secret would end someone's grant: from any client's own grants, or from a public client that needs no secret. `UNREPRODUCED`.
@@ -1530,4 +1547,12 @@ The user chose D+ and sub-decisions 2 to 6 on 2026-11-02, and confirmed P1 to P9
 ### R19: no orphan sweep
 
 Reasoned from scrty's own settled specs and the established design.
+
+### R20: the same successor on re-presentation
+
+**Researched (accessed 2026-11-04):**
+- [Auth0, refresh token rotation](https://auth0.com/docs/secure/tokens/refresh-tokens/configure-refresh-token-rotation): a new token inside the leeway, and only the previous token may be reused.
+- [Ory Hydra, graceful token refresh](https://www.ory.com/docs/hydra/guides/graceful-token-refresh): a new token on each use, in one chain, described as a workaround for clients that cannot be fixed.
+- [Okta, refresh tokens](https://developer.okta.com/docs/guides/refresh-tokens/main/): the previous token stays valid for a grace period, 30 seconds by default.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), [OAuth 2.1, draft-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt) and [browser-based apps, draft-26](https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-26.txt): searched for concurrent refresh, and silent on it.
 

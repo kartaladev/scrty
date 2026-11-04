@@ -72,7 +72,7 @@
 - **Messy `scope` values.** A `scope` with doubled spaces or duplicates (`openid  openid profile`) is split on single spaces with empty items dropped and duplicates removed. It is accepted, and the token's `scope` is `openid profile`. Test added to 6.1.
 - **Reserved characters in `state`, and a query in the redirect URI.** A `state` holding `&`, `=`, `#` and spaces comes back byte-identical after URL decoding. A registered redirect URI that already has a query (`https://rp.example.com/cb?tenant=a`) keeps it, with `code`, `state` and `iss` appended. Test added to 6.7 (success) and 6.1 (error redirect).
 - **A Basic secret containing `:`.** The decoded header is split at the first `:`, and each half is URL-decoded afterwards, so `a%3Ab` authenticates the secret `a:b`. Test added to 4.5.
-- **Two tabs refreshing at once.** Two concurrent refreshes with one token, both within the grace window, both receive tokens, and the grant stays live. Test added to 7.5 (`-race`).
+- **Two tabs refreshing at once.** Two concurrent refreshes with one token, both within the grace window, both receive the same successor, and the grant stays live through the next refresh, whichever write landed last (R20). Test added to 7.5 (`-race`).
 - **Oversized parameters.** A value past R11's bounds, any other authorization parameter over 4 KiB, or more than 10 `resource` values, is answered `invalid_request` before anything is parked or stored, and the oversized `state` is not reflected. Test added to 6.1.
 - **Double-clicked consent, or a lost resume response.** A handle's stage is single-use, so the second attempt is refused as an unknown handle, and the user restarts from the relying party. No code is issued twice. Test added to 6.6.
 - **A `state` that changes between tabs.** Two parallel requests share one flow cookie, and each keeps its own `state` and `nonce`. Test added to 6.2.
@@ -727,12 +727,18 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a client absolute lifetime of 7 days ends at 7 days;
   - the refreshed ID token keeps `auth_time`, `sub` and `aud`, with no `nonce`.
 - [ ] Red, the Review Focus row `TestProvider_Refresh/two_tabs_within_grace`: two concurrent refreshes with `r1` both succeed under `-race`, and the grant stays live.
-- [ ] FAIL. Implement over a private `session.Sessions` built in `New` with:
+- [ ] FAIL. Implement over a private `session.Sessions`, built per request because a registry's clients change over time (R13), with:
   - the lineage store;
   - `WithIdleTimeout` and `WithAbsoluteTimeout` per client, applied through `WithAbsoluteLifetime` at creation;
   - a `WithReuseObserver` that calls `GrantStore.Revoke(F, CauseReuse)`.
 
   `WithUnusedSuccessorRecovery` is never passed. Use `RotateWithGraceIssuing` with the client's grace. PASS with `-race`; commit.
+- [ ] Red rows on `TestProvider_Refresh` (R20):
+  - `two_tabs_same_successor`: a raced pair, and a pair 1 s apart, both answered the same `r2`, one head left, and `r2` then refreshes with the grant live;
+  - `diverged_holders_are_caught`: `r2` rotated to `r3`, the grace passed, and `r2` presented: revoked with cause `reuse`;
+  - `another_key_re_rotates`: `r1` re-presented to a provider with another key inside the grace receives tokens, and the grant is not revoked;
+  - `no_key_no_successor`: nothing but the provider can compute `r2`: a successor derived under another key is refused, and writes nothing.
+- [ ] FAIL; implement `func WithRefreshSuccessorKey(key []byte) Option` (at least 32 bytes, else `ErrConfig`; the default is 32 random bytes drawn once in `New`) and `HMAC-SHA256(key, family, presented secret)`, through the per-request manager's `WithRandom` or `oidcprovider`'s own read of the stored successor digest. Replace the rows pinning the old behaviour, including `two_tabs_the_token_knocked_out_is_reuse`, and `doc.go`'s sentence on it.
 - [ ] Red rows on `TestProvider_Refresh`, H6 first (R8): `rt.<real family>.<never issued>` → `invalid_grant`, with no write of any kind, and the real token still works. An omitted `scope` means the grant's; scopes the client has lost are left out and reported, and regained later when allowed again; a removed client → `invalid_client`. FAIL; implement; PASS; commit.
 
 ### Task 7.6: Revocation and introspection
