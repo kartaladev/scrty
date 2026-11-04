@@ -187,7 +187,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
   The red tests for H3 and H5 come first: a grant created at 10:04 from a sign-in at 10:00 must carry 10:00; and a code outstanding when its sign-in ends, or when its user's grants are revoked, must be refused (R7). Verify: `go test -run 'TestProvider_ExchangeCode' -count=1 ./oidcprovider/`.
 - [ ] 7.2 Make code replay revoke what the code issued, test-first. The red tests for H2 come first: a replay after the exchange, and a replay that lands between the first exchange's consume and its commit, driven by a barrier. Both must end with the grant revoked and its refresh token refused. Also cover two concurrent exchanges, of which exactly one succeeds. Only a valid replay revokes: a wrong or missing verifier, or another client, revokes nothing (R17). Detection lasts until at least a minute past the code's expiry, through the default stores' sweeps, and a valid replay after that revokes nothing. A dependency failure during the spend, or a caller hanging up, is answered as such and not as a bad code. Verify: `go test -race -run 'TestProvider_CodeReplay' -count=1 ./oidcprovider/`.
-- [ ] 7.3 Mint ID tokens, test-first:
+- [x] 7.3 Mint ID tokens, test-first:
   - header `typ` `JWT`;
   - claims `iss`, `sub`, `aud` and `azp`, `iat`;
   - `sub` the user identifier, on a chain reading usernames too (R6);
@@ -196,7 +196,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - RS256 by default, ES256 per client.
 
   Verify: `go test -run 'TestProvider_IDToken' -count=1 ./oidcprovider/`.
-- [ ] 7.4 Mint access tokens, test-first:
+- [x] 7.4 Mint access tokens, test-first:
   - a JWT with `typ` `at+jwt`, 5 minutes by default, set per client;
   - audience from `resource` within the allowlist and the grant (R15); with none named, the one granted resource alone, or `invalid_target` with the code unspent when several were granted (R15); with none granted, the client's default, plus the issuer for an `openid` token (R4), else the issuer; with `invalid_target` outside;
   - `gid` naming the grant (R4);
