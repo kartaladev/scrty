@@ -209,8 +209,8 @@ By default a stream SHALL send a comment every 15 seconds. At each one, it SHALL
 A check SHALL time out within half the heartbeat interval, and within 2 to 10 seconds, by default, so a store that hangs cannot stop the heartbeat. The consumer SHALL be able to set the timeout, which SHALL be shorter than the heartbeat. It SHALL NOT run inside a transaction or other request-scoped value of the request that opened the stream, unless the consumer carries one over.
 
 #### Scenario: A store that hangs
-- **WHEN** a stream's check blocks with no answer
-- **THEN** the stream sends its heartbeat within the interval and treats the check as a store failure
+- **WHEN** a stream's check blocks with no answer, whether or not the store honours its context
+- **THEN** the stream sends its heartbeat within the interval, treats the check as a store failure, and still closes when its client leaves or its maximum age passes
 
 #### Scenario: A transaction on the opening request
 - **WHEN** a consumer's middleware attached a transaction to the request that opened a stream, and has since committed it
@@ -316,9 +316,13 @@ When a deadline passes, the stream SHALL check its sign-in first, and SHALL send
 - **WHEN** a request moves the idle deadline one second before the old one, and the stream's timer then fires
 - **THEN** the stream sends no `session_ended`, and sends a new `session` event
 
-#### Scenario: A clock ahead of the store
-- **WHEN** a replica's clock says a deadline has passed and the store still holds the sign-in
+#### Scenario: A chain's clock ahead of the manager's
+- **WHEN** a chain's clock says a deadline has passed, and its session manager, on a clock of its own, still answers for the sign-in
 - **THEN** the stream stays open, and does not check again before its next heartbeat
+
+#### Scenario: A clock ahead, shared with the manager
+- **WHEN** a replica's clock, shared by its chain and manager, has passed a sign-in's deadline
+- **THEN** the stream says `expired`, which can be early by up to the skew
 
 #### Scenario: Idle deadline during a store outage
 - **WHEN** the session store is unavailable as the idle deadline passes, before the absolute deadline
