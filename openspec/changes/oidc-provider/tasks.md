@@ -412,7 +412,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - no orphan pass (R19): remove `GrantStore.DeleteOrphans`, its memory and adapter implementations, its statements and suite rows, and prove that a grant whose lineage went idle stays stored and its client is told when the sign-in ends.
 
   Verify: `go test -run 'TestExpiryTasks_OIDCProvider' ./...` in the `test` module.
-- [ ] 12.6 Prove on each backend that an authorization, an exchange, a refresh after a restart, and a revocation succeed, test-first. Verify: `go test -run 'TestOIDCProvider_Durable' ./...` in the `test` module.
+- [x] 12.6 Prove on each backend that an authorization, an exchange, a refresh after a restart, and a revocation succeed, test-first. Verify: `go test -run 'TestOIDCProvider_Durable' ./...` in the `test` module.
 
 ## 13. Framework adapters (`framework-adapters`)
 

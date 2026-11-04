@@ -1215,6 +1215,7 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
   - **Rejected:** email columns on `users`, with a true verified state, which reverse the settled decision and touch a migration and three adapters for a column nothing else reads; and both together.
   - **Options left for later.** Those columns can be added without breaking a consumer, with a stored email taking precedence over the username.
 - **Accepted:** a superseded token is inactive at introspection even inside its grace, and a disabled user's token stays active there until its grant is revoked, bounded by its lifetime. A caller who hangs up before the first read at revocation revokes nothing, as no credential was yet judged. All of this ran on the memory stores; task 12.6 carries the durable round trip.
+- **What the durable round trip does not cover.** It runs on all three adapters and PostgreSQL 15 and 18, and scans every table for credentials. Two limits remain. No sealed column holds a value, because the provider writes neither of the columns the migration seals, `external_id_token` and `csrf_token`; sealing is proved by the session stores' own suites. `op_client_assertions` is empty at the scan, because no client in the scenario authenticates by assertion, so the scan is proved to read that table and not to find a row in it.
 
 #### R8. A family identifier is not a credential (H6)
 
