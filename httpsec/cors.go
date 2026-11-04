@@ -101,6 +101,18 @@ type corsLayer struct {
 	// manual is set by WithoutAutomaticCORSHeaders: the chain's own features
 	// add nothing to the policy.
 	manual bool
+
+	// provider is the OpenID Provider on the chain, nil when there is none. It
+	// is set once the chain is wired and read-only afterwards; its paths are
+	// read on each request.
+	provider *oidcEndpoints
+
+	// clientHeaders and clientExposed are headers and exposed what the
+	// provider's client-facing endpoints follow: the policy's lists, with
+	// Authorization and DPoP allowed and DPoP-Nonce and WWW-Authenticate
+	// exposed. They are set by follow.
+	clientHeaders map[string]string
+	clientExposed string
 }
 
 // EnableCORS lets browser pages on the origins p names call the chain's
@@ -149,6 +161,19 @@ type corsLayer struct {
 //   - With DPoP enabled, DPoP is allowed and DPoP-Nonce and WWW-Authenticate
 //     are exposed; with CSRF protection reading a token header, that header is
 //     allowed. WithoutAutomaticCORSHeaders turns these additions off.
+//   - With an OpenID Provider on the chain (EnableOIDCProvider), its endpoints
+//     are treated as the protocol requires, at the paths the provider settled:
+//     the token, UserInfo, revocation and introspection endpoints, and the
+//     metadata documents, follow the allowlist as any route does, with
+//     Authorization and DPoP allowed as request headers whether or not DPoP is
+//     enabled, DPoP-Nonce and WWW-Authenticate exposed, and credentials never
+//     allowed, whatever p.AllowCredentials says; the authorization, resume,
+//     end-session and logout confirmation endpoints carry no Access-Control
+//     header at all, whatever the allowlist says, and a preflight to them is
+//     not answered by the layer. WithoutAutomaticCORSHeaders also turns off the
+//     provider's header additions; it cannot allow credentials on the
+//     provider's endpoints or lift the exclusion, which guard the protocol
+//     (RFC 9700 section 2.6). Every response still varies by Origin.
 //
 // Construction fails with ErrConfig, naming the setting or the origin, when no
 // origin is given; an origin is "null", has a scheme other than http or https,
@@ -191,7 +216,10 @@ func EnableCORS(p CORSPolicy, opts ...CORSOption) Option {
 
 		// The features the layer follows may be enabled by options given after
 		// this one, so it reads them once every option has been applied.
-		c.wire(func(*Chain) { l.follow(c.dpopEnabled, c.csrfTokenHeader) })
+		c.wire(func(*Chain) {
+			l.follow(c.dpopEnabled, c.csrfTokenHeader)
+			l.provider = c.oidcProvider
+		})
 
 		return nil
 	}
@@ -501,19 +529,19 @@ const (
 // follow adds the headers the chain's enabled features need, unless the
 // consumer turned the additions off. It runs once, when the chain is built.
 func (l *corsLayer) follow(dpop bool, csrfTokenHeader string) {
-	if l.manual {
-		return
+	if !l.manual {
+		if dpop {
+			l.allowHeader(headerDPoP)
+			l.expose(headerDPoPNonce)
+			l.expose(headerWWWAuthenticate)
+		}
+
+		if csrfTokenHeader != "" {
+			l.allowHeader(csrfTokenHeader)
+		}
 	}
 
-	if dpop {
-		l.allowHeader(headerDPoP)
-		l.expose(headerDPoPNonce)
-		l.expose(headerWWWAuthenticate)
-	}
-
-	if csrfTokenHeader != "" {
-		l.allowHeader(csrfTokenHeader)
-	}
+	l.deriveClientLists()
 }
 
 // expose adds name to the exposed response headers, unless a spelling of it is
@@ -592,13 +620,13 @@ func isPreflight(req Request) bool {
 
 // preflight answers req with 204, and the allow headers when its origin, its
 // method and every header it asks for are allowed.
-func (l *corsLayer) preflight(ex *Exchange) error {
+func (l *corsLayer) preflight(ex *Exchange, scope corsScope) error {
 	w := ex.Writer
 	w.AddHeader(headerVary, preflightVary)
 
 	if origin, ok := l.allowedOrigin(ex.Request.Header(headerOrigin)); ok {
-		if allowed, ok := l.preflightHeaders(ex.Request); ok {
-			l.allow(w, origin)
+		if allowed, ok := l.preflightHeaders(ex.Request, scope); ok {
+			l.allow(w, origin, scope)
 			w.SetHeader(headerAllowMethods, l.methodsValue)
 
 			if allowed != "" {
@@ -617,7 +645,12 @@ func (l *corsLayer) preflight(ex *Exchange) error {
 // preflightHeaders checks the requested method and headers, and returns the
 // Access-Control-Allow-Headers value naming the requested ones, in the
 // policy's spelling.
-func (l *corsLayer) preflightHeaders(req Request) (string, bool) {
+func (l *corsLayer) preflightHeaders(req Request, scope corsScope) (string, bool) {
+	allowedHeaders := l.headers
+	if scope == corsScopeClient {
+		allowedHeaders = l.clientHeaders
+	}
+
 	if !slices.Contains(l.methods, req.Header(headerRequestMethod)) {
 		return "", false
 	}
@@ -631,7 +664,7 @@ func (l *corsLayer) preflightHeaders(req Request) (string, bool) {
 				continue
 			}
 
-			name, ok := l.headers[item]
+			name, ok := allowedHeaders[item]
 			if !ok {
 				return "", false
 			}
@@ -651,29 +684,46 @@ func (l *corsLayer) preflightHeaders(req Request) (string, bool) {
 // readable by an allowed origin's script, and Origin is added to Vary on every
 // response, so no cache serves one origin's answer to another.
 func (l *corsLayer) Intercept(ex *Exchange, next Next) error {
+	scope := l.provider.corsScope(ex.Request.Path())
+
+	if scope == corsScopeBrowser {
+		// The provider's pages and redirects are for the user's own browser. They
+		// answer no cross-origin script, so no CORS header is set and a preflight
+		// is not answered; the request is handled as if CORS were off.
+		ex.Writer.AddHeader(headerVary, headerOrigin)
+
+		return next(ex)
+	}
+
 	if isPreflight(ex.Request) {
-		return l.preflight(ex)
+		return l.preflight(ex, scope)
 	}
 
 	w := ex.Writer
 	w.AddHeader(headerVary, headerOrigin)
 
 	if origin, ok := l.allowedOrigin(ex.Request.Header(headerOrigin)); ok {
-		l.allow(w, origin)
+		l.allow(w, origin, scope)
 
-		if l.exposed != "" {
-			w.SetHeader(headerExposeHeaders, l.exposed)
+		exposed := l.exposed
+		if scope == corsScopeClient {
+			exposed = l.clientExposed
+		}
+
+		if exposed != "" {
+			w.SetHeader(headerExposeHeaders, exposed)
 		}
 	}
 
 	return next(ex)
 }
 
-// allow sets the headers every allowed response carries.
-func (l *corsLayer) allow(w ResponseWriter, origin string) {
+// allow sets the headers every allowed response carries. The provider's
+// client endpoints never allow credentials.
+func (l *corsLayer) allow(w ResponseWriter, origin string, scope corsScope) {
 	w.SetHeader(headerAllowOrigin, origin)
 
-	if l.credentials {
+	if l.credentials && scope != corsScopeClient {
 		w.SetHeader(headerAllowCredentials, "true")
 	}
 }
