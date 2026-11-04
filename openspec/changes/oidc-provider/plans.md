@@ -402,7 +402,6 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - `RevokeByUserAndClient(ctx, user, clientID, cause, at) ([]Grant, error)`, each also writing a tombstone for each matching unspent code, `Offline` or not (R7);
     - `EndSignIns(ctx, sel SignInSelector, at time.Time) ([]Grant, error)`, which also writes a tombstone for the `GrantFamily` of each matching unspent code without `Offline`;
     - `DeleteExpired(ctx, now time.Time, keepRevoked time.Duration) (int, error)`;
-    - `DeleteOrphans(ctx, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error)`.
 - **Tombstones across the code and grant stores (R7).** The tombstones above span `CodeStore` and `GrantStore`, so `CodeStore` embeds `UnspentCodes`, with `UnspentBySignIn(ctx, sel, includeOffline, at)` and `UnspentByClient(ctx, user, clientID, at)`, and `oidcprovider.New` joins them through `GrantStore.UseCodes(UnspentCodes) error`. The grant store writes each tombstone itself, with the sign-in-ended mark when an end recorded it. A listing excluding offline codes still includes one with `EndsWithSignIn`. `EndSignIns` does not touch browser sessions. A store outage on either fails the call.
 - **Browser sessions (R2):**
   - `type BrowserSession struct { Digest []byte; SignIn SignIn; IdleExpiresAt, AbsoluteExpiresAt time.Time }`;
@@ -460,9 +459,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - an upstream issuer and session match only grants that recorded them;
   - an invalid selector shape → `ErrConfig`;
   - `DeleteExpired` keeps a revoked grant until `keepRevoked` passes;
-  - `DeleteOrphans` removes a grant whose lineage is missing and which is older than the cutoff.
 - [ ] FAIL; implement; PASS; commit.
-- [ ] Red rows on the grant suite (R7, R10): `EndSignIns` for a sign-in with an unspent code leaves that code's `GrantFamily` revoked, and a later `Create` keeps it revoked; an `Offline` code survives `EndSignIns` and not `RevokeByUser`; `DeleteOrphans` skips a grant with `HoldsLineage` false. FAIL; implement; PASS; commit.
+- [ ] Red rows on the grant suite (R7, R10): `EndSignIns` for a sign-in with an unspent code leaves that code's `GrantFamily` revoked, and a later `Create` keeps it revoked; an `Offline` code survives `EndSignIns` and not `RevokeByUser`. FAIL; implement; PASS; commit.
 
 ### Task 5.5: The lineage store type
 **Files:** Create `internal/oplineage/oplineage.go`, `oidcprovider/lineage.go`; Test `oidcprovider/lineage_test.go`
@@ -703,7 +701,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - an opaque client gets `at.<id>.<secret>`, stored as a digest, and `VerifyAccessToken` refuses it once its grant is revoked;
   - `VerifyAccessToken` on an ID token or an `rt.` value → `invalid_token`;
   - `VerifyAccessToken` on a token whose grant row is gone → refused as revoked, because a revoked row is swept while a token set to a longer lifetime can outlive it;
-  - a `resource` outside the allowlist or the grant, at the exchange → `invalid_target` with the code unspent, judged before the spend beside `codeBindingsHold` (R18).
+  - a `resource` outside the allowlist or the grant, at the exchange → `invalid_target` with the code unspent, judged before the spend beside `codeBindingsHold` (R18);
+  - a code granted one resource, `openid` in scope, exchanged with none named → `aud` is exactly that resource, with no issuer (R15);
+  - a code granted several, exchanged with none named → `invalid_target`, the code unspent, and the same code naming one succeeds (R15);
+  - a code granted none → the default audience with the issuer for `openid`, else the issuer alone; `AllowedResources` is never a default.
 - [ ] FAIL; implement; PASS; commit.
 
 ### Task 7.5: Refresh
@@ -1099,22 +1100,22 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `pgxstore` and `gormstore` reuse `internal/pgschema`'s statements, row types and encodings, and wire `storetest.RunGrantOrderRaces` and `ClientStoreSuite`;
   - `AssertionID.Record` is `INSERT … ON CONFLICT DO NOTHING`, with a row count of 1 meaning new.
 - [ ] Run `go test -race -run 'Test<Adapter>Store' ./<a>/...` in `test/` against PostgreSQL 15 and 18: PASS. Commit per adapter.
-- [ ] Each adapter also implements `BrowserSessionStore` and `CodeStore.UnspentBySignIn`, driven by the suites. `DeleteOrphans` carries `holds_lineage`.
+- [ ] Each adapter also implements `BrowserSessionStore` and `CodeStore.UnspentBySignIn`, driven by the suites.
 
 ### Task 12.5: Expiry tasks
 **Files:** Create `oidcprovider/expiry.go`; Test `test/expirytasks_test.go`
 - [ ] `func ExpiryTasks(p *Provider) []expiry.Task`, with these task names:
   - `oidc-provider.pending-requests`, `oidc-provider.codes` (the onetime purge plus the code records), `oidc-provider.access-tokens` and `oidc-provider.assertion-ids`;
-  - `oidc-provider.codes`, sweeping a record only one minute past its expiry, so an exchange in flight keeps what an end needs. The onetime purge must keep the code's token as long (R17). `DeleteExpiredBefore`'s argument is a cutoff on when a token was issued, so a durable purge passes `now - codeLifetime - 1 minute`, not `now - 1 minute`. Prove it on each backend with a replay inside the minute after the task has run;
+  - `oidc-provider.codes`, sweeping a record only one minute past its expiry, so an exchange in flight keeps what an end needs. The onetime purge must keep the code's token as long (R17). `DeleteExpiredBefore`'s argument is a cutoff on when a token was issued, so a durable purge passes `now - maxCodeLifetime - 1 minute`, not `now - 1 minute`: the maximum, as `keepRevoked` uses, so that lowering the configured lifetime in a redeploy cannot purge a code in flight early. Spent tokens then stay up to 11 minutes, which is harmless, since a replay whose record has gone revokes nothing. Prove it on each backend with a replay inside the minute after the task has run;
   - `oidc-provider.grants`, with `keepRevoked` one minute past the longest code lifetime, as the memory store keeps it, so a code spent as it expires cannot land after its tombstone is swept;
   - `oidc-provider.refresh-tokens` (the lineage `DeleteExpired`);
-  - `oidc-provider.orphaned-grants`, with a 10 min cutoff.
 - [ ] Red `TestExpiryTasks_OIDCProvider`:
   - after the clock passes, each task deletes only expired rows;
   - a revoked grant survives until the code lifetime passes;
-  - the orphan task removes a grant with no lineage row.
+  - there is no orphan task, and a grant whose lineage went idle stays stored, its client told when the sign-in ends, on each durable backend and the memory defaults (R19).
 - [ ] FAIL; implement; PASS; commit.
-- [ ] Add browser sessions to the task list, and a row proving the orphan sweep spares a grant with `HoldsLineage` false (R10).
+- [ ] Add browser sessions to the task list.
+- [ ] Remove the orphan pass (R19): `GrantStore.DeleteOrphans`, its memory implementation and `orphanable`, each adapter's, `pgschema.GrantOrphanCandidates`, `GrantOrphanDelete`, `GrantOrphanPage` and their tests, the suite rows, and the row in `exchange_test.go` that relied on it. `Grant.HoldsLineage` and its column stay, as H4's rule reads them. Regenerate the `GrantStore` mock. A lineage that cannot be written still answers a dependency failure, and that row then asserts the grant is kept and refused at refresh once 7.5 lands.
 
 ### Task 12.6: Durable round trip (lane X)
 - [ ] Red `TestOIDCProvider_Durable`, per backend: authorize → resume → exchange. Then build a second `Provider` over the same database (a restart) and refresh with the first's refresh token. Then revoke. Every step succeeds. FAIL until wired; PASS; commit.

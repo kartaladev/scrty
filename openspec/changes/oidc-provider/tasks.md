@@ -198,7 +198,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   Verify: `go test -run 'TestProvider_IDToken' -count=1 ./oidcprovider/`.
 - [ ] 7.4 Mint access tokens, test-first:
   - a JWT with `typ` `at+jwt`, 5 minutes by default, set per client;
-  - audience from `resource` within the allowlist and the grant (R15), else the client's default, plus the issuer for an `openid` token (R4), else the issuer, with `invalid_target` outside;
+  - audience from `resource` within the allowlist and the grant (R15); with none named, the one granted resource alone, or `invalid_target` with the code unspent when several were granted (R15); with none granted, the client's default, plus the issuer for an `openid` token (R4), else the issuer; with `invalid_target` outside;
   - `gid` naming the grant (R4);
   - `cnf` when bound;
   - opaque `at.<id>.<secret>` tokens per client.
@@ -408,7 +408,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - pending requests, browser sessions, codes (the onetime purge), opaque tokens and assertion identifiers;
   - grants, keeping revoked ones until the codes that name them expire;
   - lineages under a renamed task;
-  - the orphaned-grant sweep, sparing a grant recorded to hold no lineage (R10).
+  - no orphan pass (R19): remove `GrantStore.DeleteOrphans`, its memory and adapter implementations, its statements and suite rows, and prove that a grant whose lineage went idle stays stored and its client is told when the sign-in ends.
 
   Verify: `go test -run 'TestExpiryTasks_OIDCProvider' ./...` in the `test` module.
 - [ ] 12.6 Prove on each backend that an authorization, an exchange, a refresh after a restart, and a revocation succeed, test-first. Verify: `go test -run 'TestOIDCProvider_Durable' ./...` in the `test` module.

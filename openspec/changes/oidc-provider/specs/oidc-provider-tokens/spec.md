@@ -176,7 +176,7 @@ By default an access token SHALL be a signed JWT with header `typ` `at+jwt`, car
 - **THEN** the access token's `aud` is the issuer, and it is accepted only at the provider's own endpoints
 
 ### Requirement: A default audience stays usable at UserInfo
-When no `resource` was given and the token's scope holds `openid`, the issuer SHALL be added to a default audience.
+When no `resource` was named at either request and the token's scope holds `openid`, the issuer SHALL be added to a default audience.
 
 #### Scenario: Default audience with openid
 - **WHEN** a client whose default audience is `https://api.example.com` exchanges a code granted `openid`, without `resource`
@@ -194,11 +194,19 @@ A consumer MAY set the lifetime per client, up to the cap the signing keys allow
 - **THEN** that client's access tokens expire 15 minutes after issue
 
 ### Requirement: Token-endpoint resources stay within the grant
-`resource` values at the token endpoint SHALL be a subset of those granted at the authorization request, when any were. A refresh token SHALL stay bound to the whole original grant, whichever subset one request narrowed to.
+`resource` values at the token endpoint SHALL be a subset of those granted at the authorization request, when any were. When a code was granted resources and the exchange names none, one granted resource SHALL be the audience, exactly as if it had been named, and several SHALL be refused, because a token valid at several services lets any one of them use it at the others. A refresh token SHALL stay bound to the whole original grant, whichever subset one request narrowed to.
 
 #### Scenario: Narrower resource at the token endpoint
 - **WHEN** a code was granted `https://orders.example.com` and `https://billing.example.com`, and the exchange sends `resource=https://billing.example.com`
 - **THEN** the access token's `aud` is `https://billing.example.com`, and a later refresh may ask for `https://orders.example.com`
+
+#### Scenario: One resource granted, none named at the token endpoint
+- **WHEN** a code granted `openid` and only `https://orders.example.com` is exchanged without `resource`
+- **THEN** the access token's `aud` is exactly `https://orders.example.com`
+
+#### Scenario: Several resources granted, none named at the token endpoint
+- **WHEN** a code granted `https://orders.example.com` and `https://billing.example.com` is exchanged without `resource`
+- **THEN** the response is 400 with `{"error":"invalid_target"}`, the code stays unspent, and the same code exchanged with `resource=https://billing.example.com` succeeds
 
 #### Scenario: Resource outside the grant
 - **WHEN** a code was granted only `https://orders.example.com`, and the exchange sends another resource the client is allowed
@@ -464,10 +472,10 @@ No code, handle, refresh token, access token, ID token, client secret or client 
 - **THEN** the new ID token's `sub` is unchanged
 
 ### Requirement: Every code exchange records a grant
-A code exchange SHALL record a grant, also for a client not registered for the refresh grant. Such a grant SHALL hold no refresh-token lineage, SHALL NOT be treated as orphaned, and SHALL expire at the deadline of the sign-in it came from. Its access tokens name it, so replay and revocation reach them at the provider's own endpoints, and back-channel logout can find its client.
+A code exchange SHALL record a grant, also for a client not registered for the refresh grant. Such a grant SHALL hold no refresh-token lineage, and SHALL expire at the deadline of the sign-in it came from. Its access tokens name it, so replay and revocation reach them at the provider's own endpoints, and back-channel logout can find its client.
 
 #### Scenario: Client without the refresh grant
-- **WHEN** a client registered only for `authorization_code` exchanges a code, and the sweep's orphan pass then runs
+- **WHEN** a client registered only for `authorization_code` exchanges a code, and the sweep then runs
 - **THEN** the grant is kept until its sign-in's deadline
 
 #### Scenario: Back-channel logout without a refresh token

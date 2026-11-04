@@ -81,7 +81,11 @@ A grant SHALL record the family of the sign-in it came from, and the upstream is
 - **THEN** `g-1` is revoked when it does not hold `offline_access`, and returned
 
 ### Requirement: Expired provider records are swept
-Expired pending requests, browser sessions, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. The orphan pass SHALL remove only a grant of a client that was issued a refresh token and whose lineage is missing, never a grant recorded to hold none. A revoked grant SHALL be kept until every code that could still name it has expired.
+Expired pending requests, browser sessions, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. A grant SHALL NOT be removed because its lineage is missing: it stays until its own deadline, so that an end of its sign-in still reaches its client. A revoked grant SHALL be kept until every code that could still name it has expired.
+
+#### Scenario: A grant whose lineage went idle
+- **WHEN** a grant's lineage has passed its idle timeout and been swept, the grant is unexpired, and its sign-in then ends
+- **THEN** the grant is still stored, and its client is told of the end
 
 #### Scenario: Sweep
 - **WHEN** the sweep runs after pending requests and codes expired

@@ -360,10 +360,10 @@ D+ keeps D's reuse of `session` unchanged and adds four guards. Together they ma
 **What D+ costs:**
 - **Two writes at the code exchange** (lineage and grant row), first drafted as one transaction through each adapter's `WithTx`, and ordered without one by T9:
   - a lineage without a grant row fails closed at [2];
-  - a grant row without a lineage is an orphan for the sweeper.
+  - a grant row without a lineage reads as revoked at refresh, and stays until its deadline (R19).
 - **A second migrated table** with the session schema. It is reached only through that constructor.
 - **A grant-row store:** in-memory, `sqlstore`, `pgxstore` and `gormstore`, a migration and a conformance suite.
-- **Two sweep tasks**, one renamed (`expiry.Task` supports it), plus an orphan sweep.
+- **Two sweep tasks**, one renamed (`expiry.Task` supports it).
 - **Unused sign-in fields on lineage records** (MFA state, confinement marks). They are harmless, because the provider alone constructs those records with a fixed set of create options.
 - **One extra read per refresh** (the grant row).
 
@@ -387,7 +387,7 @@ Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
   - **Why the other options can't do this:** the lineage alone has no tombstone, which is why A and D as drafted cannot close the race.
 
 - **H3, `auth_time` overstated.** `Prepare` sets `AuthenticatedAt` to the current time (`session/prepared.go:84`). A grant created at the code exchange would claim the exchange time as `auth_time`, and overstate freshness to a relying party checking `max_age`. The grant must copy the sign-in's `AuthenticatedAt`, `amr` and `acr` explicitly.
-- **H4, an orphaned grant row.** Reuse revocation deletes the lineage but not the grant row. The `ReuseObserver` marks it revoked, and the sweeper removes it. The observer is not called when the revocation itself fails, so the refresh path must treat a missing lineage as revoked. *Reads* as revoked, refusing the request and writing nothing: R8.
+- **H4, an orphaned grant row.** Reuse revocation deletes the lineage but not the grant row. The `ReuseObserver` marks it revoked, and the sweep removes it after that. The observer is not called when the revocation itself fails, so the refresh path must treat a missing lineage as revoked. *Reads* as revoked, refusing the request and writing nothing: R8.
 - **H5 and H6:** added by the refresh, in R7 and R8.
 - **Access tokens outlive revocation (C7).** A JWT access token stays valid until its expiry whatever the grant storage. P4 answers this with a short lifetime and an opaque option.
 - **Token-type confusion (C10), `REPRODUCED` 2026-11-04.** `token`'s verifier checked no `typ`, and P4 signs access tokens over the same key source as first-party tokens, so an `at+jwt` token passed a default verifier (`TestVerifier_TokenType`, failing before the fix with `Expected error with "token: invalid" in chain but got nil`). jwx also wrote `typ: JWT` on first-party tokens by itself. Each token type now validates only as itself.
@@ -408,7 +408,7 @@ Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
   - a fixed-table refresh-token store constructor in `sqlstore`, `pgxstore` and `gormstore`;
   - a grant-row store with its in-memory default, three SQL adapters and a conformance suite;
   - the security-state migration;
-  - two sweep tasks plus an orphan sweep.
+  - two sweep tasks.
 - **Left alone:** `session.Store` and `close-security-gaps` D12, so the two changes need no coordination.
 - **The audit's risks, closed explicitly:**
   - the `typ` checks in `token`;
@@ -1031,7 +1031,7 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 
 - **What it decides:** this departs from decision 5's "one transaction through each adapter's `WithTx`". The exchange writes the grant row first, keeping any tombstone, and the lineage second. No transaction port joins the two stores.
 - **Why it is safe in every interleaving:**
-  - a failure between the two writes leaves a grant row with no lineage. The client got an error and holds no refresh token, and the orphan sweep removes the row (decision 5, H4). A grant recorded to hold no lineage is not an orphan (R10);
+  - a failure between the two writes leaves a grant row with no lineage. The client got an error and holds no refresh token, a refresh on it would read as revoked (H4), and the row stays until its deadline (R19);
   - a replay that lands between the two writes marks the grant row revoked. The lineage then created is unusable, because every refresh reads the grant row first (decision 5, step [2]);
   - a lineage can never exist without its grant row, which is the state that would fail open.
 - **Why not a transaction:** it would need a transaction port across stores that consumers may supply separately, and adapters that share one database handle. That buys nothing the order does not already guarantee.
@@ -1209,8 +1209,8 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 
 #### R10. Every exchange records a grant, including for clients with no refresh token
 
-- **The gap.** Clients registered only for `authorization_code` had no stated grant, while H2's tombstone, `gid` (R4) and back-channel logout all need one, and T9's orphan sweep would delete it.
-- **The decision.** The row is always written, with a flag saying it holds no lineage, which is what the orphan pass and H4's rule check. It expires at the sign-in's deadline, so an ID-token-only client still gets its logout token.
+- **The gap.** Clients registered only for `authorization_code` had no stated grant, while H2's tombstone, `gid` (R4) and back-channel logout all need one.
+- **The decision.** The row is always written, with a flag saying it holds no lineage, which is what H4's rule checks. It expires at the sign-in's deadline, so an ID-token-only client still gets its logout token.
 
 #### R11. Parsing and transport rules the specs left out
 
@@ -1275,6 +1275,24 @@ The user confirmed on 2026-11-04 that DPoP support is required. P6 stands, and D
 #### R15. Multiple resources follow RFC 8707 §2.2
 
 A `resource` at the token endpoint must be within the code's or grant's resources, not only the client's allowlist. The token narrows and the refresh token stays bound to the whole grant, so a later refresh may ask for another of them. Outside that is `invalid_target`. The token's audience is what was asked for: node-oidc-provider allows one audience per token, while RFC 8707 permits more, so it stays permitted, and the client chooses.
+
+**A code granted resources, exchanged with none named.** The standards settle one case and leave the other to the server, and the user chose:
+
+- **One granted:** the audience is exactly that resource, as if it had been named. RFC 9068 §3's example redeems a code from an authorization request naming one resource, with `openid` in scope, into a token whose `aud` is that resource alone. No issuer is added, matching that example and what an explicit `resource` gets (R4), so such a token cannot call UserInfo.
+- **Several granted:** `invalid_target`, judged before the spend, so the code stays unspent and the client can retry naming what it wants. RFC 8707 §2.2 leaves acceptance to local policy, and its §3 warns that any audience of a multi-audience token can use it at the others. A client that wants that names them all at the token endpoint, and it stays permitted.
+- **None granted:** nothing changes. The client's `DefaultAudience` applies, with the issuer added for `openid`, and otherwise the issuer alone. `AllowedResources` is never a default.
+- **Rejected:** all granted resources, which spans services without the client asking; and the default audience regardless, which contradicts RFC 9068's example and can reach a service the user never approved.
+- **The default and the override.** The rule has no option, because it follows from what was granted. A consumer chooses the outcome by what its client names, and through `DefaultAudience`.
+
+**Options left for later.** A per-client setting choosing the issuer's addition, or a `defaultResource` hook, can be added without breaking a consumer. Neither is in v1.
+
+#### R19. No orphan sweep
+
+- **The gap (`REPRODUCED` 2026-11-04).** The established design removed a grant whose lineage was missing, to clean up after a failure between T9's two writes. A lineage past its idle timeout is swept too, so the pass also removed live grants of live sign-ins, and their clients were no longer told when the sign-in ended (`oidc-provider-logout`). The pass also loaded every live grant on every run, an extrapolated 15 minutes at a million grants, and gave a consumer no override.
+- **The decision, by the user.** There is no orphan pass, and `GrantStore` has no `DeleteOrphans`. This departs from the established design, for the defect above. A grant stays until its own deadline. A row left by a failure between the two writes is harmless: the client got an error and holds no token, a refresh on it reads as revoked (H4), and an end may send its client one logout token for a sign-in it holds nothing from, which a receiver must tolerate anyway.
+- **Rejected:** a "lineage written" mark set after the second write, which keeps the cleanup at the cost of a third write with its own failure case and a column; and accepting the loss, which breaks the logout spec.
+- **The default and the override.** Rows leave through the grant sweep at their deadline, so the longest a leftover lasts is the client's absolute lifetime, 90 days by default, which a consumer sets per client. There is nothing else to override.
+- **Options left for later.** A one-time cleanup task, or the mark above, can be added without breaking a consumer if leftovers ever prove costly in practice.
 
 #### R16. One end-observer option, shared with `session-signals`
 
@@ -1496,4 +1514,17 @@ The user chose D+ and sub-decisions 2 to 6 on 2026-11-02, and confirmed P1 to P9
 - [OAuth 2.1, draft-ietf-oauth-v2-1-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt), §7.5.3: revoke only on a valid request, and why an invalid one must not. It is a draft.
 - [node-oidc-provider, `authorization_code.js`](https://raw.githubusercontent.com/panva/node-oidc-provider/main/lib/actions/grants/authorization_code.js): an expired code is refused before its consumed check, so that path revokes nothing.
 - [ory/fosite, `flow_authorize_code_token.go`](https://raw.githubusercontent.com/ory/fosite/master/handler/oauth2/flow_authorize_code_token.go): a used code revokes, and a code the store cannot find is `invalid_grant` with nothing revoked.
+
+### R15: a resource named only at the authorization request
+
+**Researched (accessed 2026-11-04):**
+- [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.txt), §3: a code from a request naming one resource redeems to a token with that `aud`, and a request with no resource uses a default.
+- [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.txt), §2.1, §2.2 and §3: `invalid_target`, acceptance by local policy, and the warning about several audiences.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §2.3: audience-restrict to one resource server or a small set.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html): searched, and it does not mention resource indicators.
+- [node-oidc-provider `resourceIndicators`](https://github.com/panva/node-oidc-provider/blob/main/docs/README.md): several granted resources must be named at the token endpoint.
+
+### R19: no orphan sweep
+
+Reasoned from scrty's own settled specs and the established design.
 
