@@ -64,7 +64,6 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
 - Every port and contract the provider changes is changed before `v0.1.0`, so the features left for later only add.
 
 **Non-Goals** (each a follow-up that only adds, provided v1 leaves its seam):
-- **`user-email`:** an email of the user's own, separate from the username, with a true verified state: columns on `users`, `identity.Details` fields, and the default store persisting what it now discards. v1 releases a username that is an address, with `email_verified` false (R21). A consumer needing more uses `WithClaimSource` until then. Deferred by the user for a quicker release; a stored email would take precedence over the username, so it only adds.
 
 - **PAR, and a FAPI 2.0 profile switch.** v1 leaves the request-object seam for them.
 - **Third-party features:** dynamic client registration (RFC 7591; RFC 7592 is Experimental), pairwise subject identifiers, and the logo and policy URIs.
@@ -72,6 +71,7 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
 - **Implicit and hybrid flows, and the resource owner password grant.** RFC 9700 and the OAuth 2.1 draft deprecate them.
 - **Front-channel logout and OIDC Session Management.** Both depend on third-party cookies, which browsers now block.
 - **Official certification.** v1 runs the suite as a CI gate. Certification on the hosted suite is the maintainer's later step.
+- **`user-email`:** an email of the user's own, separate from the username, with a true verified state: columns on `users`, `identity.Details` fields, and the default store persisting what it now discards. v1 releases a username that is an address, with `email_verified` false (R21). A consumer needing more uses `WithClaimSource` until then. Deferred by the user for a quicker release; a stored email would take precedence over the username, so it only adds.
 
 ## Decisions
 
