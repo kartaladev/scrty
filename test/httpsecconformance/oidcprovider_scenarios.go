@@ -84,12 +84,30 @@ func OIDCProviderScenarios() []Scenario {
 		opMetadataIsServed(),
 		opEndSessionRedirects(),
 		opLogoutConfirmationAnswersJSON(),
+		opMetadataHeadAnswersNoBody(),
+		opMetadataWrongMethodIsRefused(),
+		opUserInfoInvalidTokenChallenges(),
+		opUserInfoWrongMethodIsRefused(),
+		opUserInfoDPoPMalformedOffersBothSchemes(),
+		opFlowsOverATrustedProxyAreSecure(),
+		opPlainHTTPIsRefused(),
+		opProxyForwardingHTTPIsRefused(),
 	}
 }
 
 // opBuild wires a provider over memory stores and a chain in front of it, with
 // a session whose secret a scenario presents as the signed-in user.
 func opBuild(t *testing.T) ChainSpec {
+	t.Helper()
+
+	return opBuildOver(t, httpsec.WithHTTPSDeployment(), nil)
+}
+
+// opBuildOver is opBuild with transport as how the chain learns a request was
+// secure, and nil leaving it to the connection, which no adapter's in-memory
+// transport makes TLS. providerOptions are the provider's own options, and
+// extra is appended to the chain's options.
+func opBuildOver(t *testing.T, transport httpsec.Option, providerOptions []oidcprovider.Option, extra ...httpsec.Option) ChainSpec {
 	t.Helper()
 
 	effects := newEffects(t)
@@ -116,7 +134,7 @@ func opBuild(t *testing.T) ChainSpec {
 		ConsentURL:   OPIssuer + "/consent",
 		LogoutURL:    OPIssuer + "/logout-page",
 		LoggedOutURL: OPIssuer + "/bye",
-	})
+	}, providerOptions...)
 	require.NoError(t, err)
 
 	// The manager reports each sign-in's end to the provider, as a consumer wires it.
@@ -128,15 +146,20 @@ func opBuild(t *testing.T) ChainSpec {
 
 	effects.SessionID = s.ID
 
+	options := []httpsec.Option{
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: effects.Sessions, Users: fixtureUsers{}}),
+		httpsec.EnableJWKSEndpoint(opKeys()),
+		httpsec.EnableSecurityHeaders(),
+		httpsec.EnableCSRFProtection(),
+		httpsec.EnableOIDCProvider(p),
+	}
+
+	if transport != nil {
+		options = append([]httpsec.Option{transport}, options...)
+	}
+
 	return ChainSpec{
-		Options: []httpsec.Option{
-			httpsec.WithHTTPSDeployment(),
-			httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: effects.Sessions, Users: fixtureUsers{}}),
-			httpsec.EnableJWKSEndpoint(opKeys()),
-			httpsec.EnableSecurityHeaders(),
-			httpsec.EnableCSRFProtection(),
-			httpsec.EnableOIDCProvider(p),
-		},
+		Options: append(options, extra...),
 		Effects: effects,
 		NoRoute: true,
 	}
@@ -554,6 +577,7 @@ func opMetadataIsServed() Scenario {
 			require.Equal(t, http.StatusOK, res.Status, res.Body)
 			assert.False(t, res.NoRouteRan)
 			assert.Equal(t, "application/json", res.Header.Get("Content-Type"))
+			assert.Equal(t, opMetadataCacheControl, res.Header.Get("Cache-Control"))
 			assert.Empty(t, res.Header.Values("Set-Cookie"))
 
 			doc := opJSON(t, res)

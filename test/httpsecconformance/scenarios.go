@@ -527,6 +527,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
+		twoCookiesAreBothSent(),
 	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios())...)
 }
 
