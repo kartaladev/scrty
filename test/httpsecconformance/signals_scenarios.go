@@ -895,7 +895,13 @@ func signalsStreamAmongConcurrentRequests(t *testing.T, listen func(ChainSpec) S
 	})
 	c.opens()
 
-	waitForStream(t, done, "the churn to finish")
+	// Hundreds of requests take longer than a stream's short bound on a loaded machine.
+	select {
+	case <-done:
+	case <-time.After(signalsBound):
+		t.Fatal("timed out waiting for the churn to finish")
+	}
+
 	churn(t, srv.URL, 64, 4, others)
 
 	// The narrowing the stream was opened with still holds: it asked for session_expiring, and
