@@ -1031,6 +1031,321 @@ chain, err := httpsec.New(
 | Notice device text | browser and platform family, never the raw user agent | `httpsec.WithSignInNoticeMessage` (it receives only the family text) |
 | Passkey removal notice | on | `httpsec.WithoutPasskeyRemovalNotification` |
 
+## Session signals
+
+`httpsec.EnableSessionSignals` adds a Server-Sent Events stream that tells a front end what happened
+to its own sign-in: that it ended and why, or that a deadline is close. It is off by default, needs
+no data migration, and carries no session identifier or credential. The session store decides
+whether a sign-in has ended, and a message on the bus only wakes the stream to read it, so a lost
+message costs at most a heartbeat.
+
+### Enabling it
+
+```go
+chain, err := httpsec.New(
+	httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+	httpsec.EnableSessionSignals(httpsec.SessionSignals{}), // every default; see below
+)
+```
+
+The stream answers `GET` at `Path` after every authentication interceptor, in the slot
+`httpsec.OrderSessionSignals`. Headers, proxies, CORS, CSRF, rate limits, authentication and the
+pending-session gates apply below it as on any protected route. Holding a stream open is not
+activity: it never moves the sign-in's idle deadline.
+
+A sign-in is required: a caller authenticated with none, by Basic, an API key or a token bound to
+no session, is refused with 403, and no credential at all with 401.
+
+### Who may open a stream
+
+CORS alone only decides which response headers an origin gets, so the stream applies a cross-site
+check of its own, whether or not CSRF protection is enabled. A refusal is 403,
+`httpsec.ErrCrossSiteStream`, before the stream takes a place. It is logged with sampling and is not
+reported as a CSRF attack.
+
+- `Sec-Fetch-Site` of `same-origin` or `none` passes. Any other value, `same-site` included, passes
+  only for a trusted origin.
+- With no `Sec-Fetch-Site`, no `Origin` or the request's own origin passes, and any other origin only
+  when trusted. Old browsers and non-browser clients send neither header.
+- `Origin: null` never passes.
+- **Trusted depends on how the stream authenticated.** A cookie needs an origin `EnableCORS` names,
+  exactly or by pattern, with `AllowCredentials`; `*` never counts. A credential in the
+  `Authorization` header, which a page can send only if it already holds it, needs any origin the
+  policy allows, and `*` counts. With no CORS layer, nothing cross-origin is trusted. A consumer's
+  bearer on a header of its own is judged as a cookie, the stricter of the two.
+
+**The limit.** Over HTTPS on a current browser, a foreign page cannot open a cookie stream. Over
+plain HTTP, or from a browser without Fetch Metadata, a cross-site tag or navigation sends neither
+header and passes, because non-browser clients send neither header either and must pass. So set
+`SameSite` and `Secure` on the session cookie.
+
+The CORS allowlist is the override. There is no switch to turn the check off, because a stream a
+foreign page can hold open uses up the victim's places.
+
+### The `EventSource` client (cookie session)
+
+`EventSource` gives up for good on any answer other than a 200 stream, and cannot read a status. So
+a cap or a dependency failure answers 200 with only a longer `retry`, and the browser comes back
+later on its own, while 401, 403, 400, 405 and 501 stop it.
+
+```js
+// Use a module script (<script type="module">), so these names stay out of the page's globals.
+const signals = "/session/signals";
+let source, fallback, hiddenAt = null, ended = false;
+
+function connect() {
+  clearTimeout(fallback); // the previous stream's timer must not start polling for this one
+  source?.close();
+  hiddenAt = null;
+  source = new EventSource(signals);
+
+  // No session event: a proxy is holding the stream back, or a cap was reached.
+  fallback = setTimeout(startPolling, 10_000);
+
+  source.addEventListener("session", (e) => {
+    clearTimeout(fallback);
+    stopPolling();
+    showDeadlines(JSON.parse(e.data));
+  });
+  source.addEventListener("session_expiring", (e) => warn(JSON.parse(e.data)));
+  source.addEventListener("session_ended", (e) => finish(JSON.parse(e.data).reason));
+}
+
+// Report the end once, with the first reason: session_ended carries the real one.
+function finish(reason) {
+  if (ended) return;
+  ended = true;
+  clearTimeout(fallback);
+  source?.close();
+  signedOut(reason);
+}
+
+// A dead EventSource can sit with no error event on iOS and after sleep in Firefox, so it is
+// rebuilt when the page comes back (this also notes when it was hidden). JavaScript cannot see heartbeat comments, so a healthy
+// stream cannot be told from a silently dead one: rebuild only after a minute away, or when the
+// stream is not open. A shorter absence costs nothing, and a stream that died silently in it
+// is found only by the next error or the next longer absence.
+async function rebuild(force) {
+  if (document.visibilityState === "hidden") {
+    if (hiddenAt === null) hiddenAt = Date.now();
+    return;
+  }
+  if (ended) return;
+  const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+  hiddenAt = null;
+  if (!force && source?.readyState === EventSource.OPEN && away < 60_000) return;
+
+  // Probing an ordinary endpoint first keeps a 401 final.
+  let probe;
+  try {
+    probe = await fetch("/api/me");
+  } catch {
+    return; // offline: the answer is unknown, so try again on the next event
+  }
+  if (probe.status === 401) return finish("unauthenticated");
+  if (probe.ok) connect();
+}
+
+document.addEventListener("visibilitychange", () => rebuild(false));
+// pageshow also fires on the first load, which connect() below already covers.
+window.addEventListener("pageshow", (event) => event.persisted && rebuild(true));
+window.addEventListener("online", () => rebuild(false));
+
+connect();
+```
+
+- `/api/me` is any ordinary endpoint of yours that needs the sign-in.
+- From another origin, pass `{ withCredentials: true }` and allow that origin with
+  `AllowCredentials`.
+- The cap of 4 per sign-in refuses the fifth tab, not an existing one. Share one stream between tabs
+  (`BroadcastChannel` or a `SharedWorker`), and prefer HTTP/2, since browsers also limit HTTP/1.1
+  connections per host.
+
+### The `fetch()` client (bearer)
+
+A bearer client has no `EventSource` to retry for it, so it reads the stream itself. A dropped
+connection is its normal failure, so it retries on every error.
+
+```js
+// readEvents yields { name, data, retry } for each event. It handles an event split across
+// chunks, a multi-byte character split across chunks, CR, LF and CRLF line ends, and comments.
+async function* readEvents(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder(); // UTF-8
+  let rest = "", skipLF = false, event = { name: "", data: [], retry: undefined };
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return; // an event cut off before its blank line is dropped
+      let text = decoder.decode(value, { stream: true }); // keeps half a character for the next chunk
+      if (skipLF && text) { // the LF of a CRLF split in two
+        if (text.startsWith("\n")) text = text.slice(1);
+        skipLF = false;
+      }
+      if (text) skipLF = text.endsWith("\r");
+
+      const lines = (rest + text).split(/\r\n|\r|\n/);
+      rest = lines.pop(); // the unfinished line
+
+      for (const line of lines) {
+        if (line === "") {
+          if (event.name || event.data.length || event.retry !== undefined) {
+            yield { name: event.name, data: event.data.join("\n"), retry: event.retry };
+          }
+          event = { name: "", data: [], retry: undefined };
+        } else if (!line.startsWith(":")) { // a line starting with ":" is a comment
+          const i = line.indexOf(":");
+          const field = i < 0 ? line : line.slice(0, i);
+          const v = i < 0 ? "" : line.slice(i + 1).replace(/^ /, "");
+          if (field === "event") event.name = v;
+          else if (field === "data") event.data.push(v);
+          else if (field === "retry" && /^\d+$/.test(v)) event.retry = Number(v);
+        }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+// Only these answers are final: a retry would not change them. Anything else, such as a
+// gateway's 502 or a 429, is a failure to wait out.
+const final = [400, 401, 403, 405, 501];
+const maxDelay = 300_000; // 5 minutes
+
+async function follow(signal) {
+  let retry = 5_000, failures = 0;
+
+  while (!signal.aborted) {
+    let healthy = false;
+
+    try {
+      // Read now, on every attempt. Never capture it outside this loop.
+      const token = currentAccessToken();
+      const response = await fetch("/session/signals", {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      });
+
+      if (final.includes(response.status)) return stopFor(response.status);
+
+      if (response.ok) {
+        for await (const event of readEvents(response.body)) {
+          if (event.retry !== undefined) retry = event.retry;
+          if (event.name === "session") healthy = true;
+          if (event.name) handle(event); // on session_ended, handle should abort signal: see below
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) return;
+      // A network failure or a dropped connection: retry below.
+    }
+
+    // A stream that never sent a session event (a cap, a failure, a 502) is a failure. The
+    // delay starts at the server's retry, doubles on each repeat, gains up to 30% jitter, and
+    // stops growing at maxDelay.
+    failures = healthy ? 0 : failures + 1;
+    const backoff = retry * 2 ** Math.max(0, Math.min(failures - 1, 10));
+    await sleep(Math.min(maxDelay, backoff * (1 + Math.random() * 0.3)));
+  }
+}
+```
+
+Your `handle` should abort `signal` on `session_ended`, because otherwise the client reconnects once, gets 401, and reports that in place of the event's reason. A sleep between attempts does not end early on an abort, so a page that needs to stop at once should also ignore what a late attempt delivers.
+
+Read the current credential on every attempt: reconnecting with a token captured before a renewal
+presents a superseded token, which revokes the sign-in's whole family. A 200 with a `retry` and no
+`session` event is a cap or a dependency failure, so the client waits and tries again. Fall back to
+polling if the first `session` event does not arrive. Whether `stopFor(401)` should first try to
+renew the token is yours to decide.
+
+### Defaults
+
+Every field's zero value is its default, so `SessionSignals{}` works. A value outside its range is
+refused when the chain is built.
+
+| Field | Default |
+|---|---|
+| `Path` | `/session/signals` (`httpsec.DefaultSessionSignalsPath`) |
+| `Signals` | `SignalSessionEnded`, `SignalSessionExpiring` |
+| `Heartbeat` | 15 seconds, ±10% per stream; 5 to 60 seconds allowed |
+| `ExpiryWarning` | 2 minutes |
+| `AssuranceWindow` | 15 minutes (`httpsec.DefaultRecentAuthenticationWindow`); set it to your guards' window |
+| `MaxPerSignIn` | 4 |
+| `MaxPerUser` | 16 |
+| `MaxStreams` | 10 000, per replica |
+| `MaxPerSource` | 0, off |
+| `MaxAge` | 1 hour, ±10% per stream; `httpsec.NoMaxAge` turns it off |
+| `ReconnectDelay` | 5 seconds, ±30% per stream |
+| `BusyDelay` | 30 seconds, ±30% per refusal |
+| `Users` | the built-in bearer's user loader; a chain with no built-in bearer must set it |
+| `ReloadContext` | none: reads run on a context with none of the request's values |
+| `ReloadTimeout` | half of `Heartbeat`, within 2 to 10 seconds |
+| `Bus` | in-process, so with several replicas `session_ended` arrives within a heartbeat, and other signals reach only the replica that raised them |
+| `BusQueue` | 1024, for a consumer's `Bus` only |
+| `BusTimeout` | 5 seconds, for a consumer's `Bus` only |
+
+### Running it
+
+Each heartbeat reads the sign-in and the user, so 10 000 streams at 15 seconds is about 670 session
+reads and 670 user reads per second on one replica.
+
+Keep `Heartbeat` below the shortest idle timeout on the path. The Envoy and corporate-proxy lines
+below rest on secondary sources and were not checked against those products' own documentation.
+
+- **nginx:** set `proxy_buffering off` on this path, and `proxy_read_timeout` above `Heartbeat` (its
+  default is 60 s). The stream sends `X-Accel-Buffering: no`, which works only where the proxy
+  honours it: `proxy_ignore_headers` can disable it.
+- **AWS ALB:** keep the idle timeout (default 60 s) above `Heartbeat`.
+- **CloudFront:** allows 30 s between packets by default, so keep `Heartbeat` below it.
+- **API Gateway:** a hard 15-minute limit on a streamed response, so set `MaxAge` below it.
+- **Envoy:** set the route's `timeout` to `0s`.
+- **Compression middleware:** exclude this path. A compressor that holds output back delivers
+  nothing while every write succeeds, and the place stays held. The stream sends
+  `Cache-Control: no-transform`, but whether middleware honours it is unverified, so do not rely on it.
+- **`http.Server.HTTP2.WriteByteTimeout`:** set it. Over HTTP/2 nothing else bounds a write to a
+  stalled TCP connection, because the adapter's write deadline cannot.
+- **TCP keepalive and dead peers:** a peer that vanishes holds its place until a write fails, keepalive
+  gives up or `MaxAge` passes. Keep keepalive on, which is the usual state: connections accepted from
+  Go's `net.Listen` have it on, and fasthttp's `ListenAndServe` listens through it. fasthttp's
+  `TCPKeepalive` field is not a switch that turns it off, because the server acts on the field only
+  when it is true. A listener you build yourself must enable keepalive itself.
+- **A gateway sharing one upstream HTTP/2 connection:** Go's server allows 250 concurrent streams on
+  a connection (its documented minimum is 100). Raise `http.Server.HTTP2.MaxConcurrentStreams` above
+  what that gateway will carry.
+- **fasthttp and fiber:** `Concurrency` counts every stream, so size it above `MaxStreams` plus your
+  ordinary load. `MaxConnsPerIP` counts connections, so a shared proxy address reaches it quickly.
+- **Kubernetes:** set `terminationGracePeriodSeconds` longer than the shutdown context, and add a
+  `preStop` wait so the load balancer stops sending new streams first.
+- **Corporate proxies:** some buffer a response until it ends, whatever it asks. The client's polling
+  fallback is what covers them.
+- **`http.StripPrefix`:** `Path` is the path the chain sees, so the inner one.
+- **Error responders:** yours must not redirect on this path. A redirect to a login page fails an
+  `EventSource` for good.
+- **A response-writer wrapper of your own:** it needs `Unwrap`. Without it the adapter cannot reach
+  the connection's write deadline, and one with no `Flush` either is answered 501
+  (`httpsec.ErrStreamingUnsupported`), as `http.TimeoutHandler` is.
+
+### Limits
+
+- **Concurrent streams.** At most `MaxPerSignIn` (4) for a sign-in, `MaxPerUser` (16) for a user and
+  `MaxStreams` (10 000) overall, each counted per replica, so with N replicas a user can hold N times
+  `MaxPerUser`. `MaxPerSource` can cap a client address, and is off because every client shares one
+  address behind a proxy with no trusted-proxy setting. A request over a cap gets 200 with only a
+  longer `retry`, and existing streams are kept. It is logged at WARN with sampling, and counted in
+  `chain.SessionSignalStats()`.
+- **A provider's logout.** A back-channel logout that ends sessions through the session manager
+  reaches their streams as `session_ended` with the reason `provider_logout`. Streams are matched by a
+  digest of the issuer and the upstream session, and the raw values stay out of a stream, the bus and
+  the logs. On another replica with no shared bus, it arrives within a heartbeat.
+- **Logs.** Everything the stream logs goes to the logger given to the chain (`httpsec.WithLogger`),
+  never with a token or session identifier. The exception is an adapter's own recover, for a consumer
+  who calls `Stream` directly, which writes to `slog.Default`.
+- **The chain's authorizer.** It runs above the stream's slot, so it is not consulted for the stream
+  at all. What runs below the slot, including an interceptor you register there to gate the stream, is
+  not run again until the client reconnects, which `MaxAge` bounds.
+
 ## Behind a reverse proxy
 
 By default the chain attributes a request to its TCP peer, judges it secure only over TLS, and takes
