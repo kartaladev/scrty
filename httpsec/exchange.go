@@ -149,15 +149,26 @@ type Cookie = http.Cookie
 // NewHTTPResponseWriter, which is what a consumer gets when they wire nothing
 // of their own.
 type ResponseWriter interface {
-	// SetHeader replaces every value of the response header name with value.
+	// SetHeader replaces every value of the response header name with value. Once
+	// the response has begun, by WriteHeader, Write or Stream, it has no effect on the
+	// writers the library provides, whether or not the framework has yet sent the head.
+	//
+	// An empty value is what the library sets to take back a Content-Type when Stream
+	// refused, because this interface has no way to remove a header. A consumer's adapter
+	// either sends it as it is, which no client takes for an event stream, or removes the
+	// header, which a framework that fills in a missing type needs. The writers the library
+	// provides over net/http and gin remove it themselves, and so never see one from it.
 	SetHeader(name, value string)
 
 	// AddHeader adds value to the response header name, keeping the values
 	// already set, as net/http's Header.Add does. It is how a list header
 	// such as Vary is extended without dropping what an outer layer or an
-	// earlier interceptor put there.
+	// earlier interceptor put there. It has no effect once the response has begun,
+	// as SetHeader has none.
 	AddHeader(name, value string)
 
+	// SetCookie adds a Set-Cookie header. It has no effect once the response has
+	// begun, as SetHeader has none.
 	SetCookie(c *Cookie)
 	WriteHeader(status int)
 	Write(b []byte) (int, error)

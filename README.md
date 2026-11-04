@@ -1037,7 +1037,7 @@ chain, err := httpsec.New(
 to its own sign-in: that it ended and why, or that a deadline is close. It is off by default, needs
 no data migration, and carries no session identifier or credential. The session store decides
 whether a sign-in has ended, and a message on the bus only wakes the stream to read it, so a lost
-message costs at most a heartbeat.
+message costs at most a heartbeat and half a second.
 
 ### Enabling it
 
@@ -1283,7 +1283,7 @@ refused when the chain is built.
 | `ReloadContext` | none: reads run on a context with none of the request's values |
 | `ReloadTimeout` | half of `Heartbeat`, within 2 to 10 seconds |
 | `RetryableError` | none: every failure the chain would answer with a 5xx on `Path` is retried |
-| `Bus` | in-process, so with several replicas `session_ended` arrives within a heartbeat, and other signals reach only the replica that raised them |
+| `Bus` | in-process, so with several replicas `session_ended` arrives within a heartbeat and half a second, and other signals reach only the replica that raised them |
 | `BusQueue` | 1024, for a consumer's `Bus` only |
 | `BusTimeout` | 5 seconds, for a consumer's `Bus` only |
 
@@ -1392,7 +1392,7 @@ Each heartbeat reads the sign-in and the user, so 10 000 streams at 15 seconds i
 reads and 670 user reads per second on one replica. Jitter of ±10% spreads them out. `Heartbeat` can
 go to 60 seconds, which is about 170 of each. A shared bus lets you lengthen it without delaying
 `session_ended`, because a signal wakes the stream at once. Without one, a sign-in ended on another
-replica takes up to a heartbeat to arrive.
+replica takes up to a heartbeat and half a second to arrive.
 
 Keep 1.1 × `Heartbeat` below the shortest idle timeout on the path. The longest gap between two bytes
 is 1.1 × `Heartbeat` plus the time of a write, because a comment goes out when its beat falls due,
@@ -1504,7 +1504,7 @@ untrusted caller.
 - **A provider's logout.** A back-channel logout that ends sessions through the session manager
   reaches their streams as `session_ended` with the reason `provider_logout`. Streams are matched by a
   digest of the issuer and the upstream session, and the raw values stay out of a stream, the bus and
-  the logs. On another replica with no shared bus, it arrives within a heartbeat.
+  the logs. On another replica with no shared bus, it arrives within a heartbeat and half a second.
 - **Logs.** Everything the stream logs goes to the logger given to the chain (`httpsec.WithLogger`),
   never with a token or session identifier. The exception is an adapter's own recover, for a consumer
   who calls `Stream` directly, which writes to `slog.Default`.

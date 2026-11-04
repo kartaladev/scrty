@@ -2016,6 +2016,92 @@ func TestSessionSignals_Heartbeat_ReportBehindTheRead(t *testing.T) {
 			},
 		},
 		{
+			name:  "a report during the wait ends it at once, when a wake began the read and its gap is running",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.listsNothing.Store(true)
+				r.wakeWith(s, "")
+				r.requireLive(t, stream)
+
+				advance(httpsec.StreamReportGrace / 2)
+				r.wakeWith(s, "all_ended")
+
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "a wake during the wait, with a read in flight that answers alive, is asked again",
+			setup: quick,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				fire := r.manualBeats(5 * time.Second)
+				stream := r.open(t, s.ID)
+
+				r.listsNothing.Store(true)
+				fire()
+				r.requireLive(t, stream)
+
+				held := r.holdListings(t)
+				fire()
+				require.EqualValues(t, 1, held.entered.Load(), "no read is in flight during the wait")
+
+				r.wakeWith(s, "")
+				r.listsNothing.Store(false)
+
+				lists := r.lists.Load()
+
+				held.letGo()
+				synctest.Wait()
+
+				assert.Equal(t, lists+1, r.lists.Load(), "what the wake asked was never asked")
+
+				advance(httpsec.StreamReportGrace)
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a deadline passing during the wait says expired, on the read that deadline starts",
+			setup: streamSetup{idle: time.Minute, signals: quick.signals},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				fire := r.manualBeats(5 * time.Second)
+				stream := r.open(t, s.ID)
+
+				advance(time.Minute - httpsec.StreamReportGrace/2)
+
+				r.listsNothing.Store(true)
+				fire()
+				r.requireLive(t, stream)
+
+				advance(httpsec.StreamReportGrace)
+				r.requireEnded(t, stream, "expired")
+			},
+		},
+		{
+			name:  "a deadline passing during the wait says expired at its end, with that read still out",
+			setup: streamSetup{idle: time.Minute, signals: quick.signals},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				fire := r.manualBeats(5 * time.Second)
+				stream := r.open(t, s.ID)
+
+				advance(time.Minute - httpsec.StreamReportGrace/2)
+
+				r.listsNothing.Store(true)
+				fire()
+				r.requireLive(t, stream)
+
+				held := r.holdListings(t)
+
+				advance(httpsec.StreamReportGrace)
+				require.EqualValues(t, 1, held.entered.Load(), "the deadline's read is not out")
+				r.requireEnded(t, stream, "expired")
+			},
+		},
+		{
 			name:  "a wake that names no reason does not cut the wait short",
 			setup: quick,
 			assert: func(t *testing.T, r *streamRig) {

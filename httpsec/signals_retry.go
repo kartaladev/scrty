@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -39,34 +38,39 @@ const (
 // so every other answer of the chain stands.
 type sessionSignalsRetry struct{ e *sessionSignals }
 
-// Intercept passes every request on, and answers on the way out.
+// Intercept passes every request on, and answers on the way out. The context is taken on the way in,
+// because whether the client has left is a question about it: one read after next can have been ended
+// by an interceptor inside this slot, with its client still there.
 func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
 	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != s.e.cfg.Path {
 		return next(ex)
 	}
+
+	entered := ex.Context()
 
 	err := next(ex)
 	if err == nil {
 		return nil
 	}
 
-	return s.e.answerRetryOnly(ex, err)
+	return s.e.answerRetryOnly(ex, entered, err)
 }
 
 // answerRetryOnly answers err with 200 and only a retry when a retry could fix it, because an
 // EventSource gives up for good on any other status and cannot tell one from another. It returns what
-// the chain's error mapping should then answer, nil when nothing.
+// the chain's error mapping should then answer, nil when nothing. entered is the context the request
+// had on its way in (see isDependencyFailure).
 //
 // Stream is what guards a response that has begun: it refuses, having written nothing, and err is
 // left to the chain's mapping, whose status a writer ignores by then. A writer that cannot stream never
 // could, so that stays 501: no retry would change it.
-func (e *sessionSignals) answerRetryOnly(ex *Exchange, err error) error {
+func (e *sessionSignals) answerRetryOnly(ex *Exchange, entered context.Context, err error) error {
 	if errors.Is(err, ErrStreamingUnsupported) || errors.Is(err, ErrStreamingStarted) {
 		return err
 	}
 
 	closing, overCap := errors.Is(err, errStreamsClosed), errors.Is(err, ErrTooManyStreams)
-	if !closing && !overCap && !e.isDependencyFailure(ex, err) {
+	if !closing && !overCap && !e.isDependencyFailure(ex, entered, err) {
 		return err
 	}
 
@@ -155,32 +159,43 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 // says otherwise.
 //
 // What maps to 400, 401, 403, 405 or 429 is an answer, and stands. So does a request whose own client
-// hung up, which says nothing about a store. A cancelled context is what a client's leaving looks like
-// here: a deadline that ended the context is a server's, with its client still there, and hanging up
-// has no deadline to pass. A consumer's error the mapping does not know is taken for a failure, so an
-// interceptor refusing with one of its own answers the request itself, sets RetryableError, or the
-// client is told to come back.
-func (e *sessionSignals) isDependencyFailure(ex *Exchange, err error) bool {
-	ctx := ex.Context()
-
-	if errors.Is(ctx.Err(), context.Canceled) && hangup.ByCaller(ctx, err) {
+// hung up, which says nothing about a store. A cancelled entered, the context the request came into
+// this slot with, is what a client's leaving looks like here: an interceptor below this slot cannot
+// end it, and a deadline that ended it is a server's, with its client still there, since hanging up has
+// no deadline to pass.
+//
+// Once the client has left, any error is taken for its leaving, because a store answers a cancellation
+// in its own words as often as in the context's. So a real outage on a request whose client has already
+// left goes uncounted. Others will count it, and this client would hear nothing of it anyway.
+//
+// A consumer's error the mapping does not know is taken for a failure, so an interceptor refusing with
+// one of its own answers the request itself, sets RetryableError, or the client is told to come back.
+func (e *sessionSignals) isDependencyFailure(ex *Exchange, entered context.Context, err error) bool {
+	if errors.Is(entered.Err(), context.Canceled) {
 		return false
 	}
 
-	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ctx, err)
+	return StatusForError(err) >= http.StatusInternalServerError && e.retryable(ex, err)
 }
 
 // retryable asks a consumer's SessionSignals.RetryableError about err. A panic in it is logged as a
 // stream's is, without its value, and the failure is retried, since it has said nothing to the
-// contrary and a final answer would stop a browser for good.
-func (e *sessionSignals) retryable(ctx context.Context, err error) (retry bool) {
+// contrary and a final answer would stop a browser for good. The record names the family of the session
+// the request reached this far with, which a failure in an authenticator's own read has not got, so
+// that one's family is all zeros.
+func (e *sessionSignals) retryable(ex *Exchange, err error) (retry bool) {
 	if e.cfg.RetryableError == nil {
 		return true
 	}
 
 	defer func() {
 		if v := recover(); v != nil {
-			e.logStreamPanic(ctx, panicPhaseStream, id.ID{}, v)
+			var family id.ID
+			if ex.Session != nil {
+				family = ex.Session.FamilyID
+			}
+
+			e.logStreamPanic(ex.Context(), panicPhaseStream, family, v)
 
 			retry = true
 		}

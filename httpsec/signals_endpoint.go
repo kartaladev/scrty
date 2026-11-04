@@ -52,7 +52,7 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
-	reload, err := e.reloadContext(ex.Context())
+	reload, err := e.reloadContext(ex.Context(), s.FamilyID)
 	if err != nil {
 		return err
 	}
@@ -96,18 +96,31 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 }
 
 // unsetStreamType takes the stream's Content-Type back after Stream refused with err, because
-// the headers had to be set before the call, and a refusal's answer is no event stream. The
-// head has not gone, so the writer still takes it. Where the response had begun (a consumer's
-// interceptor wrote before this one) the headers it chose stand, and are not ours to touch.
+// the headers had to be set before the call, and a refusal's answer is no event stream. Where the
+// response had begun (a consumer's interceptor wrote before this one) the headers it chose stand,
+// and are not ours to touch, though gin may not have sent them yet.
 //
-// The writer has no way to remove a header, so the type is left empty, which no client takes
-// for an event stream and a body the chain's error handler then writes is not mislabelled by.
+// The writers over net/http and gin remove it, so that what fills in a missing type, a render on
+// gin and net/http's detection, still does. A consumer's adapter has no way to remove a header, so
+// the type is left empty there, as ResponseWriter's godoc says: no client takes that for an event
+// stream, and a body the chain's error handler then writes is not mislabelled by it.
 func unsetStreamType(ex *Exchange, err error) {
 	if errors.Is(err, ErrStreamingStarted) {
 		return
 	}
 
+	if w, ok := ex.Writer.(responseHeaderRemover); ok {
+		w.removeHeader("Content-Type")
+
+		return
+	}
+
 	ex.Writer.SetHeader("Content-Type", "")
+}
+
+// responseHeaderRemover is a writer that can remove a header, where ResponseWriter can only set one.
+type responseHeaderRemover interface {
+	removeHeader(name string)
 }
 
 // cancelOnly is a context that ends when its parent does and holds no values. It is what a
@@ -172,7 +185,7 @@ func streamSession(ex *Exchange) (*session.Session, error) {
 // hook carries what it needs over, and the request's cancellation is removed from what it
 // returns, because the stream outlives the handlers on fiber. What else it keeps is the
 // hook's: its godoc says never to return its argument.
-func (e *sessionSignals) reloadContext(ctx context.Context) (_ context.Context, err error) {
+func (e *sessionSignals) reloadContext(ctx context.Context, family id.ID) (_ context.Context, err error) {
 	if e.cfg.ReloadContext == nil {
 		return context.Background(), nil
 	}
@@ -181,7 +194,7 @@ func (e *sessionSignals) reloadContext(ctx context.Context) (_ context.Context, 
 	// value. The request is then a dependency failure, which a retry could fix.
 	defer func() {
 		if v := recover(); v != nil {
-			e.logStreamPanic(ctx, panicPhaseReload, id.ID{}, v)
+			e.logStreamPanic(ctx, panicPhaseReload, family, v)
 
 			err = errStreamReadPanicked
 		}

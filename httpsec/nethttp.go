@@ -372,9 +372,41 @@ type httpResponseWriter struct {
 	streamWindow time.Duration
 }
 
-func (h *httpResponseWriter) SetHeader(n, v string) { h.w.Header().Set(n, v) }
-func (h *httpResponseWriter) AddHeader(n, v string) { h.w.Header().Add(n, v) }
-func (h *httpResponseWriter) SetCookie(c *Cookie)   { http.SetCookie(h.w, c) }
+// SetHeader has no effect once a response has begun. net/http would ignore it by then, but gin
+// holds the head until the first write, and so does a wrapper that buffers, either of which would
+// send it: so one chain answers one way on every adapter. A trailer goes through the framework's
+// own writer, which the handler behind the chain holds.
+func (h *httpResponseWriter) SetHeader(n, v string) {
+	if h.wrote {
+		return
+	}
+
+	h.w.Header().Set(n, v)
+}
+
+// AddHeader has no effect once a response has begun, as SetHeader has none.
+func (h *httpResponseWriter) AddHeader(n, v string) {
+	if h.wrote {
+		return
+	}
+
+	h.w.Header().Add(n, v)
+}
+
+// SetCookie has no effect once a response has begun, as SetHeader has none.
+func (h *httpResponseWriter) SetCookie(c *Cookie) {
+	if h.wrote {
+		return
+	}
+
+	http.SetCookie(h.w, c)
+}
+
+// removeHeader removes the header, for what must leave none behind: gin's render fills a type only
+// where the key is absent, and net/http detects one only then. It looks at nothing the writer has
+// done, so what calls it has already asked whether the header is its own to remove: see
+// unsetStreamType.
+func (h *httpResponseWriter) removeHeader(n string) { h.w.Header().Del(n) }
 
 // WriteHeader sends the status, and ignores a second call. An interceptor that
 // answered the request itself keeps the status it chose: a later stage that

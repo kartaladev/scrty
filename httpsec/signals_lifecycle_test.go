@@ -397,10 +397,15 @@ func TestSessionSignals_Caps_DependencyFailure(t *testing.T) {
 			assert: func(t *testing.T, r *streamRig) {
 				lists := r.lists.Load()
 
-				answeredRetry(t, r, failing(t, r, func() {}))
+				s := r.signIn(t)
+
+				answeredRetry(t, r, r.open(t, s.ID))
 				assert.Equal(t, lists, r.lists.Load(), "reads ran with no tenant")
 				assert.NotContains(t, r.logs.String(), streamSecret)
-				assert.Equal(t, "reload", streamLogRecord(t, r.logs.String(), "panic")["phase"])
+
+				record := streamLogRecord(t, r.logs.String(), "panic")
+				assert.Equal(t, "reload", record["phase"])
+				assert.Equal(t, s.FamilyID.String(), record["family"], "the record does not name the family")
 			},
 		},
 		{
@@ -1923,6 +1928,47 @@ func TestSessionSignals_Caps_RequestContextEnded(t *testing.T) {
 				assert.Zero(t, r.chain.SessionSignalStats().ReloadFailures, "a hang-up says nothing about a store")
 			},
 		},
+		{
+			name: "a client that leaves, whose store says so in its own words, is no failure either",
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+
+				hook := func(ctx context.Context) error {
+					<-ctx.Done()
+
+					return errors.New("pq: canceling statement due to user request")
+				}
+				r.loadHook.Store(&hook)
+
+				stream := r.open(t, s.ID)
+				stream.cancel()
+				synctest.Wait()
+
+				assert.True(t, stream.closed())
+				assert.Empty(t, stream.frames(), "a retry for a client that has gone")
+				assert.Zero(t, r.chain.SessionSignalStats().ReloadFailures, "a hang-up says nothing about a store")
+			},
+		},
+		{
+			name:  "a server's deadline with a store's own words is a failure, and its client gets a retry",
+			setup: streamSetup{requestCtx: serverDeadline},
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+
+				hook := func(ctx context.Context) error {
+					<-ctx.Done()
+
+					return errors.New("pq: canceling statement due to statement timeout")
+				}
+				r.loadHook.Store(&hook)
+
+				stream := r.open(t, s.ID)
+				advance(3 * time.Second)
+
+				requireOnlyRetry(t, stream, busyLeast, busyMost)
+				assert.EqualValues(t, 1, r.chain.SessionSignalStats().ReloadFailures)
+			},
+		},
 	})
 }
 
@@ -1946,6 +1992,7 @@ func TestSessionSignals_Caps_RetryableError(t *testing.T) {
 		name      string
 		signals   httpsec.SessionSignals
 		refuse    error
+		begin     bool
 		wrap      func(http.Handler) http.Handler
 		retryable func(error) bool
 		assert    func(t *testing.T, f *signalsFixture, w *watched)
@@ -2006,12 +2053,15 @@ func TestSessionSignals_Caps_RetryableError(t *testing.T) {
 				panic(errors.New(streamSecret))
 			},
 			assert: func(t *testing.T, f *signalsFixture, w *watched) {
-				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+				s := f.signIn(t, "u-1")
+				resp, _ := f.openStream(t, s.ID)
 
 				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
 				notHandled(t, w)
 				assert.NotContains(t, w.logs.String(), streamSecret)
-				assert.Contains(t, w.logs.String(), "a panic was recovered")
+
+				record := streamLogRecord(t, w.logs.String(), "panic")
+				assert.Equal(t, s.FamilyID.String(), record["family"], "the record does not name the family")
 			},
 		},
 		{
@@ -2059,6 +2109,19 @@ func TestSessionSignals_Caps_RetryableError(t *testing.T) {
 				assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 				assert.Zero(t, w.asked.Load())
 				assert.ErrorIs(t, *w.handled.Load(), httpsec.ErrStreamingUnsupported)
+			},
+		},
+		{
+			name:   "a failure over a response a consumer began reaches the error handler, with nothing written over it",
+			begin:  true,
+			refuse: errGeoBlocked,
+			assert: func(t *testing.T, f *signalsFixture, w *watched) {
+				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
+
+				requireNoStream(t, resp, http.StatusServiceUnavailable)
+				require.NotNil(t, w.handled.Load(), "a refusal the retry could not answer went nowhere")
+				assert.ErrorIs(t, *w.handled.Load(), errGeoBlocked)
+				assert.Zero(t, f.chain.SessionSignalStats().ReloadFailures, "what was not answered as a failure was counted as one")
 			},
 		},
 		{
@@ -2135,7 +2198,13 @@ func TestSessionSignals_Caps_RetryableError(t *testing.T) {
 					}
 
 					return append(opts, httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
-						func(*httpsec.Exchange, httpsec.Next) error { return tc.refuse },
+						func(ex *httpsec.Exchange, _ httpsec.Next) error {
+							if tc.begin {
+								ex.Writer.WriteHeader(http.StatusServiceUnavailable)
+							}
+
+							return tc.refuse
+						},
 					), httpsec.After(httpsec.OrderBearerToken)))
 				},
 			})

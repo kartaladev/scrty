@@ -63,6 +63,19 @@ func newRetryOnlyRig(t *testing.T) retryOnlyRig {
 		return errors.New("consumer: under maintenance")
 	}), httpsec.After(httpsec.OrderBearerToken))
 
+	// beganHead does the same with a status alone, which gin holds back until the first write.
+	beganHead := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if ex.Request.Header("X-Begin-Head") == "" {
+			return next(ex)
+		}
+
+		ex.Writer.SetHeader("Content-Type", "text/plain")
+		ex.Writer.SetHeader("Cache-Control", "max-age=60")
+		ex.Writer.WriteHeader(http.StatusServiceUnavailable)
+
+		return errors.New("consumer: under maintenance")
+	}), httpsec.After(httpsec.OrderBearerToken))
+
 	// deferredCancel is the ordinary context a consumer's interceptor makes.
 	deferredCancel := httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
 		if ex.Request.Header("X-Deferred-Cancel") == "" {
@@ -101,7 +114,7 @@ func newRetryOnlyRig(t *testing.T) retryOnlyRig {
 		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
 		httpsec.EnableSessionSignals(httpsec.SessionSignals{MaxPerSignIn: 1, Heartbeat: 5 * time.Second}),
 		httpsec.EnableCORS(httpsec.CORSPolicy{AllowedOrigins: []string{"http://example.com"}, AllowCredentials: true}),
-		began, deferredCancel, refusedOutside,
+		began, beganHead, deferredCancel, refusedOutside,
 	))
 
 	s := must.Must(sessions.Create(t.Context(), identity.UserID("u-1"), session.WithFirstFactor(factor.Password)))
@@ -237,6 +250,20 @@ func TestSessionSignals_Caps_RetryOnlyOnThisAdapter(t *testing.T) {
 				assert.Empty(t, resp.Header.Get("Cache-Control"))
 			},
 		},
+		{
+			name: "a response a consumer began with only a status keeps its headers, though gin still holds them",
+			assert: func(t *testing.T, r retryOnlyRig) {
+				resp := r.ask(t.Context(), t, "X-Begin-Head")
+				defer func() { _ = resp.Body.Close() }()
+
+				_, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
+				assert.Equal(t, "text/plain", resp.Header.Get("Content-Type"))
+				assert.Equal(t, "max-age=60", resp.Header.Get("Cache-Control"))
+				assert.Empty(t, resp.Header.Get("X-Accel-Buffering"))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -259,4 +286,52 @@ func retryOnlyURL(t *testing.T, chain *httpsec.Chain) string {
 	t.Cleanup(srv.Close)
 
 	return srv.URL
+}
+
+// TestSessionSignals_Caps_RefusalKeepsARendersType is a store failing under a writer that cannot stream,
+// with a consumer's own gin error middleware rendering the 501, as ginsec's godoc invites. A render
+// fills the type only where the key is absent, so what the stream took back must not leave one.
+func TestSessionSignals_Caps_RefusalKeepsARendersType(t *testing.T) {
+	t.Parallel()
+
+	sessions := must.Must(session.New(session.WithStore(must.Must(session.NewMemoryStore()))))
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().Return(
+		&identity.Details{ID: "u-1", Active: true}, nil)
+
+	chain := must.Must(httpsec.New(
+		httpsec.EnableSessionSignals(httpsec.SessionSignals{}),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+		httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(*httpsec.Exchange, httpsec.Next) error {
+			return errors.New("store down")
+		}), httpsec.After(httpsec.OrderCSRF)),
+	))
+
+	engine := gin.New()
+	engine.Use(func(c *gin.Context) {
+		c.Next()
+
+		if len(c.Errors) > 0 {
+			c.JSON(httpsec.StatusForError(c.Errors.Last().Err), gin.H{"error": "refused"})
+		}
+	})
+	engine.Use(ginsec.Middleware(chain))
+
+	// http.TimeoutHandler's writer cannot flush.
+	srv := httptest.NewServer(http.TimeoutHandler(engine, 5*time.Second, "timeout"))
+	t.Cleanup(srv.Close)
+
+	req := must.Must(http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+httpsec.DefaultSessionSignalsPath, http.NoBody))
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+
+	defer func() { _ = resp.Body.Close() }()
+
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	assert.Equal(t, "application/json; charset=utf-8", resp.Header.Get("Content-Type"))
 }

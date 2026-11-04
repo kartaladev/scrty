@@ -302,8 +302,8 @@ type SessionSignals struct {
 	// real end as reuse inside its window. See SignalBus for what else a bus costs.
 	//
 	// Default: nil, an in-process bus, so with several replicas session_ended still
-	// arrives within a heartbeat, while credential_changed and a consumer's signals
-	// reach only the streams on the replica that raised them.
+	// arrives within a heartbeat and half a second, while credential_changed and a
+	// consumer's signals reach only the streams on the replica that raised them.
 	Bus SignalBus
 
 	// BusQueue is how many signals wait for a consumer's Bus before new ones are

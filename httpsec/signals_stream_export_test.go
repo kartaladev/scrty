@@ -130,3 +130,22 @@ func StreamAnswer(ctx context.Context, c *Chain, w EventWriter, closing bool) st
 
 	return l.answer(ctx, streamRead{gone: true})
 }
+
+// StreamWaitEnds is the wait for a report ending on a stream that holds the report named, "" for none,
+// and returns why the stream closed.
+func StreamWaitEnds(ctx context.Context, c *Chain, w EventWriter, report string) string {
+	e := c.signalsEndpoint()
+	st := newSignalStream("u-1", id.ID{}, "", "", signalFilter{})
+
+	if report != "" {
+		st.noteEnd(endNotice{reason: report, at: e.clock.Now()})
+	}
+
+	l := &streamLoop{e: e, w: w, start: streamStart{stream: st}, rules: e.streamRules(st)}
+
+	l.held.state.IdleDeadline = time.Now().Add(time.Hour)
+	l.held.state.AbsoluteDeadline = l.held.state.IdleDeadline
+	l.graceAt = e.clock.Now()
+
+	return l.onTimer(ctx)
+}

@@ -21,10 +21,11 @@ import (
 //
 // What a stream decides about time is in streamRules, as pure functions of what it holds and
 // the time, and the loop only reads, writes and waits. The store decides whether a sign-in
-// ended, so nothing here ends a stream on a message or on a deadline alone: every path to
-// session_ended goes through streamRules.judge, on an answer the store just gave or, for a store
-// that has not answered, at the absolute deadline alone. A stream that judge told to wait for a
-// report ends on that same answer, at most streamReportGrace later (streamLoop.waitForReport).
+// ended, so nothing here ends a stream on a message or on a deadline alone: session_ended follows
+// streamRules.judge, on an answer the store just gave or, for a store that has not answered, at the
+// absolute deadline alone. A stream that judge told to wait for a report ends on that same answer,
+// at most streamReportGrace later (streamLoop.waitForReport), by streamLoop.onWake or onTimer and
+// with no second judgement, as nothing but a read that answers alive takes the answer back.
 
 const (
 	// streamBeatJitter and streamAgeJitter spread heartbeats and maximum ages, ±10%, so that
@@ -188,9 +189,10 @@ func earlierDeadline(s session.SignInState) (string, time.Time) {
 	return deadlineAbsolute, s.AbsoluteDeadline
 }
 
-// judge decides what a reload found. It is the only path to session_ended, and has an answer from
-// the store on every path but one: a session store that cannot answer ends a stream only at the
-// absolute deadline, because the idle deadline may have moved in a store it cannot read.
+// judge decides what a reload found. Every session_ended follows a verdict of its: at once, or for
+// one that says unreported, by streamLoop.onWake or onTimer once the wait for a report is over. It has
+// an answer from the store on every path but one: a session store that cannot answer ends a stream only
+// at the absolute deadline, because the idle deadline may have moved in a store it cannot read.
 func (r streamRules) judge(h heldSignIn, read streamRead, reuse, notice *endNotice, now time.Time) streamVerdict {
 	if read.sessionErr != nil {
 		v := streamVerdict{failed: true}
@@ -1014,8 +1016,13 @@ func (l *streamLoop) waitForReport(verdict streamVerdict, now time.Time) bool {
 	return now.Before(l.graceAt)
 }
 
-// end sends session_ended, and is why the stream closes.
+// end sends session_ended, and is why the stream closes. Every path here comes from a select that may
+// have chosen it just as the stream was told to end, and a stream told to end says nothing more.
 func (l *streamLoop) end(ctx context.Context, why string) string {
+	if reason := l.told(ctx); reason != "" {
+		return reason
+	}
+
 	if reason := l.send(ctx, streamEvent{name: string(SignalSessionEnded), data: endedData{Reason: why}}); reason != "" {
 		return reason
 	}
