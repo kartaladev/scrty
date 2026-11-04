@@ -962,8 +962,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 9.5: A refresh token is never a sign-in
 - [ ] Red `TestRefreshToken_NotASignIn`. An `rt.…` value is refused as an unknown credential at each of:
   - `EnableSessionBearer`;
-  - `EnableSessionRenewal`;
-  - `EnableBearerToken`.
+  - `EnableSessionRenewal`.
 
   The session store mock asserts no `Load` call for the `EnableSessionBearer` case.
 - [ ] It may pass at once, because `session.ValidIdentifier` already refuses the value. Then invert temporarily: let the bearer accept any identifier and see the test fail, as `golang-tdd.md` asks. Commit.
@@ -973,7 +972,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a preflight from an allowed origin to `/oauth2/token` is allowed;
   - a cross-origin GET to `/oauth2/authorize` from an allowed origin carries no `Access-Control-*` header;
   - the same holds for `/oauth2/logout`.
-- [ ] FAIL; implement as a provider-registered exclusion in `cors.go` (a path set read at construction); PASS; commit.
+- [ ] FAIL; implement as a provider-registered exclusion in `cors.go` (the settled paths, read at request time); PASS; commit.
 - [ ] Red rows on `TestCORS_OIDCProvider`: a preflight for `DPoP` is allowed; `DPoP-Nonce` and `WWW-Authenticate` are exposed; no credentials are allowed; `/authorize/resume` and `/logout/confirm` never carry CORS headers. FAIL; implement; PASS; commit.
 
 ---
