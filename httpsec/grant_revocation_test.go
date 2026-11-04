@@ -811,9 +811,9 @@ func TestResetEnrolment_RawStoreRevokesGrants(t *testing.T) {
 }
 
 // TestPasskey_CloneRevokesGrants pins that a suspended clone ends a client's real
-// refresh token through the manager's port. The manager sits over a raw
-// session.Store, which ends sessions with no report a provider could see, so the
-// row that keeps the grants shows the store alone leaves them alive.
+// refresh token through the manager's port. The manager sits over a
+// session manager that reports to no provider, so the row that keeps the grants
+// shows such a manager alone leaves them alive.
 func TestPasskey_CloneRevokesGrants(t *testing.T) {
 	t.Parallel()
 
@@ -866,7 +866,7 @@ func TestPasskey_CloneRevokesGrants(t *testing.T) {
 			},
 		},
 		{
-			name: "keeping the grants, the raw store's end reaches no provider and the token works",
+			name: "keeping the grants, a manager reporting to no provider leaves the token working",
 			opts: func(w *grantWorld) []passkey.Option {
 				return []passkey.Option{passkey.WithGrantRevoker(w.p), passkey.WithoutCloneGrantRevocation()}
 			},
@@ -918,10 +918,13 @@ func TestPasskey_CloneRevokesGrants(t *testing.T) {
 
 			d := newPwlDeployment(t)
 			store := must.Must(session.NewMemoryStore())
+			// A manager that reports to no provider: its ends reach the grant port
+			// only through the manager's own revoker option.
+			sessions := must.Must(session.New(session.WithStore(store)))
 
 			m, err := passkey.New(passkey.Deps{
 				Verifier: d.verifier.mock, Credentials: d.creds, Handles: d.handles,
-				Users: d.users, Sender: d.notices, Sessions: store,
+				Users: d.users, Sender: d.notices, Sessions: sessions,
 			}, append([]passkey.Option{
 				passkey.WithRepudiationContact("help@example.com"), passkey.WithOptionalRecoveryCodes(),
 			}, tc.opts(w)...)...)
@@ -930,7 +933,7 @@ func TestPasskey_CloneRevokesGrants(t *testing.T) {
 			e := &env{
 				d: d, w: w, m: m, store: store,
 				handle: d.seedCounted(t, e2eUser, "cred-1", passkey.StateActive, 5),
-				s: must.Must(must.Must(session.New(session.WithStore(store))).Create(
+				s: must.Must(sessions.Create(
 					t.Context(), e2eUser, session.WithFirstFactor(factor.Passkey))),
 			}
 

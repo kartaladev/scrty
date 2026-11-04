@@ -273,8 +273,9 @@ func WithoutSessionRevocationOnClone() Option {
 
 // WithGrantRevoker revokes every application grant of the credential's user,
 // those with offline access included, when a suspected clone suspends a passkey.
-// It is how a provider learns of the clone: a raw session.Store given as
-// Deps.Sessions ends sessions with no report a provider could see.
+// It is how a provider learns of the clone: a session manager given as
+// Deps.Sessions that was not built with the provider as its end observer ends
+// sessions with no report a provider could see.
 //
 // The default is no revoker, and no grant is revoked, since this package alone
 // has no provider. A chain with EnableOIDCProvider and EnablePasskeys refuses a

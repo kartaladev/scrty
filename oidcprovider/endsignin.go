@@ -120,8 +120,11 @@ func clientsToNotify(ended []Grant) []ClientToNotify {
 // each grant the end revokes is reported on this call, and a sink is called synchronously, so one that
 // blocks holds the logout's answer for as long as it blocks, which no budget here bounds.
 //
-// It has no error to return, and the sign-in has already ended, so a failure is logged and leaves the
-// sign-in ended, with the grants left as they stand until the next end selecting them.
+// It has no error to return, and the sign-in has already ended, so a failure is logged and reported as
+// event.GrantEndFailed, naming the user and carrying no cause, and leaves the sign-in ended, with the
+// grants left as they stand until the next end selecting them. What did end was reported by EndSignIn
+// as it ended. The event goes to the sink on the events lane, as a failed delivery's does, so a sink
+// that blocks never holds the end.
 func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport) {
 	sel, ok := selectorOf(r)
 	if !ok {
@@ -132,12 +135,23 @@ func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport) {
 	}
 
 	if _, err := p.EndSignIn(ctx, sel); err != nil {
-		// No event reports this: a store that failed decided nothing, as the event package's rule is for
-		// every dependency. What did end was reported by EndSignIn as it ended, and asking again finishes
-		// the rest.
-		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: an ended sign-in's grants could not be ended",
-			append(diag.Failure("end_sign_ins", err), slog.Int("cause", int(r.Cause)))...)
+		p.logAndReportEndFailure(ctx, r, err)
 	}
+}
+
+// logAndReportEndFailure logs an end the provider could not carry through, and reports it off the
+// calling path, so that no sink holds the end. The event carries the user and nothing of err.
+func (p *Provider) logAndReportEndFailure(ctx context.Context, r session.EndReport, err error) {
+	p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: an ended sign-in's grants could not be ended",
+		append(diag.Failure("end_sign_ins", err), slog.Int("cause", int(r.Cause)))...)
+
+	if !p.watched(ctx) {
+		return
+	}
+
+	detached := context.WithoutCancel(ctx)
+	e := event.Event{Name: event.GrantEndFailed, Outcome: event.OutcomeFailure, User: r.User}
+	p.logouts.toSink(false, func() { p.report(detached, e) })
 }
 
 // selectorOf reads what a report names, the narrowest selection first.

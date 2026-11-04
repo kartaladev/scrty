@@ -3,6 +3,7 @@ package oidcprovider_test
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"net/url"
 	"slices"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -807,8 +809,9 @@ func TestProvider_EndSignIn_ReportsByField(t *testing.T) {
 	}
 }
 
-// TestProvider_EndSignIn_ObserverFailure pins that a report's failure stays in the log: it has no
-// error to return, and the end it describes has already happened.
+// TestProvider_EndSignIn_ObserverFailure pins that a report's failure is logged and reported as
+// an event naming the user: it has no error to return, and the end it describes has already
+// happened.
 func TestProvider_EndSignIn_ObserverFailure(t *testing.T) {
 	t.Parallel()
 
@@ -847,7 +850,8 @@ func TestProvider_EndSignIn_ObserverFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			e := newEndFixture(t)
+			var log eventLog
+			e := newEndFixture(t, oidcprovider.WithSecurityEvents(log.sink))
 			signIn := e.signInOf("u-1", "https://x.example.com", "the-upstream-session")
 			s, digest := e.online(t, signIn), e.browserOf(t, signIn)
 			tc.arrange(e)
@@ -861,6 +865,14 @@ func TestProvider_EndSignIn_ObserverFailure(t *testing.T) {
 			assert.NotContains(t, logs, errOutage.Error())
 			assert.NotContains(t, logs, "the-upstream-session")
 			tc.assert(t, e, s, digest)
+
+			require.NoError(t, e.p.Shutdown(t.Context()))
+			failed := named(log.all(), event.GrantEndFailed)
+			require.Len(t, failed, 1, "the failed end is reported once")
+			assert.Equal(t, event.OutcomeFailure, failed[0].Outcome)
+			assert.Equal(t, signIn.User, failed[0].User)
+			assert.Empty(t, failed[0].Cause, "a store's error is never carried")
+			assert.NotContains(t, fmt.Sprintf("%+v", failed[0]), errOutage.Error())
 		})
 	}
 }

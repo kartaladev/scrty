@@ -40,6 +40,7 @@ var reportedElsewhere = map[string]string{
 	event.RefreshReused:        providerEventsPinned,
 	event.GrantRevoked:         providerEventsPinned,
 	event.LogoutDeliveryFailed: providerEventsPinned,
+	event.GrantEndFailed:       providerEventsPinned,
 }
 
 // providerEventsPinned is where the OpenID provider's events are pinned.

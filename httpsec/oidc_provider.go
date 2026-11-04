@@ -3,6 +3,7 @@ package httpsec
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -233,8 +234,14 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     or the chain's WithRateLimiterFactory).
 //   - Token throttle: 10 failed client authentications per source in 15 minutes
 //     (WithOIDCTokenLimiter, or the chain's WithRateLimiterFactory).
+//   - End-session throttle: 300 requests per source a minute that park a logout
+//     or are refused; one that ends a sign-in without asking is not counted
+//     (WithOIDCEndSessionLimiter, or the chain's WithRateLimiterFactory).
+//   - Logout confirmation throttle: 30 unknown handles per source a minute
+//     (WithOIDCLogoutConfirmLimiter, or the chain's WithRateLimiterFactory).
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
-//     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit).
+//     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit, WithOIDCEndSessionBodyLimit,
+//     WithOIDCLogoutConfirmBodyLimit).
 //   - Cross-site requests: POST to the authorization, token, revocation,
 //     introspection and end-session endpoints skips CSRF protection, at the
 //     paths the provider serves them (see "Cross-site requests", below). No
@@ -244,7 +251,8 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // and a source that cannot be attributed are refused alike. The authorization and
 // resume endpoints answer ErrOIDCThrottled, 429 with an empty body, because a browser
 // is in front of them and a 401 there reads as "sign the user in", which a page may
-// answer by repeating the call. The token endpoints answer invalid_client, which their
+// answer by repeating the call. So do the end-session endpoint and the logout
+// confirmation, which a browser is in front of too. The token endpoints answer invalid_client, which their
 // clients are told to expect.
 //
 // # Cross-site requests
@@ -273,6 +281,98 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // Trust that origin through the CORS layer or WithCSRFTrustedOrigins, or exempt the
 // route with WithCSRFExemption(http.MethodPost, <the UserInfo path>).
 //
+// # Logout
+//
+// The end-session endpoint (OIDCEndSession, "/oauth2/logout" by default) is
+// RP-Initiated Logout 1.0: GET or POST, with id_token_hint, post_logout_redirect_uri,
+// state and client_id. A valid hint whose sid names the sign-in of the browser's
+// own session ends that sign-in without asking, and the answer is a 303 to the
+// registered post_logout_redirect_uri (with state), or else to the provider's
+// LoggedOutURL. Any other request ends nothing: it is parked under a handle bound to
+// the flow cookie, and the answer is a 303 to the provider's LogoutURL with the
+// handle as the "req" query parameter. So does every request when the provider is
+// built with oidcprovider.WithLogoutConfirmation or WithoutBrowserSessions. A
+// request that cannot be judged, or whose hint fails its checks, is refused with
+// ErrOIDCInvalidEndSession and never redirected.
+//
+// The logout page (LogoutURL, the consumer's own, on the issuer's origin) shows
+// who is asked and posts the user's answer to the confirmation endpoint
+// (OIDCLogoutConfirm, "/oauth2/logout/confirm") from the same browser, with its
+// cookies, as Content-Type application/json:
+//
+//	{"req": "<the handle>", "confirmed": true}
+//
+// Anything but an explicit true is a decline, which ends nothing. The answer is
+// 200 {"redirect_to": "..."} and the page navigates there: the client's
+// post_logout_redirect_uri after a confirmed logout that asked for it, otherwise
+// LoggedOutURL. A handle that is unknown, expired, spent, bound to another browser
+// or no logout request answers 400 ErrOIDCUnknownHandle alike. The confirmation is
+// not exempt from CSRF protection, so a page of another origin cannot post it.
+//
+// A confirmation ends the sign-in of the browser's own session, whichever sign-in
+// the request's hint named. Ending a sign-in deletes its first-party sessions,
+// revokes the grants that do not outlive it (those without offline access), deletes its browser session
+// (clearing the cookie), and tells each client that registered a back-channel
+// logout URI.
+//
+// A retry behaves as follows. The handle is spent last, so a request that failed
+// (a store outage, answered as the chain's error handling does, a 500 by default)
+// leaves it live and the page may post the same answer again. After a success the
+// same post is an unknown handle, 400, and only unknown handles count against the
+// confirmation's throttle. When a store failed part-way, the sign-in's browser
+// session may already be gone with its grants still live: the retry then ends
+// nothing more, the failure is logged and reported as the event
+// scrty_grant_end_failed, and the sign-in's first-party sessions are left alone
+// so that the chain's logout, or any later end of that sign-in, finishes the end.
+//
+// # Consents
+//
+// The user's allowed applications are listed at OIDCConsents ("/oauth2/consents"):
+// GET answers a JSON list of {client_id, client_name, scopes, offline_access,
+// last_given_at}, of the signed-in caller's own consents and no one else's. DELETE
+// at the same path followed by "/" and a client's identifier forgets the consent
+// and revokes the caller's grants and outstanding codes of that client, offline
+// access included, so the next authorization asks again; a client the caller
+// holds neither a consent nor a grant of answers ErrOIDCForeignConsent (404). Both
+// need a full session, answer behind the bearer and the gates, are never cached,
+// and refuse a cross-site state-changing request like the resume does. The group answers
+// every path below the list's, so no endpoint of the chain's may lie there; New
+// refuses one that does.
+//
+// # What revokes grants
+//
+// A grant outlives a sign-in only when it holds offline access. Each event below
+// has a default and an option that keeps the grants instead, and an option
+// naming a provider the chain supplies:
+//
+//   - A sign-in's end through any session manager on the chain (logout, end-session,
+//     session management, a deletion) ends the grants that gave no offline access.
+//     There is no option to keep these: it is what a sign-in's end means.
+//   - Session management's "end every other sign-in" revokes every grant, offline
+//     access included, when the request's body is {"revoke_application_access":true}.
+//     Default: not revoked.
+//   - An account recovery revokes all the user's grants. Default: revoked, through
+//     the chain's provider. recovery.WithoutRecoveryGrantRevocation keeps them;
+//     recovery.WithGrantRevoker names another revoker.
+//   - An MFA enrolment reset (mfa.ResetEnrolment) revokes all the user's grants when
+//     ResetDeps.Grants is given. Default: revoked then; mfa.WithoutResetGrantRevocation
+//     keeps them.
+//   - A suspected passkey clone revokes them when the manager is built with
+//     passkey.WithGrantRevoker(provider). There is no default: a chain with a
+//     provider and EnablePasskeys refuses a manager given neither that nor
+//     passkey.WithoutCloneGrantRevocation, which keeps them.
+//   - A password change keeps them. Default: kept. WithPasswordChangeGrantRevocation
+//     revokes them all before the new password is written, and fails the change
+//     when the revocation fails.
+//
+// A passkey manager takes a session manager, not a store: passkey.Deps.Sessions
+// must report whether its ends reach the provider, which a bare session.Store
+// cannot. The manager given to EnablePasskeys must be built over a *session.Sessions
+// built with session.WithEndObserver(p), or New refuses the chain.
+//
+// A sign-in's end the provider could not carry through to its grants is logged and
+// reported as the event scrty_grant_end_failed, from outside the end's path.
+//
 // # The provider's lifecycle
 //
 // The chain neither starts nor stops p. oidcprovider.Provider.Start is optional and
@@ -296,7 +396,10 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     management, password change, recovery, passkey, MFA, re-authentication,
 //     magic-link and OIDC login endpoints;
 //   - a session manager on the chain that does not report sign-in ends to p
-//     (session.WithEndObserver), because grants would then outlive a logout;
+//     (session.WithEndObserver), because grants would then outlive a logout. The
+//     one a passkey manager was built over is among them;
+//   - an endpoint of the chain's under the consents path, which answers every
+//     path below it;
 //   - oidcprovider.WithDPoP disagreeing with EnableDPoP;
 //   - an oidcprovider.WithAssertionTokenEndpoint audience other than the public URL
 //     of the token endpoint (see the issuer's path, below);
@@ -539,6 +642,29 @@ func (op *oidcEndpoints) checkCollisions(c *config) error {
 						optionOIDCProvider, route.path, prefix)
 				}
 			}
+		}
+	}
+
+	return op.checkConsentSubtree(taken, prefixes)
+}
+
+// checkConsentSubtree refuses a chain endpoint under the consents path. The consents group answers
+// every path below the list's, one client each, ahead of the application and of those endpoints,
+// so an endpoint of the chain's there would never be reached.
+func (op *oidcEndpoints) checkConsentSubtree(taken map[string]string, prefixes []string) error {
+	below := strings.TrimSuffix(op.paths[OIDCConsents], "/") + "/"
+
+	for _, path := range slices.Sorted(maps.Keys(taken)) {
+		if strings.HasPrefix(path, below) {
+			return newConfigError("%s serves %s on %q, under %q, where %s answers every path for a client's consent; "+
+				"move it out of that subtree", optionOIDCProvider, taken[path], path, below, OIDCConsents)
+		}
+	}
+
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(prefix, below) {
+			return newConfigError("%s serves an endpoint of the chain's on %q, under %q, where %s answers "+
+				"every path for a client's consent; move it out of that subtree", optionOIDCProvider, prefix, below, OIDCConsents)
 		}
 	}
 
@@ -800,6 +926,14 @@ func (op *oidcEndpoints) checkReporting(c *config) error {
 		return newConfigError("%s found a session manager on the chain that does not report sign-in "+
 			"ends to the provider, so grants would outlive a logout: build every manager with "+
 			"session.WithEndObserver(provider)", optionOIDCProvider)
+	}
+
+	// A passkey manager ends sessions through its own manager, which can be a
+	// different one from the chain's.
+	if p := c.passkeysOf(); p != nil && !p.deps.Passkeys.ReportsEndsTo(op.provider) {
+		return newConfigError("%s found the manager given to EnablePasskeys over a session manager that "+
+			"does not report sign-in ends to the provider, so grants would outlive a passkey removal: "+
+			"build the passkey manager's Deps.Sessions with session.WithEndObserver(provider)", optionOIDCProvider)
 	}
 
 	return nil

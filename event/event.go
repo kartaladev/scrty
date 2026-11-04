@@ -332,6 +332,14 @@ const (
 	// tell is not reported, and the delivery's failure never undoes the
 	// logout.
 	LogoutDeliveryFailed = "scrty_logout_delivery_failed"
+
+	// GrantEndFailed is a sign-in's end the OpenID provider could not carry
+	// through to its grants or browser sessions: the sign-in had already ended,
+	// and the grants it should have ended may stand until a later end selects
+	// them. It names the user when the end's report does, which an end of
+	// one family does not, and carries no cause, as a store's error is
+	// never reported. The failure never undoes or delays the sign-in's end.
+	GrantEndFailed = "scrty_grant_end_failed"
 )
 
 // Names returns every event name the library reports: the OWASP Logging
@@ -349,5 +357,6 @@ func Names() []string {
 		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
 		SigningKeyRotated, GrantCreated, ConsentGiven, ConsentDenied, ConsentRevoked,
 		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
+		GrantEndFailed,
 	}
 }

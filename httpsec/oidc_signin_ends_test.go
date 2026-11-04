@@ -685,7 +685,8 @@ func signInEndsChain(t *testing.T, f *signInEnds) []httpsec.Option {
 		Users:       f.users,
 		Sender:      &capturingSender{},
 		Sessions:    f.sessions,
-	}, passkey.WithRepudiationContact("help@example.com"), passkey.WithOptionalRecoveryCodes())
+	}, passkey.WithRepudiationContact("help@example.com"), passkey.WithOptionalRecoveryCodes(),
+		passkey.WithoutCloneGrantRevocation())
 	require.NoError(t, err)
 
 	return []httpsec.Option{

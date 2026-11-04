@@ -309,6 +309,13 @@ chain, err := httpsec.New(
 `EnableOIDCProvider`'s godoc lists every wiring mistake `New` refuses. Its endpoints answer under
 `/oauth2` (`WithOIDCProviderPrefix`, `WithOIDCProviderPath`).
 
+A passkey manager on the same chain takes a session manager, never a store: `passkey.Deps.Sessions`
+must be a `*session.Sessions` (or a wrapper with a `ReportsEndsTo` method) built with
+`session.WithEndObserver(op)`, because a bare `session.Store` ends sessions with no report a provider
+could see. `New` refuses a chain whose passkey manager is built over a session manager that does not
+report to the provider, and one whose manager was told neither `passkey.WithGrantRevoker(op)` nor
+`passkey.WithoutCloneGrantRevocation()`.
+
 ### The login and consent pages
 
 Both pages are on the issuer's origin: the same scheme, host and port. `oidcprovider.New` refuses a
@@ -408,6 +415,80 @@ request then shows the login page, `prompt=none` always answers `login_required`
 asks. **This fails the OpenID Foundation's Basic OP conformance plan**, whose `prompt=none` modules
 expect a second request in the same browser to succeed.
 
+### Logout
+
+The end-session endpoint, `/oauth2/logout`, is OpenID Connect RP-Initiated Logout 1.0: `GET` or
+`POST` with `id_token_hint`, `post_logout_redirect_uri`, `state` and `client_id`. A valid hint whose
+`sid` names the sign-in of the browser's own session ends that sign-in without asking, and the answer
+is a 303 to the client's registered `post_logout_redirect_uri` (with its `state`), or else to your
+`LoggedOutURL`. Every other request ends nothing: it is parked under a handle bound to the flow
+cookie, and the browser goes by a 303 to your `LogoutURL` with the handle as `req`. A provider built
+with `oidcprovider.WithLogoutConfirmation` asks every time, and so does one built with
+`oidcprovider.WithoutBrowserSessions`. A request that cannot be judged, or whose hint fails its checks,
+is refused with 400 `ErrOIDCInvalidEndSession` and is never redirected.
+
+Your logout page shows who is asking and posts the answer to the confirmation, `/oauth2/logout/confirm`,
+from the same browser:
+
+```js
+const res = await fetch("/oauth2/logout/confirm", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ req: handle, confirmed: true }), // false, or anything else, declines
+});
+if (res.ok) window.location = (await res.json()).redirect_to;
+```
+
+The page sends no `Authorization` header: the browser's cookies answer. It must send `Content-Type:
+application/json`, and the confirmation stays under CSRF protection, so only a page of the issuer's
+origin can post it. A confirmation ends the sign-in of the browser's own session, whichever sign-in the
+request's hint named, so holding someone's ID token ends nothing of theirs from another browser. A
+decline ends nothing and goes to `LoggedOutURL`.
+
+| Answer | Means | What the page does |
+|---|---|---|
+| 200 `{"redirect_to": ...}` | answered | navigates there |
+| 400, `ErrOIDCUnknownHandle` | the handle is unknown, expired, spent, bound to another browser, or no logout request | sends the user back to the relying party |
+| 429, `ErrOIDCThrottled` | the source is over its limit | waits |
+| the chain's error handling, a 500 by default | a store failed | posts the same answer again |
+
+**A retry.** The handle is spent last, so a failure leaves it live and the page may post again. After a
+success the same post is an unknown handle, and only unknown handles count against the throttle. When a
+store failed part-way, the browser session may already be gone with the grants still live: the retry
+then ends nothing more, the failure is logged and reported as the security event
+`scrty_grant_end_failed`, and the sign-in's first-party sessions are left alone so that the chain's
+logout, or any later end of that sign-in, finishes the end. Ending a sign-in deletes its first-party
+sessions and browser session, revokes the grants that do not outlive it (those without
+`offline_access`), and tells each client that registered a back-channel logout URI.
+
+### Consents
+
+`GET /oauth2/consents` lists the signed-in user's own consents as `[{client_id, client_name, scopes,
+offline_access, last_given_at}]`. `DELETE /oauth2/consents/<client_id>` forgets the user's consent to
+that client and revokes their grants and outstanding codes of it, offline access included, so the next
+authorization asks again. A client the caller holds neither a consent nor a grant of is a 404
+`ErrOIDCForeignConsent`. Both need a full session, are never cached, and refuse a cross-site request.
+The endpoint answers every path below `/oauth2/consents`, so `New` refuses a chain endpoint placed
+there. A consumer who wants other member names serves its own page from `op.Consents`.
+
+### What revokes grants
+
+A grant outlives a sign-in only when it holds `offline_access`. Each other event has a default and an
+option that changes it:
+
+| Event | Default | Keep or change with |
+|---|---|---|
+| A sign-in ends (logout, end-session, session management, a deletion) | grants without offline access end | none: it is what an end means |
+| Session management ends every other sign-in | grants survive | the request body `{"revoke_application_access":true}` revokes every grant, offline access and the current sign-in's included |
+| Account recovery completes | all the user's grants revoked, through the chain's provider | `recovery.WithoutRecoveryGrantRevocation` keeps them; `recovery.WithGrantRevoker` names another revoker |
+| Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given | `mfa.WithoutResetGrantRevocation` keeps them |
+| A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(op)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
+| Password change | grants kept | `httpsec.WithPasswordChangeGrantRevocation` revokes all before the new password is written |
+
+Keeping grants gives up what each option's godoc says: after a recovery, a reset or a clone, a grant
+kept is a way back in for whoever took it, for as long as its refresh token lives. A consumer who runs
+its own flow calls `op.RevokeUserGrants(ctx, user, cause)`.
+
 ### Cross-site requests
 
 A relying party calls the provider from its own origin, which a browser marks cross-site. With
@@ -450,13 +531,17 @@ but a browser client on another origin sends an `Origin` the check judges. Trust
 | Token throttle | 10 failed client authentications per source in 15 minutes | `WithOIDCTokenLimiter`, `WithRateLimiterFactory` |
 | Authorization form body | `DefaultLoginBodyLimit` | `WithOIDCAuthorizeBodyLimit` |
 | Resume body | `DefaultLoginBodyLimit` | `WithOIDCResumeBodyLimit` |
+| End-session throttle | 300 requests per source a minute that park a logout or are refused; one ending a sign-in without asking is not counted | `WithOIDCEndSessionLimiter`, `WithRateLimiterFactory` |
+| Logout confirmation throttle | 30 unknown handles per source a minute | `WithOIDCLogoutConfirmLimiter`, `WithRateLimiterFactory` |
+| End-session and confirmation bodies | `DefaultLoginBodyLimit` | `WithOIDCEndSessionBodyLimit`, `WithOIDCLogoutConfirmBodyLimit` |
 | Browser session | on | `oidcprovider.WithoutBrowserSessions` |
 | Exempt from CSRF | `POST` to authorization, token, revocation, introspection and end-session | add a route with `httpsec.WithCSRFExemption`; the provider's own cannot be removed |
 | Cookie names | `__Host-scrty-op-flow`, `__Host-scrty-op-session` | none: the prefix is what stops another host planting one |
 
 The throttles are per process unless the limiter is shared between replicas. They fail closed: a
 limiter that cannot answer, and a source that cannot be attributed, are refused like a source over its
-limit, 429 at the authorization and resume endpoints and `invalid_client` at the token endpoints.
+limit, 429 at the authorization, resume, end-session and logout confirmation endpoints and
+`invalid_client` at the token endpoints.
 
 ## Letting required users enrol
 
@@ -763,7 +848,9 @@ manager, err := passkey.New(passkey.Deps{
 
 `Verifier`, `Users`, `Sender`, `Sessions` and the repudiation contact have no default (`Sessions` may be
 left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
-`passkey.WithoutSessionRevocationOnClone` given); everything else does:
+`passkey.WithoutSessionRevocationOnClone` given). `Sessions` takes a session manager, never a bare
+`session.Store`; on a chain with `EnableOIDCProvider` it must be built with `session.WithEndObserver(op)`.
+Everything else has a default:
 
 | What | Default | Replaced by |
 |---|---|---|

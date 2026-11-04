@@ -412,6 +412,33 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: refused("EnableOIDCProvider", httpsec.DefaultLogoutPath),
 		},
 		{
+			name: "a chain endpoint under the consents path, which answers every path below it",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(f.wired(t, p),
+					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: reporting(t, p)},
+						httpsec.WithLogoutRequestPath("/consents/out")),
+					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, "/consents")))
+			},
+			assert: refused("EnableOIDCProvider", "/consents/out", "/consents"),
+		},
+		{
+			name: "a chain prefix under the consents path",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(f.wired(t, p),
+					httpsec.EnableSessionManagement(httpsec.WithSessionManagementPrefix("/consents/sessions")),
+					httpsec.EnableOIDCProvider(p, httpsec.WithOIDCProviderPath(httpsec.OIDCConsents, "/consents")))
+			},
+			assert: refused("EnableOIDCProvider", "/consents/sessions", "/consents"),
+		},
+		{
 			name: "the token path set to the JWKS path, whichever came first",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
@@ -596,6 +623,26 @@ func TestOIDCProvider_Construction(t *testing.T) {
 					httpsec.EnableOIDCProvider(p))
 			},
 			assert: refused("EnableOIDCProvider", "session.WithEndObserver"),
+		},
+		{
+			name: "a passkey manager over a session manager that does not report to the provider",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+				users := NewMockUserLoader(gomock.NewController(t))
+				pm := must.Must(passkey.New(passkey.Deps{
+					Verifier: newPasskeyVerifierStub(t).mock,
+					Users:    users,
+					Sender:   exampleSender{},
+					Sessions: must.Must(session.New()),
+				}, passkey.WithRepudiationContact("help@example.com"), passkey.WithoutCloneGrantRevocation()))
+
+				return append(f.wired(t, p),
+					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: reporting(t, p), Users: users}),
+					httpsec.EnableOIDCProvider(p))
+			},
+			assert: refused("EnableOIDCProvider", "EnablePasskeys", "session.WithEndObserver"),
 		},
 		{
 			name: "form login's session manager does not report to the provider",
