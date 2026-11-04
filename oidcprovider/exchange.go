@@ -286,6 +286,7 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 	if err := p.stores.grants.Create(ctx, grant); err != nil {
 		return nil, dependencyFailure(ctx, err, "oidcprovider: store the grant")
 	}
+	p.reportGrantCreated(ctx, grant)
 	if holdsLineage {
 		if res.RefreshToken, err = p.writeLineage(ctx, grant, rc); err != nil {
 			return nil, err
@@ -575,6 +576,7 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	if err := p.revokeGrant(detached, record.GrantFamily, CauseCodeReplay, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed code issued")
 	}
+	p.reportCodeReplay(ctx, record)
 
 	return refuseGrant()
 }

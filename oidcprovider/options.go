@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/oplineage"
 	"github.com/kartaladev/scrty/outbound"
@@ -109,12 +110,15 @@ type config struct {
 	logoutWorkers     int
 	logoutQueue       int
 	logoutTimeout     time.Duration
-	// logoutFailed is told each failed delivery. It is where the security event belongs, and until then
-	// nothing but a test sets it.
+	// logoutFailed is told each failed delivery, before its security event is reported, and nothing but a
+	// test sets it.
 	logoutFailed func(context.Context, logoutFailure)
-	clock        clock.Clock
-	logger       *slog.Logger
-	random       io.Reader
+	// events is the provider's own security-event sink, which a chain's delivery replaces on a request
+	// the chain reports for.
+	events eventsink.Own
+	clock  clock.Clock
+	logger *slog.Logger
+	random io.Reader
 	// ids names the records the provider creates. validate builds it, over the clock and
 	// randomness the options gave.
 	ids id.Generator
@@ -225,6 +229,9 @@ func (c *config) validate() error {
 	}
 	if c.claimSourceSet && nilcheck.IsNil(c.claimSource) {
 		return fmt.Errorf("%w: WithClaimSource: must not be nil", ErrConfig)
+	}
+	if err := c.events.Err("WithSecurityEvents"); err != nil {
+		return fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	if nilcheck.IsNil(c.clock) {
 		return fmt.Errorf("%w: WithClock: must not be nil", ErrConfig)

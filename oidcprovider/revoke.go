@@ -111,6 +111,7 @@ func (p *Provider) revokeRefreshToken(ctx context.Context, raw string, rc *Regis
 	if err := p.stores.grants.Revoke(detached, family, CauseRevokedByClient, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the refresh token's grant")
 	}
+	p.reportGrantRevoked(ctx, grant.ClientID, grant.User, CauseRevokedByClient)
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")

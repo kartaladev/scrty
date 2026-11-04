@@ -197,7 +197,8 @@ func (a *assertion) signedWith(key jwk.Key) bool {
 // authenticateAssertion verifies a private_key_jwt assertion (RFC 7523 §3, and
 // rfc7523bis on the audience). The checks that cost nothing run first, so a stranger's
 // assertion reaches neither the network nor the store: the signature is checked only
-// once the claims would do, and the jti recorded only once the signature holds.
+// once the claims would do, and the jti recorded only once the signature holds. A refusal after the client
+// was found returns that client beside it (see authenticateSecret).
 func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*RegisteredClient, error) {
 	if got.assertionType != assertionTypeJWT {
 		return nil, refuseClient()
@@ -214,10 +215,10 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 	case err != nil:
 		return nil, err
 	case rc.AuthMethod != PrivateKeyJWT:
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 	if !p.assertionClaimsHold(a) {
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 
 	set, err := p.assertionKeys(ctx, rc, a.kid)
@@ -225,7 +226,7 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 		return nil, err
 	}
 	if !a.verifiedBy(set) {
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 
 	fresh, err := p.stores.assertionIDs.Record(ctx, rc.ID, a.jti, a.expires)
@@ -233,7 +234,7 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 	case err != nil:
 		return nil, dependencyFailure(ctx, err, "oidcprovider: record client assertion")
 	case !fresh:
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 
 	// Time has passed since assertionClaimsHold read the clock, over the signature and the
@@ -241,7 +242,7 @@ func (p *Provider) authenticateAssertion(ctx context.Context, got presented) (*R
 	// passed that check just before exp is told new here. No store's sweep can be relied on
 	// to close that, so the expiry is judged again, after the answer.
 	if !a.expires.After(p.cfg.clock.Now()) {
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 
 	return rc, nil

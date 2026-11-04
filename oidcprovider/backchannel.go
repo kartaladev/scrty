@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/lifecycle"
 	"github.com/kartaladev/scrty/outbound"
@@ -52,6 +53,7 @@ const (
 // logoutFailure is one client not told, as the seam for a failed delivery is told of it.
 type logoutFailure struct {
 	ClientID     string
+	User         identity.UserID
 	SignInFamily id.ID
 	// Reason is one of the failure words.
 	Reason string
@@ -62,7 +64,7 @@ type logoutFailure struct {
 }
 
 func failureOf(c ClientToNotify, reason string, err error) *logoutFailure {
-	return &logoutFailure{ClientID: c.ClientID, SignInFamily: c.SignInFamily, Reason: reason, Err: err}
+	return &logoutFailure{ClientID: c.ClientID, User: c.User, SignInFamily: c.SignInFamily, Reason: reason, Err: err}
 }
 
 // LogoutDelivery hands one logout token to a client. WithLogoutDelivery supplies one; with none, the
@@ -141,8 +143,8 @@ func deliveryReason(err error) string {
 	}
 }
 
-// reportLogoutFailure logs a failed delivery with fixed text and no value of its cause, and tells the
-// seam the security event of a failed delivery belongs at. It undoes nothing.
+// reportLogoutFailure logs a failed delivery with fixed text and no value of its cause, tells the test seam,
+// and reports it as a security event (reportLogoutFailed). It undoes nothing.
 func (p *Provider) reportLogoutFailure(ctx context.Context, f logoutFailure) {
 	attrs := []slog.Attr{slog.String("client_id", f.ClientID)}
 	if f.Err != nil {
@@ -162,6 +164,7 @@ func (p *Provider) reportLogoutFailure(ctx context.Context, f logoutFailure) {
 	if p.cfg.logoutFailed != nil {
 		p.cfg.logoutFailed(ctx, f)
 	}
+	p.reportLogoutFailed(ctx, f)
 }
 
 // logCutOffLogout notes a delivery Shutdown ended part way, which is no failure, so it is not reported.
@@ -275,6 +278,7 @@ type logoutPool struct {
 	queue    []logoutJob
 	running  int
 	calls    int
+	reports  int
 	started  bool
 	closed   bool
 	finished bool
@@ -370,7 +374,7 @@ func (q *logoutPool) next() (logoutJob, bool) {
 
 // settle closes drained once there is nothing left to wait for, and needs mu held.
 func (q *logoutPool) settle() {
-	if q.closed && !q.finished && q.running == 0 && q.calls == 0 {
+	if q.closed && !q.finished && q.running == 0 && q.calls == 0 && q.reports == 0 {
 		q.finished = true
 		close(q.drained)
 	}

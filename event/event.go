@@ -39,6 +39,19 @@ type Event struct {
 	// of the session the outcome concerns, and empty when it concerns none.
 	// It is never the identifier itself, which is a credential.
 	Session string
+
+	// Client is the identifier of the OAuth client the outcome concerns, as
+	// the OpenID provider registered it, and empty where none applies or none
+	// is known: a client authentication refused for an identifier the
+	// registry does not hold names no client, as a failed login names no user.
+	// A client identifier is public, never a credential.
+	Client string
+
+	// Cause is why the outcome came about, in a fixed word, and empty where
+	// the name says it all. It is the cause a grant was revoked for, or the
+	// reason a back-channel logout delivery failed. It is never free text, and
+	// never a value a request supplied.
+	Cause string
 }
 
 // Sink receives security events.
@@ -258,6 +271,60 @@ const (
 
 	// SigningKeyRotated is a new signing key minted and stored by rotation.
 	SigningKeyRotated = "scrty_signing_key_rotated"
+
+	// GrantCreated is a grant stored for an authorization code exchanged, by
+	// the OpenID provider. It names the client and the user.
+	GrantCreated = "scrty_grant_created"
+
+	// ConsentGiven is a user's consent to a client answered at the consent
+	// stage, and the authorization code issued on it. It names the client and
+	// the user.
+	ConsentGiven = "scrty_consent_given"
+
+	// ConsentDenied is a user's denial of a client at the consent stage, a
+	// failure outcome as a refusal is. It names the client and the user.
+	ConsentDenied = "scrty_consent_denied"
+
+	// ConsentRevoked is a user's consent to a client withdrawn, reported
+	// beside the revocation of the grants that came of it (GrantRevoked). It
+	// names the client and the user.
+	ConsentRevoked = "scrty_consent_revoked"
+
+	// ClientAuthRefused is a client authentication the OpenID provider refused
+	// as invalid_client: a wrong secret, an assertion that does not verify or
+	// was replayed, a method the client did not register. It names the client
+	// only when the registry holds the identifier presented, and no user. A
+	// registry or store that failed, and a request refused as malformed
+	// (invalid_request), are not reported.
+	ClientAuthRefused = "scrty_client_auth_refused"
+
+	// CodeReplayed is an authorization code presented after it was spent, by
+	// the client it was issued to, reported once the grant it created is
+	// revoked, beside GrantRevoked with the cause code_replay. It names the
+	// client and the user.
+	CodeReplayed = "scrty_code_replayed"
+
+	// RefreshReused is a refresh token presented after its successor took
+	// over and its grace window ended, reported once the grant is revoked,
+	// beside GrantRevoked with the cause reuse. It names the client and the
+	// user, never the token.
+	RefreshReused = "scrty_refresh_reused"
+
+	// GrantRevoked is a grant of the OpenID provider revoked, one event per
+	// grant, with its cause in Cause: reuse, code_replay, sign_in_ended,
+	// consent_revoked, revoked_by_client, user_disabled, or the cause a
+	// consumer named when it revoked a user's grants. It names the client and
+	// the user.
+	GrantRevoked = "scrty_grant_revoked"
+
+	// LogoutDeliveryFailed is a back-channel logout token the OpenID provider
+	// did not deliver to a client that registered a URI for it. Cause is one
+	// of client, sign, post, status, delivery, timeout, panic, goexit, busy,
+	// queue_full or shutdown. It names the client and the user, and never the
+	// logout token, the URI or the error. A drop for a client with no URI to
+	// tell is not reported, and the delivery's failure never undoes the
+	// logout.
+	LogoutDeliveryFailed = "scrty_logout_delivery_failed"
 )
 
 // Names returns every event name the library reports: the OWASP Logging
@@ -273,6 +340,7 @@ func Names() []string {
 		MFAVerified, MFAVerifyFail, MFAEnrolled, MFARemoved, PasskeyRegistered, PasskeyRemoved,
 		RecoveryStarted, RecoveryCompleted, RecoveryRefused, Reauthenticated, ReauthenticationFail,
 		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
-		SigningKeyRotated,
+		SigningKeyRotated, GrantCreated, ConsentGiven, ConsentDenied, ConsentRevoked,
+		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
 	}
 }

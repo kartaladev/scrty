@@ -107,6 +107,8 @@ func (p *Provider) refresh(ctx context.Context, r TokenRequest, rc *RegisteredCl
 	if err != nil {
 		return nil, err
 	}
+	// From here a reuse is the grant's, and is reported once, whichever of the paths below finds it.
+	ctx = withReuseNote(ctx, grant)
 	if grant.KeyBinding != "" && r.Binding.JKT != grant.KeyBinding {
 		return nil, &Error{Code: CodeInvalidDPoPProof}
 	}
@@ -253,6 +255,7 @@ func (p *Provider) markReuse(ctx context.Context, record *session.Session, now t
 	if err := p.stores.grants.Revoke(detached, record.FamilyID, CauseReuse, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a reused refresh token's grant")
 	}
+	p.reportReuse(ctx, record.UserID)
 
 	return nil
 }
@@ -297,9 +300,12 @@ func (p *Provider) answerLineage(ctx context.Context, err error, family id.ID, n
 		detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 		defer cancel()
 
-		return dependencyFailure(ctx,
-			errors.Join(err, p.stores.grants.Revoke(detached, family, CauseReuse, now)),
-			"oidcprovider: revoke a reused refresh token's family")
+		revokeErr := p.stores.grants.Revoke(detached, family, CauseReuse, now)
+		if revokeErr == nil {
+			p.reportReuse(ctx, "")
+		}
+
+		return dependencyFailure(ctx, errors.Join(err, revokeErr), "oidcprovider: revoke a reused refresh token's family")
 	case errors.Is(err, session.ErrNotFound), errors.Is(err, session.ErrExpired):
 		return refuseGrant()
 	default:
@@ -332,6 +338,7 @@ func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Ti
 	if err := p.stores.grants.Revoke(detached, grant.Family, CauseUserDisabled, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a grant whose user has gone")
 	}
+	p.reportGrantRevoked(ctx, grant.ClientID, grant.User, CauseUserDisabled)
 	manager, err := p.lineages(nil)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")
@@ -665,5 +672,8 @@ func (p *Provider) revokeOnReuse(ctx context.Context, r session.ReuseReport) {
 	if err := p.stores.grants.Revoke(detached, r.Family, CauseReuse, r.DetectedAt); err != nil {
 		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a reused refresh token's grant could not be marked revoked",
 			append(diag.Failure("revoke_grant", err), slog.String("family", r.Family.String()))...)
+
+		return
 	}
+	p.reportReuse(ctx, r.User)
 }

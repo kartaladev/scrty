@@ -234,6 +234,33 @@
 // holds only its goroutine, until it returns. At most as many as there are workers can be left behind
 // like that, and past those a delivery fails at once. Shutdown does not return nil while one remains.
 //
+// # Security events
+//
+// With no sink the provider reports nothing, and every outcome is the same: a replayed code is still
+// refused and still revokes its grant. [WithSecurityEvents] gives it a sink of its own, and on a request
+// a chain built with httpsec.EnableSecurityEvents reports for, the events go through the chain, which
+// adds the client address, and that sink is not called. The names are in package event.
+//
+// The provider reports a grant created (event.GrantCreated); consent given, denied or revoked
+// (event.ConsentGiven, event.ConsentDenied, event.ConsentRevoked); a client authentication refused as
+// invalid_client (event.ClientAuthRefused), naming the client only when the registry holds the identifier
+// presented; a code replayed (event.CodeReplayed); a refresh token reused past its grace
+// (event.RefreshReused); each grant revoked, with its cause (event.GrantRevoked); and a back-channel
+// logout token not delivered to a client that registered a URI (event.LogoutDeliveryFailed). A reuse and
+// a replay each yield two events, the outcome and the revocation it caused, and each is reported once the
+// revocation is stored, and once however many paths find it. A dependency that failed decided nothing and
+// reports nothing.
+//
+// Each event names the client in Client and the user in User when known, and a revocation or a failed
+// delivery says why in Cause, a fixed word. None carries a code, handle, flow secret, token, assertion
+// or secret, and none carries the text of an error.
+//
+// The sink is called on the request that decided the outcome, and cannot change it: a panic in it is
+// recovered and logged without the event. A failed delivery is the exception. A worker reports its own
+// failure, and a drop, which would run on the goroutine of the logout that handed the client on, is
+// reported on a goroutine of its own, at most 64 at once, after reading the client, so that a client
+// with no URI is not reported as a failure and a sink that blocks never holds a logout.
+//
 // # Errors
 //
 // A refusal the protocol names is an [*Error], whose text is its code and holds no

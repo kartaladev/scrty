@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
 )
@@ -272,6 +273,7 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 		}
 		res, err := p.refuseRequest(ctx, r, StageConsent, CodeAccessDenied)
 		if err == nil {
+			p.reportConsent(ctx, event.ConsentDenied, s.User, r.ClientID)
 			p.touchBrowserSession(ctx, session, in.IdleTimeout, now)
 		}
 
@@ -297,6 +299,7 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 	if err := p.spendStage(ctx, r, StageConsent, StageDone, nil); err != nil {
 		return ResumeResult{}, err
 	}
+	p.reportConsent(ctx, event.ConsentGiven, s.User, r.ClientID)
 
 	offline := slices.Contains(granted, scopeOffline)
 	if err := p.stores.consents.Give(ctx, s.User, r.ClientID, granted, offline, now); err != nil {

@@ -47,6 +47,18 @@ func TestSecurityEvents_Names(t *testing.T) {
 			},
 		},
 		{
+			name: "every scrty_ name the OpenID provider reports is listed",
+			assert: func(t *testing.T, names []string) {
+				for _, want := range []string{
+					"scrty_grant_created", "scrty_consent_given", "scrty_consent_denied",
+					"scrty_consent_revoked", "scrty_client_auth_refused", "scrty_code_replayed",
+					"scrty_refresh_reused", "scrty_grant_revoked", "scrty_logout_delivery_failed",
+				} {
+					assert.Contains(t, names, want)
+				}
+			},
+		},
+		{
 			name: "no scrty_ name stands for an outcome the vocabulary names",
 			assert: func(t *testing.T, names []string) {
 				for _, gone := range []string{"scrty_rate_limit_refused", "scrty_csrf_refused"} {
@@ -63,8 +75,8 @@ func TestSecurityEvents_Names(t *testing.T) {
 						scrty++
 					}
 				}
-				assert.Equal(t, 17, scrty, "the outcomes the vocabulary does not name")
-				assert.Len(t, names, 18+17)
+				assert.Equal(t, 26, scrty, "the outcomes the vocabulary does not name")
+				assert.Len(t, names, 18+26)
 			},
 		},
 		{

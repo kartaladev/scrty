@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -58,6 +59,7 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	ended, grantErr := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
 	endGrants()
+	p.reportEnded(ctx, ended)
 	clients := clientsToNotify(ended)
 
 	handCtx, endHandOn := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
@@ -126,7 +128,9 @@ func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport) {
 	}
 
 	if _, err := p.EndSignIn(ctx, sel); err != nil {
-		// A security event reporting this belongs here, beside the log line.
+		// No event reports this: a store that failed decided nothing, as the event package's rule is for
+		// every dependency. What did end was reported by EndSignIn as it ended, and asking again finishes
+		// the rest.
 		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: an ended sign-in's grants could not be ended",
 			append(diag.Failure("end_sign_ins", err), slog.Int("cause", int(r.Cause)))...)
 	}
@@ -169,9 +173,11 @@ func (p *Provider) RevokeUserGrants(ctx context.Context, user identity.UserID, c
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
 
-	if _, err := p.stores.grants.RevokeByUser(detached, user, RevocationCause(cause), p.cfg.clock.Now()); err != nil {
+	ended, err := p.stores.grants.RevokeByUser(detached, user, RevocationCause(cause), p.cfg.clock.Now())
+	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the user's grants")
 	}
+	p.reportRevoked(ctx, ended, RevocationCause(cause))
 
 	return nil
 }
@@ -241,12 +247,16 @@ func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clie
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the consent's grants")
 	}
+	p.reportRevoked(ctx, ended, CauseConsentRevoked)
 	forgotten, err := p.stores.consents.Revoke(detached, user, clientID)
 	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: forget the consent")
 	}
 	if !forgotten && len(ended) == 0 {
 		return ErrForeignConsent
+	}
+	if forgotten {
+		p.reportConsent(ctx, event.ConsentRevoked, user, clientID)
 	}
 
 	return nil

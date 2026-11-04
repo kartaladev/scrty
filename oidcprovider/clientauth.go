@@ -54,20 +54,48 @@ type presented struct {
 // another method and a wrong secret. What a registry takes to answer is not something
 // this package can even out: a client it finds is validated as it is read, and one it
 // does not find is not.
+//
+// A refusal as invalid_client is reported as a security event (WithSecurityEvents), naming the client
+// only when the registry held the identifier presented. A malformed request (invalid_request) and a
+// dependency that failed are not reported.
 func (p *Provider) AuthenticateClient(ctx context.Context, c ClientCredentials) (*RegisteredClient, error) {
 	got, err := readCredentials(c)
 	if err != nil {
+		p.noteClientRefusal(ctx, nil, err)
+
 		return nil, err
 	}
 
+	var rc *RegisteredClient
 	switch got.method {
 	case PrivateKeyJWT:
-		return p.authenticateAssertion(ctx, got)
+		rc, err = p.authenticateAssertion(ctx, got)
 	case AuthMethodNone:
-		return p.authenticatePublic(ctx, got)
+		rc, err = p.authenticatePublic(ctx, got)
 	default:
-		return p.authenticateSecret(ctx, got)
+		rc, err = p.authenticateSecret(ctx, got)
 	}
+	if err != nil {
+		p.noteClientRefusal(ctx, rc, err)
+
+		return nil, err
+	}
+
+	return rc, nil
+}
+
+// noteClientRefusal reports err when it is a refusal of the client's credentials. known is the client
+// the registry held for the identifier presented, and nil when it held none.
+func (p *Provider) noteClientRefusal(ctx context.Context, known *RegisteredClient, err error) {
+	var refusal *Error
+	if !errors.As(err, &refusal) || refusal.Code != CodeInvalidClient {
+		return
+	}
+	clientID := ""
+	if known != nil {
+		clientID = known.ID
+	}
+	p.reportClientRefused(ctx, clientID)
 }
 
 // readCredentials settles what the request presented without reading any client, so
@@ -151,6 +179,9 @@ func readBasic(header, formID string) (presented, error) {
 // authenticateSecret always runs the comparison, against a client holding nothing
 // when the identifier is unknown or the client uses another method, so a stranger
 // cannot tell those from a wrong secret by what the comparison costs.
+//
+// Like the other two, it returns the client the registry held beside a refusal, so the refusal can be
+// reported by name, and AuthenticateClient hands none of it to its caller.
 func (p *Provider) authenticateSecret(ctx context.Context, got presented) (*RegisteredClient, error) {
 	rc, err := p.client(ctx, got.id)
 	if err != nil && !errors.Is(err, ErrClientNotFound) {
@@ -162,7 +193,7 @@ func (p *Provider) authenticateSecret(ctx context.Context, got presented) (*Regi
 		holder = rc
 	}
 	if !holder.matchesSecret([]byte(got.secret), p.cfg.clock.Now()) {
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 
 	return holder, nil
@@ -176,7 +207,7 @@ func (p *Provider) authenticatePublic(ctx context.Context, got presented) (*Regi
 	case err != nil:
 		return nil, err
 	case rc.AuthMethod != AuthMethodNone:
-		return nil, refuseClient()
+		return rc, refuseClient()
 	}
 
 	return rc, nil
