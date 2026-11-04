@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -68,8 +69,8 @@ func signalsScenarios() []Scenario {
 		{Name: "signals: a signals parameter narrows the stream and never widens it", Stream: signalsNarrowing},
 		{Name: "signals: a cross-site request is refused with 403 and no stream", Stream: signalsCrossSiteRefused},
 		{Name: "signals: a chain refusing after Stream frees the place exactly once", Stream: signalsChainRefusesAfterStream},
-		{Name: "signals: values copied before the stream stay correct as later requests reuse the buffers", Stream: signalsCopiedValuesSurviveBufferReuse},
-		{Name: "signals: a panic in a consumer's loader reaches the chain's logger without its value", Stream: signalsLoaderPanic},
+		{Name: "signals: a stream opened among concurrent requests keeps its own user, family, origin and narrowing", Stream: signalsStreamAmongConcurrentRequests},
+		{Name: "signals: a panic in a consumer's loader reaches the chain's logger, and neither that logger nor the process's default logger holds its value", Stream: signalsLoaderPanic},
 
 		{Name: "signals: a stream over a cap is answered 200 with only a retry, and the others stay open", Stream: signalsCapReached},
 		{Name: "signals: a dependency failure at admission is answered 200 with only a retry", Stream: signalsDependencyFailureAtAdmission},
@@ -142,6 +143,27 @@ func signalsSignIn(t *testing.T, e *Effects, user identity.UserID) *session.Sess
 	t.Helper()
 
 	s, err := e.Sessions.Create(t.Context(), user, session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	return s
+}
+
+// behindClock reads the wall clock set back by a fixed span.
+type behindClock struct{ by time.Duration }
+
+func (c behindClock) Now() time.Time { return time.Now().Add(-c.by) }
+
+// signalsAgedSignIn stores a new sign-in of user, in e's store, that was made age ago: its
+// authentication time is that far back, and the sessions of e find it live, since its deadlines
+// are measured from its creation and age is within them.
+func signalsAgedSignIn(t *testing.T, e *Effects, user identity.UserID, age time.Duration) *session.Session {
+	t.Helper()
+
+	older, err := session.New(
+		session.WithStore(e.Store), session.WithIdleTimeout(signalsIdleTimeout), session.WithClock(behindClock{by: age}))
+	require.NoError(t, err)
+
+	s, err := older.Create(t.Context(), user, session.WithFirstFactor(factor.Password))
 	require.NoError(t, err)
 
 	return s
@@ -585,6 +607,32 @@ func signalsNarrowing(t *testing.T, listen func(ChainSpec) StreamServer) {
 		})
 	}
 
+	t.Run("a name the chain lacks is never sent, though the stream would send it by itself", func(t *testing.T) {
+		// The chain's set is its default, session_ended and session_expiring: assurance_lapsed is
+		// not in it. The sign-ins last authenticated well beyond the assurance window, so were the
+		// set not consulted, the stream would say so whether or not the client asked for it.
+		// Naming it, or naming nothing, must both leave it unsent.
+		spec := newSignalsSpec(t, httpsec.SessionSignals{})
+		srv := listen(spec)
+
+		for _, query := range []string{"?signals=assurance_lapsed", ""} {
+			s := signalsAgedSignIn(t, spec.Effects, UserID, 2*httpsec.DefaultRecentAuthenticationWindow)
+			c := openSignals(t, srv.URL, s, query)
+			c.opens()
+
+			// Two heartbeats, each of which looks at what is due.
+			c.heartbeats(2)
+
+			_, err := spec.Effects.Sessions.Logout(t.Context(), s.UserID, s.FamilyID)
+			require.NoError(t, err)
+
+			assert.Equal(t, []string{"session_ended"}, c.eventsToEnd(), "query %q", query)
+
+			// Everything the stream sent, the heartbeats' stretch included.
+			assert.NotContains(t, c.raw.String(), string(httpsec.SignalAssuranceLapsed), "query %q", query)
+		}
+	})
+
 	t.Run("more than 16 names is refused with 400 and opens no stream", func(t *testing.T) {
 		names := make([]string, 17)
 		for i := range names {
@@ -697,7 +745,7 @@ func signalsChainRefusesAfterStream(t *testing.T, listen func(ChainSpec) StreamS
 		body, err := io.ReadAll(first.resp.Body)
 		require.NoError(t, err)
 		assert.NotContains(t, string(body), "retry")
-		waitForStream(t, toSignal(refused), "the chain to refuse")
+		waitForStream(t, toSignal(t, refused), "the chain to refuse")
 	} else {
 		// The body ran inline, and its stream was sent before the chain could refuse: the
 		// refusal changes nothing the client received.
@@ -705,7 +753,7 @@ func signalsChainRefusesAfterStream(t *testing.T, listen func(ChainSpec) StreamS
 
 		// The body returns when its client leaves, and the chain refuses after that.
 		first.cancel()
-		waitForStream(t, toSignal(refused), "the chain to refuse")
+		waitForStream(t, toSignal(t, refused), "the chain to refuse")
 	}
 
 	refuse.Store(false)
@@ -720,15 +768,18 @@ func signalsChainRefusesAfterStream(t *testing.T, listen func(ChainSpec) StreamS
 	openSignals(t, srv.URL, signalsSignIn(t, spec.Effects, "u-2"), "").noPlace()
 }
 
-// toSignal turns a channel that carries values into one that closes on the first.
-func toSignal(in <-chan struct{}) <-chan struct{} {
+// toSignal turns a channel that carries values into one that closes on the first. Its
+// goroutine ends with the row, so none waits on after the row has.
+func toSignal(t *testing.T, in <-chan struct{}) <-chan struct{} {
+	t.Helper()
+
 	out := make(chan struct{})
 
 	go func() {
 		select {
 		case <-in:
 			close(out)
-		case <-time.After(signalsBound):
+		case <-t.Context().Done():
 		}
 	}()
 
@@ -784,7 +835,14 @@ func churn(t *testing.T, base string, n int, workers int, others []*session.Sess
 	wg.Wait()
 }
 
-func signalsCopiedValuesSurviveBufferReuse(t *testing.T, listen func(ChainSpec) StreamServer) {
+// signalsStreamAmongConcurrentRequests opens a stream while requests of other users, with other
+// origins, run on the same server, and shows the stream still speaks for its own user, family,
+// origin and narrowing afterwards.
+//
+// It does not pin the copying of those values: a connected stream's buffers are not reused until
+// its client has left, so a body that read them late would pass here. That hazard is pinned in
+// the fiber adapter, by TestFiber_StreamBodyMustNotReadExchange.
+func signalsStreamAmongConcurrentRequests(t *testing.T, listen func(ChainSpec) StreamServer) {
 	lifecycle := &logSink{store: &logStore{}}
 	spec := newSignalsSpec(t,
 		httpsec.SessionSignals{ExpiryWarning: signalsIdleTimeout - signalsWarnAfter},
@@ -799,8 +857,7 @@ func signalsCopiedValuesSurviveBufferReuse(t *testing.T, listen func(ChainSpec) 
 	}
 
 	// The same requests as the churn's, in the stream's own shape, run alongside it and
-	// afterwards, on connections of their own, so a server that reuses a request's buffers
-	// does so under the stream's feet.
+	// afterwards, on connections of their own, so the stream is opened among other users' requests.
 	done := make(chan struct{})
 
 	go func() {
@@ -867,6 +924,11 @@ func signalsLoaderPanic(t *testing.T, listen func(ChainSpec) StreamServer) {
 	// library log of a panic goes to. Both are captured from here on, for the whole process.
 	captureDefaultLogs()
 
+	// The row's claim is that the chain's logger and the process's default logger hold no
+	// token. A default logger replaced since the capture was installed would pass that
+	// vacuously, so a marker, which is no secret, must be seen to land in the capture first.
+	requireDefaultLogsCaptured(t)
+
 	secret := "tok-" + hex.EncodeToString(randomBytes(12))
 
 	var armed atomic.Bool
@@ -903,8 +965,11 @@ func signalsLoaderPanic(t *testing.T, listen func(ChainSpec) StreamServer) {
 	assert.Contains(t, record["panic_type"], "leakySecret", "the value's type")
 	assert.Contains(t, record["frames"], "panickingUsers", "the frames reach the consumer's loader")
 
+	// And again now, so a default replaced during the row cannot make the check below vacuous.
+	requireDefaultLogsCaptured(t)
+
 	for _, sink := range []*logSink{chainLog, defaultLogs} {
-		assert.NotContains(t, sink.text(), secret, "a log holds the panic's value")
+		assert.NotContains(t, sink.text(), secret, "the chain's logger or the process's default logger holds the panic's value")
 	}
 
 	// The place was freed, and the process runs on: the sign-in's only place is admitted.
@@ -943,16 +1008,13 @@ func (s *logSink) Enabled(context.Context, slog.Level) bool { return true }
 func (s *logSink) Handle(_ context.Context, r slog.Record) error {
 	fields := map[string]string{"msg": r.Message, "level": r.Level.String()}
 
-	add := func(a slog.Attr) {
-		flatten(fields, s.group, a)
-	}
-
+	// The attributes of WithAttrs were qualified by the group in force when they were given.
 	for _, a := range s.attrs {
-		add(a)
+		flatten(fields, "", a)
 	}
 
 	r.Attrs(func(a slog.Attr) bool {
-		add(a)
+		flatten(fields, s.group, a)
 
 		return true
 	})
@@ -973,7 +1035,12 @@ func (s *logSink) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (s *logSink) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &logSink{store: s.store, attrs: append(append([]slog.Attr(nil), s.attrs...), attrs...), group: s.group}
+	held := append([]slog.Attr(nil), s.attrs...)
+	for _, a := range attrs {
+		held = append(held, slog.Attr{Key: s.group + a.Key, Value: a.Value})
+	}
+
+	return &logSink{store: s.store, attrs: held, group: s.group}
 }
 
 func (s *logSink) WithGroup(name string) slog.Handler {
@@ -1034,15 +1101,45 @@ var (
 // previous default, because rows run in parallel and a restore would race: a second row
 // restoring what a first had saved would leave a stale handler behind.
 //
-// Warnings and above still reach standard error, as the default handler would have written
-// them.
+// Every record it captures is written on to the default handler that was in place before, so
+// nothing the process or the standard library's log package wrote vanishes.
 func captureDefaultLogs() {
 	installDefaultLogs.Do(func() {
-		slog.SetDefault(slog.New(&teeSink{sink: defaultLogs, out: slog.NewTextHandler(os.Stderr, nil)}))
+		// The original default handler writes through the log package, which slog.SetDefault
+		// has pointed back at the handler installed: writing on to it would loop. While the log
+		// package still writes to standard error, nothing has replaced that original, so a
+		// handler of standard error stands for it.
+		var out slog.Handler = slog.NewTextHandler(os.Stderr, nil)
+		if log.Default().Writer() != os.Stderr {
+			out = slog.Default().Handler()
+		}
+
+		slog.SetDefault(slog.New(&teeSink{sink: defaultLogs, out: out}))
 	})
 }
 
-// teeSink records every record of Info and above, and writes Warn and above on.
+// requireDefaultLogsCaptured fails the row unless a record of slog's default logger and a line
+// of the standard library's log package both reach defaultLogs now. A row that asserts what the
+// default logger did not write calls it first, so that a default replaced after
+// captureDefaultLogs cannot make the assertion pass for want of anything to find. The marker is
+// random and is no secret.
+func requireDefaultLogsCaptured(t *testing.T) {
+	t.Helper()
+
+	marker := hex.EncodeToString(randomBytes(8))
+
+	slog.Info("conformance canary through slog " + marker)
+	log.Print("conformance canary through log " + marker)
+
+	logged := defaultLogs.text()
+	require.Contains(t, logged, "conformance canary through slog "+marker,
+		"slog's default logger is no longer the capture: a row asserting on it would pass vacuously")
+	require.Contains(t, logged, "conformance canary through log "+marker,
+		"the standard library's log is no longer captured: a row asserting on it would pass vacuously")
+}
+
+// teeSink records every record of Info and above, and writes each on to out, which keeps its
+// own level.
 type teeSink struct {
 	sink *logSink
 	out  slog.Handler
@@ -1053,7 +1150,7 @@ func (s *teeSink) Enabled(_ context.Context, l slog.Level) bool { return l >= sl
 func (s *teeSink) Handle(ctx context.Context, r slog.Record) error {
 	_ = s.sink.Handle(ctx, r)
 
-	if r.Level >= slog.LevelWarn {
+	if s.out.Enabled(ctx, r.Level) {
 		return s.out.Handle(ctx, r)
 	}
 
