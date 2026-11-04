@@ -1,7 +1,11 @@
 package test_test
 
 import (
+	"context"
 	"database/sql"
+	"encoding/base64"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +21,9 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
@@ -410,5 +416,440 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 			tc.assert(t, env{db: conn.DB, lockout: lockoutPolicy, streaks: store, clk: clk})
 		})
+	}
+}
+
+// opStores is every store a provider's expiry tasks sweep, as one adapter builds
+// them over a single database.
+type opStores struct {
+	pending    oidcprovider.PendingRequestStore
+	codes      oidcprovider.CodeStore
+	grants     oidcprovider.GrantStore
+	tokens     onetime.Store
+	access     oidcprovider.AccessTokenStore
+	assertions oidcprovider.AssertionIDStore
+	browser    oidcprovider.BrowserSessionStore
+	lineage    oidcprovider.RefreshTokenStore
+}
+
+// opAdapters builds each adapter's provider stores over one migrated database.
+var opAdapters = []struct {
+	name string
+	open func(t *testing.T, conn test.PostgresConn, c seal.Cipher, clk clock.Clock) opStores
+}{
+	{
+		name: "sqlstore",
+		open: func(_ *testing.T, conn test.PostgresConn, c seal.Cipher, clk clock.Clock) opStores {
+			db, w := conn.DB, sqlstore.WithClock(clk)
+			return opStores{
+				pending:    mustStore(sqlstore.NewPendingRequestStore(db)),
+				codes:      mustStore(sqlstore.NewCodeStore(db)),
+				grants:     mustStore(sqlstore.NewGrantStore(db)),
+				tokens:     mustStore(sqlstore.NewOneTimeStore(db, w)),
+				access:     mustStore(sqlstore.NewAccessTokenStore(db)),
+				assertions: mustStore(sqlstore.NewAssertionIDStore(db)),
+				browser:    mustStore(sqlstore.NewBrowserSessionStore(db)),
+				lineage:    mustStore(sqlstore.NewRefreshTokenStore(db, c, w)),
+			}
+		},
+	},
+	{
+		name: "pgx",
+		open: func(t *testing.T, conn test.PostgresConn, c seal.Cipher, clk clock.Clock) opStores {
+			cfg, err := pgxpool.ParseConfig(conn.DSN)
+			require.NoError(t, err)
+			pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+			require.NoError(t, err)
+			t.Cleanup(pool.Close)
+			w := pgxstore.WithClock(clk)
+
+			return opStores{
+				pending:    mustStore(pgxstore.NewPendingRequestStore(pool)),
+				codes:      mustStore(pgxstore.NewCodeStore(pool)),
+				grants:     mustStore(pgxstore.NewGrantStore(pool)),
+				tokens:     mustStore(pgxstore.NewOneTimeStore(pool, w)),
+				access:     mustStore(pgxstore.NewAccessTokenStore(pool)),
+				assertions: mustStore(pgxstore.NewAssertionIDStore(pool)),
+				browser:    mustStore(pgxstore.NewBrowserSessionStore(pool)),
+				lineage:    mustStore(pgxstore.NewRefreshTokenStore(pool, c, w)),
+			}
+		},
+	},
+	{
+		name: "gorm",
+		open: func(t *testing.T, conn test.PostgresConn, c seal.Cipher, clk clock.Clock) opStores {
+			db, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			w := gormstore.WithClock(clk)
+
+			return opStores{
+				pending:    mustStore(gormstore.NewPendingRequestStore(db)),
+				codes:      mustStore(gormstore.NewCodeStore(db)),
+				grants:     mustStore(gormstore.NewGrantStore(db)),
+				tokens:     mustStore(gormstore.NewOneTimeStore(db, w)),
+				access:     mustStore(gormstore.NewAccessTokenStore(db)),
+				assertions: mustStore(gormstore.NewAssertionIDStore(db)),
+				browser:    mustStore(gormstore.NewBrowserSessionStore(db)),
+				lineage:    mustStore(gormstore.NewRefreshTokenStore(db, c, w)),
+			}
+		},
+	},
+}
+
+const (
+	opIssuer      = "https://id.example.com"
+	opClient      = "billing-web"
+	opSecret      = "0123456789abcdef0123456789abcdef"
+	opRedirect    = "https://rp.example.com/cb"
+	opChallenge   = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+	opVerifier    = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+	opCodePurpose = "oidc-provider.code"
+)
+
+// opUsers answers every lookup with an active user. The provider only reads the user
+// at a resume.
+type opUsers struct{ identity.UserLoader }
+
+func (opUsers) LoadByUserID(_ context.Context, user identity.UserID) (*identity.Details, error) {
+	return &identity.Details{ID: user, Active: true}, nil
+}
+
+// opKeys stands for the signing keys, which no case here reaches.
+type opKeys struct{ signingkey.KeySource }
+
+// opEnv is a provider over one adapter's stores, its runner and the clock they share.
+type opEnv struct {
+	p        *oidcprovider.Provider
+	clk      *clockwork.FakeClock
+	db       *sql.DB
+	st       opStores
+	consents *oidcprovider.MemoryConsentStore
+	runner   *expiry.Runner
+}
+
+func newID() id.ID {
+	v, err := id.NewV7Generator().NewID()
+	if err != nil {
+		panic(err)
+	}
+
+	return v
+}
+
+func newOpEnv(t *testing.T, open func(*testing.T, test.PostgresConn, seal.Cipher, clock.Clock) opStores) *opEnv {
+	t.Helper()
+
+	set := migrate.SecurityState()
+	conn := test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
+	clk := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC))
+	st := open(t, conn, storefix.TestCipher(t), clk)
+	consents := mustStore(oidcprovider.NewMemoryConsentStore())
+
+	p, err := oidcprovider.New(oidcprovider.Deps{
+		Issuer: opIssuer,
+		Clients: []oidcprovider.Client{{
+			ID: opClient, Type: oidcprovider.Confidential, Secret: []byte(opSecret),
+			RedirectURIs: []string{opRedirect}, Scopes: []string{"openid"},
+			GrantTypes: []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
+		}},
+		Keys:         opKeys{},
+		Users:        opUsers{},
+		LoginURL:     opIssuer + "/login",
+		ConsentURL:   opIssuer + "/consent",
+		LogoutURL:    opIssuer + "/logout",
+		LoggedOutURL: opIssuer + "/bye",
+	},
+		oidcprovider.WithClock(clk),
+		oidcprovider.WithPendingRequestStore(st.pending),
+		oidcprovider.WithCodeStore(st.codes),
+		oidcprovider.WithGrantStore(st.grants),
+		oidcprovider.WithCodeTokenStore(st.tokens),
+		oidcprovider.WithAccessTokenStore(st.access),
+		oidcprovider.WithAssertionIDStore(st.assertions),
+		oidcprovider.WithBrowserSessionStore(st.browser),
+		oidcprovider.WithRefreshTokenStore(st.lineage),
+		oidcprovider.WithConsentStore(consents),
+	)
+	require.NoError(t, err)
+
+	runner, err := expiry.NewRunner(oidcprovider.ExpiryTasks(p))
+	require.NoError(t, err)
+
+	return &opEnv{p: p, clk: clk, db: conn.DB, st: st, consents: consents, runner: runner}
+}
+
+// run runs every task once, and returns each one's outcome by name.
+func (e *opEnv) run(t *testing.T) map[string]expiry.Result {
+	t.Helper()
+
+	report, err := e.runner.RunOnce(t.Context())
+	require.NoError(t, err)
+	out := make(map[string]expiry.Result, len(report.Results))
+	for _, r := range report.Results {
+		require.NoError(t, r.Err, r.Task)
+		out[r.Task] = r
+	}
+
+	return out
+}
+
+func (e *opEnv) authorize(t *testing.T) (handle, flow string) {
+	t.Helper()
+
+	res, err := e.p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: url.Values{
+		"client_id": {opClient}, "redirect_uri": {opRedirect}, "response_type": {"code"},
+		"scope": {"openid"}, "state": {"s"}, "code_challenge": {opChallenge}, "code_challenge_method": {"S256"},
+	}})
+	require.NoError(t, err)
+	loc, err := url.Parse(res.Location)
+	require.NoError(t, err)
+
+	return loc.Query().Get("req"), res.FlowSecret
+}
+
+// issueCode has a user sign in and returns the code the provider answers with, and the
+// family of the grant it would create.
+func (e *opEnv) issueCode(t *testing.T) (string, id.ID) {
+	t.Helper()
+
+	now := e.clk.Now()
+	require.NoError(t, e.consents.Give(t.Context(), "u-1", opClient, []string{"openid"}, false, now))
+	handle, flow := e.authorize(t)
+	signIn := oidcprovider.SignIn{
+		User: "u-1", Family: newID(), AuthenticatedAt: now, AMR: []string{"pwd"}, ACR: "urn:example:acr",
+		AbsoluteExpiresAt: now.Add(8 * time.Hour),
+	}
+	res, err := e.p.Resume(t.Context(), oidcprovider.ResumeInput{
+		Handle: handle, FlowSecret: flow, SignIn: &signIn, IdleTimeout: 15 * time.Minute,
+	})
+	require.NoError(t, err)
+	loc, err := url.Parse(res.RedirectTo)
+	require.NoError(t, err)
+	code := loc.Query().Get("code")
+	require.NotEmpty(t, code, res.RedirectTo)
+
+	rawID, _, _ := strings.Cut(code, ".")
+	tokenID, err := id.Parse(rawID)
+	require.NoError(t, err)
+	record, err := e.st.codes.Load(t.Context(), tokenID)
+	require.NoError(t, err)
+
+	return code, record.GrantFamily
+}
+
+// spend uses the code up, as a first exchange does.
+func (e *opEnv) spend(t *testing.T, code string) {
+	t.Helper()
+
+	tokens, err := onetime.New(opCodePurpose, onetime.WithStore(e.st.tokens), onetime.WithClock(e.clk))
+	require.NoError(t, err)
+	checked, err := tokens.Check(t.Context(), code, "")
+	require.NoError(t, err)
+	require.NoError(t, tokens.Consume(t.Context(), checked))
+}
+
+// replay presents the spent code again, as its own client with every binding right.
+func (e *opEnv) replay(t *testing.T, code string) {
+	t.Helper()
+
+	_, err := e.p.Token(t.Context(), oidcprovider.TokenRequest{
+		Credentials: oidcprovider.ClientCredentials{
+			Authorization: "Basic " + base64.StdEncoding.EncodeToString([]byte(opClient+":"+opSecret)),
+		},
+		Form: url.Values{
+			"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {opRedirect},
+			"code_verifier": {opVerifier},
+		},
+	})
+	var refusal *oidcprovider.Error
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, oidcprovider.CodeInvalidGrant, refusal.Code)
+}
+
+func (e *opEnv) grant(holdsLineage bool, created, expires time.Time) *oidcprovider.Grant {
+	return &oidcprovider.Grant{
+		Family: newID(), User: "u-1", ClientID: opClient, Scopes: []string{"openid"},
+		AuthTime: created, AMR: []string{"pwd"}, ACR: "urn:example:acr", SignInFamily: newID(),
+		CodeID: newID(), HoldsLineage: holdsLineage, CreatedAt: created, ExpiresAt: expires,
+	}
+}
+
+func grantRows(t *testing.T, e *opEnv, g *oidcprovider.Grant) int {
+	t.Helper()
+
+	return countRows(t, e.db, "op_grants", "family = '"+g.Family.String()+"'")
+}
+
+// TestExpiryTasks_OIDCProvider runs a provider's expiry tasks through a runner over each
+// durable adapter on PostgreSQL. Every case gets a database of its own.
+func TestExpiryTasks_OIDCProvider(t *testing.T) {
+	t.Parallel()
+
+	const minute = time.Minute
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, e *opEnv)
+	}
+
+	cases := []testCase{
+		{
+			name: "the tasks run in order under their names, each without error",
+			assert: func(t *testing.T, e *opEnv) {
+				report, err := e.runner.RunOnce(t.Context())
+				require.NoError(t, err)
+				names := make([]string, 0, len(report.Results))
+				for _, r := range report.Results {
+					assert.NoError(t, r.Err, r.Task)
+					names = append(names, r.Task)
+				}
+				assert.Equal(t, []string{
+					"oidc-provider.pending-requests", "oidc-provider.browser-sessions", "oidc-provider.codes",
+					"oidc-provider.grants", "oidc-provider.refresh-tokens", "oidc-provider.orphaned-grants",
+					"oidc-provider.access-tokens", "oidc-provider.assertion-ids",
+				}, names)
+			},
+		},
+		{
+			name: "a valid replay inside the minute past a code's expiry still revokes after the codes task ran",
+			assert: func(t *testing.T, e *opEnv) {
+				code, family := e.issueCode(t)
+				e.clk.Advance(5 * time.Second)
+				e.spend(t, code)
+				// The code lived 60s and expired 25s ago.
+				e.clk.Advance(time.Minute + 20*time.Second)
+				e.run(t)
+
+				e.replay(t, code)
+
+				g, err := e.st.grants.Load(t.Context(), family)
+				require.NoError(t, err, "the replay recorded a revocation")
+				assert.True(t, g.Revoked)
+				assert.Equal(t, oidcprovider.CauseCodeReplay, g.RevokeCause)
+			},
+		},
+		{
+			name: "a replay past the minute revokes nothing, and the codes task removed the token and the record",
+			assert: func(t *testing.T, e *opEnv) {
+				code, family := e.issueCode(t)
+				e.clk.Advance(5 * time.Second)
+				e.spend(t, code)
+				// The code expired a minute and a half ago.
+				e.clk.Advance(2*time.Minute + 25*time.Second)
+				res := e.run(t)
+
+				assert.Equal(t, 2, res["oidc-provider.codes"].Removed, "the token and the record")
+				assert.Zero(t, countRows(t, e.db, "op_authorization_codes", ""))
+				e.replay(t, code)
+				_, err := e.st.grants.Load(t.Context(), family)
+				assert.ErrorIs(t, err, oidcprovider.ErrNotFound, "no grant was revoked")
+			},
+		},
+		{
+			name: "pending requests, browser sessions, opaque tokens and assertion identifiers lose only what expired",
+			assert: func(t *testing.T, e *opEnv) {
+				ctx := t.Context()
+				e.authorize(t)
+				e.clk.Advance(11 * minute)
+				e.authorize(t)
+				now := e.clk.Now()
+
+				session := func(idle, abs time.Time) *oidcprovider.BrowserSession {
+					return &oidcprovider.BrowserSession{
+						Digest: []byte(newID().String()),
+						SignIn: oidcprovider.SignIn{
+							User: "u-1", Family: newID(), AuthenticatedAt: now.Add(-time.Hour),
+							AMR: []string{"pwd"}, ACR: "a", AbsoluteExpiresAt: abs,
+						},
+						IdleExpiresAt: idle, AbsoluteExpiresAt: abs,
+					}
+				}
+				require.NoError(t, e.st.browser.Put(ctx, session(now.Add(-minute), now.Add(time.Hour))))
+				require.NoError(t, e.st.browser.Put(ctx, session(now.Add(minute), now.Add(time.Hour))))
+
+				token := func(expires time.Time) *oidcprovider.AccessTokenRecord {
+					return &oidcprovider.AccessTokenRecord{
+						ID: newID(), Digest: []byte(newID().String()), GrantFamily: newID(), ClientID: opClient,
+						User: "u-1", Scopes: []string{"openid"}, IssuedAt: now.Add(-time.Hour), ExpiresAt: expires,
+					}
+				}
+				require.NoError(t, e.st.access.Create(ctx, token(now.Add(-minute))))
+				require.NoError(t, e.st.access.Create(ctx, token(now.Add(minute))))
+
+				for jti, until := range map[string]time.Time{"old": now.Add(-minute), "new": now.Add(minute)} {
+					fresh, err := e.st.assertions.Record(ctx, opClient, jti, until)
+					require.NoError(t, err)
+					require.True(t, fresh)
+				}
+
+				res := e.run(t)
+
+				for task, table := range map[string]string{
+					"oidc-provider.pending-requests": "op_pending_requests",
+					"oidc-provider.browser-sessions": "op_browser_sessions",
+					"oidc-provider.access-tokens":    "op_access_tokens",
+					"oidc-provider.assertion-ids":    "op_client_assertions",
+				} {
+					assert.Equal(t, 1, res[task].Removed, task)
+					assert.Equal(t, 1, countRows(t, e.db, table, ""), table)
+				}
+			},
+		},
+		{
+			name: "a revoked grant is kept until the longest code lifetime and a minute have passed",
+			assert: func(t *testing.T, e *opEnv) {
+				ctx := t.Context()
+				now := e.clk.Now()
+				revoked := e.grant(false, now, now.Add(365*24*time.Hour))
+				require.NoError(t, e.st.grants.Create(ctx, revoked))
+				require.NoError(t, e.st.grants.Revoke(ctx, revoked.Family, oidcprovider.CauseCodeReplay, now))
+				expired := e.grant(false, now.Add(-2*time.Hour), now.Add(-time.Hour))
+				require.NoError(t, e.st.grants.Create(ctx, expired))
+
+				e.clk.Advance(5 * minute)
+				e.run(t)
+				assert.Equal(t, 1, grantRows(t, e, revoked), "kept: a code of the longest lifetime could still name it")
+				assert.Zero(t, grantRows(t, e, expired), "an expired grant goes")
+
+				e.clk.Advance(7 * minute)
+				e.run(t)
+				assert.Zero(t, grantRows(t, e, revoked), "gone once no code could name it")
+			},
+		},
+		{
+			name: "the orphan sweep removes an old grant with no lineage, and spares one recorded to hold none",
+			assert: func(t *testing.T, e *opEnv) {
+				ctx := t.Context()
+				now := e.clk.Now()
+				orphan := e.grant(true, now, now.Add(time.Hour))
+				holdsNone := e.grant(false, now, now.Add(time.Hour))
+				require.NoError(t, e.st.grants.Create(ctx, orphan))
+				require.NoError(t, e.st.grants.Create(ctx, holdsNone))
+				e.clk.Advance(10 * minute)
+				young := e.grant(true, e.clk.Now(), e.clk.Now().Add(time.Hour))
+				require.NoError(t, e.st.grants.Create(ctx, young))
+				e.clk.Advance(minute)
+
+				res := e.run(t)
+
+				assert.Equal(t, 1, res["oidc-provider.orphaned-grants"].Removed)
+				assert.Zero(t, grantRows(t, e, orphan), "the lineage is missing and the grant is past the cutoff")
+				assert.Equal(t, 1, grantRows(t, e, holdsNone), "a grant recorded to hold no lineage is no orphan (R10)")
+				assert.Equal(t, 1, grantRows(t, e, young), "a grant inside the cutoff may be mid-exchange")
+			},
+		},
+	}
+
+	for _, a := range opAdapters {
+		for _, tc := range cases {
+			t.Run(a.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				tc.assert(t, newOpEnv(t, a.open))
+			})
+		}
 	}
 }
