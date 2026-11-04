@@ -408,6 +408,38 @@ request then shows the login page, `prompt=none` always answers `login_required`
 asks. **This fails the OpenID Foundation's Basic OP conformance plan**, whose `prompt=none` modules
 expect a second request in the same browser to succeed.
 
+### Cross-site requests
+
+A relying party calls the provider from its own origin, which a browser marks cross-site. With
+`EnableCSRFProtection`, `POST` to these endpoints skips the cross-site check, because that is how
+they are reached; each keeps its throttle, its body limit and its client authentication:
+
+| Endpoint | Path (default) | Cross-site `POST` |
+|---|---|---|
+| Authorization | `/oauth2/authorize` | exempt |
+| Token | `/oauth2/token` | exempt |
+| Revocation | `/oauth2/revoke` | exempt |
+| Introspection | `/oauth2/introspect` | exempt |
+| End-session | `/oauth2/logout` | exempt |
+| Resume | `/oauth2/authorize/resume` | refused, 403 `ErrCrossSiteRequest` |
+| Logout confirmation | `/oauth2/logout/confirm` | refused |
+| Consents | `/oauth2/consents` | refused |
+
+The last three may rest on the browser session, a cookie, so a cross-site page can never reach them:
+a consent answer or a logout confirmation posted from another site, with the victim's handle in it, is
+refused before the handler runs.
+
+The exemptions follow the paths the provider serves (`WithOIDCProviderPrefix`,
+`WithOIDCProviderPath`) and are exact, compared with the path as the client sent it. A trailing slash,
+another case, a dot segment or an escaped spelling such as `/oauth2/%74oken` is another route, and is
+judged as any route is. Only `POST` is exempt. No option removes the exemptions.
+
+UserInfo is not exempt, though a client may `POST` its access token there (RFC 6750 section 2.2). The
+token travels in the request and no cookie is involved, so nothing about it can be forged cross-site;
+but a browser client on another origin sends an `Origin` the check judges. Trust that origin through
+`EnableCORS` or `WithCSRFTrustedOrigins`, or exempt the route yourself:
+`httpsec.WithCSRFExemption(http.MethodPost, "/oauth2/userinfo")`.
+
 ### Defaults
 
 | Setting | Default | Replace with |
@@ -419,6 +451,7 @@ expect a second request in the same browser to succeed.
 | Authorization form body | `DefaultLoginBodyLimit` | `WithOIDCAuthorizeBodyLimit` |
 | Resume body | `DefaultLoginBodyLimit` | `WithOIDCResumeBodyLimit` |
 | Browser session | on | `oidcprovider.WithoutBrowserSessions` |
+| Exempt from CSRF | `POST` to authorization, token, revocation, introspection and end-session | add a route with `httpsec.WithCSRFExemption`; the provider's own cannot be removed |
 | Cookie names | `__Host-scrty-op-flow`, `__Host-scrty-op-session` | none: the prefix is what stops another host planting one |
 
 The throttles are per process unless the limiter is shared between replicas. They fail closed: a
@@ -1634,6 +1667,11 @@ webhook, from both checks. Every other protection still applies to it.
   `é` (`/webhooks/café`): it could never match, so write it in its escaped form
   (`/webhooks/caf%C3%A9`, `/webhooks/a%20b`). An escaped segment is kept and
   matches only that escaped form.
+- With `EnableOIDCProvider`, `POST` to the provider's authorization, token,
+  revocation, introspection and end-session endpoints is exempt, at the paths
+  the provider serves them, because relying parties call them cross-site. The
+  resume, the logout confirmation and `/consents` stay judged (see "OpenID
+  Provider").
 - With OIDC login, `POST` to the back-channel logout endpoint (the
   `WithOIDCBackchannelLogoutPath` prefix followed by one provider name) is
   exempt by default, because the provider calls it server to server. The
@@ -1652,7 +1690,7 @@ webhook, from both checks. Every other protection still applies to it.
 | Trusted origins | the CORS layer's, never `*` | `httpsec.WithCSRFTrustedOrigins`, `httpsec.WithoutCORSOriginsTrustedForCSRF` |
 | Token names | header `X-CSRF-Token`, field `csrf_token` | `httpsec.WithCSRFTokenNames` |
 | Token source | 32 random bytes stored on the sign-in | `httpsec.WithCSRFTokens` |
-| Exempt routes | the OIDC back-channel logout endpoint only | `httpsec.WithCSRFExemption`, `httpsec.WithoutBackchannelLogoutExemption` |
+| Exempt routes | the OIDC back-channel logout endpoint, and the provider's authorization, token, revocation, introspection and end-session endpoints | `httpsec.WithCSRFExemption`, `httpsec.WithoutBackchannelLogoutExemption` |
 
 ## DPoP
 

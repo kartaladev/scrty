@@ -109,7 +109,10 @@ func oneRealSegment(seg string) bool {
 // route.
 //
 // Default: no route is exempt, apart from the OIDC back-channel logout
-// endpoint (see WithoutBackchannelLogoutExemption). There is no option
+// endpoint (see WithoutBackchannelLogoutExemption) and, with EnableOIDCProvider,
+// POST to the provider's authorization, token, revocation, introspection and
+// end-session endpoints. A route the consumer also exempts is exempt once, and
+// builds. There is no option
 // exempting every route: that is WithoutCSRFProtection.
 //
 // Construction fails with ErrConfig when:
@@ -244,12 +247,15 @@ func WithoutBackchannelLogoutExemption() CSRFOption {
 	}
 }
 
-// settleExemptions settles the exempt routes: those WithCSRFExemption names
-// and, unless WithoutBackchannelLogoutExemption was given, the back-channel
-// logout endpoint of every OIDC login on the chain. An exemption that cannot
-// be built fails construction, rather than being dropped.
+// settleExemptions settles the exempt routes: those WithCSRFExemption names,
+// the OpenID Provider's protocol endpoints when the chain has one (see
+// providerExemptions) and, unless WithoutBackchannelLogoutExemption was given,
+// the back-channel logout endpoint of every OIDC login on the chain. An
+// exemption that cannot be built fails construction, rather than being
+// dropped.
 func (l *csrfLayer) settleExemptions(c *config) error {
 	l.exempt = slices.Clone(l.exemptions)
+	l.exempt = append(l.exempt, providerExemptions(c.oidcProvider)...)
 
 	if l.noBackchannel {
 		return nil
@@ -267,6 +273,33 @@ func (l *csrfLayer) settleExemptions(c *config) error {
 
 		return nil
 	})
+}
+
+// providerEndpointsExempt are the provider's endpoints a relying party reaches
+// cross-site by design: none takes a state-changing decision from a cookie
+// alone. The resume, the logout confirmation, the user's consents and UserInfo
+// are not among them, and stay judged.
+var providerEndpointsExempt = [...]OIDCEndpoint{
+	OIDCAuthorize, OIDCToken, OIDCRevoke, OIDCIntrospect, OIDCEndSession,
+}
+
+// providerExemptions is the exemption of POST to each of providerEndpointsExempt,
+// at the path the provider settled for it, so a moved path or prefix is followed.
+// Each is the exact path, compared as a literal with the path as sent: a "*" in
+// it is that character, and an escaped spelling of it is another route, which is
+// judged. A chain with no provider has none.
+func providerExemptions(op *oidcEndpoints) []csrfExemption {
+	if op == nil {
+		return nil
+	}
+
+	exemptions := make([]csrfExemption, 0, len(providerEndpointsExempt))
+
+	for _, e := range providerEndpointsExempt {
+		exemptions = append(exemptions, csrfExemption{method: http.MethodPost, pattern: op.paths[e]})
+	}
+
+	return exemptions
 }
 
 // backchannelExemption builds the exemption of POST to prefix followed by one

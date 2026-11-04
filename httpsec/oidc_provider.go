@@ -235,6 +235,10 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     (WithOIDCTokenLimiter, or the chain's WithRateLimiterFactory).
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit).
+//   - Cross-site requests: POST to the authorization, token, revocation,
+//     introspection and end-session endpoints skips CSRF protection, at the
+//     paths the provider serves them (see "Cross-site requests", below). No
+//     option removes it; WithCSRFExemption adds a route, UserInfo's among them.
 //
 // Every throttle fails closed: a source over its limit, a limiter that cannot answer
 // and a source that cannot be attributed are refused alike. The authorization and
@@ -242,6 +246,32 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // is in front of them and a 401 there reads as "sign the user in", which a page may
 // answer by repeating the call. The token endpoints answer invalid_client, which their
 // clients are told to expect.
+//
+// # Cross-site requests
+//
+// A relying party reaches the authorization, token, revocation, introspection and
+// end-session endpoints from its own origin, and a browser marks such a request
+// cross-site. With EnableCSRFProtection, POST to each of them is therefore exempt
+// from its Fetch Metadata and Origin check, and keeps every other protection the
+// chain applies: the endpoint's throttle, its body limit and its client
+// authentication. None of them takes a state-changing decision from a cookie alone.
+//
+// The resume, the logout confirmation and /consents are not exempt. The consent
+// stage and the logout confirmation may rest on the provider's browser session, a
+// cookie, so a cross-site POST to any of them is refused as ErrCrossSiteRequest
+// (403) before its handler runs.
+//
+// The exemption follows the paths the provider serves (WithOIDCProviderPrefix,
+// WithOIDCProviderPath) and compares each exactly, with the path as the client sent
+// it: a trailing slash, another case, a dot segment or an escaped spelling such as
+// "/oauth2/%74oken" names another route, which is judged as any route is.
+//
+// UserInfo is not exempt either, though a client may POST its access token there
+// (RFC 6750 section 2.2): the token travels in the request and no cookie is
+// involved, so a cross-site page cannot make a browser send one on a user's
+// behalf, but the Origin check still judges a browser client of another origin.
+// Trust that origin through the CORS layer or WithCSRFTrustedOrigins, or exempt the
+// route with WithCSRFExemption(http.MethodPost, <the UserInfo path>).
 //
 // # The provider's lifecycle
 //
