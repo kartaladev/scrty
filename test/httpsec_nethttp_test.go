@@ -114,7 +114,12 @@ func (nethttpAdapter) Listen(
 		httpsecconformance.WriteSlowly(w)
 	})
 
-	srv := httptest.NewUnstartedServer(spec.NewChain(t).Middleware()(mux))
+	var handler http.Handler = spec.NewChain(t).Middleware()(mux)
+	if spec.Compress {
+		handler = httpsecconformance.Gzip(handler)
+	}
+
+	srv := httptest.NewUnstartedServer(handler)
 	srv.Config.WriteTimeout = writeTimeout
 	srv.Start()
 	t.Cleanup(srv.Close)

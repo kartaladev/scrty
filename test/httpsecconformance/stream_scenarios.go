@@ -51,6 +51,11 @@ const (
 type StreamServer struct {
 	URL      string
 	Shutdown func(ctx context.Context) error
+
+	// BodyRunsLater is set by a framework whose stream body runs after the chain has
+	// returned, as fiber's does: a chain that refuses after Stream is then answered
+	// with the refusal and the client gets no stream.
+	BodyRunsLater bool
 }
 
 // StreamAdapter is an Adapter that can also serve a chain on a real listener,

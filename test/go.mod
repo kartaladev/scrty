@@ -14,6 +14,7 @@ require (
 	github.com/kartaladev/scrty/ratelimit/redisstore v0.0.0
 	github.com/kartaladev/scrty/store/gormstore v0.0.0
 	github.com/kartaladev/scrty/store/pgxstore v0.0.0
+	github.com/klauspost/compress v1.20.3
 	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.29.0
@@ -75,7 +76,6 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/lestrrat-go/dsig v1.4.0 // indirect

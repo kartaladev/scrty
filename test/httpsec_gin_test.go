@@ -104,7 +104,12 @@ func (ginAdapter) Listen(
 		httpsecconformance.WriteSlowly(gc.Writer)
 	})
 
-	srv := httptest.NewUnstartedServer(engine)
+	var handler http.Handler = engine
+	if spec.Compress {
+		handler = httpsecconformance.Gzip(handler)
+	}
+
+	srv := httptest.NewUnstartedServer(handler)
 	srv.Config.WriteTimeout = writeTimeout
 	srv.Start()
 	t.Cleanup(srv.Close)

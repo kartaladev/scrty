@@ -2,6 +2,7 @@ package httpsecconformance
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -68,15 +71,10 @@ func signalsScenarios() []Scenario {
 		{Name: "signals: values copied before the stream stay correct as later requests reuse the buffers", Stream: signalsCopiedValuesSurviveBufferReuse},
 		{Name: "signals: a panic in a consumer's loader reaches the chain's logger without its value", Stream: signalsLoaderPanic},
 
-		// Not here yet, because the code they test is still being built by another dispatch:
-		//
-		//   - "signals: a cap reached is answered 200 with only retry": needs the 200 with
-		//     only retry that a cap refusal becomes (task 6.5).
-		//   - "signals: a consumer's signal reaches an open stream": needs Chain.PublishSignal
-		//     (task 7.3).
-		//
-		// And one that is stopped: "signals: a gzip wrapper in front of the stream" needs a
-		// hook this package does not own. See the report of the dispatch that wrote this file.
+		{Name: "signals: a stream over a cap is answered 200 with only a retry, and the others stay open", Stream: signalsCapReached},
+		{Name: "signals: a dependency failure at admission is answered 200 with only a retry", Stream: signalsDependencyFailureAtAdmission},
+		{Name: "signals: a consumer's signal reaches the user's streams byte for byte, and narrowing drops it", Stream: signalsConsumerSignal},
+		{Name: "signals: a gzip wrapper in front of the chain leaves the stream readable", Stream: signalsGzipInFront},
 	}
 }
 
@@ -152,15 +150,6 @@ func signalsSignIn(t *testing.T, e *Effects, user identity.UserID) *session.Sess
 // signalsToken is the bearer a client presents for s.
 func signalsToken(s *session.Session) string {
 	return issuedTokenFor(string(s.UserID), s.ID)
-}
-
-// fiberRunsBodyLater reports whether the row runs on fiber, whose stream body runs after the
-// chain has returned. The conformance run names the adapter in the test's name, and a row
-// that must say what differs between the adapters has nothing else to ask.
-func fiberRunsBodyLater(t *testing.T) bool {
-	t.Helper()
-
-	return strings.Contains(t.Name(), "Fiber")
 }
 
 // --- the client ---
@@ -300,25 +289,37 @@ func (c *signalsClient) opens() map[string]any {
 	return data
 }
 
-// noPlace requires that the request was given no stream: the answer is a failure status, or a
-// 200 whose body is a retry and nothing more, which is what design D7 settles on for a cap
-// reached. Until the dispatch that builds that answer has landed, a cap reached is answered as
-// the dependency failure it still is, and this accepts both; it then holds to the 200 only.
-// TODO(task 6.5): require the 200 with only a retry.
-func (c *signalsClient) noPlace() {
+// signalsRetryOnly matches the whole body of a request answered with only a retry.
+var signalsRetryOnly = regexp.MustCompile(`^retry: ([0-9]+)\n\n$`)
+
+// noPlace requires that the request was given no stream, as design D7 settles it for a cap
+// reached or a dependency failure at admission: 200, an event stream, a body of one retry
+// line and nothing more, and then the end of the response. It returns the retry the client
+// was told to wait.
+func (c *signalsClient) noPlace() time.Duration {
 	c.t.Helper()
 
-	if c.resp.StatusCode != http.StatusOK {
-		assert.GreaterOrEqual(c.t, c.resp.StatusCode, http.StatusBadRequest)
+	require.Equal(c.t, http.StatusOK, c.resp.StatusCode)
+	require.Contains(c.t, c.resp.Header.Get("Content-Type"), "text/event-stream")
 
-		return
-	}
+	body, err := io.ReadAll(c.r)
+	require.NoError(c.t, err, "the answer did not end")
 
-	first := c.mustNext()
-	require.NotEmpty(c.t, first.retry, "the first block is not a retry: %+v", first)
+	m := signalsRetryOnly.FindStringSubmatch(string(body))
+	require.NotNil(c.t, m, "the body is not one retry line and nothing more: %q", body)
 
-	_, err := c.next()
-	require.ErrorIs(c.t, err, io.EOF, "the answer went on past its retry")
+	ms, err := strconv.Atoi(m[1])
+	require.NoError(c.t, err)
+
+	return time.Duration(ms) * time.Millisecond
+}
+
+// requireWithinJitter fails the row unless got is within 30% of want.
+func requireWithinJitter(t *testing.T, want, got time.Duration) {
+	t.Helper()
+
+	assert.GreaterOrEqual(t, got, want*7/10, "the retry is under BusyDelay less 30%")
+	assert.LessOrEqual(t, got, want*13/10, "the retry is over BusyDelay plus 30%")
 }
 
 // requireEnd reads the stream's end: a session_ended naming reason, and then the close.
@@ -502,8 +503,12 @@ func signalsRenewalLeavesStreamOpen(t *testing.T, listen func(ChainSpec) StreamS
 	require.Equal(t, s.FamilyID, renewed.FamilyID, "a renewal stays in its family")
 
 	// The first heartbeat read may have been sent before the renewal, so the stream is held
-	// to the second: its reload began after the renewal was stored. Neither may end it.
-	c.heartbeats(2)
+	// to the second: its reload began after the renewal was stored. Neither may end it. A
+	// beat's comment goes out before its reload is answered, so the third is what shows the
+	// second's reload has been dealt with: a logout straight after the second would race
+	// that reload, which could then find the family gone before the logout was reported and
+	// name the end "ended" (seen in 3 of 48 runs at 16 copies at once).
+	c.heartbeats(3)
 
 	_, err = spec.Effects.Sessions.SignInState(t.Context(), s.UserID, s.FamilyID)
 	require.NoError(t, err, "a stream's reload harmed the sign-in it follows")
@@ -684,7 +689,7 @@ func signalsChainRefusesAfterStream(t *testing.T, listen func(ChainSpec) StreamS
 
 	first := openSignals(t, srv.URL, s, "")
 
-	if fiberRunsBodyLater(t) {
+	if srv.BodyRunsLater {
 		// The client is given the refusal and no stream: the response is the refusal, and the
 		// body ran on an already-ended context.
 		assert.Equal(t, http.StatusRequestEntityTooLarge, first.resp.StatusCode)
@@ -1061,4 +1066,191 @@ func (s *teeSink) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (s *teeSink) WithGroup(name string) slog.Handler {
 	return &teeSink{sink: s.sink.WithGroup(name).(*logSink), out: s.out.WithGroup(name)} //nolint:forcetypeassert // it is one
+}
+
+// --- caps, a consumer's signals and a compressing wrapper ---
+
+// errAdmissionStoreDown is the failure a row's interceptor stands in for a store with.
+var errAdmissionStoreDown = errors.New("the session store is down")
+
+// failingAdmission is a chain interceptor that fails every request with errAdmissionStoreDown,
+// before anything behind it runs, as long as fail is set. It is inside the stream's answer, so
+// it is a dependency failing while a stream is being admitted.
+func failingAdmission(fail *atomic.Bool) httpsec.Option {
+	return httpsec.RegisterInterceptor(
+		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+			if fail.Load() {
+				return errAdmissionStoreDown
+			}
+
+			return next(ex)
+		}), httpsec.OrderJWKS)
+}
+
+// signalsPublish raises a consumer's signal on chain for user.
+func signalsPublish(t *testing.T, chain *httpsec.Chain, user identity.UserID, name, data string) {
+	t.Helper()
+
+	require.NotNil(t, chain, "the adapter never built the chain through ChainSpec.NewChain")
+	require.NoError(t, chain.PublishSignal(t.Context(), user, name, json.RawMessage(data)))
+}
+
+// receivesPing publishes a signal for user and reads it from c, which proves c is open and
+// receiving.
+func (c *signalsClient) receivesPing(chain *httpsec.Chain, user identity.UserID) {
+	c.t.Helper()
+
+	const data = `{"ping":true}`
+
+	signalsPublish(c.t, chain, user, "app.ping", data)
+
+	f := c.nextEvent()
+	require.Equal(c.t, "app.ping", f.event)
+	require.Equal(c.t, data, f.data)
+}
+
+func signalsCapReached(t *testing.T, listen func(ChainSpec) StreamServer) {
+	const busy = 10 * time.Second
+
+	var chain *httpsec.Chain
+
+	spec := newSignalsSpec(t, httpsec.SessionSignals{MaxPerSignIn: 1, BusyDelay: busy})
+	spec.Built = func(c *httpsec.Chain) { chain = c }
+
+	srv := listen(spec)
+	s := signalsSignIn(t, spec.Effects, UserID)
+
+	open := openSignals(t, srv.URL, s, "")
+	open.opens()
+
+	// The next request for the sign-in is over its cap. It is told to come back later.
+	refused := openSignals(t, srv.URL, s, "")
+	requireWithinJitter(t, busy, refused.noPlace())
+
+	// And it closed no stream to make room: the open one still receives.
+	open.receivesPing(chain, UserID)
+
+	// Nor was anything charged for the refusal: a client that leaves frees the place, and the
+	// next request takes it.
+	open.cancel()
+
+	again := awaitPlace(t, srv.URL, s)
+	again.receivesPing(chain, UserID)
+}
+
+func signalsDependencyFailureAtAdmission(t *testing.T, listen func(ChainSpec) StreamServer) {
+	const busy = 10 * time.Second
+
+	var (
+		fail  atomic.Bool
+		chain *httpsec.Chain
+	)
+
+	spec := newSignalsSpec(t, httpsec.SessionSignals{MaxPerSignIn: 1, BusyDelay: busy}, failingAdmission(&fail))
+	spec.Built = func(c *httpsec.Chain) { chain = c }
+
+	srv := listen(spec)
+	s := signalsSignIn(t, spec.Effects, UserID)
+
+	fail.Store(true)
+
+	requireWithinJitter(t, busy, openSignals(t, srv.URL, s, "").noPlace())
+
+	// The failure charged the sign-in nothing: with one place, the next request, once the
+	// dependency is back, takes it.
+	fail.Store(false)
+
+	open := openSignals(t, srv.URL, s, "")
+	open.opens()
+	open.receivesPing(chain, UserID)
+}
+
+func signalsConsumerSignal(t *testing.T, listen func(ChainSpec) StreamServer) {
+	var chain *httpsec.Chain
+
+	spec := newSignalsSpec(t, httpsec.SessionSignals{})
+	spec.Built = func(c *httpsec.Chain) { chain = c }
+
+	srv := listen(spec)
+
+	wide, narrow, other := signalsSignIn(t, spec.Effects, UserID), signalsSignIn(t, spec.Effects, UserID),
+		signalsSignIn(t, spec.Effects, "u-2")
+
+	wideStream := openSignals(t, srv.URL, wide, "")
+	narrowStream := openSignals(t, srv.URL, narrow, "?signals=session_ended")
+	otherStream := openSignals(t, srv.URL, other, "")
+
+	for _, c := range []*signalsClient{wideStream, narrowStream, otherStream} {
+		c.opens()
+	}
+
+	// Not canonical JSON: the key order, the spaces and the escapes are the consumer's, and
+	// reach the browser as they are.
+	const data = `{"z": 1,"a":["\u00e9", "é", "</x>"],  "n":1.50}`
+
+	signalsPublish(t, chain, UserID, "app.note", data)
+
+	f := wideStream.nextEvent()
+	assert.Equal(t, "app.note", f.event)
+	assert.Equal(t, data, f.data)
+
+	// Ending the sign-ins ends the streams with nothing else on them: the narrowed one never
+	// heard the signal, nor did another user's.
+	for _, s := range []*session.Session{wide, narrow, other} {
+		_, err := spec.Effects.Sessions.Logout(t.Context(), s.UserID, s.FamilyID)
+		require.NoError(t, err)
+	}
+
+	t.Run("the narrowed stream is not sent it", func(t *testing.T) {
+		assert.Equal(t, []string{"session_ended"}, narrowStream.eventsToEnd())
+	})
+
+	t.Run("another user's stream is not sent it", func(t *testing.T) {
+		assert.Equal(t, []string{"session_ended"}, otherStream.eventsToEnd())
+	})
+}
+
+func signalsGzipInFront(t *testing.T, listen func(ChainSpec) StreamServer) {
+	var chain *httpsec.Chain
+
+	spec := newSignalsSpec(t, httpsec.SessionSignals{})
+	spec.Compress = true
+	spec.Built = func(c *httpsec.Chain) { chain = c }
+
+	srv := listen(spec)
+	s := signalsSignIn(t, spec.Effects, UserID)
+
+	c := openSignals(t, srv.URL, s, "", func(r *http.Request) {
+		r.Header.Set("Accept-Encoding", "gzip")
+	})
+
+	// Nothing arrives as raw gzip without saying so: the first bytes are a gzip header only if
+	// the response is labelled as gzip.
+	encoding := c.resp.Header.Get("Content-Encoding")
+	head, err := c.r.Peek(2)
+	require.NoError(t, err)
+
+	if encoding != "gzip" {
+		require.NotEqual(t, []byte{0x1f, 0x8b}, head, "gzip arrived with no Content-Encoding")
+		require.Empty(t, encoding)
+	}
+
+	t.Logf("the response under a compressing wrapper carries Content-Encoding %q", encoding)
+
+	if encoding == "gzip" {
+		zr, err := gzip.NewReader(c.r)
+		require.NoError(t, err)
+
+		c.r = bufio.NewReader(zr)
+	}
+
+	// A flushed event arrives readable while the response stays open: the session event
+	// first, then one raised afterwards, with the response still open behind it.
+	c.opens()
+	c.receivesPing(chain, UserID)
+
+	_, err = spec.Effects.Sessions.Logout(t.Context(), s.UserID, s.FamilyID)
+	require.NoError(t, err)
+
+	c.requireEnd("logout")
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/compress"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -116,6 +117,10 @@ func (fiberAdapter) Listen(
 	t.Helper()
 
 	app := fiber.New(fiber.Config{WriteTimeout: writeTimeout, ErrorHandler: fibersec.ErrorHandler})
+	if spec.Compress {
+		app.Use(compress.New())
+	}
+
 	app.Use(fibersec.Middleware(spec.NewChain(t)))
 	app.Get(httpsecconformance.SlowWritePath, func(fc fiber.Ctx) error {
 		return fc.SendStreamWriter(func(w *bufio.Writer) {
@@ -151,7 +156,7 @@ func (fiberAdapter) Listen(
 		}
 	})
 
-	return httpsecconformance.StreamServer{URL: "http://" + ln.Addr().String(), Shutdown: app.ShutdownWithContext}
+	return httpsecconformance.StreamServer{URL: "http://" + ln.Addr().String(), Shutdown: app.ShutdownWithContext, BodyRunsLater: true}
 }
 
 // fiberRoute is one application route, preceded by the guard the scenario asked

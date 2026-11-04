@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/gzhttp"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -364,6 +365,29 @@ type ChainSpec struct {
 	// those settings have no effect on the chain. An adapter whose framework
 	// has no such setting, such as net/http, ignores it.
 	FrameworkTrustsProxies bool
+
+	// Compress asks a StreamAdapter to put its framework's response compression in front of
+	// the chain, outside every middleware of the chain's, as an application that
+	// compresses all its responses would. net/http and gin wrap the whole handler in
+	// Gzip, which is gzhttp; fiber, whose middleware has no such slot, uses its own
+	// compress middleware ahead of the chain. Serve ignores it.
+	Compress bool
+
+	// Built, when set, is called with each chain NewChain builds, so a scenario can reach
+	// the chain the adapter serves, to raise a signal on it.
+	Built func(*httpsec.Chain)
+}
+
+// Gzip wraps next in the real gzhttp handler, as an application that compresses its
+// responses would put in front of the chain. It is what net/http and gin use for
+// ChainSpec.Compress.
+func Gzip(next http.Handler) http.Handler {
+	wrap, err := gzhttp.NewWrapper()
+	if err != nil {
+		panic(err)
+	}
+
+	return wrap(next)
 }
 
 // NewChain builds the scenario's chain, plus whatever options the adapter adds
@@ -374,6 +398,10 @@ func (s ChainSpec) NewChain(t *testing.T, extra ...httpsec.Option) *httpsec.Chai
 
 	c, err := httpsec.New(append(append([]httpsec.Option(nil), s.Options...), extra...)...)
 	require.NoError(t, err)
+
+	if s.Built != nil {
+		s.Built(c)
+	}
 
 	return c
 }
