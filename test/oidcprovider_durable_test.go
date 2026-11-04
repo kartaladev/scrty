@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/oplineage"
@@ -22,8 +25,11 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/store/migrate"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/token/signingkey"
@@ -85,6 +91,46 @@ func (h hookedLineage) Supersede(ctx context.Context, op session.Supersession) e
 	return h.Store.Supersede(ctx, op)
 }
 
+// durAdmin builds an adapter's consent and client stores over a database: the tables that
+// the consumer's own administration writes and the provider reads, beside the ones opStores holds.
+type durAdmin func(t *testing.T, conn test.PostgresConn) (oidcprovider.ConsentStore, oidcprovider.ClientStore)
+
+// durAdmins is each adapter's durAdmin, by the adapter's name in opAdapters.
+var durAdmins = map[string]durAdmin{
+	"sqlstore": func(_ *testing.T, conn test.PostgresConn) (oidcprovider.ConsentStore, oidcprovider.ClientStore) {
+		return mustStore(sqlstore.NewConsentStore(conn.DB)), mustStore(sqlstore.NewClientStore(conn.DB))
+	},
+	"pgx": func(t *testing.T, conn test.PostgresConn) (oidcprovider.ConsentStore, oidcprovider.ClientStore) {
+		cfg, err := pgxpool.ParseConfig(conn.DSN)
+		require.NoError(t, err)
+		pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+
+		return mustStore(pgxstore.NewConsentStore(pool)), mustStore(pgxstore.NewClientStore(pool))
+	},
+	"gorm": func(t *testing.T, conn test.PostgresConn) (oidcprovider.ConsentStore, oidcprovider.ClientStore) {
+		db, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
+		require.NoError(t, err)
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sqlDB.Close() })
+
+		return mustStore(gormstore.NewConsentStore(db)), mustStore(gormstore.NewClientStore(db))
+	},
+}
+
+// durClientConfig is c as the provider is configured with it.
+func durClientConfig(c durClient, opaque bool) oidcprovider.Client {
+	return oidcprovider.Client{
+		ID: c.id, Type: oidcprovider.Confidential, Secret: []byte(c.secret),
+		RedirectURIs: []string{opRedirect}, Scopes: []string{"openid", "email"},
+		GrantTypes:         []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
+		IDTokenAlg:         signingkey.ES256,
+		OpaqueAccessTokens: opaque,
+	}
+}
+
 // durEnv is one adapter's migrated database, with the signing keys and clock every provider
 // built over it shares, as a deployment and its restarts do.
 type durEnv struct {
@@ -92,11 +138,14 @@ type durEnv struct {
 	cipher   seal.Cipher
 	clk      *clockwork.FakeClock
 	open     func(*testing.T, test.PostgresConn, seal.Cipher, clock.Clock) opStores
+	admin    durAdmin
 	keys     *signingkey.Keys
-	consents *oidcprovider.MemoryConsentStore
+	consents oidcprovider.ConsentStore
 }
 
-func newDurEnv(t *testing.T, open func(*testing.T, test.PostgresConn, seal.Cipher, clock.Clock) opStores) *durEnv {
+func newDurEnv(
+	t *testing.T, name string, open func(*testing.T, test.PostgresConn, seal.Cipher, clock.Clock) opStores,
+) *durEnv {
 	t.Helper()
 
 	set := migrate.SecurityState()
@@ -107,9 +156,21 @@ func newDurEnv(t *testing.T, open func(*testing.T, test.PostgresConn, seal.Ciphe
 		signingkey.WithAlgs(signingkey.ES256), signingkey.WithClock(clk))
 	require.NoError(t, err)
 
+	admin, ok := durAdmins[name]
+	require.True(t, ok, "an admin store builder for adapter %s", name)
+	consents, clients := admin(t, conn)
+	// The clients are registered once, as a consumer's administration does, and every provider
+	// built over the database reads them from its rows.
+	for _, c := range []struct {
+		client durClient
+		opaque bool
+	}{{durWeb, false}, {durOpaque, true}} {
+		require.NoError(t, clients.Put(t.Context(), durClientConfig(c.client, c.opaque)))
+	}
+
 	return &durEnv{
-		conn: conn, cipher: storefix.TestCipher(t), clk: clk, open: open, keys: keys,
-		consents: mustStore(oidcprovider.NewMemoryConsentStore()),
+		conn: conn, cipher: storefix.TestCipher(t), clk: clk, open: open, admin: admin, keys: keys,
+		consents: consents,
 	}
 }
 
@@ -125,18 +186,10 @@ func (e *durEnv) build(
 	if wrap != nil {
 		st.lineage = oplineage.New(wrap(oplineage.Sessions(st.lineage)))
 	}
-	client := func(c durClient, opaque bool) oidcprovider.Client {
-		return oidcprovider.Client{
-			ID: c.id, Type: oidcprovider.Confidential, Secret: []byte(c.secret),
-			RedirectURIs: []string{opRedirect}, Scopes: []string{"openid", "email"},
-			GrantTypes:         []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
-			IDTokenAlg:         signingkey.ES256,
-			OpaqueAccessTokens: opaque,
-		}
-	}
+	consents, clients := e.admin(t, e.conn)
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer:       opIssuer,
-		Clients:      []oidcprovider.Client{client(durWeb, false), client(durOpaque, true)},
+		Registry:     clients,
 		Keys:         e.keys,
 		Users:        durUsers{},
 		LoginURL:     opIssuer + "/login",
@@ -153,7 +206,7 @@ func (e *durEnv) build(
 		oidcprovider.WithAssertionIDStore(st.assertions),
 		oidcprovider.WithBrowserSessionStore(st.browser),
 		oidcprovider.WithRefreshTokenStore(st.lineage),
-		oidcprovider.WithConsentStore(e.consents),
+		oidcprovider.WithConsentStore(consents),
 	}, opts...)...)
 	require.NoError(t, err)
 
@@ -329,9 +382,145 @@ func spellings(credential string) []string {
 	}
 }
 
+// credentialHit is one place a credential was found: the table, which credential, and the
+// spelling it was found in.
+type credentialHit struct{ table, label, spelling string }
+
+// findCredentials is every table of dump that holds any spelling of any of the credentials, by label.
+func findCredentials(dump map[string]string, credentials map[string]string) []credentialHit {
+	var hits []credentialHit
+	for table, text := range dump {
+		for label, credential := range credentials {
+			for _, spelling := range spellings(credential) {
+				if strings.Contains(text, spelling) {
+					hits = append(hits, credentialHit{table: table, label: label, spelling: spelling})
+				}
+			}
+		}
+	}
+
+	return hits
+}
+
+// requireScanSeesCredentials proves the scan can find what it looks for: a credential planted in
+// a scratch table of the database, once in each spelling, must be found in every one of them. A
+// scan that read nothing would otherwise pass for a database that holds nothing in clear.
+func (e *durEnv) requireScanSeesCredentials(t *testing.T) {
+	t.Helper()
+
+	const scratch = "scan_control"
+	planted := "planted-known-credential-0123456789"
+	_, err := e.conn.DB.ExecContext(t.Context(), "CREATE TABLE "+scratch+" (v text NOT NULL)")
+	require.NoError(t, err)
+	for _, spelling := range spellings(planted) {
+		_, err = e.conn.DB.ExecContext(t.Context(), "INSERT INTO "+scratch+" (v) VALUES ($1)", spelling)
+		require.NoError(t, err)
+	}
+
+	hits := findCredentials(dumpDatabase(t, e.conn.DB), map[string]string{"planted": planted})
+
+	// The scratch table goes before the scan that matters reads the database.
+	_, err = e.conn.DB.ExecContext(t.Context(), "DROP TABLE "+scratch)
+	require.NoError(t, err)
+
+	var found []string
+	for _, hit := range hits {
+		assert.Equal(t, scratch, hit.table, "only the scratch table holds the planted credential")
+		found = append(found, hit.spelling)
+	}
+	require.ElementsMatch(t, spellings(planted), found, "the scan finds the credential in every spelling")
+}
+
 // lastSegment is a token's secret: the part after its final dot.
 func lastSegment(token string) string {
 	return token[strings.LastIndex(token, ".")+1:]
+}
+
+// landing is the point in tabA's refresh at which the other tab's whole refresh lands.
+type landing int
+
+const (
+	// landBeforeFourthLoad lands it before the fourth read of the token.
+	landBeforeFourthLoad landing = iota
+	// landBeforeSupersede lands it after the last read and before the rotation's write.
+	landBeforeSupersede
+)
+
+// raceTrace is what a race's hooks saw in tabA's lineage, counted from the database and from
+// the calls, so a case proves where the other tab landed and not just that it did.
+type raceTrace struct {
+	// rowsBeforeLanding and rowsAfterLanding are the family's rows around the other tab's refresh.
+	rowsBeforeLanding, rowsAfterLanding int
+	// loadsAtLanding and loads are the reads of the token tabA had made when the other tab landed,
+	// and by the end.
+	loadsAtLanding, loads int
+	// supersedes are tabA's rotation writes, and supersedesAfterLanding those made after the landing.
+	supersedes, supersedesAfterLanding int
+}
+
+// raceOtherTab runs a refresh of one token on tabA, and the whole refresh of the same token on
+// tabB at the point named, under a shared successor key. It checks what holds wherever the
+// landing is: neither refresh fails, both answer one successor, and the family keeps one head and
+// two rows and stays live. It returns what the hooks saw.
+func (e *durEnv) raceOtherTab(t *testing.T, key []byte, at landing) raceTrace {
+	t.Helper()
+
+	issuer := e.build(t, nil, oidcprovider.WithRefreshSuccessorKey(key))
+	issued := e.issue(t, issuer, durWeb)
+	rt0 := issued.tokens.RefreshToken
+	family := familyOf(t, rt0)
+	secret := lastSegment(rt0)
+
+	// tabB is the other tab.
+	tabB := e.build(t, nil, oidcprovider.WithRefreshSuccessorKey(key))
+	var (
+		tr      raceTrace
+		landed  bool
+		bResult *oidcprovider.TokenResponse
+		bErr    error
+	)
+	rows := func() int { return e.lineageRows(t, family) }
+	land := func(ctx context.Context) {
+		landed = true
+		tr.loadsAtLanding = tr.loads
+		tr.rowsBeforeLanding = rows()
+		bResult, bErr = e.refresh(ctx, tabB, durWeb, rt0)
+		tr.rowsAfterLanding = rows()
+	}
+	hooks := func(wrapped session.Store) session.Store {
+		return hookedLineage{Store: wrapped,
+			beforeLoad: func(ctx context.Context, got string) {
+				if got != secret {
+					return
+				}
+				tr.loads++
+				if at == landBeforeFourthLoad && tr.loads == 4 {
+					land(ctx)
+				}
+			},
+			beforeSupersede: func(ctx context.Context, _ session.Supersession) {
+				tr.supersedes++
+				if at == landBeforeSupersede && !landed {
+					land(ctx)
+				}
+				if landed {
+					tr.supersedesAfterLanding++
+				}
+			},
+		}
+	}
+	tabA := e.build(t, hooks, oidcprovider.WithRefreshSuccessorKey(key))
+
+	res, err := e.refresh(t.Context(), tabA, durWeb, rt0)
+	require.True(t, landed, "the other tab's write landed mid-refresh")
+	require.NoError(t, bErr)
+	require.NoError(t, err, "no dependency failure from an identifier in use")
+	assert.Equal(t, bResult.RefreshToken, res.RefreshToken, "the same successor")
+	assert.Equal(t, 1, e.heads(t, family))
+	assert.Equal(t, 2, e.lineageRows(t, family))
+	e.mustRefresh(t, issuer, durWeb, res.RefreshToken)
+
+	return tr
 }
 
 // TestOIDCProvider_Durable runs a provider over each durable adapter on PostgreSQL: an
@@ -420,8 +609,12 @@ func TestOIDCProvider_Durable(t *testing.T) {
 						e.requireTokenRefused(t, p, at)
 					}
 				}
-				assert.Zero(t, e.lineageRows(t, familyOf(t, web.tokens.RefreshToken)), "the family is deleted")
-				assert.Zero(t, e.lineageRows(t, familyOf(t, opaque.tokens.RefreshToken)), "the family is deleted")
+				for _, issued := range []durIssued{web, opaque} {
+					family := familyOf(t, issued.tokens.RefreshToken)
+					assert.Zero(t, e.lineageRows(t, family), "the family is deleted")
+					assert.Equal(t, 1, countRows(t, e.conn.DB, "op_grants", "family = '"+family.String()+"' AND revoked"),
+						"the grant row is marked revoked")
+				}
 			},
 		},
 		{
@@ -569,53 +762,44 @@ func TestOIDCProvider_Durable(t *testing.T) {
 			},
 		},
 		{
-			name: "a stale second read in the two-tab race ends in the same successor",
+			name: "the other tab landing between the rotation's read and its write ends in the same successor",
 			assert: func(t *testing.T, e *durEnv) {
-				issuer := e.build(t, nil, oidcprovider.WithRefreshSuccessorKey(sharedKey))
-				issued := e.issue(t, issuer, durWeb)
-				rt0 := issued.tokens.RefreshToken
-				family := familyOf(t, rt0)
-				secret := lastSegment(rt0)
+				tr := e.raceOtherTab(t, sharedKey, landBeforeSupersede)
 
-				// tabB is the other tab. Its whole refresh lands in the middle of tabA's, after
-				// tabA read the token live and before the read its rotation judges by.
-				tabB := e.build(t, nil, oidcprovider.WithRefreshSuccessorKey(sharedKey))
-				var (
-					loads   int
-					fired   bool
-					bResult *oidcprovider.TokenResponse
-					bErr    error
-				)
+				// The rotation judged by a read that was already stale: the family was one row
+				// when it read, and the other tab's successor was there when it wrote, so its
+				// write met a successor it had not observed.
+				assert.Equal(t, 1, tr.rowsBeforeLanding, "the token was live when the other tab landed")
+				assert.Equal(t, 2, tr.rowsAfterLanding, "the other tab's successor is stored")
+				require.Equal(t, 1, tr.supersedes, "tabA's rotation wrote once")
+				assert.Equal(t, 1, tr.supersedesAfterLanding, "tabA's write came after the other tab's")
+				// The four reads before a rotation's write are the family check, the manager's read,
+				// the read that guards a slow user load, and the rotation's own: the landing came
+				// after all of them, and the one read after it is the refusal's reload.
+				assert.Equal(t, 4, tr.loadsAtLanding, "the landing came after the rotation's own read")
+				assert.Equal(t, 5, tr.loads, "the lost write reloads the token once")
+			},
+		},
+		{
+			name: "a second read that finds the other tab's write answers the same successor",
+			assert: func(t *testing.T, e *durEnv) {
+				tr := e.raceOtherTab(t, sharedKey, landBeforeFourthLoad)
+
 				// The loads of the token in one refresh: its family check, the manager's read, the
-				// read that guards a slow user load, and the rotation's own. The fourth is the
-				// rotation's, the second read the manager makes.
-				land := func(wrapped session.Store) session.Store {
-					return hookedLineage{Store: wrapped, beforeLoad: func(ctx context.Context, got string) {
-						if got != secret || fired {
-							return
-						}
-						loads++
-						if loads == 4 {
-							fired = true
-							bResult, bErr = e.refresh(ctx, tabB, durWeb, rt0)
-						}
-					}}
-				}
-				tabA := e.build(t, land, oidcprovider.WithRefreshSuccessorKey(sharedKey))
-
-				res, err := e.refresh(t.Context(), tabA, durWeb, rt0)
-				require.True(t, fired, "the other tab's write landed mid-refresh")
-				require.NoError(t, bErr)
-				require.NoError(t, err, "no dependency failure from an identifier in use")
-				assert.Equal(t, bResult.RefreshToken, res.RefreshToken, "the same successor")
-				assert.Equal(t, 1, e.heads(t, family))
-				assert.Equal(t, 2, e.lineageRows(t, family))
-				e.mustRefresh(t, issuer, durWeb, res.RefreshToken)
+				// read that guards a slow user load, and the rotation's own. The other tab lands
+				// before the fourth, so the rotation reads the superseded token, and a read follows.
+				assert.Equal(t, 1, tr.rowsBeforeLanding, "the token was live when the other tab landed")
+				assert.Equal(t, 2, tr.rowsAfterLanding, "the other tab's successor is stored")
+				assert.Equal(t, 4, tr.loadsAtLanding, "the other tab landed at the rotation's own read")
+				assert.Greater(t, tr.loads, tr.loadsAtLanding, "a read of the token followed the landing")
+				assert.Zero(t, tr.supersedes, "the rotation found the successor and wrote nothing")
 			},
 		},
 		{
 			name: "no credential is in any column after a real exchange and refresh",
 			assert: func(t *testing.T, e *durEnv) {
+				e.requireScanSeesCredentials(t)
+
 				p := e.build(t, nil)
 				credentials := make(map[string]string)
 				for _, c := range []durClient{durWeb, durOpaque} {
@@ -624,11 +808,8 @@ func TestOIDCProvider_Durable(t *testing.T) {
 
 					// The scan sees the rows: the grant's family, which is no secret, is found.
 					family := familyOf(t, issued.tokens.RefreshToken)
-					seen := false
-					for _, text := range dumpDatabase(t, e.conn.DB) {
-						seen = seen || strings.Contains(text, family.String())
-					}
-					require.True(t, seen, "the scan finds the grant's rows")
+					require.NotEmpty(t, findCredentials(dumpDatabase(t, e.conn.DB), map[string]string{"family": family.String()}),
+						"the scan finds the grant's rows")
 
 					for label, secret := range map[string]string{
 						"pending handle": issued.handle, "flow secret": issued.flow,
@@ -645,14 +826,20 @@ func TestOIDCProvider_Durable(t *testing.T) {
 					}
 				}
 
-				for table, text := range dumpDatabase(t, e.conn.DB) {
-					for label, credential := range credentials {
-						for _, spelling := range spellings(credential) {
-							if strings.Contains(text, spelling) {
-								assert.Failf(t, "a credential is kept in clear", "table %s holds the %s", table, label)
-							}
-						}
-					}
+				// The consents and clients are in rows the scan reads: it finds their keys, which
+				// are no secrets, in their tables.
+				dump := dumpDatabase(t, e.conn.DB)
+				assert.Positive(t, countRows(t, e.conn.DB, "op_consents", ""), "op_consents holds rows")
+				assert.Positive(t, countRows(t, e.conn.DB, "op_clients", ""), "op_clients holds rows")
+				assert.Contains(t, dump["op_consents"], string(durUser), "the scan reads the consents")
+				for _, c := range []durClient{durWeb, durOpaque} {
+					assert.Contains(t, dump["op_clients"], c.id, "the scan reads the clients")
+					// A client's secret is kept as a digest, so the secret itself is a credential too.
+					credentials[c.id+" client secret"] = c.secret
+				}
+
+				for _, hit := range findCredentials(dump, credentials) {
+					assert.Failf(t, "a credential is kept in clear", "table %s holds the %s", hit.table, hit.label)
 				}
 			},
 		},
@@ -666,7 +853,7 @@ func TestOIDCProvider_Durable(t *testing.T) {
 				t.Run(tc.name, func(t *testing.T) {
 					t.Parallel()
 
-					tc.assert(t, newDurEnv(t, adapter.open))
+					tc.assert(t, newDurEnv(t, adapter.name, adapter.open))
 				})
 			}
 		})
