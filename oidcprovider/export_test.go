@@ -24,3 +24,15 @@ func (p *Provider) ClientForTest(ctx context.Context, id string) (*RegisteredCli
 func (c *RegisteredClient) MatchesSecretForTest(secret []byte, now time.Time) bool {
 	return c.matchesSecret(secret, now)
 }
+
+// AssertionIDsHeldForTest counts what the default assertion identifier store holds.
+func (p *Provider) AssertionIDsHeldForTest() int {
+	memory, ok := p.assertionIDs.(*memoryAssertionIDs)
+	if !ok {
+		return -1
+	}
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	return len(memory.held)
+}

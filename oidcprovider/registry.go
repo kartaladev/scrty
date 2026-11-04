@@ -36,17 +36,25 @@ type RegisteredClient struct {
 	Secrets []ClientSecret
 }
 
-// ClientRegistry is where the provider reads its clients from.
+// ClientRegistry is where the provider reads its clients from. Deps.Registry supplies
+// one; with none, the provider keeps Deps.Clients in memory. A client read from it is
+// validated as it is read, and one that fails is treated as unknown and logged.
 type ClientRegistry interface {
 	// Client returns the client, or ErrClientNotFound.
 	Client(ctx context.Context, id string) (*RegisteredClient, error)
 }
 
-// ClientStore is a registry that can also be written.
+// ClientStore is a registry that can also be written. The provider itself never writes
+// clients, so this is the consumer's own administration. MemoryRegistry is the
+// in-memory implementation.
 type ClientStore interface {
 	ClientRegistry
+	// Put adds or replaces a client, validated as construction validates one.
 	Put(ctx context.Context, c Client) error
+	// Delete removes a client, or answers ErrClientNotFound.
 	Delete(ctx context.Context, id string) error
+	// GenerateSecret gives the client a new secret of 256 bits, and returns it. This is
+	// the only time it can be read.
 	GenerateSecret(ctx context.Context, clientID string) (string, error)
 }
 
@@ -78,16 +86,25 @@ func digestSecret(secret []byte) []byte {
 	return sum[:]
 }
 
+// noSecretDigest fills a slot a client does not use, so a comparison costs the same
+// whatever the client holds.
+var noSecretDigest = make([]byte, sha256Size)
+
 // matchesSecret reports whether secret is one of the client's live secrets at now.
-// It compares digests in constant time, and checks every held secret whatever an
-// earlier one answered, so the time taken says nothing about which one matched.
+// It compares digests in constant time, and makes the same comparisons however many
+// secrets are held and whatever an earlier one answered, so the time taken says
+// nothing about which one matched, or whether the client holds any.
 func (c *RegisteredClient) matchesSecret(secret []byte, now time.Time) bool {
 	presented := digestSecret(secret)
 
 	matched := 0
-	for _, held := range c.Secrets {
-		live := held.ExpiresAt.IsZero() || now.Before(held.ExpiresAt)
-		if subtle.ConstantTimeCompare(presented, held.Digest) == 1 && live {
+	for i := range maxClientSecrets {
+		digest, live := noSecretDigest, false
+		if i < len(c.Secrets) {
+			held := c.Secrets[i]
+			digest, live = held.Digest, held.ExpiresAt.IsZero() || now.Before(held.ExpiresAt)
+		}
+		if subtle.ConstantTimeCompare(presented, digest) == 1 && live {
 			matched = 1
 		}
 	}
@@ -317,8 +334,15 @@ func validateRegistered(rc *RegisteredClient) (*RegisteredClient, error) {
 
 // client reads a client through the registry, validated as it is read, because a
 // consumer's registry could not be checked at construction (R13). A client failing
-// that is logged with the setting and answered as unknown.
+// that is logged with the setting and answered as unknown. An identifier no client
+// could hold is answered as unknown without asking the registry, because anyone can
+// send one, and a NUL in a SQL parameter would make a stranger's request a dependency
+// failure.
 func (p *Provider) client(ctx context.Context, id string) (*RegisteredClient, error) {
+	if !validClientID(id) {
+		return nil, ErrClientNotFound
+	}
+
 	rc, err := p.registry.Client(ctx, id)
 	switch {
 	case errors.Is(err, ErrClientNotFound):

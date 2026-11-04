@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -18,19 +19,21 @@ import (
 
 // Deps holds what New requires.
 type Deps struct {
-	// Issuer is the provider's issuer identifier: an https URL with no query or
-	// fragment.
+	// Issuer is the provider's issuer identifier: an https URL with no query, fragment
+	// or user information. It is required. WithLoopbackHTTPIssuer also permits http on
+	// a loopback host.
 	Issuer string
 
-	// Clients are the configured clients, kept in an in-memory registry. Exactly
-	// one of Clients and Registry is set.
+	// Clients are the configured clients, kept in an in-memory registry, which is the
+	// default. Exactly one of Clients and Registry is set.
 	Clients []Client
 
-	// Registry replaces the in-memory registry. Exactly one of Clients and
-	// Registry is set.
+	// Registry replaces the in-memory registry, and its clients are validated as they
+	// are read. Exactly one of Clients and Registry is set.
 	Registry ClientRegistry
 
-	// Keys signs what the provider issues. It is required.
+	// Keys signs what the provider issues. It is required, and the provider does not
+	// generate keys of its own. It must be the source the chain's JWKS endpoint publishes.
 	Keys signingkey.KeySource
 
 	// Users loads the users tokens describe. It is required.
@@ -56,11 +59,23 @@ type Provider struct {
 	registry ClientRegistry
 	limits   keyLimits
 
+	assertionIDs AssertionIDStore
+	keySets      *clientKeySets
+
 	loginURL, consentURL, logoutURL, loggedOutURL string
 }
 
 // New builds a Provider. A wiring mistake fails with an error matching ErrConfig
-// that names the setting.
+// that names the setting. Every field of Deps is required, apart from the one of
+// Clients and Registry left unset.
+//
+// With no options: an https issuer, browser sessions on, logout asking only when no
+// valid hint names the browser's own sign-in, pending requests living 10 minutes, codes
+// 60 seconds, client assertions at most 5 minutes with the issuer as their sole audience,
+// assertion identifiers kept in memory, client key sets fetched through a default
+// outbound.Client, kept 15 minutes and refetched for an unknown kid at most every 30
+// seconds, the system clock, slog.Default and crypto/rand. Each option names its default
+// and its bound.
 func New(d Deps, opts ...Option) (*Provider, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -75,16 +90,38 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 		return nil, err
 	}
 
+	if cfg.assertionAudience == AudienceIssuerOrTokenEndpoint && !cfg.assertionTokenEndpointSet {
+		cfg.assertionTokenEndpoint = strings.TrimSuffix(d.Issuer, "/") + tokenEndpointPath
+	}
+
 	limits := limitsOf(d.Keys)
 	registry, err := d.buildRegistry(limits)
 	if err != nil {
 		return nil, err
 	}
 
+	out := cfg.outbound
+	if !cfg.outboundSet {
+		if out, err = outbound.New(); err != nil {
+			return nil, fmt.Errorf("%w: the default outbound client: %w", ErrConfig, err)
+		}
+	}
+	assertionIDs := cfg.assertionIDs
+	if !cfg.assertionIDsSet {
+		assertionIDs = newMemoryAssertionIDs(cfg.clock)
+	}
+
 	return &Provider{
 		cfg:          cfg,
 		registry:     registry,
 		limits:       limits,
+		assertionIDs: assertionIDs,
+		keySets: &clientKeySets{
+			out:      out,
+			clock:    cfg.clock,
+			ttl:      cfg.keysTTL,
+			cooldown: cfg.keysRefetchCooldown,
+		},
 		issuer:       d.Issuer,
 		keys:         d.Keys,
 		users:        d.Users,
@@ -146,7 +183,27 @@ func (d *Deps) validate(cfg *config) error {
 		return fmt.Errorf("%w: Clients and Registry: set exactly one, got neither", ErrConfig)
 	}
 
+	if cfg.assertionTokenEndpointSet {
+		if err := validateTokenEndpoint(cfg.assertionTokenEndpoint, d.Issuer); err != nil {
+			return err
+		}
+	}
+
 	return d.validatePages()
+}
+
+// validateTokenEndpoint requires an audience URL on the issuer's origin that a client
+// can compare exactly, so no query, fragment or user information.
+func validateTokenEndpoint(raw, issuer string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || !origin.Same(raw, issuer) {
+		return fmt.Errorf("%w: WithAssertionTokenEndpoint: must be an absolute URL on the issuer's origin", ErrConfig)
+	}
+	if u.User != nil || strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("%w: WithAssertionTokenEndpoint: must have no query, fragment or user information", ErrConfig)
+	}
+
+	return nil
 }
 
 func (d *Deps) validatePages() error {

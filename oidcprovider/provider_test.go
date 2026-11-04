@@ -254,6 +254,83 @@ func TestNew_Construction(t *testing.T) {
 			assert: refused("WithClientAssertionAudience"),
 		},
 		{
+			name: "token endpoint on the issuer's origin, under the compatibility rule",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint(issuer + "/api/oauth/token"),
+			},
+			assert: built,
+		},
+		{
+			name: "token endpoint relative",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint("/api/oauth/token"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint empty",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint(""),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint on another origin",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint("https://other.example.com/token"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint on another port",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint(issuer + ":8443/token"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint with a fragment",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint(issuer + "/token#x"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint with a query",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint(issuer + "/token?x=1"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint with user information",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint("https://u@id.example.com/token"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name:   "token endpoint under the default issuer-only rule means nothing",
+			opts:   []oidcprovider.Option{oidcprovider.WithAssertionTokenEndpoint(issuer + "/api/oauth/token")},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
+			name: "token endpoint under an explicit issuer-only rule means nothing",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOnly),
+				oidcprovider.WithAssertionTokenEndpoint(issuer + "/api/oauth/token"),
+			},
+			assert: refused("WithAssertionTokenEndpoint"),
+		},
+		{
 			name:   "refetch cooldown of zero",
 			opts:   []oidcprovider.Option{oidcprovider.WithClientKeysRefetchCooldown(0)},
 			assert: refused("WithClientKeysRefetchCooldown"),
@@ -269,6 +346,10 @@ func TestNew_Construction(t *testing.T) {
 		{name: "nil logger", opts: []oidcprovider.Option{oidcprovider.WithLogger(nil)}, assert: refused("WithLogger")},
 		{name: "nil random", opts: []oidcprovider.Option{oidcprovider.WithRandom(nil)}, assert: refused("WithRandom")},
 		{name: "nil outbound", opts: []oidcprovider.Option{oidcprovider.WithOutbound(nil)}, assert: refused("WithOutbound")},
+		{name: "nil assertion store", opts: []oidcprovider.Option{oidcprovider.WithAssertionIDStore(nil)}, assert: refused("WithAssertionIDStore")},
+		{name: "typed nil assertion store", opts: []oidcprovider.Option{oidcprovider.WithAssertionIDStore((*MockAssertionIDStore)(nil))}, assert: refused("WithAssertionIDStore")},
+		{name: "a zero key-set lifetime", opts: []oidcprovider.Option{oidcprovider.WithClientKeysTTL(0)}, assert: refused("WithClientKeysTTL")},
+		{name: "a negative key-set lifetime", opts: []oidcprovider.Option{oidcprovider.WithClientKeysTTL(-time.Second)}, assert: refused("WithClientKeysTTL")},
 		{name: "nil option is skipped", opts: []oidcprovider.Option{nil}, assert: built},
 
 		// Defaults and their overrides.
@@ -287,6 +368,35 @@ func TestNew_Construction(t *testing.T) {
 				}, p.BoundsForTest())
 				assert.True(t, p.BrowserSessionsForTest())
 				assert.False(t, p.LogoutConfirmationForTest())
+			},
+		},
+		{
+			name: "the token endpoint in use, by rule",
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Empty(t, p.AssertionTokenEndpoint(), "the default rule names no token endpoint")
+			},
+		},
+		{
+			name: "the token endpoint under the compatibility rule is derived from the issuer",
+			opts: []oidcprovider.Option{oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint)},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, issuer+"/oauth2/token", p.AssertionTokenEndpoint())
+			},
+		},
+		{
+			name: "the token endpoint under the compatibility rule is the one given",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+				oidcprovider.WithAssertionTokenEndpoint(issuer + "/api/oauth/token"),
+			},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, issuer+"/api/oauth/token", p.AssertionTokenEndpoint())
 			},
 		},
 		{

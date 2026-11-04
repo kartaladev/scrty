@@ -132,11 +132,11 @@ func (SecretBytes) MarshalText() ([]byte, error) { return []byte(redacted), nil 
 
 // Client is one relying party's registration.
 type Client struct {
-	// ID is the client identifier, required.
+	// ID is the client identifier, required, in printable ASCII.
 	ID string
-	// Name is shown to the user.
+	// Name is shown to the user. It is optional.
 	Name string
-	// Type is required.
+	// Type is required, and has no default.
 	Type ClientType
 	// ApplicationType defaults to Web.
 	ApplicationType ApplicationType
@@ -148,25 +148,31 @@ type Client struct {
 	// Secret is a secret the consumer supplies, at least 32 bytes. It is nil once
 	// registered, when only its digest is kept. It prints and marshals redacted.
 	Secret SecretBytes
-	// JWKS is the registered key set for PrivateKeyJWT.
+	// JWKS is the registered key set for PrivateKeyJWT, holding public keys only.
+	// PrivateKeyJWT takes exactly one of JWKS and JWKSURI, and no other method takes
+	// either.
 	JWKS []byte
-	// JWKSURI is where to fetch the key set for PrivateKeyJWT, over https.
+	// JWKSURI is where to fetch the key set for PrivateKeyJWT, over https, through the
+	// provider's outbound client.
 	JWKSURI string
 
 	// RedirectURIs are required when the client uses the authorization endpoint.
 	RedirectURIs []string
-	// PostLogoutRedirectURIs follow the same rules as RedirectURIs.
+	// PostLogoutRedirectURIs follow the same rules as RedirectURIs. There are none by
+	// default.
 	PostLogoutRedirectURIs []string
-	// BackChannelLogoutURI must be https.
+	// BackChannelLogoutURI must be https. It is empty by default, and the client then
+	// gets no back-channel logout.
 	BackChannelLogoutURI string
 
-	// Scopes are those the client may ask for.
+	// Scopes are those the client may ask for. There are none by default.
 	Scopes []string
-	// Resources are those the client may ask for.
+	// Resources are those the client may ask for. There are none by default.
 	Resources []string
-	// DefaultAudience is used when a request names no resource.
+	// DefaultAudience is used when a request names no resource. It is empty by default.
 	DefaultAudience []string
-	// ResourceIdentifier names this client as a resource server.
+	// ResourceIdentifier names this client as a resource server. It is empty by
+	// default.
 	ResourceIdentifier string
 	// GrantTypes defaults to GrantAuthorizationCode alone.
 	GrantTypes []GrantType
@@ -182,7 +188,7 @@ type Client struct {
 	IDTokenLifetime time.Duration
 	// AccessTokenLifetime defaults to 5 minutes, within the key cap.
 	AccessTokenLifetime time.Duration
-	// OpaqueAccessTokens replaces JWT access tokens.
+	// OpaqueAccessTokens replaces JWT access tokens, which are the default.
 	OpaqueAccessTokens bool
 	// RequireBinding defaults to BindingOptional.
 	RequireBinding BindingRequirement
@@ -194,13 +200,14 @@ type Client struct {
 	GrantIdleTimeout time.Duration
 	// GrantAbsoluteLifetime defaults to 90 days.
 	GrantAbsoluteLifetime time.Duration
-	// DisableRotation is only for a confidential client required to use
-	// sender-constrained tokens.
+	// DisableRotation turns off refresh token rotation, which is on by default. It is
+	// only for a confidential client required to use sender-constrained tokens.
 	DisableRotation bool
 	// EndGrantsWithSignIn ends the client's grants with the sign-in they came
-	// from. A public web client's default is on.
+	// from. A public web client's default is on, and any other's is off.
 	EndGrantsWithSignIn bool
-	// KeepPublicWebGrantsPastSignIn overrides a public web client's default.
+	// KeepPublicWebGrantsPastSignIn overrides a public web client's default, and is
+	// only for one. It contradicts EndGrantsWithSignIn.
 	KeepPublicWebGrantsPastSignIn bool
 
 	// Metadata belongs to the consumer, and is returned unchanged.
@@ -303,8 +310,7 @@ func (c *Client) validateKind() error {
 	if c.ID == "" {
 		return c.refuse("ID", "is required")
 	}
-	// RFC 6749 appendix A: printable ASCII, so it is safe in a log and in Basic.
-	if strings.ContainsFunc(c.ID, func(r rune) bool { return r < 0x20 || r > 0x7e }) {
+	if !validClientID(c.ID) {
 		return c.refuse("ID", "must be printable ASCII")
 	}
 	if c.Type != Confidential && c.Type != Public {
@@ -315,6 +321,12 @@ func (c *Client) validateKind() error {
 	}
 
 	return c.validateMethod()
+}
+
+// validClientID says whether a client could be registered under id: not empty, and,
+// by RFC 6749 appendix A, printable ASCII, so it is safe in a log and in Basic.
+func validClientID(id string) bool {
+	return id != "" && !strings.ContainsFunc(id, func(r rune) bool { return r < 0x20 || r > 0x7e })
 }
 
 func (c *Client) validateMethod() error {
@@ -389,15 +401,27 @@ func (c *Client) validateCredentials() error {
 func (c *Client) checkPublicKeys(setting string, set jwk.Set) error {
 	for i := range set.Len() {
 		key, _ := set.Key(i)
-		if _, symmetric := key.(jwk.SymmetricKey); symmetric || key.Has("k") {
+		if isSymmetricKey(key) {
 			return c.refuse(setting, fmt.Sprintf("key %d is a symmetric key; only public keys are accepted", i))
 		}
-		if private, err := jwk.IsPrivateKey(key); (err == nil && private) || key.Has("d") {
+		if isPrivateKey(key) {
 			return c.refuse(setting, fmt.Sprintf("key %d holds private material; only public keys are accepted", i))
 		}
 	}
 
 	return nil
+}
+
+func isSymmetricKey(key jwk.Key) bool {
+	_, symmetric := key.(jwk.SymmetricKey)
+
+	return symmetric || key.Has("k")
+}
+
+func isPrivateKey(key jwk.Key) bool {
+	private, err := jwk.IsPrivateKey(key)
+
+	return (err == nil && private) || key.Has("d")
 }
 
 func (c *Client) validateGrantTypes() error {

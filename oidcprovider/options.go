@@ -21,9 +21,9 @@ const (
 	// audience. It is the default.
 	AudienceIssuerOnly AudienceRule = iota
 
-	// AudienceIssuerOrTokenEndpoint also accepts the token endpoint URL, for
-	// clients built to OIDC Core's older recommendation. It accepts the ambiguity
-	// CVE-2025-27370 describes.
+	// AudienceIssuerOrTokenEndpoint also accepts the token endpoint URL, the issuer
+	// followed by /oauth2/token (or the URL WithAssertionTokenEndpoint names), for
+	// clients built to OIDC Core's older recommendation. It accepts the ambiguity CVE-2025-27370 describes.
 	AudienceIssuerOrTokenEndpoint
 )
 
@@ -44,20 +44,27 @@ type RequestBounds struct {
 }
 
 type config struct {
-	loopbackHTTPIssuer  bool
-	browserSessions     bool
-	logoutConfirmation  bool
-	bounds              RequestBounds
-	pendingLifetime     time.Duration
-	codeLifetime        time.Duration
-	assertionAudience   AudienceRule
-	assertionMax        time.Duration
-	keysRefetchCooldown time.Duration
-	outbound            *outbound.Client
-	outboundSet         bool
-	clock               clock.Clock
-	logger              *slog.Logger
-	random              io.Reader
+	loopbackHTTPIssuer bool
+	browserSessions    bool
+	logoutConfirmation bool
+	bounds             RequestBounds
+	pendingLifetime    time.Duration
+	codeLifetime       time.Duration
+	assertionAudience  AudienceRule
+	// assertionTokenEndpoint is the audience URL AudienceIssuerOrTokenEndpoint accepts.
+	// New fills it in from the issuer when the option is not given.
+	assertionTokenEndpoint    string
+	assertionTokenEndpointSet bool
+	assertionMax              time.Duration
+	keysRefetchCooldown       time.Duration
+	keysTTL                   time.Duration
+	assertionIDs              AssertionIDStore
+	assertionIDsSet           bool
+	outbound                  *outbound.Client
+	outboundSet               bool
+	clock                     clock.Clock
+	logger                    *slog.Logger
+	random                    io.Reader
 }
 
 // The defaults New applies and the bounds it enforces, each named on its option.
@@ -69,6 +76,7 @@ const (
 	defaultAssertionMax        = 5 * time.Minute
 	maxAssertionMax            = time.Hour
 	defaultKeysRefetchCooldown = 30 * time.Second
+	defaultKeysTTL             = 15 * time.Minute
 	defaultParamBound          = 2048
 	defaultScopeBound          = 4096
 )
@@ -81,6 +89,7 @@ func defaultConfig() config {
 		assertionAudience:   AudienceIssuerOnly,
 		assertionMax:        defaultAssertionMax,
 		keysRefetchCooldown: defaultKeysRefetchCooldown,
+		keysTTL:             defaultKeysTTL,
 		clock:               clock.System(),
 		logger:              slog.Default(),
 		random:              rand.Reader,
@@ -102,8 +111,17 @@ func (c *config) validate() error {
 	if c.assertionAudience > AudienceIssuerOrTokenEndpoint {
 		return fmt.Errorf("%w: WithClientAssertionAudience: unknown rule %d", ErrConfig, c.assertionAudience)
 	}
+	if c.assertionTokenEndpointSet && c.assertionAudience != AudienceIssuerOrTokenEndpoint {
+		return fmt.Errorf("%w: WithAssertionTokenEndpoint: has no meaning unless WithClientAssertionAudience(AudienceIssuerOrTokenEndpoint) is given", ErrConfig)
+	}
 	if c.keysRefetchCooldown <= 0 {
 		return fmt.Errorf("%w: WithClientKeysRefetchCooldown: must be positive", ErrConfig)
+	}
+	if c.keysTTL <= 0 {
+		return fmt.Errorf("%w: WithClientKeysTTL: must be positive", ErrConfig)
+	}
+	if c.assertionIDsSet && nilcheck.IsNil(c.assertionIDs) {
+		return fmt.Errorf("%w: WithAssertionIDStore: must not be nil", ErrConfig)
 	}
 	if c.outboundSet && c.outbound == nil {
 		return fmt.Errorf("%w: WithOutbound: must not be nil", ErrConfig)
@@ -198,7 +216,8 @@ func WithCodeLifetime(d time.Duration) Option {
 }
 
 // WithClientAssertionAudience replaces the assertion audience rule. The default
-// is AudienceIssuerOnly.
+// is AudienceIssuerOnly. An unknown rule fails construction. Under every rule an
+// assertion names one audience.
 func WithClientAssertionAudience(r AudienceRule) Option {
 	return func(c *config) { c.assertionAudience = r }
 }
@@ -211,13 +230,15 @@ func WithClientAssertionMaxLifetime(d time.Duration) Option {
 }
 
 // WithClientKeysRefetchCooldown replaces how often an unknown kid may refetch a
-// client's jwks_uri. The default is 30 seconds, and the value must be positive.
+// client's jwks_uri, and how long a failed fetch is answered before it is tried again.
+// The default is 30 seconds, and the value must be positive.
 func WithClientKeysRefetchCooldown(d time.Duration) Option {
 	return func(c *config) { c.keysRefetchCooldown = d }
 }
 
-// WithOutbound replaces the client that fetches clients' key sets. It must not
-// be nil.
+// WithOutbound replaces the client that fetches clients' key sets, and so what confines
+// those fetches. The default is outbound.New with no options: https only, redirects
+// staying on the origin, and the time and size bounds it names. It must not be nil.
 func WithOutbound(o *outbound.Client) Option {
 	return func(c *config) { c.outbound, c.outboundSet = o, true }
 }
@@ -238,4 +259,35 @@ func WithLogger(l *slog.Logger) Option {
 // Reader, and it must not be nil.
 func WithRandom(r io.Reader) Option {
 	return func(c *config) { c.random = r }
+}
+
+// WithAssertionIDStore replaces where accepted client assertion identifiers are
+// recorded. The default keeps them in memory, which is lost with the process and not
+// shared between instances, so a deployment of more than one instance needs a shared
+// store to refuse a replay across them. It must not be nil.
+func WithAssertionIDStore(s AssertionIDStore) Option {
+	return func(c *config) { c.assertionIDs, c.assertionIDsSet = s, true }
+}
+
+// WithClientKeysTTL replaces how long a key set fetched from a client's jwks_uri is
+// used before it is fetched again, which bounds how long a key the client has
+// withdrawn keeps authenticating it. The default is 15 minutes, and the value must be
+// positive.
+func WithClientKeysTTL(d time.Duration) Option {
+	return func(c *config) { c.keysTTL = d }
+}
+
+// WithAssertionTokenEndpoint replaces the token endpoint URL that
+// AudienceIssuerOrTokenEndpoint accepts as an assertion's audience. The default is the
+// issuer followed by /oauth2/token, which holds only while the chain serves the token
+// endpoint there; a chain that moves it must say so here, or its clients' assertions
+// are refused. The chain checks the two agree: httpsec.EnableOIDCProvider compares
+// AssertionTokenEndpoint with the path it serves.
+//
+// The value must be an absolute URL on the issuer's origin with no query, fragment or
+// user information, and it is meaningful only under AudienceIssuerOrTokenEndpoint.
+// Given under the default issuer-only rule, it fails construction rather than being
+// ignored.
+func WithAssertionTokenEndpoint(url string) Option {
+	return func(c *config) { c.assertionTokenEndpoint, c.assertionTokenEndpointSet = url, true }
 }
