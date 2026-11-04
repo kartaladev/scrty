@@ -119,10 +119,6 @@ func newTokenEndpoint(t *testing.T, setup tokenSetup) *tokenEndpoint {
 			ID: tokenPostWeb, Type: oidcprovider.Confidential, Secret: secret, AuthMethod: oidcprovider.ClientSecretPost,
 			RedirectURIs: []string{rpCallback}, Scopes: scopes,
 		},
-		{
-			ID: tokenMTLSWeb, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{rpCallback},
-			Scopes: scopes, GrantTypes: both, RequireBinding: oidcprovider.BindingMTLS,
-		},
 	}
 
 	popts := []oidcprovider.Option{
@@ -141,6 +137,10 @@ func newTokenEndpoint(t *testing.T, setup tokenSetup) *tokenEndpoint {
 	}
 	if setup.cert {
 		chainOpts = append(chainOpts, httpsec.EnableCertificateBinding())
+		clients = append(clients, oidcprovider.Client{
+			ID: tokenMTLSWeb, Type: oidcprovider.Confidential, Secret: secret, RedirectURIs: []string{rpCallback},
+			Scopes: scopes, GrantTypes: both, RequireBinding: oidcprovider.BindingMTLS,
+		})
 	}
 
 	p, err := oidcprovider.New(oidcprovider.Deps{
