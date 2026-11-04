@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	identity "github.com/kartaladev/scrty/identity"
+	session "github.com/kartaladev/scrty/session"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -114,6 +115,44 @@ func (c *MockSessionRevokerDeleteByUserExceptCall) Do(f func(context.Context, id
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockSessionRevokerDeleteByUserExceptCall) DoAndReturn(f func(context.Context, identity.UserID, string) (int, error)) *MockSessionRevokerDeleteByUserExceptCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// ReportsEndsTo mocks base method.
+func (m *MockSessionRevoker) ReportsEndsTo(o session.EndObserver) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReportsEndsTo", o)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// ReportsEndsTo indicates an expected call of ReportsEndsTo.
+func (mr *MockSessionRevokerMockRecorder) ReportsEndsTo(o any) *MockSessionRevokerReportsEndsToCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportsEndsTo", reflect.TypeOf((*MockSessionRevoker)(nil).ReportsEndsTo), o)
+	return &MockSessionRevokerReportsEndsToCall{Call: call}
+}
+
+// MockSessionRevokerReportsEndsToCall wrap *gomock.Call
+type MockSessionRevokerReportsEndsToCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockSessionRevokerReportsEndsToCall) Return(arg0 bool) *MockSessionRevokerReportsEndsToCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockSessionRevokerReportsEndsToCall) Do(f func(session.EndObserver) bool) *MockSessionRevokerReportsEndsToCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockSessionRevokerReportsEndsToCall) DoAndReturn(f func(session.EndObserver) bool) *MockSessionRevokerReportsEndsToCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
