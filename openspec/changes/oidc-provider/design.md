@@ -1358,8 +1358,8 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **Slots.** `OrderOIDCProvider` is 250, inside CSRF and outside Basic and bearer, for the endpoints a client calls. `OrderOIDCProviderSession` is 850, inside the gates and session touch and outside the authorization stage, so a consumer's rules do not reach resume or consents.
 - **The check after wiring.** A wire step cannot return an error, and runs in option order. `checkAfterWiring` runs after every one, so a manager that gains an observer counts wherever its option stands. Every manager the chain records is checked, not only the bearer's.
 - **Binding the chain cannot verify.** A client requiring DPoP or a certificate is refused at construction when the chain does not verify it. The spec states the DPoP case, and certificates are the same wiring mistake (`library-design`, rule 6). A consumer's own registry cannot be listed, so `Provider.RequiresBinding` answers false for it and such a client is refused at the token endpoint instead.
-- **Framing.** Security headers must forbid framing in the document profile, not only be enabled. `WithOIDCPagesCarryFrameAncestors` remains the override. A route-matched profile cannot be seen at construction, as the godoc says.
-- **Paths.** `WithOIDCProviderPath` takes the whole request path, and the prefix does not apply to it. A path holding `?`, `#` or `%` could never match, and is refused.
+- **Framing.** Security headers must restrict framing in the document profile, not only be enabled. `frame-ancestors` may hold `'none'`, `'self'` and named `https` origins, in a typed policy or a raw header. RFC 9700 §4.16's own example names an origin, and OWASP accepts one where framing is needed, so refusing them was stricter than the standard. `*`, a scheme, a wildcard host, a plain `http` origin, an empty or missing directive, and report-only are refused. `WithOIDCPagesCarryFrameAncestors` remains the override. A route-matched profile cannot be seen at construction, as the godoc says.
+- **Paths.** `WithOIDCProviderPath` takes the whole request path, and the prefix does not apply to it. A path holding a character that needs escaping, such as a space, `?`, `#` or `%`, could not be published and compared as served, and is refused.
 - **Status.** `ErrDependency` answers 500 before the challenge and table checks, whatever it wraps.
 
 #### R24. What the token endpoint settled
@@ -1629,6 +1629,10 @@ Reasoned from scrty's own settled specs and the established design.
 - [OpenTelemetry, trace SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/): the batching processor's `maxQueueSize`, default 2048, drops spans when reached, and `Shutdown` includes a flush.
 
 ### R23 to R25
+
+**Researched (accessed 2026-11-05), for R23's framing:**
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §4.16: authorization servers must prevent clickjacking, and its example allows one named origin in `frame-ancestors`.
+- [OWASP, Clickjacking Defense Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html): `'none'` unless a need is identified; `'self'` and named origins are accepted.
 
 Reasoned from scrty's own settled specs and reproduced tests. R24's certificate refusal relies on [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705) naming no error code, as the implementing lane reported; this has not been re-checked.
 

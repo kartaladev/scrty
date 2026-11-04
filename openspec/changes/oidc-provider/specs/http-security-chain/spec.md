@@ -31,7 +31,11 @@ Building a chain with the provider SHALL fail with a configuration error naming 
 - the JWKS endpoint is not enabled;
 - the provider is enabled more than once;
 - a session manager the chain is wired with does not report sign-in ends to the provider (`sessions`), because grants would then outlive a logout;
-- two of its paths collide with each other or with another endpoint of the chain.
+- two of its paths collide with each other or with another endpoint of the chain;
+- one of its paths holds a character that would need escaping in a URL path, because it could then not be published and compared as served;
+- the JWKS endpoint publishes a different signing-key manager from the one the provider signs with. A wrapper on either side cannot be compared, and builds;
+- the provider accepts assertions naming a token endpoint other than its public URL;
+- a client the provider can list requires a binding the chain does not verify, or the provider and the chain disagree on whether DPoP is on.
 
 #### Scenario: No bearer mode
 - **WHEN** the provider is enabled on a chain with form login and no bearer mode
@@ -51,6 +55,14 @@ The provider also requires two protections its pages rest on. CSRF protection SH
 #### Scenario: Browser sessions without CSRF protection
 - **WHEN** the provider is enabled with its default browser sessions on a chain without CSRF protection
 - **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: Security headers that allow framing
+- **WHEN** the provider is enabled with security headers whose document policy has no `frame-ancestors`, is report-only, or allows `*`, a scheme, a wildcard host or a plain `http` origin
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: A named origin may frame the pages
+- **WHEN** the document policy's `frame-ancestors` holds only `'self'` and `https://ext.example.org:8000`
+- **THEN** the chain builds
 
 #### Scenario: Security headers missing
 - **WHEN** the provider is enabled on a chain without security headers, and the consumer has not stated that its pages carry `frame-ancestors`
