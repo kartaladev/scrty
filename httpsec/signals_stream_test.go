@@ -196,8 +196,10 @@ type streamRig struct {
 	setup    streamSetup
 
 	// listHook sees a listing before it runs, and an error it returns fails the listing.
+	// loadHook does the same for a load, which is what an authenticator's read is.
 	// userHook replaces what the user loader answers.
 	listHook atomic.Pointer[func(context.Context) error]
+	loadHook atomic.Pointer[func(context.Context) error]
 	userHook atomic.Pointer[func(context.Context) (*identity.Details, error)]
 
 	// lists counts listings, ends the end reports, and reuses the reuse reports. The ByTest
@@ -254,12 +256,15 @@ func newStreamRig(t *testing.T, setup streamSetup) *streamRig {
 
 	r.users = NewMockUserLoader(gomock.NewController(t))
 	r.users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
-		func(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+		func(ctx context.Context, user identity.UserID) (*identity.Details, error) {
 			if hook := r.userHook.Load(); hook != nil {
 				return (*hook)(ctx)
 			}
 
-			return storedUser(), nil
+			details := storedUser()
+			details.ID = user
+
+			return details, nil
 		})
 
 	opts := []httpsec.Option{
@@ -322,6 +327,16 @@ func (s *streamHookStore) ListByUser(ctx context.Context, user identity.UserID, 
 	}
 
 	return s.Store.ListByUser(ctx, user, at)
+}
+
+func (s *streamHookStore) Load(ctx context.Context, sid string) (*session.Session, error) {
+	if hook := s.rig.loadHook.Load(); hook != nil {
+		if err := (*hook)(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.Store.Load(ctx, sid)
 }
 
 // failListing makes every listing fail with a store's error until it is called with false.
@@ -1550,9 +1565,9 @@ func TestSessionSignals_Heartbeat_Ends(t *testing.T) {
 	}
 }
 
-// TestSessionSignals_Heartbeat_Wakes pins that a message never ends a stream, and that a flood of
+// TestSessionSignals_BusWakeUp pins that a message never ends a stream, and that a flood of
 // them cannot flood the store.
-func TestSessionSignals_Heartbeat_Wakes(t *testing.T) {
+func TestSessionSignals_BusWakeUp(t *testing.T) {
 	t.Parallel()
 
 	noBeat := streamSetup{
@@ -1575,6 +1590,55 @@ func TestSessionSignals_Heartbeat_Wakes(t *testing.T) {
 				assert.Equal(t, []string{"session"}, stream.sent())
 				r.requireLive(t, stream)
 				r.requireHarmless(t, 0, 0)
+			},
+		},
+		{
+			name:  "a message whose session still exists is not forwarded, and the heartbeat ends it later",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				// A forged message, or one whose outer transaction rolled back.
+				r.wakeWith(s, "logout")
+				r.requireLive(t, stream)
+
+				// The reason it named is past its window by the time the store agrees.
+				advance(2*time.Minute + 30*time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+				advanceUntil(t, 70*time.Second, "the heartbeat", stream.closed)
+
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "several wake-ups at once coalesce into one reload",
+			setup: noBeat,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				lists := r.lists.Load()
+				hub := httpsec.SignalHubProbeOf(r.chain)
+
+				held := r.holdListings(t)
+
+				// The first is taken, and is the read held here. The rest have one slot to fill.
+				r.wakeWith(s, "")
+				require.EqualValues(t, 1, held.entered.Load())
+
+				for range 8 {
+					hub.Deliver(httpsec.SignalEnvelope{User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded)})
+				}
+
+				held.letGo()
+				synctest.Wait()
+				assert.EqualValues(t, 1, r.lists.Load()-lists, "a wake inside the gap reloaded")
+
+				advance(2 * time.Second)
+				assert.EqualValues(t, 2, r.lists.Load()-lists, "nine wake-ups are one, and one more pending")
+				r.requireLive(t, stream)
 			},
 		},
 		{
@@ -3897,6 +3961,15 @@ func TestSessionSignals_Heartbeat_Admission(t *testing.T) {
 		}
 	}
 
+	answeredRetry := func(t *testing.T, f *signalsFixture, resp *http.Response) {
+		t.Helper()
+
+		requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+
+		open, _ := httpsec.SignalHubProbeOf(f.chain).Registry().Stats()
+		assert.Zero(t, open)
+	}
+
 	cases := []testCase{
 		{
 			name: "a disabled user is 401, on a consumer's Users",
@@ -3964,7 +4037,7 @@ func TestSessionSignals_Heartbeat_Admission(t *testing.T) {
 				})}, wrapHandler: withSignalsTenant}
 			},
 			open:   openFor,
-			assert: refused(http.StatusInternalServerError),
+			assert: answeredRetry,
 		},
 		{
 			name: "a tenant-scoped session store with no hook opens no stream, and is a dependency failure",
@@ -3977,7 +4050,7 @@ func TestSessionSignals_Heartbeat_Admission(t *testing.T) {
 				}
 			},
 			open:   openFor,
-			assert: refused(http.StatusInternalServerError),
+			assert: answeredRetry,
 		},
 		{
 			name: "the first read of the user is bounded by the same budget, on a context with none of the request's values",
@@ -4275,7 +4348,7 @@ func TestSessionSignals_Heartbeat_Panic(t *testing.T) {
 
 		resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
 
-		requireNoStream(t, resp, http.StatusInternalServerError)
+		requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
 		assert.Nil(t, g.reachedTop.Load(), "the panic reached what is above the chain")
 		assert.NotContains(t, g.logs.String(), streamSecret)
 		assert.Equal(t, "reload", streamLogRecord(t, g.logs.String(), "panic")["phase"])

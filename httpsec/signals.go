@@ -73,8 +73,8 @@ const NoMaxAge time.Duration = -1
 // answered with. The others are what a consumer's own calls return, or are internal
 // to the stream's answer, so none of them maps to a status of its own.
 var (
-	// ErrSessionSignalsDisabled is what Chain.PublishSignal and
-	// Chain.ReportCredentialChange return on a chain without EnableSessionSignals.
+	// ErrSessionSignalsDisabled is what Chain.PublishSignal, Chain.ReportCredentialChange
+	// and Chain.CloseSessionSignals return on a chain without EnableSessionSignals.
 	ErrSessionSignalsDisabled = errors.New("httpsec: session signals are not enabled")
 
 	// ErrInvalidSignal refuses a consumer's signal whose name or data is outside
@@ -227,14 +227,16 @@ type SessionSignals struct {
 
 	// ReconnectDelay is the retry a stream states when it opens, so a browser
 	// reconnects after it when the stream drops, ±30% per stream, so that a replica's
-	// clients do not all come back at one moment.
+	// clients do not all come back at one moment. Chain.CloseSessionSignals states a retry
+	// of its own, between 1 second and 3 times this, and exactly 1 second when that range
+	// is empty.
 	//
 	// Default: 5 seconds. It must be at least 1 millisecond, the smallest retry a stream
 	// can state.
 	ReconnectDelay time.Duration
 
 	// BusyDelay is the retry a request is answered with, ±30% per refusal, when a cap
-	// is reached or a dependency fails at admission.
+	// is reached or a dependency fails at admission (EnableSessionSignals says which).
 	//
 	// Default: 30 seconds. It must be at least 1 millisecond, the smallest retry a stream
 	// can state.
@@ -388,6 +390,26 @@ type SignalEnvelope struct {
 // who is not found or not active, is ErrAuthenticationRequired, and a failure of either
 // store is a dependency failure.
 //
+// What a retry could fix is answered 200 with only a retry, within SessionSignals.BusyDelay
+// ±30%, and then the response ends, because an EventSource gives up for good on any other
+// status and cannot tell one from another. That is a request over a cap, and a dependency
+// failure at any point on the stream's path, an authenticator's read of the session store
+// or the user store included: anything the chain's error mapping would answer with a 5xx.
+// So a consumer's interceptor that refuses this path with an error of its own that
+// StatusForError does not know is taken for a failure, and should write its answer itself;
+// a rate limit answered that way stays the consumer's. An answer begun before the failure
+// is not written over. It takes no place, closes no stream and charges nothing, and only GET
+// on the stream's path is answered so, so every other 5xx of the chain stands. A fetch() client
+// sees a 200 with no session event. It hides from a dashboard of statuses, so it is logged
+// at WARN with sampling, and counted in Chain.SessionSignalStats.
+//
+// The caps and the default bus are per replica: with N replicas a user can hold N times
+// SessionSignals.MaxPerUser streams, and a signal other than session_ended reaches only the
+// replica that raised it. A shared SessionSignals.Bus changes the second and not the first.
+//
+// Register Chain.CloseSessionSignals to shut a server down: with no such call an open stream
+// holds http.Server.Shutdown until its deadline, and a consumer's bus keeps its goroutines.
+//
 // A writer that cannot stream answers 501 (ErrStreamingUnsupported). Behind a consumer's
 // middleware that wraps the http.ResponseWriter, that takes an Unwrap method on the
 // wrapper. A consumer's interceptor that already wrote the response gets the chain's
@@ -416,6 +438,7 @@ func EnableSessionSignals(s SessionSignals) Option {
 
 		c.enable(option, func() error { return e.settle(c, option) })
 		c.register(e, OrderSessionSignals)
+		c.register(sessionSignalsRetry{e: e}, orderSessionSignalsRetry)
 		c.wire(func(ch *Chain) { e.wire(c, ch) })
 
 		return nil

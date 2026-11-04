@@ -1,0 +1,163 @@
+package httpsec
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"net/http"
+	"time"
+
+	"github.com/kartaladev/scrty/internal/hangup"
+)
+
+// orderSessionSignalsRetry is where a request for the stream that cannot be served now is answered
+// with only a retry: After(OrderCORS).
+//
+// It has to wrap every read of a store on the stream's path, and the first of them is an
+// authenticator's, far below the endpoint's own slot. A consumer's CookieAuthenticator can be
+// registered anywhere after OrderCSRF, so it is outside that slot too. It answers from inside
+// OrderCORS, so that what CORS and the security headers set is on what it writes whichever way they
+// come to set it: a cross-origin EventSource could not read a 200 with no CORS headers, and would give
+// up for good, which is what this answer exists to prevent.
+const orderSessionSignalsRetry = OrderCORS + 1
+
+// streamClosingRetryLeast is the least retry a closing replica states.
+const streamClosingRetryLeast = time.Second
+
+// The records of a request answered with only a retry. Neither holds an error's text, which can
+// quote a store's address or what it was asked.
+const (
+	msgStreamCapReached       = "httpsec: session signal stream refused: a cap is reached"
+	msgStreamDependencyFailed = "httpsec: session signal stream refused: a dependency failed"
+)
+
+// sessionSignalsRetry answers what a retry could fix on the stream's path. It is registered with
+// EnableSessionSignals, so a chain with no stream has none, and it looks only at GET on that path,
+// so every other answer of the chain stands.
+type sessionSignalsRetry struct{ e *sessionSignals }
+
+// Intercept passes every request on, and answers on the way out.
+func (s sessionSignalsRetry) Intercept(ex *Exchange, next Next) error {
+	if ex.Request.Method() != http.MethodGet || ex.Request.Path() != s.e.cfg.Path {
+		return next(ex)
+	}
+
+	err := next(ex)
+	if err == nil {
+		return nil
+	}
+
+	return s.e.answerRetryOnly(ex, err)
+}
+
+// answerRetryOnly answers err with 200 and only a retry when a retry could fix it, because an
+// EventSource gives up for good on any other status and cannot tell one from another. It returns what
+// the chain's error mapping should then answer, nil when nothing.
+//
+// Stream is what guards a response that has begun: it refuses, having written nothing, and err is
+// left to the chain's mapping, whose status a writer ignores by then. A writer that cannot stream never
+// could, so that stays 501: no retry would change it.
+func (e *sessionSignals) answerRetryOnly(ex *Exchange, err error) error {
+	if errors.Is(err, errStreamsClosed) {
+		// Closing is what this replica was told to do, so it is no refusal to report. The connection
+		// goes too, or a client would reconnect over it to the replica it is leaving.
+		ex.Writer.SetHeader("Connection", "close")
+
+		return e.retryOnlyOr(err, e.streamOnlyRetry(ex, e.closingRetry()))
+	}
+
+	overCap := errors.Is(err, ErrTooManyStreams)
+	if !overCap && !e.isDependencyFailure(ex, err) {
+		return err
+	}
+
+	delay := jittered(e.cfg.BusyDelay, streamRetryJitter, rand.Float64()) //nolint:gosec // jitter, not a secret
+
+	if streamErr := e.streamOnlyRetry(ex, delay); streamErr != nil {
+		return e.retryOnlyOr(err, streamErr)
+	}
+
+	if overCap {
+		e.logRetryOnly(ex.Context(), "cap-reached", msgStreamCapReached)
+
+		return nil
+	}
+
+	// It hides from a status-code dashboard, and a tenant-scoped store with no hook fails here and
+	// never as a reload, so this is where an operator sees either.
+	e.reloads.failures.Add(1)
+	e.logRetryOnly(ex.Context(), "dependency-failed", msgStreamDependencyFailed,
+		slog.String("error_type", fmt.Sprintf("%T", err)))
+
+	return nil
+}
+
+// retryOnlyOr is what the chain's error mapping answers once streamOnlyRetry has returned streamErr:
+// nothing when it answered, 501 for a writer that cannot stream, and otherwise the refusal it could not
+// write over a response that had begun.
+func (e *sessionSignals) retryOnlyOr(err, streamErr error) error {
+	switch {
+	case streamErr == nil:
+		return nil
+	case errors.Is(streamErr, ErrStreamingUnsupported):
+		return streamErr
+	default:
+		return err
+	}
+}
+
+// closingRetry is the retry a closing replica states: fresh, between 1 second and 3 × ReconnectDelay.
+// That range is empty for a ReconnectDelay under a third of a second, and the floor then stands: a
+// replica that is going away is a poor place to come back to sooner.
+func (e *sessionSignals) closingRetry() time.Duration {
+	spread := max(3*e.cfg.ReconnectDelay-streamClosingRetryLeast, 0)
+
+	return streamClosingRetryLeast + time.Duration(float64(spread)*rand.Float64()) //nolint:gosec // jitter, not a secret
+}
+
+// streamOnlyRetry answers with the stream's headers and a body of one retry, and then the response
+// ends. It returns what Stream returned.
+func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) error {
+	ex.Writer.SetHeader("Cache-Control", signalsCacheControl)
+	ex.Writer.SetHeader("Content-Type", signalsContentType)
+	ex.Writer.SetHeader("X-Accel-Buffering", "no")
+
+	return ex.Writer.Stream(cancelOnly{ex.Context()}, func(ctx context.Context, w EventWriter) error {
+		// On fiber a chain that refused after this leaves a body on an ended context, and the
+		// response is that refusal.
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		if err := writeRetry(w, delay); err != nil {
+			return nil //nolint:nilerr // the client has gone, and it was only ever told when to come back
+		}
+
+		_ = w.Flush()
+
+		return nil
+	})
+}
+
+// isDependencyFailure reports whether err is a failure of something the request depends on, and not
+// an answer: whatever the chain's error mapping would answer with a 5xx, because each such error is
+// one no client's request could have caused, and it may pass.
+//
+// What maps to 400, 401, 403, 405 or 429 is an answer, and stands. So does a request whose own client
+// hung up, which says nothing about a store. ErrStreamingStarted and ErrStreamingUnsupported map to
+// 5xx and are taken in here too, and it is Stream that then keeps their answers (answerRetryOnly). A
+// consumer's error the mapping does not know is taken for a failure, so an interceptor refusing with
+// one of its own answers the request itself, or the client is told to come back.
+func (e *sessionSignals) isDependencyFailure(ex *Exchange, err error) bool {
+	return !hangup.ByCaller(ex.Context(), err) && StatusForError(err) >= http.StatusInternalServerError
+}
+
+// logRetryOnly writes one of the records above, with sampling. A flood of requests over a cap or
+// during an outage writes one per window.
+func (e *sessionSignals) logRetryOnly(ctx context.Context, key, msg string, attrs ...slog.Attr) {
+	attrs = append(attrs, slog.String("flow", streamFlow))
+
+	logSampled(ctx, e.sampler, e.log, slog.LevelWarn, e.clock.Now(), streamFlow+sampleKeySeparator+key, msg, attrs...)
+}

@@ -569,7 +569,7 @@ func TestSessionSignals_Admission(t *testing.T) {
 			},
 			assert: func(t *testing.T, f *signalsFixture) {
 				resp, _ := f.openStream(t, f.signIn(t, "u-1").ID)
-				requireNoStream(t, resp, http.StatusInternalServerError)
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
 			},
 		},
 	}
@@ -788,7 +788,7 @@ func TestSessionSignals_Admission_ReloadContext(t *testing.T) {
 				return nil
 			}},
 			assert: func(t *testing.T, seen context.Context, _ *signalsFixture, resp *http.Response) {
-				requireNoStream(t, resp, http.StatusInternalServerError)
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
 				assert.Nil(t, seen, "no read ran with no context")
 			},
 		},

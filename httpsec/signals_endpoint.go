@@ -19,6 +19,9 @@ const (
 
 // Intercept answers the stream's path and passes everything else through. The
 // endpoint is terminal: nothing behind it runs for that path, whatever the answer.
+//
+// A cap, a close and a dependency failure are returned, and answered by sessionSignalsRetry,
+// which is what also sees the same failure from the authenticators outside this slot.
 func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 	if ex.Request.Path() != e.cfg.Path {
 		return next(ex)

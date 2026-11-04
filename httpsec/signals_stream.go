@@ -439,6 +439,18 @@ func (e *sessionSignals) runStream(ctx context.Context, w EventWriter, start str
 	l.logLifecycle(ctx, msgStreamOpened)
 
 	reason = l.run(ctx)
+
+	if reason == closeClosing {
+		l.lastRetry()
+	}
+}
+
+// lastRetry is a closing stream's last bytes: a fresh delay, so that a replica's clients do not all
+// come back at one moment. It is a field and not an event, and a client gone by now hears nothing.
+func (l *streamLoop) lastRetry() {
+	if err := writeRetry(l.w, l.e.closingRetry()); err == nil {
+		_ = l.w.Flush()
+	}
 }
 
 // streamRules is what the chain's configuration and the client's narrowing leave for st.
@@ -839,9 +851,14 @@ func (l *streamLoop) count(ctx context.Context, read streamRead, verdict streamV
 	)
 }
 
-// speak sends what is due from what the stream holds.
+// speak sends what is due from what the stream holds. A stream told to end during one event's slow
+// write says nothing more, as the loop would not.
 func (l *streamLoop) speak(ctx context.Context, now time.Time) string {
 	for _, event := range l.rules.speak(&l.held, now) {
+		if reason := l.told(ctx); reason != "" {
+			return reason
+		}
+
 		if reason := l.send(ctx, event); reason != "" {
 			return reason
 		}

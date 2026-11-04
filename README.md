@@ -1380,6 +1380,52 @@ those products' own documentation.
   the connection's write deadline, and one with no `Flush` either is answered 501
   (`httpsec.ErrStreamingUnsupported`), as `http.TimeoutHandler` is.
 
+### Shutting down
+
+`http.Server.Shutdown` waits for active handlers and cancels nothing, so an open stream holds it until
+its deadline. Register `CloseSessionSignals` with it:
+
+```go
+srv.RegisterOnShutdown(func() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := chain.CloseSessionSignals(ctx); err != nil {
+		slog.Warn("session signal streams still closing", "error", err)
+	}
+})
+```
+
+Go runs it in a goroutine of its own and does not wait for it, so `Shutdown` is what then waits for the
+handlers. Keep the timeout inside `Shutdown`'s own deadline.
+
+Each stream closes with no event. Its last bytes are a `retry` of its own between 1 second and 3 ×
+`ReconnectDelay`, so a drained replica's clients spread out, and your load balancer can send them
+elsewhere. A stream requested afterwards gets 200 with only such a `retry`, and `Connection: close`,
+and is not registered: a 503 would stop an `EventSource` for good. The call returns when every body has
+returned, or with its context's error. A body blocked in a write to a stalled client does not stop it
+returning, and a second call ends nothing new and waits on its own context.
+
+On fiber, fasthttp's `Done()` at shutdown ends streams too, and the call still ends a consumer's bus
+and refuses new streams. A chain never closed keeps its bus's two goroutines, and a signal still queued
+for the bus when it closes can be lost.
+
+### What an operator can read
+
+`chain.SessionSignalStats()` takes no lock on the delivery path, and is for your metrics, not for an
+untrusted caller.
+
+| Field | What it says |
+| --- | --- |
+| `Open` | streams holding a place on this replica |
+| `RefusedByCap` | requests a cap answered with only a `retry` |
+| `ReloadFailures` | reads on open streams that failed or timed out, and requests a failing dependency answered with only a `retry`, which is where a tenant-scoped store with no `ReloadContext` shows |
+| `ConsecutiveReloadFailures` | reads in a row that failed, added up over the open streams, so judge it against `Open` |
+| `BusSubscribed` | a consumer's bus has its subscription up |
+| `BusDropped` | signals a consumer's bus could not take, its queue being full |
+| `BusPublishFailures` | calls to a consumer's `Publish` that failed, timed out or panicked |
+| `StreamDropped` | signals a stream's own queue dropped, so one stalled tab does not read as a bus falling behind |
+
 ### Limits
 
 - **Concurrent streams.** At most `MaxPerSignIn` (4) for a sign-in, `MaxPerUser` (16) for a user and
@@ -1388,6 +1434,12 @@ those products' own documentation.
   address behind a proxy with no trusted-proxy setting. A request over a cap gets 200 with only a
   longer `retry`, and existing streams are kept. It is logged at WARN with sampling, and counted in
   `chain.SessionSignalStats()`.
+- **A dependency that fails.** A session or user store that cannot answer a request for the stream,
+  at an authenticator's read or at the stream's first, gets the same 200 with only a longer `retry`,
+  because a browser gives up for good on a 5xx. Only `GET` on `Path` is answered so, and every other
+  5xx of the chain stands. It takes the same WARN, and counts in `ReloadFailures`. A rate limit of
+  yours on this path stays yours when it writes its own answer, or returns an error
+  `httpsec.StatusForError` maps; any other error it returns is taken for a failing dependency.
 - **A provider's logout.** A back-channel logout that ends sessions through the session manager
   reaches their streams as `session_ended` with the reason `provider_logout`. Streams are matched by a
   digest of the issuer and the upstream session, and the raw values stay out of a stream, the bus and
