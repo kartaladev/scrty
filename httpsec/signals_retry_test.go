@@ -18,6 +18,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/session"
@@ -344,4 +345,192 @@ func TestSessionSignals_Caps_ConsumersAdapterTakesTheTypeBack(t *testing.T) {
 	}, w)), httpsec.ErrStreamingUnsupported)
 
 	assert.Equal(t, []string{""}, w.header["Content-Type"])
+}
+
+// firstReadSecret is text a dependency's error carries that no returned error may.
+const firstReadSecret = "dial tcp 10.0.0.9: password=hunter2"
+
+// stubUsers is a UserLoader that answers every read with load.
+type stubUsers struct {
+	load func(ctx context.Context) (*identity.Details, error)
+}
+
+func (s stubUsers) LoadByUsername(ctx context.Context, _ string) (*identity.Details, error) {
+	return s.load(ctx)
+}
+
+func (s stubUsers) LoadByUserID(ctx context.Context, _ identity.UserID) (*identity.Details, error) {
+	return s.load(ctx)
+}
+
+// listFailingStore is a session store whose listing, the stream's own read, fails once armed.
+type listFailingStore struct {
+	session.Store
+
+	armed atomic.Bool
+}
+
+func (s *listFailingStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	if s.armed.Load() {
+		return nil, errors.New(firstReadSecret)
+	}
+
+	return s.Store.ListByUser(ctx, user, now)
+}
+
+// TestSessionSignals_Caps_FirstReadReturnsNoDependencyText is each way the stream's first read of the
+// sign-in and its user can fail, with the chain's error handler made to see the error. A dependency's
+// text is in no error the request returns, as at the authenticators' own reads, and the cause stays
+// reachable where there is one.
+func TestSessionSignals_Caps_FirstReadReturnsNoDependencyText(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		signals httpsec.SessionSignals
+		store   *listFailingStore
+
+		// hangUp has the client leave while the user read is in flight, and the read then fail.
+		hangUp bool
+
+		assert func(t *testing.T, err error)
+	}
+
+	var never = func(error) bool { return false }
+
+	noText := func(t *testing.T, err error) {
+		t.Helper()
+
+		require.NotNil(t, err, "the error handler never heard of the failure")
+		assert.NotContains(t, err.Error(), firstReadSecret)
+	}
+
+	failing := func(context.Context) (*identity.Details, error) { return nil, errors.New(firstReadSecret) }
+
+	cases := []testCase{
+		{
+			name:    "the user store fails",
+			signals: httpsec.SessionSignals{RetryableError: never, Users: stubUsers{load: failing}},
+			assert:  noText,
+		},
+		{
+			name:    "the session store fails",
+			signals: httpsec.SessionSignals{RetryableError: never},
+			store:   &listFailingStore{},
+			assert:  noText,
+		},
+		{
+			name: "the user store meets the read's own deadline",
+			signals: httpsec.SessionSignals{RetryableError: never, ReloadTimeout: 20 * time.Millisecond, Users: stubUsers{
+				load: func(ctx context.Context) (*identity.Details, error) {
+					<-ctx.Done()
+
+					return nil, fmt.Errorf("%s: %w", firstReadSecret, ctx.Err())
+				},
+			}},
+			assert: func(t *testing.T, err error) {
+				noText(t, err)
+				assert.ErrorIs(t, err, context.DeadlineExceeded, "the cause was lost")
+			},
+		},
+		{
+			name: "the user loader panics",
+			signals: httpsec.SessionSignals{RetryableError: never, Users: stubUsers{
+				load: func(context.Context) (*identity.Details, error) { panic(errors.New(firstReadSecret)) },
+			}},
+			assert: noText,
+		},
+		{
+			name: "ReloadContext panics",
+			signals: httpsec.SessionSignals{RetryableError: never, ReloadContext: func(context.Context) context.Context {
+				panic(errors.New(firstReadSecret))
+			}},
+			assert: noText,
+		},
+		{
+			name:   "the client hangs up while the user store is read, and the store then fails",
+			hangUp: true,
+			assert: noText,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var handled atomic.Pointer[error]
+
+			signals := tc.signals
+
+			entered, release := make(chan struct{}), make(chan struct{})
+
+			if tc.hangUp {
+				signals.RetryableError = never
+				signals.Users = stubUsers{load: func(context.Context) (*identity.Details, error) {
+					close(entered)
+					<-release
+
+					return nil, errors.New(firstReadSecret)
+				}}
+			}
+
+			setup := signalsSetup{
+				signals: signals,
+				opts: func(*signalsFixture) []httpsec.Option {
+					return []httpsec.Option{httpsec.WithErrorHandler(func(rw http.ResponseWriter, _ *http.Request, err error) {
+						handled.Store(&err)
+						rw.WriteHeader(http.StatusInternalServerError)
+					})}
+				},
+			}
+
+			if tc.store != nil {
+				setup.wrap = func(inner session.Store) session.Store {
+					tc.store.Store = inner
+
+					return tc.store
+				}
+			}
+
+			f := newSignalsFixture(t, setup)
+			s := f.signIn(t, "u-1")
+
+			if tc.store != nil {
+				tc.store.armed.Store(true)
+			}
+
+			if !tc.hangUp {
+				resp, _ := f.openStream(t, s.ID)
+				require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+			} else {
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+
+				go func() {
+					req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+httpsec.DefaultSessionSignalsPath, nil)
+					if err != nil {
+						return
+					}
+
+					req.Header.Set("Authorization", "Bearer "+s.ID)
+
+					if resp, err := f.server.Client().Do(req); err == nil {
+						_ = resp.Body.Close()
+					}
+				}()
+
+				<-entered
+				cancel()
+				close(release)
+				f.waitDone(t)
+			}
+
+			var err error
+			if p := handled.Load(); p != nil {
+				err = *p
+			}
+
+			tc.assert(t, err)
+		})
+	}
 }

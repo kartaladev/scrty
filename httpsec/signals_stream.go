@@ -369,8 +369,11 @@ func (e *sessionSignals) readStream(ctx context.Context, user identity.UserID, f
 // hook fails here, where it can be seen, and not as an open stream that never hears of an end.
 //
 // A sign-in the store does not hold, or a user who is not found or not active, is 401. Any other
-// failure is returned as it is, matching neither that nor anything a client is told by: a
-// dependency failure. It takes the user and the family and not the session, as a body must be able
+// failure is a dependency failure, matching neither that nor anything a client is told by. A
+// failed read of the user is answered as the authenticators answer one (classifyReload), behind
+// fixed text with the cause reachable; the session read's error is already fixed text of
+// Sessions.SignInState's. It is classified on reload, which carries none of the request's
+// cancellation, so that a client's leaving is never what a failed read is taken for. It takes the user and the family and not the session, as a body must be able
 // to. A panic in a consumer's store or loader is logged as a stream's is, without its value.
 //
 // It runs on the request's goroutine, as every read of a request's authentication does. So a store
@@ -396,7 +399,7 @@ func (e *sessionSignals) readSignIn(reload context.Context, user identity.UserID
 	case read.gone, read.userGone:
 		return session.SignInState{}, ErrAuthenticationRequired
 	case read.userErr != nil:
-		return session.SignInState{}, read.userErr
+		return session.SignInState{}, classifyReload(reload, read.userErr)
 	}
 
 	return read.state, nil

@@ -277,6 +277,11 @@ type SessionSignals struct {
 	// use it for a refusal of your own that maps to a 5xx. Mind what that answer does: a 5xx
 	// stops a browser's EventSource for good, and no later request of that page is made.
 	//
+	// An authenticate.ErrUnavailable from a consumer's authenticator on this path is 401, to keep
+	// a refusal from telling an account's existence, so it is not asked about and not retried:
+	// an EventSource stops for good on it. A consumer's authenticator that wants a browser to
+	// retry through an outage returns an error that maps to a 5xx on this path.
+	//
 	// A panic in it is recovered and logged without its value, and the failure is retried.
 	//
 	// Default: nil, every such failure is retried, because a store failure in a consumer's
