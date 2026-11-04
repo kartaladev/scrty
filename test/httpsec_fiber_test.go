@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -103,6 +104,54 @@ func (fiberAdapter) Serve(
 	fiberRead(t, app, req, &res)
 
 	return res
+}
+
+// Listen serves spec's chain on a real server, behind fiber. Its shutdown ends an
+// open stream, because a stream's body ends with fasthttp's own shutdown signal.
+func (fiberAdapter) Listen(
+	t *testing.T,
+	spec httpsecconformance.ChainSpec,
+	writeTimeout time.Duration,
+) httpsecconformance.StreamServer {
+	t.Helper()
+
+	app := fiber.New(fiber.Config{WriteTimeout: writeTimeout, ErrorHandler: fibersec.ErrorHandler})
+	app.Use(fibersec.Middleware(spec.NewChain(t)))
+	app.Get(httpsecconformance.SlowWritePath, func(fc fiber.Ctx) error {
+		return fc.SendStreamWriter(func(w *bufio.Writer) {
+			_, _ = w.WriteString(httpsecconformance.SlowWriteChunk)
+			_ = w.Flush()
+
+			// The sleep is the behaviour under test: time passing with no stream
+			// of the library's to move the deadline.
+			time.Sleep(httpsecconformance.StreamWriteTimeout + time.Second)
+
+			_, _ = w.WriteString(httpsecconformance.SlowWriteChunk)
+			_ = w.Flush()
+		})
+	})
+
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
+	}()
+
+	t.Cleanup(func() {
+		_ = app.ShutdownWithTimeout(time.Second)
+		_ = ln.Close()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the server did not stop")
+		}
+	})
+
+	return httpsecconformance.StreamServer{URL: "http://" + ln.Addr().String(), Shutdown: app.ShutdownWithContext}
 }
 
 // fiberRoute is one application route, preceded by the guard the scenario asked

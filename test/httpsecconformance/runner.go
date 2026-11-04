@@ -35,6 +35,21 @@ func RunScenarios(t *testing.T, adapter Adapter, scenarios []Scenario) {
 		t.Run(sc.Name, func(t *testing.T) {
 			t.Parallel()
 
+			if sc.Stream != nil {
+				streams, ok := adapter.(StreamAdapter)
+				if !ok {
+					t.Skip("the adapter cannot serve a chain on a real listener: it is no StreamAdapter")
+				}
+
+				sc.Stream(t, func(spec ChainSpec) StreamServer {
+					t.Helper()
+
+					return streams.Listen(t, spec, StreamWriteTimeout)
+				})
+
+				return
+			}
+
 			spec := sc.Build(t)
 
 			if sc.Steps != nil {

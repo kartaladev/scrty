@@ -140,7 +140,12 @@ func (w *stubWriter) AddHeader(n, v string) {
 }
 
 func (w *stubWriter) SetCookie(c *httpsec.Cookie) { w.cookie = append(w.cookie, c) }
-func (w *stubWriter) WriteHeader(s int)           { w.status = s }
+
+func (*stubWriter) Stream(context.Context, func(context.Context, httpsec.EventWriter) error) error {
+	return httpsec.ErrStreamingUnsupported
+}
+
+func (w *stubWriter) WriteHeader(s int) { w.status = s }
 
 func (w *stubWriter) Write(b []byte) (int, error) {
 	w.body = append(w.body, b...)

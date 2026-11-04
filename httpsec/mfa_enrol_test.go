@@ -3019,6 +3019,10 @@ func (brokenWriter) SetCookie(*httpsec.Cookie) {}
 func (brokenWriter) WriteHeader(int)           {}
 func (brokenWriter) Write([]byte) (int, error) { return 0, errTransportReset }
 
+func (brokenWriter) Stream(context.Context, func(context.Context, httpsec.EventWriter) error) error {
+	return errTransportReset
+}
+
 // serveThrough runs req through chain, answering through w.
 func serveThrough(t *testing.T, chain *httpsec.Chain, req *http.Request, w httpsec.ResponseWriter) served {
 	t.Helper()

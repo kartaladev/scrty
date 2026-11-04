@@ -488,6 +488,14 @@ type Scenario struct {
 	// which is why a scenario that uses it keeps whatever must outlive one
 	// request, such as a challenge store, in the stores and not in the chain.
 	Steps func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result)
+
+	// Stream, when set, is the whole row, and Build, Request, Assert and Steps are
+	// left empty: a streamed response needs a real listener and a client reading
+	// it while it is open, neither of which one finished Result can give.
+	//
+	// It is handed a function that stands the adapter's framework up for a chain.
+	// The row is skipped on an adapter that is not a StreamAdapter.
+	Stream func(t *testing.T, listen func(ChainSpec) StreamServer)
 }
 
 // Adapter runs one scenario on one framework.
@@ -527,7 +535,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios(), streamScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

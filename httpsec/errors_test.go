@@ -456,6 +456,8 @@ var sentinelRegistry = map[string]map[string]error{
 	"github.com/kartaladev/scrty/httpsec": {
 		"httpsec.ErrAuthenticationRequired":          httpsec.ErrAuthenticationRequired,
 		"httpsec.ErrConfig":                          httpsec.ErrConfig,
+		"httpsec.ErrStreamingStarted":                httpsec.ErrStreamingStarted,
+		"httpsec.ErrStreamingUnsupported":            httpsec.ErrStreamingUnsupported,
 		"httpsec.ErrCredentialsMissing":              httpsec.ErrCredentialsMissing,
 		"httpsec.ErrMalformedRequest":                httpsec.ErrMalformedRequest,
 		"httpsec.ErrHostNotAllowed":                  httpsec.ErrHostNotAllowed,
@@ -512,6 +514,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"authenticate.ErrUnsupportedCredentials":  "internal dispatch between providers, never returned to a client",
 		"authorize.ErrConfig":                     "a wiring fault, refused at construction",
 		"httpsec.ErrConfig":                       "a wiring fault, refused at construction",
+		"httpsec.ErrStreamingStarted":             "a writer's answer to an interceptor's misuse, never a refusal",
+		"httpsec.ErrStreamingUnsupported":         "a writer's answer to an interceptor, which the endpoint answers 501",
 		"authorize.ErrUnsupportedAttributes":      "a misbuilt guard, deliberately 500 per design Decision 7",
 		"authorize.ErrInvalidAttributes":          "a misbuilt guard, deliberately 500 per design Decision 7",
 		"session.ErrConfig":                       "a wiring fault, refused at construction",

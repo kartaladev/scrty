@@ -45,6 +45,13 @@ import (
 // that answers authenticate.ErrUnavailable with 503 reopens the oracles
 // httpsec.StatusForError warns of.
 //
+// A stream goes through gin's writer, and through whatever a gin middleware outside
+// this one replaced c.Writer with. A replacement that adds a FlushError is asked to
+// flush before a status is named, so on a path with no route it can send a live stream
+// under the 404 gin holds there. Otherwise the stream flushes with the replacement's
+// Flush, or with gin's if that is what it unwraps to, and one that does nothing cannot
+// be told from one that delivered.
+//
 // Handlers registered after this one do not run for a refused or self-answered
 // request, so logging and metrics belong before it.
 //
@@ -86,7 +93,7 @@ func Middleware(chain *httpsec.Chain) gin.HandlerFunc {
 		})
 
 		ex := httpsec.NewExchange(
-			gc.Request.Context(), request, httpsec.NewHTTPResponseWriter(gc.Writer))
+			gc.Request.Context(), request, httpsec.NewHTTPResponseWriter(streamWriter{gc.Writer}))
 
 		if err := run(ex); err != nil {
 			refuse(gc, err)
