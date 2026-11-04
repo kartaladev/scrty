@@ -301,3 +301,15 @@ Next, in order:
 4. Message `session-signal`, then group 11 (needs a CSRF exemption seam: `routes()` must stay pure, and `settleExemptions` overwrites `l.exempt`), then 13 to 15. `oidc_stub.go` goes with the last stub.
 
 Decisions taken while the user was away, for their review: the merge order; `amr` as `pwd` and `mfa` (narrows "naming both factors"); named `https` origins may frame the pages, no `X-Frame-Options`; UserInfo `invalid_request` is 400 and a token sent two ways is refused; a public client's first proof at refresh is refused and a certificate-bound grant must present its certificate; `Request` gains `RawQuery`; 429 at authorize and resume. Each is in `design.md` with sources.
+
+### Opus review of `16599168` and `498e7c35`: 3 `REPRODUCED`, none fixed
+
+Proofs: `review-g10fix/oidcprovider/review_proofs_test.go`. Adapters' `Revoke` and the delivery accounting held, and no token works past a revocation.
+1. Medium: a slow sink makes `RevokeConsent` fail and keep the consent (`endsignin.go:249`). Give the consent write its own budget, as `EndSignIn` does. Moving the report after the write loses events: do not ship that.
+2. Low-medium: a consumer's cause spelled `sign_in_ended` reports twice (`events.go:84`): `endedEarlier := g.Revoked && (g.RevokeCause != CauseSignInEnded || !g.RevokedAt.Equal(g.SignInEndedAt))`.
+3. Low: a line lost to a handler panic is not counted (`backchannel.go:482`): an unfinished task in `toLog` adds to `unsaid.records`.
+- `UNREPRODUCED`, low: one narrow way past `shutdownRoom`; the loss is still counted.
+- Test gaps: `sayLost` dropping `lost.records` on a panic; `answerLineage` and `revokeOnReuse` passing `true` for `newly`; `startLane`'s `reopen` looks dead.
+- Artifacts: `events.go:26` and `doc.go:273` overclaim "a sink cannot change the outcome"; R14's "only the count" and `Shutdown`'s "every report" omit finding 3; the `security-events` reuse scenario omits the case where something else revoked first.
+
+Fold these (Opus) after step 1 above, before merging.
