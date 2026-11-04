@@ -287,6 +287,13 @@ func cloneCode(r *CodeRecord) *CodeRecord {
 	return &out
 }
 
+// codeKeptPastExpiry is how long the default code stores keep a code past its expiry. It is
+// the window in which a valid replay still revokes what the code issued, and an end of the
+// sign-in still reaches an exchange in flight. The minute is the floor the provider promises
+// of its defaults, and no option: a store given through WithCodeStore and WithCodeTokenStore
+// that keeps spent codes longer detects a replay for as long as it holds them.
+const codeKeptPastExpiry = time.Minute
+
 // errCodeHeld reports a token identifier already held.
 var errCodeHeld = errors.New("oidcprovider: a code record with this identifier is already stored")
 
@@ -295,8 +302,14 @@ var errCodeHeld = errors.New("oidcprovider: a code record with this identifier i
 //
 // It is per process and not durable, so a code does not survive a restart, and a
 // deployment of more than one instance needs a shared store. What it holds stays
-// bounded: a Create forgets every record already expired by the store's clock, at most
-// once per minute, and so does DeleteExpired, with the caller's time.
+// bounded: a Create forgets every record expired more than a minute ago by the store's
+// clock, at most once per minute. DeleteExpired forgets what expired before the caller's
+// time, which is all it is told.
+//
+// That minute is the detection window. A valid replay of a spent code revokes what the code
+// issued until at least a minute past the code's expiry, and past that is refused with
+// nothing revoked. A store of a consumer's own that keeps spent codes longer, with a token
+// store that does too, detects a replay for as long as it holds them.
 type MemoryCodeStore struct {
 	mu      sync.Mutex
 	sweep   memorySweep
@@ -323,7 +336,7 @@ func (m *MemoryCodeStore) Create(_ context.Context, r *CodeRecord) error {
 	defer m.mu.Unlock()
 
 	if now, due := m.sweep.due(); due {
-		m.deleteExpiredLocked(now)
+		m.deleteExpiredLocked(now.Add(-codeKeptPastExpiry))
 	}
 	if _, held := m.records[r.TokenID]; held {
 		return errCodeHeld
@@ -887,9 +900,12 @@ const codeTokenPurpose = "oidc-provider.code" //nolint:gosec // a purpose's name
 
 // sweepingCodeTokens is the provider's default code-token store: an onetime.MemoryStore
 // of its own, which no consumer can reach to purge, kept bounded by its writes. A write
-// that adds a record forgets the codes expired by the provider's clock, at most once per
-// minute. A code record goes at the same time, so a replay past a code's expiry finds
-// neither.
+// that adds a record forgets the codes expired more than a minute ago by the provider's
+// clock, at most once per minute. The default code record store keeps a code just as long,
+// so a valid replay revokes what the code issued until at least a minute past its expiry,
+// and past that finds nothing to revoke. A token store of a consumer's own that keeps spent
+// codes longer, with a record store that does too, detects a replay for as long as it holds
+// them.
 type sweepingCodeTokens struct {
 	*onetime.MemoryStore
 
@@ -897,9 +913,27 @@ type sweepingCodeTokens struct {
 	sweep memorySweep
 }
 
-// newDefaultCodeTokens builds the default code-token store on clk.
+// laggingClock reads a fixed time behind the clock it follows.
+type laggingClock struct {
+	clock.Clock
+
+	behind time.Duration
+}
+
+// Now implements clock.Clock.
+func (c laggingClock) Now() time.Time { return c.Clock.Now().Add(-c.behind) }
+
+// newDefaultCodeTokens builds the default code-token store on clk. The memory store judges
+// expiry by its own clock when it sweeps, and by nothing else, so it reads a lagging one. Its
+// cutoff alone could not keep a code past its expiry, because it goes by when a record was
+// issued: a code living 60 seconds, issued over a minute ago, would go as soon as it expired.
 func newDefaultCodeTokens(clk clock.Clock) (*sweepingCodeTokens, error) {
-	memory, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	// The memory store deletes a token once its lagged now reaches ExpiresAt, while the record
+	// store deletes only a record strictly past the cutoff. A nanosecond more of lag makes the
+	// token go at the same instant the record does, so at exactly a minute past expiry both
+	// still hold the code.
+	lag := codeKeptPastExpiry + time.Nanosecond
+	memory, err := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(laggingClock{Clock: clk, behind: lag}))
 	if err != nil {
 		return nil, err
 	}
@@ -907,8 +941,9 @@ func newDefaultCodeTokens(clk clock.Clock) (*sweepingCodeTokens, error) {
 	return &sweepingCodeTokens{MemoryStore: memory, sweep: memorySweep{clock: clk}}, nil
 }
 
-// sweepIfDue forgets what has expired, when a sweep is due. A token issued at this very
-// instant stays, as DeleteExpiredBefore keeps what was not issued strictly before it.
+// sweepIfDue forgets what expired more than a minute ago, when a sweep is due. The memory store
+// keeps the minute itself, by the lagging clock it judges expiry with. The cutoff only bounds
+// what was issued, and nothing expired was issued after now, so it is now and carries no margin.
 func (s *sweepingCodeTokens) sweepIfDue(ctx context.Context) error {
 	s.mu.Lock()
 	now, due := s.sweep.due()

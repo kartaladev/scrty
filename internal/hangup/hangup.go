@@ -11,7 +11,10 @@
 //     load, session renewal's load and the login password load;
 //   - the recovery flows' password load, user lookups and credential issuing,
 //     and the saved codes' failure logging, which write a hang-up at debug
-//     level instead of error.
+//     level instead of error;
+//   - token/onetime's failure logging, which does the same;
+//   - the OIDC provider's code exchange, which tells a spent code's failed
+//     reads apart from the caller leaving.
 //
 // Other checks keep their own copies of the decision.
 package hangup

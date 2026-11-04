@@ -2043,6 +2043,107 @@ func TestOnetimeStoreFailureRecords(t *testing.T) {
 	}
 }
 
+// TestOnetimeStoreFailureLevel pins whose failure is an incident. A failure the caller's own
+// ending caused is written at debug level, because a client that hung up is not an outage.
+// Every other is written at error level, even beside a caller who has left, and even when
+// the store met a deadline of its own. The answer is the same refusal either way.
+func TestOnetimeStoreFailureLevel(t *testing.T) {
+	t.Parallel()
+
+	presented := checkTokenID.String() + "." + checkSecret
+
+	type site struct {
+		name string
+		// fail makes the store fail at this site with err, and act reaches it.
+		fail func(t *testing.T, s *MockStore, err error)
+		act  func(ctx context.Context, m *onetime.Tokens) error
+	}
+	sites := []site{
+		{
+			name: "Check's read",
+			fail: func(_ *testing.T, s *MockStore, err error) {
+				s.EXPECT().FindByID(gomock.Any(), checkTokenID).Return(nil, err)
+			},
+			act: func(ctx context.Context, m *onetime.Tokens) error {
+				_, err := m.Check(ctx, presented, "")
+
+				return err
+			},
+		},
+		{
+			name: "Consume's write",
+			fail: func(t *testing.T, s *MockStore, err error) {
+				t.Helper()
+				rec := liveRecord(t)
+				s.EXPECT().FindByID(gomock.Any(), checkTokenID).Return(&rec, nil)
+				s.EXPECT().Consume(gomock.Any(), checkTokenID, gomock.Any()).Return(err)
+			},
+			act: func(ctx context.Context, m *onetime.Tokens) error {
+				c, err := m.Check(ctx, presented, "")
+				if err != nil {
+					return err
+				}
+
+				return m.Consume(ctx, c)
+			},
+		},
+	}
+
+	cancelled := func(ctx context.Context) context.Context {
+		ended, cancel := context.WithCancel(ctx)
+		cancel()
+
+		return ended
+	}
+	atFault := func(t *testing.T, logs string) {
+		t.Helper()
+		assert.Contains(t, logs, "level=ERROR", "a store outage passed unreported")
+	}
+	notAtFault := func(t *testing.T, logs string) {
+		t.Helper()
+		assert.NotContains(t, logs, "level=ERROR")
+		assert.Contains(t, logs, "level=DEBUG", "the hang-up is still recorded, below an incident")
+		assert.Contains(t, logs, "reason=token-store")
+	}
+
+	type testCase struct {
+		name   string
+		ctx    func(context.Context) context.Context
+		err    error
+		assert func(t *testing.T, logs string)
+	}
+	cases := []testCase{
+		{name: "a caller who left, and the store saying so, is no incident", ctx: cancelled, err: context.Canceled, assert: notAtFault},
+		{name: "a caller still here, and an outage, is one", err: errRedactionFixture, assert: atFault},
+		{name: "a caller who left beside an unrelated outage is one", ctx: cancelled, err: errRedactionFixture, assert: atFault},
+		{name: "a store meeting a deadline of its own, with its caller still here, is one", err: context.DeadlineExceeded, assert: atFault},
+	}
+
+	for _, at := range sites {
+		for _, tc := range cases {
+			t.Run(at.name+": "+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				var logs bytes.Buffer
+				s := NewMockStore(gomock.NewController(t))
+				at.fail(t, s, tc.err)
+				m, err := onetime.New("magic-link",
+					onetime.WithStore(s),
+					onetime.WithClock(clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))),
+					onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))))
+				require.NoError(t, err)
+
+				ctx := t.Context()
+				if tc.ctx != nil {
+					ctx = tc.ctx(ctx)
+				}
+				require.ErrorIs(t, at.act(ctx, m), onetime.ErrInvalidToken, "the answer does not change")
+				tc.assert(t, logs.String())
+			})
+		}
+	}
+}
+
 // TestOnetimeReturnedErrors pins task 5.7: an error caused by the store at
 // Issue, IssuedCount or PurgeExpired carries fixed library text, with the
 // store's own error still reachable by identity.

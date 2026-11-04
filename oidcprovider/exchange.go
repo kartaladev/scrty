@@ -111,10 +111,10 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // is the state that would fail open, and every refresh reads the row first. A failure
 // between them answers an error, leaving a row with no lineage for the orphan sweep.
 //
-// A code presented after it was spent is refused too, and revokes what it issued; see
-// refuseSpentCode. The request that won step 5 never looks again, so of several racing
-// requests exactly one is answered with tokens, even though the others' replay leaves those
-// tokens' grant revoked.
+// A code presented after it was spent is refused too, and a valid replay revokes what it
+// issued; see refuseSpentCode. The request that won step 5 never looks again, so of several
+// racing requests exactly one is answered with tokens, even though the others' replay leaves
+// those tokens' grant revoked.
 func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, error) {
 	if repeatedParam(r.Form) {
 		return nil, refuseRequest()
@@ -178,7 +178,7 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 
 	checked, err := tokens.Check(ctx, code, "")
 	if err != nil {
-		return nil, p.refuseSpentCode(ctx, code, now)
+		return nil, p.refuseSpentCode(ctx, r, rc, code)
 	}
 	record, err := p.loadCodeRecord(ctx, checked.Token().ID)
 	if err != nil {
@@ -190,7 +190,7 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 
 	if record.ClientID != rc.ID {
 		if err := tokens.Consume(ctx, checked); err != nil {
-			return nil, p.refuseSpentCode(ctx, code, now)
+			return nil, p.refuseSpentCode(ctx, r, rc, code)
 		}
 
 		return nil, refuseGrant()
@@ -208,7 +208,7 @@ func (p *Provider) exchangeCode(ctx context.Context, r TokenRequest, rc *Registe
 	}
 
 	if err := tokens.Consume(ctx, checked); err != nil {
-		return nil, p.refuseSpentCode(ctx, code, now)
+		return nil, p.refuseSpentCode(ctx, r, rc, code)
 	}
 
 	grant := newGrant(record, rc, r.Binding, holdsLineage, now, expiresAt)
@@ -401,21 +401,34 @@ func (p *Provider) writeLineage(ctx context.Context, grant *Grant, rc *Registere
 	return refreshTokenPrefix + grant.Family.String() + "." + s.ID, nil
 }
 
+// errCodeStoreUnanswered stands for a code-token store's failure, whose own error token/onetime
+// keeps to itself and writes to the log. A code the store holds as good, and that a check or a
+// spend still turned down, is the only trace of it left here.
+var errCodeStoreUnanswered = errors.New("oidcprovider: the code-token store could not answer")
+
 // refuseSpentCode answers a code that failed its check or lost its spend, and returns the
-// error the request ends with. Most such codes are simply no good. One already spent, whose
-// secret the request holds, is a replay: it is refused like any other, and first revokes
-// what the code issued.
+// error the request ends with. token/onetime answers every failure alike, on purpose, so this
+// asks its store directly to tell them apart:
 //
-// A code's identifier is not a credential, so a replay is believed only with the secret,
-// compared in constant time: without it, knowing an identifier would end someone's grant.
-// token/onetime answers every failure alike, on purpose, so this asks its store directly,
-// which is also how a store that could not answer is told from a bad code. The spent
-// token's record, including the family the code chose at issue, is what names the grant,
-// because it may not be stored yet.
+//   - a code that is no code, or whose secret is not the request's, is refused. A code's
+//     identifier is not a credential, so nothing further is believed without the secret,
+//     compared in constant time;
+//   - an unspent code past its expiry is refused;
+//   - an unspent code still good is no refusal: the store could not answer the check or the
+//     spend, or the caller left while it did, so this answers that failure rather than tell the
+//     client to discard a good code;
+//   - a spent code is a replay. A valid one, from the client the code was issued to with
+//     everything codeBindingsHold compares, is refused and first revokes what the code issued.
+//     An invalid one only is refused, because whoever holds only a leaked code could otherwise
+//     end the user's grant.
+//
+// The spent token's record, including the family the code chose at issue, is what names the
+// grant, because it may not be stored yet. A replay is seen for as long as the code stores hold
+// the code: see codeKeptPastExpiry.
 //
 // None of this depends on the caller still listening, from the first read to the last
 // write: a replay that hangs up must not spare what it was evidence against.
-func (p *Provider) refuseSpentCode(ctx context.Context, code string, now time.Time) error {
+func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *RegisteredClient, code string) error {
 	tokenID, secret, ok := splitCode(code)
 	if !ok {
 		return refuseGrant()
@@ -429,7 +442,7 @@ func (p *Provider) refuseSpentCode(ctx context.Context, code string, now time.Ti
 		return refuseGrant()
 	case err != nil:
 		return dependencyFailure(ctx, err, "oidcprovider: read the code's token")
-	case tok == nil || tok.Purpose != codeTokenPurpose || tok.ConsumedAt.IsZero():
+	case tok == nil || tok.Purpose != codeTokenPurpose:
 		return refuseGrant()
 	}
 	sum := sha256.Sum256([]byte(secret))
@@ -437,15 +450,43 @@ func (p *Provider) refuseSpentCode(ctx context.Context, code string, now time.Ti
 		return refuseGrant()
 	}
 
-	record, err := p.loadCodeRecord(detached, tokenID)
-	if err != nil {
-		return err
+	// Read after the check or the spend read theirs, so what they found expired is still.
+	now := p.cfg.clock.Now()
+	if tok.ConsumedAt.IsZero() {
+		if !now.Before(tok.ExpiresAt) {
+			return refuseGrant()
+		}
+
+		return dependencyFailure(ctx, unansweredCause(ctx), "oidcprovider: check or spend the code")
+	}
+
+	// Read on the detached context so a caller who left still revokes, but judged on the
+	// caller's: only the caller's own ending is a hang-up, and the budget running out is not.
+	record, err := p.stores.codes.Load(detached, tokenID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return refuseGrant()
+	case err != nil:
+		return dependencyFailure(ctx, err, "oidcprovider: load the code record")
+	}
+	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
+		return refuseGrant()
 	}
 	if err := p.revokeReplayed(detached, record.GrantFamily, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed code issued")
 	}
 
 	return refuseGrant()
+}
+
+// unansweredCause is why a good code was turned down: the caller's own ending when it has left,
+// which is what a store would have answered, and the store's failure otherwise.
+func unansweredCause(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return errCodeStoreUnanswered
 }
 
 // splitCode reads the token/onetime form of a code: "<identifier>.<secret>".

@@ -182,6 +182,13 @@ type UnspentCodes interface {
 //
 // A store does not judge expiry: Load returns an expired record, and the provider
 // compares ExpiresAt with its own clock.
+//
+// Retention is the store's to keep. A valid replay of a spent code is detected, and revokes
+// what the code issued, only while the record is held, and an end of the sign-in reaches an
+// exchange in flight only while it is too. Both need the code kept until a minute past its
+// expiry, as the default stores do. A store swept sooner gives that up: a replay after the sweep
+// is refused with nothing revoked. The code-token store given through WithCodeTokenStore must
+// retain the same window, so for a longer one both stores must retain together.
 type CodeStore interface {
 	UnspentCodes
 
@@ -194,6 +201,11 @@ type CodeStore interface {
 
 	// DeleteExpired removes the records whose ExpiresAt is strictly before before, and
 	// returns how many it removed. It judges only by before, never by a clock of its own.
+	//
+	// The caller chooses before, and with it how long a spent code is remembered. A valid
+	// replay's detection and an end's reach to an exchange in flight need a record kept until
+	// a minute past its expiry, so a before later than that minute behind now gives both up
+	// for the records between. The default stores sweep on their own at that mark.
 	DeleteExpired(ctx context.Context, before time.Time) (int, error)
 }
 

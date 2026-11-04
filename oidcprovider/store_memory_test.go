@@ -223,6 +223,93 @@ func TestMemoryStores_ForgetWhatExpired(t *testing.T) {
 	}
 }
 
+// A code's record and token outlive its expiry by a minute, so that a replay is told from a
+// code long gone, and an end of the sign-in reaches an exchange still in flight. They still
+// go, with no consumer doing anything.
+func TestMemoryCodeStores_KeepACodeAMinutePastItsExpiry(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
+
+	type store struct {
+		add  func(t *testing.T, n int, expires time.Time)
+		held func(t *testing.T, n int) bool
+	}
+
+	cases := []struct {
+		name    string
+		newCase func(t *testing.T, clk *clockwork.FakeClock) store
+	}{
+		{
+			name: "code records",
+			newCase: func(t *testing.T, clk *clockwork.FakeClock) store {
+				t.Helper()
+				s, err := oidcprovider.NewMemoryCodeStore(oidcprovider.WithMemoryStoreClock(clk))
+				require.NoError(t, err)
+
+				return store{
+					add: func(t *testing.T, n int, expires time.Time) {
+						t.Helper()
+						require.NoError(t, s.Create(t.Context(), &oidcprovider.CodeRecord{TokenID: memoryID(n), ExpiresAt: expires}))
+					},
+					held: func(t *testing.T, n int) bool {
+						t.Helper()
+						_, err := s.Load(t.Context(), memoryID(n))
+
+						return err == nil
+					},
+				}
+			},
+		},
+		{
+			name: "the provider's default code tokens",
+			newCase: func(t *testing.T, clk *clockwork.FakeClock) store {
+				t.Helper()
+				p, err := oidcprovider.New(validDeps(t), oidcprovider.WithClock(clk))
+				require.NoError(t, err)
+				s := p.CodeTokensForTest()
+
+				return store{
+					add: func(t *testing.T, n int, expires time.Time) {
+						t.Helper()
+						require.NoError(t, s.Insert(t.Context(), codeToken(n, clk.Now(), expires)))
+					},
+					held: func(t *testing.T, n int) bool {
+						t.Helper()
+						_, err := s.FindByID(t.Context(), memoryID(n))
+
+						return err == nil
+					},
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(start)
+			s := tc.newCase(t, clk)
+
+			expires := start.Add(time.Minute)
+			s.add(t, 1, expires)
+			s.add(t, 2, expires.Add(time.Hour))
+
+			// 59 seconds past its expiry, on a write whose sweep is due.
+			clk.Advance(time.Minute + 59*time.Second)
+			s.add(t, 3, clk.Now().Add(time.Hour))
+			assert.True(t, s.held(t, 1), "forgotten within the minute past its expiry")
+
+			// Past the minute, on the next sweep due.
+			clk.Advance(time.Minute)
+			s.add(t, 4, clk.Now().Add(time.Hour))
+			assert.False(t, s.held(t, 1), "kept past the minute")
+			assert.True(t, s.held(t, 2), "and what has not expired stays")
+		})
+	}
+}
+
 // codeToken is a token of the purpose a provider's codes are spent under.
 func codeToken(n int, issued, expires time.Time) onetime.Token {
 	return onetime.Token{

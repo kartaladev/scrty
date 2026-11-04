@@ -368,8 +368,13 @@ func WithPendingRequestStore(s PendingRequestStore) Option {
 }
 
 // WithCodeStore replaces where code records are kept. The default is a MemoryCodeStore,
-// which is lost with the process and not shared between instances. It must not be nil.
+// which is lost with the process and not shared between instances, and which keeps a code
+// until a minute past its expiry. It must not be nil.
 // New gives it to the grant store through GrantStore.UseCodes.
+//
+// A valid replay's detection and an end's reach to an exchange in flight need a code kept
+// until a minute past its expiry. A store, or a consumer sweeping it through DeleteExpired
+// sooner, gives that up. To retain longer, WithCodeTokenStore's store must retain as long too.
 func WithCodeStore(s CodeStore) Option {
 	return func(c *config) { c.codes, c.codesSet = s, true }
 }
@@ -392,9 +397,14 @@ func WithGrantStore(s GrantStore) Option {
 
 // WithCodeTokenStore replaces where authorization codes' one-time tokens are kept, which
 // is what decides a code's single spend. The default is an onetime.MemoryStore of the
-// provider's own, which forgets expired codes by the provider's clock on a write, at most
-// once per minute. It is lost with the process and not shared between instances. A store
-// given here is the consumer's to purge. It must not be nil.
+// provider's own, which is lost with the process and not shared between instances, and
+// which keeps a code until a minute past its expiry, forgetting it after that on a write,
+// at most once per minute. A store given here is the consumer's to purge. It must not be nil.
+//
+// A valid replay's detection and an end's reach to an exchange in flight need a code kept
+// until a minute past its expiry. A consumer purging sooner gives that up. The code store
+// given through WithCodeStore must retain the same window, so for a longer one both stores
+// must retain together.
 func WithCodeTokenStore(s onetime.Store) Option {
 	return func(c *config) { c.codeTokens, c.codeTokensSet = s, true }
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/hangup"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -387,7 +388,9 @@ func (m *Tokens) mint(subject string, opts []IssueOption) (string, Token, error)
 // tell them apart could enumerate which records exist and which are still
 // unspent while holding no valid token at all. A store failure is additionally
 // logged at error level, since it is an outage this package has deliberately
-// made invisible to the caller and would otherwise leave no trace anywhere.
+// made invisible to the caller and would otherwise leave no trace anywhere. One
+// the caller's own ending caused is logged at debug level, because a client that
+// hung up is not an outage.
 //
 // The binding is compared only when the token was issued with one. A token
 // issued unbound ignores whatever is presented here, rather than behaving as
@@ -419,11 +422,7 @@ func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked,
 		// is not there is an ordinary refusal and says nothing about the
 		// store's health.
 		if !errors.Is(err, ErrTokenNotFound) {
-			m.logger.LogAttrs(ctx, slog.LevelError, "onetime: reading the token store failed",
-				append([]slog.Attr{
-					slog.String("purpose", m.purpose),
-					slog.String("token_id", tokenID.String()),
-				}, diag.Failure("token-store", err)...)...)
+			m.logStoreFailure(ctx, "onetime: reading the token store failed", tokenID, err)
 		}
 
 		return Checked{}, ErrInvalidToken
@@ -471,7 +470,8 @@ func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked,
 // that no longer exists, one that expired since it was checked, and a store
 // that could not answer are the same answer here for the same reason they are
 // the same answer in Check. The store failure is logged at error level, since
-// nothing else records it.
+// nothing else records it, or at debug level when the caller's own ending caused
+// it.
 func (m *Tokens) Consume(ctx context.Context, c Checked) error {
 	if c.token.ID.IsZero() {
 		return ErrInvalidToken
@@ -486,17 +486,30 @@ func (m *Tokens) Consume(ctx context.Context, c Checked) error {
 
 	if err := m.store.Consume(ctx, c.token.ID, now); err != nil {
 		if !errors.Is(err, ErrTokenNotFound) {
-			m.logger.LogAttrs(ctx, slog.LevelError, "onetime: marking the token consumed failed",
-				append([]slog.Attr{
-					slog.String("purpose", m.purpose),
-					slog.String("token_id", c.token.ID.String()),
-				}, diag.Failure("token-store", err)...)...)
+			m.logStoreFailure(ctx, "onetime: marking the token consumed failed", c.token.ID, err)
 		}
 
 		return ErrInvalidToken
 	}
 
 	return nil
+}
+
+// logStoreFailure writes the one record of a store failure Check or Consume kept
+// from its caller: a fixed reason and the error's type, never its text, with the
+// public token identifier. A failure the caller's own ending caused is written at
+// debug level, and every other at error level.
+func (m *Tokens) logStoreFailure(ctx context.Context, msg string, tokenID id.ID, err error) {
+	level := slog.LevelError
+	if hangup.ByCaller(ctx, err) {
+		level = slog.LevelDebug
+	}
+
+	m.logger.LogAttrs(ctx, level, msg,
+		append([]slog.Attr{
+			slog.String("purpose", m.purpose),
+			slog.String("token_id", tokenID.String()),
+		}, diag.Failure("token-store", err)...)...)
 }
 
 // Redeem checks presented, runs the caller's own checks in order and then
