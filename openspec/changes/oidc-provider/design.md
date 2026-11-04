@@ -1311,10 +1311,12 @@ The user confirmed on 2026-11-04 that DPoP support is required. P6 stands, and D
 
 #### R14. Back-channel delivery is bounded, and follows no redirect
 
-- **Bounded.** The specs said asynchronous and nothing more. A logout storm could then start goroutines without limit. Delivery uses a bounded pool and queue, stopped by the provider's `Shutdown`, and a worker that ends its goroutine is replaced, as #68 does in `notify`. A drop is reported as a failed delivery. Defaults (*proposed*): 8 workers, a queue of 1024, each replaceable; a consumer delivery takes over all of it.
+- **Bounded.** The specs said asynchronous and nothing more. A logout storm could then start goroutines without limit. Delivery uses a bounded pool and queue, stopped by the provider's `Shutdown`, and a worker that ends its goroutine is replaced, as #68 does in `notify`. A drop is reported as a failed delivery. Defaults (*proposed*): 8 workers, a queue of 1024, each replaceable through `WithLogoutDeliveryPool`, and a bound on each delivery through `WithLogoutDeliveryTimeout`. A consumer delivery replaces the POST and runs on the same pool and within the same bound. Workers start on demand, one goroutine per delivery, so `Start` launches nothing and only enforces `signingkey`'s sentinels. A delivery left behind past its bound holds no worker, and at most twice the workers can be left behind at once; past that a delivery fails with the `busy` reason.
+- **Reports cannot hold anything (`REPRODUCED` 2026-11-04).** A log handler or sink could delay `EndSignIn`, stop its browser-session deletes by panicking, keep a worker, or hold `Shutdown` past its context. Reports now run on two bounded lanes, started on demand: `records`, one goroutine in order, for log lines; and `events`, up to 64, for the sink. Two, because one bound would let 64 hung sinks stop the log lines. Past 1024 waiting on a lane the newest loses, counted as `lost_events` or `lost_records`, and a full queue at `Shutdown` loses nothing. This follows the common telemetry shape, a bounded queue that drops when full and flushes at shutdown. There is no option, because the bound protects the provider from its sink: a consumer who cannot accept it gives a sink that returns promptly. `EndSignIn` runs grants, browser deletes, hand-on, then its own report, so a hung synchronous sink holds the response and not the deletes.
+- **What counts as failed.** A POST or consumer delivery cut off by `Shutdown` is reported as `shutdown`, as the client may not have been told. A store or fetch cut off is only logged. A status, panic or goexit arriving together with the stop or the bound keeps its real reason. A 200 or 204 is judged by status without reading the body, so an oversized body is still a success (`outbound.PostFormStatus`).
 - **Context.** It keeps the caller's values, and not its cancellation.
 - **Protocol.** Back-Channel §2.8: 200 and 204 are success. §2.5: retransmit only for a recoverable failure, so one attempt by default, and a consumer's queue may do more. The specs read found nothing on redirects, so following none is scrty's own choice, since a target is a registered URI. The `events` value is exactly `{}`, as the suite checks.
-- **Outbound policy.** The confined client restricts schemes, origins and redirects, and has no private-address rule, so a first-party relying party on an internal address is reachable. Nothing to override.
+- **Outbound policy.** The confined client restricts schemes, origins and redirects, and has no private-address rule, so a first-party relying party on an internal address is reachable. `WithLogoutOutbound` replaces the client for delivery. A client from `WithOutbound` is copied through `outbound.Client.WithoutRedirects`, so "follows no redirect" holds under every option (`REPRODUCED` 2026-11-04: such a client followed a 307 and sent the token again). That client's own time bound still applies, as its godoc states.
 
 #### R15. Multiple resources follow RFC 8707 §2.2
 
@@ -1337,6 +1339,36 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **Rejected:** a "lineage written" mark set after the second write, which keeps the cleanup at the cost of a third write with its own failure case and a column; and accepting the loss, which breaks the logout spec.
 - **The default and the override.** Rows leave through the grant sweep at their deadline, so the longest a leftover lasts is the client's absolute lifetime, 90 days by default, which a consumer sets per client. There is nothing else to override.
 - **Options left for later.** A one-time cleanup task, or the mark above, can be added without breaking a consumer if leftovers ever prove costly in practice.
+
+#### R22. An issuer with a path
+
+- **The gap (`REPRODUCED` 2026-11-05).** The construction check of P7 compared the assertion token endpoint with the path the chain serves. An issuer of `https://id.example.com/auth` behind a router stripping `/auth` was refused, with no setting that worked: moving the prefix stopped the routes matching, and stating the stripped URL refused clients naming the real one.
+- **The decision.** The issuer states the public URL, and the served path is planned separately, as Keycloak and node-oidc-provider do. A public URL is the issuer's origin, plus the served path when that is at or under the issuer's path, and otherwise plus the issuer's path and the served path. The check and the metadata documents share this rule. Paths compare in their escaped form, so an encoded spelling does not pass.
+- **The default and the override.** No configuration for a stripped chain or for a prefix including the issuer's path. `WithAssertionTokenEndpoint` still states the URL outright.
+- **The limit.** A chain cannot see at construction whether a router strips. A chain mounted without stripping must include the issuer's path in its prefix, or the published URLs do not reach it. `EnableOIDCProvider`'s godoc says so.
+- **Rejected:** a public-path option, which restates what the issuer already says and can disagree with it.
+
+#### R23. What the chain's construction settled
+
+- **Slots.** `OrderOIDCProvider` is 250, inside CSRF and outside Basic and bearer, for the endpoints a client calls. `OrderOIDCProviderSession` is 850, inside the gates and session touch and outside the authorization stage, so a consumer's rules do not reach resume or consents.
+- **The check after wiring.** A wire step cannot return an error, and runs in option order. `checkAfterWiring` runs after every one, so a manager that gains an observer counts wherever its option stands. Every manager the chain records is checked, not only the bearer's.
+- **Binding the chain cannot verify.** A client requiring DPoP or a certificate is refused at construction when the chain does not verify it. The spec states the DPoP case, and certificates are the same wiring mistake (`library-design`, rule 6). A consumer's own registry cannot be listed, so `Provider.RequiresBinding` answers false for it and such a client is refused at the token endpoint instead.
+- **Framing.** Security headers must forbid framing in the document profile, not only be enabled. `WithOIDCPagesCarryFrameAncestors` remains the override. A route-matched profile cannot be seen at construction, as the godoc says.
+- **Paths.** `WithOIDCProviderPath` takes the whole request path, and the prefix does not apply to it. A path holding `?`, `#` or `%` could never match, and is refused.
+- **Status.** `ErrDependency` answers 500 before the challenge and table checks, whatever it wraps.
+
+#### R24. What the token endpoint settled
+
+- **Defaults, each *proposed*.** A throttle of 10 failures per source in 15 minutes, replaceable with `WithOIDCTokenLimiter`, and a 64 KiB body bound with 413 above it, replaceable with `WithOIDCTokenBodyLimit`. A throttled source, an unattributable address and a limiter that cannot answer all read as `invalid_client`.
+- **Refusals.** A missing required certificate answers `invalid_request`: RFC 8705 names no code, and `invalid_grant` would tell the client to discard its code. A proof plus a certificate from a client requiring mTLS is refused, as the token would carry only `cnf.jkt`. A repeated `Authorization` header answers `invalid_request`.
+- **Order.** `AuthenticateClient` is never called before `Token`, because an assertion is single-use. The proof is judged before client authentication, so a valid proof with a wrong secret still records its `jti`. Invalid proofs are charged to the source. Refused grants, nonce requests and failures are not.
+
+#### R25. What the provider's events settled
+
+- **Fields and names.** `event.Event` gains `Client` and `Cause`, with nine names under `scrty_`. A client is named only when the registry held it, so presented text never reaches an event.
+- **One event per outcome.** A refresh reuse yields two events, the reuse and the revocation, through a chain as well as outside one. The chain's emitter stays off the lineage manager's context, so the same reuse is not reported a third time as `authn_token_reuse`. A code replay likewise yields two. `GrantRevoked` is reported only by the call that newly revoked the row, with the cause the store keeps. `CodeReplayed` may repeat, as each replay is a real presentation.
+- **Only what happened.** `GrantCreated` is reported once the credential is handed out. A failed dependency decided nothing, so `SignInsEnded` failing reports nothing, while grants that did end are reported as they end.
+- **The default and the override.** No sink means no events and no clock read. `WithSecurityEvents` sets one, and a chain's emitter takes its place on the context. `RevokeUserGrants` puts the consumer's own cause in `Cause`, unchanged.
 
 #### R16. One end-observer option, shared with `session-signals`
 
@@ -1579,6 +1611,21 @@ Reasoned from scrty's own settled specs and the established design.
 - [Ory Hydra, graceful token refresh](https://www.ory.com/docs/hydra/guides/graceful-token-refresh): a new token on each use, in one chain, described as a workaround for clients that cannot be fixed.
 - [Okta, refresh tokens](https://developer.okta.com/docs/guides/refresh-tokens/main/): the previous token stays valid for a grace period, 30 seconds by default.
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), [OAuth 2.1, draft-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt) and [browser-based apps, draft-26](https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-26.txt): searched for concurrent refresh, and silent on it.
+
+### R22: an issuer with a path
+
+**Researched (accessed 2026-11-05):**
+- [Keycloak, using a reverse proxy](https://www.keycloak.org/server/reverseproxy): a non-root path may be stated in the `hostname` URL, sent as `X-Forwarded-Prefix`, or matched with `http-relative-path`.
+- [node-oidc-provider, documentation](https://raw.githubusercontent.com/panva/node-oidc-provider/main/docs/README.md): shows an issuer with and without a path at one mount path, and what the host must route for each. Only the first half of the page was read.
+
+### R14: reports on bounded lanes
+
+**Researched (accessed 2026-11-05):**
+- [OpenTelemetry, trace SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/): the batching processor's `maxQueueSize`, default 2048, drops spans when reached, and `Shutdown` includes a flush.
+
+### R23 to R25
+
+Reasoned from scrty's own settled specs and reproduced tests. R24's certificate refusal relies on [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705) naming no error code, as the implementing lane reported; this has not been re-checked.
 
 ### R21: an email from the username
 

@@ -808,10 +808,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `sub`, `sid`, no `nonce`, and the client's ID token algorithm.
 - [ ] Red `TestProvider_BackChannelDelivery`:
   - an `httptest.NewTLSServer` receives one form POST with `logout_token`;
-  - a server that never answers: `EndSignIn` returns within 50 ms, and the delivery times out after 5 s on a fake clock;
+  - a server that never answers: `EndSignIn` returns within 50 ms, and the delivery times out after 5 s under `synctest`;
   - a 500 answer → logged and reported, with no retry;
   - a consumer `LogoutDelivery` receives the URI and token instead.
-- [ ] FAIL. Deliver on a goroutine with `context.WithoutCancel` and a 5 s timeout, tracked by a `sync.WaitGroup` that `(*Provider).Close(ctx)` waits on. PASS with `-race`; commit.
+- [ ] FAIL. Deliver on a goroutine with `context.WithoutCancel` and a 5 s timeout, tracked by the pool that `Shutdown` drains (R14). PASS with `-race`; commit.
 - [ ] Red rows on `TestProvider_LogoutToken`: `events` is exactly `{"http://schemas.openid.net/event/backchannel-logout":{}}`, and `sid` equals the ID tokens'.
 - [ ] Red rows on `TestProvider_BackChannelDelivery` (`-race`, R14): a 302 is not followed and is reported as failed; 204 is a success; with 8 workers and a queue of 1024 a further delivery is dropped and reported; a delivery ending its goroutine is replaced, with the pool's size unchanged; `Shutdown` drains until its context ends, and reports what it leaves; a store or fetch cut off by `Shutdown` is not reported as a failure; a cancelled caller's context still delivers. FAIL; implement; PASS; commit.
 - [ ] `Provider` gains `Start(ctx) error` and `Shutdown(ctx) error`, following `signingkey`'s pattern. `EnableOIDCProvider`'s godoc names them.
@@ -841,7 +841,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - enabled twice;
   - the end-session path set to the chain's logout path;
   - two provider paths equal;
-  - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`, checked in a `c.wire` step so an observer added during wiring counts;
+  - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`, checked in `c.checkAfterWiring` so an observer added during wiring counts (R23);
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
   - `(*Provider).DPoPEnabled()` differing from whether `EnableDPoP` is on → `ErrConfig` naming `WithDPoP`;
   - `(*Provider).AssertionTokenEndpoint()` not empty and differing from the chain's token URL, after the prefix and path options → `ErrConfig` naming `WithAssertionTokenEndpoint`;
