@@ -231,11 +231,19 @@ A refresh token SHALL carry at least 128 bits, from a cryptographically secure s
 - **THEN** it receives tokens, and the grant is not revoked
 
 #### Scenario: Two tabs refresh at once
-- **WHEN** two requests present `r1` together, inside its grace window, on a provider holding its derivation key
+- **WHEN** two requests present `r1` within 10 seconds of its rotation, on a provider holding its derivation key
 - **THEN** both receive the same successor `r2`, one head remains, and a later refresh with `r2` succeeds with the grant live
 
+#### Scenario: Re-presented after the same-successor window
+- **WHEN** `r1` is presented again 20 seconds after its rotation, inside its grace window
+- **THEN** it receives tokens with a new successor, the grant is not revoked, and the previous successor presented past its own grace revokes the grant
+
+#### Scenario: Consumer sets the same-successor window
+- **WHEN** a consumer sets the window to zero, and `r1` is presented again inside its grace window
+- **THEN** it receives tokens with a new successor, as no re-presentation answers the same one
+
 #### Scenario: A replica without the shared key
-- **WHEN** `r1` is presented again inside its grace window to a provider whose derivation key differs from the one that derived its successor
+- **WHEN** `r1` is presented again within the same-successor window to a provider whose derivation key differs from the one that derived its successor
 - **THEN** it receives tokens with a new successor, and the grant is not revoked
 
 #### Scenario: Consumer widens the grace window

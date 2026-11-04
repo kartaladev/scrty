@@ -213,7 +213,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - narrowed scope allowed, omitted scope the grant's own, wider scope answered `invalid_scope`, and scopes the client has lost left out and reported (R13);
   - a client removed from the registry refused as `invalid_client`;
   - rotation with a 30-second grace by default, at most 5 minutes; `WithUnusedSuccessorRecovery` refused;
-  - a token re-presented inside its grace answering the same successor with no write, and `WithRefreshSuccessorKey`, defaulting to a per-process key (R20);
+  - a token re-presented within 10 seconds of its rotation answering the same successor with no write, `WithRefreshSuccessorKey` defaulting to a per-process key, and `WithRefreshSuccessorWindow` (R20);
   - reuse revoking the whole grant through the reuse observer;
   - rotation off returning the same token;
   - refreshed tokens keeping the grant's authentication facts, and an ID token without `nonce`;
