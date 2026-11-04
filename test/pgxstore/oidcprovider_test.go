@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -334,6 +335,85 @@ func TestPgxStore_LineageIsNotASession(t *testing.T) {
 
 			_, err = tc.written.Load(ctx, rec.ID)
 			require.NoError(t, err, "and the store that wrote it reads it")
+		})
+	}
+}
+
+// TestPgxStore_LineageInCallerTransaction proves a lineage store joined to a caller's
+// transaction, by either route, still writes to the lineage table and not to sessions;
+// that a plain session store on the same transaction still uses sessions; and that the
+// caller's rollback removes both rows.
+func TestPgxStore_LineageInCallerTransaction(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// join returns the options a store takes and the context its calls run on.
+		join func(ctx context.Context, tx pgx.Tx) ([]pgxstore.Option, context.Context)
+	}
+
+	cases := []testCase{
+		{
+			name: "WithTx",
+			join: func(ctx context.Context, tx pgx.Tx) ([]pgxstore.Option, context.Context) {
+				return nil, pgxstore.WithTx(ctx, tx)
+			},
+		},
+		{
+			name: "WithTxResolver",
+			join: func(ctx context.Context, tx pgx.Tx) ([]pgxstore.Option, context.Context) {
+				return []pgxstore.Option{pgxstore.WithTxResolver(func(context.Context) (pgx.Tx, bool) { return tx, true })}, ctx
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := migrated(t)
+			ctx := t.Context()
+			c := storefix.TestCipher(t)
+
+			tx, err := conn.Pool.Begin(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tx.Rollback(context.WithoutCancel(ctx)) })
+
+			opts, runCtx := tc.join(ctx, tx)
+			lineages := lineageSessions(t, conn.Pool, c, opts...)
+			sessions := newSessionStore(t, conn.Pool, c, opts...)
+
+			lineageRec := opSession("lineage-identifier", opID(200))
+			sessionRec := opSession("session-identifier", opID(201))
+			require.NoError(t, lineages.Create(runCtx, lineageRec))
+			require.NoError(t, sessions.Create(runCtx, sessionRec))
+
+			// count reads through the caller's transaction, which sees its own writes.
+			count := func(table string, family id.ID) int {
+				var n int
+				// table is one of this test's constants.
+				require.NoError(t, tx.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE family_id = $1", family).Scan(&n))
+				return n
+			}
+
+			assert.Equal(t, 1, count(pgschema.RefreshTokenTable, lineageRec.FamilyID), "the lineage is in the lineage table")
+			assert.Zero(t, count("sessions", lineageRec.FamilyID), "and not in sessions")
+			assert.Equal(t, 1, count("sessions", sessionRec.FamilyID), "the session is in sessions")
+			assert.Zero(t, count(pgschema.RefreshTokenTable, sessionRec.FamilyID), "and not in the lineage table")
+
+			got, err := lineages.Load(runCtx, lineageRec.ID)
+			require.NoError(t, err, "the lineage store reads its own write")
+			assert.Equal(t, lineageRec.FamilyID, got.FamilyID)
+			_, err = lineages.Load(runCtx, sessionRec.ID)
+			require.ErrorIs(t, err, session.ErrNotFound)
+			_, err = sessions.Load(runCtx, lineageRec.ID)
+			require.ErrorIs(t, err, session.ErrNotFound)
+
+			require.NoError(t, tx.Rollback(ctx))
+
+			var left int
+			require.NoError(t, conn.DB.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM "+pgschema.RefreshTokenTable+")+(SELECT count(*) FROM sessions)").Scan(&left))
+			assert.Zero(t, left, "the caller's rollback removes both rows")
 		})
 	}
 }
