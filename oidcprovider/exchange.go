@@ -31,9 +31,9 @@ const (
 	refreshTokenPrefix = "rt."
 )
 
-// replayRevocationBudget bounds the writes a replay's revocation makes once it has stopped
-// listening to its caller. It is a proposed value.
-const replayRevocationBudget = 10 * time.Second
+// revocationBudget bounds the writes a revocation makes once it has stopped listening to its
+// caller: a replay's, a reuse's and a gone user's. It is a proposed value.
+const revocationBudget = 10 * time.Second
 
 // Binding is the key a token request proved it holds, which httpsec fills in after
 // verifying the DPoP proof or the certificate. The provider verifies neither.
@@ -83,7 +83,8 @@ type TokenResponse struct {
 	// IDToken is present when the grant's scopes hold openid.
 	IDToken string
 	// RefreshToken is rt.<family>.<secret>, present when the client is registered for
-	// the refresh grant.
+	// the refresh grant. A refresh answers a new one, or for a client with rotation off, the
+	// one it presented.
 	RefreshToken string
 }
 
@@ -125,13 +126,37 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // There is no transaction across 8, 9 and 10. A lineage can never exist without its row, which
 // is the state that would fail open, and every refresh reads the row first. A failure after
 // the spend answers an error and burns the code, leaving records no one holds a token for: a
-// row with no lineage stays until its own deadline or a revocation.
+// row with no lineage reads as revoked at a refresh, and stays until its deadline.
 //
 // A code presented after it was spent is refused too, and a valid replay revokes what it
 // issued; see refuseSpentCode. The request that won step 7 never looks again, so of several
 // racing requests exactly one is answered with tokens, even though the others' replay leaves
 // those tokens' grant revoked. Which is why a resource is no part of what makes a replay valid:
 // it is what a request asks for, and not what the code was issued for.
+//
+// A refresh_token request runs in an order of its own, and writes nothing until its step 5:
+//
+//  1. a token of no shape the provider mints is refused with no lookup;
+//  2. the grant row is read, and one missing, revoked, past its expiry or another client's is
+//     refused;
+//  3. a grant bound to a key needs that key, or the answer is invalid_dpop_proof;
+//  4. a secret that is no record of that family is refused, which is also how a lineage missing
+//     behind a live row reads: as revoked, with nothing recorded, since a family is no credential;
+//  5. the token is judged. Superseded and past its grace, it is reuse: the whole grant is revoked,
+//     the newest token with it, and the answer is invalid_grant;
+//  6. a missing or disabled user is refused, and the grant revoked;
+//  7. a scope outside the grant is invalid_scope, a scope the client has lost is left out and the
+//     response says so, and resource is judged as at a code's exchange, against the whole grant;
+//  8. the tokens are signed, then the token is rotated, so a key failure rotates nothing;
+//  9. the row is read again, and a revocation since step 2 answers no tokens;
+//  10. an opaque access token is stored.
+//
+// The presented token works again within its grace, 30 seconds unless Client.RefreshGrace says
+// otherwise, for a client that lost the response or a second tab presenting it at once: each gets
+// tokens, and the grant stays live. That rotates the token again, which knocks out the successor
+// issued before, and presenting a knocked-out token is reuse, so two tabs must keep the token
+// answered last. A failure after step 8 answers an error, and the presented token retries. See
+// [session.Sessions.RotateWithGrace] for what the lineage guarantees.
 func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, error) {
 	if repeatedParam(r.Form) {
 		return nil, refuseRequest()
@@ -160,9 +185,10 @@ func (p *Provider) Token(ctx context.Context, r TokenRequest) (*TokenResponse, e
 	if !slices.Contains(rc.GrantTypes, grantType) {
 		return nil, &Error{Code: CodeUnauthorizedClient}
 	}
-	if grantType != GrantAuthorizationCode {
-		// A refresh is not answered yet.
-		return nil, &Error{Code: CodeUnsupportedGrantType}
+	// Client.RequireBinding belongs here, ahead of both grants, so that what it refuses has
+	// neither spent a code nor rotated a refresh token. Nothing enforces it yet.
+	if grantType == GrantRefreshToken {
+		return p.refresh(ctx, r, rc)
 	}
 
 	return p.exchangeCode(ctx, r, rc)
@@ -398,8 +424,15 @@ func newGrant(
 }
 
 // lineages builds the manager over the provider's lineage store, with the client's timeouts
-// when one is given. It never takes WithUnusedSuccessorRecovery (decision 5). It holds
-// nothing but what the arguments settle, so it is built where it is used.
+// when one is given, and with the observer that marks a reused family's grant. It never takes
+// WithUnusedSuccessorRecovery, which would keep a superseded refresh token renewable for days.
+//
+// It is built where it is used, one per request. A client's lifetimes are read as the client
+// stands now, and a consumer's registry can change them at any time, so a manager per client set
+// in New could not exist for those clients. Sharing one is not what serialises a refresh token's
+// rotations: the only lock a manager holds is for the strict Rotate, which the provider never
+// calls, and racing renewals are decided by the store's conditional write, as they are across
+// replicas. The manager keeps nothing between calls that a provider's lineages rely on.
 func (p *Provider) lineages(rc *RegisteredClient) (*session.Sessions, error) {
 	opts := []session.Option{
 		session.WithStore(oplineage.Sessions(p.stores.lineage)),
@@ -407,6 +440,7 @@ func (p *Provider) lineages(rc *RegisteredClient) (*session.Sessions, error) {
 		session.WithRandom(p.cfg.random),
 		session.WithLogger(p.cfg.logger),
 		session.WithTouchInterval(0),
+		session.WithReuseObserver(p.revokeOnReuse),
 	}
 	if rc != nil {
 		opts = append(opts,
@@ -472,7 +506,7 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	if !ok {
 		return refuseGrant()
 	}
-	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), replayRevocationBudget)
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
 
 	tok, err := p.stores.codeTokens.FindByID(detached, tokenID)
@@ -511,7 +545,7 @@ func (p *Provider) refuseSpentCode(ctx context.Context, r TokenRequest, rc *Regi
 	if record.ClientID != rc.ID || !codeBindingsHold(r, record, rc) {
 		return refuseGrant()
 	}
-	if err := p.revokeReplayed(detached, record.GrantFamily, now); err != nil {
+	if err := p.revokeGrant(detached, record.GrantFamily, CauseCodeReplay, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke what a replayed code issued")
 	}
 
@@ -542,14 +576,13 @@ func splitCode(code string) (id.ID, string, bool) {
 	return tokenID, secret, true
 }
 
-// revokeReplayed revokes the grant a replayed code issued, and its lineage. The grant's row
-// comes first, as the tombstone a grant not stored yet is created over, and which every
-// refresh reads first, so it alone ends the grant. Each write is tried whatever became of
-// the other. A failure answers an error, and since the code stays spent, presenting it again
-// tries both again. Opaque access tokens need nothing here, because their grant is checked
-// when they are read.
-func (p *Provider) revokeReplayed(ctx context.Context, family id.ID, now time.Time) error {
-	grantErr := p.stores.grants.Revoke(ctx, family, CauseCodeReplay, now)
+// revokeGrant revokes a grant and its lineage. The grant's row comes first, as the tombstone a
+// grant not stored yet is created over, and which every refresh reads first, so it alone ends
+// the grant. Each write is tried whatever became of the other. A failure answers an error, and
+// what caused the revocation can be presented again to try both again. Opaque access tokens
+// need nothing here, because their grant is checked when they are read.
+func (p *Provider) revokeGrant(ctx context.Context, family id.ID, cause RevocationCause, now time.Time) error {
+	grantErr := p.stores.grants.Revoke(ctx, family, cause, now)
 
 	manager, err := p.lineages(nil)
 	if err != nil {

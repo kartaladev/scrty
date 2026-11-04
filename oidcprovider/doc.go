@@ -113,6 +113,33 @@
 // read. A resource server verifying a JWT offline makes no such read, so for it a token lasts
 // until its exp. A store or key source that cannot answer is no verdict on the token.
 //
+// # Refresh
+//
+// A client registered for the refresh grant gets rt.<family>.<secret>, whose secret carries 256
+// bits and is stored only as a digest, in a [RefreshTokenStore] no sign-in reads. The family is
+// not a secret: a value naming a real family and a secret never issued changes nothing.
+//
+// Each refresh supersedes the token presented and answers a new one. The old one works again
+// within its grace, 30 seconds by default ([Client].RefreshGrace, at most 5 minutes), for a client
+// that lost the response, and for two tabs presenting it at once. Both of those get tokens and
+// the grant stays live, with one live head left, so the token answered first must not be
+// presented again. A superseded token presented later is reuse, which revokes the whole grant
+// and reports nothing to the presenter but invalid_grant. No option weakens that, and an unused
+// successor is never recovered.
+//
+// A grant ends when it goes unrefreshed for 30 days ([Client].GrantIdleTimeout), 90 days after it
+// was created ([Client].GrantAbsoluteLifetime), and by its sign-in's deadline unless it holds
+// offline_access. A client's lifetimes are read as the client stands at each refresh, so shortening
+// one reaches grants already issued, and no rotation extends either deadline.
+// [Client].DisableRotation answers the presented token back unchanged, and is only for a
+// confidential client required to bind its tokens.
+//
+// A refresh may narrow scope within the grant, and name another of its resources. A scope the
+// client is no longer allowed is left out and reported, and returns when it is allowed again. The
+// refresh token stays bound to the whole grant. A refreshed ID token keeps auth_time, amr, acr
+// and sid, and has no nonce. A bound grant needs its key, and a confidential client's refresh
+// token is bound by its client authentication rather than to a key.
+//
 // # Errors
 //
 // A refusal the protocol names is an [*Error], whose text is its code and holds no

@@ -191,10 +191,20 @@ type exchangeFixture struct {
 	keys  *exchangeKeys
 }
 
+// exchangeFixtureStart is the time a fixture's clock starts at.
+var exchangeFixtureStart = time.Date(2026, 11, 4, 10, 4, 0, 0, time.UTC)
+
 func newExchangeFixture(t *testing.T, opts ...oidcprovider.Option) *exchangeFixture {
 	t.Helper()
 
-	clk := clockwork.NewFakeClockAt(time.Date(2026, 11, 4, 10, 4, 0, 0, time.UTC))
+	return newExchangeFixtureOn(t, clockwork.NewFakeClockAt(exchangeFixtureStart), opts...)
+}
+
+// newExchangeFixtureOn is newExchangeFixture on a clock the row already holds, for a store it
+// builds on the same clock.
+func newExchangeFixtureOn(t *testing.T, clk *clockwork.FakeClock, opts ...oidcprovider.Option) *exchangeFixture {
+	t.Helper()
+
 	store, err := oidcprovider.NewMemoryPendingRequestStore()
 	require.NoError(t, err)
 	consents, err := oidcprovider.NewMemoryConsentStore()
@@ -2062,6 +2072,10 @@ func TestProvider_CodeReplay(t *testing.T) {
 				assert.True(t, grant.Revoked, "a live grant survived the replay that should have revoked it")
 				assert.Equal(t, oidcprovider.CauseCodeReplay, grant.RevokeCause)
 				assert.Equal(t, "billing-web", grant.ClientID, "the commit filled in the record the replay left")
+
+				require.NotEmpty(t, first.res.RefreshToken)
+				_, err = x.p.Token(t.Context(), refreshRequest("billing-web", first.res.RefreshToken, nil))
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
 			},
 		},
 		{
@@ -2088,6 +2102,9 @@ func TestProvider_CodeReplay(t *testing.T) {
 				assert.True(t, grant.RevokedAt.Equal(x.clk.Now()))
 				_, err = x.p.LineageForTest().Load(t.Context(), secret)
 				require.ErrorIs(t, err, session.ErrNotFound, "its refresh token is gone with the family")
+
+				_, err = x.p.Token(t.Context(), refreshRequest("billing-web", res.RefreshToken, nil))
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
 			},
 		},
 		{
