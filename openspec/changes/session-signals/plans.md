@@ -372,4 +372,4 @@ const RecoveryKindName = "passkey"
 
 - [ ] **8.1:** `test/httpsecconformance/signals_scenarios.go`, with scenarios named `signals: …` covering everything listed in `tasks.md` 8.1, on all three adapters.
 - [ ] **8.2:** Run every module's suite one at a time with `-race`, then `govulncheck ./...`, `gofmt -l .` and `go vet ./...` per module. All output must be clean.
-- [ ] **8.3:** An Opus reviewer checks the branch against every requirement in the four spec deltas, every decision D1–D10, and each row of the security review table. Each finding is REPRODUCED with a failing test or labelled UNREPRODUCED (`.claude/rules/defect-claims.md`). Findings go back to a fresh dispatch.
+- [ ] **8.3:** An Opus reviewer checks the branch against every requirement in the five spec deltas, every decision D1–D10, and each row of the security review table. Each finding is REPRODUCED with a failing test or labelled UNREPRODUCED (`.claude/rules/defect-claims.md`). Findings go back to a fresh dispatch.

@@ -1304,10 +1304,10 @@ What a read finds is `session` if a deadline or `authenticated_at` moved, `sessi
 `assurance_lapsed` if one has fallen due, `session_ended` if the sign-in is gone, and nothing if it
 holds and has not moved.
 
-The stream ends in one of three ways. If the sign-in is gone or its user is not active, it sends
-`session_ended` with the reason, and a reconnection with that credential gets 401. At `MaxAge` it
-closes with no event, and the client reconnects and is judged again. When the client leaves, nothing
-is sent.
+If the sign-in is gone or its user is not active, the stream sends `session_ended` with the reason
+and closes, and a reconnection with that credential gets 401. At `MaxAge` it closes with no event, and
+the client reconnects and is judged again. When the client leaves, or a write fails, nothing is sent.
+`CloseSessionSignals` and a panic close it too, as the sections below say.
 
 A reason on the bus names the end only if the store says gone within two heartbeats of its arrival,
 and a report of `reuse` is not relabelled by a later one. With no such report the reason is `expired`
@@ -1500,11 +1500,14 @@ untrusted caller.
   because a store failing inside your authenticator must not end an `EventSource` for good. A
   refusal of your own that maps to a 5xx can say so through `RetryableError`: returning false sends
   it through the chain's error mapping and your error handler, and counts no failure. A 5xx is final
-  for a browser, so return false only for what a retry would not change.
+  for a browser, so return false only for what a retry would not change. `authenticate.ErrUnavailable`
+  maps to 401, not a 5xx, so it is not retried and an `EventSource` stops on it: an authenticator of
+  your own that wants a browser to retry through an outage returns an error that maps to a 5xx here.
 - **A provider's logout.** A back-channel logout that ends sessions through the session manager
-  reaches their streams as `session_ended` with the reason `provider_logout`. Streams are matched by a
-  digest of the issuer and the upstream session, and the raw values stay out of a stream, the bus and
-  the logs. On another replica with no shared bus, it arrives within a heartbeat and half a second.
+  reaches their streams as `session_ended` with the reason `provider_logout`. One that names no
+  upstream session, under `BackchannelLogoutScopeAll`, ends every session of the user, and says
+  `all_ended`. Streams are matched by a digest of the issuer and the upstream session, and the raw
+  values stay out of a stream, the bus and the logs. On another replica with no shared bus, it arrives within a heartbeat and half a second.
 - **Logs.** Everything the stream logs goes to the logger given to the chain (`httpsec.WithLogger`),
   never with a token or session identifier. The exception is an adapter's own recover, for a consumer
   who calls `Stream` directly, which writes to `slog.Default`.
