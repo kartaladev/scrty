@@ -249,6 +249,7 @@ func TestConformanceFiber(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, fiberAdapter{})
+	httpsecconformance.RunScenarios(t, fiberAdapter{}, httpsecconformance.OIDCProviderScenarios())
 }
 
 // TestChallengeFiber runs the automation-challenge rows on fiber, which

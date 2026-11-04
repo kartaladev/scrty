@@ -177,6 +177,7 @@ func TestConformanceGin(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, ginAdapter{})
+	httpsecconformance.RunScenarios(t, ginAdapter{}, httpsecconformance.OIDCProviderScenarios())
 }
 
 // TestChallengeGin runs the automation-challenge rows on gin, which

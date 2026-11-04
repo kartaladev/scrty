@@ -179,6 +179,7 @@ func TestConformanceNetHTTP(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, nethttpAdapter{})
+	httpsecconformance.RunScenarios(t, nethttpAdapter{}, httpsecconformance.OIDCProviderScenarios())
 }
 
 // TestChallengeNetHTTP runs the automation-challenge rows, which
