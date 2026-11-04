@@ -30,6 +30,10 @@ type config struct {
 	clock        clock.Clock
 	resealOnRead bool
 
+	// lineage binds a session store to the fixed lineage table. Only
+	// NewRefreshTokenStore sets it, and no option can.
+	lineage bool
+
 	// honours is the set of optionKinds the constructing store declared.
 	honours optionKind
 

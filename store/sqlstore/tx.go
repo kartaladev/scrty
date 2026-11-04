@@ -80,6 +80,16 @@ func WithTx(ctx context.Context, tx *sql.Tx) context.Context {
 // and no handle; the calling store wraps it with its operation name and runs no
 // statement.
 func (c *config) conn(ctx context.Context) (q DBTX, tx *sql.Tx, ambient bool, err error) {
+	q, tx, ambient, err = c.resolveConn(ctx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	return c.boundTo(q), tx, ambient, nil
+}
+
+// resolveConn is conn's resolution, before the handle is bound to the store's table.
+func (c *config) resolveConn(ctx context.Context) (q DBTX, tx *sql.Tx, ambient bool, err error) {
 	if c.resolver != nil {
 		h, ok := c.resolver(ctx)
 		if !ok {

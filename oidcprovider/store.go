@@ -431,6 +431,10 @@ type GrantStore interface {
 	// zero at, is refused with an error matching ErrConfig before anything is read or
 	// written.
 	//
+	// A grant with no held code, stored while an end waits, is left for the next end. The
+	// provider never stores such a grant, as each comes from an exchange whose code the
+	// end holds.
+	//
 	// It deletes no browser session, as those are not this store's: the provider does
 	// that itself, through its browser-session store's DeleteBySignIn.
 	EndSignIns(ctx context.Context, sel SignInSelector, at time.Time) ([]Grant, error)

@@ -1,8 +1,11 @@
 // Package sqlstore keeps scrty's security state in PostgreSQL through
 // database/sql: sessions, one-time tokens, login attempts, signing keys, MFA
-// enrolments, API keys, and OIDC links, flows and handoffs. IdentityStore
-// keeps the identity records beside them: users, their role grants,
-// organizations, groups and role privileges. Each store implements the
+// enrolments, API keys, and OIDC links, flows and handoffs. It also keeps the
+// OIDC provider's state: parked requests, codes, consents, grants, access
+// tokens, assertion identifiers, browser sessions, clients and refresh-token
+// lineages, the last in a table of their own that no session store reads.
+// IdentityStore keeps the identity records beside them: users, their role
+// grants, organizations, groups and role privileges. Each store implements the
 // contract its owning package defines, and runs against the tables the
 // migrate package creates: the security-state stores against
 // migrate.SecurityState, the identity store against migrate.Identity.
@@ -70,7 +73,10 @@
 // only its own writes and leaves the caller's transaction usable, with the
 // caller's earlier work intact. Outside one, each runs in a transaction of its
 // own. The identity store's reads follow the
-// limit above.
+// limit above. GrantStore.EndSignIns, GrantStore.RevokeByUser and
+// GrantStore.RevokeByUserAndClient behave the same way as those writes, and
+// take the grants they write in one order, as GrantStore says, with the limit
+// it states for a caller's transaction.
 //
 // # Errors
 //

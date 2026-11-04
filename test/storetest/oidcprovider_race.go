@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -40,6 +41,18 @@ const (
 	EndReportedOnceRaceName  = "an end raced from many callers reports each grant once"
 	EndCreateRaceName        = "a sign-in's end racing its code's exchange leaves the grant revoked"
 	TouchRaceName            = "a touch racing a longer one leaves the longer deadline"
+
+	// The pairs RunGrantOrderRaces meets, each reported under its own name.
+	GrantOrderEndRevokeUserRaceName   = "an end racing a user's revocation fails neither"
+	GrantOrderEndRevokeClientRaceName = "an end racing a client's revocation fails neither"
+	GrantOrderEndsRaceName            = "two ends racing fail neither"
+	GrantOrderRevokeUsersRaceName     = "two of a user's revocations racing fail neither"
+	GrantOrderRevokeClientsRaceName   = "two of a client's revocations racing fail neither"
+
+	// The pairs holding different sets, one of a user's grants and the other those of
+	// one client of them.
+	GrantOrderEndSetsRaceName        = "an end racing a client's revocation over different sets fails neither"
+	GrantOrderRevokeUserSetsRaceName = "a user's revocation racing a client's over different sets fails neither"
 )
 
 // raceDigest is the digest a race holds for key.
@@ -213,6 +226,20 @@ func RunGrantRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
 
 	h.Require(t)
 
+	h, codes := joinedGrantHarness(t, h)
+
+	runRace(t, h, revocationCreateRace(), raceRule{name: RevocationCreateRaceName, noun: "create", racers: 2})
+	runRace(t, h, endReportedOnceRace(), raceRule{name: EndReportedOnceRaceName, noun: "report", racers: ProviderRaceRacers})
+	runRace(t, h, endCreateRace(codes), raceRule{name: EndCreateRaceName, noun: "create", racers: 2})
+}
+
+// joinedGrantHarness is h with every store it builds joined to one in-memory code store,
+// which it returns too.
+func joinedGrantHarness(
+	t *testing.T, h DurableHarness[oidcprovider.GrantStore],
+) (DurableHarness[oidcprovider.GrantStore], *oidcprovider.MemoryCodeStore) {
+	t.Helper()
+
 	codes, err := oidcprovider.NewMemoryCodeStore()
 	require.NoError(t, err)
 
@@ -227,9 +254,176 @@ func RunGrantRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
 	}
 	h.New, h.NewReplica = joined(h.New), joined(h.NewReplica)
 
-	runRace(t, h, revocationCreateRace(), raceRule{name: RevocationCreateRaceName, noun: "create", racers: 2})
-	runRace(t, h, endReportedOnceRace(), raceRule{name: EndReportedOnceRaceName, noun: "report", racers: ProviderRaceRacers})
-	runRace(t, h, endCreateRace(codes), raceRule{name: EndCreateRaceName, noun: "create", racers: 2})
+	return h, codes
+}
+
+// RunGrantOrderRaces holds a grant store's operations writing many grants to one lock
+// order: for each pair of EndSignIns, RevokeByUser and RevokeByUserAndClient that can
+// meet, one of each per record, over stored grants and outstanding codes whose families
+// interleave. A durable store whose operations take those rows in different orders
+// deadlocks, the database ends one of the two with an error, and its write is lost, which
+// the race reports as an unexpected error, and as a family left live. It says nothing
+// about how a store avoids that, so it holds any store, and asks no SQL of it.
+//
+// The sweep is left out: it is store-wide, so it would take the other records' rows, and
+// an adapter's own test meets it. Its inputs are checked as RunConsumeRace checks them.
+// It uses the in-memory code store whatever the grant store is.
+func RunGrantOrderRaces(t *testing.T, h DurableHarness[oidcprovider.GrantStore]) {
+	t.Helper()
+
+	h.Require(t)
+
+	h, codes := joinedGrantHarness(t, h)
+
+	type call = func(ctx context.Context, s oidcprovider.GrantStore, n int) error
+
+	end := func(ctx context.Context, s oidcprovider.GrantStore, n int) error {
+		_, err := s.EndSignIns(ctx, oidcprovider.SignInSelector{User: orderRaceUser(n)}, suiteStart)
+		return err
+	}
+	revokeUser := func(ctx context.Context, s oidcprovider.GrantStore, n int) error {
+		_, err := s.RevokeByUser(ctx, orderRaceUser(n), oidcprovider.CauseRecovery, suiteStart)
+		return err
+	}
+	revokeClient := func(ctx context.Context, s oidcprovider.GrantStore, n int) error {
+		_, err := s.RevokeByUserAndClient(ctx, orderRaceUser(n), opClient, oidcprovider.CauseRecovery, suiteStart)
+		return err
+	}
+
+	for i, pair := range []struct {
+		name          string
+		first, second call
+	}{
+		{GrantOrderEndRevokeUserRaceName, end, revokeUser},
+		{GrantOrderEndRevokeClientRaceName, end, revokeClient},
+		{GrantOrderEndsRaceName, end, end},
+		{GrantOrderRevokeUsersRaceName, revokeUser, revokeUser},
+		{GrantOrderRevokeClientsRaceName, revokeClient, revokeClient},
+	} {
+		firstFamily := 200000 + i*50000
+		runRace(t, h, grantOrderRace(codes, firstFamily, pair.first, pair.second),
+			raceRule{name: pair.name, noun: "call", racers: 2})
+	}
+
+	// The pairs above hold identical sets, which a store taking its rows in the order it
+	// meets them can still match by luck. These hold a user's grants against one client's,
+	// each set large enough to be met in an order of its own.
+	for i, pair := range []struct {
+		name          string
+		first, second call
+	}{
+		{GrantOrderEndSetsRaceName, end, revokeClient},
+		{GrantOrderRevokeUserSetsRaceName, revokeUser, revokeClient},
+	} {
+		firstFamily := 450000 + i*50000
+		runRace(t, h, grantOrderSetsRace(firstFamily, pair.first, pair.second),
+			raceRule{name: pair.name, noun: "call", racers: 2})
+	}
+}
+
+const (
+	// orderRaceRecords is how many meetings a pair of RunGrantOrderRaces runs.
+	orderRaceRecords = 32
+
+	// orderRaceFamilies is how many families a record spans, half of them stored grants
+	// and half named only by an outstanding code.
+	orderRaceFamilies = 16
+)
+
+const (
+	// orderSetsRaceRecords is how many meetings a pair over different sets runs.
+	orderSetsRaceRecords = 8
+
+	// orderSetsRaceFamilies is how many grants a record of such a pair spans, alternating
+	// between two clients, so one client's are half of the user's.
+	orderSetsRaceFamilies = 1200
+)
+
+// orderRaceUser is the user of the record whose families start at n.
+func orderRaceUser(n int) identity.UserID { return identity.UserID("order-race-u-" + strconv.Itoa(n)) }
+
+// grantOrderRace is first as racer 0 against second as racer 1. Both must succeed, so the
+// engine counts racer 0 as the one win, and any error fails the record.
+func grantOrderRace(
+	codes *oidcprovider.MemoryCodeStore, firstFamily int, first, second func(ctx context.Context, s oidcprovider.GrantStore, n int) error,
+) Race[oidcprovider.GrantStore] {
+	return Race[oidcprovider.GrantStore]{
+		Records: orderRaceRecords,
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, i int) string {
+			t.Helper()
+			n := firstFamily + i*orderRaceFamilies
+			signIn := opSignIn(string(orderRaceUser(n)), n)
+			for family := n; family < n+orderRaceFamilies; family += 2 {
+				require.NoError(t, s.Create(ctx, grantRecord(family+1, signIn)))
+
+				code := codeRecord(family, signIn)
+				code.GrantFamily = suiteID(family)
+				require.NoError(t, codes.Create(ctx, code))
+			}
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.GrantStore, key string, racer int) (bool, error) {
+			if racer == 0 {
+				return true, first(ctx, s, raceN(key))
+			}
+
+			return false, second(ctx, s, raceN(key))
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
+			t.Helper()
+			n := raceN(key)
+			for family := n; family < n+orderRaceFamilies; family++ {
+				if got := loadGrant(ctx, t, s, family); !got.Revoked {
+					t.Errorf("record %s: family %d was left live", key, family)
+				}
+			}
+		},
+	}
+}
+
+// grantOrderSetsRace is first as racer 0 against second as racer 1, over one user's
+// stored grants of two clients, where one call holds all of them and the other those of
+// one client. Both must succeed, and every grant must end revoked. The grants are stored
+// in a scrambled order, so no order of the store's own is the family order.
+func grantOrderSetsRace(firstFamily int, first, second func(ctx context.Context, s oidcprovider.GrantStore, n int) error) Race[oidcprovider.GrantStore] {
+	// stride is coprime to the grants of a record, so the stored order is a permutation.
+	const stride = 7
+
+	return Race[oidcprovider.GrantStore]{
+		Records: orderSetsRaceRecords,
+		Seed: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, i int) string {
+			t.Helper()
+			n := firstFamily + i*orderSetsRaceFamilies
+			signIn := opSignIn(string(orderRaceUser(n)), n)
+			for k := range orderSetsRaceFamilies {
+				offset := k * stride % orderSetsRaceFamilies
+				grant := grantRecord(n+offset, signIn)
+				if offset%2 == 1 {
+					grant.ClientID = opOtherClient
+				}
+				require.NoError(t, s.Create(ctx, grant))
+			}
+
+			return strconv.Itoa(n)
+		},
+		Attempt: func(ctx context.Context, s oidcprovider.GrantStore, key string, racer int) (bool, error) {
+			if racer == 0 {
+				return true, first(ctx, s, raceN(key))
+			}
+
+			return false, second(ctx, s, raceN(key))
+		},
+		Check: func(ctx context.Context, t *testing.T, s oidcprovider.GrantStore, key string) {
+			t.Helper()
+			n := raceN(key)
+			for family := n; family < n+orderSetsRaceFamilies; family++ {
+				if got := loadGrant(ctx, t, s, family); !got.Revoked {
+					t.Errorf("record %s: family %d was left live", key, family)
+				}
+			}
+		},
+	}
 }
 
 // raceGrant is the grant of family n, from a sign-in of a user of its own.

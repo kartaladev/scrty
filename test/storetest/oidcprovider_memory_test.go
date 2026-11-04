@@ -2,6 +2,7 @@ package storetest_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -11,10 +12,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 	"github.com/kartaladev/scrty/token/onetime"
 )
@@ -72,6 +75,13 @@ func TestMemory(t *testing.T) {
 		})
 	})
 
+	t.Run("Clients", func(t *testing.T) {
+		t.Parallel()
+		storetest.ClientStoreSuite(t, func(*testing.T) oidcprovider.ClientStore {
+			return must.Must(oidcprovider.NewMemoryRegistry(nil))
+		})
+	})
+
 	t.Run("Races", func(t *testing.T) {
 		t.Parallel()
 
@@ -106,7 +116,154 @@ func TestMemory(t *testing.T) {
 				return must.Must(oidcprovider.NewMemoryGrantStore())
 			}))
 		})
+		t.Run("GrantLockOrder", func(t *testing.T) {
+			t.Parallel()
+			storetest.RunGrantOrderRaces(t, providerHarness(func() oidcprovider.GrantStore {
+				return must.Must(oidcprovider.NewMemoryGrantStore())
+			}))
+		})
 	})
+}
+
+// grantOrderDefect is what a brokenOrderGrants gets wrong.
+type grantOrderDefect int
+
+const (
+	// grantOrderAborts fails a user's revocation, as a database ending one side of a
+	// deadlock does.
+	grantOrderAborts grantOrderDefect = iota
+	// grantOrderLoses reports success from a user's revocation, having written nothing.
+	grantOrderLoses
+)
+
+// brokenOrderGrants is the memory store with a user's revocation broken.
+type brokenOrderGrants struct {
+	*oidcprovider.MemoryGrantStore
+
+	defect grantOrderDefect
+}
+
+func (b brokenOrderGrants) RevokeByUser(
+	context.Context, identity.UserID, oidcprovider.RevocationCause, time.Time,
+) ([]oidcprovider.Grant, error) {
+	if b.defect == grantOrderAborts {
+		return nil, errors.New("deadlock detected")
+	}
+
+	return nil, nil
+}
+
+// clientDefect is what a brokenClients gets wrong.
+type clientDefect int
+
+const (
+	// clientHoldsSecret returns the client with the secret it was given.
+	clientHoldsSecret clientDefect = iota
+	// clientGenerateAdds returns a secret from GenerateSecret and leaves what was held.
+	clientGenerateAdds
+	// clientDeleteKeeps answers a delete and removes nothing.
+	clientDeleteKeeps
+)
+
+// brokenClients is the memory registry with one promise of its port broken.
+type brokenClients struct {
+	*oidcprovider.MemoryRegistry
+
+	defect clientDefect
+	secret []byte
+}
+
+func (b *brokenClients) Put(ctx context.Context, c oidcprovider.Client) error {
+	if len(c.Secret) > 0 {
+		b.secret = c.Secret
+	}
+
+	return b.MemoryRegistry.Put(ctx, c)
+}
+
+func (b *brokenClients) Client(ctx context.Context, clientID string) (*oidcprovider.RegisteredClient, error) {
+	rc, err := b.MemoryRegistry.Client(ctx, clientID)
+	if err == nil && b.defect == clientHoldsSecret {
+		rc.Secret = b.secret
+	}
+
+	return rc, err
+}
+
+func (b *brokenClients) GenerateSecret(ctx context.Context, clientID string) (string, error) {
+	if b.defect == clientGenerateAdds {
+		if _, err := b.MemoryRegistry.Client(ctx, clientID); err != nil {
+			return "", err
+		}
+
+		return "a-secret-nothing-holds", nil
+	}
+
+	return b.MemoryRegistry.GenerateSecret(ctx, clientID)
+}
+
+func (b *brokenClients) Delete(ctx context.Context, clientID string) error {
+	if b.defect == clientDeleteKeeps {
+		return nil
+	}
+
+	return b.MemoryRegistry.Delete(ctx, clientID)
+}
+
+// orderClientBackend is the subtest the guard reads these variants' failed cases under.
+const orderClientBackend = "fake"
+
+func orderVariant(name string, d grantOrderDefect, failsCase, failsWith string) storefix.BrokenVariant {
+	return storefix.BrokenVariant{
+		Name: "grant-order-" + name,
+		Run: func(t *testing.T) {
+			t.Run(orderClientBackend, func(t *testing.T) {
+				storetest.RunGrantOrderRaces(t, providerHarness(func() oidcprovider.GrantStore {
+					return brokenOrderGrants{MemoryGrantStore: must.Must(oidcprovider.NewMemoryGrantStore()), defect: d}
+				}))
+			})
+		},
+		FailsCase: failsCase,
+		FailsWith: failsWith,
+	}
+}
+
+func clientVariant(name string, d clientDefect, failsCase string) storefix.BrokenVariant {
+	return storefix.BrokenVariant{
+		Name: "client-" + name,
+		Run: func(t *testing.T) {
+			t.Run(orderClientBackend, func(t *testing.T) {
+				storetest.ClientStoreSuite(t, func(*testing.T) oidcprovider.ClientStore {
+					return &brokenClients{MemoryRegistry: must.Must(oidcprovider.NewMemoryRegistry(nil)), defect: d}
+				})
+			})
+		},
+		FailsCase: failsCase,
+	}
+}
+
+var orderClientVariants = []storefix.BrokenVariant{
+	orderVariant("aborts", grantOrderAborts, storetest.GrantOrderEndRevokeUserRaceName, "deadlock detected"),
+	orderVariant("loses", grantOrderLoses, storetest.GrantOrderRevokeUsersRaceName, ""),
+	clientVariant("holds-secret", clientHoldsSecret, "put and load return every field, with the supplied secret only as its digest"),
+	clientVariant("generate-adds", clientGenerateAdds, "generate secret replaces every secret held, and the secret returned is the digest kept"),
+	clientVariant("delete-keeps", clientDeleteKeeps, "delete removes the client, and a second delete is not found"),
+}
+
+// orderClientBrokenVar names the variant TestBrokenOrderClientConformance runs.
+const orderClientBrokenVar = "STORETEST_BROKEN_ORDER_CLIENT"
+
+// TestBrokenOrderClientConformance is the child half of TestBrokenOrderClientStoresAreCaught.
+func TestBrokenOrderClientConformance(t *testing.T) {
+	storefix.RunBrokenChild(t, orderClientBrokenVar, "TestBrokenOrderClientStoresAreCaught", orderClientVariants)
+}
+
+// TestBrokenOrderClientStoresAreCaught checks that RunGrantOrderRaces and ClientStoreSuite
+// each fail against a store carrying the defect they guard, at the case guarding it.
+func TestBrokenOrderClientStoresAreCaught(t *testing.T) {
+	t.Parallel()
+
+	storefix.CatchBrokenVariants(t, orderClientBrokenVar, "TestBrokenOrderClientConformance", orderClientBackend, orderClientVariants)
 }
 
 // TestMemoryAtAnyClock runs the provider's in-memory defaults through their suites on a
