@@ -45,6 +45,7 @@ Every implementation task is test-first: write the failing test, run it and conf
   - a path that is empty, lacks its leading slash, or ends in a slash;
   - a warning window above the idle timeout less the touch interval;
   - a `MaxAge` below twice the heartbeat, `NoMaxAge`, and `MaxPerSource` above `MaxStreams`;
+  - a `ReloadTimeout` not shorter than the heartbeat, and its default at heartbeats of 5, 15 and 60 s (2.5, 7.5 and 10 s); a `BusQueue` or `BusTimeout` below 1;
   - a chain clock that cannot wait;
   - a failed build leaves no observer on the manager, because the hub wires in last.
 
@@ -76,14 +77,14 @@ Every implementation task is test-first: write the failing test, run it and conf
   - no `Sec-Fetch-Site` and no `Origin` (a bearer client) → opens;
   - an allowed origin → opens with its CORS headers, including `Vary: Origin`;
   - a cookie stream from an origin named without credentials → 403; a bearer stream from it → opens;
-  - `*` with a cookie cross-site → 403, and no CORS at all with a cross-origin `Origin` → 403;
-  - `same-site` from an untrusted origin → 403; the refusal is `ErrCrossSiteStream`, and emits no `MaliciousCSRF` event;
+  - `*` with a cookie cross-site → 403; `*` with a bearer token → opens; `Origin: null` with a bearer token under `*` → 403; and no CORS at all with a cross-origin `Origin` → 403;
+  - `same-site` from an untrusted origin → 403; the refusal is `ErrCrossSiteStream`, emits no `MaliciousCSRF` event, and is logged with sampling;
   - a `POST` under CSRF protection reaches 405 once CSRF passes;
   - a CORS preflight for `Authorization` is answered with no stream;
   - a same-origin cookie stream opens without a CSRF token;
   - a source refused by a consumer's rate-limiting interceptor below the slot gets no stream.
 
-  Add the README section "Session signals": enabling it; the `EventSource` client, which probes an ordinary endpoint before rebuilding, so a 401 stays final, and rebuilds on `visibilitychange`, `pageshow` and `online`; the `fetch()` client, which reads the current credential on every attempt; the defaults table; and the operator's section listing each intermediary and server setting in design's failure sweep. Verify: `go test -run 'TestSessionSignals_EarlySlots|TestSessionSignals_CrossSite' -count=1 ./httpsec/`.
+  Add the README section "Session signals": enabling it; the `EventSource` client, which probes an ordinary endpoint before rebuilding, so a 401 stays final, and rebuilds on `visibilitychange`, `pageshow` and `online`; the `fetch()` client, which reads the current credential on every attempt; the defaults table; and the operator's section listing each intermediary and server setting in the design's failure sweep, the concurrent-stream limits and what happens at them (ASVS 7.1.2), how a provider's logout reaches streams (7.1.3), where logs go (16.2.3), and that the chain's authorizer is not re-run until a reconnection. Verify: `go test -run 'TestSessionSignals_EarlySlots|TestSessionSignals_CrossSite' -count=1 ./httpsec/`.
 
 ## 5. Stream lifecycle against the store (D4)
 
@@ -93,9 +94,11 @@ Every implementation task is test-first: write the failing test, run it and conf
   - gone with no report → `ended`; gone, a held deadline passed → `expired`;
   - still valid → a comment only, and every row asserts that nothing was presented or revoked;
   - **a session or user-store failure → a comment, no `session_ended`, the stream stays open, and a later successful reload that finds the sign-in ended closes it;**
-  - a store that hangs → the read times out at half the heartbeat, a comment is still sent, and it counts as a failure;
+  - a store that hangs → the read times out, the session and user reads sharing the budget, a comment is still sent, and it counts as a failure; a consumer's `ReloadTimeout` is used;
   - a renewal past its grace window, a strict rotation and a step-up → the stream stays open, the sign-in stays live, and no reuse is reported;
-  - a transaction on the opening request, committed since → reloads read current state; a tenant carried by `ReloadContext`;
+  - a transaction on the opening request, committed since → reloads read current state; a tenant carried by `ReloadContext`; a tenant-scoped store with no hook → no stream opens, and the failure is logged and answered as a dependency failure;
+  - **a panic in the stream's own code or a consumer's loader, on all three adapters** → the chain's logger gets the type, phase, family and frames, no log anywhere holds the value, the place is freed, and the process runs on;
+  - a stream's open and close log at DEBUG with user, family, client address, origin and reason, and no token or identifier, and the stream itself sends no client address;
   - back-channel logout through `DeleteByExternalSession` → `provider_logout`.
 
   Also: a reconnect after `session_ended` with the same credential → 401; a consumer heartbeat interval is used. Verify: `go test -run 'TestSessionSignals_Heartbeat' -count=1 -race ./httpsec/`.
@@ -107,7 +110,7 @@ Every implementation task is test-first: write the failing test, run it and conf
 
 ## 6. Bus, registry and caps (D6, D8, D9)
 
-- [ ] 6.1 Add `SignalBus`, `SignalEnvelope`, the in-process default, and the per-replica registry fed by one subscription, test-first: an envelope reaches only its user's streams, and `session_ended` only its family's, or every stream of the user when it names no family, sparing `Kept`, and waking all of them when `Kept` is nil; a family-only report reaches its family; an upstream-session report reaches the streams holding that issuer and session; a report naming no one reaches no stream; empty registry keys are removed. Verify: `go test -run 'TestSessionSignals_Bus' -count=1 -race ./httpsec/`.
+- [ ] 6.1 Add `SignalBus`, `SignalEnvelope`, the in-process default, and the per-replica registry fed by one subscription, test-first: an envelope reaches only its user's streams, and `session_ended` only its family's, or every stream of the user when it names no family, sparing `Kept`, and waking all of them when `Kept` is nil; a family-only report reaches its family; an upstream-session report reaches the streams holding that digest, and the envelope carries the digest and never the raw session; a report naming no one reaches no stream; empty registry keys are removed. Verify: `go test -run 'TestSessionSignals_Bus' -count=1 -race ./httpsec/`.
 - [ ] 6.2 Treat bus envelopes as untrusted, test-first:
   - a bus `session_ended` forwards only when the reload agrees, so a message whose session still exists (a rolled-back outer transaction, or a forged message) is not forwarded, and the heartbeat ends the stream later;
   - several wake-ups coalesce into one reload;
@@ -115,8 +118,8 @@ Every implementation task is test-first: write the failing test, run it and conf
   - a library signal with an unknown name, malformed data, or more than 8 KiB is dropped, and an `app.` envelope outside `PublishSignal`'s limits is dropped.
 
   Verify: `go test -run 'TestSessionSignals_BusWakeUp|TestSessionSignals_BusUntrusted' -count=1 -race ./httpsec/`.
-- [ ] 6.3 Handle bus failures, test-first: a failing `Publish` leaves the raising request's outcome unchanged and is logged with sampling; a `Publish` that hangs does not hold up a logout, and is abandoned after 5 s; the queue of 1024 overflowing drops with a sampled log, and a consumer's signal gets `ErrSignalsBusy`; `Publish` receives none of the request's values; a failing `Subscribe`, one returning early with no error, and a panic in either are all retried with backoff from 1 s up to 30 s; `deliver` called concurrently, or after close, is safe; no goroutine runs before first use, or after close (goleak); the heartbeat still ends streams; with the default bus, a signal raised on another replica is not delivered. Verify: `go test -run 'TestSessionSignals_BusOutage' -count=1 -race ./httpsec/`.
-- [ ] 6.4 Enforce the caps per replica, test-first: a fifth stream per sign-in, a seventeenth per user and one over the total → 200 with only `retry` within `BusyDelay` ±30%, `ErrTooManyStreams` internally, a sampled WARN, nothing charged, no existing stream closed; a dependency failure at admission → the same answer, on this path only, with other paths' 5xx unchanged; two requests racing for the last place → exactly one opens (a barrier test); a client that leaves frees its place; a chain refusing after `Stream`, on all three adapters, frees it once; a panicking body frees it once; consumer caps are used; `MaxPerSource` off by default, and used when set; `SessionSignalStats` counts each. Verify: `go test -run 'TestSessionSignals_Caps' -count=1 -race ./httpsec/`.
+- [ ] 6.3 Handle bus failures, test-first: a failing `Publish` leaves the raising request's outcome unchanged and is logged with sampling; a `Publish` that hangs does not hold up a logout, and is abandoned after 5 s; the queue overflowing drops with a sampled log and a counted drop, and a consumer's signal gets `ErrSignalsBusy`; a consumer's `BusQueue` and `BusTimeout` are used; `Publish` receives none of the request's values; a failing `Subscribe`, one returning early with no error, and a panic in either, logged as the stream's panics are, are all retried with backoff from 1 s up to 30 s; `deliver` called concurrently, or after close, is safe; no goroutine runs before first use, or after close (goleak); the heartbeat still ends streams; with the default bus, a signal raised on another replica is not delivered. Verify: `go test -run 'TestSessionSignals_BusOutage' -count=1 -race ./httpsec/`.
+- [ ] 6.4 Enforce the caps per replica, test-first: a fifth stream per sign-in, a seventeenth per user and one over the total → 200 with only `retry` within `BusyDelay` ±30%, `ErrTooManyStreams` internally, a sampled WARN, nothing charged, no existing stream closed; a dependency failure at admission → the same answer, on this path only, with other paths' 5xx unchanged; two requests racing for the last place → exactly one opens (a barrier test); a client that leaves frees its place; a chain refusing after `Stream`, on all three adapters, frees it once; a panicking body frees it once; consumer caps are used; `MaxPerSource` off by default, and used when set; `SessionSignalStats` counts each, including bus drops, publish failures and reload failures in a row, and its godoc says it is for operators. Verify: `go test -run 'TestSessionSignals_Caps' -count=1 -race ./httpsec/`.
 - [ ] 6.5 Bound each stream's queue at 32, test-first: a slow stream drops its own events, never another stream's, and never blocks the publisher; a slow stream whose sign-in is then ended still sends `session_ended`. Godoc the bus (including that a shared bus should authenticate its transport), the replica limit and the caps. Verify: `go test -run 'TestSessionSignals_SlowStream' -count=1 -race ./httpsec/`.
 - [ ] 6.6 End every open stream on `chain.CloseSessionSignals(ctx)`, test-first:
   - each stream closes without an event and frees its place;

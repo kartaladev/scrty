@@ -27,8 +27,8 @@
   - caps 4 per sign-in, 16 per user and 10 000 in total, per replica;
   - `ReconnectDelay` 5 s ±30% per stream, `BusyDelay` 30 s ±30% per refusal, and on closing a fresh `retry` between 1 s and 3 × `ReconnectDelay`;
   - `MaxAge` 1 hour ±10%, `NoMaxAge` to turn it off, at least 2 × heartbeat; `MaxPerSource` off;
-  - a reload timeout of half the heartbeat;
-  - a publisher queue of 1024 and a 5 s `Publish` timeout, for a consumer's bus only;
+  - `ReloadTimeout` half the heartbeat, within 2–10 s, shorter than the heartbeat if set, one budget for the session and user reads together;
+  - `BusQueue` 1024 and `BusTimeout` 5 s, for a consumer's bus only;
   - a queue of 32 per stream, and a wake channel of 1;
   - at most 16 `signals` query names and 256 bytes;
   - consumer data up to 8 KiB of valid JSON and valid UTF-8, with no raw CR or LF;
@@ -46,6 +46,7 @@
 - A store failure during a reload never ends a stream (user's choice, 2026-11-03). Only a store that agrees, or the absolute deadline during an outage, ends one.
 - **A stream never calls `Sessions.Load`, holds no session identifier, and no read of its can present, judge or revoke.** Every reload row asserts it.
 - A body reads nothing from the exchange: the endpoint copies what it needs before `Stream`, with `strings.Clone` for strings.
+- No log holds a panic's value, a token or a session identifier. The chain's own stream body, publisher and subscription goroutines recover their panics and log through the chain's logger; the adapter's recover is only a backstop.
 - Verify commands run with `-v`, and the named tests must appear. Timing-sensitive tests also pass 16 concurrent copies of the compiled binary, for several rounds. Tests order events with barriers, not sleeps.
 - Never read or cite `.claude/.legacy`. Never edit `openspec/` from an implementer. Agents never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`.
 - Run modules' suites one at a time, never in parallel. Navigate with gopls (`.claude/rules/gopls-navigation.md`).
@@ -192,7 +193,8 @@ type SessionSignals struct {
     Path string; Signals []Signal
     Heartbeat, ExpiryWarning, AssuranceWindow, MaxAge, ReconnectDelay, BusyDelay time.Duration
     MaxPerSignIn, MaxPerUser, MaxStreams, MaxPerSource int
-    Users identity.UserLoader; ReloadContext func(context.Context) context.Context; Bus SignalBus
+    Users identity.UserLoader; ReloadContext func(context.Context) context.Context; ReloadTimeout time.Duration
+    Bus SignalBus; BusQueue int; BusTimeout time.Duration
 }
 const NoMaxAge time.Duration = -1
 const DefaultSessionSignalsPath = "/session/signals"
@@ -241,7 +243,7 @@ func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protectio
   - neither header → opens;
   - an allowed origin → opens with its CORS headers.
 
-  Also `TestSessionSignals_EarlySlots`: a CORS preflight for `Authorization` gets 204 with no stream; a same-origin cookie stream opens without a CSRF token; a rate-limited source gets no stream. **Green:** a stream-specific check before registration. Trusted means an origin CORS names exactly or by pattern, with credentials allowed for a cookie-authenticated stream, and with or without for one authenticated by `Authorization`. Do not reuse CORS's `allowedOrigin`, which says yes to everything under `*`, nor the CSRF layer's trusted list, nor `ErrCrossSiteRequest`, which emits `MaliciousCSRF`.
+  Also `TestSessionSignals_EarlySlots`: a CORS preflight for `Authorization` gets 204 with no stream; a same-origin cookie stream opens without a CSRF token; a rate-limited source gets no stream. **Green:** a stream-specific check before registration. Trusted means, for a cookie-authenticated stream, an origin CORS names exactly or by pattern with credentials allowed, a wildcard not counting; and for one authenticated by `Authorization`, any origin CORS allows, a wildcard counting. `Origin: null` never passes, under `*` included. Do not reuse CORS's `allowedOrigin`, which says yes to everything under `*`, `null` included, nor the CSRF layer's trusted list, nor `ErrCrossSiteRequest`, which emits `MaliciousCSRF`. A refusal logs with sampling.
 - [ ] Write the README section: enabling it; an `EventSource` client (cookie session) that probes an ordinary endpoint before rebuilding, and rebuilds on `visibilitychange`, `pageshow` and `online`; a `fetch()` client (bearer) that reads the current credential on every attempt; the defaults table; and the operator's section, one line per setting that the design's failure sweep names.
 - [ ] Verify each task's command, then the root suite. Commit per task.
 
@@ -256,7 +258,9 @@ func crossSiteAllowed(ex *Exchange, cors *corsPolicy) bool // the csrf-protectio
 **Decisions the implementer cannot make alone:**
 - A timer reloads before it speaks. On a store failure only the absolute deadline ends the stream. Alive per the store while past per the clock re-arms no sooner than the next heartbeat.
 - A reason from a report is kept with its local receipt time, and used only if the store says gone within two heartbeats. It has its own field, since the wake channel carries nothing.
-- The reload's context comes from `ReloadContext`, called once at admission, and defaults to one with none of the request's values, with a timeout of half the heartbeat per read.
+- The reload's context comes from `ReloadContext`, called once at admission, and defaults to one with none of the request's values. The first read at admission uses it too, so a missing tenant fails there, as a dependency failure. `ReloadTimeout` covers the session and user reads together.
+- The body's first deferred step recovers a panic and logs through the chain's logger, with the value's type, the phase (`stream`, `reload`, `bus`), the family, and frames as function, file and line. It frees the place. It never logs the value, nor `debug.Stack()`, which quotes arguments.
+- Open and close log at DEBUG with user, family, client address, origin and reason.
 
 - [ ] **5.1 Red:** `TestSessionSignals_Heartbeat`, every row in `tasks.md` 5.1. The jitter row asserts that each interval is within `[0.9, 1.1] × heartbeat` over 20 beats. The store-failure row uses a store double that fails for two reloads and then reports the sign-in gone. It asserts two comments and no event, then `session_ended`.
 - [ ] **5.2–5.4 Red:**
@@ -281,9 +285,9 @@ type SignalBus interface {
     Publish(ctx context.Context, e SignalEnvelope) error
     Subscribe(ctx context.Context, deliver func(SignalEnvelope)) error
 }
-type SignalEnvelope struct { User identity.UserID; Family, Kept id.ID; ExternalIssuer, ExternalSessionID string; Name, Reason string; Data json.RawMessage }
+type SignalEnvelope struct { User identity.UserID; Family, Kept id.ID; Upstream string /* SHA-256 of issuer, a separator and upstream session */; Name, Reason string; Data json.RawMessage }
 func (c *Chain) CloseSessionSignals(ctx context.Context) error
-type SessionSignalStats struct { Open int; RefusedByCap, ReloadFailures uint64; BusSubscribed bool }
+type SessionSignalStats struct { Open int; RefusedByCap, ReloadFailures, ConsecutiveReloadFailures, BusDropped, BusPublishFailures uint64; BusSubscribed bool }
 func (c *Chain) SessionSignalStats() SessionSignalStats
 ```
 

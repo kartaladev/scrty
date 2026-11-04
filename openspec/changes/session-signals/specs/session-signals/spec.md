@@ -206,7 +206,7 @@ By default a stream SHALL send a comment every 15 seconds. At each one, it SHALL
 - **THEN** building the chain fails with a configuration error
 
 ### Requirement: A check is bounded and independent of the opening request
-A check SHALL time out within half the heartbeat interval, so a store that hangs cannot stop the heartbeat. It SHALL NOT run inside a transaction or other request-scoped value of the request that opened the stream, unless the consumer carries one over.
+A check SHALL time out within half the heartbeat interval, and within 2 to 10 seconds, by default, so a store that hangs cannot stop the heartbeat. The consumer SHALL be able to set the timeout, which SHALL be shorter than the heartbeat. It SHALL NOT run inside a transaction or other request-scoped value of the request that opened the stream, unless the consumer carries one over.
 
 #### Scenario: A store that hangs
 - **WHEN** a stream's check blocks with no answer
@@ -219,6 +219,10 @@ A check SHALL time out within half the heartbeat interval, so a store that hangs
 #### Scenario: Multi-tenant consumer
 - **WHEN** the consumer supplies a function carrying its tenant from the opening request to the checks
 - **THEN** the checks run with that tenant
+
+#### Scenario: A tenant-scoped store with no such function
+- **WHEN** a store needs a tenant, and the consumer supplies no function to carry it
+- **THEN** the stream does not open, the failure is logged, and no other tenant's data is read
 
 ### Requirement: A store outage does not end a stream
 When the session store or the user store fails to answer a check, the stream SHALL stay open, send its heartbeat, and check again at the next one. It SHALL NOT report the sign-in as ended because of the failure, and SHALL still end at the sign-in's absolute deadline.
@@ -254,6 +258,14 @@ The chain SHALL deliver signals through a bus. By default the bus SHALL reach on
 #### Scenario: A bus that has fallen behind
 - **WHEN** a consumer's bus has fallen so far behind that a consumer's signal cannot be queued
 - **THEN** publishing fails with an error saying so
+
+#### Scenario: Consumer sets the queue and the timeout
+- **WHEN** the consumer sets the bus's queue size and publish timeout
+- **THEN** those are used
+
+#### Scenario: An upstream session on the bus
+- **WHEN** a provider logs out an upstream session and the signal crosses a shared bus
+- **THEN** the message carries a digest of the issuer and session and not the session itself, and the matching stream on another replica ends
 
 #### Scenario: Default bus on several replicas
 - **WHEN** no bus is configured, `credential_changed` is enabled, a stream is open on replica A, and the user changes their password through replica B
@@ -404,6 +416,24 @@ The consumer SHALL be able to publish its own signal to every open stream of one
 #### Scenario: Narrowed client
 - **WHEN** a client opened its stream with `?signals=session_ended` and the consumer publishes `app.roles_changed` for its user
 - **THEN** that stream does not send `app.roles_changed`
+
+### Requirement: A panic in a stream reaches the consumer's logger, without its value
+A panic in the stream's own code, or in a consumer's bus or loader it calls, SHALL be recovered on every adapter and logged through the chain's logger, naming the value's type, where it happened and the sign-in's family, and never the value. The stream SHALL then close and free its place, and the process SHALL keep running.
+
+#### Scenario: A panic carrying a secret
+- **WHEN** a consumer's user loader panics with a value holding a token, on any of the three adapters
+- **THEN** the chain's logger records the panic's type and location, no log holds the token, and the stream's place is freed
+
+### Requirement: A stream's lifecycle and refusals can be seen
+A stream's open and close SHALL be logged with its user, family, client address, origin and reason, and never a token or session identifier. A cap refusal and a cross-site refusal SHALL be logged with sampling. The chain SHALL report drops and failures of a consumer's bus with its other counts, and failures of checks in a row.
+
+#### Scenario: A refused cross-site stream
+- **WHEN** a request for the stream is refused as cross-site
+- **THEN** it is logged with sampling, and no CSRF attack is reported
+
+#### Scenario: A bus falling behind
+- **WHEN** a consumer's bus drops a signal
+- **THEN** the chain's counts show it
 
 ### Requirement: A stream does not keep its sign-in alive
 Opening a stream and keeping it open SHALL NOT record activity on its sign-in, so a stream left open SHALL NOT keep an idle sign-in alive.

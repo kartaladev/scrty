@@ -33,7 +33,7 @@ A request for the signal stream SHALL NOT record activity on its session, unlike
 - **THEN** it is told the stream request does not
 
 ### Requirement: A cross-origin stream is governed by CORS
-A cross-origin request for the signal stream SHALL be answered only for an origin the chain's CORS policy names: with credentials allowed for a stream authenticated by a cookie, and with or without them for a stream authenticated by an `Authorization` header. A wildcard SHALL NOT make an origin trusted, and `Origin: null` SHALL never pass.
+A cross-origin request for the signal stream SHALL be answered only for an origin the chain's CORS policy names: with credentials allowed for a stream authenticated by a cookie, where a wildcard SHALL NOT count; and with or without them, a wildcard included, for a stream authenticated by an `Authorization` header. `Origin: null` SHALL never pass.
 
 #### Scenario: Allowed origin
 - **WHEN** CORS allows `https://app.example.com` with credentials and a page there opens the stream
@@ -41,6 +41,10 @@ A cross-origin request for the signal stream SHALL be answered only for an origi
 
 #### Scenario: Bearer page on an allowed origin, without credentials
 - **WHEN** CORS names `https://app.example.com` without credentials, and a page there sends a `fetch()` of the stream with an `Authorization` header
+- **THEN** the stream opens
+
+#### Scenario: Wildcard CORS and a bearer token
+- **WHEN** CORS allows `*`, and a page on another site sends a `fetch()` of the stream with an `Authorization` header
 - **THEN** the stream opens
 
 #### Scenario: An echoed origin varies
