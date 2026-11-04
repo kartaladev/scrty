@@ -122,6 +122,7 @@ type Recoverer struct {
 	risk          func(ctx context.Context, in RiskInput) (time.Duration, error)
 
 	revokeSessions  bool
+	grants          GrantRevoker
 	sessionLifetime time.Duration
 	ids             id.Generator
 	issue           IssueFunc
@@ -180,6 +181,9 @@ type config struct {
 	riskSet bool
 
 	keepSessions    bool
+	grants          GrantRevoker
+	grantsSet       bool
+	keepGrants      bool
 	sessionLifetime time.Duration
 	ids             id.Generator
 	idsSet          bool
@@ -521,6 +525,7 @@ func NewRecoverer(deps Deps, opts ...Option) (*Recoverer, error) {
 		r.validateMFA,
 		r.validateFlow,
 		r.validateCompletion,
+		r.validateGrants,
 		r.validateHolds,
 	}
 	for _, step := range steps {

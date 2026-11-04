@@ -222,6 +222,12 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // identifier that does not parse, names another user's passkey or names
 // none is passkey.ErrNotFound (404), and nothing changes.
 //
+// On a chain with EnableOIDCProvider, the manager must say what a suspended clone
+// does to the user's application grants, by passkey.WithGrantRevoker or
+// passkey.WithoutCloneGrantRevocation; one with neither refuses the chain with a
+// configuration error. A chain using only the manager's MFAMethod, without
+// EnablePasskeys, is outside that check. With no provider nothing changes.
+//
 // Passwordless login is off by default and is enabled with
 // WithPasskeyPasswordlessLogin, which serves its own two endpoints as a first
 // factor at OrderPasskeyLogin.
@@ -428,6 +434,8 @@ func (c *config) wirePasskeys() error {
 			"so the prefix would move no endpoint", option)
 	}
 
+	c.checkAfterWiring(func() error { return p.checkCloneGrants(c) })
+
 	if err := p.checkResolving(c); err != nil {
 		return err
 	}
@@ -458,6 +466,20 @@ func (c *config) wirePasskeys() error {
 	})
 
 	return nil
+}
+
+// checkCloneGrants refuses a manager on a chain with a provider that was told
+// nothing about a suspended clone's grants. The package's own default revokes
+// nothing, since it alone has no provider, and here that would leave a suspected
+// clone's grants alive with nobody having chosen it.
+func (p *passkeyInterceptor) checkCloneGrants(c *config) error {
+	if c.oidcProvider == nil || p.deps.Passkeys == nil || p.deps.Passkeys.CloneGrantsDecided() {
+		return nil
+	}
+
+	return newConfigError("EnablePasskeys on a chain with EnableOIDCProvider needs a manager that says what " +
+		"a suspected clone does to the user's grants: build it with passkey.WithGrantRevoker(provider), or " +
+		"with passkey.WithoutCloneGrantRevocation() to keep them")
 }
 
 // checkPaths refuses a passkey path that collides with another passkey path,

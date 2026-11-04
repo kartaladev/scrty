@@ -274,9 +274,15 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	// not be one the chain's bearer accepts. The factory is handed over only
 	// when the consumer configured one: without it the core builds its own
 	// in-memory default, on the core's logger and clock, which are the
-	// chain's unless the consumer replaced them.
-	opts := make([]recovery.Option, 0, len(i.coreOpts)+5)
+	// chain's unless the consumer replaced them. The chain's provider goes
+	// first as well, so recovery.WithGrantRevoker replaces it and
+	// recovery.WithoutRecoveryGrantRevocation keeps the grants.
+	opts := make([]recovery.Option, 0, len(i.coreOpts)+6)
 	opts = append(opts, recovery.WithLogger(c.logger), recovery.WithClock(c.clock))
+
+	if grants := c.grantRevoker(); grants != nil {
+		opts = append(opts, recovery.WithGrantRevoker(grants))
+	}
 
 	if c.limiterFactory != nil {
 		opts = append(opts, recovery.WithUserLimiterFactory(c.limiterFactory))

@@ -34,6 +34,27 @@ import (
 // lockout.Policy.Reset.
 type ChangePasswordFunc func(ex *Exchange) error
 
+// passwordChangeGrantCause is the cause a password change revokes grants with.
+const passwordChangeGrantCause = "password_change"
+
+// userGrantRevoker revokes every grant an application holds for a user, those
+// with offline access included. *oidcprovider.Provider satisfies it, and it is
+// what the chain hands the endpoints that revoke them when EnableOIDCProvider is
+// on. There is none on a chain without a provider, and nothing to revoke.
+type userGrantRevoker interface {
+	RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error
+}
+
+// grantRevoker is the chain's provider as the port its endpoints revoke through,
+// and nil on a chain without one.
+func (c *config) grantRevoker() userGrantRevoker {
+	if c.oidcProvider == nil {
+		return nil
+	}
+
+	return c.oidcProvider.provider
+}
+
 // passwordChangeGate holds every session that owes a password change, and lets
 // the consumer's resolve endpoint through so the debt can be paid.
 type passwordChangeGate struct {
@@ -58,6 +79,11 @@ type passwordChangeGate struct {
 	// log is the chain's logger, handed over at assembly, which a store that
 	// cannot clear is reported through.
 	log *slog.Logger
+
+	// revokeGrants is WithPasswordChangeGrantRevocation, and grants the chain's
+	// provider it revokes through, handed over at assembly.
+	revokeGrants bool
+	grants       userGrantRevoker
 }
 
 // wirePasswordChange hands every password-change gate the chain's logout path,
@@ -73,6 +99,7 @@ func (c *config) wirePasswordChange() {
 		g.logoutPath = c.logoutPath
 		g.attempts = stores
 		g.log = c.logger
+		g.grants = c.grantRevoker()
 
 		return nil
 	})
@@ -189,6 +216,9 @@ func (g *passwordChangeGate) isResolveRequest(r Request) bool {
 // A successful change also clears the caller's lockout failures, at once and
 // before the save, since the password has changed whether or not the save then
 // succeeds; see clearFailures.
+//
+// With WithPasswordChangeGrantRevocation the user's grants are revoked just
+// before the consumer's function runs.
 func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	// The endpoint changes this caller's own password, so there has to be a
 	// caller: without a session it would be an unauthenticated password change
@@ -219,6 +249,14 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	// the exchange's context, and what it leaves there is not this caller's
 	// say in whose failures are cleared.
 	ctx, username := ex.Context(), g.clearableUsername(ex.Context())
+
+	// Before the change, as the option promises: a revocation that fails leaves
+	// the password as it was, and the caller can try again.
+	if g.revokeGrants {
+		if err := g.grants.RevokeUserGrants(ctx, s.UserID, passwordChangeGrantCause); err != nil {
+			return err
+		}
+	}
 
 	if err := g.change(ex); err != nil {
 		// The consumer's error is the refusal, unchanged: they know why they
@@ -327,7 +365,8 @@ type PasswordChangeOption func(*passwordChangeGate) error
 //
 // A successful resolve also clears the caller's lockout failures (see
 // ChangePasswordFunc); there is no option to keep them, since they were
-// guesses at a password that no longer exists.
+// guesses at a password that no longer exists. It keeps the user's application
+// grants unless WithPasswordChangeGrantRevocation revokes them.
 //
 // A POST to the chain's logout path always passes, so a caller owing a change
 // can end the session; the path is the one EnableLogout configured, read when
@@ -353,7 +392,11 @@ func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChange
 		}
 
 		c.enable(option, func() error {
-			return requireDep(option, "session manager", sessions)
+			if err := requireDep(option, "session manager", sessions); err != nil {
+				return err
+			}
+
+			return g.checkGrantRevocation(c)
 		})
 
 		c.useSessions(sessions)
@@ -362,6 +405,47 @@ func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChange
 
 		return nil
 	}
+}
+
+// WithPasswordChangeGrantRevocation revokes every application grant of the user,
+// offline access included, each time the resolve endpoint runs, before the
+// consumer's function writes the new password.
+//
+// Default: off. A password change keeps the user's grants, as no standard
+// requires otherwise and surveyed providers do likewise; a consumer who treats a
+// change as a sign of compromise opts in here.
+//
+// A revocation that fails fails the change: the function does not run, so the
+// password stays as it was, and the error goes to the chain's handling, a 500 by
+// default, so the caller can try again. Since the revocation comes first, one
+// that succeeded stands even when the function then refuses the new password.
+//
+// It revokes through the chain's provider, so a chain without EnableOIDCProvider
+// is refused with a configuration error, and so is one without
+// WithPasswordChangeEndpoint, which has no change to revoke on.
+func WithPasswordChangeGrantRevocation() PasswordChangeOption {
+	return func(g *passwordChangeGate) error {
+		g.revokeGrants = true
+
+		return nil
+	}
+}
+
+// checkGrantRevocation refuses WithPasswordChangeGrantRevocation on a chain where
+// it could revoke nothing.
+func (g *passwordChangeGate) checkGrantRevocation(c *config) error {
+	switch {
+	case !g.revokeGrants:
+		return nil
+	case g.change == nil:
+		return newConfigError("WithPasswordChangeGrantRevocation needs WithPasswordChangeEndpoint: " +
+			"with no resolve endpoint there is no change to revoke the grants on")
+	case c.oidcProvider == nil:
+		return newConfigError("WithPasswordChangeGrantRevocation needs EnableOIDCProvider: " +
+			"with no provider on the chain there are no grants to revoke")
+	}
+
+	return nil
 }
 
 // WithPasswordChangeEndpoint answers POST requests on path with fn.

@@ -30,6 +30,7 @@ const (
 	msgIDFailed             = "recovery: a recovery record identifier could not be minted"
 	msgResetFailed          = "recovery: the authenticator reset failed"
 	msgRevokeFailed         = "recovery: the user's sessions could not be revoked"
+	msgGrantsFailed         = "recovery: the user's application grants could not be revoked"
 	msgReissueFailed        = "recovery: the saved codes could not be replaced"
 	msgRemainingFailed      = "recovery: the remaining saved codes could not be counted"
 	msgSessionFailed        = "recovery: the recovery session could not be created"
@@ -44,6 +45,7 @@ const (
 	errTextRecordStore = "recovery: the recovery record store failed"
 	errTextRecordID    = "recovery: a recovery record identifier could not be minted"
 	errTextIssue       = "recovery: the recovery session's credential could not be issued"
+	errTextGrants      = "recovery: the user's application grants could not be revoked"
 )
 
 // IssueFunc issues the credential the holder of a recovery session carries
@@ -159,7 +161,9 @@ type issuedSession struct {
 //
 // Then, in this order: the proofs are spent; a completed record is written;
 // the planned authenticators are removed; every session of the user is
-// deleted, unless WithoutSessionRevocation; when a saved code was spent, the
+// deleted, unless WithoutSessionRevocation; the user's application grants are
+// revoked, when a revoker is present (WithGrantRevoker) and unless
+// WithoutRecoveryGrantRevocation; when a saved code was spent, the
 // saved set is replaced and the new codes returned; the recovery session is
 // stored, already recovery-pending, in the one write that creates it; and the
 // user is notified at their contact address. The result carries the
@@ -324,8 +328,8 @@ func recoveryOwn(user identity.UserID) session.CreateOption {
 	}
 }
 
-// complete runs the completion sequence from the reset on: reset, revoke,
-// reissue or count, the one write that stores the recovery session c.issued
+// complete runs the completion sequence from the reset on: reset, revoke the
+// sessions and the grants, reissue or count, the one write that stores the recovery session c.issued
 // already holds a credential for, and the notice. ctx is already detached
 // from the caller's cancellation.
 func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (*Result, error) {
@@ -340,6 +344,14 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 			r.logger.LogAttrs(ctx, slog.LevelError, msgRevokeFailed, diag.Failure("session-store", err)...)
 
 			return nil, err
+		}
+	}
+
+	if r.grants != nil {
+		if err := r.grants.RevokeUserGrants(ctx, c.user, grantRevocationCause); err != nil {
+			r.logger.LogAttrs(ctx, slog.LevelError, msgGrantsFailed, diag.Failure("grant-revoker", err)...)
+
+			return nil, diag.Wrap(err, errTextGrants)
 		}
 	}
 
