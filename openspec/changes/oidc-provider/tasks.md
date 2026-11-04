@@ -177,7 +177,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 7. Grants and tokens (`oidcprovider`, `oidc-provider-tokens`, `oidc-provider-userinfo`)
 
-- [ ] 7.1 Exchange a code in T2's order, test-first:
+- [x] 7.1 Exchange a code in T2's order, test-first:
   - another client's code is consumed, then refused;
   - a wrong redirect URI, verifier or `dpop_jkt` is refused with the code left unspent; so is a verifier of bad syntax, and a verifier sent for a code with no challenge (R1);
   - a missing or disabled user is refused (R7);
