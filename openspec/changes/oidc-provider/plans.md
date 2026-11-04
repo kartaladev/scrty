@@ -747,7 +747,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 7.8: Ending grants
 **Files:** Create `oidcprovider/endsignin.go`
 - [ ] Red `TestProvider_EndSignIn`:
-  - each `session.EndReport` cause maps to the right `SignInSelector`, with `EndDeleted` selecting the family, and `EndUserSessionsExcept` or `EndOtherSignIns` with a nil `KeptFamily` selecting the whole user;
+  - `SignInsEnded` chooses its `SignInSelector` from the report's fields, not by listing causes, so a cause added later cannot silently stop ending grants: a family selects that family, a user with a `KeptFamily` the user except it, a user with an issuer that pair, an issuer with an upstream session that pair, and a user alone the whole user. So `EndDeleted` selects the family, and `EndUserSessionsExcept` or `EndOtherSignIns` with a nil `KeptFamily` select the whole user. A row asserts an unknown cause naming a family still ends it;
   - a report naming nobody ends nothing and is logged;
   - the online grant is revoked and the offline one survives;
   - an `EndsWithSignIn` client loses both;
