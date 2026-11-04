@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -70,8 +71,9 @@ type OIDCProviderOption func(*oidcEndpoints) error
 //
 // Default: DefaultOIDCProviderPrefix, which passes through once the consumer
 // moves away from it. A prefix that is empty, does not start with "/" or ends
-// with one, or holds "?", "#" or "%", is refused, since no request path could
-// match what it builds.
+// with one, or holds a character that needs escaping in a URL path (a space, "?",
+// "#" or "%", for instance), is refused: a path that needs escaping cannot be
+// published and compared unescaped.
 //
 // An endpoint given its own path with WithOIDCProviderPath keeps that path.
 func WithOIDCProviderPrefix(prefix string) OIDCProviderOption {
@@ -83,9 +85,9 @@ func WithOIDCProviderPrefix(prefix string) OIDCProviderOption {
 				option, prefix)
 		}
 
-		if strings.ContainsAny(prefix, "?#%") {
-			return newConfigError("%s was given %q: a prefix holds no \"?\", \"#\" or \"%%\", which no "+
-				"request path can match", option, prefix)
+		if needsEscaping(prefix) {
+			return newConfigError("%s was given %q: a prefix holds no character that needs escaping in a "+
+				"URL path (such as a space, \"?\", \"#\" or \"%%\")", option, prefix)
 		}
 
 		op.prefix = prefix
@@ -99,8 +101,9 @@ func WithOIDCProviderPrefix(prefix string) OIDCProviderOption {
 // the prefix does not apply to it, whichever option came first.
 //
 // Default: each endpoint at its place under the prefix, as its constant says. A
-// path not starting with "/", one holding "?", "#" or "%" (no decoded request
-// path can match it), or an endpoint that does not exist, is refused.
+// path not starting with "/", one holding a character that needs escaping in a URL path (a space, "?", "#"
+// or "%", for instance), or an endpoint that does not exist, is refused: a path
+// that needs escaping cannot be published and compared unescaped.
 func WithOIDCProviderPath(endpoint OIDCEndpoint, path string) OIDCProviderOption {
 	const option = "WithOIDCProviderPath"
 
@@ -113,9 +116,9 @@ func WithOIDCProviderPath(endpoint OIDCEndpoint, path string) OIDCProviderOption
 			return newConfigError("%s was given %q for %s: a path starts with \"/\"", option, path, endpoint)
 		}
 
-		if strings.ContainsAny(path, "?#%") {
-			return newConfigError("%s was given %q for %s: a path holds no \"?\", \"#\" or \"%%\", which "+
-				"no request path can match", option, path, endpoint)
+		if needsEscaping(path) {
+			return newConfigError("%s was given %q for %s: a path holds no character that needs escaping "+
+				"in a URL path (such as a space, \"?\", \"#\" or \"%%\")", option, path, endpoint)
 		}
 
 		op.overrides[endpoint] = path
@@ -138,4 +141,10 @@ func WithOIDCPagesCarryFrameAncestors() OIDCProviderOption {
 
 		return nil
 	}
+}
+
+// needsEscaping reports whether p would change when escaped as a URL path, so
+// that what is served and what is published stay the same string.
+func needsEscaping(p string) bool {
+	return (&url.URL{Path: p}).EscapedPath() != p
 }

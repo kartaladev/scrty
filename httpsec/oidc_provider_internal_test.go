@@ -148,6 +148,9 @@ func TestOIDCEndpoints_PublicURL(t *testing.T) {
 		{"the issuer's path itself is kept as served", "https://id.example.com/auth", "/auth", equals("https://id.example.com/auth")},
 		{"a path sharing only the issuer path's letters is outside it", "https://id.example.com/auth", "/authority/token", equals("https://id.example.com/auth/authority/token")},
 		{"a trailing slash on the issuer is no part of its path", "https://id.example.com/auth/", "/oauth2/token", equals("https://id.example.com/auth/oauth2/token")},
+		{"a root issuer keeps the served path", "https://id.example.com/", "/token", equals("https://id.example.com/token")},
+		{"an encoded issuer path is kept as served", "https://id.example.com/a%20b", "/a b/token", equals("https://id.example.com/a%20b/token")},
+		{"an encoded issuer path is put before a path outside it", "https://id.example.com/a%20b", "/token", equals("https://id.example.com/a%20b/token")},
 		{"the issuer's port is kept", "https://id.example.com:8443/auth", "/token", equals("https://id.example.com:8443/auth/token")},
 	}
 

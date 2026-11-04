@@ -241,12 +241,17 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     oidcprovider.WithoutBrowserSessions turns off;
 //   - no EnableSecurityHeaders, or security headers whose document profile does not
 //     forbid framing: no Content-Security-Policy (removed, or only reported), no
-//     frame-ancestors directive, or one naming any source but 'self' and 'none'.
+//     frame-ancestors directive, or one naming any source but 'none', 'self'
+//     (in any case) and named https origins such as https://ext.example.org:8000.
+//     A wildcard source, a scheme-only source, a wildcard host and an http origin
+//     are refused. A policy set with WithHeader is read from its text.
 //     WithOIDCPagesCarryFrameAncestors states the consumer's pages protect
 //     themselves instead. A route-matched profile (WithHeaderProfile) is chosen
 //     per request and cannot be seen at construction, so only the document
-//     profile is judged.
-//   - a path or prefix holding "?", "#" or "%", which no request path can match.
+//     profile is judged;
+//   - a path or prefix that needs escaping in a URL path, such as one holding a
+//     space, "?", "#" or "%", because it could not be published and compared
+//     unescaped.
 //
 // # The issuer's path
 //
@@ -454,8 +459,8 @@ func (op *oidcEndpoints) checkCollisions(c *config) error {
 
 			for _, prefix := range prefixes {
 				if underPrefix(route.path, prefix) {
-					return newConfigError("%s answers on %q, under %q, whose endpoint answers every POST "+
-						"under it", optionOIDCProvider, route.path, prefix)
+					return newConfigError("%s answers on %q, which falls under the prefix %q of another endpoint",
+						optionOIDCProvider, route.path, prefix)
 				}
 			}
 		}
@@ -658,19 +663,21 @@ func (op *oidcEndpoints) publicURL(served string) string {
 	return u.Scheme + "://" + u.Host + op.publicPath(served)
 }
 
-// publicPath is the path of publicURL.
+// publicPath is the path of publicURL, escaped. A served path needs no escaping
+// (the options refuse one that does), so it is compared with the issuer's path
+// decoded, and either is escaped where it is published.
 func (op *oidcEndpoints) publicPath(served string) string {
 	u, err := url.Parse(op.provider.Issuer())
 	if err != nil {
 		return served
 	}
 
-	base := strings.TrimRight(u.EscapedPath(), "/")
+	base := strings.TrimRight(u.Path, "/")
 	if underPrefix(served, base) {
-		return served
+		return (&url.URL{Path: served}).EscapedPath()
 	}
 
-	return base + served
+	return (&url.URL{Path: base}).EscapedPath() + served
 }
 
 // plainHTTPAllowed reports whether the provider's issuer uses the http scheme,
@@ -694,8 +701,10 @@ func (op *oidcEndpoints) checkFrameAncestors(c *config) error {
 		return nil
 	}
 
-	return newConfigError("%s needs EnableSecurityHeaders, because the login and consent pages must not "+
-		"be framed; if those pages carry frame-ancestors themselves, say so with "+
+	return newConfigError("%s found that the chain's security headers do not forbid framing, and the "+
+		"login and consent pages must not be framed: enable EnableSecurityHeaders with a "+
+		"Content-Security-Policy whose frame-ancestors holds only 'none', 'self' or https origins; "+
+		"if those pages carry frame-ancestors themselves, say so with "+
 		"WithOIDCPagesCarryFrameAncestors", optionOIDCProvider)
 }
 

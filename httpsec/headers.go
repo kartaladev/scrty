@@ -396,25 +396,55 @@ func WithoutHeader(name string) HeaderOption {
 // who may frame it. It reads only the document profile: a route-matched profile
 // is chosen per request, and cannot be seen at construction.
 //
-// Only a frame-ancestors of 'self', 'none' or both limits it: any other source
-// names an origin that may frame the pages, and no directive leaves them open.
+// Only a frame-ancestors made of 'none', 'self' (keywords in any case) and
+// named https origins limits it: a wildcard source, a scheme-only source, a
+// wildcard host or an http origin lets pages the consumer does not control
+// frame it, and no directive leaves them open. A policy set with WithHeader is
+// read from its text, the first frame-ancestors directive deciding as a browser
+// does.
 func (l *securityHeaders) forbidsFraming() bool {
 	h, ok := l.document.find(headerCSP)
-	if !ok || h.policy == nil {
+	if !ok {
 		return false
 	}
 
-	for _, d := range h.policy.directives {
-		if !strings.EqualFold(d.name, "frame-ancestors") {
-			continue
+	if h.policy != nil {
+		for _, d := range h.policy.directives {
+			if strings.EqualFold(d.name, "frame-ancestors") {
+				return limitsFraming(d.sources)
+			}
 		}
 
-		return len(d.sources) > 0 && !slices.ContainsFunc(d.sources, func(src string) bool {
-			return src != "'self'" && src != "'none'"
-		})
+		return false
+	}
+
+	for _, directive := range strings.Split(h.value, ";") {
+		fields := strings.Fields(directive)
+		if len(fields) > 0 && strings.EqualFold(fields[0], "frame-ancestors") {
+			return limitsFraming(fields[1:])
+		}
 	}
 
 	return false
+}
+
+// limitsFraming reports whether every source of a frame-ancestors directive is
+// 'none', 'self' or a named https origin, and there is at least one.
+func limitsFraming(sources []string) bool {
+	if len(sources) == 0 {
+		return false
+	}
+
+	return !slices.ContainsFunc(sources, func(src string) bool {
+		switch strings.ToLower(src) {
+		case "'self'", "'none'":
+			return false
+		}
+
+		rest, ok := strings.CutPrefix(strings.ToLower(src), "https://")
+
+		return !ok || rest == "" || strings.ContainsAny(rest, "*'")
+	})
 }
 
 // set replaces the header of h's name in place, or appends h.

@@ -493,6 +493,47 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: refused("WithOIDCProviderPath"),
 		},
 		{
+			name: "a path holding a space",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/a b"))
+			},
+			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "a path holding a non-ASCII letter",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCToken, "/caf\u00e9"))
+			},
+			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "a prefix holding a space",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withOptions(t, nil, httpsec.WithOIDCProviderPrefix("/o p"))
+			},
+			assert: refused("WithOIDCProviderPrefix"),
+		},
+		{
+			name: "an assertion endpoint under an issuer path needing escaping, behind a stripping router, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				issuer := opIssuer + "/a%20b"
+				p := f.providerOver(t, issuer, f.keys, nil,
+					oidcprovider.WithClientAssertionAudience(oidcprovider.AudienceIssuerOrTokenEndpoint),
+					oidcprovider.WithAssertionTokenEndpoint(issuer+"/oauth2/token"))
+
+				return append(f.wired(t, p), httpsec.EnableOIDCProvider(p))
+			},
+			assert: built,
+		},
+		{
 			name: "a prefix holding a query",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()
@@ -889,6 +930,123 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "'self'"))))
 			},
 			assert: built,
+		},
+		{
+			name: "frame-ancestors keyword in upper case builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "'SELF'"))))
+			},
+			assert: built,
+		},
+		{
+			name: "frame-ancestors naming an https origin builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "https://ext.example.org:8000"))))
+			},
+			assert: built,
+		},
+		{
+			name: "frame-ancestors of self and an https origin builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "'self'", "https://ext.example.org"))))
+			},
+			assert: built,
+		},
+		{
+			name: "frame-ancestors with a scheme-only source is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "https:"))))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "frame-ancestors with a wildcard host is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "https://*.example.com"))))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "frame-ancestors with an http origin is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "http://ext.example.org"))))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "frame-ancestors with self and a wildcard is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithCSP(httpsec.StrictCSP(httpsec.CSPDirective("frame-ancestors", "'self'", "*"))))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "a raw policy forbidding framing builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'"))
+			},
+			assert: built,
+		},
+		{
+			name: "a raw policy with the directive name in upper case builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithHeader("Content-Security-Policy", "default-src 'self'; FRAME-ANCESTORS 'self'"))
+			},
+			assert: built,
+		},
+		{
+			name: "a raw policy with no frame-ancestors is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithHeader("Content-Security-Policy", "default-src 'self'"))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "a raw policy opening frame-ancestors is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors *"))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "a raw policy with an empty frame-ancestors is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithHeader("Content-Security-Policy", "default-src 'self'; frame-ancestors"))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
+		},
+		{
+			name: "a raw policy only mentioning frame-ancestors in another directive is refused",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return withHeaders(t, httpsec.WithHeader("Content-Security-Policy", "default-src frame-ancestors"))
+			},
+			assert: refused("EnableOIDCProvider", "forbid framing", "WithOIDCPagesCarryFrameAncestors"),
 		},
 		{
 			name: "security headers forbidding all framing build",
