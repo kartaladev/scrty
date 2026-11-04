@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -350,6 +351,57 @@ func TestProvider_IDToken(t *testing.T) {
 		signingFails("R18: a key source holding no key is a dependency failure too",
 			errors.Join(signingkey.ErrNoKey, errOutage)),
 		signingHangsUp(),
+		{
+			name: "R18: a key source failing at the second signature, the ID token's, leaves the code unspent and nothing written",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := x.issue(t)
+				var signatures atomic.Int32
+				x.keys.failSigning(func(context.Context) error {
+					if signatures.Add(1) == 2 {
+						return errOutage
+					}
+
+					return nil
+				})
+
+				return c, billingExchange(c, nil)
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				assertNothingWritten(t, x, c)
+
+				x.keys.failSigning(nil)
+				res, err = x.p.Token(t.Context(), billingExchange(c, nil))
+				require.NoError(t, err, "the same request succeeds once the keys are back")
+				assert.NotEmpty(t, res.IDToken)
+			},
+		},
+		{
+			name: "every token has a jti of its own",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := x.issue(t)
+
+				return c, billingExchange(c, nil)
+			},
+			assert: func(t *testing.T, x *exchangeFixture, _ issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				again, err := x.p.Token(t.Context(), billingExchange(x.issue(t), nil))
+				require.NoError(t, err)
+
+				jtis := map[any]bool{}
+				for _, raw := range []string{res.AccessToken, res.IDToken, again.AccessToken, again.IDToken} {
+					_, claims := decodeJWT(t, raw)
+					require.NotEmpty(t, claims["jti"])
+					jtis[claims["jti"]] = true
+				}
+				assert.Len(t, jtis, 4, "no two of four tokens share a jti")
+			},
+		},
 	}
 
 	runTokenRows(t, rows)
@@ -369,23 +421,96 @@ func TestProvider_IDToken_Construction(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		keys   func(*testing.T) signingkey.KeySource
-		assert func(*testing.T, *oidcprovider.Provider, error)
+		name string
+		keys func(*testing.T) signingkey.KeySource
+		// client changes the one client, which lasts 1 minute unless it says otherwise.
+		client func(*oidcprovider.Client)
+		// noClients registers none, so only the keys are judged.
+		noClients bool
+		assert    func(*testing.T, *oidcprovider.Provider, error)
 	}
 
 	cases := []testCase{
 		{
-			name: "keys whose usable window is under the default lifetime fail, naming Keys",
+			name: "keys that leave no usable window fail construction naming Keys, though no client is configured",
+			keys: func(t *testing.T) signingkey.KeySource {
+				t.Helper()
+
+				return reportingKeys{KeySource: newExchangeKeys(t), lifetime: time.Minute, rotate: time.Minute}
+			},
+			noClients: true,
+			assert: func(t *testing.T, _ *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrConfig)
+				assert.ErrorContains(t, err, "Keys")
+			},
+		},
+		{
+			name: "keys whose usable window is under the default lifetime build, since the clients fit it",
 			keys: func(t *testing.T) signingkey.KeySource {
 				t.Helper()
 
 				return reportingKeys{KeySource: newExchangeKeys(t), lifetime: 3 * time.Minute, rotate: time.Minute}
 			},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
+			name: "clients exactly at the keys' usable window build",
+			keys: func(t *testing.T) signingkey.KeySource {
+				t.Helper()
+
+				return reportingKeys{KeySource: newExchangeKeys(t), lifetime: 3 * time.Minute, rotate: time.Minute}
+			},
+			client: func(c *oidcprovider.Client) { c.IDTokenLifetime, c.AccessTokenLifetime = 2*time.Minute, 2*time.Minute },
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
+			name: "a usable window that is not whole seconds builds",
+			keys: func(t *testing.T) signingkey.KeySource {
+				t.Helper()
+
+				return reportingKeys{KeySource: newExchangeKeys(t), lifetime: 3*time.Minute + 500*time.Millisecond, rotate: time.Minute}
+			},
+			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
+			name: "a client over the keys' usable window fails construction, naming the client and the setting",
+			keys: func(t *testing.T) signingkey.KeySource {
+				t.Helper()
+
+				return reportingKeys{KeySource: newExchangeKeys(t), lifetime: 3 * time.Minute, rotate: time.Minute}
+			},
+			client: func(c *oidcprovider.Client) { c.AccessTokenLifetime = 3 * time.Minute },
 			assert: func(t *testing.T, _ *oidcprovider.Provider, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, oidcprovider.ErrConfig)
-				assert.Contains(t, err.Error(), "Keys")
+				assert.ErrorContains(t, err, "billing-web")
+				assert.ErrorContains(t, err, "AccessTokenLifetime")
+			},
+		},
+		{
+			name: "keys that leave no usable window fail construction",
+			keys: func(t *testing.T) signingkey.KeySource {
+				t.Helper()
+
+				return reportingKeys{KeySource: newExchangeKeys(t), lifetime: time.Minute, rotate: time.Minute}
+			},
+			assert: func(t *testing.T, _ *oidcprovider.Provider, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrConfig)
+				assert.ErrorContains(t, err, "billing-web")
 			},
 		},
 		{
@@ -424,7 +549,15 @@ func TestProvider_IDToken_Construction(t *testing.T) {
 			deps.Keys = tc.keys(t)
 			client := webClient()
 			client.IDTokenLifetime, client.AccessTokenLifetime = time.Minute, time.Minute
+			if tc.client != nil {
+				tc.client(&client)
+			}
 			deps.Clients = []oidcprovider.Client{client}
+			if tc.noClients {
+				registry, err := oidcprovider.NewMemoryRegistry(nil)
+				require.NoError(t, err)
+				deps.Clients, deps.Registry = nil, registry
+			}
 
 			p, err := oidcprovider.New(deps)
 			tc.assert(t, p, err)

@@ -509,8 +509,7 @@ func (r *requestReading) readResources() string {
 		if value == "" || slices.Contains(resources, value) {
 			continue
 		}
-		parsed, err := url.Parse(value)
-		if err != nil || !parsed.IsAbs() || strings.Contains(value, "#") || !slices.Contains(r.client.Resources, value) {
+		if !validResource(value) || !slices.Contains(r.client.Resources, value) {
 			return CodeInvalidTarget
 		}
 		resources = append(resources, value)

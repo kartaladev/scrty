@@ -53,21 +53,37 @@ type AccessToken struct {
 // A resource must be one the client may ask for, and of the grant when it holds any, so a
 // token narrows its grant and never widens it (R15). The grant itself keeps them all, for a
 // later refresh to ask for another. What was asked for is exactly the audience: a client
-// wanting UserInfo too asks for the issuer as well (R4).
+// wanting UserInfo too asks for the issuer as well, which it can only do when it lists the
+// issuer in Client.Resources (R4).
 //
-// With none asked for, the audience is the client's default, with the issuer added for an
-// openid token so it stays usable at UserInfo (R4), or else the issuer alone. Neither has an
-// override beyond the client's own DefaultAudience and Resources: RFC 9068 §4 leaves no room
-// for a token of any audience.
+// With none asked for and a grant that holds one, that one is the audience, exactly as if it
+// had been named, with no issuer even for an openid token (R15). With several held, none is
+// chosen for the client: the request is invalid_target, and the client names what it wants.
+// Both are judged here, before a code is spent.
+//
+// With none asked for and none held, the audience is the client's default, with the issuer
+// added for an openid token so it stays usable at UserInfo (R4), or else the issuer alone.
+// Client.Resources is never a default. Neither has an override beyond the client's own
+// DefaultAudience and Resources: RFC 9068 §4 leaves no room for a token of any audience.
 func resolveAudience(form url.Values, granted []string, rc *RegisteredClient, issuer string, scopes []string) ([]string, error) {
 	values := form[paramResource]
 	if len(values) > maxResources {
 		return nil, refuseRequest()
 	}
 
+	named := slices.DeleteFunc(slices.Clone(values), func(value string) bool { return value == "" })
+	if len(named) == 0 {
+		switch {
+		case len(granted) == 1:
+			named = granted
+		case len(granted) > 1:
+			return nil, &Error{Code: CodeInvalidTarget}
+		}
+	}
+
 	var asked []string
-	for _, value := range values {
-		if value == "" || slices.Contains(asked, value) {
+	for _, value := range named {
+		if slices.Contains(asked, value) {
 			continue
 		}
 		if !slices.Contains(rc.Resources, value) || len(granted) > 0 && !slices.Contains(granted, value) {
@@ -120,14 +136,33 @@ func confirmationMembers(c token.Confirmation) map[string]string {
 	}
 }
 
+// errMalformedBinding stands for a binding that is no thumbprint, which only a failing caller
+// of the provider can hand it: httpsec computes both from a verified proof or certificate.
+var errMalformedBinding = errors.New("oidcprovider: a binding is not a SHA-256 thumbprint")
+
+// bindingWellFormed says whether every key the binding names is a thumbprint a token can carry.
+// It is judged for a token of either kind, because an opaque one is read back through a store
+// that would otherwise keep the junk, and a public client's grant keeps the key beside it.
+func bindingWellFormed(b Binding) bool {
+	return (b.JKT == "" || token.WellFormedThumbprint(b.JKT)) &&
+		(b.X5T == "" || token.WellFormedThumbprint(b.X5T))
+}
+
 // mintAccessToken makes grant's access token for audience. It writes nothing, so a failure
-// costs nothing but the attempt: a code is still unspent (R18). A JWT carries gid so whoever
+// costs nothing but the attempt: a code is still unspent (R18). A binding that is no
+// thumbprint fails alike for every kind of token. Nothing caps the token at its grant's end,
+// so a token may outlive its grant at a resource server that verifies it offline; expires_in
+// states the token's own lifetime. A JWT carries gid so whoever
 // holds the provider's store can tell its grant has ended (R4), and sub is the grant's user
 // identifier (R6). It is signed with the algorithm the client's ID tokens use, the one
 // algorithm the client's registration has checked the keys can produce.
 func (p *Provider) mintAccessToken(
 	ctx context.Context, grant *Grant, rc *RegisteredClient, binding Binding, audience []string, now time.Time,
 ) (*mintedAccessToken, error) {
+	if !bindingWellFormed(binding) {
+		return nil, dependencyFailure(ctx, errMalformedBinding, "oidcprovider: read the request's binding")
+	}
+
 	minted := &mintedAccessToken{tokenType: tokenTypeBearer, expiresIn: int(rc.AccessTokenLifetime / time.Second)}
 	if binding.JKT != "" {
 		minted.tokenType = tokenTypeDPoP
@@ -253,7 +288,8 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, raw string) (*AccessTo
 // are judged here, as a store judges neither.
 func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*AccessToken, error) {
 	tokenID, secret, ok := splitCode(raw)
-	if !ok {
+	if !ok || !strings.HasPrefix(raw, tokenID.String()+".") {
+		// A token has the one spelling the provider mints, as its secret has.
 		return nil, refuseToken()
 	}
 	digest, ok := digestEncoded(secret)
@@ -285,8 +321,10 @@ func (p *Provider) readOpaqueAccessToken(ctx context.Context, raw string) (*Acce
 }
 
 // readJWTAccessToken verifies a JWT and reads the claims the provider always puts there, so one
-// lacking any of them was not minted by this provider, whatever signed it. A confirmation holding
-// a member the library cannot check is refused rather than read as no binding.
+// lacking any of them was not minted by this provider, whatever signed it: an audience, a jti, an
+// iat, a scope, a grant. A confirmation holding a member the library cannot check, or naming both
+// a DPoP key and a certificate when the provider binds a token to one, is refused rather than
+// read as the one it kept or as no binding.
 func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessToken, error) {
 	claims, err := p.accessVerifier.Verify(ctx, raw)
 	switch {
@@ -301,7 +339,12 @@ func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessT
 	clientID, _ := stringClaim(claims, claimClientID)
 	scope, hasScope := stringClaim(claims, claimScope)
 	confirmation := claims.Confirmation()
-	if !hasScope || len(confirmation.Other) > 0 {
+	if !hasScope || len(confirmation.Other) > 0 || confirmation.JKT != "" && confirmation.X5TS256 != "" {
+		return nil, refuseToken()
+	}
+	audience := claims.Audience()
+	_, hasIssuedAt := claims.Claim("iat")
+	if len(audience) == 0 || claims.ID() == "" || !hasIssuedAt {
 		return nil, refuseToken()
 	}
 	family, err := id.Parse(gid)
@@ -313,7 +356,7 @@ func (p *Provider) readJWTAccessToken(ctx context.Context, raw string) (*AccessT
 		Subject:      identity.UserID(claims.Subject()),
 		ClientID:     clientID,
 		Scopes:       strings.Fields(scope),
-		Audience:     claims.Audience(),
+		Audience:     audience,
 		Confirmation: confirmationMembers(confirmation),
 		GrantFamily:  family,
 	}, nil

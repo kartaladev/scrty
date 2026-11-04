@@ -36,9 +36,11 @@ type Deps struct {
 	// Keys signs what the provider issues. It is required, and the provider does not
 	// generate keys of its own. It must be the source the chain's JWKS endpoint publishes.
 	// New builds an issuer per algorithm it lists, RS256 alone for a source that lists none,
-	// so a username-mode generator cannot reach the provider. A source whose usable window,
-	// its key lifetime minus its rotation, is under the 5 minutes a token lasts by default
-	// fails construction, however short the clients set theirs.
+	// so a username-mode generator cannot reach the provider. A source reporting its lifetimes
+	// has a usable window, its key lifetime minus its rotation, and a client whose ID or access
+	// token lasts longer fails construction, naming the client and the setting. A window shorter
+	// than the 5 minutes a token lasts by default is fine when every client fits it; one that
+	// leaves no window at all fails construction, naming Keys.
 	Keys signingkey.KeySource
 
 	// Users loads the users tokens describe. It is required.

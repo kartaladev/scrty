@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token"
@@ -19,16 +20,25 @@ var errNoIssuer = errors.New("oidcprovider: no issuer for the client's algorithm
 // identifier and clock (R6). Building them here is what keeps a generator's subject mode out:
 // sub is whatever a mint names, which is the grant's user identifier. An algorithm no client
 // could register is left out, so a source listing one does not fail construction for it.
+//
+// An issuer's own default lifetime is never used, because every mint names the client's. So it
+// is set no higher than the keys allow, in whole seconds, and cannot refuse keys that the
+// clients fit: a client over the window is refused by name when it is registered, and keys
+// with no window at all fail here, naming Keys.
 func buildIssuers(
 	keys signingkey.KeySource, limits keyLimits, issuer string, clk clock.Clock,
 ) (map[signingkey.Alg]*token.Issuer, error) {
+	lifetime := defaultTokenLifetime
+	if limits.capped {
+		lifetime = min(lifetime, limits.window.Truncate(time.Second))
+	}
 	issuers := make(map[signingkey.Alg]*token.Issuer, len(limits.algs))
 	for _, alg := range limits.algs {
 		if !signingkey.SupportedAlg(alg) {
 			continue
 		}
 		built, err := token.NewIssuer(keys, alg, issuer,
-			token.WithTokenLifetime(defaultTokenLifetime), token.WithClock(clk))
+			token.WithTokenLifetime(lifetime), token.WithClock(clk))
 		if err != nil {
 			return nil, fmt.Errorf("%w: Keys: %w", ErrConfig, err)
 		}

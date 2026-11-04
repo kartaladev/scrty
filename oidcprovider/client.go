@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
@@ -167,10 +168,18 @@ type Client struct {
 
 	// Scopes are those the client may ask for. There are none by default.
 	Scopes []string
-	// Resources are those the client may ask for. There are none by default.
+	// Resources are those the client may ask for, each an absolute URI with no fragment. There
+	// are none by default. They are an allowlist and never a default audience: a code granted
+	// several of them and exchanged with none named is invalid_target, and a code granted one
+	// makes it the audience, with no issuer, even for openid. A client that also wants the
+	// issuer as an audience, to call UserInfo with the token, lists the issuer here and names
+	// it beside the resource it asks for.
 	Resources []string
-	// DefaultAudience is used when a request names no resource, with the issuer added for an
-	// openid token. It is empty by default, and a token is then for the issuer alone.
+	// DefaultAudience is the audience when a request names no resource and its code was granted
+	// none, with the issuer added for an openid token so it stays usable at UserInfo. It is
+	// empty by default, and a token is then for the issuer alone. Each value is an absolute URI
+	// with no fragment. It does not apply once the code was granted a resource: one granted is
+	// the audience instead, and several are refused. It is never made of Resources.
 	DefaultAudience []string
 	// ResourceIdentifier names this client as a resource server. It is empty by
 	// default.
@@ -296,6 +305,7 @@ func validateClient(c Client) (Client, error) {
 		(*Client).validateCredentials,
 		(*Client).validateGrantTypes,
 		(*Client).validateURIs,
+		(*Client).validateAudiences,
 		(*Client).validatePolicies,
 		(*Client).validateLifetimes,
 		(*Client).validateGrantLifetimes,
@@ -455,6 +465,40 @@ func (c *Client) validateURIs() error {
 	}
 	if c.BackChannelLogoutURI != "" {
 		return c.validateHTTPSEndpoint("BackChannelLogoutURI", c.BackChannelLogoutURI)
+	}
+
+	return nil
+}
+
+// validResource says whether value could be a resource indicator (RFC 8707 §2): an absolute
+// URI with no fragment, and no space around it, since a value of that kind can never be what a
+// request names. An authorization request holds its resources to the same. Text that is not
+// valid UTF-8 is refused too, since a request carrying it is refused before any match.
+func validResource(value string) bool {
+	if value == "" || !utf8.ValidString(value) || value != strings.TrimSpace(value) || strings.Contains(value, "#") {
+		return false
+	}
+	u, err := url.Parse(value)
+
+	return err == nil && u.IsAbs()
+}
+
+// validateAudiences refuses an audience or a resource that a token could never name, so the
+// mistake fails at construction and not at the first exchange. The reason never repeats the
+// value.
+func (c *Client) validateAudiences() error {
+	for _, field := range []struct {
+		setting string
+		values  []string
+	}{
+		{"DefaultAudience", c.DefaultAudience},
+		{"Resources", c.Resources},
+	} {
+		for i, value := range field.values {
+			if !validResource(value) {
+				return c.refuse(fmt.Sprintf("%s[%d]", field.setting, i), "must be an absolute URI with no fragment")
+			}
+		}
 	}
 
 	return nil

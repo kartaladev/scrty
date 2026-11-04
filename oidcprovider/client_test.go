@@ -429,6 +429,41 @@ func TestClient_Validation(t *testing.T) {
 		{name: "negative ID token lifetime", client: func(c *oidcprovider.Client) { c.IDTokenLifetime = -time.Second }, assert: refused("IDTokenLifetime")},
 		{name: "fractional access token lifetime", client: func(c *oidcprovider.Client) { c.AccessTokenLifetime = 1500 * time.Millisecond }, assert: refused("AccessTokenLifetime")},
 
+		// Audiences and resources: a value no authorization request could carry fails here.
+		{name: "a default audience and a resource, both absolute", client: func(c *oidcprovider.Client) {
+			c.DefaultAudience = []string{"https://api.example.com", "https://api.example.com/v2?tenant=a"}
+			c.Resources = []string{"https://orders.example.com", "urn:example:billing"}
+		}, assert: accepted},
+		{name: "a default audience that is blank", client: func(c *oidcprovider.Client) { c.DefaultAudience = []string{" "} }, assert: refused("DefaultAudience")},
+		{name: "a default audience that is empty", client: func(c *oidcprovider.Client) { c.DefaultAudience = []string{""} }, assert: refused("DefaultAudience")},
+		{name: "a default audience that is relative", client: func(c *oidcprovider.Client) { c.DefaultAudience = []string{"api"} }, assert: refused("DefaultAudience")},
+		{name: "a default audience with a fragment", client: func(c *oidcprovider.Client) {
+			c.DefaultAudience = []string{"https://api.example.com", "https://api.example.com#part"}
+		}, assert: refused("DefaultAudience[1]")},
+		{name: "a default audience with an empty fragment", client: func(c *oidcprovider.Client) {
+			c.DefaultAudience = []string{"https://api.example.com#"}
+		}, assert: refused("DefaultAudience")},
+		{name: "a default audience with surrounding space", client: func(c *oidcprovider.Client) {
+			c.DefaultAudience = []string{" https://api.example.com"}
+		}, assert: refused("DefaultAudience")},
+		{name: "a resource that is blank", client: func(c *oidcprovider.Client) { c.Resources = []string{" "} }, assert: refused("Resources")},
+		{name: "a resource that is empty", client: func(c *oidcprovider.Client) { c.Resources = []string{""} }, assert: refused("Resources")},
+		{name: "a resource that is relative", client: func(c *oidcprovider.Client) { c.Resources = []string{"/orders"} }, assert: refused("Resources")},
+		{name: "a resource with a fragment", client: func(c *oidcprovider.Client) {
+			c.Resources = []string{"https://api.example.com#part"}
+		}, assert: refused("Resources[0]")},
+
+		{name: "a resource url.Parse refuses", client: func(c *oidcprovider.Client) { c.Resources = []string{"http://[::1"} }, assert: refused("Resources[0]")},
+		{name: "a resource with surrounding space", client: func(c *oidcprovider.Client) {
+			c.Resources = []string{"https://api.example.com/orders "}
+		}, assert: refused("Resources[0]")},
+		{name: "a resource that is invalid UTF-8", client: func(c *oidcprovider.Client) {
+			c.Resources = []string{"https://x/\xff"}
+		}, assert: refused("Resources[0]")},
+		{name: "a URN, a port, a path and a trailing slash", client: func(c *oidcprovider.Client) {
+			c.Resources = []string{"urn:example:api", "https://api.example.com:8443", "https://api.example.com/v2/orders", "https://api.example.com/v2/"}
+		}, assert: accepted},
+
 		// Uniqueness and keys.
 		{name: "duplicate identifier", clients: []oidcprovider.Client{webClient(), webClient()}, assert: refused("ID")},
 		{name: "ES256 under a source that reports nothing", client: func(c *oidcprovider.Client) { c.IDTokenAlg = signingkey.ES256 }, assert: refused("IDTokenAlg")},

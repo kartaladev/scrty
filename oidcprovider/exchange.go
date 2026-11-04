@@ -73,7 +73,10 @@ type TokenResponse struct {
 	AccessToken string
 	// TokenType is how it is presented: DPoP when bound to a proof's key, and otherwise Bearer.
 	TokenType string
-	// ExpiresIn is the access token's lifetime in seconds.
+	// ExpiresIn is the access token's lifetime in seconds, which is what its exp says. It is
+	// not cut short at its grant's end, so a token may outlive its grant at a resource server
+	// that verifies it offline; one that reads the provider's store through VerifyAccessToken
+	// sees the grant end at once.
 	ExpiresIn int
 	// Scope is what the tokens were granted, space-separated.
 	Scope string
@@ -98,14 +101,17 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // ErrDependency behind fixed text, and a caller who left matches its own context's error.
 // None of these carries a code, a secret or a token.
 //
-// An authorization_code request runs in the order the guarantees rest on:
+// An authorization_code request runs in the order the guarantees rest on, and where a request
+// earns two refusals, the earlier step's is the one answered:
 //
 //  1. check the code, which writes nothing;
 //  2. another client's code is spent, then refused, because a code it holds has leaked;
 //  3. a wrong redirect URI, verifier or dpop_jkt is refused with the code unspent, since
 //     the client may still hold what it should have sent;
 //  4. a resource outside the client's allowlist or the code's grant is invalid_target, and
-//     more of them than are read is invalid_request, with the code unspent;
+//     so is none named when the code's grant holds several, because no one of them is the
+//     client's choice to make; more values than are read is invalid_request. The code is left
+//     unspent. A grant holding one resource makes it the audience when none is named;
 //  5. a revocation already recorded for the code's grant, a sign-in that has ended by its
 //     deadline, and a missing or disabled user are refused, with the code unspent;
 //  6. mint the tokens, for the grant family the code already names. Signing writes nothing,

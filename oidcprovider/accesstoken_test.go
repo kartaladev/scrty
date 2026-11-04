@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,51 @@ func TestProvider_AccessToken(t *testing.T) {
 			},
 		}
 	}
+	// malformed is an exchange whose binding is no thumbprint httpsec would compute, which is
+	// a failure of whatever filled it in. It answers a dependency failure with the code
+	// unspent and nothing written, whichever kind of token or client.
+	malformed := func(name string, issue func(*testing.T, *exchangeFixture) (issuedCode, oidcprovider.TokenRequest), binding oidcprovider.Binding) tokenRow {
+		return tokenRow{
+			name: name,
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c, req := issue(t, x)
+				req.Binding = binding
+
+				return c, req
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertDependencyFailure(t, err)
+				assert.Nil(t, res)
+				assertNothingWritten(t, x, c)
+			},
+		}
+	}
+	jwtClient := func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+		t.Helper()
+		c := x.issue(t)
+
+		return c, billingExchange(c, nil)
+	}
+	opaqueClientRequest := func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+		t.Helper()
+		c := issueOpaque(t, x)
+
+		return c, opaqueExchange(c)
+	}
+	publicClient := func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+		t.Helper()
+		c := issueCodeFor(t, x.parkFixture, nativeClient, func(v url.Values) {
+			asClient(v, nativeClient, nativeRedirect)
+			v.Set("scope", "openid offline_access")
+		}, testSignIn(x.parkFixture, "u-1"), "openid", "offline_access")
+
+		return c, oidcprovider.TokenRequest{
+			Form: exchangeForm(c, nativeRedirect, func(v url.Values) { v.Set("client_id", nativeClient) }),
+		}
+	}
+
 	// opaqueStoreFailing has the provider's opaque token store refuse its write.
 	opaqueStoreFailing := func(t *testing.T) []oidcprovider.Option {
 		t.Helper()
@@ -301,6 +347,124 @@ func TestProvider_AccessToken(t *testing.T) {
 				assertNothingWritten(t, x, c)
 			},
 		},
+		audience("R15: one resource granted, none named: exactly it, with no issuer, even for openid", "openid",
+			[]string{ordersResource}, nil, []string{ordersResource}),
+		audience("R15: one resource granted, none named, without openid: it, and not the default audience", "api.read",
+			[]string{ordersResource}, nil, []string{ordersResource}),
+		audience("R15: one resource granted, only empty values named: as if none were", "openid",
+			[]string{ordersResource}, []string{""}, []string{ordersResource}),
+		{
+			name: "R15: several resources granted, none named, is invalid_target; the code stays unspent and naming one exchanges",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := issueAudience(t, x, "openid", ordersResource, invoiceResource)
+
+				return c, audienceExchange(c)
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeInvalidTarget)
+				assert.Nil(t, res)
+				assertNothingWritten(t, x, c)
+
+				res, err = x.p.Token(t.Context(), audienceExchange(c, invoiceResource))
+				require.NoError(t, err, "the refusal left the code unspent")
+				assert.Equal(t, []string{invoiceResource}, audienceOf(t, x, res))
+			},
+		},
+		{
+			name: "R15: several resources granted may all be named at the token endpoint",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := issueAudience(t, x, "openid", ordersResource, invoiceResource)
+
+				return c, audienceExchange(c, ordersResource, invoiceResource)
+			},
+			assert: func(t *testing.T, x *exchangeFixture, _ issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, []string{ordersResource, invoiceResource}, audienceOf(t, x, res))
+			},
+		},
+		{
+			name: "exactly 10 resource values are read, repeats counting once",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := issueAudience(t, x, "openid")
+
+				return c, audienceExchange(c, slices.Repeat([]string{ordersResource}, 10)...)
+			},
+			assert: func(t *testing.T, x *exchangeFixture, _ issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, []string{ordersResource}, audienceOf(t, x, res))
+			},
+		},
+		{
+			name: "where two refusals compete, the bindings are judged before the resource",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := issueAudience(t, x, "openid")
+
+				return c, confidentialExchange(audienceClient, audienceRedirect, c, func(v url.Values) {
+					v.Set("redirect_uri", "https://elsewhere.example.com/cb")
+					v["resource"] = []string{"https://nowhere.example.com"}
+				})
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.Nil(t, res)
+				assertNothingWritten(t, x, c)
+			},
+		},
+		{
+			name: "where two refusals compete, the resource is judged before the sign-in's end",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				signIn := testSignIn(x.parkFixture, "u-1")
+				signIn.AbsoluteExpiresAt = x.clk.Now().Add(30 * time.Second)
+				c := issueCodeFor(t, x.parkFixture, audienceClient, func(v url.Values) {
+					asClient(v, audienceClient, audienceRedirect)
+					v.Set("scope", "openid")
+				}, signIn, "openid")
+				x.clk.Advance(45 * time.Second)
+
+				return c, audienceExchange(c, "https://nowhere.example.com")
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeInvalidTarget)
+				assert.Nil(t, res)
+				assertNothingWritten(t, x, c)
+
+				_, err = x.p.Token(t.Context(), audienceExchange(c))
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+			},
+		},
+		{
+			name: "where two refusals compete, the resource is judged before a disabled user",
+			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
+				t.Helper()
+				c := issueAudience(t, x, "openid")
+				x.users.set(func(u *exchangeUsers) { u.disabled["u-1"] = true })
+
+				return c, audienceExchange(c, "https://nowhere.example.com")
+			},
+			assert: func(t *testing.T, x *exchangeFixture, c issuedCode, res *oidcprovider.TokenResponse, err error) {
+				t.Helper()
+				assertRefused(t, err, oidcprovider.CodeInvalidTarget)
+				assert.Nil(t, res)
+				assertNothingWritten(t, x, c)
+
+				_, err = x.p.Token(t.Context(), audienceExchange(c))
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+			},
+		},
+		malformed("a JWT client's malformed jkt", jwtClient, oidcprovider.Binding{JKT: "not-a-thumbprint"}),
+		malformed("an opaque client's malformed jkt, as a JWT client's", opaqueClientRequest, oidcprovider.Binding{JKT: "not-a-thumbprint"}),
+		malformed("an opaque client's malformed certificate thumbprint", opaqueClientRequest, oidcprovider.Binding{X5T: "short"}),
+		malformed("a public client's malformed jkt is never kept as its grant's key", publicClient, oidcprovider.Binding{JKT: "not-a-thumbprint"}),
 		bound("no binding is no cnf, and Bearer", oidcprovider.Binding{}, "Bearer", nil),
 		bound("a proof's key is cnf.jkt, and DPoP", oidcprovider.Binding{JKT: boundJKT}, "DPoP", map[string]any{"jkt": boundJKT}),
 		bound("a certificate is cnf.x5t#S256, and Bearer", oidcprovider.Binding{X5T: boundX5T}, "Bearer", map[string]any{"x5t#S256": boundX5T}),
@@ -575,6 +739,35 @@ func TestProvider_AccessToken_Verify(t *testing.T) {
 	}
 	literal := func(raw string) func(*testing.T, *exchangeFixture) string {
 		return func(*testing.T, *exchangeFixture) string { return raw }
+	}
+
+	// crafted is a JWT signed as the provider signs, with every claim it always puts there,
+	// for change to take away or alter: nothing but the provider should be able to make one.
+	crafted := func(change func(claims map[string]any)) func(*testing.T, *exchangeFixture) string {
+		return func(t *testing.T, x *exchangeFixture) string {
+			t.Helper()
+
+			return signedAccess(t, x, liveGrantFamily(t, x), change)
+		}
+	}
+	// noLookup holds a token store that must not be asked, so a call fails the case.
+	noLookup := func(t *testing.T) []oidcprovider.Option {
+		t.Helper()
+
+		return []oidcprovider.Option{oidcprovider.WithAccessTokenStore(NewMockAccessTokenStore(gomock.NewController(t)))}
+	}
+	// sized is a token of size bytes, within a few, whose request bounds are tight.
+	sized := func(size int) func(*testing.T, *exchangeFixture) string {
+		return func(t *testing.T, x *exchangeFixture) string {
+			t.Helper()
+
+			return tokenOfSize(t, x, liveGrantFamily(t, x), size)
+		}
+	}
+	tightBounds := func(t *testing.T) []oidcprovider.Option {
+		t.Helper()
+
+		return []oidcprovider.Option{oidcprovider.WithRequestBounds(oidcprovider.RequestBounds{Resource: 256, Scope: 256})}
 	}
 
 	// leavingAtGrantRead is a caller leaving once the JWT has verified, during its grant's read.
@@ -1003,6 +1196,119 @@ func TestProvider_AccessToken_Verify(t *testing.T) {
 			assert: refused,
 		},
 		{
+			name: "an opaque token bound to a key states it",
+			arrange: func(t *testing.T, x *exchangeFixture) string {
+				t.Helper()
+				c := issueOpaque(t, x)
+				req := opaqueExchange(c)
+				req.Binding = oidcprovider.Binding{JKT: boundJKT}
+				res, err := x.p.Token(t.Context(), req)
+				require.NoError(t, err)
+
+				return res.AccessToken
+			},
+			assert: func(t *testing.T, _ *exchangeFixture, at *oidcprovider.AccessToken, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.True(t, at.Opaque)
+				assert.Equal(t, map[string]string{"jkt": boundJKT}, at.Confirmation, "read back bound, never as unbound")
+			},
+		},
+		{
+			name: "an opaque token bound to a certificate states it",
+			arrange: func(t *testing.T, x *exchangeFixture) string {
+				t.Helper()
+				c := issueOpaque(t, x)
+				req := opaqueExchange(c)
+				req.Binding = oidcprovider.Binding{X5T: boundX5T}
+				res, err := x.p.Token(t.Context(), req)
+				require.NoError(t, err)
+
+				return res.AccessToken
+			},
+			assert: func(t *testing.T, _ *exchangeFixture, at *oidcprovider.AccessToken, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, map[string]string{"x5t#S256": boundX5T}, at.Confirmation)
+			},
+		},
+		{name: "control: a crafted JWT with every claim the provider puts there", arrange: crafted(nil), assert: func(t *testing.T, _ *exchangeFixture, at *oidcprovider.AccessToken, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, []string{issuer}, at.Audience)
+		}},
+		{name: "a JWT with no aud, which the provider always sets", arrange: crafted(func(c map[string]any) { delete(c, "aud") }), assert: refused},
+		{name: "a JWT with an empty aud", arrange: crafted(func(c map[string]any) { c["aud"] = []string{} }), assert: refused},
+		{name: "a JWT with no iat, which the provider always sets", arrange: crafted(func(c map[string]any) { delete(c, "iat") }), assert: refused},
+		{name: "a JWT with no jti, which the provider always sets", arrange: crafted(func(c map[string]any) { delete(c, "jti") }), assert: refused},
+		{name: "a JWT with no sub, which the provider always sets", arrange: crafted(func(c map[string]any) { delete(c, "sub") }), assert: refused},
+		{
+			name: "a JWT bound to a DPoP key and a certificate at once, one of which would be dropped",
+			arrange: crafted(func(c map[string]any) {
+				c["cnf"] = map[string]any{"jkt": boundJKT, "x5t#S256": boundX5T}
+			}),
+			assert: refused,
+		},
+		{
+			name: "an opaque token with the identifier spelt in capitals is refused, as it has one spelling",
+			arrange: func(t *testing.T, x *exchangeFixture) string {
+				t.Helper()
+				res, _ := exchangedOpaque(t, x)
+				tokenID, secret := opaqueParts(t, res.AccessToken)
+				capitals := strings.ToUpper(tokenID.String())
+				require.NotEqual(t, tokenID.String(), capitals)
+
+				return "at." + capitals + "." + secret
+			},
+			assert: refused,
+		},
+		{
+			name:    "an opaque value with the identifier in capitals makes no lookup",
+			opts:    noLookup,
+			arrange: literal("at.0192F3A4-B5C6-7D8E-9FA0-B1C2D3E4F5A6." + strings.Repeat("A", 43)),
+			assert:  refused,
+		},
+		{
+			name:    "an opaque value with a bad identifier makes no lookup",
+			opts:    noLookup,
+			arrange: literal("at.nope." + strings.Repeat("A", 43)),
+			assert:  refused,
+		},
+		{
+			name:    "an opaque value with a secret of no shape the provider mints makes no lookup",
+			opts:    noLookup,
+			arrange: literal("at.0192f3a4-b5c6-7d8e-9fa0-b1c2d3e4f5a6.short"),
+			assert:  refused,
+		},
+		{
+			name:    "an opaque value with a secret too long makes no lookup",
+			opts:    noLookup,
+			arrange: literal("at.0192f3a4-b5c6-7d8e-9fa0-b1c2d3e4f5a6." + strings.Repeat("A", 44)),
+			assert:  refused,
+		},
+		{
+			name:    "an opaque value with no secret makes no lookup",
+			opts:    noLookup,
+			arrange: literal("at.0192f3a4-b5c6-7d8e-9fa0-b1c2d3e4f5a6."),
+			assert:  refused,
+		},
+		{
+			name:    "a token at the verifier's bound still verifies",
+			opts:    tightBounds,
+			arrange: sized(13824),
+			assert: func(t *testing.T, _ *exchangeFixture, at *oidcprovider.AccessToken, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, at)
+			},
+		},
+		{
+			name:    "a token just past the verifier's bound is refused, whatever it is signed by",
+			opts:    tightBounds,
+			arrange: sized(13824 + 8),
+			assert:  refused,
+		},
+		{
 			name:    "a grant store failing is a dependency failure, not an invalid token",
 			opts:    failingGrants(func(context.Context) error { return errOutage }),
 			arrange: anyGrant,
@@ -1073,6 +1379,47 @@ func TestProvider_AccessToken_Verify(t *testing.T) {
 			}
 		})
 	}
+}
+
+// signedAccess is an access token signed as the provider signs one, claim by claim, so a row can
+// take one away. It names family, and every claim the provider always sets.
+func signedAccess(t *testing.T, x *exchangeFixture, family id.ID, change func(claims map[string]any)) string {
+	t.Helper()
+
+	claims := map[string]any{
+		"iss": issuer, "sub": "u-1", "aud": []string{issuer}, "jti": "j", "client_id": "billing-web",
+		"scope": "openid", "gid": family.String(),
+		"exp": x.clk.Now().Add(time.Minute).Unix(), "iat": x.clk.Now().Unix(),
+	}
+	if change != nil {
+		change(claims)
+	}
+
+	return signed(t, signingkey.RS256, testRSAKey(), map[string]any{"kid": rsKid, "typ": token.TypeAccessToken}, claims)
+}
+
+// tokenOfSize is a signed access token of the given size, give or take a few bytes below it,
+// made by padding its scope. It converges on the size from the token's own length.
+func tokenOfSize(t *testing.T, x *exchangeFixture, family id.ID, size int) string {
+	t.Helper()
+
+	pad := size / 2
+	for range 20 {
+		raw := signedAccess(t, x, family, func(c map[string]any) { c["scope"] = strings.Repeat("s", pad) })
+		over := len(raw) - size
+		if over <= 0 && over > -4 {
+			return raw
+		}
+		// Base64 carries three bytes of JSON in four of token.
+		step := over * 3 / 4
+		if step == 0 {
+			step = over / max(over, -over)
+		}
+		pad -= step
+	}
+	require.FailNow(t, "no token of the size", "wanted %d", size)
+
+	return ""
 }
 
 // anyOpaqueNoSecret is the opaque form with its secret left out.

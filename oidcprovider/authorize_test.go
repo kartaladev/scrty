@@ -45,7 +45,7 @@ func authzClients() []oidcprovider.Client {
 			Secret:       secret,
 			RedirectURIs: []string{authzRedirect},
 			Scopes:       []string{"openid", "profile", "email", "offline_access", "api.read"},
-			Resources:    []string{"https://api.example.com", "https://data.example.com", "https://frag.example.com#x", "/relative"},
+			Resources:    []string{"https://api.example.com", "https://data.example.com"},
 			GrantTypes:   []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
 		},
 		{
@@ -334,6 +334,21 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 			i := slices.IndexFunc(d.Clients, func(c oidcprovider.Client) bool { return c.ID == "billing-web" })
 			require.GreaterOrEqual(t, i, 0)
 			d.Clients[i].RedirectURIs = append(slices.Clone(d.Clients[i].RedirectURIs), uri)
+		}
+	}
+	// registerResource adds a resource to billing-web's registered ones.
+	registerResource := func(resource string) func(*testing.T, *oidcprovider.Deps) {
+		return func(t *testing.T, d *oidcprovider.Deps) {
+			t.Helper()
+			i := slices.IndexFunc(d.Clients, func(c oidcprovider.Client) bool { return c.ID == "billing-web" })
+			require.GreaterOrEqual(t, i, 0)
+			d.Clients[i].Resources = append(slices.Clone(d.Clients[i].Resources), resource)
+		}
+	}
+	resourcesAre := func(want ...string) func(*testing.T, *oidcprovider.PendingRequest) {
+		return func(t *testing.T, r *oidcprovider.PendingRequest) {
+			t.Helper()
+			assert.Equal(t, want, r.Resources)
 		}
 	}
 	require.Greater(t, len(bigHint(3<<10)), 4096, "the 5 KiB row must sit past the general bound")
@@ -696,12 +711,16 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 		{name: "resource not allowed", params: set("resource", "https://other.example.com"), assert: refused(oidcprovider.CodeInvalidTarget)},
 		{name: "resource with a fragment", params: set("resource", "https://api.example.com#x"), assert: refused(oidcprovider.CodeInvalidTarget)},
 		{name: "resource with an empty fragment", params: set("resource", "https://api.example.com#"), assert: refused(oidcprovider.CodeInvalidTarget)},
-		{name: "resource with a fragment, though the client lists it", params: set("resource", "https://frag.example.com#x"), assert: refused(oidcprovider.CodeInvalidTarget)},
-		{name: "resource not absolute, though the client lists it", params: set("resource", "/relative"), assert: refused(oidcprovider.CodeInvalidTarget)},
+		{name: "resource with a fragment", params: set("resource", "https://frag.example.com#x"), assert: refused(oidcprovider.CodeInvalidTarget)},
+		{name: "resource not absolute", params: set("resource", "/relative"), assert: refused(oidcprovider.CodeInvalidTarget)},
 		{name: "resource allowed", params: set("resource", "https://api.example.com"), assert: proceeds(func(t *testing.T, r *oidcprovider.PendingRequest) {
 			t.Helper()
 			assert.Equal(t, []string{"https://api.example.com"}, r.Resources)
 		})},
+		{name: "a URN resource", deps: registerResource("urn:example:api"), params: set("resource", "urn:example:api"), assert: proceeds(resourcesAre("urn:example:api"))},
+		{name: "a resource with a port", deps: registerResource("https://api.example.com:8443"), params: set("resource", "https://api.example.com:8443"), assert: proceeds(resourcesAre("https://api.example.com:8443"))},
+		{name: "a resource with a path", deps: registerResource("https://api.example.com/v2/orders"), params: set("resource", "https://api.example.com/v2/orders"), assert: proceeds(resourcesAre("https://api.example.com/v2/orders"))},
+		{name: "a resource with a trailing slash", deps: registerResource("https://api.example.com/v2/"), params: set("resource", "https://api.example.com/v2/"), assert: proceeds(resourcesAre("https://api.example.com/v2/"))},
 		{name: "resource= counts as omitted", params: set("resource", ""), assert: proceeds(func(t *testing.T, r *oidcprovider.PendingRequest) {
 			t.Helper()
 			assert.Empty(t, r.Resources)

@@ -90,9 +90,18 @@
 // Its audience is the request's resource values, each of which the client may ask for
 // ([Client].Resources) and which the code granted when it granted any. Anything else is
 // invalid_target with the code unspent. The token narrows and the grant keeps them all, so a
-// later refresh may ask for another. With no resource, the audience is
-// [Client].DefaultAudience, plus the issuer for an openid token so it stays usable at UserInfo,
-// and with no default it is the issuer alone. No option allows any audience.
+// later refresh may ask for another. What was asked for is exactly the audience: a client that
+// also wants the issuer, to use the token at UserInfo, lists the issuer in [Client].Resources
+// and names it beside the resource.
+//
+// With no resource named, a code granted one resource gets exactly that one, with no issuer even
+// for openid; a code granted several is invalid_target with the code unspent, and the same code
+// naming one then succeeds; and a code granted none gets [Client].DefaultAudience, plus the
+// issuer for an openid token so it stays usable at UserInfo, or the issuer alone when there is
+// no default. [Client].Resources is never a default. No option allows any audience.
+//
+// expires_in is the token's own lifetime and is not cut at its grant's end, so a resource
+// server verifying a JWT offline may accept it until its exp.
 //
 // [Client].OpaqueAccessTokens replaces the JWT with at.<id>.<secret>, whose secret carries 256
 // bits and is stored only as a digest, in the [AccessTokenStore] from [WithAccessTokenStore],
