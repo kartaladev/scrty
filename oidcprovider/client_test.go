@@ -464,6 +464,27 @@ func TestClient_Validation(t *testing.T) {
 			c.Resources = []string{"urn:example:api", "https://api.example.com:8443", "https://api.example.com/v2/orders", "https://api.example.com/v2/"}
 		}, assert: accepted},
 
+		// A resource server's identifier.
+		{name: "a resource identifier with a port and a path", client: func(c *oidcprovider.Client) {
+			c.ResourceIdentifier = "https://rs.example.com:8443/v2"
+		}, assert: accepted},
+		{name: "a resource identifier equal to the issuer", client: func(c *oidcprovider.Client) {
+			c.ResourceIdentifier = issuer
+		}, assert: refused("ResourceIdentifier")},
+		{name: "a resource identifier that is relative", client: func(c *oidcprovider.Client) {
+			c.ResourceIdentifier = "/orders"
+		}, assert: refused("ResourceIdentifier")},
+		{name: "a resource identifier with a fragment", client: func(c *oidcprovider.Client) {
+			c.ResourceIdentifier = "https://rs.example.com#part"
+		}, assert: refused("ResourceIdentifier")},
+		{name: "a resource identifier with an empty fragment", client: func(c *oidcprovider.Client) {
+			c.ResourceIdentifier = "https://rs.example.com#"
+		}, assert: refused("ResourceIdentifier")},
+		{name: "a resource identifier on a public client", client: func(c *oidcprovider.Client) {
+			public(c)
+			c.ResourceIdentifier = "https://rs.example.com"
+		}, assert: refused("ResourceIdentifier")},
+
 		// Uniqueness and keys.
 		{name: "duplicate identifier", clients: []oidcprovider.Client{webClient(), webClient()}, assert: refused("ID")},
 		{name: "ES256 under a source that reports nothing", client: func(c *oidcprovider.Client) { c.IDTokenAlg = signingkey.ES256 }, assert: refused("IDTokenAlg")},
@@ -642,4 +663,25 @@ func TestClient_Validation(t *testing.T) {
 			tc.assert(t, got, nil)
 		})
 	}
+}
+
+// A registry that can be written after New is read against the issuer, which only the provider
+// knows: a resource identifier equal to it makes the client unknown, as any invalid client is.
+func TestClient_ResourceIdentifierIsTheIssuer_WhenRead(t *testing.T) {
+	t.Parallel()
+
+	d := validDeps(t)
+	registry, err := oidcprovider.NewMemoryRegistry([]oidcprovider.Client{webClient()})
+	require.NoError(t, err)
+	d.Clients, d.Registry = nil, registry
+	p, err := oidcprovider.New(d)
+	require.NoError(t, err)
+
+	c := webClient()
+	c.ID = "rs"
+	c.ResourceIdentifier = issuer
+	require.NoError(t, registry.Put(t.Context(), c), "the registry does not know the issuer")
+
+	_, err = p.ClientForTest(t.Context(), "rs")
+	assert.ErrorIs(t, err, oidcprovider.ErrClientNotFound)
 }

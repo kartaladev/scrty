@@ -310,6 +310,13 @@ func (p *Provider) answerLineage(ctx context.Context, err error, family id.ID, n
 // judgeGrantUser refuses a user who no longer exists or is disabled, and revokes the grant.
 // It runs once the token is known to be real, so a forged one cannot revoke. A loader that cannot
 // answer is no verdict on the user. The revocation does not depend on the caller still listening.
+//
+// The grant's row is marked first, and the family deleted next. A row that cannot be marked leaves
+// the family alone, since a family gone would refuse the next presentation before it could mark the
+// row, and nothing else would, so presenting the token again finishes the work. A row marked with
+// the delete failing is a dependency failure too, and no token works from then on, as the row
+// refuses them; its lineage stays until it expires or is swept. This differs from revokeGrant's order on purpose: a replayed code can
+// retry through its code record, and a refresh token has no such record.
 func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Time) error {
 	details, err := p.users.LoadByUserID(ctx, grant.User)
 	switch {
@@ -322,8 +329,15 @@ func (p *Provider) judgeGrantUser(ctx context.Context, grant *Grant, now time.Ti
 
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if err := p.revokeGrant(detached, grant.Family, CauseUserDisabled, now); err != nil {
+	if err := p.stores.grants.Revoke(detached, grant.Family, CauseUserDisabled, now); err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke a grant whose user has gone")
+	}
+	manager, err := p.lineages(nil)
+	if err != nil {
+		return dependencyFailure(ctx, err, "oidcprovider: build the lineage manager")
+	}
+	if _, err := manager.RevokeFamily(detached, grant.Family); err != nil {
+		return dependencyFailure(ctx, err, "oidcprovider: delete a grant's family whose user has gone")
 	}
 
 	return refuseGrant()

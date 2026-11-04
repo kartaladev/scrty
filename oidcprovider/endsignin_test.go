@@ -1,12 +1,15 @@
 package oidcprovider_test
 
 import (
+	"cmp"
 	"context"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +36,8 @@ type hookedBrowsers struct {
 	oidcprovider.BrowserSessionStore
 
 	fail atomic.Bool
+	// sawDelete is told the context of each deletion, and is set before the request starts.
+	sawDelete func(context.Context)
 
 	mu        sync.Mutex
 	selectors []oidcprovider.SignInSelector
@@ -43,6 +48,9 @@ func (h *hookedBrowsers) DeleteBySignIn(ctx context.Context, sel oidcprovider.Si
 	h.mu.Lock()
 	h.selectors = append(h.selectors, sel)
 	h.mu.Unlock()
+	if h.sawDelete != nil {
+		h.sawDelete(ctx)
+	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -561,6 +569,45 @@ func TestProvider_EndSignIn(t *testing.T) {
 				assert.True(t, box.budgeted)
 			},
 		},
+		{
+			name: "a client holding several grants in each of two sign-ins is told once of each, however the store orders them",
+			arrange: func(t *testing.T, e *endFixture) oidcprovider.SignInSelector {
+				t.Helper()
+
+				box := &e.box
+				box.signIns = []oidcprovider.SignIn{e.signInOf("u-1", "", ""), e.signInOf("u-1", "", "")}
+				for _, signIn := range box.signIns {
+					e.online(t, signIn)
+					e.offline(t, signIn)
+				}
+				// Interleaved, so that equal notices are never next to each other as the store gave them.
+				e.grants.reorderEnded = func(grants []oidcprovider.Grant) {
+					slices.SortStableFunc(grants, func(a, b oidcprovider.Grant) int {
+						return cmp.Compare(a.SignInFamily.String(), b.SignInFamily.String())
+					})
+					half := len(grants) / 2
+					woven := make([]oidcprovider.Grant, 0, len(grants))
+					for i := range half {
+						woven = append(woven, grants[i], grants[half+i])
+					}
+					copy(grants, woven)
+				}
+
+				return oidcprovider.SignInSelector{User: "u-1"}
+			},
+			assert: func(t *testing.T, e *endFixture, got outcome) {
+				t.Helper()
+
+				require.NoError(t, got.err)
+				families := []string{e.box.signIns[0].Family.String(), e.box.signIns[1].Family.String()}
+				slices.Sort(families)
+				require.Len(t, got.clients, 2, "one notice per client per sign-in")
+				for i, c := range got.clients {
+					assert.Equal(t, "billing-web", c.ClientID)
+					assert.Equal(t, families[i], c.SignInFamily.String(), "ordered by sign-in within a client")
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -577,6 +624,40 @@ func TestProvider_EndSignIn(t *testing.T) {
 			tc.assert(t, e, outcome{clients: clients, err: err})
 		})
 	}
+}
+
+// TestProvider_EndSignIn_BudgetsApart is apart because it runs in a synctest bubble, where the
+// budget of ten seconds passes in no time and the clock cannot differ between two reads. A grant
+// store hanging until its budget ends must leave the browser sessions' store a live context with
+// time still to run, which one budget shared by both would not.
+func TestProvider_EndSignIn_BudgetsApart(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		e := newEndFixture(t)
+		signIn := e.signInOf("u-1", "", "")
+		grant, digest := e.online(t, signIn), e.browserOf(t, signIn)
+
+		var browserErr error
+		var browserLeft time.Duration
+		e.grants.sawBulk = func(ctx context.Context) { <-ctx.Done() }
+		e.browsers.sawDelete = func(ctx context.Context) {
+			browserErr = ctx.Err()
+			if by, ok := ctx.Deadline(); ok {
+				browserLeft = time.Until(by)
+			}
+		}
+
+		started := time.Now()
+		_, err := e.p.EndSignIn(t.Context(), oidcprovider.SignInSelector{Family: signIn.Family})
+
+		assertDependencyFailure(t, err)
+		assert.GreaterOrEqual(t, time.Since(started), 10*time.Second, "the grant store spent its whole budget")
+		require.NoError(t, browserErr, "the browser sessions' store was given a live context")
+		assert.Positive(t, browserLeft, "with a budget of its own to spend")
+		assert.False(t, e.browserHeld(t, digest), "and the browser sessions ended")
+		assert.False(t, e.grantStands(t, grant).Revoked, "while the grant store, which hung, ended nothing")
+	})
 }
 
 // TestProvider_EndSignIn_ReportsByField pins that a report's selector comes from its fields and not
@@ -684,6 +765,20 @@ func TestProvider_EndSignIn_ReportsByField(t *testing.T) {
 			want:   &oidcprovider.SignInSelector{ExternalIssuer: upstream, ExternalSessionID: "x-9"},
 		},
 		{name: "a cause and nothing else names nobody", report: session.EndReport{Cause: later}},
+		{
+			name:   "a session with no issuer, beside a user, names nobody and not the user's sign-ins",
+			report: session.EndReport{Cause: later, User: "u-1", ExternalSessionID: "x-9"},
+		},
+		{
+			name:   "a session with no issuer, beside a user and a kept family, names nobody",
+			report: session.EndReport{Cause: later, User: "u-1", KeptFamily: kept, ExternalSessionID: "x-9"},
+		},
+		{name: "a session with no issuer or user names nobody", report: session.EndReport{Cause: later, ExternalSessionID: "x-9"}},
+		{
+			name:   "a family beside a session with no issuer still names the family, the narrowest first",
+			report: session.EndReport{Cause: later, User: "u-1", Family: family, ExternalSessionID: "x-9"},
+			want:   &oidcprovider.SignInSelector{Family: family},
+		},
 		{name: "an empty report names nobody", report: session.EndReport{}},
 		{name: "an upstream issuer alone names nobody", report: session.EndReport{Cause: later, ExternalIssuer: upstream}},
 		{name: "an upstream session alone names nobody", report: session.EndReport{Cause: later, ExternalSessionID: "x-9"}},
@@ -1035,6 +1130,11 @@ func (h *hookedConsents) ListByUser(ctx context.Context, user identity.UserID) (
 }
 
 // TestProvider_RevokeUserGrants_Consent is revoking a consent, over real grants.
+const (
+	firstPartyClient   = "first-party-web"
+	firstPartyRedirect = "https://first.example.com/cb"
+)
+
 func TestProvider_RevokeUserGrants_Consent(t *testing.T) {
 	t.Parallel()
 
@@ -1042,10 +1142,44 @@ func TestProvider_RevokeUserGrants_Consent(t *testing.T) {
 		name   string
 		user   identity.UserID
 		client string
-		assert func(t *testing.T, e *endFixture, billing, offline, tied *refreshScene, code issuedCode, err error)
+		// firstParty registers a first-party client with u-1 holding a grant of it and no consent;
+		// that grant is the fixture's box.first.
+		firstParty bool
+		assert     func(t *testing.T, e *endFixture, billing, offline, tied *refreshScene, code issuedCode, err error)
 	}
 
 	cases := []testCase{
+		{
+			name:       "a first-party client holds no consent, and its grant for that user still ends, others' standing",
+			user:       "u-1",
+			client:     firstPartyClient,
+			firstParty: true,
+			assert: func(t *testing.T, e *endFixture, billing, offline, tied *refreshScene, _ issuedCode, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				first := e.box.first
+				grant := e.grantStands(t, first)
+				assert.True(t, grant.Revoked)
+				assert.Equal(t, oidcprovider.CauseConsentRevoked, grant.RevokeCause)
+				assertRefreshRefused(t, e.refreshFixture, first, first.first.RefreshToken)
+				for _, s := range []*refreshScene{billing, offline, tied} {
+					assert.False(t, e.grantStands(t, s).Revoked, "another client's grant stands")
+				}
+			},
+		},
+		{
+			name:       "another user's first-party grant is foreign, and ends nothing",
+			user:       "u-2",
+			client:     firstPartyClient,
+			firstParty: true,
+			assert: func(t *testing.T, e *endFixture, _, _, _ *refreshScene, _ issuedCode, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, oidcprovider.ErrForeignConsent)
+				assert.False(t, e.grantStands(t, e.box.first).Revoked)
+			},
+		},
 		{
 			name:   "that user's and client's grants go, offline ones and outstanding codes too, and the consent is forgotten",
 			user:   "u-1",
@@ -1124,6 +1258,18 @@ func TestProvider_RevokeUserGrants_Consent(t *testing.T) {
 				v.Set("scope", "openid offline_access")
 			}, signIn, "openid", "offline_access")
 
+			if tc.firstParty {
+				require.NoError(t, e.registry.Put(t.Context(), oidcprovider.Client{
+					ID: firstPartyClient, Type: oidcprovider.Confidential, Secret: []byte(exchangeSecret),
+					RedirectURIs: []string{firstPartyRedirect}, Scopes: []string{"openid", "profile"}, FirstParty: true,
+					GrantTypes: []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
+				}))
+				e.box.first = e.grantFrom(t, signIn, firstPartyClient, firstPartyRedirect, "openid", "profile")
+				// issueCodeFor gives a consent the first-party flow never would: drop it.
+				_, err := e.consents.Revoke(t.Context(), "u-1", firstPartyClient)
+				require.NoError(t, err)
+			}
+
 			err := e.p.RevokeConsent(t.Context(), tc.user, tc.client)
 			tc.assert(t, e, billing, offline, tied, code, err)
 		})
@@ -1165,16 +1311,6 @@ func TestProvider_RevokeUserGrants_ConsentStore(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:    "a consent that cannot be read is a dependency failure, and nothing is revoked",
-			arrange: func(_ *endFixture, c *hookedConsents) { c.failLoad.Store(true) },
-			assert: func(t *testing.T, _ *endFixture, c *hookedConsents, err error) {
-				t.Helper()
-
-				assertDependencyFailure(t, err)
-				consentHeld(t, c)
-			},
-		},
-		{
 			name:    "grants that cannot be revoked are a dependency failure, and the consent stays",
 			arrange: func(e *endFixture, _ *hookedConsents) { e.grants.failBulk.Store(true) },
 			assert: func(t *testing.T, _ *endFixture, c *hookedConsents, err error) {
@@ -1197,27 +1333,10 @@ func TestProvider_RevokeUserGrants_ConsentStore(t *testing.T) {
 			},
 		},
 		{
-			name: "a caller gone before the consent was read matches its own context, and nothing is revoked",
+			name: "a caller already gone does not spare the writes",
 			ctx: func(ctx context.Context, _ *hookedConsents) context.Context {
 				ctx, cancel := context.WithCancel(ctx)
 				cancel()
-
-				return ctx
-			},
-			arrange: func(*endFixture, *hookedConsents) {},
-			assert: func(t *testing.T, _ *endFixture, c *hookedConsents, err error) {
-				t.Helper()
-
-				require.ErrorIs(t, err, context.Canceled)
-				assert.NotErrorIs(t, err, oidcprovider.ErrDependency)
-				consentHeld(t, c)
-			},
-		},
-		{
-			name: "a caller leaving after the read does not spare the writes",
-			ctx: func(ctx context.Context, c *hookedConsents) context.Context {
-				ctx, cancel := context.WithCancel(ctx)
-				c.afterLoad = cancel
 
 				return ctx
 			},
@@ -1317,4 +1436,21 @@ func TestProvider_RevokeUserGrants_Consents(t *testing.T) {
 			tc.assert(t, e, views, err)
 		})
 	}
+}
+
+// A hand-on hook that spends its whole budget must leave the browser delete a live context of its own.
+func TestProvider_EndSignIn_HandOnHangsBrowserKeepsABudget(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		e := newEndFixture(t, oidcprovider.WithLogoutNoticesForTest(func(ctx context.Context, _ []oidcprovider.ClientToNotify) { <-ctx.Done() }))
+		signIn := e.signInOf("u-1", "", "")
+		_ = e.online(t, signIn)
+		var browserErr error
+		e.browsers.sawDelete = func(ctx context.Context) { browserErr = ctx.Err() }
+		started := time.Now()
+		_, err := e.p.EndSignIn(t.Context(), oidcprovider.SignInSelector{Family: signIn.Family})
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, time.Since(started), 10*time.Second)
+		assert.NoError(t, browserErr, "the browser delete has a budget of its own")
+	})
 }

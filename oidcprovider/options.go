@@ -341,9 +341,13 @@ func WithOutbound(o *outbound.Client) Option {
 }
 
 // WithClaimSource replaces where UserInfo reads a user's claims. The default reads the user just
-// loaded from Deps.Users, releasing name and preferred_username for the scope profile, and has no
-// email to release for the scope email, since identity.Details holds none: a consumer with email,
-// phone, address or claims of its own supplies them here. See ClaimSource. It must not be nil.
+// loaded from Deps.Users, releasing name and preferred_username for the scope profile, and for the
+// scope email a username that is exactly an email address (mail.ParseAddress accepts it and returns
+// it unchanged, so a display form such as "Ada <ada@example.com>" does not count) as email, with
+// email_verified always false, because a username proves nothing about who controls that address.
+// The address is never used to look up a user. A consumer with a verified email, phone, address or
+// claims of its own supplies them here, and its values, email_verified true included, are answered
+// unchanged. See ClaimSource. It must not be nil.
 func WithClaimSource(s ClaimSource) Option {
 	return func(c *config) { c.claimSource, c.claimSourceSet = s, true }
 }

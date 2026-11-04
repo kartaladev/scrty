@@ -39,7 +39,7 @@ const (
 // deleted leaves the row marked: either failure is a dependency failure, and presenting the token
 // again finishes the work. Nothing here has an override, since each is the standard's or R8's.
 func (p *Provider) Revoke(ctx context.Context, c ClientCredentials, form url.Values) error {
-	rc, raw, err := p.readTokenRequest(ctx, c, form)
+	rc, raw, err := p.readTokenRequest(ctx, c, form, false)
 	if err != nil {
 		return err
 	}
@@ -55,9 +55,10 @@ func (p *Provider) Revoke(ctx context.Context, c ClientCredentials, form url.Val
 }
 
 // readTokenRequest is what revocation and introspection share: a repeated parameter is refused, the
-// client authenticates, and a token must be named, in that order, so that an unauthenticated request
-// learns nothing of what it sent.
-func (p *Provider) readTokenRequest(ctx context.Context, c ClientCredentials, form url.Values) (*RegisteredClient, string, error) {
+// client authenticates, a public client is refused when refusePublic is set, and a token must be
+// named, in that order, so that an unauthenticated request learns nothing of what it sent, and a
+// public client is refused whatever it names.
+func (p *Provider) readTokenRequest(ctx context.Context, c ClientCredentials, form url.Values, refusePublic bool) (*RegisteredClient, string, error) {
 	if repeatedParam(form) {
 		return nil, "", refuseRequest()
 	}
@@ -67,6 +68,9 @@ func (p *Provider) readTokenRequest(ctx context.Context, c ClientCredentials, fo
 	rc, err := p.AuthenticateClient(ctx, c)
 	if err != nil {
 		return nil, "", err
+	}
+	if refusePublic && rc.Type == Public {
+		return nil, "", refuseClient()
 	}
 	raw := form.Get(paramToken)
 	if raw == "" {
@@ -165,7 +169,8 @@ func isRefusal(err error) bool {
 // An active answer holds active, scope, client_id, sub, exp, iat, iss, aud and token_type, and cnf
 // when the token is bound. token_type is DPoP for a token bound to a proof's key, Bearer for any other
 // access token, and refresh_token for a refresh token, whose aud is the issuer, the only party it is
-// presented to, and whose exp is the first of its grant's end and its own deadlines.
+// presented to, and whose exp is the first of its grant's end, its own deadlines and the client's idle timeout and
+// absolute lifetime as they stand.
 //
 // It writes nothing, and does not reach the lineage manager's judgement. A superseded refresh token
 // is inactive, inside its grace too, though a refresh would still take it there, and is no reuse. It
@@ -174,12 +179,9 @@ func isRefusal(err error) bool {
 // A store or key source that cannot answer is no verdict on the token: it matches ErrDependency, and
 // a caller who left matches its own context's error. No error carries the token.
 func (p *Provider) Introspect(ctx context.Context, c ClientCredentials, form url.Values) (map[string]any, error) {
-	rc, raw, err := p.readTokenRequest(ctx, c, form)
+	rc, raw, err := p.readTokenRequest(ctx, c, form, true)
 	if err != nil {
 		return nil, err
-	}
-	if rc.Type == Public {
-		return nil, refuseClient()
 	}
 
 	if strings.HasPrefix(raw, refreshTokenPrefix) {
@@ -192,7 +194,7 @@ func (p *Provider) Introspect(ctx context.Context, c ClientCredentials, form url
 		return inactiveToken(), nil
 	case err != nil:
 		return nil, err
-	case !mayIntrospect(rc, at):
+	case !mayIntrospect(rc, at, p.issuer):
 		return inactiveToken(), nil
 	}
 
@@ -202,10 +204,12 @@ func (p *Provider) Introspect(ctx context.Context, c ClientCredentials, form url
 // inactiveToken is the whole of what is said of a token that is not active.
 func inactiveToken() map[string]any { return map[string]any{"active": false} }
 
-// mayIntrospect is the visibility rule for an access token.
-func mayIntrospect(rc *RegisteredClient, at *AccessToken) bool {
+// mayIntrospect is the visibility rule for an access token. A resource identifier equal to the
+// issuer, which the registry's read already refuses, grants nothing here either: the issuer is in
+// nearly every token's audience.
+func mayIntrospect(rc *RegisteredClient, at *AccessToken, issuer string) bool {
 	return at.ClientID == rc.ID ||
-		rc.ResourceIdentifier != "" && slices.Contains(at.Audience, rc.ResourceIdentifier)
+		rc.ResourceIdentifier != "" && rc.ResourceIdentifier != issuer && slices.Contains(at.Audience, rc.ResourceIdentifier)
 }
 
 func describeAccessToken(at *AccessToken) map[string]any {
@@ -252,7 +256,10 @@ func (p *Provider) introspectRefreshToken(ctx context.Context, raw string, rc *R
 		return inactiveToken(), nil
 	}
 
-	expiresAt := earliest(grant.ExpiresAt, record.IdleExpiresAt, record.AbsoluteExpiresAt)
+	// The client's limits as they stand are what a refresh would judge by, so they bound exp as well as
+	// the record's own, which a client shortening them since cannot reach.
+	expiresAt := earliest(grant.ExpiresAt, record.IdleExpiresAt, record.AbsoluteExpiresAt,
+		record.LastAccessedAt.Add(rc.GrantIdleTimeout), record.FamilyCreatedAt.Add(rc.GrantAbsoluteLifetime))
 	answer := map[string]any{
 		"active":     true,
 		"scope":      strings.Join(grant.Scopes, " "),

@@ -22,7 +22,8 @@ const claimSub = "sub"
 //
 // The answer always holds sub, the token's subject, which is the ID token's for the same grant. The
 // rest comes from the ClaimSource given to WithClaimSource, or by default from the user just loaded.
-// A claim the user does not have is left out, never null or empty.
+// A claim whose value is null or the empty string is left out, never sent as either; an empty list
+// or object, false and zero are values and stay.
 //
 // None of this has an override apart from the source: RFC 9068 §4 is why the audience has none. A
 // store or claim source that cannot answer is no verdict on the token: it matches ErrDependency

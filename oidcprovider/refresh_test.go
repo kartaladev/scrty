@@ -58,6 +58,10 @@ type hookedLineage struct {
 	// onLoad runs after each read that found a record, and is set before the request starts.
 	onLoad func()
 
+	// rewrite changes each record a read found, as a store of its own might hold it, and is set
+	// before the request starts.
+	rewrite func(*session.Session)
+
 	// sawDelete is told the context of each family's deletion, and afterDelete runs once one has
 	// landed. Both are set before the request starts.
 	sawDelete   func(context.Context)
@@ -93,6 +97,9 @@ func (h *hookedLineage) Load(ctx context.Context, secret string) (*session.Sessi
 	}
 
 	record, err := h.Store.Load(ctx, secret)
+	if err == nil && record != nil && h.rewrite != nil {
+		h.rewrite(record)
+	}
 	if err == nil && h.onLoad != nil {
 		h.onLoad()
 	}
@@ -192,6 +199,8 @@ type hookedGrants struct {
 	failBulk atomic.Bool
 	// sawBulk is told the context of each such write, and is set before the request starts.
 	sawBulk func(context.Context)
+	// reorderEnded arranges the grants an end of sign-ins answers, and is set before the request starts.
+	reorderEnded func([]oidcprovider.Grant)
 	// mu guards selectors.
 	mu sync.Mutex
 	// selectors holds what each end of sign-ins selected, in order.
@@ -222,7 +231,12 @@ func (h *hookedGrants) EndSignIns(ctx context.Context, sel oidcprovider.SignInSe
 		return nil, err
 	}
 
-	return h.GrantStore.EndSignIns(ctx, sel, at)
+	ended, err := h.GrantStore.EndSignIns(ctx, sel, at)
+	if h.reorderEnded != nil {
+		h.reorderEnded(ended)
+	}
+
+	return ended, err
 }
 
 // RevokeByUser implements oidcprovider.GrantStore.
@@ -1003,11 +1017,21 @@ func TestProvider_Refresh(t *testing.T) {
 				f.users.set(func(u *exchangeUsers) { u.disabled["u-1"] = true })
 				f.grants.failRevoke.Store(true)
 			},
-			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, res *oidcprovider.TokenResponse, err error) {
+			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, res *oidcprovider.TokenResponse, err error) {
 				t.Helper()
 				assertDependencyFailure(t, err)
 				assert.Nil(t, res)
-				assert.Zero(t, f.liveHeads(t), "each write is tried whatever became of the other")
+				assert.NotZero(t, f.liveHeads(t), "the row is marked first, so a failed mark leaves the family to retry through")
+				assert.False(t, grantNow(t, f, s).Revoked)
+
+				f.grants.failRevoke.Store(false)
+				_, err = f.p.Token(t.Context(), s.request)
+				assertRefused(t, err, oidcprovider.CodeInvalidGrant)
+				assert.True(t, grantNow(t, f, s).Revoked, "presenting it again marks the row")
+				assert.Equal(t, oidcprovider.CauseUserDisabled, grantNow(t, f, s).RevokeCause)
+				assert.Zero(t, f.liveHeads(t))
+				_, verr := f.p.VerifyAccessToken(t.Context(), s.first.AccessToken)
+				assertRefused(t, verr, oidcprovider.CodeInvalidToken)
 			},
 		},
 		{

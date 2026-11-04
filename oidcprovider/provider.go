@@ -111,6 +111,7 @@ func New(d Deps, opts ...Option) (*Provider, error) {
 	}
 
 	limits := limitsOf(d.Keys)
+	limits.issuer = d.Issuer
 	registry, err := d.buildRegistry(limits)
 	if err != nil {
 		return nil, err

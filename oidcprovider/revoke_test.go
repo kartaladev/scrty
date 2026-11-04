@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/session"
 )
 
 // credsOf returns the credentials clientID authenticates with its secret.
@@ -705,7 +706,6 @@ func TestProvider_Introspect(t *testing.T) {
 		}
 	}
 	access := func(s *refreshScene) string { return s.first.AccessToken }
-	refresh := func(s *refreshScene) string { return s.first.RefreshToken }
 	byOpaqueClient := func(_ *testing.T, _ *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
 		return credsOf(opaqueClient), tokenForm(s.first.AccessToken)
 	}
@@ -726,6 +726,23 @@ func TestProvider_Introspect(t *testing.T) {
 				form.Set("client_id", nativeClient)
 
 				return oidcprovider.ClientCredentials{}, form
+			},
+			assert: refused(oidcprovider.CodeInvalidClient),
+		},
+		{
+			name: "a public client naming no token is invalid_client, since the client is judged first",
+			arrange: func(*testing.T, *refreshFixture, *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				return oidcprovider.ClientCredentials{}, url.Values{"client_id": {nativeClient}}
+			},
+			assert: refused(oidcprovider.CodeInvalidClient),
+		},
+		{
+			name:  "a client whose resource identifier is the issuer is unknown, and sees no one's token",
+			start: startBound,
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				t.Helper()
+
+				return credsOf(resourceServer(t, f, issuer)), tokenForm(s.first.AccessToken)
 			},
 			assert: refused(oidcprovider.CodeInvalidClient),
 		},
@@ -987,8 +1004,12 @@ func TestProvider_Introspect(t *testing.T) {
 			assert: inactive,
 		},
 		{
-			name:    "a live refresh token answers the full field list, and writes nothing",
-			arrange: byBillingOf(refresh),
+			name: "a live refresh token answers the full field list, and writes nothing",
+			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				f.clk.Advance(10 * time.Minute)
+
+				return credsOf("billing-web"), tokenForm(s.first.RefreshToken)
+			},
 			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, got introspected) {
 				t.Helper()
 
@@ -998,7 +1019,7 @@ func TestProvider_Introspect(t *testing.T) {
 					"scope":      "openid profile offline_access",
 					"client_id":  "billing-web",
 					"sub":        "u-1",
-					"iat":        f.clk.Now().Unix(),
+					"iat":        f.clk.Now().Add(-10 * time.Minute).Unix(),
 					"exp":        s.head(t, f, s.first.RefreshToken).IdleExpiresAt.Unix(),
 					"iss":        issuer,
 					"aud":        []string{issuer},
@@ -1020,6 +1041,63 @@ func TestProvider_Introspect(t *testing.T) {
 
 				require.NoError(t, got.err)
 				assert.Equal(t, f.clk.Now().Add(time.Hour).Unix(), got.answer["exp"])
+			},
+		},
+		{
+			name: "a refresh token's exp honours an idle timeout the client has shortened since",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				t.Helper()
+
+				billingClient(t, f, func(c *oidcprovider.Client) { c.GrantIdleTimeout = time.Hour })
+
+				return credsOf("billing-web"), tokenForm(s.first.RefreshToken)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, got introspected) {
+				t.Helper()
+
+				require.NoError(t, got.err)
+				require.Equal(t, true, got.answer["active"])
+				assert.Equal(t, f.clk.Now().Add(time.Hour).Unix(), got.answer["exp"])
+			},
+		},
+		{
+			name: "a refresh token's exp honours an absolute lifetime the client has shortened since",
+			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				t.Helper()
+
+				// A refresh an hour in moves the last use on, and only then are both limits made
+				// 3 hours, so the idle end is 4 hours out and the absolute one 3.
+				f.clk.Advance(time.Hour)
+				res := assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				billingClient(t, f, func(c *oidcprovider.Client) {
+					c.GrantIdleTimeout, c.GrantAbsoluteLifetime = 3*time.Hour, 3*time.Hour
+				})
+				f.lineage.writes.Store(0)
+
+				return credsOf("billing-web"), tokenForm(res.RefreshToken)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, got introspected) {
+				t.Helper()
+
+				require.NoError(t, got.err)
+				require.Equal(t, true, got.answer["active"])
+				assert.Equal(t, f.clk.Now().Add(2*time.Hour).Unix(), got.answer["exp"], "three hours from the grant's start")
+			},
+		},
+		{
+			name: "a refresh token's exp is its record's own absolute end when that is the first, whatever its idle end",
+			arrange: func(_ *testing.T, f *refreshFixture, s *refreshScene) (oidcprovider.ClientCredentials, url.Values) {
+				// A lineage store of the consumer's need not keep the idle end within the absolute one.
+				f.lineage.rewrite = func(r *session.Session) { r.AbsoluteExpiresAt = f.clk.Now().Add(30 * time.Minute) }
+
+				return credsOf("billing-web"), tokenForm(s.first.RefreshToken)
+			},
+			assert: func(t *testing.T, f *refreshFixture, _ *refreshScene, got introspected) {
+				t.Helper()
+
+				require.NoError(t, got.err)
+				require.Equal(t, true, got.answer["active"])
+				assert.Equal(t, f.clk.Now().Add(30*time.Minute).Unix(), got.answer["exp"])
 			},
 		},
 		{

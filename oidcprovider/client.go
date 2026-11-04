@@ -181,8 +181,12 @@ type Client struct {
 	// with no fragment. It does not apply once the code was granted a resource: one granted is
 	// the audience instead, and several are refused. It is never made of Resources.
 	DefaultAudience []string
-	// ResourceIdentifier names this client as a resource server. It is empty by
-	// default.
+	// ResourceIdentifier names this client as a resource server, so that introspection shows
+	// it access tokens whose audience includes the identifier. It is empty by default, and a
+	// client then sees only tokens issued to it. It must be an absolute URI with no fragment,
+	// on a confidential client, and never the issuer, which is in nearly every token's audience
+	// and would show this client them all. A client breaking this fails construction, and one a
+	// registry returns later is unknown, as any invalid client is.
 	ResourceIdentifier string
 	// GrantTypes defaults to GrantAuthorizationCode alone.
 	GrantTypes []GrantType
@@ -251,9 +255,12 @@ func (c *Client) refuse(setting, reason string) error {
 	return &clientError{client: c.ID, setting: setting, reason: reason}
 }
 
-// keyLimits is what the provider's key source lets a client ask for.
+// keyLimits is what the provider's key source and issuer let a client ask for.
 type keyLimits struct {
-	algs []signingkey.Alg
+	// issuer is the provider's, which no client may take as its resource identifier. It is set by
+	// New, since the key source cannot report it.
+	issuer string
+	algs   []signingkey.Alg
 	// window is the longest token lifetime the keys allow, meaningful when capped.
 	window time.Duration
 	// capped says the source reports its lifetimes. One that does not gets no
@@ -280,6 +287,9 @@ func limitsOf(keys signingkey.KeySource) keyLimits {
 
 // checkKeys takes a client whose defaults are resolved.
 func (c *Client) checkKeys(limits keyLimits) error {
+	if limits.issuer != "" && c.ResourceIdentifier == limits.issuer {
+		return c.refuse("ResourceIdentifier", "must not be the issuer")
+	}
 	if !slices.Contains(limits.algs, c.IDTokenAlg) {
 		return c.refuse("IDTokenAlg", fmt.Sprintf("the keys cannot produce %s", c.IDTokenAlg))
 	}
@@ -487,6 +497,14 @@ func validResource(value string) bool {
 // mistake fails at construction and not at the first exchange. The reason never repeats the
 // value.
 func (c *Client) validateAudiences() error {
+	if c.ResourceIdentifier != "" {
+		if !validResource(c.ResourceIdentifier) {
+			return c.refuse("ResourceIdentifier", "must be an absolute URI with no fragment")
+		}
+		if c.Type == Public {
+			return c.refuse("ResourceIdentifier", "a public client cannot be a resource server")
+		}
+	}
 	for _, field := range []struct {
 		setting string
 		values  []string

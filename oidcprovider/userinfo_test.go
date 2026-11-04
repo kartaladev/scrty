@@ -2,6 +2,8 @@ package oidcprovider_test
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -88,6 +90,15 @@ func TestProvider_UserInfo(t *testing.T) {
 			return at
 		}
 	}
+	withUsername := func(username string) func(*testing.T, *refreshFixture, *refreshScene) *oidcprovider.AccessToken {
+		return func(t *testing.T, f *refreshFixture, s *refreshScene) *oidcprovider.AccessToken {
+			t.Helper()
+
+			f.users.set(func(u *exchangeUsers) { u.name, u.username = "Ada", username })
+
+			return verified(t, f, s.first.AccessToken)
+		}
+	}
 	never := func(*MockClaimSource) {}
 
 	cases := []testCase{
@@ -109,10 +120,54 @@ func TestProvider_UserInfo(t *testing.T) {
 			assert:  subOnly,
 		},
 		{
-			name:    "email with the default source is sub alone, as the identity store holds no email",
+			name:    "email releases a username that is exactly an address, unverified",
 			start:   startBillingFor("openid", "email"),
-			arrange: naming,
+			arrange: withUsername("ada@example.com"),
+			assert: func(t *testing.T, answer map[string]any, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, map[string]any{"sub": "u-1", "email": "ada@example.com", "email_verified": false}, answer)
+			},
+		},
+		{
+			name:    "email with a username in display form releases neither claim",
+			start:   startBillingFor("openid", "email"),
+			arrange: withUsername("Ada <ada@example.com>"),
 			assert:  subOnly,
+		},
+		{
+			name:    "email with a username that is no address releases neither claim",
+			start:   startBillingFor("openid", "email"),
+			arrange: withUsername("ada"),
+			assert:  subOnly,
+		},
+		{
+			name:    "an address as the username is not released without the email scope",
+			start:   startBillingFor("openid", "profile"),
+			arrange: withUsername("ada@example.com"),
+			assert: func(t *testing.T, answer map[string]any, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.NotContains(t, answer, "email")
+				assert.NotContains(t, answer, "email_verified")
+			},
+		},
+		{
+			name: "a consumer's source replaces the default, and its verified email is answered unchanged",
+			source: func(m *MockClaimSource) {
+				m.EXPECT().Claims(gomock.Any(), identity.UserID("u-1"), []string{"openid", "email"}).Return(
+					map[string]any{"email": "ada@corp.example", "email_verified": true}, nil)
+			},
+			start:   startBillingFor("openid", "email"),
+			arrange: withUsername("ada@example.com"),
+			assert: func(t *testing.T, answer map[string]any, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, map[string]any{"sub": "u-1", "email": "ada@corp.example", "email_verified": true}, answer)
+			},
 		},
 		{
 			name:   "claims a user does not have are omitted, never empty",
@@ -167,10 +222,13 @@ func TestProvider_UserInfo(t *testing.T) {
 			assert: subOnly,
 		},
 		{
-			name: "what a source leaves null or empty is omitted, and false and zero are values",
+			name: "what a source leaves null or an empty string is omitted, and anything else is a value",
 			source: func(m *MockClaimSource) {
 				m.EXPECT().Claims(gomock.Any(), gomock.Any(), gomock.Any()).Return(map[string]any{
-					"nothing": nil, "blank": "", "list": []string{}, "object": map[string]any{}, "pointer": (*string)(nil),
+					"nothing": nil, "blank": "", "pointer": (*string)(nil),
+					"raw_null": json.RawMessage("null"), "raw_spaced_null": json.RawMessage(" null\n"),
+					"list": []string{}, "object": map[string]any{}, "raw_list": json.RawMessage("[]"),
+					"raw_object": json.RawMessage("{}"), "raw_zero": json.RawMessage("0"), "raw_empty_string": json.RawMessage(`""`),
 					"email_verified": false, "count": 0,
 				}, nil)
 			},
@@ -178,7 +236,14 @@ func TestProvider_UserInfo(t *testing.T) {
 				t.Helper()
 
 				require.NoError(t, err)
-				assert.Equal(t, map[string]any{"sub": "u-1", "email_verified": false, "count": 0}, answer)
+				assert.Equal(t, map[string]any{
+					"sub": "u-1", "email_verified": false, "count": 0,
+					"list": []string{}, "object": map[string]any{}, "raw_list": json.RawMessage("[]"),
+					"raw_object": json.RawMessage("{}"), "raw_zero": json.RawMessage("0"), "raw_empty_string": json.RawMessage(`""`),
+				}, answer)
+				encoded, err := json.Marshal(answer)
+				require.NoError(t, err)
+				assert.NotContains(t, string(encoded), "null", "no claim is sent as null")
 			},
 		},
 		{
@@ -401,6 +466,29 @@ func TestProvider_UserInfo_SourceMapKept(t *testing.T) {
 	_, err := f.p.UserInfo(t.Context(), verified(t, f, s.first.AccessToken))
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"department": "ops", "blank": ""}, held)
+}
+
+// TestProvider_UserInfo_SourceCannotChangeTheToken pins that a source is given a copy of the token's
+// scopes, as the token stays what it was verified to be.
+func TestProvider_UserInfo_SourceCannotChangeTheToken(t *testing.T) {
+	t.Parallel()
+
+	source := NewMockClaimSource(gomock.NewController(t))
+	source.EXPECT().Claims(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ identity.UserID, scopes []string) (map[string]any, error) {
+			scopes[0] = "tampered"
+
+			return nil, nil
+		})
+	f := newRefreshFixture(t, oidcprovider.WithClaimSource(source))
+	s := startBilling(t, f)
+	at := verified(t, f, s.first.AccessToken)
+	before := slices.Clone(at.Scopes)
+
+	_, err := f.p.UserInfo(t.Context(), at)
+
+	require.NoError(t, err)
+	assert.Equal(t, before, at.Scopes, "a source rewrote the token's scopes")
 }
 
 // TestProvider_UserInfo_NilClaimSource pins a wiring mistake failing at construction.

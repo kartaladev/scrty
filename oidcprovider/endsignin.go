@@ -46,20 +46,27 @@ type ClientToNotify struct {
 //
 // A selector of no valid shape is refused with an error matching ErrConfig, before anything is read
 // or written. Each store is written whatever became of the other, and neither depends on the caller
-// still listening. A failure of either matches ErrDependency, with the clients of whatever did end
+// still listening, and each has a budget of its own. A failure of either matches ErrDependency, with the clients of whatever did end
 // still returned and handed on, and asking again finishes the work and tells no one twice. It has no
 // override: what ends is decided per client, by [Client].EndGrantsWithSignIn.
 func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientToNotify, error) {
 	if err := sel.Validate(); err != nil {
 		return nil, err
 	}
-	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
-	defer cancel()
-
-	ended, grantErr := p.stores.grants.EndSignIns(detached, sel, p.cfg.clock.Now())
+	// Each store, and the hand-on, spends a budget of its own, so that one hanging until its budget ends
+	// leaves the others a live context.
+	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	ended, grantErr := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
+	endGrants()
 	clients := clientsToNotify(ended)
-	p.handOn(detached, clients)
-	_, browserErr := p.stores.browserSessions.DeleteBySignIn(detached, sel)
+
+	handCtx, endHandOn := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	p.handOn(handCtx, clients)
+	endHandOn()
+
+	browserCtx, endBrowsers := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	defer endBrowsers()
+	_, browserErr := p.stores.browserSessions.DeleteBySignIn(browserCtx, sel)
 
 	return clients, dependencyFailure(ctx, errors.Join(grantErr, browserErr), "oidcprovider: end the sign-ins")
 }
@@ -93,10 +100,13 @@ func clientsToNotify(ended []Grant) []ClientToNotify {
 //
 // The selection comes from what the report names and not from its cause, so a cause added later ends
 // what it names with no change here. A family names that family; an upstream issuer with its session
-// names that session; a user with a kept family names the user but that family; a user with an upstream
+// names that session, and a session without its issuer names nothing; a user with a kept family names the user but that family; a user with an upstream
 // issuer names that pair; a user alone names the user, so a nil KeptFamily spares nothing. A report
 // naming none of those, as a deletion of a session that had already gone does, ends nothing, and is
 // logged.
+//
+// It runs inside the session manager's call, on a context its caller cannot cancel, and each store
+// has its own budget of 10 seconds, so hanging stores can delay a logout's answer by up to 30 seconds.
 //
 // It has no error to return, and the sign-in has already ended, so a failure is logged and leaves the
 // sign-in ended, with the grants left as they stand until the next end selecting them.
@@ -123,7 +133,8 @@ func selectorOf(r session.EndReport) (SignInSelector, bool) {
 		return SignInSelector{Family: r.Family}, true
 	case r.ExternalIssuer != "" && r.ExternalSessionID != "":
 		return SignInSelector{ExternalIssuer: r.ExternalIssuer, ExternalSessionID: r.ExternalSessionID}, true
-	case r.User == "":
+	case r.User == "" || r.ExternalSessionID != "":
+		// A session without its issuer names no sign-in, and must not widen to the user's.
 		return SignInSelector{}, false
 	case r.KeptFamily != id.Nil:
 		return SignInSelector{User: r.User, ExceptFamily: r.KeptFamily}, true
@@ -202,11 +213,13 @@ func (p *Provider) Consents(ctx context.Context, user identity.UserID) ([]Consen
 
 // RevokeConsent forgets what user allowed clientID, and revokes every grant and outstanding code of
 // that user and client, offline_access included, with CauseConsentRevoked, so their refresh tokens
-// stop working at once and the next authorization asks again. Another client's are left alone.
+// stop working at once and the next authorization asks again. Another client's, and another user's,
+// are left alone.
 //
-// A consent the user does not hold is refused with ErrForeignConsent and ends nothing, so a user
-// naming a client cannot end what no consent of theirs ever gave. A first-party client that was never
-// asked holds no consent to revoke: RevokeUserGrants is what reaches its grants.
+// A user holding neither a consent to the client nor a grant of it that this ended is refused with
+// ErrForeignConsent, with that user's outstanding codes for the client still revoked, so a user naming a client cannot end what nothing of theirs
+// ever gave. A first-party client is never asked, so it holds no consent; its grants for the user
+// are ended all the same, and RevokeUserGrants is only for ending every client's.
 //
 // The grants go first, so that a failure leaves the consent listed, to be revoked again. Neither write
 // depends on the caller still listening. A failure matches ErrDependency, and an empty user or client
@@ -215,21 +228,19 @@ func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clie
 	if user == "" || clientID == "" {
 		return fmt.Errorf("%w: RevokeConsent: a user and a client are required", ErrConfig)
 	}
-	remembered, err := p.rememberedConsent(ctx, user, clientID)
-	switch {
-	case err != nil:
-		return err
-	case remembered == nil:
-		return ErrForeignConsent
-	}
 
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
 	defer cancel()
-	if _, err := p.stores.grants.RevokeByUserAndClient(detached, user, clientID, CauseConsentRevoked, p.cfg.clock.Now()); err != nil {
+	ended, err := p.stores.grants.RevokeByUserAndClient(detached, user, clientID, CauseConsentRevoked, p.cfg.clock.Now())
+	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: revoke the consent's grants")
 	}
-	if _, err := p.stores.consents.Revoke(detached, user, clientID); err != nil {
+	forgotten, err := p.stores.consents.Revoke(detached, user, clientID)
+	if err != nil {
 		return dependencyFailure(ctx, err, "oidcprovider: forget the consent")
+	}
+	if !forgotten && len(ended) == 0 {
+		return ErrForeignConsent
 	}
 
 	return nil

@@ -166,8 +166,11 @@
 // error and presenting the token again finishes the work.
 //
 // [Provider.Introspect] says what a token is, to a confidential client (RFC 7662): one issued to it,
-// or an access token whose audience includes its [Client].ResourceIdentifier. Anything else, and
-// anything unknown, expired or revoked, a JWT of a revoked grant included, answers {"active": false}.
+// or an access token whose audience includes its [Client].ResourceIdentifier, which is never the
+// issuer, and is only for a confidential client. A public client is invalid_client whatever it names.
+// Anything else, and anything unknown, expired or revoked, a JWT of a revoked grant included, answers
+// {"active": false}. A refresh token's exp is the first of its grant's end and its own and the
+// client's limits as they stand.
 //
 // Neither is a refresh: presenting a superseded refresh token to either is no reuse. Introspection
 // answers it inactive and writes nothing, and revocation ends its grant as its client asked.
@@ -176,24 +179,29 @@
 //
 // [Provider.UserInfo] answers for an access token read by [Provider.VerifyAccessToken], holding openid
 // and for the issuer. A token for a named resource alone has no issuer, and is refused. The answer
-// holds sub, and by default for the scope profile the user's name and preferred_username.
-// [identity.Details] holds no email, so a consumer with email, phone, address or claims of its own
-// supplies a [ClaimSource] through [WithClaimSource]. Its values are returned unchanged, and a claim
-// the user does not have is left out. A missing or disabled user is invalid_token, and a store or
+// holds sub, and by default for the scope profile the user's name and preferred_username. For the
+// scope email, a username that is exactly an email address is released as email, with email_verified
+// always false, as a username proves nothing about who controls that address. "Ada <ada@example.com>"
+// and "ada" release neither claim, and the address is never used to look up a user.
+// [identity.Details] holds no email of its own, so a consumer with a verified email, phone, address or
+// claims of its own supplies a [ClaimSource] through [WithClaimSource]. Its values are returned unchanged, except that
+// a claim whose value is null or the empty string is left out, as OIDC Core 5.3.2 asks. A missing or disabled user is invalid_token, and a store or
 // source that cannot answer is a dependency failure.
 //
 // # Ending grants
 //
 // [Provider.EndSignIn] ends the grants of the sign-ins a [SignInSelector] names, deletes their browser
 // sessions, and returns the clients to notify. A grant holding offline_access survives, unless its
-// client is registered with [Client].EndGrantsWithSignIn. A provider handed to session.WithEndObserver
+// client is registered with [Client].EndGrantsWithSignIn. Each store is written on a budget of its own,
+// so one that hangs spares no other. A provider handed to session.WithEndObserver
 // does the same for each end its session manager reports, choosing its selector from what the report
 // names, so a cause added later needs nothing here. A failure there is logged, and never undoes the
 // end. A sign-in that merely expires is not reported, and ends nothing.
 //
 // [Provider.RevokeUserGrants] revokes every grant of a user with a cause, offline_access included, for
 // what a security event leaves in doubt. [Provider.RevokeConsent] forgets a user's consent for a client
-// and revokes that user's and client's grants, and [Provider.Consents] lists what a user has allowed.
+// and revokes that user's and client's grants, a first-party client's included though it holds no
+// consent, and [Provider.Consents] lists what a user has allowed.
 //
 // # Errors
 //
