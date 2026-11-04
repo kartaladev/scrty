@@ -689,6 +689,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `sid` equal to the sign-in family's text, and the same after the sign-in renews;
   - an ES256 client signs with ES256;
   - `IDTokenLifetime` of 10 min gives 600.
+- [ ] Red row (R18): a key source failing at signing answers a dependency failure, with the code unspent, no grant row and no lineage, and the same request then succeeds. Mint before `tokens.Consume`, for `record.GrantFamily`.
 - [ ] Red row (R6): a chain reading usernames does not change `sub`, which is `Grant.User`. FAIL; implement through `token.Issuer`, one per algorithm the keys hold, built in `New`; PASS; commit.
 
 ### Task 7.4: Access tokens
@@ -700,7 +701,9 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `AccessTokenLifetime` of 15 min;
   - `cnf.jkt` when `Binding.JKT` is set;
   - an opaque client gets `at.<id>.<secret>`, stored as a digest, and `VerifyAccessToken` refuses it once its grant is revoked;
-  - `VerifyAccessToken` on an ID token or an `rt.` value → `invalid_token`.
+  - `VerifyAccessToken` on an ID token or an `rt.` value → `invalid_token`;
+  - `VerifyAccessToken` on a token whose grant row is gone → refused as revoked, because a revoked row is swept while a token set to a longer lifetime can outlive it;
+  - a `resource` outside the allowlist or the grant, at the exchange → `invalid_target` with the code unspent, judged before the spend beside `codeBindingsHold` (R18).
 - [ ] FAIL; implement; PASS; commit.
 
 ### Task 7.5: Refresh

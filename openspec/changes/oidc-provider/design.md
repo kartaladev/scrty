@@ -1166,6 +1166,13 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
   - **A compact spent-code record.** It holds the token identifier, a secret digest, the client and the grant family instead of the whole record, so long retention stores less. It needs a store contract and a migration, so it fits only alongside one of the above.
   - **What would reopen this:** a consumer asking for the signal, a conformance or certification requirement on late replays, or a final OAuth 2.1 that requires more than draft-17 does.
 
+#### R18. Tokens are signed before the code is spent
+
+- **The gap.** Signing after both writes would burn the code on a key failure, and leave a live grant and lineage nobody holds.
+- **The order.** Signing has no side effect, so it joins the refusal checks, and the spend stays last among them, as every one-time credential in scrty does. The exchange judges `resource`, mints the JWTs for the grant family the code already names, then spends, then writes the grant row and the lineage in T9's order, and only then stores an opaque access token. A key failure is a dependency failure with the code unspent, and the client may retry.
+- **What it costs.** Two racing exchanges both sign, and the loser discards its tokens unreturned. Reaching that needs the client's authentication and the code's bindings, so an outsider cannot use it to spend signing work. A store failure after the spend still burns the code and leaves records nobody holds. They fail safe, as no token was returned.
+- **The default and the override.** This is an order, not a policy, so there is no option. Reasoned from scrty's own settled specs and the established design.
+
 #### R8. A family identifier is not a credential (H6)
 
 - **The gap.** The refresh token's family is not a secret, yet H4's "missing lineage reads as revoked" could be read as writing a revocation, and the revocation endpoint could revoke by the family alone. Either way, a value holding a real family and a made-up secret would end someone's grant: from any client's own grants, or from a public client that needs no secret. `UNREPRODUCED`.
