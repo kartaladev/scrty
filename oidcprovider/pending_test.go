@@ -24,6 +24,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 var handleShape = regexp.MustCompile(`^rh\.([0-9a-f-]{36})\.([A-Za-z0-9_-]+)$`)
@@ -45,6 +46,13 @@ type parkFixture struct {
 func newParkFixture(t *testing.T, loginURL string, opts ...oidcprovider.Option) *parkFixture {
 	t.Helper()
 
+	return newParkFixtureKeys(t, loginURL, plainKeys(t), opts...)
+}
+
+// newParkFixtureKeys is newParkFixture over a key source a row chooses, for a hint it signs.
+func newParkFixtureKeys(t *testing.T, loginURL string, keys signingkey.KeySource, opts ...oidcprovider.Option) *parkFixture {
+	t.Helper()
+
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC))
 	store, err := oidcprovider.NewMemoryPendingRequestStore()
 	require.NoError(t, err)
@@ -63,7 +71,7 @@ func newParkFixture(t *testing.T, loginURL string, opts ...oidcprovider.Option) 
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer:       issuer,
 		Registry:     registry,
-		Keys:         plainKeys(t),
+		Keys:         keys,
 		Users:        users(t),
 		LoginURL:     loginURL,
 		ConsentURL:   issuer + "/consent",
@@ -965,4 +973,102 @@ func TestProvider_PendingRequest_StoreFailure(t *testing.T) {
 			tc.assert(t, view, err)
 		})
 	}
+}
+
+// TestProvider_Park_Resume holds the parking rows only a resume can answer: a handle's
+// lifetime as a resume meets it, and a browser's two tabs.
+func TestProvider_Park_Resume(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		opts   []oidcprovider.Option
+		after  time.Duration
+		assert func(t *testing.T, res oidcprovider.ResumeResult, err error)
+	}{
+		{
+			name:  "a resume at 10 minutes 1 second is an unknown handle",
+			after: 10*time.Minute + time.Second,
+			assert: func(t *testing.T, res oidcprovider.ResumeResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle)
+				assert.Empty(t, res.RedirectTo)
+			},
+		},
+		{
+			name:  "a resume at 6 minutes under a 5 minute lifetime is an unknown handle",
+			opts:  []oidcprovider.Option{oidcprovider.WithPendingRequestLifetime(5 * time.Minute)},
+			after: 6 * time.Minute,
+			assert: func(t *testing.T, res oidcprovider.ResumeResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle)
+				assert.Empty(t, res.RedirectTo)
+			},
+		},
+		{
+			name:  "a resume just before the lifetime ends proceeds",
+			after: 10*time.Minute - time.Second,
+			assert: func(t *testing.T, res oidcprovider.ResumeResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotEmpty(t, res.RedirectTo)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newParkFixture(t, issuer+"/login", tc.opts...)
+			res, err := f.p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: authzParams()})
+			require.NoError(t, err)
+
+			f.clk.Advance(tc.after)
+			signIn := testSignIn(f, "u-1")
+			got, err := f.p.Resume(t.Context(), oidcprovider.ResumeInput{
+				Handle:     handleOf(t, res.Location),
+				FlowSecret: res.FlowSecret,
+				SignIn:     &signIn,
+			})
+			tc.assert(t, got, err)
+		})
+	}
+
+	t.Run("two tabs of one browser each resume, with their own state and nonce", func(t *testing.T) {
+		t.Parallel()
+
+		f := newParkFixture(t, issuer+"/login")
+		require.NoError(t, f.consents.Give(t.Context(), "u-1", "billing-web", []string{"openid", "profile"}, false, f.clk.Now()))
+
+		tab := func(state, nonce, flow string) oidcprovider.AuthorizeResult {
+			params := authzParams()
+			params.Set("state", state)
+			params.Set("nonce", nonce)
+			res, err := f.p.Authorize(t.Context(), oidcprovider.AuthorizeInput{Params: params, FlowSecret: flow})
+			require.NoError(t, err)
+
+			return res
+		}
+		first := tab("state-1", "nonce-1", "")
+		second := tab("state-2", "nonce-2", first.FlowSecret)
+		require.Equal(t, first.FlowSecret, second.FlowSecret)
+
+		for _, want := range []struct {
+			res          oidcprovider.AuthorizeResult
+			state, nonce string
+		}{{first, "state-1", "nonce-1"}, {second, "state-2", "nonce-2"}} {
+			signIn := testSignIn(f, "u-1")
+			got, err := f.p.Resume(t.Context(), oidcprovider.ResumeInput{
+				Handle:     handleOf(t, want.res.Location),
+				FlowSecret: first.FlowSecret,
+				SignIn:     &signIn,
+			})
+			require.NoError(t, err)
+
+			answer := queryOf(t, got.RedirectTo)
+			assert.Equal(t, want.state, answer.Get("state"))
+			assert.Equal(t, want.nonce, recordOf(t, f, answer.Get("code")).Nonce)
+		}
+	})
 }

@@ -193,7 +193,8 @@ type PendingView struct {
 // needs the handle and the browser's flow secret. A wrong flow secret, an unknown or
 // expired handle, a request already answered, an end-session request and a client since
 // removed all fail alike, with ErrUnknownHandle. A failing store or registry is a
-// dependency failure. It looks up no account, and leaves the request as it was.
+// dependency failure. It looks up no account, and leaves the request as it was, so a page
+// may read a request any number of times before it calls Resume.
 func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string) (*PendingView, error) {
 	r, err := p.loadPending(ctx, handle, flowSecret)
 	if err != nil {
@@ -238,12 +239,9 @@ func (p *Provider) grantedScopes(ctx context.Context, r *PendingRequest) ([]stri
 		return nil, nil
 	}
 
-	remembered, err := p.stores.consents.Load(ctx, r.SignIn.User, r.ClientID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return nil, nil
-	case err != nil:
-		return nil, dependencyFailure(ctx, err, "oidcprovider: load the remembered consent")
+	remembered, err := p.rememberedConsent(ctx, r.SignIn.User, r.ClientID)
+	if err != nil || remembered == nil {
+		return nil, err
 	}
 
 	return remembered.Scopes, nil

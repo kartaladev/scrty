@@ -122,8 +122,9 @@ func (AuthorizeResult) LogValue() slog.Value { return slog.StringValue(redacted)
 // request's state and iss, and no error_description.
 //
 // A valid request is parked, and the Location is the consumer's login page with the
-// handle in its req parameter. A prompt=none request is answered login_required, because
-// nothing can answer it silently.
+// handle in its req parameter. The page reads the request with PendingRequest, signs the
+// user in, and hands the sign-in to Resume, whose answer says where the browser goes next. A
+// prompt=none request is answered login_required, because nothing can answer it silently.
 //
 // Authorize does not judge TLS, and renders nothing: both are the chain's.
 func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {

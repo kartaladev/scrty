@@ -1,6 +1,12 @@
 package oidcprovider
 
-import "slices"
+import (
+	"context"
+	"errors"
+	"slices"
+
+	"github.com/kartaladev/scrty/identity"
+)
 
 // consentNeeded decides whether a pending request must go through the consent stage.
 // remembered is what the user gave this client, nil for nothing.
@@ -32,4 +38,17 @@ func consentNeeded(c *RegisteredClient, req *PendingRequest, remembered *Consent
 	return slices.ContainsFunc(req.Scopes, func(scope string) bool {
 		return scope != scopeOffline && !slices.Contains(remembered.Scopes, scope)
 	})
+}
+
+// rememberedConsent reads what user gave the client, and nil for nothing.
+func (p *Provider) rememberedConsent(ctx context.Context, user identity.UserID, clientID string) (*Consent, error) {
+	remembered, err := p.stores.consents.Load(ctx, user, clientID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil, nil //nolint:nilnil // nothing remembered is an answer, and no failure
+	case err != nil:
+		return nil, dependencyFailure(ctx, err, "oidcprovider: load the remembered consent")
+	}
+
+	return remembered, nil
 }
