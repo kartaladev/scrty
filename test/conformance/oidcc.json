@@ -1,0 +1,1011 @@
+{
+  "description": "scrty OpenID Provider, conformance OP (test/cmd/conformanceop)",
+  "alias": "scrty",
+  "server": {
+    "discoveryUrl": "https://op:9443/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "client",
+    "client_secret": "conformance-secret-for-client-one-0000"
+  },
+  "client2": {
+    "client_id": "client2",
+    "client_secret": "conformance-secret-for-client-two-0000"
+  },
+  "client_secret_post": {
+    "client_id": "client-post",
+    "client_secret": "conformance-secret-for-client-post-000"
+  },
+  "browser": [
+    {
+      "match": "https://op:9443/oauth2/authorize*",
+      "tasks": [
+        {
+          "task": "Login",
+          "optional": true,
+          "match": "https://op:9443/login*",
+          "commands": [
+            [
+              "text",
+              "name",
+              "username",
+              "conformance",
+              "optional"
+            ],
+            [
+              "text",
+              "name",
+              "password",
+              "conformance-password",
+              "optional"
+            ],
+            [
+              "click",
+              "class",
+              "login-submit"
+            ]
+          ]
+        },
+        {
+          "task": "Consent",
+          "optional": true,
+          "match": "https://op:9443/consent*",
+          "commands": [
+            [
+              "click",
+              "class",
+              "login-submit"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "*/test/*/callback*",
+          "commands": [
+            [
+              "wait",
+              "id",
+              "submission_complete",
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "match": "https://op:9443/oauth2/logout*",
+      "tasks": [
+        {
+          "task": "Choose logout option",
+          "optional": true,
+          "match": "https://op:9443/logout*",
+          "commands": [
+            [
+              "click",
+              "css",
+              "button[autofocus]"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "*/test/*/post*"
+        }
+      ]
+    }
+  ],
+  "override": {
+    "oidcc-backchannel-rp-initiated-logout": {
+      "client": {
+        "client_id": "client-bcl",
+        "client_secret": "conformance-secret-for-client-bcl-0000"
+      }
+    },
+    "oidcc-prompt-login": {
+      "browser": [
+        {
+          "comment": "updates the placeholder during the second authorization",
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-in",
+                  "update-image-placeholder-optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-max-age-1": {
+      "browser": [
+        {
+          "comment": "updates the placeholder during the second authorization",
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-in",
+                  "update-image-placeholder-optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-ensure-registered-redirect-uri": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Expect redirect uri mismatch error page",
+              "match": "https://op:9443/oauth2/authorize*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "authorization request was refused",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-ensure-request-object-with-redirect-uri": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Expect redirect uri mismatch error page",
+              "match": "https://op:9443/oauth2/authorize*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "authorization request was refused",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-no-params": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Choose logout option",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "click",
+                  "css",
+                  "button[autofocus]"
+                ]
+              ]
+            },
+            {
+              "task": "Expect success page",
+              "match": "https://op:9443/signed-out",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-out Success",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-only-state": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Choose logout option",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "click",
+                  "css",
+                  "button[autofocus]"
+                ]
+              ]
+            },
+            {
+              "task": "Expect success page",
+              "match": "https://op:9443/signed-out",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-out Success",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-no-post-logout-redirect-uri": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Choose logout option",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "click",
+                  "css",
+                  "button[autofocus]"
+                ]
+              ]
+            },
+            {
+              "task": "Expect success page",
+              "match": "https://op:9443/signed-out",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-out Success",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-bad-post-logout-redirect-uri": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Expect the logged-out page",
+              "optional": true,
+              "match": "https://op:9443/signed-out",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-out Success",
+                  "update-image-placeholder"
+                ]
+              ]
+            },
+            {
+              "task": "Expect the confirmation page",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Do you want to sign out",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-query-added-to-post-logout-redirect-uri": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Expect the logged-out page",
+              "optional": true,
+              "match": "https://op:9443/signed-out",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Sign-out Success",
+                  "update-image-placeholder"
+                ]
+              ]
+            },
+            {
+              "task": "Expect the confirmation page",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Do you want to sign out",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-no-id-token-hint": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Expect the confirmation page",
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Do you want to sign out",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-modified-id-token-hint": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Expect refusal page",
+              "optional": true,
+              "match": "https://op:9443/oauth2/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "id_token_hint could not be validated",
+                  "update-image-placeholder"
+                ]
+              ]
+            },
+            {
+              "task": "Expect the confirmation page",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Do you want to sign out",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "oidcc-rp-initiated-logout-bad-id-token-hint": {
+      "browser": [
+        {
+          "match": "https://op:9443/oauth2/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://op:9443/login*",
+              "commands": [
+                [
+                  "text",
+                  "name",
+                  "username",
+                  "conformance",
+                  "optional"
+                ],
+                [
+                  "text",
+                  "name",
+                  "password",
+                  "conformance-password",
+                  "optional"
+                ],
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://op:9443/consent*",
+              "commands": [
+                [
+                  "click",
+                  "class",
+                  "login-submit"
+                ]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "*/test/*/callback*",
+              "commands": [
+                [
+                  "wait",
+                  "id",
+                  "submission_complete",
+                  10
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "match": "https://op:9443/oauth2/logout*",
+          "tasks": [
+            {
+              "task": "Expect refusal page",
+              "optional": true,
+              "match": "https://op:9443/oauth2/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "id_token_hint could not be validated",
+                  "update-image-placeholder"
+                ]
+              ]
+            },
+            {
+              "task": "Expect the confirmation page",
+              "optional": true,
+              "match": "https://op:9443/logout*",
+              "commands": [
+                [
+                  "wait",
+                  "xpath",
+                  "//*",
+                  10,
+                  "Do you want to sign out",
+                  "update-image-placeholder"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+[
+  {
+    "test-name": "oidcc-ensure-request-without-nonce-succeeds-for-code-flow",
+    "variant": "*",
+    "configuration-filename": "*oidcc.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "The request carries neither a PKCE challenge nor a nonce. scrty requires PKCE by default, and a confidential client registered PKCEOrNonce must send one of the two (design R1), so the provider refuses it, as RFC 9700 allows."
+  }
+]
