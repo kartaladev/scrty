@@ -121,45 +121,6 @@ func (c *MockGrantStoreDeleteExpiredCall) DoAndReturn(f func(context.Context, ti
 	return c
 }
 
-// DeleteOrphans mocks base method.
-func (m *MockGrantStore) DeleteOrphans(ctx context.Context, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteOrphans", ctx, lineageExists, olderThan)
-	ret0, _ := ret[0].(int)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// DeleteOrphans indicates an expected call of DeleteOrphans.
-func (mr *MockGrantStoreMockRecorder) DeleteOrphans(ctx, lineageExists, olderThan any) *MockGrantStoreDeleteOrphansCall {
-	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteOrphans", reflect.TypeOf((*MockGrantStore)(nil).DeleteOrphans), ctx, lineageExists, olderThan)
-	return &MockGrantStoreDeleteOrphansCall{Call: call}
-}
-
-// MockGrantStoreDeleteOrphansCall wrap *gomock.Call
-type MockGrantStoreDeleteOrphansCall struct {
-	*gomock.Call
-}
-
-// Return rewrite *gomock.Call.Return
-func (c *MockGrantStoreDeleteOrphansCall) Return(arg0 int, arg1 error) *MockGrantStoreDeleteOrphansCall {
-	c.Call = c.Call.Return(arg0, arg1)
-	return c
-}
-
-// Do rewrite *gomock.Call.Do
-func (c *MockGrantStoreDeleteOrphansCall) Do(f func(context.Context, func(id.ID) (bool, error), time.Time) (int, error)) *MockGrantStoreDeleteOrphansCall {
-	c.Call = c.Call.Do(f)
-	return c
-}
-
-// DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockGrantStoreDeleteOrphansCall) DoAndReturn(f func(context.Context, func(id.ID) (bool, error), time.Time) (int, error)) *MockGrantStoreDeleteOrphansCall {
-	c.Call = c.Call.DoAndReturn(f)
-	return c
-}
-
 // EndSignIns mocks base method.
 func (m *MockGrantStore) EndSignIns(ctx context.Context, sel oidcprovider.SignInSelector, at time.Time) ([]oidcprovider.Grant, error) {
 	m.ctrl.T.Helper()

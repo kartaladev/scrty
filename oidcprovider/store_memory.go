@@ -838,62 +838,6 @@ func (m *MemoryGrantStore) deleteExpiredLocked(now time.Time, keepRevoked time.D
 	return held - len(m.grants)
 }
 
-// DeleteOrphans implements GrantStore. lineageExists runs without the store's lock, as
-// it reads another store.
-func (m *MemoryGrantStore) DeleteOrphans(_ context.Context, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error) {
-	if lineageExists == nil {
-		return 0, fmt.Errorf("%w: GrantStore.DeleteOrphans: lineageExists must not be nil", ErrConfig)
-	}
-
-	deleted := 0
-	for _, family := range m.orphanCandidates(olderThan) {
-		exists, err := lineageExists(family)
-		if err != nil {
-			return deleted, fmt.Errorf("oidcprovider: checking a grant's lineage: %w", err)
-		}
-		if !exists && m.deleteOrphan(family, olderThan) {
-			deleted++
-		}
-	}
-
-	return deleted, nil
-}
-
-func (m *MemoryGrantStore) orphanCandidates(olderThan time.Time) []id.ID {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var families []id.ID
-	for family, held := range m.grants {
-		if held.orphanable(olderThan) {
-			families = append(families, family)
-		}
-	}
-
-	return families
-}
-
-// deleteOrphan removes family if it is still a candidate, as a revocation may have
-// arrived while its lineage was being checked.
-func (m *MemoryGrantStore) deleteOrphan(family id.ID, olderThan time.Time) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	held, ok := m.grants[family]
-	if !ok || !held.orphanable(olderThan) {
-		return false
-	}
-	delete(m.grants, family)
-
-	return true
-}
-
-// orphanable reports whether the orphan pass may look at this record at all. A
-// revocation is delete expired's, because it must outlive any code naming it.
-func (g *memoryGrant) orphanable(olderThan time.Time) bool {
-	return g.stored && !g.Revoked && g.HoldsLineage && g.CreatedAt.Before(olderThan)
-}
-
 // codeTokenPurpose is the token/onetime purpose an authorization code's token is issued
 // under.
 const codeTokenPurpose = "oidc-provider.code" //nolint:gosec // a purpose's name, and no credential

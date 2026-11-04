@@ -543,7 +543,6 @@ var securityStateIndexes = map[string][]string{
 		"CREATE INDEX op_grants_external_session ON op_grants USING btree (external_issuer, external_session_id)",
 		"CREATE INDEX op_grants_expiry ON op_grants USING btree (expires_at)",
 		"CREATE INDEX op_grants_revoked ON op_grants USING btree (revoked_at)",
-		"CREATE INDEX op_grants_created ON op_grants USING btree (created_at)",
 	},
 	"op_refresh_tokens": {
 		"CREATE UNIQUE INDEX op_refresh_tokens_pkey ON op_refresh_tokens USING btree (id)",
@@ -2186,10 +2185,6 @@ func providerLookups() []opLookup {
 		{
 			name: "assertion identifier of a client", table: "op_client_assertions", index: "op_client_assertions_client_id_jti_key",
 			where: `client_id = $1 AND jti = $2`, args: client + `, 'j-1'`, columns: []string{"client_id", "jti"},
-		},
-		{
-			name: "orphan candidates", table: "op_grants", index: "op_grants_created",
-			where: `created_at < $1 AND holds_lineage AND NOT revoked`, args: when, columns: []string{"created_at"},
 		},
 		userAndClient("held codes of a user and client", "op_authorization_codes", "op_authorization_codes_user_client"),
 		userAndClient("consent of a user and client", "op_consents", "op_consents_user_ref_client_id_key"),

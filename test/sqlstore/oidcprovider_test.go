@@ -810,24 +810,6 @@ WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
 				assert.Equal(t, opID(2), later[0].Family)
 			},
 		},
-		{
-			name: "delete orphans holds no connection while it asks about a lineage",
-			assert: func(t *testing.T, ctx context.Context, db *sql.DB) {
-				s := joined(t, db)
-				require.NoError(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), CreatedAt: opTime, ExpiresAt: opTime.Add(time.Hour), HoldsLineage: true}))
-				db.SetMaxOpenConns(1)
-				t.Cleanup(func() { db.SetMaxOpenConns(poolSize) })
-
-				bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
-				defer cancel()
-				n, err := s.DeleteOrphans(bounded, func(id.ID) (bool, error) {
-					var one int
-					return false, db.QueryRowContext(bounded, "SELECT 1").Scan(&one)
-				}, opTime.Add(time.Hour))
-				require.NoError(t, err, "a lineage check that needs the pool must not wait on the pass itself")
-				assert.Equal(t, 1, n)
-			},
-		},
 	}
 
 	for _, tc := range cases {

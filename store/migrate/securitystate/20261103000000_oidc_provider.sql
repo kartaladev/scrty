@@ -188,10 +188,9 @@ CREATE INDEX op_grants_user_issuer ON op_grants (user_ref, external_issuer);
 CREATE INDEX op_grants_sign_in ON op_grants (sign_in_family);
 -- Issuer leads: a provider session id is unique only within its issuer.
 CREATE INDEX op_grants_external_session ON op_grants (external_issuer, external_session_id);
--- The sweep's two conditions, and the orphan pass's.
+-- The sweep's two conditions.
 CREATE INDEX op_grants_expiry ON op_grants (expires_at);
 CREATE INDEX op_grants_revoked ON op_grants (revoked_at);
-CREATE INDEX op_grants_created ON op_grants (created_at);
 
 -- Refresh-token lineages, which a session store runs over unchanged but for the table's
 -- name. Its columns and indexes are the sessions table's, in the same order, and a later

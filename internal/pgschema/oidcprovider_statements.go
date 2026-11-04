@@ -101,17 +101,6 @@ WHERE NOT op_grants.revoked`
   ORDER BY family FOR UPDATE)
 DELETE FROM op_grants USING chosen WHERE family = chosen_family`
 
-	// GrantOrphanCandidates lists up to $3 families created strictly before $1, holding
-	// a lineage and unrevoked, after family $2 and in family order. A revocation
-	// recorded first has a NULL created_at, so the comparison leaves it out.
-	GrantOrphanCandidates = `SELECT family FROM op_grants
-WHERE created_at < $1 AND holds_lineage AND NOT revoked AND family > $2 ORDER BY family LIMIT $3`
-
-	// GrantOrphanDelete removes family $1 if it is still a candidate at cutoff $2, as a
-	// revocation may have arrived while its lineage was being checked.
-	GrantOrphanDelete = `DELETE FROM op_grants
-WHERE family = $1 AND created_at < $2 AND holds_lineage AND NOT revoked`
-
 	// AccessTokenInsert stores a token, with the arguments AccessTokenArgs returns. No
 	// row affected means its identifier is already held.
 	AccessTokenInsert = `INSERT INTO op_access_tokens (` + accessTokenColumns + `)
@@ -230,10 +219,6 @@ const (
 
 // heldFamilies is the set $1 of a statement writing the grants a hold returned.
 const heldFamilies = `SELECT held.family::uuid FROM jsonb_array_elements_text($1::jsonb) AS held(family)`
-
-// GrantOrphanPage is how many candidates the orphan pass lists at a time. The pass asks
-// another store about each one, holding nothing, so it never needs them all at once.
-const GrantOrphanPage = 500
 
 // sessionsTable finds the sessions table's name in a session statement. No column of
 // that table, and no alias in its statements, holds the word.

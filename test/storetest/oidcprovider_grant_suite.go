@@ -1109,14 +1109,10 @@ func grantShapeCases() []suiteCase[grantWorld] {
 	return cases
 }
 
-// grantSweepCases are the cases of DeleteExpired and DeleteOrphans.
+// grantSweepCases are the cases of DeleteExpired.
 func grantSweepCases() []suiteCase[grantWorld] {
 	keep := 10 * time.Minute
 	revokedAt := suiteStart.Add(time.Hour)
-
-	lineages := func(alive ...id.ID) func(id.ID) (bool, error) {
-		return func(family id.ID) (bool, error) { return slices.Contains(alive, family), nil }
-	}
 
 	return []suiteCase[grantWorld]{
 		{
@@ -1205,117 +1201,6 @@ func grantSweepCases() []suiteCase[grantWorld] {
 					require.ErrorIs(t, err, oidcprovider.ErrConfig)
 				}
 				loadGrant(ctx, t, s, 1)
-			},
-		},
-		{
-			name: "delete orphans removes a grant whose lineage is missing, and older than the cutoff",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				cutoff := suiteStart.Add(10 * time.Minute)
-				orphan := grantRecord(1, opSignIn("u-1", 1))
-				withLineage := grantRecord(2, opSignIn("u-1", 1))
-				atCutoff := grantRecord(3, opSignIn("u-1", 1))
-				atCutoff.CreatedAt = cutoff
-				recent := grantRecord(4, opSignIn("u-1", 1))
-				recent.CreatedAt = cutoff.Add(time.Second)
-				createGrants(ctx, t, s, orphan, withLineage, atCutoff, recent)
-
-				n, err := s.DeleteOrphans(ctx, lineages(suiteID(2)), cutoff)
-				require.NoError(t, err)
-				assert.Equal(t, 1, n)
-
-				_, err = s.Load(ctx, suiteID(1))
-				require.ErrorIs(t, err, oidcprovider.ErrNotFound)
-				for _, kept := range []int{2, 3, 4} {
-					loadGrant(ctx, t, s, kept)
-				}
-			},
-		},
-		{
-			name: "delete orphans skips a grant holding no lineage (R10)",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				g := grantRecord(1, opSignIn("u-1", 1))
-				g.HoldsLineage = false
-				createGrants(ctx, t, s, g)
-
-				n, err := s.DeleteOrphans(ctx, lineages(), suiteStart.Add(time.Hour))
-				require.NoError(t, err)
-				assert.Zero(t, n)
-				loadGrant(ctx, t, s, 1)
-			},
-		},
-		{
-			name: "delete orphans spares a revocation, recorded first or not, which delete expired owns (H2, H4)",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
-				require.NoError(t, s.Revoke(ctx, suiteID(1), oidcprovider.CauseReuse, suiteStart))
-				require.NoError(t, s.Revoke(ctx, suiteID(2), oidcprovider.CauseCodeReplay, suiteStart))
-
-				n, err := s.DeleteOrphans(ctx, lineages(), suiteStart.Add(time.Hour))
-				require.NoError(t, err)
-				assert.Zero(t, n)
-				loadGrant(ctx, t, s, 1)
-				loadGrant(ctx, t, s, 2)
-			},
-		},
-		{
-			name: "a revocation arriving during the lineage check survives the orphan pass",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
-
-				n, err := s.DeleteOrphans(ctx, func(family id.ID) (bool, error) {
-					return false, s.Revoke(ctx, family, oidcprovider.CauseCodeReplay, revokedAt)
-				}, suiteStart.Add(time.Hour))
-				require.NoError(t, err)
-				assert.Zero(t, n)
-
-				stored := loadGrant(ctx, t, s, 1)
-				assert.True(t, stored.Revoked)
-				assert.Equal(t, oidcprovider.CauseCodeReplay, stored.RevokeCause)
-			},
-		},
-		{
-			name: "a lineage check failing midway reports what the pass removed, and removes no more",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)), grantRecord(2, opSignIn("u-1", 1)))
-				boom := errors.New("lineage store down")
-
-				checks := 0
-				n, err := s.DeleteOrphans(ctx, func(id.ID) (bool, error) {
-					if checks++; checks == 2 {
-						return false, boom
-					}
-
-					return false, nil
-				}, suiteStart.Add(time.Hour))
-				require.ErrorIs(t, err, boom)
-				assert.Equal(t, 1, n)
-				assert.Equal(t, 2, checks, "the failure ends the pass")
-
-				held := 0
-				for _, family := range []id.ID{suiteID(1), suiteID(2)} {
-					if _, err := s.Load(ctx, family); err == nil {
-						held++
-					}
-				}
-				assert.Equal(t, 1, held, "the one it could not check is kept")
-			},
-		},
-		{
-			name: "a failing lineage check ends the pass with the error, and removes nothing it could not check",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				createGrants(ctx, t, s, grantRecord(1, opSignIn("u-1", 1)))
-				boom := errors.New("lineage store down")
-
-				_, err := s.DeleteOrphans(ctx, func(id.ID) (bool, error) { return false, boom }, suiteStart.Add(time.Hour))
-				require.ErrorIs(t, err, boom)
-				loadGrant(ctx, t, s, 1)
-			},
-		},
-		{
-			name: "a nil lineage check is refused",
-			assert: func(t *testing.T, ctx context.Context, s grantWorld, _ *clockwork.FakeClock) {
-				_, err := s.DeleteOrphans(ctx, nil, suiteStart)
-				require.ErrorIs(t, err, oidcprovider.ErrConfig)
 			},
 		},
 	}

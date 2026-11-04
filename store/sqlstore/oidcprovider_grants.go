@@ -238,48 +238,6 @@ func (s *GrantStore) DeleteExpired(ctx context.Context, now time.Time, keepRevok
 	return int(n), err
 }
 
-// DeleteOrphans implements oidcprovider.GrantStore. It lists its candidates a page at a
-// time and asks about each with no rows open, so lineageExists may use any connection,
-// the caller's transaction included. Each removal is one conditional delete, so a grant
-// revoked while its lineage was being checked is kept.
-func (s *GrantStore) DeleteOrphans(
-	ctx context.Context, lineageExists func(id.ID) (bool, error), olderThan time.Time,
-) (int, error) {
-	const op = "delete orphaned grants"
-
-	if lineageExists == nil {
-		return 0, failed(op, fmt.Errorf("%w: GrantStore.DeleteOrphans: lineageExists must not be nil", oidcprovider.ErrConfig))
-	}
-	cutoff := storekit.Time(olderThan)
-
-	deleted := 0
-	after := id.Nil
-	for {
-		page, err := s.c.queryIDs(ctx, op, pgschema.GrantOrphanCandidates, cutoff, after.String(), pgschema.GrantOrphanPage)
-		if err != nil {
-			return deleted, err
-		}
-		for _, family := range page {
-			exists, err := lineageExists(family)
-			if err != nil {
-				return deleted, failed(op, fmt.Errorf("checking a grant's lineage: %w", err))
-			}
-			if exists {
-				continue
-			}
-			n, err := s.c.exec(ctx, op, pgschema.GrantOrphanDelete, family.String(), cutoff)
-			if err != nil {
-				return deleted, err
-			}
-			deleted += int(n)
-		}
-		if len(page) < pgschema.GrantOrphanPage {
-			return deleted, nil
-		}
-		after = page[len(page)-1]
-	}
-}
-
 // atomically runs fn as one unit: under a savepoint inside a caller's transaction, and
 // otherwise in a READ COMMITTED transaction of the store's own.
 func (s *GrantStore) atomically(ctx context.Context, op string, fn func(q DBTX) error) error {

@@ -274,7 +274,7 @@ func BrowserSessionDeleteBySignIn(sel oidcprovider.SignInSelector) (string, []an
 // any other.
 //
 // A single Create or Revoke holds one row, and so cannot close a cycle on its own, nor
-// can GrantOrphanDelete, which takes its candidates in family order. The order is held
+// can the sweep, which takes its rows in family order. The order is held
 // within one call: a caller's transaction that has already written a later family holds
 // that row out of order when it calls one of these, and can deadlock. PostgreSQL then ends
 // a statement with 40P01, which the caller retries, as it must any such failure.

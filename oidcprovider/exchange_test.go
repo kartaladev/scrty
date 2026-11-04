@@ -1166,7 +1166,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 			},
 		},
 		{
-			name: "a lineage that cannot be written leaves a row the orphan sweep removes, and no token",
+			name: "a lineage that cannot be written answers an error with no token, and the grant row is kept",
 			opts: func(t *testing.T) []oidcprovider.Option {
 				t.Helper()
 				lineages := NewMockLineageSessionStore(gomock.NewController(t))
@@ -1188,10 +1188,6 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				grant := grantOf(t, x, c)
 				assert.False(t, grant.Revoked)
 				assert.True(t, grant.HoldsLineage)
-
-				removed, err := x.p.GrantsForTest().DeleteOrphans(t.Context(), func(id.ID) (bool, error) { return false, nil }, x.clk.Now().Add(time.Hour))
-				require.NoError(t, err)
-				assert.Equal(t, 1, removed)
 			},
 		},
 		{

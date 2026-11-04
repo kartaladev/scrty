@@ -97,21 +97,6 @@ func lineageSessions(t *testing.T, pool *pgxpool.Pool, c seal.Cipher, opts ...pg
 	return oplineage.Sessions(lineages)
 }
 
-// openPoolOf opens a pool of at most size connections on the database at dsn.
-func openPoolOf(ctx context.Context, t *testing.T, dsn string, size int32) *pgxpool.Pool {
-	t.Helper()
-
-	cfg, err := pgxpool.ParseConfig(dsn)
-	require.NoError(t, err)
-	cfg.MaxConns = size
-
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { closeBounded(t, pool) })
-
-	return pool
-}
-
 // withoutSessionsTable renames the sessions table away until the test ends, so that a
 // lineage statement reaching it fails instead of passing on the wrong table.
 func withoutSessionsTable(t *testing.T, conn database) {
@@ -882,23 +867,6 @@ WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
 				require.NoError(t, err)
 				require.Len(t, later, 1, "the next end finds it")
 				assert.Equal(t, opID(2), later[0].Family)
-			},
-		},
-		{
-			name: "delete orphans holds no connection while it asks about a lineage",
-			assert: func(t *testing.T, ctx context.Context, conn database) {
-				one := openPoolOf(ctx, t, conn.DSN, 1)
-				s := joined(t, one)
-				require.NoError(t, s.Create(ctx, &oidcprovider.Grant{Family: opID(1), CreatedAt: opTime, ExpiresAt: opTime.Add(time.Hour), HoldsLineage: true}))
-
-				bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
-				defer cancel()
-				n, err := s.DeleteOrphans(bounded, func(id.ID) (bool, error) {
-					var n int
-					return false, conn.DB.QueryRowContext(bounded, "SELECT 1").Scan(&n)
-				}, opTime.Add(time.Hour))
-				require.NoError(t, err, "a lineage check that needs the pool must not wait on the pass itself")
-				assert.Equal(t, 1, n)
 			},
 		},
 	}

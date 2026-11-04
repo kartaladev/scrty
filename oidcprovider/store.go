@@ -311,8 +311,8 @@ type Grant struct {
 	Offline bool
 	// EndsWithSignIn ties the grant to its sign-in even when Offline is true.
 	EndsWithSignIn bool
-	// HoldsLineage reports that the grant has a refresh-token lineage. A grant without
-	// one is never an orphan.
+	// HoldsLineage reports that the grant has a refresh-token lineage. A refresh reads
+	// it, to know whether a lineage is to be looked for at all.
 	HoldsLineage bool
 
 	// CreatedAt and ExpiresAt bound the grant's life.
@@ -459,15 +459,6 @@ type GrantStore interface {
 	// keepRevoked must cover every code that could still name the grant, and one of
 	// zero or less is refused with an error matching ErrConfig.
 	DeleteExpired(ctx context.Context, now time.Time, keepRevoked time.Duration) (int, error)
-
-	// DeleteOrphans removes each grant created strictly before olderThan which holds a
-	// lineage that lineageExists reports missing. It never removes a grant with
-	// HoldsLineage false, a revoked grant, or a revocation recorded first, and that holds
-	// for a grant revoked while its lineage was being checked, so it must not hold anything
-	// the store's other methods need while lineageExists runs. It returns how many it removed. A failure of lineageExists ends the pass, returning what
-	// was removed so far and the error. A nil lineageExists is refused with an error
-	// matching ErrConfig.
-	DeleteOrphans(ctx context.Context, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error)
 }
 
 // AccessTokenRecord is one opaque access token. The token's secret is held only as a

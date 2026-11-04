@@ -125,7 +125,7 @@ func (TokenResponse) LogValue() slog.Value { return slog.StringValue(redacted) }
 // There is no transaction across 8, 9 and 10. A lineage can never exist without its row, which
 // is the state that would fail open, and every refresh reads the row first. A failure after
 // the spend answers an error and burns the code, leaving records no one holds a token for: a
-// row with no lineage is for the orphan sweep.
+// row with no lineage stays until its own deadline or a revocation.
 //
 // A code presented after it was spent is refused too, and a valid replay revokes what it
 // issued; see refuseSpentCode. The request that won step 7 never looks again, so of several
