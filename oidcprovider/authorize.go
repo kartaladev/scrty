@@ -300,16 +300,19 @@ func (p *Provider) validateTarget(ctx context.Context, params url.Values) (*Regi
 // readRequest runs the checks and answers the first refusal's code, or nothing. What no
 // store could hold or a redirect should repeat goes first, so that every such value is
 // invalid_request whichever parameter holds it. The rest follow the order the
-// requirements state, with the hint last, because only it costs a lookup.
+// requirements state, with the hint last, because only it costs a lookup. A request object
+// comes straight after the bounds: the provider reads none, so whatever the object may
+// have carried, such as the PKCE, is not missing, and OpenID Connect Core sections 6.1
+// and 6.2 have it answer request_not_supported or request_uri_not_supported.
 func (p *Provider) readRequest(ctx context.Context, r *requestReading) (string, error) {
 	for _, step := range []func(*requestReading) string{
 		(*requestReading).readRepeats,
 		(*requestReading).readBounds,
+		(*requestReading).readRequestObjects,
 		(*requestReading).readResponseType,
 		(*requestReading).readPKCE,
 		(*requestReading).readScopes,
 		(*requestReading).readResources,
-		(*requestReading).readRequestObjects,
 		(*requestReading).readPrompt,
 		(*requestReading).readMaxAge,
 		(*requestReading).readBinding,

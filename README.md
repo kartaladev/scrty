@@ -335,25 +335,39 @@ if (res.ok) window.location = (await res.json()).redirect_to;
 ```
 
 The consent page posts to the same endpoint, `{"req": handle, "scopes": ["openid", "profile"]}` to
-grant or `{"req": handle, "deny": true}` to deny. It needs no `Authorization` header, because the
-browser session answers for the user who signed in.
+grant or `{"req": handle, "deny": true}` to deny. While the browser session is on, which is the
+default, it needs no `Authorization` header, because the browser session answers for the user who
+signed in. Under `oidcprovider.WithoutBrowserSessions` there is no browser session to answer, so the
+consent page sends the sign-in in the `Authorization` header as the login page does.
 
 | Answer | Means | What the page does |
 |---|---|---|
 | 200 `{"redirect_to": ...}` | the next page, or the client with a code or an error | navigates there |
 | 400, `ErrOIDCUnknownHandle` | the handle is unknown, expired, spent or bound to another browser | the user starts again from the relying party |
 | 400, `ErrOIDCConsentMalformed` | the answer does not fit the request | answers again; the handle is unspent |
-| 401, `ErrAuthenticationRequired` | no sign-in, or something else than one: an API key and Basic credentials are refused | signs the user in, and resumes again |
-| 401, `ErrOIDCReauthenticate` | the sign-in is too old for the request's `prompt` or `max_age` | authenticates the user again, and resumes again |
+| 401, `ErrAuthenticationRequired` | no sign-in, or something else than one: an API key, Basic credentials, a second `Authorization` line, or a session an interceptor read from anywhere but the `Authorization` header are refused | signs the user in, and resumes again |
+| 401, `ErrOIDCReauthenticate` | the sign-in is too old for the request's `prompt` or `max_age`, or a consent stage came with no valid browser session (it ended, idled out, or the provider has none) | authenticates the user again, and resumes again |
+| 413, `ErrRequestTooLarge` | the body is over the resume body limit | sends less |
+| 429, `ErrOIDCThrottled` | the source is over its limit, the limiter could not answer, or the source could not be attributed. The answer has an empty body and no `WWW-Authenticate` | waits, and does not sign the user in again: this is not a sign-in problem |
 | the chain's refusal for that state | the session owes a second factor, an enrolment, a recovery or a password change, or a bound sign-in came without its proof | finishes that step, and resumes again |
 
 The sign-in is read only from the `Authorization` header, through the chain's bearer, never from the
-query. A session a late renewal alone could recover cannot resume.
+query. A request must carry exactly one `Authorization` line, as at the token endpoint, and a consumer's
+own interceptor that publishes a session must read it from that header: one reading the query or a
+cookie is refused, even when it records the credential with `RecordPresentedToken`. A session a late
+renewal alone could recover cannot resume.
+
+The authorization endpoint's refusals of a throttled source answer 429 too, with no `Location`. Both
+browser endpoints do so rather than the 401 the chain's other throttled flows answer, because a 401
+here reads as "sign the user in" and a page may loop on it. The token endpoints keep their 401.
 
 A server-rendered page can skip the `fetch`, and resume through the Go API: `op.Resume`, with
 `ResumeInput` built from the cookies `httpsec.OIDCFlowCookie` and `httpsec.OIDCBrowserSessionCookie`.
 It then answers for what the chain would have judged: `SignIn` cannot say a session owes a step, so
-the page must not pass one that does.
+the page must not pass one that does. The page must also set `ResumeResult.BrowserSessionSecret`
+as a cookie, named `httpsec.OIDCBrowserSessionCookie`, `HttpOnly`, `Secure`, `SameSite=Lax` and with
+`Path=/`, or single sign-on silently fails: the next authorization finds no browser session, and
+shows the login page again.
 
 Under an issuer built with `oidcprovider.WithLoopbackHTTPIssuer`, for local development, both cookies
 lose the `__Host-` prefix and `Secure`, because a browser refuses the prefix over plain http.
@@ -401,12 +415,15 @@ expect a second request in the same browser to succeed.
 | Endpoint paths | under `/oauth2` | `WithOIDCProviderPrefix`, `WithOIDCProviderPath` |
 | Authorization throttle | 300 parked or invalid-client requests per source a minute | `WithOIDCAuthorizeLimiter`, `WithRateLimiterFactory` |
 | Resume throttle | 30 unknown handles per source a minute | `WithOIDCResumeLimiter`, `WithRateLimiterFactory` |
+| Token throttle | 10 failed client authentications per source in 15 minutes | `WithOIDCTokenLimiter`, `WithRateLimiterFactory` |
 | Authorization form body | `DefaultLoginBodyLimit` | `WithOIDCAuthorizeBodyLimit` |
 | Resume body | `DefaultLoginBodyLimit` | `WithOIDCResumeBodyLimit` |
 | Browser session | on | `oidcprovider.WithoutBrowserSessions` |
 | Cookie names | `__Host-scrty-op-flow`, `__Host-scrty-op-session` | none: the prefix is what stops another host planting one |
 
-The throttles are per process unless the limiter is shared between replicas.
+The throttles are per process unless the limiter is shared between replicas. They fail closed: a
+limiter that cannot answer, and a source that cannot be attributed, are refused like a source over its
+limit, 429 at the authorization and resume endpoints and `invalid_client` at the token endpoints.
 
 ## Letting required users enrol
 

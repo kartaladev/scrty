@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -141,7 +140,9 @@ func (g *oidcUserInfoGroup) serve(ex *Exchange, _ Next) error {
 // endpoint does not read, or an empty parameter, which counts as omitted. RFC 6750 section 3.1 makes a
 // repeated parameter, a repeated header and more than one way of sending the token invalid_request,
 // and section 2 makes a token in the query beside another method one of those, though a token in the
-// query alone is no token. A body is read only for a POST that declares a form, because section 2.2
+// query alone is no token. The query is judged by name in its raw form, whether or not the framework
+// parsed the pair, so that a value that does not decode, a bare name and an empty value each count as
+// a second method: the client sent one. A body is read only for a POST that declares a form, because section 2.2
 // reads a token from nothing else. underDPoP is reported with an error too, so that the refusal can be
 // challenged in the scheme the token came in.
 func (g *oidcUserInfoGroup) readToken(ex *Exchange) (raw string, underDPoP bool, err error) {
@@ -150,7 +151,7 @@ func (g *oidcUserInfoGroup) readToken(ex *Exchange) (raw string, underDPoP bool,
 		return "", underDPoP, err
 	}
 
-	if raw != "" && slices.ContainsFunc(ex.Request.QueryValues(oidcAccessTokenParam), func(v string) bool { return v != "" }) {
+	if raw != "" && queryNamesAny(ex.Request.RawQuery(), []string{oidcAccessTokenParam}) {
 		return "", underDPoP, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
 

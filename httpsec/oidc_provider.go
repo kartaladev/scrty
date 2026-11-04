@@ -231,8 +231,17 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //     minute (WithOIDCAuthorizeLimiter, or the chain's WithRateLimiterFactory).
 //   - Resume throttle: 30 unknown handles per source a minute (WithOIDCResumeLimiter,
 //     or the chain's WithRateLimiterFactory).
+//   - Token throttle: 10 failed client authentications per source in 15 minutes
+//     (WithOIDCTokenLimiter, or the chain's WithRateLimiterFactory).
 //   - Request bodies: DefaultLoginBodyLimit (WithOIDCAuthorizeBodyLimit,
 //     WithOIDCResumeBodyLimit, WithOIDCTokenBodyLimit).
+//
+// Every throttle fails closed: a source over its limit, a limiter that cannot answer
+// and a source that cannot be attributed are refused alike. The authorization and
+// resume endpoints answer ErrOIDCThrottled, 429 with an empty body, because a browser
+// is in front of them and a 401 there reads as "sign the user in", which a page may
+// answer by repeating the call. The token endpoints answer invalid_client, which their
+// clients are told to expect.
 //
 // # The provider's lifecycle
 //
@@ -293,6 +302,16 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // chain mounted without stripping must include the issuer's path in its prefix
 // (WithOIDCProviderPrefix("/auth/oauth2")); otherwise the published URLs do not
 // reach it.
+//
+// # What the resume endpoint reads
+//
+// The sign-in is read from the Authorization header, once, and nowhere else. A session
+// that a consumer's interceptor publishes from the query, a cookie or a header of its
+// own does not resume, even when the interceptor records the credential with
+// Exchange.RecordPresentedToken: recording says which credential authenticated, not
+// where it was presented. A consumer's own bearer reaches the endpoint by reading the
+// Authorization header. A consent stage may stand on the browser session's cookie
+// alone, as that session is the provider's own.
 func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
 	return func(c *config) error {
 		if err := requireDep(optionOIDCProvider, "provider", p); err != nil {
@@ -712,7 +731,13 @@ func (op *oidcEndpoints) publicPath(served string) string {
 // loopback host. The endpoints that would otherwise insist on https answer
 // plain http then.
 func (op *oidcEndpoints) plainHTTPAllowed() bool {
-	u, err := url.Parse(op.provider.Issuer())
+	return issuerIsPlainHTTP(op.provider)
+}
+
+// issuerIsPlainHTTP reports whether p's issuer has the http scheme, compared as parsed,
+// so that a scheme spelled in capitals is the same one.
+func issuerIsPlainHTTP(p *oidcprovider.Provider) bool {
+	u, err := url.Parse(p.Issuer())
 
 	return err == nil && u.Scheme == "http"
 }

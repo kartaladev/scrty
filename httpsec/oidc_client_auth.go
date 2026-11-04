@@ -32,12 +32,17 @@ const oidcAuthorizationHeader = "Authorization"
 // is ever read from there to authenticate with.
 var oidcQueryCredentials = []string{"client_secret", "client_assertion", "client_assertion_type"}
 
-// queryNamesCredential reports whether the raw query names a client credential, however
-// the pairs parse. It splits on "&" and ";" both, so a pair one framework reads and
-// another drops is judged alike, takes each piece's name before "=", and compares it
-// decoded when it decodes and as sent when it does not. A name with no "=" counts, and a
-// value that merely holds a credential's name does not.
+// queryNamesCredential reports whether the raw query names a client credential.
 func queryNamesCredential(raw string) bool {
+	return queryNamesAny(raw, oidcQueryCredentials)
+}
+
+// queryNamesAny reports whether the raw query names any of names, however the pairs
+// parse. It splits on "&" and ";" both, so a pair one framework reads and another drops is
+// judged alike, takes each piece's name before "=", and compares it decoded when it
+// decodes and as sent when it does not. A name with no "=" counts, and so does one with an
+// empty value, while a value that merely holds a name does not.
+func queryNamesAny(raw string, names []string) bool {
 	for piece := range strings.FieldsFuncSeq(raw, func(r rune) bool { return r == '&' || r == ';' }) {
 		name, _, _ := strings.Cut(piece, "=")
 
@@ -45,7 +50,7 @@ func queryNamesCredential(raw string) bool {
 			name = decoded
 		}
 
-		if slices.Contains(oidcQueryCredentials, name) {
+		if slices.Contains(names, name) {
 			return true
 		}
 	}
@@ -93,9 +98,11 @@ func (t *oidcClientThrottle) flush() {
 
 // admit asks whether the request's source may be heard at all, before its credentials
 // are read, so that a throttled source costs one bucket read and no secret comparison.
-// False means the request is refused as invalid_client, which is what a throttled
-// source, a source that cannot be attributed and a limiter that cannot answer all read
-// as to a client: nothing tells them from a wrong credential.
+// False means the request is refused, and the caller chooses how it reads. At the token
+// endpoints it is invalid_client, which is what a throttled source, a source that cannot
+// be attributed and a limiter that cannot answer all read as to a client: nothing tells
+// them from a wrong credential. At the authorization and resume endpoints it is
+// ErrOIDCThrottled, which answers 429, because a browser is in front of those.
 func (t *oidcClientThrottle) admit(ex *Exchange, op *oidcEndpoints) (ratelimit.Source, bool) {
 	src, err := sourceThrottled(ex.Context(), t.guard, ex.Request.ClientIP(), t.flow, t.sampler, op.log, op.now())
 
@@ -131,8 +138,8 @@ func (t *oidcClientThrottle) answer(ex *Exchange, src ratelimit.Source, err erro
 //
 // It answers an *oidcprovider.Error holding invalid_request when the body is not a form
 // that parses, when the Authorization header is repeated, or when the raw query names a
-// credential, which it finds whether or not the framework parsed the pair, and ErrRequestTooLarge for a
-// body over limit, which is read before anything is parsed.
+// credential, which it finds whether or not the framework parsed the pair, and
+// ErrRequestTooLarge for a body over limit, which is read before anything is parsed.
 func readOIDCClientRequest(r Request, limit int64) (oidcprovider.ClientCredentials, error) {
 	refused := func() (oidcprovider.ClientCredentials, error) {
 		return oidcprovider.ClientCredentials{}, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}

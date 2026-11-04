@@ -46,6 +46,17 @@ var (
 	// request's prompt or max_age. It maps to 401: the user signs in again.
 	ErrOIDCReauthenticate = fmt.Errorf("httpsec: the sign-in must be repeated: %w", oidcprovider.ErrReauthenticate)
 
+	// ErrOIDCThrottled refuses a request to the authorization or resume endpoint that the
+	// endpoint will not hear: its source is over the limit, the limiter could not answer,
+	// or the source cannot be attributed. It fails closed, as ratelimit.ErrThrottled does,
+	// and wraps it, so a consumer matching either identity reaches it.
+	//
+	// It maps to 429 (RFC 6585 section 4), where the chain's other throttled flows answer
+	// 401. Those two endpoints are visited by a browser, and a 401 there reads as "sign
+	// the user in", which a page may answer by sending the browser back at once. The
+	// token endpoints keep the 401 their clients are told to expect.
+	ErrOIDCThrottled = fmt.Errorf("httpsec: too many requests: %w", ratelimit.ErrThrottled)
+
 	// ErrOIDCForeignConsent refuses a consent listing or revocation for a user other
 	// than the signed-in one. It maps to 404, as another user's passkey does.
 	ErrOIDCForeignConsent = fmt.Errorf("httpsec: no such consent: %w", oidcprovider.ErrForeignConsent)
@@ -248,6 +259,10 @@ var statusTable = []statusRow{
 	{authenticate.ErrUnavailable, http.StatusUnauthorized},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
+
+	// A browser endpoint of the OpenID Provider that will not hear its source. It wraps
+	// ratelimit.ErrThrottled, so its row must stand ahead of the one below.
+	{ErrOIDCThrottled, http.StatusTooManyRequests},
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
 
 	// A wrong second-factor code, at verification or enrolment, and the

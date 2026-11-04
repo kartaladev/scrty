@@ -269,6 +269,12 @@ func TestStatusForError(t *testing.T) {
 		{name: "a sign-in needing re-authentication", err: httpsec.ErrOIDCReauthenticate, want: 401},
 		{name: "the provider's re-authentication", err: oidcprovider.ErrReauthenticate, want: 401},
 		{name: "another user's consent", err: httpsec.ErrOIDCForeignConsent, want: 404},
+		{name: "a throttled browser endpoint", err: httpsec.ErrOIDCThrottled, want: 429},
+		{
+			name: "a throttled browser endpoint, joined with the throttle it wraps",
+			err:  fmt.Errorf("%w: %w", httpsec.ErrOIDCThrottled, ratelimit.ErrThrottled),
+			want: 429,
+		},
 		{name: "the provider's foreign consent", err: oidcprovider.ErrForeignConsent, want: 404},
 		{name: "a provider dependency failure", err: oidcprovider.ErrDependency, want: 500},
 		{
@@ -344,6 +350,7 @@ func TestOIDCRefusalsWrapTheProvidersOwn(t *testing.T) {
 		{name: "malformed consent", err: httpsec.ErrOIDCConsentMalformed, assert: wraps(oidcprovider.ErrConsentMalformed)},
 		{name: "re-authentication", err: httpsec.ErrOIDCReauthenticate, assert: wraps(oidcprovider.ErrReauthenticate)},
 		{name: "foreign consent", err: httpsec.ErrOIDCForeignConsent, assert: wraps(oidcprovider.ErrForeignConsent)},
+		{name: "throttled", err: httpsec.ErrOIDCThrottled, assert: wraps(ratelimit.ErrThrottled)},
 	}
 
 	for _, tc := range cases {
@@ -559,6 +566,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrOIDCConsentMalformed":            httpsec.ErrOIDCConsentMalformed,
 		"httpsec.ErrOIDCReauthenticate":              httpsec.ErrOIDCReauthenticate,
 		"httpsec.ErrOIDCForeignConsent":              httpsec.ErrOIDCForeignConsent,
+		"httpsec.ErrOIDCThrottled":                   httpsec.ErrOIDCThrottled,
 	},
 	"github.com/kartaladev/scrty/session": {
 		"session.ErrConfig":             session.ErrConfig,

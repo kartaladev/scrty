@@ -278,6 +278,55 @@ func TestOIDCUserInfo(t *testing.T) {
 			assert: malformedWith(challengeMalformed),
 		},
 		{
+			name:  "a query token that does not parse beside the header is two methods, malformed",
+			setup: withClaimSource(nil),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				return w.get(t, userInfoURL+"?access_token=%zz", bearerOf(access(t, w, tokenWeb, nil)))
+			},
+			assert: malformedWith(challengeMalformed),
+		},
+		{
+			name:  "a bare query token name beside the header is two methods, malformed",
+			setup: withClaimSource(nil),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				return w.get(t, userInfoURL+"?access_token", bearerOf(access(t, w, tokenWeb, nil)))
+			},
+			assert: malformedWith(challengeMalformed),
+		},
+		{
+			name:  "an empty query token beside the header is two methods, malformed",
+			setup: withClaimSource(nil),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				return w.get(t, userInfoURL+"?access_token=", bearerOf(access(t, w, tokenWeb, nil)))
+			},
+			assert: malformedWith(challengeMalformed),
+		},
+		{
+			name:  "a query token behind a semicolon beside the header is two methods, malformed",
+			setup: withClaimSource(nil),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				return w.get(t, userInfoURL+"?a=1;access_token=x", bearerOf(access(t, w, tokenWeb, nil)))
+			},
+			assert: malformedWith(challengeMalformed),
+		},
+		{
+			name: "a query token that does not parse, alone, is no token",
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				return w.get(t, userInfoURL+"?access_token=%zz")
+			},
+			assert: challengedWith(challengeNoToken),
+		},
+		{
 			name:  "a query token beside a form token is two methods, malformed, and nothing is read",
 			setup: withClaimSource(nil),
 			send: func(t *testing.T, w *opWorld) tokenAnswer {

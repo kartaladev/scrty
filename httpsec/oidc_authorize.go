@@ -38,16 +38,6 @@ const (
 	defaultOIDCAuthorizeWindow = time.Minute
 )
 
-// oidcAuthorizeParams names what the authorization endpoint reads from a GET's query.
-// A Request reads its query by name, and an unknown parameter is ignored in any case, so
-// a parameter left out of this list is one the provider does not act on.
-var oidcAuthorizeParams = []string{
-	"client_id", "redirect_uri", "response_type", "response_mode", "scope", "state", "nonce",
-	"code_challenge", "code_challenge_method", "resource", "request", "request_uri", "prompt",
-	"max_age", "display", "id_token_hint", "dpop_jkt", "login_hint", "ui_locales",
-	"claims_locales", "acr_values",
-}
-
 // oidcAuthorizeGroup serves the authorization endpoint.
 type oidcAuthorizeGroup struct {
 	oidcGroupBase
@@ -84,7 +74,9 @@ func (g *oidcAuthorizeGroup) flushRefusalLogs() error {
 
 // WithOIDCAuthorizeLimiter counts, per source, the requests the authorization endpoint
 // parks and those naming an invalid client or redirect URI. A source past its limit is
-// refused with ratelimit.ErrThrottled before the request is read.
+// refused with ErrOIDCThrottled, which wraps ratelimit.ErrThrottled and answers 429, before
+// the request is read. A limiter that cannot answer, and a source that cannot be
+// attributed, are refused the same way: the limit fails closed.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under namespace
 // "oidc-authorize", or else an in-memory limiter of 300 per source a minute. A deployment
@@ -129,13 +121,20 @@ func WithOIDCAuthorizeBodyLimit(n int64) OIDCProviderOption {
 //  2. a method it does not serve, and a request not made over TLS, are refused with
 //     nothing read from them;
 //  3. the source is asked before anything else is read, so a throttled source costs no
-//     parsing, no client lookup and no store write;
+//     parsing, no client lookup and no store write. A source over the limit, a limiter
+//     that cannot answer and a source that cannot be attributed are all refused with
+//     ErrOIDCThrottled, which answers 429: this endpoint is visited by a browser, and a
+//     401 there reads as "sign the user in";
 //  4. the provider judges the request. What it cannot answer by redirect goes to the
 //     chain's error handling, with no Location, and anything else is a 303.
 //
 // A request that parks is charged to its source, as is one naming an invalid client or
-// redirect URI. An answer that writes nothing and names a registered client is not, and
+// redirect URI. An error redirected to a registered client's redirect URI is not, and
 // neither is a failure, which is no verdict on the source.
+//
+// A code answered from a valid browser session is not charged either, though it writes
+// one: it parks nothing, and such a code needs a live browser session, so a source can
+// mint no more of them than the sessions it holds. That is accepted.
 func (g *oidcAuthorizeGroup) serve(ex *Exchange, _ Next) error {
 	setOIDCNoStore(ex.Writer)
 
@@ -153,7 +152,7 @@ func (g *oidcAuthorizeGroup) serve(ex *Exchange, _ Next) error {
 
 	src, ok := g.throttle.admit(ex, g.op)
 	if !ok {
-		return ratelimit.ErrThrottled
+		return ErrOIDCThrottled
 	}
 
 	params, err := readOIDCAuthorizeParams(ex.Request, g.bodyLimit)
@@ -197,16 +196,19 @@ func (g *oidcAuthorizeGroup) serve(ex *Exchange, _ Next) error {
 }
 
 // readOIDCAuthorizeParams reads a request's parameters: a POST's from its form body and
-// never its query, and a GET's from its query. A body that is not a form, or does not
-// parse, has named no client that could be redirected to.
+// never its query, and a GET's from its raw query. Both are parsed strictly, with
+// url.ParseQuery, on every adapter, because a framework's own query reading drops a pair
+// that does not parse, and a pair dropped can hide a repeated redirect_uri, a request_uri
+// or a prompt=none. A query or body that does not parse has named no client that could
+// be redirected to.
+//
+// Every parameter is handed to the provider, which reads the ones it knows and ignores
+// the rest, so there is no list here to fall out of step with it.
 func readOIDCAuthorizeParams(r Request, limit int64) (url.Values, error) {
 	if r.Method() != http.MethodPost {
-		params := url.Values{}
-
-		for _, name := range oidcAuthorizeParams {
-			if values := r.QueryValues(name); len(values) > 0 {
-				params[name] = values
-			}
+		params, err := url.ParseQuery(r.RawQuery())
+		if err != nil {
+			return nil, ErrOIDCInvalidAuthorization
 		}
 
 		return params, nil
@@ -244,8 +246,10 @@ func (t *oidcClientThrottle) settleAt(c *config, flow string, limit int, window 
 }
 
 // oidcCookieName is the name p's cookie goes by: name, unless p has the loopback issuer.
+// The issuer's scheme is compared as parsed, so that "HTTP://127.0.0.1:8080", which is the
+// same issuer, loses the prefix too, as plainHTTPAllowed judges it.
 func oidcCookieName(p *oidcprovider.Provider, name string) string {
-	if strings.HasPrefix(p.Issuer(), "http://") {
+	if issuerIsPlainHTTP(p) {
 		return strings.TrimPrefix(name, oidcHostPrefix)
 	}
 

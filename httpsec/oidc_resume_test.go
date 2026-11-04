@@ -465,8 +465,11 @@ func TestOIDCResume(t *testing.T) {
 				w.pending.loads.Store(0)
 
 				a := w.resume(t, flowLoginBody("rh.unknown.again"), flowBearer(s.ID))
-				require.ErrorIs(t, a.err, ratelimit.ErrThrottled)
-				assert.Equal(t, http.StatusUnauthorized, a.status)
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
+				assert.Empty(t, a.header.Get("WWW-Authenticate"), "a page is not told to sign in")
+				assert.Empty(t, a.body)
+				assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
 				assert.Zero(t, w.pending.loads.Load(), "the handle is not looked up")
 
 				other := w.resume(t, flowLoginBody("rh.unknown.other"), flowBearer(s.ID), flowFrom(flowOtherAddr))
@@ -514,7 +517,7 @@ func TestOIDCResume(t *testing.T) {
 				require.ErrorIs(t, a.err, httpsec.ErrOIDCUnknownHandle)
 
 				a = w.resume(t, flowLoginBody("rh.unknown"), flowBearer(s.ID))
-				require.ErrorIs(t, a.err, ratelimit.ErrThrottled)
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
 			},
 		},
 		{
@@ -784,8 +787,161 @@ func TestOIDCResume(t *testing.T) {
 				s := w.session(t)
 				handle, flow := w.park(t, flowWeb)
 
-				a := w.resume(t, flowLoginBody(handle), flowCookieOf(flowCookie, flow), flowConsumerSession(s.ID))
+				a := w.resume(t, flowLoginBody(handle), flowCookieOf(flowCookie, flow), flowConsumerAuthorization(s.ID))
 				require.Equal(t, http.StatusOK, a.status, a.body)
+				assert.Equal(t, oidcprovider.StageConsent, w.stage(t, handle, flow))
+			},
+		},
+		{
+			name: "a consumer's interceptor reading the query is no sign-in, with the handle unspent",
+			setup: flowSetup{chain: func(t *testing.T, w *opFlow) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+					func(ex *httpsec.Exchange, next httpsec.Next) error {
+						presented := ex.Request.Query("session")
+						if presented == "" {
+							return next(ex)
+						}
+
+						s, err := w.sessions.Load(ex.Context(), presented)
+						if err != nil {
+							return err
+						}
+
+						if err := ex.PublishSession(&authenticate.Authentication{
+							Principal: &identity.Principal{ID: s.UserID},
+							Time:      w.clk.Now(),
+						}, s); err != nil {
+							return err
+						}
+
+						ex.RecordPresentedToken(presented)
+
+						return next(ex)
+					}), httpsec.OrderBearerToken)}
+			}},
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				s := w.session(t)
+				handle, flow := w.park(t, flowWeb)
+
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+					w.issuer+flowResumePath+"?session="+s.ID, strings.NewReader(flowLoginBody(handle)))
+				r.Header.Set("Content-Type", "application/json")
+
+				a := w.serve(t, r, []flowChange{flowCookieOf(flowCookie, flow)})
+				require.ErrorIs(t, a.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, a.status)
+				flowUnspent(t, w, handle, flow)
+			},
+		},
+		{
+			name: "a credential recorded with no session published is no sign-in",
+			setup: flowSetup{chain: func(t *testing.T, _ *opFlow) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{httpsec.RegisterInterceptor(httpsec.InterceptorFunc(
+					func(ex *httpsec.Exchange, next httpsec.Next) error {
+						ex.RecordPresentedToken("recorded")
+
+						return next(ex)
+					}), httpsec.OrderBearerToken)}
+			}},
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				handle, flow := w.park(t, flowWeb)
+
+				a := w.resume(t, flowLoginBody(handle), flowCookieOf(flowCookie, flow),
+					func(r *http.Request) { r.Header.Set("Authorization", "Consumer recorded") })
+				require.ErrorIs(t, a.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, a.status)
+				flowUnspent(t, w, handle, flow)
+			},
+		},
+		{
+			name: "two Authorization lines are no sign-in, with the handle unspent",
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				s := w.session(t)
+				handle, flow := w.park(t, flowWeb)
+
+				a := w.resume(t, flowLoginBody(handle), flowCookieOf(flowCookie, flow), flowBearer(s.ID),
+					func(r *http.Request) { r.Header.Add("Authorization", "Basic dTpw") })
+				require.ErrorIs(t, a.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, a.status)
+				flowUnspent(t, w, handle, flow)
+			},
+		},
+		{
+			name:  "a credential that is no sign-in is judged before the body is read",
+			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{httpsec.WithOIDCResumeBodyLimit(8)}},
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				a := w.resume(t, flowLoginBody("rh.a-handle-past-the-limit"), flowCookieOf(flowCookie, "f"),
+					func(r *http.Request) { r.Header.Set("Authorization", "Consumer unread") })
+				require.ErrorIs(t, a.err, httpsec.ErrAuthenticationRequired, "not ErrRequestTooLarge")
+			},
+		},
+		{
+			name: "a throttled source's body is not read",
+			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{
+				httpsec.WithOIDCResumeLimiter(must1(ratelimit.NewMemoryLimiter(1, time.Minute))),
+				httpsec.WithOIDCResumeBodyLimit(32),
+			}},
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				s := w.session(t)
+
+				first := w.resume(t, flowLoginBody("rh.unknown"), flowBearer(s.ID))
+				require.ErrorIs(t, first.err, httpsec.ErrOIDCUnknownHandle)
+
+				a := w.resume(t, flowLoginBody("rh.a-handle-well-past-the-limit-of-the-body"), flowBearer(s.ID))
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled, "not ErrRequestTooLarge")
+			},
+		},
+		{
+			name:  "a limiter that cannot answer refuses 429, with the handle unlooked-up",
+			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{httpsec.WithOIDCResumeLimiter(flowDownLimiter{})}},
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				a := w.resume(t, flowLoginBody("rh.x.y"), flowBearer(w.session(t).ID))
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
+				assert.Empty(t, a.header.Get("WWW-Authenticate"))
+				assert.Zero(t, w.pending.loads.Load())
+			},
+		},
+		{
+			name: "a source that cannot be attributed is refused 429",
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				// With no bearer, so that the bearer's own throttle, which refuses first, is not reached.
+				a := w.resume(t, flowLoginBody("rh.x.y"), flowFrom("not-an-address"))
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
+				assert.Zero(t, w.pending.loads.Load())
+			},
+		},
+		{
+			name: "an empty list of scopes is an answer, and grants nothing",
+			run: func(t *testing.T, w *opFlow) {
+				t.Helper()
+
+				s := w.session(t)
+				handle, flow, _ := w.atConsent(t, s)
+
+				a := w.resume(t, `{"req":`+strconv.Quote(handle)+`,"scopes":[]}`, flowBearer(s.ID),
+					flowCookieOf(flowCookie, flow))
+				t.Logf("status=%d err=%v body=%s", a.status, a.err, a.body)
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCConsentMalformed)
 				assert.Equal(t, oidcprovider.StageConsent, w.stage(t, handle, flow))
 			},
 		},
@@ -1166,6 +1322,15 @@ const (
 	flowConsumerSessionHeader = "X-Consumer-Session"
 	flowConsumerMachineHeader = "X-Consumer-Machine"
 )
+
+// flowConsumerAuthorization presents id to the consumer's interceptor in the Authorization
+// header, in a scheme nothing else on the chain reads.
+func flowConsumerAuthorization(id string) flowChange {
+	return func(r *http.Request) {
+		r.Header.Set(flowConsumerSessionHeader, id)
+		r.Header.Set("Authorization", "Consumer "+id)
+	}
+}
 
 func flowConsumerSession(id string) flowChange {
 	return func(r *http.Request) { r.Header.Set(flowConsumerSessionHeader, id) }

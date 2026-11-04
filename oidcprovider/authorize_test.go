@@ -731,6 +731,16 @@ func TestValidateAuthorizationRequest(t *testing.T) {
 
 		// Request objects.
 		{name: "request given", params: set("request", "eyJhbGciOiJub25lIn0.e30."), assert: refused(oidcprovider.CodeRequestNotSupported)},
+		{name: "request carrying the PKCE, which only it holds, is still request_not_supported", params: func(v url.Values) {
+			v.Del("code_challenge")
+			v.Del("code_challenge_method")
+			v.Set("request", "eyJhbGciOiJub25lIn0.e30.")
+		}, assert: refused(oidcprovider.CodeRequestNotSupported)},
+		{name: "request_uri carrying the PKCE, which only it holds, is still request_uri_not_supported", params: func(v url.Values) {
+			v.Del("code_challenge")
+			v.Del("code_challenge_method")
+			v.Set("request_uri", "https://rp.example.com/req/1")
+		}, assert: refused(oidcprovider.CodeRequestURINotSupported)},
 		{name: "request= counts as omitted", params: set("request", ""), assert: proceeds(nil)},
 		{name: "request_uri given, and never fetched", opts: []oidcprovider.Option{oidcprovider.WithOutbound(watchedOutbound)}, params: set("request_uri", "https://rp.example.com/req/1"), assert: func(t *testing.T, f *authzFixture, res oidcprovider.AuthorizeResult, err error) {
 			t.Helper()

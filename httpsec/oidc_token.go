@@ -54,6 +54,11 @@ func (g *oidcTokenGroup) flushRefusalLogs() error {
 // deployment of more than one replica supplies a factory or a limiter its replicas
 // share, or the limit is per process.
 //
+// A source past its limit, a limiter that cannot answer and a source that cannot be
+// attributed are all refused as invalid_client: the limit fails closed, and a client
+// cannot tell it from a wrong credential. Unlike the authorization and resume endpoints,
+// which answer 429, this endpoint's clients are told to expect that.
+//
 // A nil limiter, including an interface holding a nil pointer, is refused: it would read
 // as no limit while the consumer believed they had replaced one.
 func WithOIDCTokenLimiter(l ratelimit.Limiter) OIDCProviderOption {

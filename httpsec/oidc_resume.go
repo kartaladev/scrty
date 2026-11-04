@@ -64,8 +64,10 @@ func (g *oidcResumeGroup) flushRefusalLogs() error {
 }
 
 // WithOIDCResumeLimiter counts the unknown handles presented at the resume endpoint, per
-// source. A source past its limit is refused with ratelimit.ErrThrottled before its
-// handle is looked up.
+// source. A source past its limit is refused with ErrOIDCThrottled, which wraps
+// ratelimit.ErrThrottled and answers 429, before its handle is looked up. A limiter that
+// cannot answer, and a source that cannot be attributed, are refused the same way: the
+// limit fails closed.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under namespace
 // "oidc-resume", or else an in-memory limiter of 30 per source a minute. A deployment of
@@ -131,7 +133,10 @@ type oidcResumeDocument struct {
 //  2. anything but POST is refused, and so is a request not made over TLS, each with
 //     nothing read from it;
 //  3. the source is asked before anything else is read, so a throttled source costs no
-//     parsing and no handle lookup;
+//     parsing and no handle lookup. A source over the limit, a limiter that cannot answer
+//     and a source that cannot be attributed are all refused with ErrOIDCThrottled, which
+//     answers 429: this endpoint is called by a page, and a 401 there reads as "sign the
+//     user in", which the page may answer by repeating the call;
 //  4. a credential that is not a complete sign-in is refused before the handle is looked
 //     at, so nothing about the handle is told to it, and the handle stays unspent;
 //  5. the provider judges the handle and answers the stage, spending it only on success.
@@ -154,7 +159,7 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 
 	src, ok := g.throttle.admit(ex, g.op)
 	if !ok {
-		return ratelimit.ErrThrottled
+		return ErrOIDCThrottled
 	}
 
 	signIn, err := g.resumeSignIn(ex)
@@ -204,6 +209,15 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 // resumeSignIn is the sign-in the request's bearer authenticated, and nil when the
 // request presented no credential at all.
 //
+// The sign-in comes in the Authorization header and nowhere else. A request with more
+// than one Authorization line is refused, as the token endpoint refuses it, because the
+// lines may be read differently by whatever stands in front of the chain. A session that
+// a consumer's interceptor published from the query, a cookie or a header of its own is
+// refused even when the interceptor recorded the credential with
+// Exchange.RecordPresentedToken: recording says which credential authenticated, and the
+// resume endpoint still wants it presented where the protocol puts it. A consumer's own
+// bearer reaches this endpoint by reading the Authorization header.
+//
 // The provider's SignIn cannot say that a session owes a step, so that is judged here. The
 // gates ahead of this endpoint refuse such a session first on a chain enabling them, and
 // this holds the line on one that does not. A session only a late renewal may recover is
@@ -213,13 +227,22 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 // neither is an Authorization header nothing on the chain read. Neither falls back to the
 // browser session, because whoever sent it believed they were presenting a credential.
 func (g *oidcResumeGroup) resumeSignIn(ex *Exchange) (*oidcprovider.SignIn, error) {
+	lines := ex.Request.HeaderValues(oidcAuthorizationHeader)
+	if len(lines) > 1 {
+		return nil, ErrAuthenticationRequired
+	}
+
 	s := ex.Session
 	if s == nil || ex.bearerCredential == "" {
-		if ex.Authentication != nil || s != nil || len(ex.Request.HeaderValues(oidcAuthorizationHeader)) > 0 {
+		if ex.Authentication != nil || s != nil || len(lines) > 0 {
 			return nil, ErrAuthenticationRequired
 		}
 
 		return nil, nil //nolint:nilnil // no credential is an answer, which only a consent may rest on
+	}
+
+	if len(lines) == 0 {
+		return nil, ErrAuthenticationRequired
 	}
 
 	if err := fullSessionOnly(s); err != nil {

@@ -38,6 +38,10 @@ const (
 	flowOtherAddr  = "192.0.2.21:4711"
 	flowLoopback   = "http://127.0.0.1:8080"
 
+	// flowLoopbackUpper spells the loopback issuer's scheme in capitals, which a URL's
+	// scheme is insensitive to.
+	flowLoopbackUpper = "HTTP://127.0.0.1:8080"
+
 	flowAuthorizePath = "/oauth2/authorize"
 	flowResumePath    = "/oauth2/authorize/resume"
 )
@@ -147,7 +151,7 @@ func newOPFlow(t *testing.T, setup flowSetup) *opFlow {
 		oidcprovider.WithConsentStore(w.consents),
 		oidcprovider.WithGrantStore(w.grants),
 	}, setup.provider...)
-	if w.issuer == flowLoopback {
+	if w.issuer == flowLoopback || w.issuer == flowLoopbackUpper {
 		popts = append(popts, oidcprovider.WithLoopbackHTTPIssuer())
 	}
 
@@ -320,6 +324,34 @@ func (w *opFlow) authorizePOST(t *testing.T, form url.Values, change ...flowChan
 
 	return w.serve(t, r, change)
 }
+
+// rawGET sends rawQuery to the authorization endpoint exactly as written, as a browser
+// following a link would, whatever net/http makes of its pairs.
+func (w *opFlow) rawGET(t *testing.T, rawQuery string, change ...flowChange) flowAnswer {
+	t.Helper()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		w.issuer+flowAuthorizePath+"?"+rawQuery, nil)
+
+	return w.serve(t, r, change)
+}
+
+// flowDownLimiter is a limiter that cannot answer.
+type flowDownLimiter struct{}
+
+var errFlowLimiterDown = errors.New("limiter down")
+
+func (flowDownLimiter) Exceeded(context.Context, string) (bool, error) {
+	return true, errFlowLimiterDown
+}
+
+func (flowDownLimiter) RecordFailure(context.Context, string) error { return errFlowLimiterDown }
+
+func (flowDownLimiter) Charge(context.Context, string) (ratelimit.Receipt, bool, error) {
+	return ratelimit.Receipt{}, true, errFlowLimiterDown
+}
+
+func (flowDownLimiter) Refund(context.Context, ratelimit.Receipt) error { return nil }
 
 // flowParams is a valid request from clientID, with change applied.
 func flowParams(clientID string, change ...func(url.Values)) url.Values {
@@ -642,6 +674,161 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 				}))
 			},
 			assert: redirectedWith("request_uri_not_supported"),
+		},
+		{
+			name: "a GET whose query has a pair that does not parse is refused with no redirect",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.rawGET(t, flowParams(flowWeb).Encode()+"&redirect_uri=https://evil.example/%zz")
+			},
+			assert: refusedUnredirected,
+		},
+		{
+			name: "a GET's request_uri with a semicolon is not parsed away",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.rawGET(t, flowParams(flowWeb).Encode()+"&request_uri=https://rp.example.com/req;1")
+			},
+			assert: refusedUnredirected,
+		},
+		{
+			name: "a GET's prompt=none with a semicolon never shows a login page",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.rawGET(t, flowParams(flowWeb).Encode()+"&prompt=none;")
+			},
+			assert: refusedUnredirected,
+		},
+		{
+			name: "a GET's repeated scope hidden behind a bad pair is refused",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.rawGET(t, flowParams(flowWeb).Encode()+"&scope=admin%zz")
+			},
+			assert: refusedUnredirected,
+		},
+		{
+			name: "dpop_jkt reaches the provider from a GET",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb, func(p url.Values) { p.Set("dpop_jkt", "e30") }))
+			},
+			assert: redirectedWith("invalid_request"),
+		},
+		{
+			name: "request reaches the provider from a GET",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb, func(p url.Values) { p.Set("request", "eyJhbGciOiJub25lIn0.e30.") }))
+			},
+			assert: redirectedWith("request_not_supported"),
+		},
+		{
+			name: "resource reaches the provider from a GET",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb, func(p url.Values) { p.Set("resource", "/relative") }))
+			},
+			assert: redirectedWith("invalid_target"),
+		},
+		{
+			name: "response_mode reaches the provider from a GET",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb, func(p url.Values) { p.Set("response_mode", "fragment") }))
+			},
+			assert: redirectedWith("invalid_request"),
+		},
+		{
+			name: "id_token_hint reaches the provider from a GET",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb, func(p url.Values) { p.Set("id_token_hint", "not-a-token") }))
+			},
+			assert: redirectedWith("invalid_request"),
+		},
+		{
+			name:  "an upper-case loopback issuer's flow cookie has no prefix and is not Secure",
+			setup: flowSetup{issuer: flowLoopbackUpper},
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb))
+			},
+			assert: func(t *testing.T, _ *opFlow, a flowAnswer) {
+				t.Helper()
+
+				require.Equal(t, http.StatusSeeOther, a.status)
+				assert.Nil(t, a.cookie(flowCookie))
+
+				flow := a.cookie(flowCookiePlain)
+				require.NotNil(t, flow, "a browser refuses the prefix over plain http")
+				assert.False(t, flow.Secure)
+			},
+		},
+		{
+			name:  "a limiter that cannot answer refuses 429, and parks nothing",
+			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{httpsec.WithOIDCAuthorizeLimiter(flowDownLimiter{})}},
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb))
+			},
+			assert: func(t *testing.T, w *opFlow, a flowAnswer) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
+				assert.Empty(t, a.header.Get("Location"))
+				assert.Empty(t, a.header.Get("WWW-Authenticate"))
+				assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
+				assert.Zero(t, w.pending.creates.Load())
+			},
+		},
+		{
+			name: "a source that cannot be attributed is refused 429",
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				return w.authorizeGET(t, flowParams(flowWeb), flowFrom("not-an-address"))
+			},
+			assert: func(t *testing.T, w *opFlow, a flowAnswer) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
+				assert.Zero(t, w.pending.creates.Load())
+			},
+		},
+		{
+			name: "a throttled source's body is not read",
+			setup: flowSetup{endpoint: []httpsec.OIDCProviderOption{
+				httpsec.WithOIDCAuthorizeLimiter(must.Must(ratelimit.NewMemoryLimiter(1, time.Minute))),
+				httpsec.WithOIDCAuthorizeBodyLimit(16),
+			}},
+			send: func(t *testing.T, w *opFlow) flowAnswer {
+				t.Helper()
+
+				first := w.authorizeGET(t, flowParams("nobody"))
+				require.ErrorIs(t, first.err, httpsec.ErrOIDCInvalidAuthorization, "an invalid client is charged")
+
+				return w.authorizePOST(t, flowParams(flowWeb))
+			},
+			assert: func(t *testing.T, _ *opFlow, a flowAnswer) {
+				t.Helper()
+
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled, "refused before the oversized body is read")
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
+			},
 		},
 		{
 			name: "a flow cookie the browser holds is kept",
@@ -990,9 +1177,12 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 			assert: func(t *testing.T, w *opFlow, a flowAnswer) {
 				t.Helper()
 
-				require.ErrorIs(t, a.err, ratelimit.ErrThrottled)
-				assert.Equal(t, http.StatusUnauthorized, a.status)
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
 				assert.Empty(t, a.header.Get("Location"))
+				assert.Empty(t, a.header.Get("WWW-Authenticate"), "a page is not told to sign in")
+				assert.Empty(t, a.body)
+				assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
 				assert.Zero(t, w.registry.reads.Load(), "no client was looked up")
 				assert.Zero(t, w.pending.creates.Load(), "nothing is parked")
 
@@ -1015,7 +1205,7 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 			assert: func(t *testing.T, w *opFlow, a flowAnswer) {
 				t.Helper()
 
-				require.ErrorIs(t, a.err, ratelimit.ErrThrottled)
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
 				assert.Equal(t, int64(1), w.pending.creates.Load())
 			},
 		},
@@ -1054,7 +1244,8 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 			assert: func(t *testing.T, w *opFlow, a flowAnswer) {
 				t.Helper()
 
-				require.ErrorIs(t, a.err, ratelimit.ErrThrottled)
+				require.ErrorIs(t, a.err, httpsec.ErrOIDCThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, a.status)
 				assert.Equal(t, int64(300), w.pending.creates.Load())
 			},
 		},
