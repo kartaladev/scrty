@@ -37,8 +37,9 @@ const (
 //
 // A source decides which scopes release which claims, a standard claim or one of its own, and is
 // given the token's scopes to do so. What it returns is answered unchanged, except that a claim whose
-// value is null or the empty string is left out, while an empty list or object is kept, and
-// sub is always the token's own.
+// value is null or the empty string is left out, whatever form it takes: a nil, a nil slice or map, a
+// nil pointer or one to such a value, a raw JSON null or "". An empty list or object that is not nil
+// is kept, and sub is always the token's own.
 //
 // An error is a dependency failure and no verdict on the token, and it is not repeated to anyone. A
 // source is asked only about a user who exists and is active. It is called on the request's context,
@@ -71,21 +72,36 @@ func isEmailAddress(s string) bool {
 	return err == nil && parsed.Address == s
 }
 
-// absentClaim says a claim's value is one the user does not have: JSON null, whether a nil, a nil
-// pointer or a raw JSON null, or the empty string, as OIDC Core §5.3.2 asks of a claim not returned.
-// Nothing else is: an empty list or object is a value the source means, as are false and zero.
+// absentClaim says a claim's value is one the user does not have, as OIDC Core §5.3.2 asks of a
+// claim not returned: JSON null or the empty string, in any form it can take. That is a nil, a nil
+// slice or map, a nil pointer, a pointer to what is itself absent, and a raw JSON null or "". Nothing
+// else is: an empty but non-nil list or object is a value the source means, as are false and zero.
 func absentClaim(value any) bool {
 	if value == nil {
 		return true
 	}
 	if raw, ok := value.(json.RawMessage); ok {
-		return string(bytes.TrimSpace(raw)) == "null"
+		trimmed := string(bytes.TrimSpace(raw))
+
+		return trimmed == "" || trimmed == "null" || trimmed == `""`
 	}
+
 	v := reflect.ValueOf(value)
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return true
+		}
+
+		v = v.Elem()
+		if raw, ok := v.Interface().(json.RawMessage); ok {
+			return absentClaim(raw)
+		}
+	}
+
 	switch v.Kind() {
 	case reflect.String:
 		return v.Len() == 0
-	case reflect.Pointer:
+	case reflect.Slice, reflect.Map, reflect.Interface:
 		return v.IsNil()
 	default:
 		return false

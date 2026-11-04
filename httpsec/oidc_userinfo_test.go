@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,11 +29,12 @@ const (
 	challengeMalformed    = `Bearer error="invalid_request"`
 	challengeScope        = `Bearer error="insufficient_scope"`
 
-	challengeDPoP        = `DPoP algs="ES256"`
-	challengeDPoPToken   = `DPoP error="invalid_token", algs="ES256"` //nolint:gosec // G101: a challenge, and no credential
-	challengeDPoPProof   = `DPoP error="invalid_dpop_proof", algs="ES256"`
-	challengeDPoPNonce   = `DPoP error="use_dpop_nonce", algs="ES256"`
-	challengeDPoPNoScope = `DPoP error="insufficient_scope", algs="ES256"`
+	challengeDPoP          = `DPoP algs="ES256"`
+	challengeDPoPMalformed = `DPoP error="invalid_request", algs="ES256"`
+	challengeDPoPToken     = `DPoP error="invalid_token", algs="ES256"` //nolint:gosec // G101: a challenge, and no credential
+	challengeDPoPProof     = `DPoP error="invalid_dpop_proof", algs="ES256"`
+	challengeDPoPNonce     = `DPoP error="use_dpop_nonce", algs="ES256"`
+	challengeDPoPNoScope   = `DPoP error="insufficient_scope", algs="ES256"`
 )
 
 // bearerOf presents tok under the Bearer scheme.
@@ -109,6 +111,15 @@ func challengedWith(challenges ...string) func(*testing.T, tokenAnswer) {
 	return func(t *testing.T, a tokenAnswer) {
 		t.Helper()
 		assertChallenged(t, a, http.StatusUnauthorized, challenges...)
+	}
+}
+
+// malformedWith is a row's assert for assertChallenged at 400, as RFC 6750 section 3.1 has
+// invalid_request.
+func malformedWith(challenges ...string) func(*testing.T, tokenAnswer) {
+	return func(t *testing.T, a tokenAnswer) {
+		t.Helper()
+		assertChallenged(t, a, http.StatusBadRequest, challenges...)
 	}
 }
 
@@ -255,13 +266,56 @@ func TestOIDCUserInfo(t *testing.T) {
 			assert: challengedWith(challengeNoToken),
 		},
 		{
-			name: "a query beside the header is not read",
+			name:  "a query token beside the header is two methods, malformed, and nothing is read",
+			setup: withClaimSource(nil),
 			send: func(t *testing.T, w *opWorld) tokenAnswer {
 				t.Helper()
 
-				return w.get(t, userInfoURL+"?access_token=garbage", bearerOf(access(t, w, tokenWeb, nil)))
+				at := access(t, w, tokenWeb, nil)
+
+				return w.get(t, userInfoURL+"?access_token="+url.QueryEscape(at), bearerOf(at))
 			},
-			assert: claimsAre(profileClaims),
+			assert: malformedWith(challengeMalformed),
+		},
+		{
+			name:  "a query token beside a form token is two methods, malformed, and nothing is read",
+			setup: withClaimSource(nil),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				at := access(t, w, tokenWeb, nil)
+
+				return w.post(t, userInfoURL+"?access_token="+url.QueryEscape(at), url.Values{"access_token": {at}})
+			},
+			assert: malformedWith(challengeMalformed),
+		},
+		{
+			name: "a token in a GET's form body is no token",
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				at := access(t, w, tokenWeb, nil)
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, userInfoURL, strings.NewReader("access_token="+at))
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				r.RemoteAddr = tokenAddr
+
+				return w.serve(t, r)
+			},
+			assert: challengedWith(challengeNoToken),
+		},
+		{
+			name:  "the DPoP scheme beside a form token is malformed, and DPoP is offered too",
+			setup: dpopSetup(plainDPoP),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				at := access(t, w, tokenWeb, nil)
+
+				return w.post(t, userInfoURL, url.Values{"access_token": {at}}, func(r *http.Request) {
+					r.Header.Set("Authorization", "DPoP "+at)
+				})
+			},
+			assert: malformedWith(challengeMalformed, challengeDPoPMalformed),
 		},
 
 		// No token, and a malformed request.
@@ -319,7 +373,7 @@ func TestOIDCUserInfo(t *testing.T) {
 
 				return w.get(t, userInfoURL, bearerOf(at), func(r *http.Request) { r.Header.Add("Authorization", "Bearer "+at) })
 			},
-			assert: challengedWith(challengeMalformed),
+			assert: malformedWith(challengeMalformed),
 		},
 		{
 			name: "two ways of sending the token are malformed",
@@ -330,7 +384,7 @@ func TestOIDCUserInfo(t *testing.T) {
 
 				return w.post(t, userInfoURL, url.Values{"access_token": {at}}, bearerOf(at))
 			},
-			assert: challengedWith(challengeMalformed),
+			assert: malformedWith(challengeMalformed),
 		},
 		{
 			name: "a form parameter given twice is malformed",
@@ -341,7 +395,7 @@ func TestOIDCUserInfo(t *testing.T) {
 
 				return w.post(t, userInfoURL, url.Values{"access_token": {at, at}})
 			},
-			assert: challengedWith(challengeMalformed),
+			assert: malformedWith(challengeMalformed),
 		},
 		{
 			name: "a form that does not parse is malformed",
@@ -354,7 +408,7 @@ func TestOIDCUserInfo(t *testing.T) {
 
 				return w.serve(t, r)
 			},
-			assert: challengedWith(challengeMalformed),
+			assert: malformedWith(challengeMalformed),
 		},
 		{
 			name: "a body over the default bound is refused",
@@ -407,7 +461,7 @@ func TestOIDCUserInfo(t *testing.T) {
 
 				return w.get(t, userInfoURL, bearerOf(access(t, w, tokenWeb, nil)), overTLSLess)
 			},
-			assert: challengedWith(challengeMalformed),
+			assert: malformedWith(challengeMalformed),
 		},
 		{
 			name: "the loopback issuer answers plain http",
@@ -951,6 +1005,42 @@ func TestOIDCUserInfo_SenderConstrained(t *testing.T) {
 			},
 		},
 
+		{
+			name: "a replay store that fails is a failure, with no challenge",
+			setup: dpopSetup(func(*testing.T) *httpsec.DPoP {
+				return &httpsec.DPoP{PublicURL: opIssuer, Replay: &replayFailingAfterFirst{}}
+			}),
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				at := w.bound(t, k1, nil)
+
+				return w.get(t, userInfoURL, dpopOf(at, w.userInfoProof(t, k1, "j2", http.MethodGet, at, nil)))
+			},
+			assert: func(t *testing.T, a tokenAnswer) {
+				t.Helper()
+				assert.Equal(t, http.StatusInternalServerError, a.status)
+				assert.Empty(t, a.body)
+				assert.Empty(t, a.header.Values("WWW-Authenticate"))
+				assert.Equal(t, "no-store", a.header.Get("Cache-Control"))
+			},
+		},
+		{
+			name:  "an opaque bound token is served only under its proof",
+			setup: plain,
+			send: func(t *testing.T, w *opWorld) tokenAnswer {
+				t.Helper()
+
+				at, _ := w.issued(t, opOpaqueClient, nil, w.withProof(t, k1, "issuing", nil))["access_token"].(string)
+				require.True(t, strings.HasPrefix(at, "at."), at)
+
+				assertChallenged(t, w.get(t, userInfoURL, bearerOf(at)), http.StatusUnauthorized, challengeDPoPToken)
+
+				return w.get(t, userInfoURL, dpopOf(at, w.userInfoProof(t, k1, "j2", http.MethodGet, at, nil)))
+			},
+			assert: claimsAre(profileClaims),
+		},
+
 		// Certificate binding.
 		{
 			name:  "a certificate-bound token over its certificate",
@@ -1003,6 +1093,78 @@ func TestOIDCUserInfo_SenderConstrained(t *testing.T) {
 
 			w := newOPWorld(t, tc.setup)
 			tc.assert(t, tc.send(t, w))
+		})
+	}
+}
+
+// replayFailingAfterFirst records the proof that issues a token, and fails from then on.
+type replayFailingAfterFirst struct{ calls int }
+
+func (r *replayFailingAfterFirst) Record(context.Context, string, time.Time) (bool, error) {
+	r.calls++
+	if r.calls == 1 {
+		return true, nil
+	}
+
+	return false, errors.New("replay secret text")
+}
+
+// replayCounting records every proof it is given, as fresh.
+type replayCounting struct{ calls atomic.Int32 }
+
+func (r *replayCounting) Record(context.Context, string, time.Time) (bool, error) {
+	r.calls.Add(1)
+
+	return true, nil
+}
+
+// TestOIDCUserInfo_ProofRecordedLast pins that a proof is recorded only once its token's binding is
+// judged: a refusal of the binding leaves no replay row, a served request leaves one.
+func TestOIDCUserInfo_ProofRecordedLast(t *testing.T) {
+	t.Parallel()
+
+	k1 := newDPoPKey(t, elliptic.P256())
+	k2 := newDPoPKey(t, elliptic.P256())
+
+	type testCase struct {
+		name   string
+		proof  dpopKey
+		assert func(t *testing.T, a tokenAnswer, recorded int32)
+	}
+
+	cases := []testCase{
+		{
+			name:  "a proof from another key than the token's is refused, and recorded nowhere",
+			proof: k2,
+			assert: func(t *testing.T, a tokenAnswer, recorded int32) {
+				t.Helper()
+				assertChallenged(t, a, http.StatusUnauthorized, challengeDPoPToken)
+				assert.EqualValues(t, 1, recorded, "only the proof that issued the token is recorded")
+			},
+		},
+		{
+			name:  "a proof from the token's key is served, and recorded",
+			proof: k1,
+			assert: func(t *testing.T, a tokenAnswer, recorded int32) {
+				t.Helper()
+				assertAnswered(t, a)
+				assert.EqualValues(t, 2, recorded)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			replay := &replayCounting{}
+			w := newOPWorld(t, dpopSetup(func(*testing.T) *httpsec.DPoP {
+				return &httpsec.DPoP{PublicURL: opIssuer, Replay: replay}
+			}))
+			at := w.bound(t, k1, nil)
+
+			a := w.get(t, userInfoURL, dpopOf(at, w.userInfoProof(t, tc.proof, "j2", http.MethodGet, at, nil)))
+			tc.assert(t, a, replay.calls.Load())
 		})
 	}
 }

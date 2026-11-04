@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/elliptic"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1029,6 +1031,109 @@ func TestOIDCRevoke_Throttle(t *testing.T) {
 				}
 
 				tc.run(t, newOPWorld(t, setup), ep)
+			})
+		}
+	}
+}
+
+// TestOIDCIntrospect_PublicRefusalIsCharged pins that a public client refused at introspection is
+// charged to its source like any other failed client authentication, so a source cannot probe the
+// endpoint through a client that never authenticates.
+func TestOIDCIntrospect_PublicRefusalIsCharged(t *testing.T) {
+	t.Parallel()
+
+	w := newOPWorld(t, opWorldSetup{})
+	for range 10 {
+		assertTokenRefused(t, w.post(t, introspectURL, tokenForm("x", "client_id", tokenPublic)), oidcprovider.CodeInvalidClient)
+	}
+
+	w.lookups.Store(0)
+	assertTokenRefused(t, w.post(t, introspectURL, tokenForm("x"), asClient(tokenWeb)), oidcprovider.CodeInvalidClient)
+	assert.Zero(t, w.lookups.Load(), "the source is throttled by what the public client's refusals charged")
+}
+
+// TestOIDCRevoke_RefusalLogs pins that each endpoint's throttle reaches the chain's sampling: what
+// it logs about a source it cannot attribute goes through the chain's sampler, and a chain's flush
+// reports what its guard held back, each at each endpoint.
+func TestOIDCRevoke_RefusalLogs(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// drive sends requests until the row's component holds suppressed records.
+		drive func(t *testing.T, w *opWorld, ep opClientEndpoint)
+		// key says whether a reported key is the row's component's, for the flow.
+		key func(key, flow string) bool
+	}
+
+	cases := []testCase{
+		{
+			name: "the chain's sampler is the throttle's",
+			drive: func(t *testing.T, w *opWorld, ep opClientEndpoint) {
+				t.Helper()
+
+				for range 3 {
+					w.post(t, ep.url, tokenForm("x"), asClient(tokenWeb), fromAddr(""))
+				}
+			},
+			key: func(key, flow string) bool { return strings.HasPrefix(key, flow+"|") },
+		},
+		{
+			name: "a chain's flush reaches the throttle's guard",
+			drive: func(t *testing.T, w *opWorld, ep opClientEndpoint) {
+				t.Helper()
+
+				for range 4 {
+					w.post(t, ep.url, tokenForm("x"), withSecret(tokenWeb, "wrong"))
+				}
+			},
+			key: func(key, flow string) bool { return strings.Contains(key, ":"+flow+":") },
+		},
+	}
+
+	for _, ep := range oidcClientEndpoints {
+		for _, tc := range cases {
+			t.Run(ep.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				var (
+					mu         sync.Mutex
+					suppressed = map[string]int{}
+				)
+
+				flow := map[string]string{"revocation": "oidc-revoke", "introspection": "oidc-introspect"}[ep.name]
+				w := newOPWorld(t, opWorldSetup{
+					tokenSetup: tokenSetup{
+						endpoint: func(*testing.T) []httpsec.OIDCProviderOption {
+							l := must.Must(ratelimit.NewMemoryLimiter(1, time.Hour))
+
+							return []httpsec.OIDCProviderOption{ep.limiter(l)}
+						},
+						chain: []httpsec.Option{
+							httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+							httpsec.WithRefusalLogReporter(func(key string, n int) {
+								mu.Lock()
+								defer mu.Unlock()
+
+								suppressed[key] += n
+							}),
+						},
+					},
+				})
+
+				tc.drive(t, w, ep)
+				require.NoError(t, w.chain.FlushRefusalLogs())
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				var total int
+				for key, n := range suppressed {
+					if tc.key(key, flow) {
+						total += n
+					}
+				}
+				assert.Positive(t, total, "the component's suppressed records are reported: %v", suppressed)
 			})
 		}
 	}

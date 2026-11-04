@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -68,16 +69,18 @@ func WithOIDCUserInfoBodyLimit(n int64) OIDCProviderOption {
 //  2. anything but GET and POST is refused, and so is a request not made over TLS, as the chain
 //     reports the connection, unless the provider was built for a loopback issuer, each with no
 //     token read;
-//  3. the token is read from the header or a POST's form, never the query;
+//  3. the token is read from the header or a POST's form, never the query, and a token in the query
+//     beside one of those is two methods, which is malformed;
 //  4. the provider reads the token, so a proof's work is spent only on a token it issued;
 //  5. the token is held to its key: a proof is verified over it, the binding is judged, and the
 //     proof is recorded last, so a replayed one reads no user and no claims;
 //  6. the provider answers with the claims.
 //
-// A refusal is answered here as a resource server's, in a challenge and no body: 401, or 403 for
-// insufficient_scope. RFC 6750 section 3.1 would have invalid_request at 400; the provider's
-// contract keeps every refusal but that of scope at 401, a challenge the client can answer. Any
-// failure goes to the chain's error handling, whose answer holds no text, and charges no one: nothing
+// A refusal is answered here as a resource server's, in a challenge and no body: 400 for
+// invalid_request, which is a malformed request and one refused for plain http, 403 for
+// insufficient_scope, and 401 for any other (RFC 6750 section 3.1). A malformed request that
+// presented its token under the DPoP scheme is challenged under that scheme too (RFC 9449 section
+// 7.2). Any failure goes to the chain's error handling, whose answer holds no text, and charges no one: nothing
 // here spends a credential, so no source is counted.
 //
 // None of this has an override, each step being a standard's: a consumer replaces where claims come
@@ -96,12 +99,17 @@ func (g *oidcUserInfoGroup) serve(ex *Exchange, _ Next) error {
 	v := ex.dpop()
 
 	if !ex.Request.Secure() && !g.op.plainHTTPAllowed() {
-		return writeOIDCChallenge(ex, oidcDPoPChallenged(v, false, nil), oidcprovider.CodeInvalidRequest)
+		return writeOIDCMalformed(ex, v, false)
 	}
 
 	raw, underDPoP, err := g.readToken(ex)
 	if err != nil {
-		return g.refuse(ex, oidcDPoPChallenged(v, false, nil), err)
+		var refusal *oidcprovider.Error
+		if errors.As(err, &refusal) && refusal.Code == oidcprovider.CodeInvalidRequest {
+			return writeOIDCMalformed(ex, v, underDPoP)
+		}
+
+		return err
 	}
 
 	if raw == "" {
@@ -131,10 +139,26 @@ func (g *oidcUserInfoGroup) serve(ex *Exchange, _ Next) error {
 
 // readToken reads the token from the request, and "" when it carries none: no header, a scheme this
 // endpoint does not read, or an empty parameter, which counts as omitted. RFC 6750 section 3.1 makes a
-// repeated parameter, a repeated header and more than one way of sending the token invalid_request. A
-// body is read only for a POST that declares a form, because section 2.2 reads a token from nothing
-// else. The query is not read.
+// repeated parameter, a repeated header and more than one way of sending the token invalid_request,
+// and section 2 makes a token in the query beside another method one of those, though a token in the
+// query alone is no token. A body is read only for a POST that declares a form, because section 2.2
+// reads a token from nothing else. underDPoP is reported with an error too, so that the refusal can be
+// challenged in the scheme the token came in.
 func (g *oidcUserInfoGroup) readToken(ex *Exchange) (raw string, underDPoP bool, err error) {
+	raw, underDPoP, err = g.readHeaderOrForm(ex)
+	if err != nil {
+		return "", underDPoP, err
+	}
+
+	if raw != "" && slices.ContainsFunc(ex.Request.QueryValues(oidcAccessTokenParam), func(v string) bool { return v != "" }) {
+		return "", underDPoP, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
+	}
+
+	return raw, underDPoP, nil
+}
+
+// readHeaderOrForm is readToken's reading of the two places a token may be sent.
+func (g *oidcUserInfoGroup) readHeaderOrForm(ex *Exchange) (raw string, underDPoP bool, err error) {
 	r := ex.Request
 
 	if len(r.HeaderValues(oidcAuthorizationHeader)) > 1 {
@@ -153,17 +177,17 @@ func (g *oidcUserInfoGroup) readToken(ex *Exchange) (raw string, underDPoP bool,
 	case errors.Is(err, ErrRequestTooLarge):
 		return "", false, ErrRequestTooLarge
 	case err != nil:
-		return "", false, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
+		return "", underDPoP, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
 
 	form, err := url.ParseQuery(string(body))
 	if err != nil {
-		return "", false, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
+		return "", underDPoP, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
 
 	values := form[oidcAccessTokenParam]
 	if len(values) > 1 || (claimed && form.Get(oidcAccessTokenParam) != "") {
-		return "", false, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
+		return "", underDPoP, &oidcprovider.Error{Code: oidcprovider.CodeInvalidRequest}
 	}
 
 	if claimed {
@@ -266,20 +290,41 @@ func oidcDPoPChallenged(v *dpopVerifier, underDPoP bool, at *oidcprovider.Access
 }
 
 // writeOIDCChallenge answers code as a resource server does: 401, or 403 for insufficient_scope, a
-// challenge and no body. By default no error_description is sent, so a client learns no more than
+// challenge and no body. invalid_request is 400 (RFC 6750 section 3.1). By default no error_description is sent, so a client learns no more than
 // the code.
 func writeOIDCChallenge(ex *Exchange, asDPoP bool, code string) error {
 	ex.Writer.AddHeader(headerWWWAuthenticate, oidcChallenge(ex.dpop(), asDPoP, code))
 
 	status := http.StatusUnauthorized
-	if code == oidcprovider.CodeInsufficientScope {
+
+	switch code {
+	case oidcprovider.CodeInsufficientScope:
 		status = http.StatusForbidden
+	case oidcprovider.CodeInvalidRequest:
+		status = http.StatusBadRequest
 	}
 
 	ex.Writer.WriteHeader(status)
 
 	return nil
 }
+
+// writeOIDCMalformed answers a request that cannot be read as one (RFC 6750 section 3.1): 400, a
+// challenge naming invalid_request and no body. A request that presented its token under the DPoP
+// scheme is challenged under that scheme as well as Bearer (RFC 9449 section 7.2), unless DPoP is
+// required, when the Bearer scheme is not offered at all.
+func writeOIDCMalformed(ex *Exchange, v *dpopVerifier, underDPoP bool) error {
+	asDPoP := oidcDPoPChallenged(v, underDPoP, nil)
+
+	if underDPoP && !asDPoPRequired(v) {
+		ex.Writer.AddHeader(headerWWWAuthenticate, oidcChallenge(v, false, oidcprovider.CodeInvalidRequest))
+	}
+
+	return writeOIDCChallenge(ex, asDPoP, oidcprovider.CodeInvalidRequest)
+}
+
+// asDPoPRequired says DPoP is on and required, so that Bearer is not a scheme to offer.
+func asDPoPRequired(v *dpopVerifier) bool { return v != nil && v.cfg.Require }
 
 // oidcChallenge is the challenge naming code. A DPoP challenge names the accepted algorithms when the
 // chain has any: with DPoP off, a token bound while it was on is still refused under its scheme.

@@ -30,6 +30,13 @@ func verified(t *testing.T, f *refreshFixture, raw string) *oidcprovider.AccessT
 func TestProvider_UserInfo(t *testing.T) {
 	t.Parallel()
 
+	// Values a source may point at: an empty string, a nil slice, and a value that is there.
+	var (
+		blank    = ""
+		nilSlice []string
+		word     = "word"
+	)
+
 	type testCase struct {
 		name string
 		// source, when set, is expected by the row, and given as the provider's claim source.
@@ -226,9 +233,11 @@ func TestProvider_UserInfo(t *testing.T) {
 			source: func(m *MockClaimSource) {
 				m.EXPECT().Claims(gomock.Any(), gomock.Any(), gomock.Any()).Return(map[string]any{
 					"nothing": nil, "blank": "", "pointer": (*string)(nil),
-					"raw_null": json.RawMessage("null"), "raw_spaced_null": json.RawMessage(" null\n"),
+					"nil_slice": []string(nil), "nil_map": map[string]any(nil), "to_blank": &blank, "to_nil_slice": &nilSlice,
+					"raw_blank": json.RawMessage(`""`), "raw_spaced_blank": json.RawMessage(" \"\"\n"),
+					"to_value": &word, "raw_null": json.RawMessage("null"), "raw_spaced_null": json.RawMessage(" null\n"),
 					"list": []string{}, "object": map[string]any{}, "raw_list": json.RawMessage("[]"),
-					"raw_object": json.RawMessage("{}"), "raw_zero": json.RawMessage("0"), "raw_empty_string": json.RawMessage(`""`),
+					"raw_object": json.RawMessage("{}"), "raw_zero": json.RawMessage("0"),
 					"email_verified": false, "count": 0,
 				}, nil)
 			},
@@ -239,7 +248,7 @@ func TestProvider_UserInfo(t *testing.T) {
 				assert.Equal(t, map[string]any{
 					"sub": "u-1", "email_verified": false, "count": 0,
 					"list": []string{}, "object": map[string]any{}, "raw_list": json.RawMessage("[]"),
-					"raw_object": json.RawMessage("{}"), "raw_zero": json.RawMessage("0"), "raw_empty_string": json.RawMessage(`""`),
+					"raw_object": json.RawMessage("{}"), "raw_zero": json.RawMessage("0"), "to_value": &word,
 				}, answer)
 				encoded, err := json.Marshal(answer)
 				require.NoError(t, err)

@@ -166,9 +166,13 @@ func isRefusal(err error) bool {
 
 // Introspect says what the token form names is, for a client allowed to see it (RFC 7662).
 //
-// A public client is refused with invalid_client, whatever it names (RFC 7662 §4), and so is a
-// request with no client authentication. A client sees a token issued to it, and an access token
-// whose audience includes its [Client].ResourceIdentifier. A token it may not see, and an unknown,
+// The endpoint requires authentication of its caller (RFC 7662 §2.1 and §4, against token scanning).
+// A public client has no credential to authenticate with, so refusing it with invalid_client,
+// whatever it names, is this provider's own rule, which the RFC leaves to the server. A request with
+// no client authentication is refused the same way, as the RFC requires.
+//
+// A client sees a token issued to it, and an access token whose audience includes its
+// [Client].ResourceIdentifier. A token it may not see, and an unknown,
 // expired or revoked one, a JWT of a revoked grant included, answers exactly {"active": false}, so
 // the answer does not say which it was.
 //
