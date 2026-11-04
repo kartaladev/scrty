@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -83,7 +84,9 @@ var oidcMetadataMembers = map[string]struct{}{
 // The members are derived from the configuration: DPoP algorithms and certificate-bound
 // tokens only when those are enabled on the chain, the grant types and client
 // authentication methods the provider supports, and offline_access only when a client
-// may ask for it.
+// may ask for it. All are fixed when the chain is built except scopes_supported, which is
+// read from Provider.Capabilities at each request, so a client added to the provider's
+// in-memory registry later is reflected.
 type oidcMetadataGroup struct {
 	oidcGroupBase
 
@@ -93,8 +96,9 @@ type oidcMetadataGroup struct {
 	cache    time.Duration
 	cacheSet bool
 
-	// document is built by settle, and read only afterwards.
-	document []byte
+	// document is built by settle, and read only afterwards. It holds every member
+	// but scopes_supported, which is added per request.
+	document map[string]json.RawMessage
 }
 
 var _ oidcWellKnownPaths = (*oidcMetadataGroup)(nil)
@@ -166,9 +170,29 @@ func (g *oidcMetadataGroup) serve(ex *Exchange, _ Next) error {
 		return nil
 	}
 
-	_, err := ex.Writer.Write(g.document)
+	body, err := g.body()
+	if err != nil {
+		return err
+	}
+
+	_, err = ex.Writer.Write(body)
 
 	return err
+}
+
+// body is the document with the scopes the provider offers now. The provider reads its
+// registry under its own lock and calls nothing of the consumer's while holding it.
+func (g *oidcMetadataGroup) body() ([]byte, error) {
+	scopes, err := json.Marshal(g.op.provider.Capabilities().Scopes)
+	if err != nil {
+		return nil, err
+	}
+
+	doc := make(map[string]json.RawMessage, len(g.document)+1)
+	maps.Copy(doc, g.document)
+	doc["scopes_supported"] = scopes
+
+	return json.Marshal(doc)
 }
 
 // settle builds the document from the configuration, now that every option has been
@@ -189,7 +213,6 @@ func (g *oidcMetadataGroup) settle(c *config) error {
 		"introspection_endpoint": op.publicURL(op.paths[OIDCIntrospect]),
 		"end_session_endpoint":   op.publicURL(op.paths[OIDCEndSession]),
 
-		"scopes_supported":                           caps.Scopes,
 		"claims_supported":                           caps.Claims,
 		"response_types_supported":                   []string{"code"},
 		"response_modes_supported":                   []string{"query"},
@@ -237,19 +260,31 @@ func (g *oidcMetadataGroup) settle(c *config) error {
 		doc[name] = value
 	}
 
-	body, err := json.Marshal(doc)
-	if err != nil {
-		return newConfigError("%s could not write its metadata: %v", optionOIDCProvider, err)
+	built := make(map[string]json.RawMessage, len(doc))
+
+	for name, value := range doc {
+		raw, ok := value.(json.RawMessage)
+		if !ok {
+			var err error
+			if raw, err = json.Marshal(value); err != nil {
+				return newConfigError("%s could not write its metadata: %v", optionOIDCProvider, err)
+			}
+		}
+
+		built[name] = raw
 	}
 
-	g.document = body
+	g.document = built
 
 	return nil
 }
 
 // WithOIDCMetadataMember adds a member to both metadata documents, such as
 // service_documentation or ui_locales_supported. The value is published as it is
-// given, and its meaning is the consumer's.
+// given, and its meaning is the consumer's. A name the provider does not set, such as
+// registration_endpoint, is the consumer's own: the provider neither checks nor routes
+// what it names, so advertising an endpoint the chain does not route is the consumer's
+// responsibility.
 //
 // Default: none. A member the provider sets itself, those of a feature that is off
 // included, is a configuration error, as is an empty name, a value JSON cannot

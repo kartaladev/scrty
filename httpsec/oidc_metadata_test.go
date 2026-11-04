@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/internal/must"
@@ -321,6 +323,8 @@ func TestOIDCMetadata_Paths(t *testing.T) {
 		oidc:   []httpsec.OIDCProviderOption{httpsec.WithOIDCProviderPrefix("/auth/oauth2")},
 	}
 
+	slashed := mdSetup{issuer: mdPathIssuer + "/"}
+
 	type testCase struct {
 		name   string
 		setup  mdSetup
@@ -337,6 +341,10 @@ func TestOIDCMetadata_Paths(t *testing.T) {
 		{name: "stripped: the OAuth document inserted before the path", setup: stripped, path: mdOAuthPath + "/auth", served: true},
 		{name: "stripped: the OAuth document at the root belongs to no issuer here", setup: stripped, path: mdOAuthPath},
 		{name: "stripped: the appended form is not the stripped chain's", setup: stripped, path: "/auth" + mdOIDCPath},
+
+		{name: "trailing slash: the OpenID document with the slash trimmed", setup: slashed, path: mdOIDCPath, served: true},
+		{name: "trailing slash: the OAuth document inserted without the slash", setup: slashed, path: mdOAuthPath + "/auth", served: true},
+		{name: "trailing slash: the slash is not part of the served path", setup: slashed, path: mdOAuthPath + "/auth/"},
 
 		{name: "unstripped: the OpenID document appended to the issuer", setup: unstripped, path: "/auth" + mdOIDCPath, served: true},
 		{name: "unstripped: the OAuth document inserted before the path", setup: unstripped, path: mdOAuthPath + "/auth", served: true},
@@ -436,6 +444,11 @@ func TestOIDCMetadata_Construction(t *testing.T) {
 			setup:  member("dpop_signing_alg_values_supported", []string{"ES256"}),
 			assert: refused,
 		},
+		{
+			name:   "certificate-bound tokens, which the provider sets only when bound, while they are off",
+			setup:  member("tls_client_certificate_bound_access_tokens", true),
+			assert: refused,
+		},
 		{name: "a member with no name", setup: member("", "x"), assert: refused},
 		{name: "a member no JSON can hold", setup: member("service_documentation", make(chan int)), assert: refused},
 		{
@@ -513,6 +526,15 @@ func TestOIDCMetadata_Serving(t *testing.T) {
 			assert: hasCache("public, max-age=3600"),
 		},
 		{
+			name:   "HEAD has an empty body",
+			method: http.MethodHead, path: mdOIDCPath,
+			assert: func(t *testing.T, a mdAnswer) {
+				t.Helper()
+				require.Equal(t, http.StatusOK, a.status)
+				assert.Empty(t, a.body)
+			},
+		},
+		{
 			name:   "another method is refused here, not passed on",
 			method: http.MethodPost, path: mdOIDCPath,
 			assert: func(t *testing.T, a mdAnswer) {
@@ -570,26 +592,33 @@ func TestOIDCMetadata_Serving_JWKSKeepsItsOwnBehaviour(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	kids := func() ([]string, mdAnswer) {
+	// kids returns an error rather than failing the test, because Eventually runs it off
+	// the test goroutine.
+	kids := func() ([]string, mdAnswer, error) {
 		a := mdGet(t, chain, http.MethodGet, "/.well-known/jwks.json")
-		require.Equal(t, http.StatusOK, a.status, string(a.body))
+		if a.status != http.StatusOK {
+			return nil, a, fmt.Errorf("the key set answered %d: %s", a.status, a.body)
+		}
 
 		var set struct {
 			Keys []struct {
 				Kid string `json:"kid"`
 			} `json:"keys"`
 		}
-		require.NoError(t, json.Unmarshal(a.body, &set))
+		if err := json.Unmarshal(a.body, &set); err != nil {
+			return nil, a, err
+		}
 
 		out := make([]string, 0, len(set.Keys))
 		for _, k := range set.Keys {
 			out = append(out, k.Kid)
 		}
 
-		return out, a
+		return out, a, nil
 	}
 
-	before, answer := kids()
+	before, answer, err := kids()
+	require.NoError(t, err)
 	require.Len(t, before, 1)
 	assert.Empty(t, answer.header.Get("Cache-Control"), "the key set does not take the documents' cache lifetime")
 
@@ -605,12 +634,57 @@ func TestOIDCMetadata_Serving_JWKSKeepsItsOwnBehaviour(t *testing.T) {
 	clk.Advance(6 * time.Hour)
 
 	require.Eventually(t, func() bool {
-		after, _ := kids()
+		after, _, err := kids()
 
-		return len(after) == 2
+		return err == nil && len(after) == 2
 	}, 5*time.Second, 10*time.Millisecond, "the key rotated")
 
-	after, answer := kids()
+	after, answer, err := kids()
+	require.NoError(t, err)
 	assert.Contains(t, after, before[0], "the previous key is still published")
 	assert.Empty(t, answer.header.Get("Cache-Control"))
+}
+
+// TestOIDCMetadata_ScopesFollowTheRegistry pins that scopes_supported is read at the
+// request, so a client added to the in-memory registry after the chain was built is
+// reflected in both documents, while the other members stay as built.
+func TestOIDCMetadata_ScopesFollowTheRegistry(t *testing.T) {
+	t.Parallel()
+
+	f := newOPFixture(t)
+
+	reg, err := oidcprovider.NewMemoryRegistry([]oidcprovider.Client{{
+		ID: "billing-web", Type: oidcprovider.Confidential,
+		Secret:       []byte("0123456789abcdef0123456789abcdef"),
+		RedirectURIs: []string{"https://rp.example.com/cb"},
+	}})
+	require.NoError(t, err)
+
+	p, err := oidcprovider.New(oidcprovider.Deps{
+		Issuer: opIssuer, Registry: reg, Keys: f.keys, Users: NewMockUserLoader(gomock.NewController(t)),
+		LoginURL: opIssuer + "/login", ConsentURL: opIssuer + "/consent",
+		LogoutURL: opIssuer + "/logout-page", LoggedOutURL: opIssuer + "/bye",
+	})
+	require.NoError(t, err)
+
+	chain, err := httpsec.New(f.bearer(t, reporting(t, p)), httpsec.EnableJWKSEndpoint(f.keys),
+		httpsec.EnableSecurityHeaders(), httpsec.EnableCSRFProtection(), httpsec.EnableOIDCProvider(p))
+	require.NoError(t, err)
+
+	for _, path := range []string{mdOIDCPath, mdOAuthPath} {
+		assert.NotContains(t, mdGet(t, chain, http.MethodGet, path).doc(t)["scopes_supported"], "offline_access", path)
+	}
+
+	require.NoError(t, reg.Put(t.Context(), oidcprovider.Client{
+		ID: "mobile", Type: oidcprovider.Public, ApplicationType: oidcprovider.Native,
+		RedirectURIs: []string{"https://rp.example.com/cb"},
+		Scopes:       []string{"openid", "offline_access"},
+		GrantTypes:   []oidcprovider.GrantType{oidcprovider.GrantAuthorizationCode, oidcprovider.GrantRefreshToken},
+	}))
+
+	for _, path := range []string{mdOIDCPath, mdOAuthPath} {
+		doc := mdGet(t, chain, http.MethodGet, path).doc(t)
+		assert.Contains(t, doc["scopes_supported"], "offline_access", path)
+		assert.Equal(t, opIssuer+"/oauth2/token", doc["token_endpoint"], path)
+	}
 }

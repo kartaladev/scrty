@@ -219,3 +219,23 @@ func TestProvider_Capabilities(t *testing.T) {
 		})
 	}
 }
+
+// TestProvider_Capabilities_FreshCopies pins that a caller may change what it was given
+// without changing what the provider reports later.
+func TestProvider_Capabilities_FreshCopies(t *testing.T) {
+	t.Parallel()
+
+	p, err := oidcprovider.New(validDeps(t))
+	require.NoError(t, err)
+
+	first := p.Capabilities()
+	want := p.Capabilities()
+
+	for _, list := range [][]string{first.Scopes, first.Claims, first.IDTokenAlgs, first.AssertionAlgs} {
+		for i := range list {
+			list[i] = "changed"
+		}
+	}
+
+	assert.Equal(t, want, p.Capabilities())
+}
