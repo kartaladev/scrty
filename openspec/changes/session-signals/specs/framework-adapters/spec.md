@@ -13,12 +13,23 @@ The framework-neutral response writer SHALL let an interceptor stream a response
 - **WHEN** a consumer's own response writer reports that it cannot stream and a client requests the signal stream
 - **THEN** the response is 501
 
+### Requirement: A writer that cannot flush is reported as unable to stream
+A response writer that cannot flush, such as a consumer's wrapper hiding the underlying writer, or a server timeout handler, SHALL be reported as unable to stream, not treated as a client that left.
+
+#### Scenario: A wrapper that hides the writer
+- **WHEN** a consumer's middleware wraps the response writer with no way to reach the one beneath, and a client requests the signal stream
+- **THEN** the response is 501, nothing else is written, and no reconnection loop follows
+
 ### Requirement: Starting a stream sends the response head once
-Starting a stream SHALL send the status and every header set before it, on every adapter. Starting a stream after the response has begun, or a second time, SHALL fail and write nothing.
+Starting a stream SHALL send the status and every header set before it, on every adapter. Starting a stream after the response has begun, or a second time, SHALL fail and write nothing. Once a stream has started successfully, its body SHALL run exactly once, on an already-ended context if the chain then refused, so that what it holds is always released.
 
 #### Scenario: Headers set before streaming are sent
 - **WHEN** an interceptor sets `Cache-Control: no-store` and a CORS header, and then starts a stream, on any of the three adapters
 - **THEN** the client receives both headers with the streamed response
+
+#### Scenario: Refused after starting
+- **WHEN** an interceptor refuses the request after a stream was started, on any of the three adapters
+- **THEN** the client receives the refusal and no stream, and the body runs once on an already-ended context
 
 #### Scenario: Stream after the response began
 - **WHEN** an interceptor has already written a body and then starts a stream

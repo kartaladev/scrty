@@ -67,13 +67,13 @@ See `proposal.md` for why, and the four spec deltas for the required behaviour. 
 **Goals:**
 - One stream implementation in `httpsec`, run identically by three very different adapters.
 - The session store as the only source of truth. A signal can wake a stream early, but it never ends one by itself.
-- Bounded cost per stream: one goroutine, one ticker, one timer and one store read per heartbeat.
+- Bounded cost per stream: one body goroutine, one ticker, one timer, and two reads per heartbeat, the sign-in and its user (D4). Fiber adds two goroutines per stream, its `Done()` watcher and its connection reader (D1).
 
 **Non-Goals:**
 - Delivery guarantees beyond "within one heartbeat": no acknowledgements, no ordering across signals, no replay.
 - Redis and PostgreSQL bus implementations (follow-ups).
 - A browser client library. The README shows `EventSource` for cookie sessions and a `fetch()` reader for bearer clients.
-- Metrics. Streams log at DEBUG when they open and close, and bus failures log with sampling. A consumer who wants counts wraps the bus.
+- A metrics integration. Streams log at DEBUG when they open and close, bus failures and cap refusals log with sampling, and `chain.SessionSignalStats()` returns plain counts for the consumer to export (D8).
 
 ## Decisions
 
@@ -87,7 +87,7 @@ type ResponseWriter interface {
     WriteHeader(status int)
     Write(b []byte) (int, error)
     // Stream sends the status and headers set so far, then runs body until it returns.
-    // Each EventWriter.Flush reaches the client before body continues.
+    // Each EventWriter.Flush hands the event on to be sent before body continues.
     Stream(ctx context.Context, body func(ctx context.Context, w EventWriter) error) error
 }
 
@@ -103,12 +103,18 @@ type EventWriter interface {
   - the client leaving ends `body`'s context.
 - **fiber:**
   - `Stream` registers `body` with `SendStreamWriter` and returns at once;
-  - `body` runs after the chain has unwound, on a context detached from the chain's end-of-request cancellation, and cancelled when fasthttp's `Done()` fires at shutdown or when a flush fails;
-  - the body's start, each `Write` and each `Flush` set the connection's write deadline to `now + StreamWriteWindow` through `RequestCtx.Conn()`, so the deadline fasthttp set once for the whole response does not cut the stream. *Unverified:* this rests on a later `SetWriteDeadline` on the `net.Conn` replacing the one fasthttp set. Task 1.2's first test establishes it on fiber before anything else is built.
+  - `body` runs after the chain has unwound, on a context detached from the chain's end-of-request cancellation, and cancelled when fasthttp's `Done()` fires at shutdown, when a flush fails, or when the client leaves. `SetBodyStreamWriter` starts its goroutine at once (fasthttp v1.77.0), so the adapter's middleware holds the body behind a gate until the chain has returned, and a chain that refuses after `Stream` never runs it;
+  - **a reader sees the client leave** (user's choice, 2026-11-04). A failed write is seen too late: the stream's writes go through an in-memory pipe, so a nil `Flush` does not mean the bytes reached the socket, and a client that left is noticed 2 to 3 heartbeats later, while its stream keeps its place under the caps. So one goroutine reads the connection while the stream is open, and EOF ends `body`'s context. A stream response carries `Connection: close`, because the reader may consume pipelined bytes, so its connection is not reused. A client that half-closes counts as having left. This costs one goroutine and about 2.7 KiB per stream (measured over 1000 streams). *Rejected:* amending the spec to three heartbeats on fiber, because a reloaded tab could then meet 429, which ends an `EventSource` for good;
+  - the body's start, each `Write` and each `Flush` set the connection's write deadline to `now + StreamWriteWindow` through the connection, so the deadline fasthttp set once for the whole response does not cut the stream. Task 1.2 established this on fiber v3.6.1 and fasthttp v1.77.0 (`TestFiber_StreamOutlivesWriteTimeout`, 2026-11-04): without the later deadline the stream is cut at its first write after 3 seconds, and with it the stream stays open for 30 seconds.
+  - the closure holds the connection and the `Done()` channel, copied while the chain runs, and never the fiber `Ctx` or the `*fasthttp.RequestCtx`, which are pooled.
+- **A body must not read the exchange** (review, 2026-11-04). On fiber the request and everything read from it are views into buffers that are reused once the chain returns, so a body reading them can see another user's request (`TestFiber_StreamBodyMustNotReadExchange` shows the hazard). `Stream`'s godoc requires a caller to copy what its body needs before calling it, strings included, on every adapter.
 - **The write window is one fixed constant** (corrected 2026-11-04, before implementation; this draft said `2 × heartbeat`, and the plan `now + 10s`). `httpsec.StreamWriteWindow` is 2 minutes, twice the largest heartbeat D2 allows, and every adapter uses it.
   - The adapter is never told the heartbeat: `Stream(ctx, body)` does not carry it, so `2 × heartbeat` could not be built.
-  - The window must outlast the gap between two writes, not only cover a write in flight. On HTTP/2, Go's server resets the stream when its write-deadline timer fires, even with no write in flight (`onWriteTimeout`, read in `net/http/internal/http2/server.go` at Go 1.27.3). So a 10-second window would end every idle stream on the default 15-second heartbeat. That is UNREPRODUCED until task 1.3's HTTP/2 row fails against a shorter window; if the row cannot be made to fail, this reason is removed and the window reconsidered.
-  - *Trade-off:* a client that stops reading holds its stream and its place for up to 2 minutes, not 30 seconds at the default heartbeat. The caps bound what that costs, and a client that reads can hold a place anyway. `CloseSessionSignals` is bounded by its own context (D8).
+  - The window must outlast the gap between two writes, not only cover a write in flight. On HTTP/2, Go's server resets the stream when its write-deadline timer fires, even with no write in flight (`onWriteTimeout`, read in `net/http/internal/http2/server.go` at Go 1.27.3). So a 10-second window would end every idle stream on the default 15-second heartbeat. REPRODUCED by `TestHTTPResponseWriter_Stream/over_HTTP/2_a_window_shorter_than_an_idle_gap_resets_the_stream`: with a 500 ms window and a 2 s gap, `stream error: stream ID 1; INTERNAL_ERROR; received from peer` at 0.51 s.
+  - *Trade-off:* a client that stops reading holds its stream and its place for longer, not 30 seconds at the default heartbeat. The caps bound what that costs, and a client that reads can hold a place anyway. `CloseSessionSignals` is bounded by its own context (D8). The bound, measured on 2026-11-04, applies once the kernel's buffers are full, which at one heartbeat comment every 15 seconds can take days (72 050 comments on macOS loopback), so until then only the session's own end limits such a stream:
+    - net/http over HTTP/1.1, and an HTTP/2 flow-control stall: the window. Over TLS, up to 5 seconds more, because closing a TLS connection sends its alert under its own deadline.
+    - fiber: up to about 5 heartbeats plus the window, because each flush the pipe accepts also moves the deadline of the socket write that is stuck.
+    - **net/http over HTTP/2, when the TCP connection itself stalls: no bound from the adapter.** Go's server queues the reset but sends nothing while a frame write is blocked, so the body stays blocked (`after 20s the body is still blocked`, with a 1 s window). Only the server's own `HTTP2.WriteByteTimeout` bounds it (1.00 s when set to 1 s), and the server is the consumer's. The godoc and the README say to set it.
   - *Rejected:* a window parameter on `Stream`, which every consumer adapter would have to honour for a value only the stream endpoint chooses.
   - **Override:** none, as for the rest of the adapter contract.
 
@@ -127,7 +133,7 @@ type EventWriter interface {
                                                             Done() at shutdown
 ```
 
-- **The headers are frozen when `Stream` is called.** Every adapter sends the status and the headers set so far, and later `SetHeader` calls have no effect. On fiber, everything the chain set before returning is sent, because fasthttp writes the header block when it starts the body.
+- **The headers are frozen when `Stream` is called.** Every adapter sends the status and the headers set so far, and later `SetHeader`, `AddHeader` and `SetCookie` calls have no effect, on fiber too, where fasthttp could otherwise still send what the chain sets while unwinding. After `Stream`, `Write` returns `ErrStreamingStarted` and `WriteHeader` does nothing. `Stream` sends 200 itself, because gin holds 404 for a path with no route, and fiber whatever status was already on its context.
 - **`Stream` once, before anything else is written.** `Stream` called after `WriteHeader` or `Write`, or a second time, returns `ErrStreamingStarted` and writes nothing. The endpoint never does this; the rule exists so a consumer adapter's contract is complete.
 - **Why not `Flush()` on `ResponseWriter`**, as the proposal first said: on fiber, it cannot deliver anything before the handler returns. A body function is the shape all three adapters can honour.
 - **Breaking, before the tag:** a consumer's own `ResponseWriter` must implement `Stream`. A consumer adapter that cannot stream may return `ErrStreamingUnsupported`. The endpoint then answers 501, and the godoc says so.
@@ -146,6 +152,12 @@ signals := httpsec.SessionSignals{
     MaxPerSignIn:    4,                 // default
     MaxPerUser:      16,                // default
     MaxStreams:      10_000,            // default, per replica
+    MaxPerSource:    0,                 // default: off
+    MaxAge:          time.Hour,         // default; NoMaxAge turns it off
+    ReconnectDelay:  5 * time.Second,   // default; ±30% per stream
+    BusyDelay:       30 * time.Second,  // default; ±30% per refusal
+    Users:           nil,               // default: the built-in bearer's loader
+    ReloadContext:   nil,               // default: a context with none of the request's values
     Bus:             nil,               // default: in-process
 }
 chain, err := httpsec.New(..., httpsec.EnableSessionSignals(signals))
@@ -163,12 +175,18 @@ err = chain.CloseSessionSignals(ctx)
   - a cap below 1, or `MaxPerSignIn` above `MaxPerUser`, or `MaxPerUser` above `MaxStreams`;
   - `assurance_lapsed` without `EnableReauthentication`, because the front end would be told to re-prove with no way to do it;
   - a `Path` that another enabled endpoint already serves;
-  - `EnableSessionSignals` given twice.
+  - `EnableSessionSignals` given twice;
+  - no session manager on the chain, as session management already refuses;
+  - no `Users` and no built-in bearer's loader to default to, because a stream could not tell that its user was disabled;
+  - a `Path` that is empty, or lacks its leading slash, or ends in a slash, since it would silently never be served;
+  - a warning window above the idle timeout less the touch interval, since a user who is active but whose activity writes coalesce would be warned;
+  - a `MaxAge` below twice the heartbeat, or `MaxPerSource` above `MaxStreams`;
+  - a chain clock (`WithClock`) that cannot wait (`clock.Timed`), because a controlled `Now` with real waits fires timers at the wrong moments.
 - **`AssuranceWindow`** (user's choice, 2026-11-03). The chain has no re-authentication window of its own: each recency guard has one. The field defaults to `DefaultRecentAuthenticationWindow`, the guards' default, and its godoc says to set it to the window of the guards the front end must satisfy. The two cannot be checked against each other, because `Guards` are constructed apart from the chain.
 - **The query string:** `?signals=` is split on commas, at most 16 names and 256 bytes in all, and more than that is refused with 400. A name that is not in the chain's set is dropped. `app.` names are matched the same way, so a client can narrow to its own signals too.
 - **Consumer signal names are a fixed shape** (security review, 2026-11-03). A name must match `^app\.[a-z0-9][a-z0-9._-]{0,62}$`. An event name goes onto the wire as an `event:` line, and a CR or LF in it would start a new field or event: the SSE injection that GHSA-22cc-p3c6-wpvm and CVE-2026-44214 describe in other libraries. The shape also excludes `:` and NUL. A client's `?signals=` entries are held to the same shape before they are compared, and a malformed entry is dropped like an unknown one.
 - **`PublishSignal`:**
-  - it returns `ErrSessionSignalsDisabled` when the stream is not enabled, `ErrInvalidSignal` for a name outside that shape, or data over 8 KiB or not valid JSON, and the bus's error otherwise;
+  - it returns `ErrSessionSignalsDisabled` when the stream is not enabled; `ErrInvalidSignal` for a name outside that shape, or data over 8 KiB, not valid JSON, not valid UTF-8, or holding a raw line break between its tokens, as `json.MarshalIndent` output does; and `ErrSignalsBusy` when a consumer's bus has fallen so far behind that the signal was dropped (D6). Data is delivered unchanged, so it is refused here, not compacted, and not found out later by the wire writer;
   - a user with no open stream is not an error: the signal reaches no one;
   - it never blocks on a slow stream (D9).
 - **`ReportCredentialChange`:** returns `ErrSessionSignalsDisabled` when disabled, and `ErrInvalidSignal` for a kind outside `password`, `passkey` and `second_factor`.
@@ -182,10 +200,12 @@ err = chain.CloseSessionSignals(ctx)
 - **CSRF:** a `CookieAuthenticator` calls `CheckCSRFToken`, which checks only unsafe methods. The stream is a `GET` and changes nothing, so it passes without a token. A test pins that, so a later tightening of CSRF cannot break `EventSource`, which cannot send a token header.
 - **Cross-site requests are refused by the stream itself** (security review, 2026-11-03). CORS in scrty decides only which response headers an origin gets. For a disallowed origin it leaves them out, and the request still runs. A page on another site could therefore open credentialed streams that its browser cannot read, each taking one of the victim's per-sign-in places. That is UNREPRODUCED, since there is no code yet, and the first test of task 4.6 writes it. The stream therefore applies, to its `GET`, the origin rule the CSRF layer applies to unsafe methods (`csrf-protection`), whether or not CSRF protection is enabled:
   - `Sec-Fetch-Site` of `same-origin` or `none` passes;
-  - `same-site`, `cross-site` or any other value passes only when its `Origin` is one CORS allows with credentials;
-  - with no `Sec-Fetch-Site`, a cross-origin `Origin` passes only when CORS allows it, and no `Origin` at all passes, since old browsers and non-browser clients send neither;
-  - `Origin: null` never passes;
-  - a refusal is 403, before the stream is registered, so it costs no place.
+  - `same-site`, `cross-site` or any other value passes only for a trusted origin;
+  - with no `Sec-Fetch-Site`, a cross-origin `Origin` passes only when trusted, and no `Origin` at all passes, since old browsers and non-browser clients send neither;
+  - `Origin: null` never passes, and a wildcard does not make an origin trusted;
+  - **trusted depends on how the stream authenticated** (failure sweep, 2026-11-04). A cookie is sent by the browser on its own, so a cookie-authenticated stream needs an origin CORS names, exactly or by pattern, with credentials allowed. An `Authorization` header is not ambient, so that stream needs only an origin CORS names, exactly or by pattern. `AllowCredentials` defaults to false, so requiring it of every client would refuse a bearer page whose preflight had just passed. *Not reused:* CORS's `allowedOrigin` answers yes for every origin under `*`, `null` included, and the CSRF layer's trusted list ignores credentials and does not exist with CSRF off;
+  - a refusal is 403 with its own sentinel, `ErrCrossSiteStream`, before the stream is registered, so it costs no place. It does not reuse `ErrCrossSiteRequest`, which would emit `MaliciousCSRF` for a page that merely tried;
+  - a response that echoes an origin carries `Vary: Origin`.
 
   This is the resource isolation policy that web.dev's Fetch Metadata guidance describes, and OWASP's advice for WebSocket handshakes to validate `Origin` every time. **Override:** the CORS allowlist, which already names the origins a consumer trusts. There is no switch to turn the check off, because a stream that a foreign page can hold open is the denial of service it exists to prevent.
 - **Activity, corrected 2026-11-03.** The draft relied on an internal set that the built-in authenticators consult before recording activity. On `main`, authenticators never record activity: only `sessionTouch` does, after the handler, at slot 800. A terminal endpoint at 673 is never inside it, so the built-in paths need no set. A consumer interceptor below 673 that records activity on its own asks `httpsec.RecordsSessionActivity(ex)`, which reports false for the stream's path. The godoc on `CookieAuthenticator` and on `OrderSessionTouch` says so.
@@ -193,8 +213,13 @@ err = chain.CloseSessionSignals(ctx)
 
 ### D4. The store is the truth; signals are wake-ups
 
-- Each stream holds `{user, family, handle, idle deadline, absolute deadline, authenticatedAt}` from its first load.
-- **At every heartbeat** it reloads its session by identifier, through the read the bearer uses, without recording a presentation. The outcome decides the next step:
+- Each stream holds `{user, family, handle, idle deadline, absolute deadline, authenticatedAt}` from its first load, and no session identifier or credential.
+- **The reload reads by user and family, never by identifier** (corrected by the failure sweep, 2026-11-04; the draft said "the read the bearer uses"). `Sessions.Load` is what a presentation goes through, so it cannot be the reload. After a renewal's grace window it revokes the family and raises a false theft alarm, after a strict rotation it answers not found, and it records a first presentation (REPRODUCED: `session/sessions.go:375,383`, `session/reuse.go:496,533`). So a stream that reloaded through it would sign its user out. The raw `Store.Load` fails the other way, answering with stale deadlines after the current session has moved or gone. So:
+  - `(*Sessions).SignInState(ctx, user, family) (SignInState, error)` returns the family's current session's two deadlines, `AuthenticatedAt` and upstream identifiers, or `ErrNotFound`. It is built on the existing `Store.ListByUser`, which lists one live current session per family, opens no sealed field, and can judge, revoke or mark nothing. No store method changes.
+  - A renewal, a strict rotation or a step-up leaves the family and moves its current session, so the stream carries on and reports the new state. This was shown on the memory store (`TestSweep_Candidate_ListByUserFollowsFamilyHead`).
+  - Its cost is one indexed query that returns that user's sign-ins.
+  - **Limit:** a stream follows its family, so it keeps following after a renewal it took no part in, including a thief's stream opened before the victim renewed. `MaxAge` (below) bounds that.
+- **At every heartbeat** it reloads through that read, and through `Users.LoadByUserID`. The outcome decides the next step:
 
   | Reload finds | The stream sends | Then |
   |---|---|---|
@@ -205,10 +230,13 @@ err = chain.CloseSessionSignals(ctx)
   | gone, its family revoked on reuse | `session_ended` `reuse` | closes |
   | gone after a user-wide end | `session_ended` `all_ended` | closes |
   | gone after a provider logout | `session_ended` `provider_logout` | closes |
-  | gone with no known reason, or past a deadline | `session_ended` `expired` | closes |
-  | a store failure, not "not found" | `:` comment | keeps going, logs with sampling, reloads next heartbeat |
+  | gone with no report, no deadline passed | `session_ended` `ended` | closes |
+  | gone, a held deadline passed | `session_ended` `expired` | closes |
+  | a session or user-store failure, or a read that timed out | `:` comment | keeps going, logs with sampling, reloads next heartbeat |
 
-  The reason comes from the latest end report the stream was woken with, through D5's mapping. A stream that learns of the end only from its heartbeat, with no report (another replica, no shared bus), sends `ended`, or `expired` when a deadline has passed.
+  The reason comes from the latest end report the stream was woken with, through D5's mapping, and only if the store says gone within two heartbeats of receiving it (local receipt time). So a report whose end did not happen, a rolled-back transaction or a forged bus message, cannot name a later real end. A report for a session deleted from a family that stays live changes nothing, because the store still answers. A user who is not found or not active ends the stream with `ended`.
+- **A reload has a timeout,** half the heartbeat, and a timeout counts as a store failure. Without one, a store that hangs instead of failing stops the heartbeat, the timers and the queue, because they share one goroutine. A store that ignores its context stays unbounded, and the godoc says so.
+- **A reload does not run on the request's context** (failure sweep, 2026-11-04). The body's context keeps the request's values on every adapter (REPRODUCED). A consumer's transaction attached with `WithTx` would stay open for the stream's life on net/http, pinning a pooled connection, and on fiber be committed when the chain returns, so that every reload failed and an ended sign-in looked alive until its absolute deadline. So reloads and user reads run on a context with none of those values. **Override:** `ReloadContext func(ctx) ctx`, called once at admission, lets a multi-tenant consumer carry its tenant. Without it a tenant-scoped store fails at the first reload, which is logged, rather than reading another tenant.
 - **A store outage keeps the stream open** (user's choice, 2026-11-03). The store has not said the sign-in ended, and the stream grants no access, so closing would only make every client reconnect at once when the store returns. The stream's own timer still ends it at its absolute deadline.
 - **A `session_ended` arriving from the bus triggers the same reload at once.** It is forwarded only if the store agrees, which removes three problems:
   - a spurious end, when a consumer's outer transaction rolls back after `Sessions.Delete` returned;
@@ -216,7 +244,11 @@ err = chain.CloseSessionSignals(ctx)
   - races between replicas.
 
   If the store still shows the session, the heartbeat catches the end later.
-- **Timers:** `session_expiring`, expiry and `assurance_lapsed` come from the held deadlines and `authenticatedAt` through a single timer per stream, armed for the earliest of the three and re-armed after each reload.
+- **Timers:** `session_expiring`, expiry and `assurance_lapsed` come from the held deadlines and `authenticatedAt` through a single timer per stream, armed for the earliest of what has not yet been sent, and re-armed after every reload, moved or not, so that a clock step is corrected.
+- **A timer reloads before it speaks** (failure sweep, 2026-11-04). Held deadlines can be a whole heartbeat stale, so a timer alone would tell a user who is working that their session ended. On any timer the stream reloads first. It ends only if the store agrees; on a store failure only the *absolute* deadline ends it, because the idle deadline may have moved in a store it cannot read. If the store says alive while the local clock says past, the timer re-arms no sooner than the next heartbeat, so it cannot spin.
+- **Equal or absent values:** when the two deadlines are equal, `session_expiring` names `absolute`, so a front end does not offer a "stay signed in" that cannot work. A zero `AuthenticatedAt` is sent as `null`, and is not treated as lapsed. A deadline already inside the warning window at open warns at once. "Once" holds per connection, so a reconnecting client hears it again.
+- **A maximum age** (user's choice, 2026-11-04). Admission is judged once, so with no limit a stream outlives its bearer token, its certificate, and a policy that would now refuse it, for up to the 12-hour absolute default. `MaxAge`, default 1 hour with ±10% jitter, closes the stream with no event, and the client reconnects and is judged again. OWASP's DoS guidance asks for an absolute connection timeout, and it keeps a consumer under a proxy's hard limit. *Rejected:* closing at a token's `exp`, as Mercure does, because a short-lived token would make `fetch()` clients reconnect every few minutes. **Override:** the field, or `NoMaxAge`, whose godoc says what it gives up.
+- **A disabled user** (user's choice, 2026-11-04). Disabling revokes nothing, so the session read sees no change. Each reload therefore also reads the user, doubling the reads per heartbeat. **Override:** `Users`, which defaults to the built-in bearer's loader, and is required when there is none.
 - **Heartbeat jitter:** ±10% of the interval, so streams opened together do not reload together.
 - **Override:** the heartbeat interval. The rule that the store decides has none, because trusting a message to end a session is exactly what this decision rejects.
 
@@ -255,17 +287,21 @@ err = chain.CloseSessionSignals(ctx)
 
     | Cause | Raised by | Report names | Wire reason |
     |---|---|---|---|
+    | `EndLogout` | `Logout(user, family)`, which the chain's logout calls | user and family | `logout` |
     | `EndDeleted` | `Delete(id)` | user and family, from a load before the delete, made only when an observer is set | `logout` |
     | `EndByHandle` | `EndSignIn` | user and family | `ended` |
     | `EndReuse` | reuse detection, after `Store.DeleteFamily` | user and family | `reuse` |
-    | `EndFamilyRevoked` | `RevokeFamily(family)` | family only | `reuse` |
+    | `EndFamilyRevoked` | `RevokeFamily(family)` | family only | `ended` |
     | `EndUserSessions` | `DeleteByUser` | user, no family | `all_ended` |
     | `EndUserSessionsExcept` | `DeleteByUserExcept` | user, no family, the spared family as `KeptFamily` | `all_ended` |
     | `EndOtherSignIns` | `EndOtherSignIns` | user, no family, the spared family as `KeptFamily` | `all_ended` |
     | `EndUserExternalIssuer` | `DeleteByUserAndExternalIssuer` | user, issuer, no family | `provider_logout` |
-    | `EndExternalSession` | `DeleteByExternalSession` | issuer and upstream session, neither user nor family | none: the hub drops it, and the heartbeat ends those streams |
+    | `EndExternalSession` | `DeleteByExternalSession` | issuer and upstream session, neither user nor family | `provider_logout`, routed by a third registry key on issuer and upstream session |
     | (not reported) | `DeleteExpired`, a deadline passing | a deadline is not an event | |
 
+  - **Logout gets its own cause** (user's choice, 2026-11-04). The chain's logout ends the family through `RevokeFamily`, deliberately, so that the successor of a renewal goes too. That reports no user, and the draft mapped it to `reuse`, so every ordinary logout would have told the user's other tabs that their credentials were stolen (REPRODUCED: `TestSweep_ChainLogoutReportsDeletedCause`). `Logout` ends the family in the same way and names the user. Only `EndReuse` ever says `reuse`. *Rejected:* mapping `EndFamilyRevoked` to `logout`, which would mislabel an administrator's revocation.
+  - **Back-channel logout reaches the stream** (failure sweep, 2026-11-04). Its preferred path is `DeleteByExternalSession`, which names neither user nor family, so dropping its report would make the stream learn a heartbeat late, with the wrong reason. Each stream holds its issuer and upstream session, which are not secrets, and the registry routes on them.
+  - **A report naming no one** (`EndDeleted` after a failed read) reaches no stream, and the heartbeat ends it. A nil `KeptFamily` means nothing was spared: every stream of the user is woken and reloads, and the store keeps the live one open.
   - **A bulk end is one report** (settled while planning, 2026-11-02). Listing the sign-ins first would cost a read per bulk delete and race the delete. The stream reloads anyway (D4), so a report that names only the user is enough to wake every stream of that user.
   - **`KeptFamily` for `DeleteByUserExcept`** (corrected 2026-11-03). That call keeps a *session*, not a family, and a report carries no session identifier. When an observer is set, the manager loads the kept session first and reports its family. `EndOtherSignIns` already holds the current session, and reads its family without a load.
   - **The observer's context** keeps the caller's values but not its cancellation, as the reuse observer's does, so a client that hangs up cannot drop the report.
@@ -275,7 +311,8 @@ err = chain.CloseSessionSignals(ctx)
 - **`credential_changed`:**
   - raised by the chain's own endpoints, after their write succeeds: password-change resolve (`password`), recovery finish (`password` or `second_factor`, as the recovery replaced), passkey registration and removal (`passkey`), and MFA enrolment confirmation and removal (`second_factor`);
   - for changes the consumer makes outside those endpoints (an admin console, a password reset of its own), `chain.ReportCredentialChange(ctx, userID, kind)` raises the same library signal;
-  - it is the one library signal a consumer may raise, because the change happened in the consumer's code.
+  - it is the one library signal a consumer may raise, because the change happened in the consumer's code;
+  - **a stream the same change ends does not hear of it** (failure sweep, 2026-11-04). Removing a passkey and finishing a recovery end the user's other sign-ins, so those streams close with `session_ended`, and that is what tells them. The signal reaches every stream *still open*.
 - **The consumer's own signals:** `chain.PublishSignal`.
 - **`session_expiring` and `assurance_lapsed`:** the stream's own timer (D4).
 - *Alternative considered:* deriving signals from the security-event sink (`WithSecurityEvents`, `close-security-gaps` D13), which already emits `session_logout` and similar. Rejected: that sink is the operator's feed and covers every user. A filter between it and browsers is the coupling the proposal rules out, since an event added to it later would reach browsers by default. And `EndSignIn` and the bulk deletes raise no event there.
@@ -318,13 +355,15 @@ type SignalEnvelope struct {
 - **One subscription per replica,** not per stream. The chain keeps a local registry `user → streams` and `family → streams`, and hands each envelope to the streams it names (D5's diagram).
   - This lets a Redis or PostgreSQL bus use one channel, not one per user.
 - **The default bus** delivers only within the process. With several replicas and no shared bus, `session_ended` still arrives within a heartbeat. `credential_changed` and the consumer's signals reach only the streams on the replica that raised them. The godoc says so, as the rate limiter documents its N-replica limit.
-- **A failing `Publish`** is logged with sampling and never changes the outcome of the request that raised it. A failing `Subscribe` is retried with backoff, from 1 second doubling to 30 seconds, while the heartbeat keeps ending streams.
-- **An envelope from the bus is untrusted.** A `session_ended` only triggers a reload (D4). Any other library signal from the bus is delivered only when its name is one of the four, its data parses, and it is no more than 8 KiB. `app.` envelopes are held to the `PublishSignal` limits again on receipt.
+- **A failing `Publish`** is logged with sampling and never changes the outcome of the request that raised it. A failing `Subscribe` is retried with backoff, from 1 second doubling to 30 seconds, while the heartbeat keeps ending streams. A `Subscribe` that returns early with no error is treated as a failure, and a panic in either is recovered, so that a consumer's bus cannot take down the process.
+- **A hanging `Publish` cannot hang a logout** (failure sweep, 2026-11-04). Observers run synchronously in the caller's transaction, so publishing inline would turn a bus outage into a logout outage, holding row locks while it waited. A consumer's bus is therefore fed from a bounded queue of 1024 by one publisher goroutine, with a 5-second timeout per `Publish`, on a context with none of the request's values. Overflow drops the message with a sampled log, and the heartbeat is the fallback; a consumer-raised signal returns `ErrSignalsBusy`. The default bus needs none of this: it hands each stream a non-blocking send inline.
+- **Goroutine lifetimes.** The publisher and the subscription start at the first stream or the first raised signal, and the default bus starts neither, so a chain with signals enabled and never used leaks nothing. After `CloseSessionSignals`, `deliver` and `raise` do nothing, and a chain's observer stays on its manager, as `AddEndObserver` documents, inert. A consumer's transaction that rolls back after a report causes one extra reload, and no false end. A `credential_changed` raised before a consumer's own transaction rolls back cannot be recalled: `ReportCredentialChange`'s godoc says to call it after commit.
+- **An envelope from the bus is untrusted.** A `session_ended` only triggers a reload (D4), and its `Reason` is checked against the known reasons before it is kept. Any other library signal from the bus is delivered only when its name is one of the four, its data parses, and it is no more than 8 KiB. `app.` envelopes are held to the `PublishSignal` limits again on receipt.
 - **Override:** the port.
 
 ### D7. The wire format
 
-- The first bytes are `retry: 5000` and then the `session` event.
+- The first bytes are `retry: <ms>` and then the `session` event. The value is `ReconnectDelay` ±30%, chosen per stream (failure sweep, 2026-11-04): a replica's streams close together on a deploy, and a fixed value would bring them all back at the same moment. The heartbeat's jitter does nothing for that. `retry` is the only delay a server can set on `EventSource`.
 - Each event is `event: <name>\ndata: <json>\n\n`, with no `id:`. A heartbeat is `:\n\n`.
 - The data:
   - `session`: `{"idle_deadline", "absolute_deadline", "authenticated_at"}` in RFC 3339, UTC;
@@ -332,31 +371,35 @@ type SignalEnvelope struct {
   - `session_expiring`: `{"deadline":"idle"|"absolute","at"}`;
   - `assurance_lapsed`: `{"authenticated_at"}`;
   - `credential_changed`: `{"kind":"password"|"passkey"|"second_factor"}`;
-  - `app.*`: the consumer's JSON, unchanged, on one `data:` line. JSON already escapes its newlines, and `PublishSignal` requires valid JSON.
+  - `app.*`: the consumer's JSON, unchanged, on one `data:` line. JSON escapes line breaks inside its strings but allows them between tokens, so `PublishSignal` refuses data holding a raw one (REPRODUCED: `json.MarshalIndent` output is valid JSON holding LF).
 - **No raw CR or LF reaches the wire inside a field.** The event writer refuses, and does not send, an event whose name or data line holds one. That is a second check behind D2's name shape and the JSON rule, so a later change cannot reopen the injection.
-- Headers: `Content-Type: text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`. `no-store` keeps the stream out of every cache (RFC 9111 §5.2.2.5). `X-Accel-Buffering` works only where the operator's proxy honours it, and the README says so.
+- Headers: `Content-Type: text/event-stream`, `Cache-Control: no-store, no-transform`, `X-Accel-Buffering: no`. `no-store` keeps the stream out of every cache (RFC 9111 §5.2.2.5). `no-transform` asks intermediaries not to compress it (*unverified:* RFC 9111 §5.2.2.6 was not read, and whether common middleware honours it was not tested). `X-Accel-Buffering` works only where the operator's proxy honours it, and the README says so.
 - **Reconnection follows WHATWG's rules.** Any response other than 200 with `text/event-stream` fails an `EventSource` for good, and a dropped connection makes it reconnect after `retry`. So every answer is chosen for what the browser does next:
 
   | Answer | The browser then | Used for |
   |---|---|---|
-  | 200, stream, then the connection closes | reconnects after `retry` | shutdown (D8), a client-side drop |
+  | 200, stream, then the connection closes | reconnects after `retry` | shutdown (D8), `MaxAge`, a client-side drop |
+  | 200, only a longer `retry`, then close | reconnects after `retry` | a cap reached, a dependency failure at admission |
   | 200, `session_ended`, then close | reconnects, and gets 401 | an ended sign-in |
-  | 401, 403, 400, 405, 429, 501 | stops for good | refusals that a retry would not change |
+  | 401, 403, 400, 405, 501 | stops for good | refusals that a retry would not change |
 
-  A client that wants to retry after 429 (a tab freed elsewhere) or after a 5xx at admission builds a new `EventSource` itself, and the README shows that with backoff.
+  **A refusal a retry could fix is not final** (user's choice, 2026-11-04). A 429 or a 5xx ends an `EventSource` for good, and `EventSource` cannot see a status, so a client cannot tell them from 401. A phone that changes network can meet its own dead streams at the cap, and a store blip at admission would stop every tab that reconnected during it. So a cap refusal and a dependency failure on the stream's path answer 200 with only `retry: <BusyDelay ±30%>` and close, caught for the dependency failure by an outer step on this path alone. A rate limit a consumer's own interceptor answers is the consumer's. *Rejected:* keeping 429 with a client probe, because a client that does not copy the snippet dies; and evicting the oldest stream, because five live tabs would evict each other every few seconds. The trade-off: a fifth tab keeps retrying at a low rate, and a `fetch()` client sees a 200 with no `session` event, which the godoc states and `SessionSignalStats` counts. The README's client, which must rebuild a dead `EventSource` for sleep and network changes, probes an ordinary endpoint first, so a 401 stays final.
 - After `session_ended` the stream closes. The browser's reconnection then gets 401, which ends `EventSource`'s retries.
 - **Override:** none for the format. It is the contract front ends code against.
 
 ### D8. Caps and shutdown
 
 - The caps are kept in the local registry and counted per replica. With N replicas, a user can hold N × `MaxPerUser` streams, which the godoc states.
-- A request over a cap gets 429, `ErrTooManyStreams`, and is charged to nothing. A stream frees its place when its body returns, whatever ended it.
-- **Override:** the three fields.
-- **Shutdown** (settled while planning, 2026-11-02). `http.Server.Shutdown` waits for active handlers and does not cancel their contexts, so an open stream would hold it until its deadline. `chain.CloseSessionSignals(ctx)` ends every stream without an event, and returns when every body has returned or `ctx` ends. A stream requested afterwards gets 200 with only the `retry` line, and its connection is closed at once. *Changed from 503 by the security review, 2026-11-03:* WHATWG fails an `EventSource` for good on any non-200 answer, so a 503 during a rolling deploy would stop every client that reached the closing replica. A dropped stream makes the browser reconnect, and the load balancer then sends it to a live replica. It is idempotent. The README registers it with `RegisterOnShutdown`. On fiber, fasthttp's `Done()` at shutdown ends streams too. Without the call, streams end at the shutdown deadline as they would otherwise.
+- A request over a cap gets 200 with only a longer `retry` (D7), and is charged to nothing. Inside the library this is `ErrTooManyStreams`, and it is logged with sampling at WARN.
+- **A place is freed exactly once, whatever ended the stream.** `Stream` promises that if it returns nil its body runs exactly once, on a cancelled context when the chain refused, because on fiber the place is taken in the chain and the body runs after it returned (REPRODUCED: `TestSweep_FiberPlaceFreedWhenChainRefusesAfterStream`). The place is also freed when `Stream` returns an error. A release is idempotent, and empty registry keys are removed.
+- **One party cannot be stopped from filling a replica by the three caps alone:** 625 accounts at 16 streams fill 10 000 places. `MaxPerSource`, off by default, caps streams per client address, as the chain resolved it. Behind a proxy with no trusted-proxy setting every client shares one address, so it stays off by default.
+- **`chain.SessionSignalStats()`** returns `{Open, RefusedByCap, ReloadFailures, BusSubscribed}`, so an operator can see a cap being hit. It reads counters and takes no lock on the delivery path. *Rejected:* keeping "wrap the bus" as the only visibility, which shows none of these.
+- **Override:** the four fields.
+- **Shutdown** (settled while planning, 2026-11-02). `http.Server.Shutdown` waits for active handlers and does not cancel their contexts, so an open stream would hold it until its deadline. `chain.CloseSessionSignals(ctx)` ends every stream without an event, and returns when every body has returned or `ctx` ends. A stream requested afterwards gets 200 with only a `retry` line, and its response ends at once (on HTTP/1.1 the connection closes, and on HTTP/2 only the stream ends). *Changed from 503 by the security review, 2026-11-03:* WHATWG fails an `EventSource` for good on any non-200 answer, so a 503 during a rolling deploy would stop every client that reached the closing replica. A dropped stream makes the browser reconnect, and the load balancer then sends it to a live replica. A closed stream's last act is a fresh `retry` between 1 second and 3 × `ReconnectDelay`, so a drained replica's clients spread out; it is a field, not an event. A second call ends nothing new and waits on its own context for streams a first call timed out on. The README registers it with `RegisterOnShutdown`, which Go runs in its own goroutine and does not wait for, so `Shutdown` itself is what waits for handlers. On fiber, fasthttp's `Done()` at shutdown ends streams too. Without the call, streams end at the shutdown deadline as they would otherwise.
 
 ### D9. Concurrency inside one replica
 
-- **One goroutine per stream:** the body. It `select`s over:
+- **One body goroutine per stream** (fiber adds its `Done()` watcher and connection reader, D1). It `select`s over:
   - its context (the client left, a flush failed, or shutdown);
   - the heartbeat ticker, with jitter;
   - the single timer (D4);
@@ -371,18 +414,20 @@ type SignalEnvelope struct {
 | When | Condition | Answer |
 |---|---|---|
 | before streaming | stream not enabled | the request passes through to the consumer's routes |
+| before streaming | `Stream` reports `ErrStreamingStarted` (a consumer's interceptor already wrote) | the chain's error mapping, as a 500 |
 | before streaming | method other than `GET` | 405, with `Allow: GET` |
 | before streaming | no credential | 401 |
 | before streaming | authenticated without a sign-in | 403 |
-| before streaming | a cross-site request from an origin CORS does not allow | 403 |
+| before streaming | a cross-site request from an origin not trusted (D3) | 403 `ErrCrossSiteStream` |
 | before streaming | a pending sign-in | as the pending-session gate answers it |
 | before streaming | `signals` over 16 names or 256 bytes | 400 |
-| before streaming | a cap reached | 429 `ErrTooManyStreams` |
-| before streaming | the adapter cannot stream | 501 `ErrStreamingUnsupported` |
-| before streaming | after `CloseSessionSignals` | 200 with only `retry`, then the connection closes |
+| before streaming | a cap reached | 200 with only a longer `retry`, then the response ends (`ErrTooManyStreams` internally) |
+| before streaming | a dependency failure at admission | 200 with only a longer `retry`, then the response ends |
+| before streaming | the adapter cannot stream, including a consumer's wrapper with no `Unwrap`, or `http.TimeoutHandler` | 501 `ErrStreamingUnsupported` |
+| before streaming | after `CloseSessionSignals` | 200 with only `retry`, then the response ends |
 | while streaming | any failure | the stream closes; the status was already sent |
 
-- Every refusal goes through the chain's error mapping, as every other refusal does, so a consumer's error responder shapes the body.
+- Every refusal goes through the chain's error mapping, as every other refusal does, so a consumer's error responder shapes the body. A responder must not redirect on this path: a redirect to a login page fails an `EventSource` for good, and the README says so.
 
 ## Security review against standards (2026-11-03)
 
@@ -398,16 +443,45 @@ Each decision was checked against the standards and practice listed under Refere
 | Vocabulary (D5) | OpenID CAEP 1.0 (`session-revoked`, `credential-change`, `assurance-level-change`) | Complies as stated: scrty borrows the vocabulary, not the protocol. Its credential kinds are coarser than CAEP's `credential_type` on purpose, so a stream never says which passkey or factor changed |
 | Event names and data (D2, D7) | WHATWG event-stream parsing (CR, LF or CRLF end a line, and a blank line dispatches); GHSA-22cc-p3c6-wpvm and CVE-2026-44214 (newline injection in other SSE libraries) | **Gap, fixed.** Consumer names have a fixed shape, and the writer refuses a raw CR or LF |
 | Reconnection and shutdown (D7, D8) | WHATWG (a non-200 answer fails the connection with no retry; a drop reconnects after `retry`, "a few seconds") | **Conflict, fixed.** Shutdown no longer answers 503. Every other answer is chosen for what the browser does next (D7's table) |
-| Caps, queue, heartbeat (D8, D9) | OWASP DoS Cheat Sheet (load limits, absolute connection timeout); OWASP WebSocket (per-user and total connection limits, heartbeats, backpressure); RFC 9113 §6.5.2; WHATWG (a comment every 15 seconds or so) | Complies. Streams are capped per sign-in, per user and per replica. Queues are bounded and drop slow clients' events. A client that stops reading is ended by the per-flush write deadline. The absolute session deadline bounds every stream's life |
+| Caps, queue, heartbeat (D8, D9) | OWASP DoS Cheat Sheet (load limits, absolute connection timeout); OWASP WebSocket (per-user and total connection limits, heartbeats, backpressure); RFC 9113 §6.5.2; WHATWG (a comment every 15 seconds or so) | Complies. Streams are capped per sign-in, per user and per replica. Queues are bounded and drop slow clients' events. A client that stops reading is ended by the write deadline once the kernel's buffers fill, except for a stalled TCP connection over HTTP/2, which needs the server's `HTTP2.WriteByteTimeout` (D1). The absolute session deadline bounds every stream's life |
 | Caching (D7) | OWASP Session Management (`no-store` for session data); RFC 9111 §5.2.2.5; nginx `X-Accel-Buffering` | Complies. The README notes that `X-Accel-Buffering` depends on the operator's proxy |
 | The bus (D4, D6) | OpenID SSF 1.0 (authenticate transmitters, validate `iss`, ignore unknown fields); CAEP 1.0 | Complies with the practice. Neither standard prescribes an internal bus, so scrty treats bus messages as untrusted: an end only triggers a store check, other envelopes are revalidated, and the port's godoc asks a shared bus to authenticate its transport |
 
+## Failure sweep (2026-11-04)
+
+The user asked that everything that can go wrong be anticipated. The design was traced through the code, and production failures of long-lived streams were researched. Each row states what would have happened, and where it is now handled. "Reproduced" means a failing test against existing code; "unreproduced" means no code exists yet, and its first task writes the test.
+
+| What goes wrong | What would have happened | Handled by | Status |
+|---|---|---|---|
+| A renewal or step-up while a stream is open | The stream's own reload revokes the live sign-in, or reports it ended | D4, `SignInState` | Reproduced |
+| An ordinary logout | Other tabs told `reuse` | D5, `EndLogout` | Reproduced |
+| A chain that refuses after `Stream`, on fiber | A place leaks, and shutdown waits for a body that never runs | D8, D1's promise | Reproduced |
+| A request-scoped transaction | Held open for the stream's life, or closed under every reload | D4, `ReloadContext` | Retention reproduced; consequences unreproduced |
+| `json.MarshalIndent` data | Accepted, then dropped by the writer | D2, D7 | Reproduced for the standard library |
+| A fetch client reconnecting with a token captured before a renewal | The family is revoked | README: read the current credential on each attempt | Revocation reproduced |
+| `go test -run` matching no test | The verify command stays green | `tasks.md`: `-v`, and the named tests must appear | Reproduced |
+| A timer firing on a stale deadline | An active user told their session ended | D4 | Unreproduced |
+| A store that hangs instead of failing | Heartbeat, timers and queue all stop | D4, reload timeout | Unreproduced |
+| A hanging bus | Logout hangs, holding row locks | D6, publisher queue | Unreproduced |
+| A forged or stale report | A later real end is given the wrong reason | D4, D6 | Unreproduced |
+| A wrapper with no `Unwrap`, or `http.TimeoutHandler` | Looks like a client leaving, so the browser reconnects forever | D10, 501 | Unreproduced until dispatch A's row |
+| A replica draining | Every client reconnects at the same moment | D7, D8, jittered `retry` | Unreproduced |
+| A panic in a consumer's bus | The process dies | D6 | Unreproduced |
+| A retired sealing key | The stream stays open | `ListByUser` opens no sealed field; a row confirms it | Unreproduced |
+| Compression above the adapter | Nothing arrives, no write fails, the place is held | D7 `no-transform`, a test per adapter, README | Unreproduced |
+
+**Handled by documentation, because the consumer owns the setting.** The README gains: intermediary timeouts (nginx 60 s, ALB 60 s, CloudFront 30 s between packets, API Gateway's hard 15-minute limit, and Envoy's route timeout, which must be set to `0s`); compression middleware; `http.Server.HTTP2.WriteByteTimeout`; TCP keepalive and dead peers; `SETTINGS_MAX_CONCURRENT_STREAMS` (Go's default of 250) when a gateway shares one upstream connection; fasthttp's `Concurrency`, which counts every stream, and `MaxConnsPerIP`, which counts connections; pod termination (`terminationGracePeriodSeconds` longer than the shutdown context, and a `preStop` wait); buffering corporate proxies; and a client that rebuilds on `visibilitychange`, `pageshow` and `online`, because iOS and Firefox can leave a dead `EventSource` with no error, and a client that falls back to polling when the first `session` event does not arrive. `StripPrefix` means `Path` is the inner path.
+
+**Checked and found not to apply.** A DPoP proof expiring mid-stream (a proof is per request, checked at open). `Server.ReadTimeout` and `IdleTimeout` ending a net/http stream (source reading only). A BOM (the stream sends none). An event split across flushes (no flush splits one, and an unterminated event is discarded). Odd casing in `Sec-Fetch-Site` (falls to the refusing branch). bfcache and `no-store` (no source ties it to a subresource). Read-replica lag producing a false "gone" (it would also 401 ordinary requests, so the store contract already rules it out). `MaxStreams` per-family counting across rotation (rotation keeps the family).
+
 ## Risks / Trade-offs
 
-- **[Store load]** 10 000 streams at 15 s is about 670 session reads per second per replica.
+- **[Store load]** 10 000 streams at 15 s is about 670 session reads and 670 user reads per second per replica.
   → Jitter spreads them out. The interval can go to 60 s, and the README gives the arithmetic. A shared bus lets a consumer lengthen the heartbeat without delaying `session_ended`.
-- **[Fiber write deadline]** The fiber design rests on resetting the connection's deadline per flush, which is unverified.
-  → Task 1.2 tests it first. If it fails, the fiber adapter documents that a `HeaderReceived` hook giving the stream path a long `WriteTimeout` is required, and the `framework-adapters` delta is amended before any other task.
+- **[Fiber write deadline]** The fiber design rests on resetting the connection's deadline per flush.
+  → Task 1.2 established it on the pinned versions. A fiber or fasthttp upgrade could change it, and `TestFiber_StreamOutlivesWriteTimeout` would then fail.
+- **[A stalled client over HTTP/2]** The adapter cannot bound a stalled TCP connection under Go's HTTP/2 server (D1).
+  → The godoc and the README tell the consumer to set `HTTP2.WriteByteTimeout`. `CloseSessionSignals` is bounded by its own context.
 - **[A lost bus message]**
   → The heartbeat bounds the delay. Signals are wake-ups, never the only path.
 - **[A slow client]**
@@ -420,8 +494,10 @@ Each decision was checked against the standards and practice listed under Refere
   → The cap of 4 per sign-in refuses the fifth tab, not an existing one. The README recommends one shared stream (BroadcastChannel or SharedWorker), or HTTP/2.
 - **[A breaking adapter interface]**
   → It lands before `v0.1.0`, which `release-readiness` records. `ErrStreamingUnsupported` gives a consumer adapter a way out.
-- **[A refusal at admission stops `EventSource` for good]** A 5xx from a store outage while the stream opens fails the connection permanently (WHATWG).
-  → It is the chain's ordinary dependency-failure answer and is not changed here. The README's client snippet rebuilds the `EventSource` after an error, with backoff.
+- **[A refusal that hides a problem]** Answering 200 to a cap refusal or a dependency failure hides it from browser tools and status-code dashboards.
+  → It is logged at WARN with sampling and counted in `SessionSignalStats`.
+- **[A stream that follows a thief]** A stream follows its family across renewals it took no part in (D4).
+  → `MaxAge` bounds it to an hour by default, and `app.*` godoc warns against sensitive data.
 - **[The chain's authorizer does not see the stream]**
   → The stream reveals only the caller's own sign-in, and the session-management endpoints already sit at the same place. A consumer who must gate it puts an interceptor below `OrderSessionSignals`.
 
@@ -468,6 +544,14 @@ Each decision was checked against the standards and practice listed under Refere
 - [OpenID Shared Signals Framework 1.0](https://openid.net/specs/openid-sharedsignals-framework-1_0.html): transmitter authentication, `iss` validation, ignoring unknown fields (D6).
 - [OpenID CAEP 1.0](https://openid.net/specs/openid-caep-1_0.html): the event types and their fields (D5).
 - *Unverified:* the Fetch standard's own text on credentialed cross-origin reads; whether browsers retry after a 5xx beyond WHATWG's current text; SSF's security-considerations text on signing and replay.
+
+**Failure sweep** (researched, accessed 2026-11-04; "read" unless marked)
+- D1, D6: Go 1.27.3 `net/http` (`responsecontroller.go`, `server.go`, `http2.go`, `internal/http2/server.go`); fasthttp v1.77.0 `server.go`; [golang/go #52183](https://github.com/golang/go/issues/52183) (open: an HTTP/2 client leaving may be seen only at the next write); [fasthttp #1591](https://github.com/valyala/fasthttp/issues/1591) (open); [fiber #4145](https://github.com/gofiber/fiber/issues/4145) and [#4263](https://github.com/gofiber/fiber/issues/4263) (no disconnect signal in fasthttp; `Done` fires only at shutdown); [GO-2023-2102](https://pkg.go.dev/vuln/GO-2023-2102).
+- D3: [CVE-2026-61593](https://corgea.com/advisories/vulnerabilities/CVE-2026-61593) (an SSE `GET` with no `Origin` check); [CVE-2026-46431](https://advisories.gitlab.com/golang/github.com/xyproto/algernon/CVE-2026-46431/) (`*` on an SSE endpoint); [Mercure spec](https://mercure.rocks/spec), first 100k characters (no `*` or reflection; closing at `exp`; a maximum connection lifetime).
+- D7, D8: [AWS Builders' Library: backoff with jitter](https://builder.aws.com/content/3EumjoZascWd1oZiEgL8ORlv3qE/timeouts-retries-and-backoff-with-jitter); [Mercure hub configuration](https://mercure.rocks/docs/hub/config) (`write_timeout`, `drain_timeout`, `subscription_limits`); [Kubernetes pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination).
+- README guidance: [nginx proxy](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) and [gzip](https://nginx.org/en/docs/http/ngx_http_gzip_module.html); [ALB attributes](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html); [CloudFront origin settings](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/DownloadDistValuesOrigin.html); [API Gateway streaming](https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode.html); [Caddy #6293](https://github.com/caddyserver/caddy/issues/6293); [Apple forum 765183](https://developer.apple.com/forums/thread/765183); [Mozilla 1251117](https://bugzilla.mozilla.org/show_bug.cgi?id=1251117); [Chrome Page Lifecycle](https://developer.chrome.com/docs/web-platform/page-lifecycle-api); [WebKit 202370](https://bugs.webkit.org/show_bug.cgi?id=202370); [web.dev bfcache](https://web.dev/articles/bfcache).
+- Read through summaries only: [Istio and SSE](https://oneuptime.com/blog/post/2026-02-24-how-to-configure-istio-for-server-sent-events/view) and [Envoy and SSE](https://dzone.com/articles/thoughts-on-server-sent-events-http2-and-envoy-1); [LibreChat #12038](https://github.com/danny-avila/LibreChat/discussions/12038) on corporate proxies; [a Shopify thread](https://community.shopify.com/t/how-can-i-do-sse-and-auth-session-at-the-same-time-without-a-302-redirect/334742) on login redirects.
+- *Unverified:* HAProxy's timeouts; RFC 9111's `no-transform`; the Fetch standard's redirect rules; whether a `retry` sent just before closing is honoured by every browser; Cloudflare's rule for whether data resets its 125-second timer.
 
 **D2, D3, D5, D9, D10: the tree as it stands** (checked 2026-11-03, at `4649c90`)
 - Reasoned from scrty's own settled specs and code, and the established design: the reuse observer and the ending calls in `sessions`; `sessionTouch` and the slot order in `http-security-chain`; the recency guards and their default window in `reauthentication`; and `close-security-gaps` D8 (the internal-set pattern), D12 (session management) and D13 (security events).

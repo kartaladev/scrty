@@ -5,7 +5,7 @@
 ### Requirement: The manager reports each explicit end of a sign-in to its end observers
 After each explicit end of sign-ins through the manager, it SHALL call every observer synchronously, in the order given. These ends SHALL be reported:
 - a family revoked for reuse, and a family revoked;
-- a session deleted, and a sign-in ended by its handle;
+- a session deleted, a sign-in logged out, and a sign-in ended by its handle;
 - a user's sessions deleted, with or without one kept, and a user's other sign-ins ended;
 - sessions deleted by upstream session, or by user and upstream issuer.
 
@@ -75,8 +75,16 @@ A manager with no end observer SHALL report nothing, and deleting a session SHAL
 Each ending call SHALL report its own cause, so an observer can tell a logout from an ended sign-in, a revocation or a user-wide end. A user-wide or bulk end SHALL be one report, naming no family.
 
 #### Scenario: Logout
-- **WHEN** a session of user `u-1` is deleted at logout
+- **WHEN** user `u-1` logs out of a sign-in
+- **THEN** its whole family ends, and the observer receives one report naming `u-1`, that family and the logout cause
+
+#### Scenario: A session deleted
+- **WHEN** a session of user `u-1` is deleted by its identifier
 - **THEN** the observer receives one report naming `u-1`, the session's family and the deleted cause
+
+#### Scenario: A family revoked
+- **WHEN** a family is revoked directly
+- **THEN** the observer receives one report naming the family, no user, and the revoked cause
 
 #### Scenario: Sign-in ended from another device
 - **WHEN** user `u-1` ends one of their sign-ins from another device
@@ -96,6 +104,29 @@ Where an end spares one session, the report SHALL name that session's family as 
 #### Scenario: Kept session named by family
 - **WHEN** an observer is configured and every session of a user but one named session is deleted
 - **THEN** the report names the kept session's family, and no session identifier
+
+### Requirement: A sign-in's state can be read without presenting anything
+The manager SHALL answer, for a user and a family, the deadlines and authentication time of that family's current session, or that it has no live one. The read SHALL record no presentation, SHALL NOT judge or revoke anything, and SHALL read no sealed field. It SHALL follow the family across renewal and rotation.
+
+#### Scenario: After a renewal
+- **WHEN** a family's session has been renewed and the grace window has passed
+- **THEN** the read answers the successor's deadlines, and the family stays live
+
+#### Scenario: After a strict rotation
+- **WHEN** a family's session has been rotated strictly
+- **THEN** the read answers the new session's authentication time
+
+#### Scenario: Never presented
+- **WHEN** the read finds a session never yet presented
+- **THEN** no presentation is recorded
+
+#### Scenario: Ended
+- **WHEN** the family has been ended, or its current session has passed a deadline
+- **THEN** the read answers not found
+
+#### Scenario: Another user's family
+- **WHEN** the read names a family that belongs to another user
+- **THEN** the read answers not found
 
 ### Requirement: An observer cannot change an end's outcome
 The observer SHALL be called only after the write succeeded, and a panicking observer SHALL NOT change the outcome of the call that ended the sessions.
