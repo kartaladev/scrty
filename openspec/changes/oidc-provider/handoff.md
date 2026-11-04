@@ -289,3 +289,15 @@ Record in `design.md`: new options `WithOIDCTokenLimiter` and `WithOIDCTokenBody
 Agreed with `session-signal` on 2026-11-05: whichever of #72 and #73 is ready first merges first, probably #73. That session reported that the user delegated the order, which this session did not hear directly, so #73's description states the change for the user to see. Neither session merges; the merge stays the user's click. `session-signal` rebases #73 onto `main`, carrying the end-observer commit `442c9f19`, and messages when it has rebased and when it merges. `feat/oidc-provider` is still not rewritten: when #73 lands, merge `main` in. Group 11 still gets its notice first, and 11.1 uses `Logout` only if it is on `main` by then, otherwise `RevokeFamily`.
 
 **Pushes:** the user asked for PR #72 to be updated for each commit, so each commit landing on `feat/oidc-provider` is pushed and the PR body kept current. Lane branches stay local until their review is clean. While the user is away, a decision is researched first and takes the option closest to standard security practice, then listed for the user's review.
+
+### State at the second usage limit (supersedes the lane lists above)
+
+**47 of 79 on `feat/oidc-provider`, and nothing below is ticked.** `feat/oidc-provider-int` (worktree `lane-int` in this session's scratchpad) holds 7.9, 7.10, 8.1 to 8.7, 9.1 to 9.6 and group 10 in merge order, reviewed and folded. Its `httpsec` and `oidcprovider` passed under `-race` when last run.
+
+Next, in order:
+1. Cherry-pick `498e7c35` from `feat/oidc-provider-g10fix` onto `int`: the second delivery fold, committed there and not yet on `int`. Read the Opus review of `16599168` and `498e7c35` (proofs in `review-g10fix/`), fold what it found, and re-run.
+2. Run the `test/` module whole on a quiet machine, on the default image and `postgres:15.19-alpine`. It only passed with `-p 1 -parallel 4 -timeout 45m` under load, and the events fold never got one clean pass on its final tree, so a store defect is not ruled out.
+3. Cherry-pick `int` onto `feat/oidc-provider`, tick 7.9, 7.10, 8.1 to 8.7, 9.1 to 9.6, 10.1 and 10.2, push, update PR #72, and remove the lane branches.
+4. Message `session-signal`, then group 11 (needs a CSRF exemption seam: `routes()` must stay pure, and `settleExemptions` overwrites `l.exempt`), then 13 to 15. `oidc_stub.go` goes with the last stub.
+
+Decisions taken while the user was away, for their review: the merge order; `amr` as `pwd` and `mfa` (narrows "naming both factors"); named `https` origins may frame the pages, no `X-Frame-Options`; UserInfo `invalid_request` is 400 and a token sent two ways is refused; a public client's first proof at refresh is refused and a certificate-bound grant must present its certificate; `Request` gains `RawQuery`; 429 at authorize and resume. Each is in `design.md` with sources.
