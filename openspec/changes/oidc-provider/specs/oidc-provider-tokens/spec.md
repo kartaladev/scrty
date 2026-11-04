@@ -220,7 +220,7 @@ A consumer MAY register a client for opaque access tokens. They SHALL carry at l
 - **THEN** its unexpired access token is refused at UserInfo and reported inactive by introspection
 
 ### Requirement: Refresh tokens rotate on every use
-A refresh token SHALL carry at least 128 bits, from a cryptographically secure source or derived under a secret key, SHALL be stored only as a digest, and SHALL have a format no sign-in path of the chain accepts. A successful refresh SHALL return a new refresh token and supersede the one presented. The superseded token SHALL be accepted again only within a grace window, 30 seconds by default, for a client retrying a lost response.
+A refresh token SHALL carry at least 128 bits, from a cryptographically secure source or derived under a secret key, SHALL be stored by a durable store only as a digest, and SHALL have a format no sign-in path of the chain accepts. A successful refresh SHALL return a new refresh token and supersede the one presented. The superseded token SHALL be accepted again only within a grace window, 30 seconds by default, for a client retrying a lost response.
 
 #### Scenario: Rotation
 - **WHEN** a client refreshes with token `r1`
