@@ -377,10 +377,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - keys: `ID id.ID`, `HandleDigest []byte`, `FlowDigest []byte`;
     - the request: `ClientID`, `RedirectURI`, `Scopes`, `Resources`, `State`, `Nonce`, `Challenge`, `Prompt []string`, `MaxAge *int`, `IDTokenHintSubject`, `DPoPJKT`, `LoginHint`, `UILocales`, `ClaimsLocales`, `ACRValues`;
     - progress: `ParkedAt`, `ExpiresAt`, `Stage`, `SignIn *SignIn`.
-  - `type PendingRequestStore interface { Create(ctx, *PendingRequest) error; Load(ctx context.Context, handleDigest []byte) (*PendingRequest, error); Advance(ctx context.Context, handleDigest []byte, from, to Stage, s *SignIn) error; DeleteExpired(ctx context.Context, before time.Time) (int, error) }`. `Advance` returns `ErrNotFound` unless the stored stage equals `from`.
+  - `type PendingRequestStore interface { Create(ctx, *PendingRequest) error; Load(ctx context.Context, handleDigest []byte) (*PendingRequest, error); Advance(ctx context.Context, handleDigest []byte, from, to Stage, s *SignIn) error; DeleteExpired(ctx context.Context, before time.Time) (int, error) }`. `Advance` returns `ErrNotFound` unless the stored stage equals `from` and `to` is a strictly forward move: login to consent or done, consent to done, logout to done.
 - **Sign-ins:** `type SignIn struct { User identity.UserID; Family id.ID; AuthenticatedAt time.Time; AMR []string; ACR string; AbsoluteExpiresAt time.Time; ExternalIssuer, ExternalSessionID string }`.
 - **Code records:**
-  - `type CodeRecord struct { TokenID id.ID; ClientID, RedirectURI, Challenge, Nonce, DPoPJKT string; Scopes, Resources []string; SignIn SignIn; GrantFamily id.ID; Offline bool; ExpiresAt time.Time }`. `SignIn` already holds the upstream issuer and session (R7);
+  - `type CodeRecord struct { TokenID id.ID; ClientID, RedirectURI, Challenge, Nonce, DPoPJKT string; Scopes, Resources []string; SignIn SignIn; GrantFamily id.ID; Offline, EndsWithSignIn bool; ExpiresAt time.Time }`. Issuing a code (6.7) sets `EndsWithSignIn` from the client. `SignIn` already holds the upstream issuer and session (R7);
   - `type CodeStore interface { Create(ctx, *CodeRecord) error; Load(ctx, tokenID id.ID) (*CodeRecord, error); DeleteExpired(ctx, before time.Time) (int, error) }`.
 - **Consents:**
   - `type Consent struct { User identity.UserID; ClientID string; Scopes []string; Offline bool; LastGivenAt time.Time }`;
@@ -403,7 +403,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - `EndSignIns(ctx, sel SignInSelector, at time.Time) ([]Grant, error)`, which also writes a tombstone for the `GrantFamily` of each matching unspent code without `Offline`;
     - `DeleteExpired(ctx, now time.Time, keepRevoked time.Duration) (int, error)`;
     - `DeleteOrphans(ctx, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error)`.
-- **Tombstones across the code and grant stores (R7).** The tombstones above span `CodeStore` and `GrantStore`, so `GrantStore` takes a `func(ctx, sel SignInSelector, includeOffline bool) ([]id.ID, error)` from `CodeStore`, wired by `oidcprovider.New`, and writes the tombstones through its own `Revoke`. A store outage on either fails the call.
+- **Tombstones across the code and grant stores (R7).** The tombstones above span `CodeStore` and `GrantStore`, so `CodeStore` embeds `UnspentCodes`, with `UnspentBySignIn(ctx, sel, includeOffline, at)` and `UnspentByClient(ctx, user, clientID, at)`, and `oidcprovider.New` joins them through `GrantStore.UseCodes(UnspentCodes) error`. The grant store writes each tombstone itself, with the sign-in-ended mark when an end recorded it. A listing excluding offline codes still includes one with `EndsWithSignIn`. `EndSignIns` does not touch browser sessions. A store outage on either fails the call.
 - **Browser sessions (R2):**
   - `type BrowserSession struct { Digest []byte; SignIn SignIn; IdleExpiresAt, AbsoluteExpiresAt time.Time }`;
   - `type BrowserSessionStore interface { Put(ctx, *BrowserSession) error; Load(ctx, digest []byte, now time.Time) (*BrowserSession, error); Touch(ctx, digest []byte, idleUntil time.Time) error; Delete(ctx, digest []byte) error; DeleteBySignIn(ctx, sel SignInSelector) (int, error); DeleteExpired(ctx, before time.Time) (int, error) }`.
@@ -1071,8 +1071,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `lineage_not_a_session`: an identifier created through the lineage store → `ErrNotFound` from the adapter's `NewSessionStore`;
   - `no_credential_in_any_column`: `SELECT *` from every `op_` table after an issue, compared against the code, refresh token and client secret.
 - [ ] Conditional writes:
-  - `Advance` is `UPDATE … WHERE stage = $from`;
-  - `Grant.Create` is `INSERT … ON CONFLICT (family) DO UPDATE SET … , revoked = op_grants.revoked OR EXCLUDED.revoked`;
+  - `Advance` checks the move, then is `UPDATE … WHERE stage = $from`;
+  - `Grant.Create` is `INSERT … ON CONFLICT (family) DO UPDATE SET … , revoked = op_grants.revoked OR EXCLUDED.revoked WHERE <the row is a tombstone>`, and no row affected is the refusal the suite requires, keeping any sign-in-ended mark;
   - `Revoke` is `INSERT … ON CONFLICT DO UPDATE SET revoked = true` (the first cause kept);
   - `EndSignIns` is one `UPDATE … WHERE <selector> AND sign_in_ended_at IS NULL RETURNING *`;
   - `AssertionID.Record` is `INSERT … ON CONFLICT DO NOTHING`, with a row count of 1 meaning new.
@@ -1083,7 +1083,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 **Files:** Create `oidcprovider/expiry.go`; Test `test/expirytasks_test.go`
 - [ ] `func ExpiryTasks(p *Provider) []expiry.Task`, with these task names:
   - `oidc-provider.pending-requests`, `oidc-provider.codes` (the onetime purge plus the code records), `oidc-provider.access-tokens` and `oidc-provider.assertion-ids`;
-  - `oidc-provider.grants`, with `keepRevoked` equal to the code lifetime;
+  - `oidc-provider.grants`, with `keepRevoked` one minute past the longest code lifetime, as the memory store keeps it, so a code spent as it expires cannot land after its tombstone is swept;
   - `oidc-provider.refresh-tokens` (the lineage `DeleteExpired`);
   - `oidc-provider.orphaned-grants`, with a 10 min cutoff.
 - [ ] Red `TestExpiryTasks_OIDCProvider`:

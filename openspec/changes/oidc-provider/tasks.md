@@ -86,21 +86,21 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 5. Provider stores, in-memory defaults and conformance suites (`security-state-stores`, `store-conformance`, design T2, T3, T6, T7)
 
-- [ ] 5.1 Add the pending-request store port and its in-memory default, test-first. Records hold the handle's and the flow secret's digests. The stage advances login → consent → done by one conditional write, and expiry is judged at the caller's time. Add its exported suite to `test/storetest`. Verify: `go test -run 'TestMemory/PendingRequests' ./storetest/` in the `test` module.
-- [ ] 5.2 Add the code-record store port and its in-memory default, keyed by the `token/onetime` identifier and holding every binding of T2, including the grant family `F`, the sign-in's upstream issuer and session, and whether it holds `offline_access` (R7), test-first, with its suite. Verify: `go test -run 'TestMemory/CodeRecords' ./storetest/` in the `test` module.
-- [ ] 5.3 Add the consent store port and its in-memory default, test-first, with its suite:
+- [x] 5.1 Add the pending-request store port and its in-memory default, test-first. Records hold the handle's and the flow secret's digests. The stage advances login → consent → done by one conditional write, and expiry is judged at the caller's time. Add its exported suite to `test/storetest`. Verify: `go test -run 'TestMemory/PendingRequests' ./storetest/` in the `test` module.
+- [x] 5.2 Add the code-record store port and its in-memory default, keyed by the `token/onetime` identifier and holding every binding of T2, including the grant family `F`, the sign-in's upstream issuer and session, and whether it holds `offline_access` (R7), test-first, with its suite. Verify: `go test -run 'TestMemory/CodeRecords' ./storetest/` in the `test` module.
+- [x] 5.3 Add the consent store port and its in-memory default, test-first, with its suite:
   - scopes accumulate per user and client;
   - offline consent is recorded only when given explicitly;
   - the time consent was last given is kept;
   - consent can be revoked, and listed by user only.
 
   Verify: `go test -run 'TestMemory/Consents' ./storetest/` in the `test` module.
-- [ ] 5.4 Add the grant store port and its in-memory default, test-first, with its suite:
+- [x] 5.4 Add the grant store port and its in-memory default, test-first, with its suite:
   - create keeps a revocation recorded first (the H2 tombstone);
   - load by family;
   - revoke, which inserts a tombstone when no row exists;
   - revoke by user, and by user and client;
-  - end sign-ins by each T3 selector, returning only newly marked grants, deleting the matching browser sessions, and recording a revocation for each matching unspent code without `offline_access` (R2, R7);
+  - end sign-ins by each T3 selector, returning only newly marked grants, and recording a revocation carrying the mark for each matching unspent code without `offline_access` or of a client tied to its sign-in (R7);
   - revoke by user, and by user and client, recording one for each such code, `offline_access` included (R7);
   - a grant recorded to hold no lineage (R10);
   - grants record the sign-in's family and upstream session unchanged;
@@ -399,7 +399,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 12. Durable stores, migration and sweeping (`schema-migrations`, `security-state-stores`, `expiry-sweeping`)
 
-- [ ] 12.1 Write the security-state migration that creates the provider's nine tables and every lookup index (grants by user, by user and client, by sign-in, by upstream session; unspent codes and browser sessions by user, by sign-in and by upstream session), test-first, with a populated-database test and a rollback test. Verify: `go test -run 'TestMigrations' ./...` in the `test` module, against PostgreSQL 15 and 18.
+- [ ] 12.1 Write the security-state migration that creates the provider's nine tables and every lookup index (grants by user, by user and client, by sign-in, by upstream session; held codes and browser sessions by user, by sign-in and by upstream session), test-first, with a populated-database test and a rollback test. Verify: `go test -run 'TestMigrations' ./...` in the `test` module, against PostgreSQL 15 and 18.
 - [ ] 12.2 Implement every provider store in `sqlstore`, and `NewRefreshTokenStore` over the fixed `op_refresh_tokens` table (T7), test-first, driven by the suites. Include the "lineage identifier not found through the session store" case and the "no credential in any column" case. Verify: `go test -race -run 'TestSQLStore' ./sqlstore/...` in the `test` module.
 - [ ] 12.3 Implement the same in `pgxstore`, test-first. Verify: `go test -race -run 'TestPgxStore' ./pgxstore/...` in the `test` module.
 - [ ] 12.4 Implement the same in `gormstore`, test-first. Verify: `go test -race -run 'TestGormStore' ./gormstore/...` in the `test` module.

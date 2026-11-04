@@ -947,7 +947,7 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
   - upstream session;
   - user and upstream issuer.
 
-  (R2 and R7: it also deletes the matching browser sessions, and records a revocation for each matching unspent code.) It revokes the matching grants without `offline_access` (or every matching grant of a client tied to its sign-in), sets the sign-in-ended mark on every matching grant, and returns only the grants it newly marked.
+  (R7: it also records a revocation for each matching unspent code. R2: the provider deletes the matching browser sessions itself, through `DeleteBySignIn`, because they are another store.) It revokes the matching grants without `offline_access` (or every matching grant of a client tied to its sign-in), sets the sign-in-ended mark on every matching grant, and returns only the grants it newly marked.
 - **Why:**
   - every way a sign-in ends can be matched to its grants without a lookup `session.Store` lacks. Decision 5 keeps the port unchanged, and an upstream back-channel logout knows only the upstream session;
   - returning only newly marked grants makes "a client SHALL be notified at most once for one ended sign-in" (`oidc-provider-logout`) a store guarantee. The chain's logout and the session manager can both report one end, and the second report finds nothing new to notify.
@@ -1116,8 +1116,15 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 #### R7. An outstanding code does not outlive the sign-in or the user's grants (H5)
 
 - **The gap.** `EndSignIn` and `RevokeUserGrants` act on grant rows, but a code issued before they ran has no row yet. So a logout, recovery or MFA reset followed within the code's lifetime (60 s by default, 10 minutes at most) by its exchange creates a live grant after the event meant to end it. `UNREPRODUCED`.
-- **The decision.** Both operations also record a revocation for family `F` of each matching unspent code, reusing the H2 tombstone: the exchange reads it and answers `invalid_grant`, and if it races, the grant is stored revoked. Logout spares codes holding `offline_access`, as it spares such grants. The code record adds the upstream issuer and session, for T3's selectors. No override, because it only carries the existing decisions to a case they missed.
+- **The decision.** Both operations also record a revocation for family `F` of each matching unspent code, reusing the H2 tombstone: the exchange reads it and answers `invalid_grant`, and if it races, the grant is stored revoked. Logout spares codes holding `offline_access`, as it spares such grants, unless the client is tied to its sign-in, which the code record states as `EndsWithSignIn`. The code record adds the upstream issuer and session, for T3's selectors. No override, because it only carries the existing decisions to a case they missed.
 - **Also.** The exchange reads the user, as a refresh does, so a user disabled within those seconds gets no grant.
+- **Settled while building the stores (2026-11-04).**
+  - **"Unspent" means still held.** The spend lives in `token/onetime`, so a code store lists every unexpired record. That over-reaches harmlessly: a spent code's grant matches the same operation, and tombstones are swept.
+  - **An end's tombstone carries the sign-in-ended mark, and `Create` over it keeps the revocation and the mark,** so a racing exchange cannot make a client be notified twice. A plain revocation carries no mark.
+  - **Joining.** `GrantStore.UseCodes(UnspentCodes) error` joins the two stores from `New`. A different code store is refused, because replacing it would silently break the first provider's revocations. Two providers may share both stores.
+  - **`Create` is refused over a stored grant, and only fills a tombstone.**
+  - **`Advance` moves strictly forward:** login, consent, done, with login to done allowed. Nothing leaves done, and a logout request moves only to done.
+  - **What no store can close:** a code created after `EndSignIns` has listed the codes. The resume loads the sign-in immediately before issuing, which narrows that window to the gap between the load and the code's write. It is not closed.
 
 #### R8. A family identifier is not a credential (H6)
 
@@ -1221,6 +1228,7 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **[RS256 by default conflicts with FAPI 2.0]** → recorded in P8. A FAPI profile is a later, additive switch.
 - **[A cookie now stands for a sign-in at the provider's own endpoints]** (R2) → it is `__Host-`, `HttpOnly`, single-purpose, stored as a digest, capped by the sign-in's timeouts and ended with it, and CSRF protection is required with it. It does not see markers placed on the sign-in afterwards; the godoc states that.
 - **[Basic OP passes only with `PKCEOrNonce` and one expected failure]** (R1, R5) → recorded, and the runner fails if the entry goes stale. Official certification may need more, and was not checked.
+- **[A code issued as its sign-in ends]** (R7) → a resume that loaded the sign-in just before it ended can write a code after `EndSignIns` listed the codes, and that code's grant survives the end. The window is one request's gap, and the sign-in's other routes close with it. It is recorded, not closed.
 - **[A hint older than the key retention cannot be judged]** (R6) → it counts as no hint, so the user is asked at logout. No sign-in ends on a value that cannot be verified.
 - **[Two active changes define one option]** (R16) → task 1.3 aligns `session-signals` before either is implemented.
 - **[A sign-in credential held by the login page's JavaScript]** → it is the credential the page already holds to sign in, kept in memory only. The resume adds no new exposure, and `bff-resource-server`'s cookie session could remove it later (P1).
