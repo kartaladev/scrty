@@ -70,8 +70,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - no secret or digest in an error's text.
 
   Verify: `go test -run 'TestMemoryRegistry|TestRegistry_Secrets' -count=1 ./oidcprovider/`.
-- [ ] 4.5 Authenticate clients by `client_secret_basic` (Base64, then URL-decode), `client_secret_post` and `none`, test-first: the wrong method and an undecodable header are `invalid_client`; two methods at once and two different identifiers are `invalid_request`; a credential in the query is `invalid_request`. Verify: `go test -run 'TestAuthenticateClient' -count=1 ./oidcprovider/`.
-- [ ] 4.6 Verify `private_key_jwt` assertions, test-first. Cover:
+- [x] 4.5 Authenticate clients by `client_secret_basic` (Base64, then URL-decode), `client_secret_post` and `none`, test-first: the wrong method and an undecodable header are `invalid_client`; two methods at once and two different identifiers are `invalid_request`; a credential in the query is `invalid_request`. Verify: `go test -run 'TestAuthenticateClient' -count=1 ./oidcprovider/`.
+- [x] 4.6 Verify `private_key_jwt` assertions, test-first. Cover:
   - an asymmetric algorithm only;
   - `iss` and `sub` equal to `client_id`;
   - `aud` the issuer alone by default, with the `AudienceIssuerOrTokenEndpoint` option;
@@ -82,7 +82,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - a fetch failure reported as a dependency failure, not as `invalid_client`.
 
   Verify: `go test -run 'TestAuthenticateClient_PrivateKeyJWT' -count=1 ./oidcprovider/`.
-- [ ] 4.7 Godoc the package, `New`, `Client` and every option, each naming its default and limit. Verify: `go doc ./oidcprovider` lists them, and `go vet ./oidcprovider/` is clean.
+- [x] 4.7 Godoc the package, `New`, `Client` and every option, each naming its default and limit. Verify: `go doc ./oidcprovider` lists them, and `go vet ./oidcprovider/` is clean.
 
 ## 5. Provider stores, in-memory defaults and conformance suites (`security-state-stores`, `store-conformance`, design T2, T3, T6, T7)
 
@@ -267,6 +267,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 - [ ] 8.1 Add `EnableOIDCProvider` with its construction rules, test-first, one table:
   - a bearer mode is required, and so is the JWKS endpoint;
+  - an assertion token endpoint differing from the chain's real token path is refused (P7);
   - a JWKS endpoint serving a different signing-key manager from the provider's key source is refused, while a wrapped provider, which cannot be compared, builds (R6);
   - enabling it twice is refused, and so are path collisions;
   - every session manager on the chain must report to the provider (T4);

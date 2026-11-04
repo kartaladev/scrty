@@ -802,6 +802,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - two provider paths equal;
   - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`;
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
+  - `(*Provider).AssertionTokenEndpoint()` not empty and differing from the chain's token URL, after the prefix and path options → `ErrConfig` naming `WithAssertionTokenEndpoint`;
   - `EnableJWKSEndpoint` given a `*signingkey.Keys` for which `(*Provider).SignsWith` answers false → `ErrConfig`, and a consumer's wrapped provider of any other type, which cannot be compared → built, as the godoc says;
   - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (`httpsec/options.go`).
 - [ ] FAIL; implement; PASS; commit.
