@@ -642,7 +642,10 @@ func TestOutboundTimeout(t *testing.T) {
 				<-r.Context().Done()
 			})
 
-			ctx := t.Context()
+			// A call nothing else ends fails on how long it took, rather than leaving the run hanging.
+			backstop, stop := context.WithTimeout(t.Context(), time.Minute)
+			defer stop()
+			ctx := backstop
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
 			}
@@ -656,6 +659,56 @@ func TestOutboundTimeout(t *testing.T) {
 			started := time.Now()
 			_, err = c.Get(ctx, silent.URL+"/jwks", nil)
 			tc.assert(t, err, time.Since(started), sent)
+		})
+	}
+}
+
+// TestOutboundFormLeavesTheHeaderAlone pins that a form's content type goes on a copy: the caller's header may
+// be shared, and is theirs.
+func TestOutboundFormLeavesTheHeaderAlone(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		post func(c *outbound.Client, ctx context.Context, rawURL string, header http.Header) error
+	}
+
+	cases := []testCase{
+		{
+			name: "PostForm",
+			post: func(c *outbound.Client, ctx context.Context, rawURL string, header http.Header) error {
+				_, err := c.PostForm(ctx, rawURL, url.Values{"a": {"b"}}, header)
+
+				return err
+			},
+		},
+		{
+			name: "PostFormStatus",
+			post: func(c *outbound.Client, ctx context.Context, rawURL string, header http.Header) error {
+				_, err := c.PostFormStatus(ctx, rawURL, url.Values{"a": {"b"}}, header)
+
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got atomic.Value
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				got.Store(r.Header.Get("Content-Type"))
+			}))
+			t.Cleanup(srv.Close)
+			c, err := outbound.New(outbound.WithHTTPClient(trusting(t, srv)))
+			require.NoError(t, err)
+
+			header := http.Header{"Content-Type": {"text/plain"}, "X-Kept": {"yes"}}
+			require.NoError(t, tc.post(c, t.Context(), srv.URL+"/form", header))
+
+			assert.Equal(t, "application/x-www-form-urlencoded", got.Load(), "the request says it is a form")
+			assert.Equal(t, http.Header{"Content-Type": {"text/plain"}, "X-Kept": {"yes"}}, header, "and the caller's header is as it was")
 		})
 	}
 }

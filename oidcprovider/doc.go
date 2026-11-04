@@ -238,10 +238,12 @@
 // Reports stay off the logout and off the workers. A failure's log line waits for one goroutine, in order,
 // and its event for one of 64, so a log handler or sink that is slow, panics or never returns delays no
 // logout, keeps no worker, and holds no Shutdown past its context. At most 1024 wait for each, besides what
-// Shutdown finds still queued, which has room of its own. The newest past that loses its event and keeps
-// its log line, or, where the log handler is held too or a burst outruns it, loses both, and how many is
-// logged once the handler can take it. A log line cannot outlive a handler that never returns, which is the
-// one thing that can log it.
+// Shutdown finds still queued and any post it cuts off, which have room of their own. The newest past that
+// loses its event and keeps its log line, or, where the log handler is held too or a burst outruns it, may
+// lose both. How many is logged once the handler can take it, as lost_records and lost_events, with the notes
+// of a delivery cut off or ending late, which are no failure's report, apart as lost_notes. A handler that
+// panics on that count is offered it three times, and then again the next time there is something to log. A
+// log line cannot outlive a handler that never returns, which is the one thing that can log it.
 //
 // # Security events
 //

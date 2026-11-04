@@ -116,7 +116,9 @@ func clientsToNotify(ended []Grant) []ClientToNotify {
 //
 // It runs inside the session manager's call, on a context its caller cannot cancel, and each store
 // has its own budget of 10 seconds, so hanging stores can delay a logout's answer by up to 20 seconds.
-// Back-channel delivery adds nothing to that, as handing it on never waits.
+// Back-channel delivery adds nothing to that, as handing it on never waits. A security-event sink does:
+// each grant the end revokes is reported on this call, and a sink is called synchronously, so one that
+// blocks holds the logout's answer for as long as it blocks, which no budget here bounds.
 //
 // It has no error to return, and the sign-in has already ended, so a failure is logged and leaves the
 // sign-in ended, with the grants left as they stand until the next end selecting them.

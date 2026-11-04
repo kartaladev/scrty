@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1126,6 +1127,8 @@ func TestProvider_Events_DropReadsTheClient(t *testing.T) {
 		answer func(ctx context.Context, release <-chan struct{}) error
 		// reported says the drop is reported.
 		reported bool
+		// lost is how many events are counted as lost.
+		lost int
 	}
 
 	cases := []testCase{
@@ -1149,6 +1152,20 @@ func TestProvider_Events_DropReadsTheClient(t *testing.T) {
 		{
 			name:   "a client the registry no longer holds has no one to tell",
 			answer: func(context.Context, <-chan struct{}) error { return oidcprovider.ErrClientNotFound },
+		},
+		{
+			name:     "a registry that panics has not answered, so that too is unknown, and is reported",
+			answer:   func(context.Context, <-chan struct{}) error { panic("in the registry") },
+			reported: true,
+		},
+		{
+			name: "a registry that ends the goroutine takes the event with it, and it is counted",
+			answer: func(context.Context, <-chan struct{}) error {
+				runtime.Goexit()
+
+				return nil
+			},
+			lost: 1,
 		},
 	}
 
@@ -1190,6 +1207,8 @@ func TestProvider_Events_DropReadsTheClient(t *testing.T) {
 			finish()
 			drained(t, x.p)
 			assert.Equal(t, tc.reported, dropReported())
+			_, lost := countsOf(t, x.logs.String())
+			assert.Equal(t, tc.lost, lost)
 		})
 	}
 }

@@ -29,7 +29,7 @@ import (
 // decided it, and neither a logout nor a worker may wait for a sink: it reaches the sink on a goroutine of
 // its own, at most 64 at once, with at most 1024 more waiting, and is stamped when it reaches it. Past those
 // the newest loses its event and keeps its log line, and how many did so is logged. What Shutdown finds still
-// queued has room of its own. Shutdown waits for those goroutines, as it does for every delivery, and returns
+// queued has room of its own, as does a post it cuts off, which an end arriving after it cannot take. Shutdown waits for those goroutines, as it does for every delivery, and returns
 // its context's error if the sink still holds one then. The limit has no option, as it protects the provider
 // from the sink: a consumer who cannot afford it gives a sink that returns promptly, onto a queue of its own.
 //
@@ -181,7 +181,7 @@ func (p *Provider) reportLogoutFailed(ctx context.Context, f logoutFailure) {
 		Name: event.LogoutDeliveryFailed, Outcome: event.OutcomeFailure, User: f.User, Client: f.ClientID, Cause: f.Reason,
 	}
 	dropped := slices.Contains(dropReasons, f.Reason)
-	p.logouts.toSink(func() {
+	p.logouts.toSink(f.refused, func() {
 		if !dropped || p.hasSomeoneToTell(ctx, f.ClientID) {
 			p.report(ctx, e)
 		}
@@ -191,12 +191,25 @@ func (p *Provider) reportLogoutFailed(ctx context.Context, f logoutFailure) {
 // hasSomeoneToTell reads the client as it stands, within the delivery's own bound. A client that has
 // gone, or registered no URI, has no one to tell. A registry that cannot answer leaves it unknown,
 // and unknown is reported: an event about a client with no one to tell costs less than silence about
-// a client that should have been told.
-func (p *Provider) hasSomeoneToTell(ctx context.Context, clientID string) bool {
+// a client that should have been told. A registry that panics has not answered either. One that ends the
+// goroutine takes the event with it, as nothing can stop that, so the event is counted as lost.
+func (p *Provider) hasSomeoneToTell(ctx context.Context, clientID string) (tell bool) {
+	answered := false
+	defer func() {
+		switch {
+		case answered:
+		case recover() != nil:
+			tell = true
+		default:
+			p.logouts.eventLost()
+		}
+	}()
+
 	bounded, cancel := context.WithTimeout(ctx, p.cfg.logoutTimeout)
 	defer cancel()
 
 	rc, err := p.client(bounded, clientID)
+	answered = true
 	switch {
 	case errors.Is(err, ErrClientNotFound):
 		return false

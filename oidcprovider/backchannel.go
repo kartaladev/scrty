@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,6 +45,9 @@ const (
 	maxLogoutSinkReports = 64
 	// maxLogoutReportsWaiting bounds what waits for a goroutine, for the sink and for the log each.
 	maxLogoutReportsWaiting = 1024
+	// maxLostCountTries is how many times a log handler is offered a count of what found no room before the
+	// count waits for the next time the lane has work, so that one that always fails cannot keep it turning.
+	maxLostCountTries = 3
 )
 
 // The fixed words a failed delivery is logged and reported under.
@@ -72,6 +76,8 @@ type logoutFailure struct {
 	Err error
 	// PanicType is the Go type of what a delivery panicked with.
 	PanicType string
+	// refused says the pool turned the job away, so its report takes none of the room Shutdown holds.
+	refused bool
 }
 
 func failureOf(c ClientToNotify, reason string, err error) *logoutFailure {
@@ -160,7 +166,7 @@ func deliveryReason(err error) string {
 // reportLogoutFailure hands a failed delivery to the log and to the sink, and returns at once: nothing here
 // calls a consumer's code on the goroutine that found the failure. It undoes nothing.
 func (p *Provider) reportLogoutFailure(ctx context.Context, f logoutFailure) {
-	p.logouts.toLog(func() {
+	p.logouts.toLog(f.refused, func() {
 		if p.cfg.logoutFailed != nil {
 			defer p.cfg.logoutFailed(ctx, f)
 		}
@@ -190,7 +196,7 @@ func (p *Provider) logLogoutFailure(ctx context.Context, f logoutFailure) {
 // logCutOffLogout notes a read of a client or a signature Shutdown ended, before any token left, which is no
 // failure, so it is not reported.
 func (p *Provider) logCutOffLogout(ctx context.Context, clientID string) {
-	p.logouts.toLog(func() {
+	p.logouts.noteToLog(func() {
 		p.cfg.logger.LogAttrs(ctx, slog.LevelInfo, "oidcprovider: shutdown cut off a logout token's delivery",
 			slog.String("client_id", clientID))
 	})
@@ -198,17 +204,17 @@ func (p *Provider) logCutOffLogout(ctx context.Context, clientID string) {
 
 // logLateLogoutFailure notes how a delivery ended after its bound had already reported it failed.
 func (p *Provider) logLateLogoutFailure(ctx context.Context, f *logoutFailure) {
-	p.logouts.toLog(func() {
+	p.logouts.noteToLog(func() {
 		p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: a logout token's delivery ended its goroutine after its bound",
 			slog.String("client_id", f.ClientID), slog.String("reason", f.Reason), slog.String("value_type", f.PanicType))
 	})
 }
 
-// logLostLogoutReports says how many reports of failed deliveries found no room: those that lost their log
-// line and their event, and those that lost only their event.
-func (p *Provider) logLostLogoutReports(records, events int) {
-	p.cfg.logger.LogAttrs(context.Background(), slog.LevelError, "oidcprovider: reports of failed logout deliveries found no room",
-		slog.Int("lost_records", records), slog.Int("lost_events", events))
+// logLostLogoutReports says what found no room: how many failures lost their log line, how many lost their
+// event, and, apart from those, how many notes of how a delivery ended were lost, which are no failure's report.
+func (p *Provider) logLostLogoutReports(lost lostReports) {
+	p.cfg.logger.LogAttrs(context.Background(), slog.LevelError, "oidcprovider: reports of logout deliveries found no room",
+		slog.Int("lost_records", lost.records), slog.Int("lost_events", lost.events), slog.Int("lost_notes", lost.notes))
 }
 
 // outboundLogoutDelivery is the default: one form POST through a confined client.
@@ -260,7 +266,7 @@ func (c *config) buildLogoutDelivery() (LogoutDelivery, error) {
 	// delivery short.
 	opts := append([]outbound.Option{
 		outbound.WithHTTPClient(&http.Client{Transport: newLogoutTransport()}),
-		outbound.WithTimeout(c.logoutTimeout + logoutOutboundMargin),
+		outbound.WithTimeout(min(c.logoutTimeout, math.MaxInt64-logoutOutboundMargin) + logoutOutboundMargin),
 	}, c.logoutOutbound...)
 	out, err := outbound.New(append(opts, outbound.WithMaxRedirects(0))...)
 	if err != nil {
@@ -298,7 +304,7 @@ type logoutPool struct {
 	report  func(context.Context, logoutFailure)
 	cutOff  func(context.Context, string)
 	late    func(context.Context, *logoutFailure)
-	lost    func(records, events int)
+	lost    func(lostReports)
 
 	workers, capacity int
 	timeout           time.Duration
@@ -319,8 +325,18 @@ type logoutPool struct {
 	// records runs what is logged, and events what reaches a sink. They are apart so that a sink that does
 	// not return costs no failure its log line, and a log handler that does not return costs none its event.
 	records, events reportLane
-	// lostRecords and lostEvents count what found no room, until records can log how many.
-	lostRecords, lostEvents int
+	// unsaid counts what found no room, until records can log how many, and lostTries how many times in a row
+	// that has been offered to the log handler and not taken.
+	unsaid    lostReports
+	lostTries int
+	// shutdownRoom is the place in each lane held for what Shutdown found: each job it took from the queue, and
+	// one for each worker and each call still running as it stopped them, which may each report once. It is
+	// set once, as nothing starts afterwards, and a refused job has no share of it. flushed says it has been.
+	shutdownRoom int
+	flushed      bool
+	// reporting counts the reports being handed to the lanes, by those with no goroutine counted above: an end
+	// whose job was refused, and Shutdown with what it took from the queue.
+	reporting int
 
 	// drained is closed while Shutdown has been asked and nothing is left running, which a report of a
 	// later drop reopens with a new channel, so that nil from Shutdown goes on meaning nothing is left.
@@ -335,6 +351,13 @@ type reportLane struct {
 	running         int
 	waiting         []func()
 }
+
+// lostReports is what found no room, by what it is.
+type lostReports struct {
+	records, events, notes int
+}
+
+func (l lostReports) any() bool { return l != lostReports{} }
 
 func newLogoutPool(cfg *config, p *Provider) *logoutPool {
 	stopped, stop := context.WithCancel(context.Background())
@@ -361,7 +384,10 @@ func newLogoutPool(cfg *config, p *Provider) *logoutPool {
 func (q *logoutPool) enqueue(ctx context.Context, c ClientToNotify) {
 	job := logoutJob{client: c, ctx: context.WithoutCancel(ctx)}
 	if reason := q.accept(job); reason != "" { //nolint:contextcheck // a worker's context is the job's
-		q.report(job.ctx, *failureOf(c, reason, nil)) //nolint:contextcheck // the job's context is ctx, detached
+		defer q.endReporting()
+		failure := failureOf(c, reason, nil)
+		failure.refused = true
+		q.report(job.ctx, *failure) //nolint:contextcheck // the job's context is ctx, detached
 	}
 }
 
@@ -371,8 +397,12 @@ func (q *logoutPool) accept(job logoutJob) (refused string) {
 
 	switch {
 	case q.closed:
+		q.beginReporting()
+
 		return failureShutdown
 	case len(q.queue) >= q.capacity:
+		q.beginReporting()
+
 		return failureQueueFull
 	}
 	q.queue = append(q.queue, job)
@@ -418,37 +448,88 @@ func (q *logoutPool) next() (logoutJob, bool) {
 
 // settle closes drained once there is nothing left to wait for, and needs mu held.
 func (q *logoutPool) settle() {
-	if q.closed && !q.finished && q.running == 0 && q.calls == 0 && q.records.running == 0 && q.events.running == 0 {
+	if q.closed && !q.finished && q.reporting == 0 && q.running == 0 && q.calls == 0 && q.records.running == 0 && q.events.running == 0 {
 		q.finished = true
 		close(q.drained)
 	}
 }
 
-// toLog hands what logs a failure to the records lane. Past its room the failure is counted.
-func (q *logoutPool) toLog(task func()) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if !q.push(&q.records, task) {
-		q.lostRecords++
+// reopen takes back a nil from Shutdown that has not been said yet, as there is something to wait for again,
+// and needs mu held.
+func (q *logoutPool) reopen() {
+	if q.finished {
+		q.finished = false
+		q.drained = make(chan struct{})
 	}
 }
 
-// toSink hands what reports a failure to the events lane. Past its room the failure is counted, and the
-// records lane is started to log how many, which is how a lost event still gets said.
-func (q *logoutPool) toSink(task func()) {
+// beginReporting says a report is on its way to the lanes, so that its log line and its event are one step
+// for Shutdown, and needs mu held.
+func (q *logoutPool) beginReporting() {
+	q.reporting++
+	q.reopen()
+}
+
+func (q *logoutPool) endReporting() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if !q.push(&q.events, task) {
-		q.lostEvents++
-		q.startLane(&q.records)
+	q.reporting--
+	q.settle()
+}
+
+// toLog hands what logs a failure to the records lane. Past its room the failure is counted.
+func (q *logoutPool) toLog(refused bool, task func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if !q.push(&q.records, refused, task) {
+		q.unsaid.records++
 	}
+}
+
+// noteToLog hands a line that is no failure's report to the records lane. Past its room it is counted apart.
+func (q *logoutPool) noteToLog(task func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if !q.push(&q.records, false, task) {
+		q.unsaid.notes++
+	}
+}
+
+// toSink hands what reports a failure to the events lane. Past its room the failure is counted.
+func (q *logoutPool) toSink(refused bool, task func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if !q.push(&q.events, refused, task) {
+		q.countLostEvent()
+	}
+}
+
+// eventLost counts an event lost on its way to the sink.
+func (q *logoutPool) eventLost() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	q.countLostEvent()
+}
+
+// countLostEvent counts an event, and starts the records lane to log how many, which may be idle as its own log
+// line has already gone, and is how a lost event still gets said. It needs mu held.
+func (q *logoutPool) countLostEvent() {
+	q.unsaid.events++
+	q.startLane(&q.records)
 }
 
 // push adds a task unless the lane has no room, and needs mu held.
-func (q *logoutPool) push(lane *reportLane, task func()) bool {
-	if len(lane.waiting) >= lane.capacity {
+func (q *logoutPool) push(lane *reportLane, refused bool, task func()) bool {
+	room := lane.capacity
+	if !refused {
+		room += q.shutdownRoom
+	}
+	if len(lane.waiting) >= room {
 		return false
 	}
 	lane.waiting = append(lane.waiting, task)
@@ -463,10 +544,7 @@ func (q *logoutPool) startLane(lane *reportLane) {
 		return
 	}
 	lane.running++
-	if q.finished {
-		q.finished = false
-		q.drained = make(chan struct{})
-	}
+	q.reopen()
 	go q.runLane(lane)
 }
 
@@ -492,8 +570,9 @@ func (q *logoutPool) runLane(lane *reportLane) {
 	}
 }
 
-// nextTask takes the oldest task, or takes this goroutine off the count. The records lane says how many
-// reports found no room before it leaves, so that the count is the last thing said of a burst.
+// nextTask takes the oldest task, or takes this goroutine off the count. The records lane says how much found
+// no room before it leaves, so that the count is the last thing said of a burst. A count the log handler would
+// not take after its tries stays counted, and goes with the next time this lane has work.
 func (q *logoutPool) nextTask(lane *reportLane) (func(), bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -505,17 +584,42 @@ func (q *logoutPool) nextTask(lane *reportLane) (func(), bool) {
 
 		return task, true
 	}
-	if lane == &q.records && q.lostRecords+q.lostEvents > 0 {
-		records, events := q.lostRecords, q.lostEvents
-		q.lostRecords, q.lostEvents = 0, 0
+	if lane == &q.records && q.unsaid.any() && q.lostTries < maxLostCountTries {
+		lost := q.unsaid
+		q.unsaid = lostReports{}
+		q.lostTries++
 
-		return func() { q.lost(records, events) }, true
+		return func() { q.sayLost(lost) }, true
+	}
+	if lane == &q.records {
+		q.lostTries = 0
 	}
 	lane.waiting = nil
 	lane.running--
 	q.settle()
 
 	return nil, false
+}
+
+// sayLost logs a count, and puts it back if the log handler panics or ends the goroutine instead of taking it.
+func (q *logoutPool) sayLost(lost lostReports) {
+	said := false
+	defer func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+
+		if said {
+			q.lostTries = 0
+
+			return
+		}
+		q.unsaid.records += lost.records
+		q.unsaid.events += lost.events
+		q.unsaid.notes += lost.notes
+	}()
+
+	q.lost(lost)
+	said = true
 }
 
 // attempt runs one delivery, waiting no longer than its bound. A job taken as Shutdown stopped everything
@@ -668,10 +772,14 @@ func (q *logoutPool) shutdown(ctx context.Context) error {
 	q.mu.Lock()
 	left := q.queue
 	q.queue = nil
-	// What was queued takes no one's room: the queue's own bound already held it, and this is once.
-	q.records.capacity += len(left)
-	q.events.capacity += len(left)
+	if !q.flushed {
+		q.flushed = true
+		q.shutdownRoom = len(left) + q.running + q.calls
+	}
+	q.beginReporting()
 	q.mu.Unlock()
+	defer q.endReporting()
+
 	q.stop()
 	for _, job := range left {
 		q.report(job.ctx, *failureOf(job.client, failureShutdown, nil)) //nolint:contextcheck // the job's context is its own, detached from its caller's

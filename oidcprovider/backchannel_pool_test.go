@@ -3,7 +3,9 @@ package oidcprovider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"reflect"
 	"runtime"
@@ -21,6 +23,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/event"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/outbound"
 )
@@ -948,6 +951,7 @@ func TestProvider_BackChannelDelivery_Construction(t *testing.T) {
 		{name: "one worker and one place is enough", opts: []oidcprovider.Option{oidcprovider.WithLogoutDeliveryPool(1, 1)}, assert: func(t *testing.T, err error) { require.NoError(t, err) }},
 		{name: "no bound", opts: []oidcprovider.Option{oidcprovider.WithLogoutDeliveryTimeout(0)}, assert: refused("WithLogoutDeliveryTimeout")},
 		{name: "a negative bound", opts: []oidcprovider.Option{oidcprovider.WithLogoutDeliveryTimeout(-time.Second)}, assert: refused("WithLogoutDeliveryTimeout")},
+		{name: "the longest bound there is", opts: []oidcprovider.Option{oidcprovider.WithLogoutDeliveryTimeout(math.MaxInt64)}, assert: func(t *testing.T, err error) { require.NoError(t, err) }},
 		{name: "options an outbound client refuses", opts: []oidcprovider.Option{oidcprovider.WithLogoutOutbound(outbound.WithTimeout(-time.Second))}, assert: refused("WithLogoutOutbound")},
 		{name: "options for a post that a consumer's delivery replaces", opts: []oidcprovider.Option{delivery, oidcprovider.WithLogoutOutbound()}, assert: refused("WithLogoutOutbound")},
 		{name: "the same, the other way round", opts: []oidcprovider.Option{oidcprovider.WithLogoutOutbound(), delivery}, assert: refused("WithLogoutOutbound")},
@@ -1352,26 +1356,32 @@ func fillQueue(t *testing.T, x *ending, g *gate) {
 	x.end(t.Context(), t, "billing-web")
 }
 
-// countsOf adds up the records that say how many reports found no room.
+// countsOf adds up the records that say how many failures lost their log line, and how many their event.
 func countsOf(t *testing.T, logged string) (records, events int) {
 	t.Helper()
 
+	return lostCount(t, logged, "lost_records="), lostCount(t, logged, "lost_events=")
+}
+
+// lostCount adds up one field of the records that say how much found no room.
+func lostCount(t *testing.T, logged, prefix string) int {
+	t.Helper()
+
+	total := 0
 	for line := range strings.Lines(logged) {
 		if !strings.Contains(line, "found no room") {
 			continue
 		}
 		for field := range strings.FieldsSeq(line) {
-			for prefix, total := range map[string]*int{"lost_records=": &records, "lost_events=": &events} {
-				if rest, ok := strings.CutPrefix(field, prefix); ok {
-					n, err := strconv.Atoi(rest)
-					require.NoError(t, err)
-					*total += n
-				}
+			if rest, ok := strings.CutPrefix(field, prefix); ok {
+				n, err := strconv.Atoi(rest)
+				require.NoError(t, err)
+				total += n
 			}
 		}
 	}
 
-	return records, events
+	return total
 }
 
 // The bound on reports, as the godoc states it: 64 goroutines at a sink and 1024 reports waiting for one.
@@ -1442,7 +1452,9 @@ func TestProvider_BackChannelDelivery_HungLogHandlerLosesTheNewest(t *testing.T)
 		fillQueue(t, x, g)
 
 		started := time.Now()
-		for range 1 + reportsWaiting + over {
+		x.end(t.Context(), t, "billing-web") // What the handler holds, once its goroutine has taken it.
+		synctest.Wait()
+		for range reportsWaiting + over {
 			x.end(t.Context(), t, "billing-web")
 		}
 		assert.Zero(t, time.Since(started), "no end waited")
@@ -1713,5 +1725,561 @@ func TestProvider_BackChannelDelivery_NoSinkReadsNoClient(t *testing.T) {
 
 		assert.Equal(t, []string{"shutdown"}, x.reasons())
 		assert.Zero(t, reads.Load())
+	})
+}
+
+// heldAtSinkLookup is a caller's context that, once armed, holds the next look for a chain's sink until it is
+// released. A failed delivery's report looks for one between handing on its log line and its event, so this
+// stops a report at that point, and whatever is meant to race it can be run there on purpose.
+type heldAtSinkLookup struct {
+	context.Context //nolint:containedctx // what it holds is a lookup on this context
+
+	armed   atomic.Bool
+	release chan struct{}
+}
+
+func newHeldAtSinkLookup(ctx context.Context) *heldAtSinkLookup {
+	return &heldAtSinkLookup{Context: ctx, release: make(chan struct{})}
+}
+
+// Value implements context.Context.
+func (c *heldAtSinkLookup) Value(key any) any {
+	if strings.Contains(fmt.Sprintf("%T", key), "eventsink") && c.armed.CompareAndSwap(true, false) {
+		<-c.release
+	}
+
+	return c.Context.Value(key)
+}
+
+// failuresOnChain is ctx with a chain's sink that keeps each failed delivery's event in log, once release says.
+// A nil release holds nothing.
+func failuresOnChain(ctx context.Context, log *eventLog, release <-chan struct{}) context.Context {
+	return eventsink.With(ctx, func(ctx context.Context, e event.Event) {
+		if e.Name != event.LogoutDeliveryFailed {
+			return
+		}
+		if release != nil {
+			<-release
+		}
+		log.sink(ctx, e)
+	})
+}
+
+// TestProvider_BackChannelDelivery_NilCoversEveryReport pins that Shutdown's nil means every report has been
+// made, on two paths where no worker, call or report goroutine is left to say one is still to come.
+func TestProvider_BackChannelDelivery_NilCoversEveryReport(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// reach runs the provider up to where a report is held, on held. What held wraps holds nothing.
+		reach      func(t *testing.T, x *ending, held *heldAtSinkLookup)
+		wantEvents int
+	}
+
+	cases := []testCase{
+		{
+			name: "a drop whose log line is out and whose event is not",
+			reach: func(t *testing.T, x *ending, held *heldAtSinkLookup) {
+				t.Helper()
+				require.NoError(t, x.p.Shutdown(t.Context()))
+				held.armed.Store(true)
+				go x.end(held, t, "billing-web")
+				synctest.Wait()
+				assert.Equal(t, []string{"shutdown"}, x.reasons(), "its log line is out")
+			},
+			wantEvents: 1,
+		},
+		{
+			name: "a queue another Shutdown has taken and is still reporting",
+			reach: func(t *testing.T, x *ending, held *heldAtSinkLookup) {
+				t.Helper()
+				x.end(held.Context, t, "billing-web")
+				synctest.Wait()
+				x.end(held, t, "billing-web")
+				held.armed.Store(true)
+
+				bounded, stop := context.WithTimeout(t.Context(), time.Second)
+				t.Cleanup(stop)
+				go func() { _ = x.p.Shutdown(bounded) }()
+				time.Sleep(time.Second)
+				synctest.Wait()
+				assert.Equal(t, []string{"shutdown", "shutdown"}, x.reasons(), "what it cut off and took are logged")
+			},
+			wantEvents: 2,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				var log eventLog
+				x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDelivery(newGate(true)), oidcprovider.WithLogoutDeliveryPool(1, 1))
+				held := newHeldAtSinkLookup(failuresOnChain(t.Context(), &log, nil))
+				tc.reach(t, x, held)
+
+				bounded, stop := context.WithTimeout(t.Context(), time.Second)
+				defer stop()
+				err := x.p.Shutdown(bounded)
+				close(held.release)
+				require.ErrorIs(t, err, context.DeadlineExceeded, "a report is still to be made")
+
+				require.NoError(t, x.p.Shutdown(t.Context()))
+				assert.Len(t, named(log.all(), event.LogoutDeliveryFailed), tc.wantEvents, "and nil is said once it has been")
+			})
+		})
+	}
+}
+
+// TestProvider_BackChannelDelivery_CutOffPostHasRoomAtShutdown pins that what Shutdown finds queued and a post
+// it cuts off lose nothing to lanes already full: each of those two has room of its own.
+func TestProvider_BackChannelDelivery_CutOffPostHasRoomAtShutdown(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var made atomic.Int32
+		g := newGate(true)
+		x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDelivery(g), oidcprovider.WithLogoutDeliveryPool(1, 1),
+			atFailedDelivery(func() {
+				<-release
+				made.Add(1)
+			}))
+		fillQueue(t, x, g)
+		for range reportsAtASink + reportsWaiting {
+			x.end(t.Context(), t, "billing-web")
+			synctest.Wait()
+		}
+
+		bounded, stop := context.WithTimeout(t.Context(), time.Second)
+		defer stop()
+		require.ErrorIs(t, x.p.Shutdown(bounded), context.DeadlineExceeded)
+		synctest.Wait()
+		close(release)
+		require.NoError(t, x.p.Shutdown(t.Context()))
+
+		_, events := countsOf(t, x.logs.String())
+		assert.Zero(t, events, "nothing is counted as lost")
+		assert.Equal(t, int32(reportsAtASink+reportsWaiting+2), made.Load(), "the queued one and the cut-off post have their events")
+	})
+}
+
+// TestProvider_BackChannelDelivery_ShutdownRoomIsNotADropsRoom pins that "room of its own" holds against an end
+// arriving during the flush: the drop is the newest and finds none, and what Shutdown found queued keeps its
+// log line and its event.
+func TestProvider_BackChannelDelivery_ShutdownRoomIsNotADropsRoom(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		const later = 8
+		release := make(chan struct{})
+		logs := &lockedBuffer{}
+		var log eventLog
+		g := newGate(true)
+		clients := append(oneClient(), listeningClient("audit-web", billingBackChannel))
+		x := newEnding(t, clients, nil, oidcprovider.WithLogoutDelivery(g), oidcprovider.WithLogoutDeliveryPool(1, 2),
+			oidcprovider.WithLogger(slog.New(heldHandler{Handler: slog.NewTextHandler(logs, nil), release: release})))
+		base := failuresOnChain(t.Context(), &log, release)
+		held := newHeldAtSinkLookup(base)
+
+		x.end(base, t, "billing-web")
+		synctest.Wait()
+		x.end(held, t, "billing-web")
+		x.end(base, t, "audit-web") // Queued behind the one the flush will be held at.
+		held.armed.Store(true)
+		for range reportsAtASink + reportsWaiting {
+			x.end(base, t, "billing-web")
+			synctest.Wait()
+		}
+
+		bounded, stop := context.WithTimeout(t.Context(), time.Second)
+		defer stop()
+		first := make(chan error, 1)
+		go func() { first <- x.p.Shutdown(bounded) }()
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		for range later {
+			x.end(base, t, "billing-web")
+		}
+		close(held.release)
+		require.ErrorIs(t, <-first, context.DeadlineExceeded)
+		close(release)
+		require.NoError(t, x.p.Shutdown(t.Context()))
+
+		told := []string{}
+		for _, f := range x.failed() {
+			told = append(told, f.ClientID)
+		}
+		assert.Contains(t, told, "audit-web", "its log line had room")
+		clientsReported := []string{}
+		for _, e := range named(log.all(), event.LogoutDeliveryFailed) {
+			clientsReported = append(clientsReported, e.Client)
+		}
+		assert.Contains(t, clientsReported, "audit-web", "and so did its event")
+	})
+}
+
+// onLostCount is a log handler running act at each saying of how much found no room, and keeping every record
+// it returns from.
+type onLostCount struct {
+	slog.Handler
+	said *atomic.Int32
+	act  func(n int32)
+}
+
+// Handle implements slog.Handler.
+func (h onLostCount) Handle(ctx context.Context, r slog.Record) error {
+	if strings.Contains(r.Message, "found no room") {
+		h.act(h.said.Add(1))
+	}
+
+	return h.Handler.Handle(ctx, r)
+}
+
+// WithAttrs implements slog.Handler.
+func (h onLostCount) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup implements slog.Handler.
+func (h onLostCount) WithGroup(string) slog.Handler { return h }
+
+// TestProvider_BackChannelDelivery_LostCountIsSaidOnce pins that how many found no room is said once, however
+// the log handler takes it: one that fails to take it has it offered again, a limited number of times, so
+// that a handler that always fails cannot keep a goroutine turning.
+func TestProvider_BackChannelDelivery_LostCountIsSaidOnce(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		act    func(n int32)
+		assert func(t *testing.T, offered int32, events int)
+	}
+
+	const over = 1
+
+	cases := []testCase{
+		{
+			name: "by a handler that takes it",
+			act:  func(int32) {},
+			assert: func(t *testing.T, offered int32, events int) {
+				t.Helper()
+				assert.Equal(t, int32(1), offered)
+				assert.Equal(t, over, events)
+			},
+		},
+		{
+			name: "after a handler panicked on it once",
+			act: func(n int32) {
+				if n == 1 {
+					panic("in the handler")
+				}
+			},
+			assert: func(t *testing.T, offered int32, events int) {
+				t.Helper()
+				assert.Equal(t, int32(2), offered)
+				assert.Equal(t, over, events)
+			},
+		},
+		{
+			name: "after a handler ended its goroutine on it once",
+			act: func(n int32) {
+				if n == 1 {
+					runtime.Goexit()
+				}
+			},
+			assert: func(t *testing.T, offered int32, events int) {
+				t.Helper()
+				assert.Equal(t, int32(2), offered)
+				assert.Equal(t, over, events)
+			},
+		},
+		{
+			name: "or not at all, by a handler that always panics, after a few tries",
+			act:  func(int32) { panic("in the handler") },
+			assert: func(t *testing.T, offered int32, events int) {
+				t.Helper()
+				assert.Equal(t, int32(3), offered)
+				assert.Zero(t, events)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				release := make(chan struct{})
+				stuck := make(chan struct{})
+				defer close(stuck)
+				logs := &lockedBuffer{}
+				var said atomic.Int32
+				g := newGate(true)
+				x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDelivery(g), oidcprovider.WithLogoutDeliveryPool(1, 1),
+					atFailedDelivery(func() { <-release }),
+					oidcprovider.WithLogger(slog.New(onLostCount{Handler: slog.NewTextHandler(logs, nil), said: &said, act: func(n int32) {
+						if n > 8 { // Said over and over: stop here, so that this fails rather than spins.
+							<-stuck
+						}
+						tc.act(n)
+					}})))
+				fillQueue(t, x, g)
+				for range reportsAtASink + reportsWaiting + over {
+					x.end(t.Context(), t, "billing-web")
+					synctest.Wait()
+				}
+				close(release)
+				close(g.open)
+
+				bounded, stop := context.WithTimeout(t.Context(), time.Minute)
+				defer stop()
+				require.NoError(t, x.p.Shutdown(bounded))
+				_, events := countsOf(t, logs.String())
+				tc.assert(t, said.Load(), events)
+			})
+		})
+	}
+}
+
+// TestProvider_BackChannelDelivery_LostCountWaitsForTheNextBurst pins that a count the handler would not take
+// is kept and said with the next, rather than dropped when the tries run out.
+func TestProvider_BackChannelDelivery_LostCountWaitsForTheNextBurst(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		const over = 1
+		release := make(chan struct{})
+		logs := &lockedBuffer{}
+		var said atomic.Int32
+		g := newGate(true)
+		x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDelivery(g), oidcprovider.WithLogoutDeliveryPool(1, 1),
+			atFailedDelivery(func() { <-release }),
+			oidcprovider.WithLogger(slog.New(onLostCount{Handler: slog.NewTextHandler(logs, nil), said: &said, act: func(n int32) {
+				if n <= 3 {
+					panic("in the handler")
+				}
+			}})))
+		fillQueue(t, x, g)
+		for range reportsAtASink + reportsWaiting + over {
+			x.end(t.Context(), t, "billing-web")
+			synctest.Wait()
+		}
+		assert.Equal(t, int32(3), said.Load(), "it has run out of tries")
+		_, events := countsOf(t, logs.String())
+		assert.Zero(t, events)
+
+		x.end(t.Context(), t, "billing-web")
+		synctest.Wait()
+
+		_, events = countsOf(t, logs.String())
+		assert.Equal(t, over+1, events, "the next burst says them all")
+		close(release)
+		close(g.open)
+		require.NoError(t, x.p.Shutdown(t.Context()))
+	})
+}
+
+// TestProvider_BackChannelDelivery_LostCountGoesOnBeingSaid pins that the tries are for a handler that fails: one
+// that takes each count goes on being told, however many come before its goroutine next has nothing to do.
+func TestProvider_BackChannelDelivery_LostCountGoesOnBeingSaid(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		const rounds = 3 // With the first, one count past the tries, and nothing after it to say it instead.
+		release := make(chan struct{})
+		next := make(chan struct{}, 1+rounds)
+		logs := &lockedBuffer{}
+		var said atomic.Int32
+		g := newGate(true)
+		x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDelivery(g), oidcprovider.WithLogoutDeliveryPool(1, 1),
+			atFailedDelivery(func() { <-release }),
+			oidcprovider.WithLogger(slog.New(onLostCount{Handler: slog.NewTextHandler(logs, nil), said: &said, act: func(int32) { <-next }})))
+		fillQueue(t, x, g)
+		for range reportsAtASink + reportsWaiting {
+			x.end(t.Context(), t, "billing-web")
+			synctest.Wait()
+		}
+
+		x.end(t.Context(), t, "billing-web") // Lost, and the handler is held at saying so.
+		synctest.Wait()
+		for range rounds {
+			x.end(t.Context(), t, "billing-web") // Lost too, so the goroutine has more to say once it is let go.
+			synctest.Wait()
+			next <- struct{}{}
+			synctest.Wait()
+		}
+		next <- struct{}{}
+		close(release)
+		close(g.open)
+		require.NoError(t, x.p.Shutdown(t.Context()))
+
+		_, events := countsOf(t, logs.String())
+		assert.Equal(t, 1+rounds, events)
+	})
+}
+
+// TestProvider_BackChannelDelivery_LostEventIsSaidWithTheLogIdle pins that a lost event gets said when nothing
+// else is logging: its own log line has already gone, and the goroutine that logged it has left.
+func TestProvider_BackChannelDelivery_LostEventIsSaidWithTheLogIdle(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var log eventLog
+		g := newGate(true)
+		x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDelivery(g), oidcprovider.WithLogoutDeliveryPool(1, 1))
+		base := failuresOnChain(t.Context(), &log, release)
+		held := newHeldAtSinkLookup(base)
+		fillQueue(t, x, g)
+		for range reportsAtASink + reportsWaiting {
+			x.end(base, t, "billing-web")
+			synctest.Wait()
+		}
+
+		held.armed.Store(true)
+		ended := make(chan struct{})
+		go func() {
+			defer close(ended)
+			x.end(held, t, "billing-web")
+		}()
+		synctest.Wait()
+		_, events := countsOf(t, x.logs.String())
+		assert.Zero(t, events, "the log line went, and the goroutine that logged it has left")
+
+		close(held.release)
+		<-ended
+		synctest.Wait()
+		_, events = countsOf(t, x.logs.String())
+		assert.Equal(t, 1, events)
+
+		close(release)
+		close(g.open)
+		require.NoError(t, x.p.Shutdown(t.Context()))
+	})
+}
+
+// TestProvider_BackChannelDelivery_LostRecordsCountsFailures pins what lost_records counts: failures that lost
+// their log line. A note of how a delivery ended is no failure's report, and is counted apart if it is lost.
+func TestProvider_BackChannelDelivery_LostRecordsCountsFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a late line lost is a note, and its count survives a panic", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			late := make(chan struct{})
+			var calls, said atomic.Int32
+			logs := &lockedBuffer{}
+			handler := onLostCount{Handler: slog.NewTextHandler(logs, nil), said: &said, act: func(n int32) {
+				if n == 1 {
+					panic("in the handler")
+				}
+			}}
+			x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDeliveryPool(1, 1), oidcprovider.WithLogoutDeliveryTimeout(time.Second),
+				oidcprovider.WithLogger(slog.New(heldHandler{Handler: handler, release: release})),
+				oidcprovider.WithLogoutDelivery(oidcprovider.LogoutDeliveryFunc(func(context.Context, string, string) error {
+					if calls.Add(1) == 1 {
+						<-late
+						panic("after its bound")
+					}
+
+					return nil
+				})))
+			x.end(t.Context(), t, "billing-web")
+			synctest.Wait()
+			x.end(t.Context(), t, "billing-web") // Queued, and delivered once the bound frees the worker.
+			x.end(t.Context(), t, "billing-web") // Dropped, and its record is what the handler holds.
+			synctest.Wait()
+			for range reportsWaiting - 1 {
+				x.end(t.Context(), t, "billing-web")
+			}
+
+			time.Sleep(time.Second) // The bound ends the call, and that failure's record takes the last place.
+			synctest.Wait()
+			close(late) // The call ends after its bound, which is noted, and that finds no room.
+			synctest.Wait()
+			close(release)
+			require.NoError(t, x.p.Shutdown(t.Context()))
+
+			records, _ := countsOf(t, logs.String())
+			assert.Zero(t, records, "no failure lost its record")
+			assert.Equal(t, 1, lostCount(t, logs.String(), "lost_notes="), "and the note is counted apart")
+		})
+	})
+
+	t.Run("a late line after Shutdown has room, however many Shutdowns came", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			late := make(chan struct{})
+			logs := &lockedBuffer{}
+			x := newEnding(t, oneClient(), nil, oidcprovider.WithLogoutDeliveryPool(1, 1),
+				oidcprovider.WithLogger(slog.New(heldHandler{Handler: slog.NewTextHandler(logs, nil), release: release})),
+				oidcprovider.WithLogoutDelivery(oidcprovider.LogoutDeliveryFunc(func(context.Context, string, string) error {
+					<-late
+					panic("after Shutdown cut it off")
+				})))
+			x.end(t.Context(), t, "billing-web")
+			synctest.Wait()
+			x.end(t.Context(), t, "billing-web") // Queued.
+			x.end(t.Context(), t, "billing-web") // Dropped, and its record is what the handler holds.
+			synctest.Wait()
+			for range reportsWaiting {
+				x.end(t.Context(), t, "billing-web")
+			}
+
+			for range 2 {
+				bounded, stop := context.WithTimeout(t.Context(), time.Second)
+				require.ErrorIs(t, x.p.Shutdown(bounded), context.DeadlineExceeded)
+				stop()
+				synctest.Wait()
+			}
+			close(late)
+			synctest.Wait()
+			close(release)
+			require.NoError(t, x.p.Shutdown(t.Context()))
+
+			assert.Contains(t, logs.String(), "after its bound")
+			records, _ := countsOf(t, logs.String())
+			assert.Zero(t, records+lostCount(t, logs.String(), "lost_notes="), "and nothing is counted as lost")
+		})
+	})
+
+	t.Run("a cut-off read's note has room at Shutdown", func(t *testing.T) {
+		t.Parallel()
+		synctest.Test(t, func(t *testing.T) {
+			release := make(chan struct{})
+			logs := &lockedBuffer{}
+			memory, err := oidcprovider.NewMemoryRegistry(oneClient())
+			require.NoError(t, err)
+			registry := &registryAnswering{ClientRegistry: memory, answer: func(ctx context.Context) error {
+				<-ctx.Done()
+
+				return ctx.Err()
+			}}
+			x := newEnding(t, nil, registry, oidcprovider.WithLogoutDeliveryPool(1, 1), oidcprovider.WithLogoutDelivery(&logoutRecorder{}),
+				oidcprovider.WithLogoutDeliveryTimeout(time.Hour),
+				oidcprovider.WithLogger(slog.New(heldHandler{Handler: slog.NewTextHandler(logs, nil), release: release})))
+			registry.armed.Store(true)
+			x.end(t.Context(), t, "billing-web")
+			synctest.Wait()
+			x.end(t.Context(), t, "billing-web") // Queued.
+			x.end(t.Context(), t, "billing-web") // Dropped, and its record is what the handler holds.
+			synctest.Wait()
+			for range reportsWaiting {
+				x.end(t.Context(), t, "billing-web")
+			}
+
+			bounded, stop := context.WithTimeout(t.Context(), time.Second)
+			defer stop()
+			require.ErrorIs(t, x.p.Shutdown(bounded), context.DeadlineExceeded)
+			synctest.Wait()
+			close(release)
+			require.NoError(t, x.p.Shutdown(t.Context()))
+
+			assert.Contains(t, logs.String(), "shutdown cut off")
+			records, _ := countsOf(t, logs.String())
+			assert.Zero(t, records+lostCount(t, logs.String(), "lost_notes="), "and nothing is counted as lost")
+		})
 	})
 }
