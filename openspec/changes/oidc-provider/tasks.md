@@ -244,7 +244,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - consent revocation revoking that user's and client's grants.
 
   Verify: `go test -run 'TestProvider_EndSignIn|TestProvider_RevokeUserGrants' -count=1 ./oidcprovider/`.
-- [ ] 7.9 Build and deliver back-channel logout tokens, test-first:
+- [x] 7.9 Build and deliver back-channel logout tokens, test-first:
   - the token: `typ` `logout+jwt`, `iss`, `aud`, `iat`, `exp` at most 2 minutes later, `jti`, `events`, `sub` and `sid`, no `nonce`, and the client's ID token algorithm;
   - `events` exactly the logout event with an empty object, and `sid` equal to the ID tokens';
   - delivery: asynchronous, through the outbound client with a timeout and no redirect followed, 200 and 204 as success, at most once per client per ended sign-in, one attempt;
@@ -253,7 +253,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - a replaceable delivery.
 
   Verify: `go test -race -run 'TestProvider_LogoutToken|TestProvider_BackChannelDelivery' -count=1 ./oidcprovider/`.
-- [ ] 7.10 Emit the provider's security events through D13's sink, test-first:
+- [x] 7.10 Emit the provider's security events through D13's sink, test-first:
   - grant created;
   - consent given, denied or revoked;
   - client authentication refused;
@@ -266,7 +266,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 8. Chain wiring, authorization and resume endpoints (`httpsec`, `http-security-chain`, `http-error-propagation`)
 
-- [ ] 8.1 Add `EnableOIDCProvider` with its construction rules, test-first, one table:
+- [x] 8.1 Add `EnableOIDCProvider` with its construction rules, test-first, one table:
   - a bearer mode is required, and so is the JWKS endpoint;
   - an assertion token endpoint differing from the chain's real token path is refused (P7);
   - a JWKS endpoint serving a different signing-key manager from the provider's key source is refused, while a wrapped provider, which cannot be compared, builds (R6);
@@ -277,15 +277,15 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - the provider joins the internal set of features that verify bound credentials, so a provider-only chain can enable DPoP.
 
   Verify: `go test -run 'TestOIDCProvider_Construction' -count=1 ./httpsec/`.
-- [ ] 8.2 Route the provider's paths, test-first: the `/oauth2` defaults, a consumer prefix and per-path options, and other paths passing through. Verify: `go test -run 'TestOIDCProvider_Routes' -count=1 ./httpsec/`.
-- [ ] 8.3 Add the provider's public refusal errors to the status table, test-first:
+- [x] 8.2 Route the provider's paths, test-first: the `/oauth2` defaults, a consumer prefix and per-path options, and other paths passing through. Verify: `go test -run 'TestOIDCProvider_Routes' -count=1 ./httpsec/`.
+- [x] 8.3 Add the provider's public refusal errors to the status table, test-first:
   - 400 for an invalid client or redirect URI, an unknown handle and a malformed consent answer;
   - 401 for re-authentication needed;
   - 404 for another user's consents;
   - 500 for a dependency failure, with no text.
 
   Verify: `go test -run 'TestStatusForError' -count=1 ./httpsec/`.
-- [ ] 8.4 Serve the authorization endpoint, test-first, by GET and form POST:
+- [x] 8.4 Serve the authorization endpoint, test-first, by GET and form POST:
   - an unredirectable error goes to the chain's error handling with no `Location` header;
   - other errors are 303 redirects with `state` and `iss`;
   - a parked request answers 303 to the login URL with the handle and `Cache-Control: no-store`, and sets or keeps the `__Host-` flow cookie (`HttpOnly`, `Secure`, `SameSite=Lax`), without the prefix or `Secure` under the loopback issuer;
@@ -294,7 +294,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - the endpoint is throttled per source.
 
   Verify: `go test -run 'TestOIDCAuthorize' -count=1 ./httpsec/`.
-- [ ] 8.5 Serve the resume endpoint, test-first:
+- [x] 8.5 Serve the resume endpoint, test-first:
   - the sign-in comes from the `Authorization` header, through the chain's bearer modes, and never from the query; at the consent stage alone, the browser session may stand in (R2);
   - an API key, Basic credentials, a session only a late renewal may recover, and a bound sign-in without its proof are refused (R6, R12);
   - a successful login stage sets the browser-session cookie (R2);
@@ -305,8 +305,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - the consent stage accepts a grant or a denial.
 
   Verify: `go test -run 'TestOIDCResume' -count=1 ./httpsec/`.
-- [ ] 8.6 Let the consumer's pages read a pending request from an `httpsec.Request`, taking the flow cookie from it, test-first. Verify: `go test -run 'TestOIDCPendingRequest' -count=1 ./httpsec/`.
-- [ ] 8.7 Document `EnableOIDCProvider` in godoc, naming each default. Add the README section covering:
+- [x] 8.6 Let the consumer's pages read a pending request from an `httpsec.Request`, taking the flow cookie from it, test-first. Verify: `go test -run 'TestOIDCPendingRequest' -count=1 ./httpsec/`.
+- [x] 8.7 Document `EnableOIDCProvider` in godoc, naming each default. Add the README section covering:
   - wiring, and the login and consent page contract;
   - pages served from the issuer's origin;
   - `frame-ancestors` for pages served outside the chain;
@@ -317,14 +317,14 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 9. Token, revocation, introspection and UserInfo endpoints (`httpsec`)
 
-- [ ] 9.1 Serve the token endpoint, test-first:
+- [x] 9.1 Serve the token endpoint, test-first:
   - form POST only, over TLS, with a repeated parameter refused and an empty one omitted; a credential in the query refused (R11);
   - client authentication before the grant, and failures charged to the source;
   - a JSON success with `Cache-Control: no-store`;
   - `{"error"}` errors with 400, or 401 with `WWW-Authenticate` for `invalid_client`, and no `error_description`.
 
   Verify: `go test -run 'TestOIDCToken' -count=1 ./httpsec/`.
-- [ ] 9.2 Bind tokens at the token endpoint, test-first:
+- [x] 9.2 Bind tokens at the token endpoint, test-first:
   - the DPoP proof (without `ath`) is verified before a code is spent or a refresh token rotated;
   - access tokens carry `cnf.jkt` with `token_type` `DPoP`;
   - a public client's grant is bound to the key, a confidential client's is not;
@@ -335,8 +335,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - a confidential client refreshing with no proof gets `Bearer` unless required; a required one is refused; a `DPoP` header while DPoP is off is ignored.
 
   Verify: `go test -run 'TestOIDCToken_SenderConstrained' -count=1 ./httpsec/`.
-- [ ] 9.3 Serve the revocation and introspection endpoints, with client authentication and `Cache-Control: no-store`, test-first. Verify: `go test -run 'TestOIDCRevoke|TestOIDCIntrospect' -count=1 ./httpsec/`.
-- [ ] 9.4 Serve UserInfo, test-first:
+- [x] 9.3 Serve the revocation and introspection endpoints, with client authentication and `Cache-Control: no-store`, test-first. Verify: `go test -run 'TestOIDCRevoke|TestOIDCIntrospect' -count=1 ./httpsec/`.
+- [x] 9.4 Serve UserInfo, test-first:
   - GET and POST, with the token from the header or a POST body and never the query;
   - over TLS (R11);
   - challenges: 401 `invalid_token`, 401 with no code when no token was sent, 403 `insufficient_scope`, and the `DPoP` scheme for a bound token, verified through D8, with `use_dpop_nonce` in its 401 form;
@@ -344,12 +344,12 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - a claim-source outage answered 500 with no text.
 
   Verify: `go test -run 'TestOIDCUserInfo' -count=1 ./httpsec/`.
-- [ ] 9.5 Prove that a refresh token is never a sign-in, test-first: one presented as a session-reference bearer or to session renewal is refused as an unknown credential. Verify: `go test -run 'TestRefreshToken_NotASignIn' -count=1 ./httpsec/`.
-- [ ] 9.6 Apply CORS to the provider, test-first: the token, UserInfo, revocation, introspection and metadata endpoints follow the allowlist, allow `DPoP` and `Authorization`, expose `DPoP-Nonce` and `WWW-Authenticate`, and allow no credentials; the authorization, resume, end-session and confirmation endpoints never carry CORS headers. Verify: `go test -run 'TestCORS_OIDCProvider' -count=1 ./httpsec/`.
+- [x] 9.5 Prove that a refresh token is never a sign-in, test-first: one presented as a session-reference bearer or to session renewal is refused as an unknown credential. Verify: `go test -run 'TestRefreshToken_NotASignIn' -count=1 ./httpsec/`.
+- [x] 9.6 Apply CORS to the provider, test-first: the token, UserInfo, revocation, introspection and metadata endpoints follow the allowlist, allow `DPoP` and `Authorization`, expose `DPoP-Nonce` and `WWW-Authenticate`, and allow no credentials; the authorization, resume, end-session and confirmation endpoints never carry CORS headers. Verify: `go test -run 'TestCORS_OIDCProvider' -count=1 ./httpsec/`.
 
 ## 10. Metadata (`httpsec`, `oidc-provider-metadata`)
 
-- [ ] 10.1 Build both metadata documents from the configuration, test-first:
+- [x] 10.1 Build both metadata documents from the configuration, test-first:
   - both well-known paths, including for an issuer with a path;
   - the required and supported members, endpoints following the paths in use, `end_session_endpoint` when logout is on;
   - the revocation and introspection authentication methods, the latter without `none`, and the assertion algorithms without `none` once `private_key_jwt` is listed (R11);
@@ -358,7 +358,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
   - consumer members added, and an override of a provider member refused at construction.
 
   Verify: `go test -run 'TestOIDCMetadata' -count=1 ./httpsec/`.
-- [ ] 10.2 Serve the documents publicly with `Cache-Control` of 1 hour by default, replaceable, test-first, and prove that the JWKS endpoint keeps publishing the previous key after a rotation. Verify: `go test -run 'TestOIDCMetadata_Serving' -count=1 ./httpsec/`.
+- [x] 10.2 Serve the documents publicly with `Cache-Control` of 1 hour by default, replaceable, test-first, and prove that the JWKS endpoint keeps publishing the previous key after a rotation. Verify: `go test -run 'TestOIDCMetadata_Serving' -count=1 ./httpsec/`.
 
 ## 11. Logout, consents and grant revocation across the chain
 
