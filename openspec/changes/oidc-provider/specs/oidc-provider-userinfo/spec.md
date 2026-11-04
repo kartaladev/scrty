@@ -17,6 +17,10 @@ The UserInfo endpoint SHALL accept GET and POST, taking the access token from th
 - **WHEN** a client sends the access token as `?access_token=`
 - **THEN** the request is refused as carrying no token
 
+#### Scenario: Token in the query beside another method
+- **WHEN** a client sends `?access_token=` and also a token in the `Authorization` header
+- **THEN** the request is answered 400 with `invalid_request`, and no claim is read
+
 #### Scenario: ID token presented
 - **WHEN** a client presents an ID token as the access token
 - **THEN** the request is refused with `invalid_token`
