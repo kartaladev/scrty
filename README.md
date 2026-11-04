@@ -1337,6 +1337,55 @@ including a thief's stream opened before the victim renewed, and `MaxAge` is wha
 A panic in a stream, or in a loader or store it calls, is logged through the chain's logger with its
 type, phase, family and frames, and never its value. The stream then closes and frees its place.
 
+### The signals
+
+| Signal | Data | Sent when |
+|---|---|---|
+| `session` | `idle_deadline`, `absolute_deadline`, `authenticated_at` | always first, and when a read finds one moved |
+| `session_ended` | `reason`: `logout`, `ended`, `reuse`, `all_ended`, `provider_logout` or `expired` | the sign-in ended, whatever the narrowing says |
+| `session_expiring` | `deadline`: `idle` or `absolute`, and `at` | a deadline is within `ExpiryWarning` |
+| `assurance_lapsed` | `authenticated_at` | the last authentication is older than `AssuranceWindow` |
+| `credential_changed` | `kind`: `password`, `passkey` or `second_factor` | the user's credentials changed, and this stream's sign-in did not end with it |
+| `app.<name>` | your own JSON | you publish it |
+
+A stream never carries the audit feed, and no option makes it: no failed sign-ins, lockouts,
+rate-limit, CSRF, host or DPoP refusals, no client addresses, and nothing about another user. Those
+belong to `WithSecurityEvents`, which is the operator's.
+
+The chain raises `credential_changed` itself after a password change, a passkey registered or removed,
+and a second factor enrolled. A recovery raises it for the second factors and passkeys it removed, for
+a stream still open: by default a recovery ends the user's other sign-ins, so their streams hear
+`session_ended` instead, and only `recovery.WithoutSessionRevocation` leaves one to hear this. A
+consumer's own kinds of authenticator raise nothing. `recovery.Result.Removed` lists what went, and
+its `ID`s are yours to keep out of responses and logs.
+
+For a change you make elsewhere, such as an admin console or a reset of your own, report it **after
+it commits**, because a raised signal cannot be recalled:
+
+```go
+err := chain.ReportCredentialChange(ctx, userID, httpsec.CredentialPassword)
+```
+
+It names only the kind. It returns `ErrSessionSignalsDisabled` without `EnableSessionSignals`,
+`ErrInvalidSignal` for another kind, and `ErrSignalsBusy` if your bus's queue is full or the streams
+have closed.
+
+To send a signal of your own to every open stream of a user:
+
+```go
+err := chain.PublishSignal(ctx, userID, "app.roles_changed", json.RawMessage(`{"roles":["editor"]}`))
+```
+
+The name is `app.` and 1 to 63 of `[a-z0-9._-]`, starting with a letter or digit. The data is JSON of
+at most 8 KiB, valid UTF-8, on one line, so compact it and do not `MarshalIndent` it, and it arrives
+byte for byte. Anything else returns `ErrInvalidSignal` and sends nothing. A client's `?signals=`
+narrowing applies. A user with no open stream is not an error.
+
+A stream can follow a thief who holds the session, so put nothing sensitive in the data: send a
+pointer, and let the client fetch the details through its own authorised request. A signal that is
+dropped is gone, and the default bus reaches only this replica's streams, so never rely on one alone.
+The out-of-band notice stays the record.
+
 ### Running it
 
 Each heartbeat reads the sign-in and the user, so 10 000 streams at 15 seconds is about 670 session
