@@ -909,7 +909,7 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 	}
 	if res.RowsAffected == 0 {
 		var exists, superseded bool
-		if err := q.Raw(pgschema.SessionPresentationRefusal, digest).Row().Scan(&exists, &superseded); err != nil {
+		if err := scanRow(q.Raw(pgschema.SessionPresentationRefusal, digest), &exists, &superseded); err != nil {
 			return failed(op, err)
 		}
 
@@ -938,8 +938,8 @@ func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string)
 		return false, failed(op, err)
 	}
 	var used bool
-	err = q.Raw(pgschema.SessionSuccessorPresented,
-		storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())).Row().Scan(&used)
+	err = scanRow(q.Raw(pgschema.SessionSuccessorPresented,
+		storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())), &used)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, session.ErrNotFound
 	}

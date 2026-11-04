@@ -89,6 +89,19 @@
 // (a tracing plugin, for example) still run on every store statement, and see
 // its bound values. A consumer registering one owns what it records.
 //
+// # Time limits
+//
+// A *gorm.DB configured with gorm.Config.DefaultContextTimeout bounds every
+// statement the stores run, the provider stores' included. The bound applies
+// to one statement at a time, only when the operation's context carries no
+// deadline of its own (a context with a deadline keeps it, as in gorm), and it
+// is the bound of the handle the operation resolves to: the caller's
+// transaction, or the handle a resolver reports, rather than the store's own
+// *gorm.DB when they differ. A call of several statements, a many-grant call
+// for one, bounds each statement and not the call as a whole. The stores have
+// no time-limit option of their own; set none on the *gorm.DB and the context
+// alone decides.
+//
 // # Read replicas
 //
 // Limit, stated: the stores read and write through whatever *gorm.DB they are

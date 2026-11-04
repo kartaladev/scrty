@@ -2,6 +2,7 @@ package gormstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -16,6 +17,31 @@ import (
 // judged. It never maps err to a sentinel refusal or to absence.
 func failed(op string, err error) error {
 	return fmt.Errorf("gormstore: %s: %w", op, err)
+}
+
+// scanRow runs q, a handle carrying a Raw statement, and scans the first row it returns
+// into dest. It reports sql.ErrNoRows when there is none. It reads through q.Rows, never
+// q.Row: on a handle that prepares its statements, gorm answers a statement that cannot
+// be prepared (a cancelled context, a missing table, a caller's aborted transaction) with
+// an empty sql.Row, and scanning that panics, where Rows returns the failure. Both go
+// through gorm's own processor, so the handle's DefaultContextTimeout, logger and
+// callbacks apply alike.
+func scanRow(q *gorm.DB, dest ...any) error {
+	rows, err := q.Rows()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		return sql.ErrNoRows
+	}
+
+	return rows.Scan(dest...)
 }
 
 // deleteWhere runs one DELETE of the rows of model T matching query and args,

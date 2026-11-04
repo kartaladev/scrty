@@ -181,9 +181,9 @@ func (s *AttemptStore) AddStreakFailure(
 			setHold bool
 		)
 		run := func(q *gorm.DB) error {
-			return q.Raw(pgschema.StreakAdd,
+			return scanRow(q.Raw(pgschema.StreakAdd,
 				rowID, username, storekit.Time(at), storekit.Time(since), limit,
-			).Row().Scan(&got.Failures, &got.Newest, &heldAt, &setHold)
+			), &got.Failures, &got.Newest, &heldAt, &setHold)
 		}
 		if ambient {
 			err = run(q)
@@ -224,8 +224,8 @@ func (s *AttemptStore) FailureStreak(ctx context.Context, username string, since
 		got    lockout.FailureStreak
 		heldAt *time.Time
 	)
-	err = q.Raw(pgschema.StreakRead, username, storekit.Time(since)).
-		Row().Scan(&got.Failures, &got.Newest, &heldAt)
+	err = scanRow(q.Raw(pgschema.StreakRead, username, storekit.Time(since)),
+		&got.Failures, &got.Newest, &heldAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return lockout.FailureStreak{}, nil
 	}

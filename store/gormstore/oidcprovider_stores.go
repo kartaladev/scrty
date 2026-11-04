@@ -30,12 +30,15 @@ import (
 // rows it affected. It goes to the handle's connection pool, or its transaction, directly:
 // gorm's own Exec treats an "@" in a statement as the start of a named argument and then
 // binds none of the numbered ones, and expands a slice argument into a list. These statements
-// are pgschema's, written for the driver's numbered placeholders as they stand.
+// are pgschema's, written for the driver's numbered placeholders as they stand. The handle's
+// DefaultContextTimeout bounds it, as it bounds a statement gorm runs (see withBound).
 func (c *config) exec(ctx context.Context, op, query string, args ...any) (int64, error) {
-	q, err := c.pool(ctx)
+	q, bound, err := c.pool(ctx)
 	if err != nil {
 		return 0, failed(op, err)
 	}
+	ctx, cancel := withBound(ctx, bound)
+	defer cancel()
 	res, err := q.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, failed(op, err)
@@ -66,14 +69,17 @@ func (c *config) execOrRefuse(ctx context.Context, op string, refusal error, que
 // queryRow runs query, one statement, on the connection ctx resolves to, and scans its single
 // row into dest. It returns sql.ErrNoRows unwrapped when there is no row, so the caller maps
 // absence to its own sentinel, and any other error wrapped with op. It is never
-// gorm.ErrRecordNotFound, which gorm raises for its own finishers alone.
+// gorm.ErrRecordNotFound, which gorm raises for its own finishers alone. The handle's
+// DefaultContextTimeout bounds it (see withBound).
 func (c *config) queryRow(ctx context.Context, op, query string, args []any, dest ...any) error {
-	q, err := c.pool(ctx)
+	q, bound, err := c.pool(ctx)
 	if err != nil {
 		return failed(op, err)
 	}
+	ctx, cancel := withBound(ctx, bound)
+	defer cancel()
 
-	err = q.QueryRowContext(ctx, query, args...).Scan(dest...)
+	err = scanOne(ctx, q, query, args, dest...)
 	if err == nil || errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -81,15 +87,55 @@ func (c *config) queryRow(ctx context.Context, op, query string, args []any, des
 	return failed(op, err)
 }
 
-// pool is the connection pool, or the transaction, the handle ctx resolves to runs its
-// statements on.
-func (c *config) pool(ctx context.Context) (gorm.ConnPool, error) {
-	q, _, err := c.conn(ctx)
+// scanOne runs a statement on q and scans the first row it returns into dest, reporting
+// sql.ErrNoRows when there is none. It reads through QueryContext, never QueryRowContext:
+// on a handle that prepares its statements, gorm answers a statement that cannot be
+// prepared with an empty sql.Row, and scanning that panics, where QueryContext returns the
+// failure.
+func scanOne(ctx context.Context, q gorm.ConnPool, query string, args []any, dest ...any) error {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		return sql.ErrNoRows
 	}
 
-	return q.Statement.ConnPool, nil
+	return rows.Scan(dest...)
+}
+
+// pool is the connection pool, or the transaction, the handle ctx resolves to runs its
+// statements on, with the DefaultContextTimeout of that handle: a caller's transaction or
+// a resolver's handle may carry a different one than the store's own.
+func (c *config) pool(ctx context.Context) (gorm.ConnPool, time.Duration, error) {
+	q, _, err := c.conn(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return q.Statement.ConnPool, q.DefaultContextTimeout, nil
+}
+
+// withBound applies bound, a handle's gorm.Config.DefaultContextTimeout, to ctx as gorm
+// does for the statements it runs: only when ctx has no deadline of its own, and not at all
+// when bound is zero. The statements that go to the connection pool directly do not pass
+// through gorm, so they ask for it here. The caller cancels once it has finished with the
+// statement, and with any rows it returned.
+func withBound(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
+	if bound <= 0 {
+		return ctx, func() {}
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+
+	return context.WithTimeout(ctx, bound)
 }
 
 // wroteOrHeld is the refusal of a record already held, when a conditional insert wrote
@@ -150,10 +196,12 @@ func loadRecord[R any, S scannable[R]](
 
 // queryIDs reads a statement's one uuid column.
 func (c *config) queryIDs(ctx context.Context, op, query string, args ...any) ([]id.ID, error) {
-	q, err := c.pool(ctx)
+	q, bound, err := c.pool(ctx)
 	if err != nil {
 		return nil, failed(op, err)
 	}
+	ctx, cancel := withBound(ctx, bound)
+	defer cancel()
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, failed(op, err)
@@ -364,10 +412,12 @@ func (s *ConsentStore) ListByUser(ctx context.Context, user identity.UserID) ([]
 	if err := pgschema.CheckText("user reference", string(user)); err != nil {
 		return nil, failed(op, err)
 	}
-	q, err := s.c.pool(ctx)
+	q, bound, err := s.c.pool(ctx)
 	if err != nil {
 		return nil, failed(op, err)
 	}
+	ctx, cancel := withBound(ctx, bound)
+	defer cancel()
 	rows, err := q.QueryContext(ctx, pgschema.ConsentListByUser, string(user))
 	if err != nil {
 		return nil, failed(op, err)

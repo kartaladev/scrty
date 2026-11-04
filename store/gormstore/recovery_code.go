@@ -128,7 +128,7 @@ func (s *RecoveryCodeStore) Match(ctx context.Context, user identity.UserID, has
 		return false, failed(op, err)
 	}
 	var found bool
-	if err := q.Raw(pgschema.RecoveryCodeMatch, string(user), storekit.OrEmpty(hash)).Row().Scan(&found); err != nil {
+	if err := scanRow(q.Raw(pgschema.RecoveryCodeMatch, string(user), storekit.OrEmpty(hash)), &found); err != nil {
 		return false, failed(op, err)
 	}
 

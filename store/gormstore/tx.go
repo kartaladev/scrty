@@ -208,7 +208,7 @@ func readCommitted(ctx context.Context, db *gorm.DB, fn func(*gorm.DB) error) er
 // returned as the driver gave it.
 func requireReadCommitted(ctx context.Context, q *gorm.DB) error {
 	var level string
-	if err := savepointSession(ctx, q).Raw(pgschema.CurrentIsolation).Row().Scan(&level); err != nil {
+	if err := scanRow(savepointSession(ctx, q).Raw(pgschema.CurrentIsolation), &level); err != nil {
 		return err
 	}
 	if !pgschema.ReadCommittedOrWeaker(level) {

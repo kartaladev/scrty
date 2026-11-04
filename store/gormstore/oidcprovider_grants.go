@@ -160,12 +160,18 @@ func checkRevocation(operation string, user identity.UserID, clientID string, ca
 func (s *GrantStore) writeBulk(ctx context.Context, op string, w pgschema.GrantBulkWrite) ([]oidcprovider.Grant, error) {
 	var reported []oidcprovider.Grant
 	err := s.atomically(ctx, op, func(q *gorm.DB) error {
+		// Each statement is bounded on its own, as gorm bounds each it runs, and its rows
+		// are read before its bound is cancelled.
 		var held string
-		if err := q.Statement.ConnPool.QueryRowContext(ctx, w.Hold, w.HoldArgs...).Scan(&held); err != nil {
+		holdCtx, cancel := withBound(ctx, q.DefaultContextTimeout)
+		err := scanOne(holdCtx, q.Statement.ConnPool, w.Hold, w.HoldArgs, &held)
+		cancel()
+		if err != nil {
 			return failed(op, err)
 		}
-		var err error
-		reported, err = returnedGrants(ctx, q.Statement.ConnPool, op, w.Write, w.WriteArgs(held)...)
+		writeCtx, cancel := withBound(ctx, q.DefaultContextTimeout)
+		defer cancel()
+		reported, err = returnedGrants(writeCtx, q.Statement.ConnPool, op, w.Write, w.WriteArgs(held)...)
 
 		return err
 	})
