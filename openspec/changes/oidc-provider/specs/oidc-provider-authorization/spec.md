@@ -292,6 +292,17 @@ A browser session SHALL expire at the sign-in's absolute deadline, and after the
 - **WHEN** a browser session is not used for longer than the sign-in manager's idle timeout, and an authorization then starts
 - **THEN** the login page is shown
 
+### Requirement: A code answered from a browser session does not outlive its sign-in
+A code answered from a browser session SHALL make no tokens once that sign-in has ended, even when the request overlapped the end, unless the end spares it because it holds `offline_access` for a client that does not end its grants with the sign-in. A code SHALL NOT be released when the browser session could not be looked at after the code was written.
+
+#### Scenario: A request overlapping the end
+- **WHEN** a sign-in's end is in progress, and a silent authorization or a consent answered from its browser session writes a code the end does not spare
+- **THEN** either the request is refused or the code is answered with `invalid_grant` at the token endpoint
+
+#### Scenario: Browser session store failing
+- **WHEN** the browser session cannot be looked at after a silent authorization wrote its code, for a reason other than the session being gone
+- **THEN** no code leaves, and the failure is answered as a dependency failure
+
 ### Requirement: A browser session skips the login stage
 An authorization request whose browser holds a valid browser session SHALL skip the login stage, unless `prompt` includes `login` or `select_account`, or `max_age` is not met. The user SHALL be checked as a refresh checks one, and a missing or disabled user SHALL count as no session. When consent is not needed, the browser SHALL be redirected with 303 and the code.
 
