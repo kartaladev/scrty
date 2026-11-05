@@ -1273,7 +1273,7 @@ Each defect was `UNREPRODUCED` when this group was written, and R27 records each
 - [ ] Write `TestProvider_FailedEndReportRead` in `oidcprovider`: over a real manager wired with `SignInsEnded`, a failed read leaves the deleted sign-in's grants and the kept sign-in's grants live, and sends no logout token.
 - [ ] Write `TestOIDCLogout_CompletesWhileSessionReadsFail` in `httpsec`: the chain's logout and end-session both end the sign-in with a store whose `Load` fails after the bearer has admitted the request.
 - [ ] Run them with `go test -race -run 'TestSessions_EndReportRead' -count=1 ./session/`, and confirm the `Delete` row fails because the session was deleted.
-- [ ] Change `readForReport` and its two callers. The failure comes back through `storeFailed`, with text naming the read. Point `Delete`'s godoc at `RevokeFamily` for a logout.
+- [ ] Change `readForReport` and its two callers. The failure comes back through `storeFailed`, with text naming the read. Point `Delete`'s godoc away from itself for a logout, at `Logout` once `session-signals` merged.
 - [ ] Verify: `go test -race -count=1 ./session/ ./oidcprovider/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.` The main session tells the `session-signals` session when this merges (16.7).
 
 ### Task 16.4: A durable store needs a successor key
