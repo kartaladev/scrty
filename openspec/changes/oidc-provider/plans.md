@@ -1211,7 +1211,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 
 ## Task group 16: the code review of #72 (R27)
 
-Each defect is `UNREPRODUCED`. The first step of each task is its failing test, and a test that passes before the fix means the claim was wrong: stop, report it, and the main session removes that part of R27. A compile error is not a red step. Each dispatch reports the failing output it saw.
+Each defect was `UNREPRODUCED` when this group was written, and R27 records each test that then failed. The first step of each task is its failing test, and a test that passes before the fix means the claim was wrong: stop, report it, and the main session removes that part of R27. A compile error is not a red step. Each dispatch reports the failing output it saw.
 
 **Review Focus for this group:**
 - A retried recovery after the first revocation fails: the same proofs succeed, or with an MFA proof the same code and the next MFA code, and no attempt was charged as a refusal.
@@ -1274,7 +1274,7 @@ Each defect is `UNREPRODUCED`. The first step of each task is its failing test, 
 - [ ] Write `TestOIDCLogout_CompletesWhileSessionReadsFail` in `httpsec`: the chain's logout and end-session both end the sign-in with a store whose `Load` fails after the bearer has admitted the request.
 - [ ] Run them with `go test -race -run 'TestSessions_EndReportRead' -count=1 ./session/`, and confirm the `Delete` row fails because the session was deleted.
 - [ ] Change `readForReport` and its two callers. The failure comes back through `storeFailed`, with text naming the read. Point `Delete`'s godoc at `RevokeFamily` for a logout.
-- [ ] Verify: `go test -race -count=1 ./session/ ./oidcprovider/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.` The main session tells `session-signal` when this merges (16.7).
+- [ ] Verify: `go test -race -count=1 ./session/ ./oidcprovider/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.` The main session tells the `session-signals` session when this merges (16.7).
 
 ### Task 16.4: A durable store needs a successor key
 **Files:** Modify `oidcprovider/options.go`, `oidcprovider/refresh.go`, `test/expirytasks_test.go`, `test/oidcprovider_durable_test.go`, `test/oidcprovider_durable_logout_test.go`, `README.md`. Test: the file holding `oidcprovider`'s construction table.
@@ -1307,4 +1307,4 @@ Each defect is `UNREPRODUCED`. The first step of each task is its failing test, 
 
 ### Task 16.7: The final gate again
 - [ ] The main session runs `make check`, and the `test` module under `-race` on PostgreSQL 15 and 18. It pushes, and confirms the `conformance` job and every other job are green and that CodeQL reports no new alert on #72.
-- [ ] Tell `session-signal` about the new `sessions` requirement and the `readForReport` signature, as its rebase carries both.
+- [ ] Tell the `session-signals` session about the new `sessions` requirement and the `readForReport` signature, as its rebase carries both.

@@ -14,10 +14,10 @@ An MFA proof's check is also its spend, so a recovery completing at once SHALL v
 - **THEN** the recovery fails as a dependency failure, the saved or issued code is not spent, and the same code with the next MFA code succeeds
 
 ### Requirement: A recovery that cannot revoke grants spends nothing, or says so
-A recovery SHALL revoke the user's provider grants after its proofs pass every check and before any is spent, and a failure there SHALL be a dependency failure with nothing spent. It SHALL revoke them again after the sessions end. If only that second revocation fails, the recovery SHALL complete, its result SHALL say the grants were not revoked, and the failure SHALL be logged and reported as a security event. A held recovery SHALL take both steps at its finish.
+A recovery SHALL revoke the user's provider grants after its proofs pass every check and before any other than an MFA proof is spent, and a failure there SHALL be a dependency failure with nothing else spent. It SHALL revoke them again after the sessions end. If only that second revocation fails, the recovery SHALL complete, its result SHALL say the grants were not revoked, and the failure SHALL be logged and reported as a security event. A held recovery SHALL take both steps at its finish.
 
 #### Scenario: Grant store down before the proofs are spent
-- **WHEN** a recovery's proofs pass their checks, and revoking `u-1`'s grants fails
+- **WHEN** a recovery with no MFA proof passes its checks, and revoking `u-1`'s grants fails
 - **THEN** the recovery fails as a dependency failure, and the same proofs succeed when presented again
 
 #### Scenario: Grant store fails after the proofs are spent
