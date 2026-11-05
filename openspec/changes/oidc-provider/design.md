@@ -1716,7 +1716,7 @@ Reasoned from scrty's own settled specs and the established design.
 - [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §3.1.2.6: errors return to the redirection URI with `state`.
 - [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), §4: no post-logout redirection when validation fails.
 
-All sources were read by a research agent, with quotes reported. The defects themselves are `UNREPRODUCED` until group 16 runs.
+All sources were read by a research agent, with quotes reported. R27 names the test that reproduced each defect.
 
 ### R26
 
