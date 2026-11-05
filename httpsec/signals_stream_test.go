@@ -1896,6 +1896,14 @@ func (r *streamRig) wakeUserWide(s *session.Session, reason string) {
 	synctest.Wait()
 }
 
+// wakeBare delivers a report naming the sign-in and no reason, which wakes its stream to read and keeps nothing.
+func (r *streamRig) wakeBare(s *session.Session) {
+	httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+		User: s.UserID, Family: s.FamilyID, Name: string(httpsec.SignalSessionEnded),
+	})
+	synctest.Wait()
+}
+
 // TestSessionSignals_BusWakeUp_UserWideReport pins that a report naming no family names only a sign-in
 // it ended: a read begun after it that answers alive takes it back, and a report naming the family
 // keeps its window.
@@ -1985,10 +1993,14 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 			assert: func(t *testing.T, r *streamRig) {
 				b, stream := providerLogoutOfAnother(t, r)
 
+				held := r.holdUserReads(t)
+
 				r.act(func() {
 					_, err := r.sessions.EndOtherSignIns(t.Context(), "u-1", r.stored(t, b.ID))
 					require.NoError(t, err)
 				})
+				require.Zero(t, held.entered.Load(), "a read began for the stream the report spared")
+				held.letGo()
 				advance(time.Second)
 				r.requireLive(t, stream)
 
@@ -2004,10 +2016,14 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 			assert: func(t *testing.T, r *streamRig) {
 				b, stream := providerLogoutOfAnother(t, r)
 
+				held := r.holdUserReads(t)
+
 				r.act(func() {
 					_, err := r.sessions.DeleteByUserExcept(t.Context(), "u-1", b.ID)
 					require.NoError(t, err)
 				})
+				require.Zero(t, held.entered.Load(), "a read began for the stream the report spared")
+				held.letGo()
 				advance(time.Second)
 				r.requireLive(t, stream)
 
@@ -2182,6 +2198,175 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 
 				advanceUntil(t, 20*time.Second, "the end", stream.closed)
 				r.requireEnded(t, stream, "reuse")
+			},
+		},
+		{
+			name:  "a user-wide report does not replace a family's report still in its window",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				r.wakeUserWide(s, "provider_logout")
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			name:  "a user-wide report replaces a family's report once its window is over",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				advance(35 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+				r.wakeUserWide(s, "all_ended")
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "a user-wide report arriving after a family's keeps the family's through a take-back",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				held := r.holdUserReads(t)
+
+				r.wakeUserWide(s, "all_ended")
+				require.EqualValues(t, 1, held.entered.Load(), "the report's wake began the read")
+
+				r.wakeWith(s, "logout")
+				r.wakeUserWide(s, "provider_logout")
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held.letGo()
+				synctest.Wait()
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			// The limit endNotice states: a report ahead of its write is told from nothing but the
+			// timing, so a real all_ended in that order is taken for another sign-in's. A label is lost,
+			// and ended is never false.
+			name:  "a real all_ended that arrives ahead of its write ends the stream as ended",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeUserWide(s, "all_ended")
+				advance(50 * time.Millisecond)
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			// The limit endNotice states: the wait for a report takes any report that comes, with no
+			// read begun after it, so another sign-in's report in that wait names this stream's end.
+			name:  "a user-wide report during the wait for a report names the end",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+				r.wakeBare(s)
+				r.wakeUserWide(s, "provider_logout")
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "provider_logout")
+			},
+		},
+		{
+			name:  "a real all_ended that follows its write during the wait for a report names the end",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+				r.wakeBare(s)
+				r.wakeUserWide(s, "all_ended")
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "a second user-wide report during a read is not taken back with the first",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				held := r.holdUserReads(t)
+
+				r.wakeUserWide(s, "provider_logout")
+				require.EqualValues(t, 1, held.entered.Load(), "the first report's wake began the read")
+
+				r.wakeUserWide(s, "all_ended")
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held.letGo()
+				synctest.Wait()
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "a read that failed does not take back a user-wide report",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.failListing(true)
+				r.wakeUserWide(s, "all_ended")
+				r.failListing(false)
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "an overdue read's late answer does not take back a user-wide report",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				held := r.holdUserReads(t)
+
+				r.wakeUserWide(s, "all_ended")
+				require.EqualValues(t, 1, held.entered.Load(), "the report's wake began the read")
+
+				advance(11 * time.Second)
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held.letGo()
+				synctest.Wait()
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "all_ended")
 			},
 		},
 	})

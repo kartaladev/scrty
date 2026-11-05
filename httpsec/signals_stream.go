@@ -512,6 +512,8 @@ func (l *streamLoop) lastRetry() {
 func (e *sessionSignals) streamRules(st *signalStream) streamRules {
 	rules := streamRules{reasonWindow: streamReasonBeats * e.cfg.Heartbeat}
 
+	st.window.Store(int64(rules.reasonWindow))
+
 	if st.wanted.wants(string(SignalSessionExpiring)) {
 		rules.warning = e.cfg.ExpiryWarning
 	}
@@ -953,8 +955,10 @@ func (l *streamLoop) onAnswer(ctx context.Context, read streamRead) string {
 // takeBackBroad drops the user-wide notice held when reading started, if the session store then answered
 // that it holds the sign-in: that report was about another of the user's sign-ins, and must not name a
 // later end of this one. A read begun before the notice says nothing of it, because a report may arrive
-// before its write is visible, so such a notice waits for the read its wake starts. Compared by identity,
-// so that a notice arriving during the read stays.
+// before its write is visible, so such a notice waits for the read its wake starts. That wake is the only
+// one that ties a report to a read: a user-wide report that arrives ahead of its write, and whose read
+// answers alive, is taken back as another sign-in's, so a real all_ended in that order loses its reason
+// and the end says ended. Compared by identity, so that a notice arriving during the read stays.
 //
 // A reuse is never taken back. Every reuse the session manager reports names its family, so one naming
 // only a user comes from a bus's sender, who must not be able to erase a family's reuse with it.

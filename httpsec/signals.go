@@ -976,18 +976,32 @@ func envelopeForEnd(r session.EndReport) (SignalEnvelope, bool) {
 // can still name a later end in its window. That is a stated limit: the report of a superseded
 // session's deletion names a family that stays live, and only the window bounds it.
 //
-// A user-wide report can still name what it did not end, in two orderings, both stated limits. It
-// replaces a family's notice as any later report does, so taking it back leaves neither. And one that
-// arrives with no read begun after it, as during the wait for a report, names a store's gone that no
-// read has tied to it. Each costs a label, and needs two reports or an end within a moment of each other.
+// A user-wide report, one naming only a user, can still name what it did not end, in three orderings,
+// all stated limits. Each costs a label, and ended is never false.
+//
+//   - It arrives ahead of its write, and a read begun after it answers alive: the read takes it back,
+//     and the end that follows says ended. A real all_ended in that order cannot be told apart from
+//     another sign-in's report, so it loses its reason.
+//   - It arrives with no read begun after it, as during the wait for a report, and names a store's gone
+//     that no read has tied to it. A real all_ended whose report follows its write is named the same way.
+//   - It arrives while a read it cannot take back is in flight: a read that failed, or timed out, leaves
+//     the notice, as does one begun before the notice.
+//
+// A user-wide report does not replace a notice naming the family while that notice is inside its window,
+// since a family's report is about this stream. Once the window is over it may. A report naming the family
+// replaces a user-wide one as usual.
 type endNotice struct {
 	reason string
 	at     time.Time
 
 	// broad says the report named no family and no upstream session, only a user, so that it may
-	// be about another of the user's sign-ins. A read begun after it that answers alive takes it
-	// back (streamLoop.takeBackBroad). There is no option for this, as for streamReportGrace: it
-	// protects a label.
+	// be about another of the user's sign-ins. A read begun after it that answers that the store holds
+	// the sign-in takes it back (streamLoop.takeBackBroad); a read that failed or timed out leaves it.
+	// A user-only reuse is not taken back, whatever it says: reuse is kept apart, and taking it back
+	// would let a bus's sender erase a family's reuse, as no session manager reports a reuse without
+	// its family. Otherwise a broad notice is only ever replaced, by a report naming the family or
+	// by a later broad one, and it never replaces a family's notice inside its window (noteEnd). There
+	// is no option for this, as for streamReportGrace: it protects a label.
 	broad bool
 }
 
@@ -1027,6 +1041,11 @@ type signalStream struct {
 	reuse  atomic.Pointer[endNotice]
 	notes  atomic.Uint64
 
+	// window is how long a family's notice outranks a user-wide one, which the stream's loop sets from
+	// the chain's rules (streamRules). Zero until then, which lets a user-wide notice replace as any
+	// other does.
+	window atomic.Int64
+
 	// closing is closed once by the registry when CloseSessionSignals ends the stream.
 	closing chan struct{}
 }
@@ -1060,13 +1079,40 @@ func (s *signalStream) noteEnd(n endNotice) {
 		s.reuse.Store(&n)
 		s.notes.Add(1)
 	default:
-		s.notice.Store(&n)
-		s.notes.Add(1)
+		if !s.keepNotice(&n) {
+			s.notes.Add(1)
+		}
 	}
 
 	select {
 	case s.wake <- struct{}{}:
 	default:
+	}
+}
+
+// keepNotice stores n as the notice and reports false, unless n is user-wide and the notice held names
+// the family and is inside its window, when it keeps that one and reports true. The compare-and-swap
+// loop makes the choice against one notice: a concurrent take-back leaves nil and n goes in, and a
+// concurrent report naming the family either lands first, so n is refused, or after, and replaces n.
+// A refused n is not counted, since it kept no reason.
+func (s *signalStream) keepNotice(n *endNotice) (refused bool) {
+	if !n.broad {
+		s.notice.Store(n)
+
+		return false
+	}
+
+	window := time.Duration(s.window.Load())
+
+	for {
+		held := s.notice.Load()
+		if held != nil && !held.broad && n.at.Sub(held.at) <= window {
+			return true
+		}
+
+		if s.notice.CompareAndSwap(held, n) {
+			return false
+		}
 	}
 }
 
