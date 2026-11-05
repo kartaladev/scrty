@@ -491,7 +491,7 @@ option that changes it:
 |---|---|---|
 | A sign-in ends (logout, end-session, session management, a deletion) | grants without offline access end | none: it is what an end means |
 | Session management ends every other sign-in | grants survive | the request body `{"revoke_application_access":true}` revokes every grant, offline access and the current sign-in's included |
-| Account recovery completes | all the user's grants revoked, through the chain's provider | `recovery.WithoutRecoveryGrantRevocation` keeps them; `recovery.WithGrantRevoker` names another revoker |
+| Account recovery completes | all the user's grants revoked, through the chain's provider: once before its codes are spent, and again after its sessions end | `recovery.WithoutRecoveryGrantRevocation` keeps them; `recovery.WithGrantRevoker` names another revoker |
 | Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given; with it nil, **none**, since the package cannot see a provider, so a consumer using the provider must set it | `mfa.WithoutResetGrantRevocation` keeps them |
 | A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(op)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
 | Password change | grants kept | `httpsec.WithPasswordChangeGrantRevocation` revokes all before the new password is written |
@@ -502,6 +502,17 @@ leaves the user's refresh tokens working.
 
 A clone's revocation that fails leaves the refusal standing, is logged every time, and is reported as
 `scrty_grant_revoke_failed` on a request a chain watches: suspending happens once, so nothing asks again.
+
+A recovery revokes twice, and only the first failure stops it. The first runs once the proofs pass and
+before the issued and saved codes are spent, so a failure there is a dependency failure
+(`recovery.ErrDependency`, 500 on the chain) with those codes unspent and nothing charged, and the user
+retries. An MFA proof is verified before it, so a wrong code ends nothing, and a retry after the failure
+needs the next MFA code. The second runs after the sessions end, as a live session could have minted a
+grant in between. Its proofs are spent, so a failure there does not stop the recovery: it completes with
+`recovery.Result.GrantsNotRevoked` set, the failure is logged and reported as `scrty_grant_revoke_failed`,
+and the chain's `scrty_recovery_completed` carries the cause `event.CauseGrantsNotRevoked`. The default
+response does not change, and a `httpsec.WithRecoveryResponder` reads the flag, to tell the user and call
+`op.RevokeUserGrants` again. A held recovery revokes nothing when it starts, and takes both steps at its finish.
 
 Keeping grants gives up what each option's godoc says: after a recovery, a reset or a clone, a grant
 kept is a way back in for whoever took it, for as long as its refresh token lives. A consumer who runs

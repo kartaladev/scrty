@@ -29,8 +29,9 @@ func TestRecoverer_RevokesGrants(t *testing.T) {
 
 	errGrants := errors.New("grant store secret text")
 
+	// A recovery revokes twice: before the spend and after the sessions end.
 	revokes := func(g *MockGrantRevoker, err error) {
-		g.EXPECT().RevokeUserGrants(gomock.Any(), anaID, "recovery").Return(err).Times(1)
+		g.EXPECT().RevokeUserGrants(gomock.Any(), anaID, "recovery").Return(err).Times(2)
 	}
 
 	type testCase struct {
@@ -68,7 +69,7 @@ func TestRecoverer_RevokesGrants(t *testing.T) {
 			name: "a client that hung up does not stop the revocation: the completion is detached",
 			expect: func(g *MockGrantRevoker) {
 				g.EXPECT().RevokeUserGrants(gomock.Any(), anaID, "recovery").DoAndReturn(
-					func(ctx context.Context, _ identity.UserID, _ string) error { return ctx.Err() }).Times(1)
+					func(ctx context.Context, _ identity.UserID, _ string) error { return ctx.Err() }).Times(2)
 			},
 			act: func(ctx context.Context, _ *testing.T, e *completeEnv, r *recovery.Recoverer) (*recovery.Result, error) {
 				ctx, cancel := context.WithCancel(ctx)
@@ -124,9 +125,11 @@ func TestRecoverer_RevokesGrants(t *testing.T) {
 			assert: completed,
 		},
 		{
-			name:   "a revoker's failure is returned behind fixed text, with the session not stored and the saved set unreplaced",
-			expect: func(g *MockGrantRevoker) { revokes(g, errGrants) },
-			act:    recoverNow,
+			name: "a revoker's failure is returned behind fixed text, with nothing spent or ended",
+			expect: func(g *MockGrantRevoker) {
+				g.EXPECT().RevokeUserGrants(gomock.Any(), anaID, "recovery").Return(errGrants).Times(1)
+			},
+			act: recoverNow,
 			assert: func(t *testing.T, e *completeEnv, prior []string, res *recovery.Result, err error) {
 				t.Helper()
 
@@ -134,12 +137,12 @@ func TestRecoverer_RevokesGrants(t *testing.T) {
 				assert.NotContains(t, err.Error(), "secret text", "its text is the package's own")
 				assert.NotErrorIs(t, err, recovery.ErrRefused, "a dependency failure is no refusal")
 				assert.Nil(t, res)
-				assert.False(t, e.loads(t, prior[0]), "the step before it stays done")
+				assert.True(t, e.loads(t, prior[0]), "the sessions stand")
 				assert.Empty(t, e.out.recoveredNotices(), "no notice claims a recovery that failed")
 
 				remaining, rerr := e.codes.Remaining(t.Context(), anaID)
 				require.NoError(t, rerr)
-				assert.Equal(t, len(e.saved)-1, remaining.N, "the old set stands, less the code spent")
+				assert.Equal(t, len(e.saved), remaining.N, "the old set stands, with nothing spent")
 			},
 		},
 		{

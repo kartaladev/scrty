@@ -20,6 +20,8 @@ import (
 	"github.com/kartaladev/scrty/token"
 )
 
+//go:generate mockgen -destination=grantrevoker_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/recovery GrantRevoker
+
 // msgRecoveryLogsSuppressed is the record the recovery endpoints' own sampler
 // writes for a key whose counts are about to be discarded.
 const msgRecoveryLogsSuppressed = "httpsec: recovery logs suppressed"
@@ -496,7 +498,17 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	// credential is handed out below.
 	// A completed recovery is a sign-in as well, of the recovery factor.
 	ctx := ex.Context()
-	emitEvent(ctx, sessionEvent(event.RecoveryCompleted, event.OutcomeSuccess, res.Session))
+
+	// The response does not change when the core could not revoke the grants a
+	// second time: the recovery succeeded, and the flag reaches a responder
+	// through RecoveryResult.Recovery. The chain's report of the recovery records
+	// it beside the failure the core reported.
+	completed := sessionEvent(event.RecoveryCompleted, event.OutcomeSuccess, res.Session)
+	if res.GrantsNotRevoked {
+		completed.Cause = event.CauseGrantsNotRevoked
+	}
+
+	emitEvent(ctx, completed)
 	emitEvent(ctx, sessionEvent(event.SessionCreated, event.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(event.AuthnTokenCreated, event.OutcomeSuccess, res.Session))
 	emitEvent(ctx, sessionEvent(event.AuthnLoginSuccess, event.OutcomeSuccess, res.Session))
@@ -538,10 +550,12 @@ func (i *recoveryInterceptor) issueRecovered(ctx context.Context, s *session.Ses
 // A malformed request is counted nowhere: it is the client's mistake, checked
 // before any proof, and says nothing about a guess. Nor is a credential the
 // chain could not issue (errRecoveryNotIssued): every proof had passed, and
-// the outage is the deployment's, not the client's. A refusal after the
-// recovery codes passed is counted unless the consumer turned that off. Every
-// other failure is counted: a refused code, an unknown or throttled user, and
-// any dependency outage the recovery met.
+// the outage is the deployment's, not the client's. The same holds for a first
+// grant revocation that failed (recovery.ErrDependency), which the user is meant
+// to retry: charging it would throttle them out of a recovery they hold good
+// proofs for. A refusal after the recovery codes passed is counted unless the
+// consumer turned that off. Every other failure is counted: a refused code, an
+// unknown or throttled user, and any dependency outage the recovery met.
 //
 // That includes an error matching authenticate.ErrUnavailable, which the
 // password proof returns when its user store could not answer. No password
@@ -552,7 +566,8 @@ func (i *recoveryInterceptor) issueRecovered(ctx context.Context, s *session.Ses
 // the codes passed, so it is counted as such a refusal is, though nothing is
 // recorded against the account or the user's recovery limit.
 func countsAgainstRecoverySource(countRefusals bool, err error) bool {
-	if errors.Is(err, recovery.ErrMalformed) || errors.Is(err, errRecoveryNotIssued) {
+	if errors.Is(err, recovery.ErrMalformed) || errors.Is(err, errRecoveryNotIssued) ||
+		errors.Is(err, recovery.ErrDependency) {
 		return false
 	}
 

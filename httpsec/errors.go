@@ -460,7 +460,8 @@ var statusTable = []statusRow{
 // automation-challenge verifier that could not answer (ErrChallengeUnavailable)
 // is 500 in the same way, whatever its own error wraps, while a request the
 // verifier refused (ErrChallengeRequired) is 403. So is a dependency of the
-// OpenID Provider that failed (oidcprovider.ErrDependency).
+// OpenID Provider that failed (oidcprovider.ErrDependency), and a dependency that
+// stopped a recovery before any code but an MFA one was spent (recovery.ErrDependency).
 //
 // A challenge is checked next, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
@@ -505,9 +506,9 @@ func StatusForError(err error) int {
 		return http.StatusInternalServerError
 	}
 
-	// And a dependency of the OpenID Provider that failed, whatever its own error
-	// wraps.
-	if errors.Is(err, oidcprovider.ErrDependency) {
+	// And a dependency of the OpenID Provider or of a recovery that failed,
+	// whatever its own error wraps.
+	if errors.Is(err, oidcprovider.ErrDependency) || errors.Is(err, recovery.ErrDependency) {
 		return http.StatusInternalServerError
 	}
 

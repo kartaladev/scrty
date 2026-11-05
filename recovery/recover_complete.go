@@ -54,15 +54,16 @@ const (
 // WithCredentialIssuer.
 //
 // It is called once the session is built and marked recovery-pending, and
-// before anything is spent or stored: s loads nothing yet, and is stored only
-// once the recovery's other effects have run. It must not modify s or user. A
-// credential it returns for a recovery that then fails, such as one that loses
-// a racing recovery its saved code, names a session that is never stored, so
-// it authenticates nothing and is discarded.
+// before the grants are revoked and anything is spent or stored: s loads
+// nothing yet, and is stored only once the recovery's other effects have run.
+// It must not modify s or user. A credential it returns for a recovery that
+// then fails, such as one whose first grant revocation fails or that loses a
+// racing recovery its saved code, names a session that is never stored, so it
+// authenticates nothing and is discarded.
 //
-// An error is a dependency failure, never a refusal: the recovery spends,
-// removes, ends, replaces, records and sends nothing, counts nothing against
-// the user, and returns the error behind fixed text of this package, still
+// An error is a dependency failure, never a refusal: the recovery revokes,
+// spends, removes, ends, replaces, records and sends nothing, counts nothing
+// against the user, and returns the error behind fixed text of this package, still
 // matching it through errors.Is and errors.As.
 type IssueFunc func(ctx context.Context, s *session.Session, user *identity.Details) (string, error)
 
@@ -123,6 +124,15 @@ type Result struct {
 	// lost with the response. Nil when the recovery is held.
 	Details *identity.Details
 
+	// GrantsNotRevoked is set when the recovery completed but its second
+	// revocation of the user's application grants failed (WithGrantRevoker), so
+	// a grant minted before the sessions ended may stand. The failure was logged
+	// and reported as event.GrantRevokeFailed. The consumer can tell the user,
+	// and call the revoker's RevokeUserGrants again, which is idempotent. It is
+	// false when no revoker is in use, when the grants were kept on purpose
+	// (WithoutRecoveryGrantRevocation), and when the recovery is held.
+	GrantsNotRevoked bool
+
 	// Held is set, and nothing else is, when the recovery is held: it carries
 	// the completion token Finish takes and the instant it can be presented.
 	Held *Hold
@@ -155,16 +165,27 @@ type issuedSession struct {
 // session, confined to the session lifetime, and issues its credential
 // through the issuer (WithCredentialIssuer), after every check and before
 // anything is spent. An issuing failure is a dependency failure, not a
-// refusal: nothing is spent, removed, ended, replaced, recorded or sent, and
-// nothing is counted against the user, so the same proofs recover once the
-// issuer is healthy.
+// refusal: nothing is revoked, spent, removed, ended, replaced, recorded or
+// sent, and nothing is counted against the user, so the same proofs recover
+// once the issuer is healthy.
 //
-// Then, in this order: the proofs are spent; a completed record is written;
+// With an MFA proof it then verifies the code, which spends it, so a wrong code
+// ends nothing: the refusal spends nothing else and revokes nothing.
+//
+// It then revokes the user's application grants, when a revoker is present
+// (WithGrantRevoker) and unless WithoutRecoveryGrantRevocation. A failure is a
+// dependency failure as well (ErrDependency), with nothing counted against the
+// user: the same proofs recover once the revoker is healthy, except that an MFA
+// code was spent by its verification, so a retry needs the next one. Its issued
+// and saved codes are not spent. A held recovery spends every proof when it
+// starts, and revokes nothing until its finish.
+//
+// Then, in this order: the remaining proofs are spent, the issued code before
+// the saved code; a completed record is written;
 // the planned authenticators are removed; every session of the user is
-// deleted, unless WithoutSessionRevocation; the user's application grants are
-// revoked, when a revoker is present (WithGrantRevoker) and unless
-// WithoutRecoveryGrantRevocation; when a saved code was spent, the
-// saved set is replaced and the new codes returned; the recovery session is
+// deleted, unless WithoutSessionRevocation; the grants are revoked again, as a
+// live session could have minted one in between; when a saved code was spent,
+// the saved set is replaced and the new codes returned; the recovery session is
 // stored, already recovery-pending, in the one write that creates it; and the
 // user is notified at their contact address. The result carries the
 // credential, counts the saved codes the user then holds (the new set after a
@@ -173,14 +194,18 @@ type issuedSession struct {
 // A failure at any step from the record to the session's write is returned,
 // with the proofs spent and the earlier steps done, and the credential
 // discarded: it names a session that was never stored, so it authenticates
-// nothing. In particular a failed reset revokes nothing, and a session write
-// that fails after the saved set was replaced loses the new codes with the
-// error. A notice the sender refuses is logged, and the recovery stands.
+// nothing. In particular a failed reset revokes nothing further, and a session
+// write that fails after the saved set was replaced loses the new codes with
+// the error. The one exception is the second grant revocation: its failure is
+// logged and reported as event.GrantRevokeFailed, Result.GrantsNotRevoked is
+// set, and the recovery carries on. A notice the sender refuses is logged, and
+// the recovery stands.
 //
 // Everything from the first spend on runs detached from ctx's cancellation,
-// so a client that hangs up cannot leave a recovery half done. The issuer
-// runs before that, on ctx itself, so a client that hangs up while it issues
-// spends nothing.
+// so a client that hangs up cannot leave a recovery half done. The issuer runs
+// before that, on ctx itself, so a client that hangs up while it issues spends
+// nothing. So does the first revocation when there is no MFA proof; with one it
+// follows the verification, so it runs detached too.
 //
 // A refusal (ErrRefused) is reported as event.RecoveryRefused
 // (WithSecurityEvents); a dependency failure, and a request whose own context
@@ -213,7 +238,15 @@ func (r *Recoverer) recover(ctx context.Context, req Request) (*Result, error) {
 		}
 	}
 
-	if err := r.spend(ctx, v); err != nil {
+	// A held recovery may yet be cancelled by the real user, so it revokes at its
+	// finish. One completing at once revokes as it spends, so an outage costs the
+	// user as little as it can and they can retry.
+	spend := r.spend
+	if hold <= 0 {
+		spend = r.revokeThenSpend
+	}
+
+	if err := spend(ctx, v); err != nil {
 		return nil, err
 	}
 
@@ -329,9 +362,13 @@ func recoveryOwn(user identity.UserID) session.CreateOption {
 }
 
 // complete runs the completion sequence from the reset on: reset, revoke the
-// sessions and the grants, reissue or count, the one write that stores the recovery session c.issued
-// already holds a credential for, and the notice. ctx is already detached
-// from the caller's cancellation.
+// sessions and the grants, reissue or count, the one write that stores the
+// recovery session c.issued already holds a credential for, and the notice. ctx
+// is already detached from the caller's cancellation.
+//
+// The revocation here is the second, and a failure does not stop the sequence:
+// the proofs are spent, so returning would leave the user locked out with no way
+// to retry, which is worse than one grant the consumer is told about.
 func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (*Result, error) {
 	if err := r.planner.execute(ctx, c.user, c.plan); err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgResetFailed, diag.Failure("authenticator-remove", err)...)
@@ -347,15 +384,18 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		}
 	}
 
+	res := &Result{Details: c.details}
+
 	if r.grants != nil {
 		if err := r.grants.RevokeUserGrants(ctx, c.user, grantRevocationCause); err != nil {
 			r.logger.LogAttrs(ctx, slog.LevelError, msgGrantsFailed, diag.Failure("grant-revoker", err)...)
+			r.events.Report(ctx, event.Event{
+				Name: event.GrantRevokeFailed, At: r.clock.Now(), Outcome: event.OutcomeFailure, User: c.user,
+			}, r.logger)
 
-			return nil, diag.Wrap(err, errTextGrants)
+			res.GrantsNotRevoked = true
 		}
 	}
-
-	res := &Result{Details: c.details}
 
 	switch {
 	case c.savedSpent:

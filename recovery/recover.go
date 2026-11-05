@@ -571,15 +571,67 @@ func (r *Recoverer) checkRest(ctx context.Context, v *verified, req Request) err
 // The whole phase runs detached from the caller's cancellation: once one
 // proof is spent, a client that hangs up must not leave the others unspent
 // and the recovery half done.
+//
+// A held recovery spends through it and revokes nothing. One completing at once
+// goes through revokeThenSpend.
 func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 	ctx = context.WithoutCancel(ctx)
 
-	if v.mfa != nil {
-		if err := v.mfa.Verify(ctx, v.user, v.mfaCode); err != nil {
-			return r.spendRefused(ctx, v.user, "mfa-verify", err, mfaRefusal(err))
-		}
+	if err := r.spendMFA(ctx, v); err != nil {
+		return err
 	}
 
+	return r.spendCodes(ctx, v)
+}
+
+// revokeThenSpend is spend for a recovery completing at once, with the first
+// grant revocation in its place: after the MFA proof and before the codes.
+//
+// The MFA proof comes first because nothing else checks it: its verification is
+// its check, and it cannot be undone. Revoking before it would let one stolen
+// code and any wrong MFA code end all the user's grants. So a first revocation
+// that fails has spent the MFA code, and only that: the user retries with the
+// next one.
+//
+// Once the MFA proof is spent the rule of spend applies, so the revocation runs
+// detached from the caller's cancellation. With no MFA proof nothing is spent
+// yet, so it runs on ctx, and a client that hangs up during it spends nothing.
+func (r *Recoverer) revokeThenSpend(ctx context.Context, v *verified) error {
+	detached := context.WithoutCancel(ctx)
+
+	if v.mfa != nil {
+		if err := r.spendMFA(detached, v); err != nil {
+			return err
+		}
+
+		ctx = detached
+	}
+
+	if err := r.revokeGrantsFirst(ctx, v.user); err != nil {
+		return err
+	}
+
+	return r.spendCodes(detached, v)
+}
+
+// spendMFA spends the MFA proof, if there is one. ctx is already detached from
+// the caller's cancellation.
+func (r *Recoverer) spendMFA(ctx context.Context, v *verified) error {
+	if v.mfa == nil {
+		return nil
+	}
+
+	if err := v.mfa.Verify(ctx, v.user, v.mfaCode); err != nil {
+		return r.spendRefused(ctx, v.user, "mfa-verify", err, mfaRefusal(err))
+	}
+
+	return nil
+}
+
+// spendCodes spends the issued code and then the saved code, whichever of them
+// the recovery presented. ctx is already detached from the caller's
+// cancellation.
+func (r *Recoverer) spendCodes(ctx context.Context, v *verified) error {
 	if v.has(ProofIssued) {
 		cctx, watch := depfault.Watching(ctx)
 		if err := r.issued.Consume(cctx, v.issued); err != nil {

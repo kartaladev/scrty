@@ -48,13 +48,20 @@ type Event struct {
 	Client string
 
 	// Cause is why the outcome came about, in a fixed word, and empty where
-	// the name says it all. It is the cause a grant was revoked for, or the
-	// reason a back-channel logout delivery failed. It is never the text of an
-	// error, and never a value a request supplied. The one exception to the
+	// the name says it all. It is the cause a grant was revoked for, the reason
+	// a back-channel logout delivery failed, or CauseGrantsNotRevoked on a
+	// RecoveryCompleted whose grants could not be revoked. It is never the text
+	// of an error, and never a value a request supplied. The one exception to the
 	// fixed word is a cause a consumer named when it revoked a user's grants:
 	// that is the consumer's own, and is carried unchanged.
 	Cause string
 }
+
+// CauseGrantsNotRevoked is the Cause of a RecoveryCompleted a chain reports for a
+// recovery that completed with its second grant revocation failed
+// (recovery.Result.GrantsNotRevoked). The GrantRevokeFailed beside it names the
+// user.
+const CauseGrantsNotRevoked = "grants_not_revoked"
 
 // Sink receives security events.
 //
@@ -227,7 +234,9 @@ const (
 	RecoveryStarted = "scrty_recovery_started"
 
 	// RecoveryCompleted is an account recovery completed, and its
-	// recovery-pending session stored.
+	// recovery-pending session stored. Its Cause is CauseGrantsNotRevoked when
+	// the chain reports a recovery whose second grant revocation failed, and
+	// empty otherwise.
 	RecoveryCompleted = "scrty_recovery_completed"
 
 	// RecoveryRefused is an account recovery's completion refused for its
@@ -341,13 +350,19 @@ const (
 	// never reported. The failure never undoes or delays the sign-in's end.
 	GrantEndFailed = "scrty_grant_end_failed"
 
-	// GrantRevokeFailed is a suspected passkey clone whose user's application
-	// grants could not be revoked: the credential is suspended and the login
-	// refused, but the grants stand, and suspending happens once, so nothing
-	// asks again. It names the user and carries no cause, as a revoker's error
-	// is never reported. It is reported on a request a chain watches, as the
-	// passkey manager has no sink of its own, and the failure is logged either
-	// way. It never changes the refusal.
+	// GrantRevokeFailed is a user's application grants that could not be revoked
+	// where nothing asks again. It names the user and carries no cause, as a
+	// revoker's error is never reported, and the failure is logged either way.
+	//
+	// It reports two things. A suspected passkey clone: the credential is
+	// suspended and the login refused, but the grants stand, and suspending
+	// happens once. It is reported on a request a chain watches, as the passkey
+	// manager has no sink of its own, and it never changes the refusal. And an
+	// account recovery's second revocation, after its proofs were spent: the
+	// recovery completes, and recovery.Result.GrantsNotRevoked says so. It is
+	// reported through the recoverer's sink (recovery.WithSecurityEvents), or the
+	// chain's when a chain runs it. A recovery's first revocation is not reported:
+	// it spends nothing but an MFA code, if one was a proof, so the user can retry it.
 	GrantRevokeFailed = "scrty_grant_revoke_failed"
 )
 

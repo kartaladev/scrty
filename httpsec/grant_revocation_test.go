@@ -642,7 +642,8 @@ func TestRecovery_RevokesGrantsThroughTheChain(t *testing.T) {
 				t.Helper()
 
 				recoveredBySession(t, h, out)
-				assert.Equal(t, []oidcprovider.RevocationCause{oidcprovider.CauseRecovery}, w.grants.causes())
+				assert.Equal(t, []oidcprovider.RevocationCause{oidcprovider.CauseRecovery, oidcprovider.CauseRecovery},
+					w.grants.causes(), "once before the proofs are spent, and once after the sessions end")
 				w.assertGrantRevoked(t, refresh)
 			},
 		},
@@ -668,7 +669,7 @@ func TestRecovery_RevokesGrantsThroughTheChain(t *testing.T) {
 				t.Helper()
 
 				recoveredBySession(t, h, out)
-				assert.Equal(t, []identity.UserID{e2eUser}, r.users)
+				assert.Equal(t, []identity.UserID{e2eUser, e2eUser}, r.users)
 				w.assertGrantWorks(t, refresh)
 			},
 		},

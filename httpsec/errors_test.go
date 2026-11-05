@@ -279,6 +279,12 @@ func TestStatusForError(t *testing.T) {
 		},
 		{name: "the provider's foreign consent", err: oidcprovider.ErrForeignConsent, want: 404},
 		{name: "a provider dependency failure", err: oidcprovider.ErrDependency, want: 500},
+		{name: "a recovery's dependency failure", err: recovery.ErrDependency, want: 500},
+		{
+			name: "a recovery's dependency failure is 500 whatever its cause wraps",
+			err:  fmt.Errorf("%w: %w", recovery.ErrDependency, authenticate.ErrAuthenticationFailed),
+			want: 500,
+		},
 		{
 			name: "a provider dependency failure outranks a refusal its cause wraps",
 			err:  fmt.Errorf("%w: %w", oidcprovider.ErrDependency, authenticate.ErrAuthenticationFailed),
@@ -537,6 +543,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"recovery.ErrCodeThrottled":            recovery.ErrCodeThrottled,
 		"recovery.ErrConfig":                   recovery.ErrConfig,
 		"recovery.ErrCooldown":                 recovery.ErrCooldown,
+		"recovery.ErrDependency":               recovery.ErrDependency,
 		"recovery.ErrMalformed":                recovery.ErrMalformed,
 		"recovery.ErrNotYetCompletable":        recovery.ErrNotYetCompletable,
 		"recovery.ErrReauthenticationRequired": recovery.ErrReauthenticationRequired,
@@ -667,6 +674,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"password.ErrTooLong":                   "the encoder's error is returned as is, and the consumer decides",
 		"password.ErrContainsNUL":               "the encoder's error is returned as is, and the consumer decides",
 		"recovery.ErrConfig":                    "a wiring fault, refused at construction",
+		"recovery.ErrDependency":                "a dependency failure, answered 500 whatever its cause wraps",
 		"recovery.ErrRecordNotFound":            "a store outcome the recovery core converts to ErrRefused before it leaves the core",
 		"passkey.ErrConfig":                     "a wiring fault, refused at construction",
 		"passkey.ErrDuplicateCredential":        "a store outcome the passkey core converts to authenticate.ErrAuthenticationFailed before it leaves the core",
