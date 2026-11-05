@@ -1267,7 +1267,8 @@ func TestProvider_Events_DropsOfEachKind(t *testing.T) {
 
 			assert.Equal(t, []string{"timeout", "timeout", "busy", "busy"}, x.reasons(), "the quiet client took a place too")
 			failed := named(log.all(), event.LogoutDeliveryFailed)
-			assert.Equal(t, []string{"timeout", "timeout", "busy"}, causesOf(failed), "and is not reported")
+			// Log lines keep their order, on one goroutine. Events do not: several goroutines reach the sink at once.
+			assert.ElementsMatch(t, []string{"timeout", "timeout", "busy"}, causesOf(failed), "and is not reported")
 
 			close(g.open)
 			synctest.Wait()

@@ -637,9 +637,13 @@ func TestOutboundTimeout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// A provider that accepts the connection and never answers.
+			// A provider that accepts the connection and never answers. Returning from the handler would be an
+			// answer, an empty 200: closing a TLS connection sends close_notify before it closes the socket, which
+			// ends this context while the client can still read, and the transport may hand that 200 back in place
+			// of the deadline. Aborting closes the connection with nothing written.
 			silent, sent := countingServer(t, true, func(_ http.ResponseWriter, r *http.Request) {
 				<-r.Context().Done()
+				panic(http.ErrAbortHandler)
 			})
 
 			// A call nothing else ends fails on how long it took, rather than leaving the run hanging.

@@ -121,8 +121,16 @@ const (
 	hangTimeout      = 100 * time.Millisecond
 )
 
-// hang answers only once the request has gone.
-func hang(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
+// hang never answers. Returning once the request has gone would send an empty
+// 200: closing a TLS connection sends close_notify before it closes the
+// socket, which ends this context while the client can still read, and the
+// transport may hand that 200 back in place of the deadline or the hang-up.
+// Aborting closes the connection with nothing written.
+func hang(_ http.ResponseWriter, r *http.Request) {
+	<-r.Context().Done()
+
+	panic(http.ErrAbortHandler)
+}
 
 func TestPolicy_Breached(t *testing.T) {
 	t.Parallel()
