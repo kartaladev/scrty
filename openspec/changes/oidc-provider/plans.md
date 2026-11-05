@@ -1214,7 +1214,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 Each defect is `UNREPRODUCED`. The first step of each task is its failing test, and a test that passes before the fix means the claim was wrong: stop, report it, and the main session removes that part of R27. A compile error is not a red step. Each dispatch reports the failing output it saw.
 
 **Review Focus for this group:**
-- A retried recovery after the first revocation fails: the same proofs succeed, and no attempt was charged as a refusal.
+- A retried recovery after the first revocation fails: the same proofs succeed, or with an MFA proof the same code and the next MFA code, and no attempt was charged as a refusal.
 - A cross-site POST carrying a malformed body: refused as before, with no redirect built from what could not be parsed.
 - A repeated parameter in a bounced POST, such as two `resource` values: both reach the GET, in order, as `url.Values.Encode` gives them.
 - `DeleteByUserExcept` with an empty `keep`: reads nothing, as `readForReport` already skips an empty identifier, and every session goes.
@@ -1223,7 +1223,7 @@ Each defect is `UNREPRODUCED`. The first step of each task is its failing test, 
 ### Task 16.1: A recovery's two revocations
 **Files:** Modify `recovery/recover_complete.go`, `recovery/hold.go`, `recovery/grants.go`, `event/event.go`, `httpsec/recovery.go`. Test: `recovery/recover_grants_test.go` (new), `httpsec/recovery_test.go`.
 
-**Produces:** `Result.GrantsNotRevoked bool`, true only when the second revocation failed. `func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID) error`.
+**Produces:** `Result.GrantsNotRevoked bool`, true only when the second revocation failed. `func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID) error`. `recovery.ErrDependency`, which a first failure matches and the chain answers 500. `event.CauseGrantsNotRevoked`.
 
 - [ ] Write `TestRecover_GrantRevocation`, one table on a revoker whose failure position is set per row, with an `assert` closure:
   - fails first: the error matches `ErrDependency`'s wrap behind `errTextGrants`, no proof is spent, no record is written, and the same request then succeeds;
@@ -1232,7 +1232,8 @@ Each defect is `UNREPRODUCED`. The first step of each task is its failing test, 
   - `WithoutRecoveryGrantRevocation`: never called.
 - [ ] Write `TestFinish_GrantRevocation`: starting a hold calls the revoker zero times; a first failure at `Finish` leaves the record pending and the token usable, and the retry succeeds; a second failure completes as above.
 - [ ] Run `go test -race -run 'TestRecover_GrantRevocation|TestFinish_GrantRevocation' -count=1 ./recovery/` and confirm: the fail-second row fails because the recovery returned `errTextGrants`, and the fail-first row because a proof was spent.
-- [ ] In `recover`, call `revokeGrantsFirst` on the caller's `ctx` immediately before `r.spend`, only when `hold <= 0`. In `finish`, call it after `issueSession` and before `ctx = context.WithoutCancel(ctx)`. A hang-up there logs at DEBUG, as `issueSession` does.
+- [ ] Add rows to `TestRecover_GrantRevocation`: a wrong MFA code revokes nothing and leaves the other code unspent; a right MFA code with a failing first revocation matches `ErrDependency`, leaves the other code unspent, and a retry with the next MFA code succeeds; a caller hanging up after `Verify` accepted still revokes.
+- [ ] In `recover`, when `hold <= 0`, verify an MFA proof first, then call `revokeGrantsFirst`, then spend the issued and saved codes. Once `Verify` has accepted, the revocation runs detached from the caller's cancellation. With no MFA proof it runs on the caller's `ctx`, before anything is spent. In `finish`, call it after `issueSession` and before `ctx = context.WithoutCancel(ctx)`. A hang-up there logs at DEBUG, as `issueSession` does.
 - [ ] In `complete`, a failure of `RevokeUserGrants` logs `msgGrantsFailed`, reports `event.GrantRevokeFailed`, sets `res.GrantsNotRevoked`, and carries on.
 - [ ] Update the godoc of `WithGrantRevoker`, `Result` and `event.GrantRevokeFailed`, which today names only a passkey clone. In `httpsec/recovery.go`, keep the existing response and record the flag where the chain reports the recovery. Add a test there that the chain's answer is the recovery's success.
 - [ ] Verify: `go test -race -count=1 ./recovery/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint run ./recovery/... ./httpsec/...` showing `0 issues.`
@@ -1240,10 +1241,10 @@ Each defect is `UNREPRODUCED`. The first step of each task is its failing test, 
 ### Task 16.2: A POST with no flow cookie becomes a GET
 **Files:** Modify `httpsec/oidc_authorize.go`, `httpsec/oidc_endsession.go`. Test: `httpsec/oidc_post_bounce_test.go`, `test/httpsecconformance/oidcprovider_scenarios.go`.
 
-**Produces:** `func bounceOIDCPost(ex *Exchange, params url.Values) error`, in `oidc_authorize.go`, which writes the 303.
+**Produces:** `func bounceOIDCPost(ex *Exchange, endpoint string, params url.Values) error`, in `oidc_authorize.go`, which writes the 303 to `endpoint`, the address the metadata publishes (`op.publicURL`).
 
 - [ ] Write `TestOIDCFormPost_NoFlowCookie`, one table across both endpoints, with an `assert` closure:
-  - an empty POST to end-session with no cookie: 303, `Location` is the endpoint's path with no query, no `Set-Cookie`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`;
+  - an empty POST to end-session with no cookie: 303, `Location` is the endpoint's published address with no query, no `Set-Cookie`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`;
   - a POST to authorize with two `resource` values, a `state` of `a&b=c #d` and an `id_token_hint`: `Location`'s query parses back to the same `url.Values`;
   - a POST holding a valid flow cookie: no bounce, answered as today;
   - a GET with no cookie: not bounced, and sets the cookie as today;
@@ -1251,7 +1252,7 @@ Each defect is `UNREPRODUCED`. The first step of each task is its failing test, 
   - nothing parked, and nothing charged, shown by `throttle`'s limit not moving over repeated bounces.
 - [ ] Write `TestOIDCFormPost_ParkedRequestSurvives`: park a request holding cookie `c`, POST empty to end-session with no cookie, and assert no `Set-Cookie` and that resuming with `c` succeeds.
 - [ ] Run `go test -race -run 'TestOIDCFormPost' -count=1 ./httpsec/` and confirm the failures show a `Set-Cookie` and a 303 to the login page, not a compile error.
-- [ ] In both handlers, after the throttle's `admit` and `readOIDCAuthorizeParams`, and before the provider is called: when the method is POST and the flow cookie is absent, `return bounceOIDCPost(ex, params)`.
+- [ ] In both handlers, after the throttle's `admit` and `readOIDCAuthorizeParams`, and before the provider is called: when the method is POST and the flow cookie is absent, `return bounceOIDCPost(ex, op.publicURL(<the endpoint's path>), params)`.
 - [ ] Add the scenario to `test/httpsecconformance/oidcprovider_scenarios.go`, so net/http, gin and fiber all assert it. Verify from `test/`: `go test -race -run 'TestConformance(NetHTTP|Gin|Fiber)' -count=1 .`
 - [ ] Run `make conformance`, and confirm `oidcc-ensure-post-request-succeeds` passes and no new result appears. A failure stops the task, and goes back to the main session, as R27 says.
 - [ ] Browser check: serve a page on a second host that form-posts to the provider, in a real browser. Confirm the POST carries no flow cookie, and the redirected GET does. Report the browser and version, and the main session records it in R27. A browser withholding the cookie stops the task.

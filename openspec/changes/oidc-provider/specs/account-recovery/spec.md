@@ -2,6 +2,17 @@
 
 ## ADDED Requirements
 
+### Requirement: A recovery verifies an MFA proof before revoking grants
+An MFA proof's check is also its spend, so a recovery completing at once SHALL verify it before its first grant revocation. A refused MFA code SHALL revoke nothing, and a failure of that revocation SHALL leave only that code spent.
+
+#### Scenario: A wrong MFA code
+- **WHEN** a recovery presents a valid saved code and a wrong MFA code
+- **THEN** the recovery is refused, `u-1`'s grants are not revoked, and the saved code is not spent
+
+#### Scenario: Grant store down after an MFA code is accepted
+- **WHEN** a recovery's MFA code is accepted, and revoking `u-1`'s grants fails
+- **THEN** the recovery fails as a dependency failure, the saved or issued code is not spent, and the same code with the next MFA code succeeds
+
 ### Requirement: A recovery that cannot revoke grants spends nothing, or says so
 A recovery SHALL revoke the user's provider grants after its proofs pass every check and before any is spent, and a failure there SHALL be a dependency failure with nothing spent. It SHALL revoke them again after the sessions end. If only that second revocation fails, the recovery SHALL complete, its result SHALL say the grants were not revoked, and the failure SHALL be logged and reported as a security event. A held recovery SHALL take both steps at its finish.
 
