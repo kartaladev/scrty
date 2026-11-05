@@ -987,9 +987,14 @@ func envelopeForEnd(r session.EndReport) (SignalEnvelope, bool) {
 //   - It arrives while a read it cannot take back is in flight: a read that failed, or timed out, leaves
 //     the notice, as does one begun before the notice.
 //
-// A user-wide report does not replace a notice naming the family while that notice is inside its window,
-// since a family's report is about this stream. Once the window is over it may. A report naming the family
-// replaces a user-wide one as usual.
+// A user-wide report does not replace a notice naming the family or the upstream session while that notice
+// is inside its window, since such a report is about this stream. Once the window is over it may. A report
+// naming either replaces a user-wide one as usual. That refusal costs a real all_ended its label in two
+// more orderings, also stated limits, and ended is still never false.
+//
+//   - The notice it was refused by ended nothing: the end is named with that notice's reason.
+//   - It was refused near the end of that notice's window, and a read says gone only after the window: it
+//     was not kept, so nothing is left to name the end, which says ended.
 type endNotice struct {
 	reason string
 	at     time.Time
@@ -999,9 +1004,9 @@ type endNotice struct {
 	// the sign-in takes it back (streamLoop.takeBackBroad); a read that failed or timed out leaves it.
 	// A user-only reuse is not taken back, whatever it says: reuse is kept apart, and taking it back
 	// would let a bus's sender erase a family's reuse, as no session manager reports a reuse without
-	// its family. Otherwise a broad notice is only ever replaced, by a report naming the family or
-	// by a later broad one, and it never replaces a family's notice inside its window (noteEnd). There
-	// is no option for this, as for streamReportGrace: it protects a label.
+	// its family. Otherwise a broad notice is only ever replaced, by a report naming the family or the
+	// upstream session or by a later broad one, and it never replaces a notice naming either inside its
+	// window (keepNotice). There is no option for this, as for streamReportGrace: it protects a label.
 	broad bool
 }
 
@@ -1033,18 +1038,20 @@ type signalStream struct {
 	// several coalesce into one. noteEnd sets notice or reuse first, so the reload can read
 	// them. reuse is kept apart, so that a later report cannot overwrite it: within its
 	// window it outranks whatever else arrived, which the stream's loop decides. notes counts
-	// the reports that kept a reason, which is how the loop knows one has not been answered
-	// (streamLoop.holding). It is added to before the wake is sent, so a read that starts on
-	// the wake counts the report.
+	// the reports that must hold the queue, every one with a known reason whether or not the
+	// reason was kept, which is how the loop knows one has not been answered (streamLoop.holding).
+	// It is added to before the wake is sent, so a read that starts on the wake counts the report.
 	wake   chan struct{}
 	notice atomic.Pointer[endNotice]
 	reuse  atomic.Pointer[endNotice]
 	notes  atomic.Uint64
 
-	// window is how long a family's notice outranks a user-wide one, which the stream's loop sets from
-	// the chain's rules (streamRules). Zero until then, which lets a user-wide notice replace as any
-	// other does.
-	window atomic.Int64
+	// window is how long a notice naming the family or the upstream session outranks a user-wide one
+	// (keepNotice). The endpoint sets it before the stream is registered, and it never changes after,
+	// because a report can arrive as soon as the stream is. A heartbeat is at least minSignalsHeartbeat,
+	// so a live stream's is never zero. Only a stream built without the endpoint, as a test's is, has a
+	// window of zero.
+	window time.Duration
 
 	// closing is closed once by the registry when CloseSessionSignals ends the stream.
 	closing chan struct{}
@@ -1067,7 +1074,8 @@ func newSignalStream(user identity.UserID, family id.ID, upstream, source string
 // noteEnd keeps what an end report said, reuse apart from every other reason, and then wakes
 // the stream without blocking. A report with no reason keeps nothing, and still wakes, and holds
 // nothing on the queue: every end the session manager reports has a reason, so only a bus's
-// sender sends one without.
+// sender sends one without. A notice keepNotice refuses still holds the queue, since it may report
+// a real end, and what is raised behind that must not go ahead of it. The hold's bound limits a flood.
 //
 // A notice is counted before the wake is sent, so a read that starts on the wake sees the notice
 // it was woken for. Counted after, the read could start and answer, leaving the notice unanswered.
@@ -1079,9 +1087,8 @@ func (s *signalStream) noteEnd(n endNotice) {
 		s.reuse.Store(&n)
 		s.notes.Add(1)
 	default:
-		if !s.keepNotice(&n) {
-			s.notes.Add(1)
-		}
+		s.keepNotice(&n)
+		s.notes.Add(1)
 	}
 
 	select {
@@ -1090,28 +1097,28 @@ func (s *signalStream) noteEnd(n endNotice) {
 	}
 }
 
-// keepNotice stores n as the notice and reports false, unless n is user-wide and the notice held names
-// the family and is inside its window, when it keeps that one and reports true. The compare-and-swap
-// loop makes the choice against one notice: a concurrent take-back leaves nil and n goes in, and a
-// concurrent report naming the family either lands first, so n is refused, or after, and replaces n.
-// A refused n is not counted, since it kept no reason.
-func (s *signalStream) keepNotice(n *endNotice) (refused bool) {
+// keepNotice stores n as the notice, unless n is user-wide and the notice held names the family or the
+// upstream session and is inside its window, when that one stays. The compare-and-swap loop makes the
+// choice against one notice: a concurrent take-back leaves nil and n goes in, and a concurrent report
+// naming the family or upstream session either lands first, so n is refused, or after, and replaces n.
+//
+// At the window of zero that only a stream built without the endpoint has, a user-wide notice still does
+// not replace one it is no later than, since the two are compared by when they arrived.
+func (s *signalStream) keepNotice(n *endNotice) {
 	if !n.broad {
 		s.notice.Store(n)
 
-		return false
+		return
 	}
-
-	window := time.Duration(s.window.Load())
 
 	for {
 		held := s.notice.Load()
-		if held != nil && !held.broad && n.at.Sub(held.at) <= window {
-			return true
+		if held != nil && !held.broad && n.at.Sub(held.at) <= s.window {
+			return
 		}
 
 		if s.notice.CompareAndSwap(held, n) {
-			return false
+			return
 		}
 	}
 }

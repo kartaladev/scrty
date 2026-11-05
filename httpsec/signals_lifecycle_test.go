@@ -1391,7 +1391,7 @@ func TestSessionSignals_Bus_Stream(t *testing.T) {
 			assert: func(t *testing.T, r *streamRig, f *fixture) {
 				requireEndReason(t, f.oneStream, "all_ended")
 				assert.Equal(t, []string{"session"}, f.twoStream.sent(), "the kept sign-in heard of it")
-				assert.EqualValues(t, 1, r.lists.Load()-f.lists, "the kept sign-in's stream was woken to read")
+				assert.EqualValues(t, 1, r.lists.Load()-f.lists, "a read began for a stream other than the ended sign-in's")
 				assert.False(t, f.twoStream.closed())
 				assert.Equal(t, []string{"session"}, f.otherStream.sent())
 			},

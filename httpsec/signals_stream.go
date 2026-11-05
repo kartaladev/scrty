@@ -510,9 +510,7 @@ func (l *streamLoop) lastRetry() {
 
 // streamRules is what the chain's configuration and the client's narrowing leave for st.
 func (e *sessionSignals) streamRules(st *signalStream) streamRules {
-	rules := streamRules{reasonWindow: streamReasonBeats * e.cfg.Heartbeat}
-
-	st.window.Store(int64(rules.reasonWindow))
+	rules := streamRules{reasonWindow: e.reasonWindow()}
 
 	if st.wanted.wants(string(SignalSessionExpiring)) {
 		rules.warning = e.cfg.ExpiryWarning
@@ -524,6 +522,9 @@ func (e *sessionSignals) streamRules(st *signalStream) streamRules {
 
 	return rules
 }
+
+// reasonWindow is how long after its local receipt a report's reason can name an end.
+func (e *sessionSignals) reasonWindow() time.Duration { return streamReasonBeats * e.cfg.Heartbeat }
 
 // run is the stream's one select, and returns why the stream closed. Writes happen only here, so
 // no event can interleave with another or with a heartbeat. Leaving it cancels a read in flight

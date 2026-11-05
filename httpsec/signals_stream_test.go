@@ -2369,8 +2369,226 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 				r.requireEnded(t, stream, "all_ended")
 			},
 		},
+		{
+			name:  "a real all_ended refused by a family's report holds what is raised behind it",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				heldBehindTheEnd(t, r, func(s *session.Session) { r.wakeWith(s, "logout") }, "logout")
+			},
+		},
+		{
+			name:  "a real all_ended with no report ahead of it holds what is raised behind it",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				heldBehindTheEnd(t, r, func(*session.Session) {}, "all_ended")
+			},
+		},
+		{
+			// A refused report is held for like any other, so one that ended nothing costs only the read.
+			name:  "a user-wide report that is refused and ended nothing lets the queue go when a read answers alive",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				advance(2 * time.Second)
+
+				held := r.holdListings(t)
+
+				r.wakeUserWide(s, "all_ended")
+				require.EqualValues(t, 1, held.entered.Load(), "the report's wake began the read")
+
+				r.raiseOnQueue("app.note")
+				require.Empty(t, stream.events("app.note"), "the queue went ahead of the read: %v", stream.sent())
+
+				held.letGo()
+				synctest.Wait()
+
+				assert.Equal(t, []string{"session", "app.note"}, stream.sent())
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			// The bound the hold already has is what stops a bus's sender silencing a stream with these.
+			name:  "user-wide reports that are refused and outrun the reads hold the queue only to the bound",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				advance(2 * time.Second)
+
+				flood := func(context.Context) error {
+					//nolint:contextcheck // the hub logs a panic on its own context, detached from any request
+					httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+						User: s.UserID, Name: string(httpsec.SignalSessionEnded), Reason: "all_ended",
+					})
+
+					return nil
+				}
+				r.listHook.Store(&flood)
+
+				r.wakeUserWide(s, "all_ended")
+				r.raiseOnQueue("app.note")
+				require.Empty(t, stream.events("app.note"), "the flood let a signal through after one answered read")
+
+				advance(httpsec.StreamWakeGap)
+				assert.Equal(t, []string{"session", "app.note"}, stream.sent(), "the flood held a signal past the bound")
+				r.requireLive(t, stream)
+			},
+		},
+		{
+			name:  "a user-wide report does not replace an upstream session's report still in its window",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				a := r.signIn(t, session.WithExternalSession("idp", issuer, "upstream-a", "id-token"))
+				stream := r.open(t, a.ID)
+
+				httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+					Upstream: httpsec.UpstreamDigest(issuer, "upstream-a"),
+					Name:     string(httpsec.SignalSessionEnded),
+					Reason:   "provider_logout",
+				})
+				synctest.Wait()
+
+				r.wakeUserWide(a, "all_ended")
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), a.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "provider_logout")
+			},
+		},
+		{
+			// The limit endNotice states: the family's report ended nothing, and it still outranks a real
+			// all_ended inside its window, so that end carries the family's reason.
+			name:  "a real all_ended refused by a family's report that ended nothing is labelled with the family's reason",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+				r.wakeUserWide(s, "all_ended")
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			// The limit endNotice states: the refused report is not kept, so once the family's window is
+			// over nothing is left to name an end the store only then says is gone.
+			name:  "a real all_ended refused near the end of a family's window, and seen gone after it, says ended",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				advance(29 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held := r.holdListings(t)
+
+				r.wakeUserWide(s, "all_ended")
+				require.EqualValues(t, 1, held.entered.Load(), "the report's wake began the read")
+
+				advance(2 * time.Second)
+				held.letGo()
+				synctest.Wait()
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			// A stream takes its place before its body runs, and on fiber Stream returns before the body
+			// starts, so a report can reach it here. The family's report keeps its window from the first.
+			name:  "a family's report arriving before the body runs keeps its window against a user-wide one",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				let := make(chan struct{})
+				below := r.handler
+				r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					below.ServeHTTP(&headHeldWriter{ResponseWriter: w, let: let}, req)
+				})
+
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+				require.Empty(t, stream.sent(), "the body ran, so nothing here is before it")
+
+				r.wakeWith(s, "logout")
+				advance(time.Millisecond)
+				r.wakeUserWide(s, "provider_logout")
+
+				close(let)
+				synctest.Wait()
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
 	})
 }
+
+// heldBehindTheEnd opens a stream, lets ahead run and its read answer, and then ends the sign-in with a
+// user-wide report and a signal raised behind it during the read: session_ended, naming reason, must go
+// first, and the signal must not go at all.
+func heldBehindTheEnd(t *testing.T, r *streamRig, ahead func(*session.Session), reason string) {
+	t.Helper()
+
+	s := r.signIn(t)
+	stream := r.open(t, s.ID)
+
+	ahead(s)
+	advance(2 * time.Second)
+
+	require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+	held := r.holdListings(t)
+
+	r.wakeUserWide(s, "all_ended")
+	require.EqualValues(t, 1, held.entered.Load(), "the report's wake began the read")
+
+	r.raiseOnQueue("app.note")
+	assert.Empty(t, stream.events("app.note"), "what was raised behind the end went out ahead of it: %v", stream.sent())
+
+	held.letGo()
+	synctest.Wait()
+
+	advanceUntil(t, time.Minute, "the end", stream.closed)
+	r.requireEnded(t, stream, reason)
+	assert.NotContains(t, stream.sent(), "app.note")
+}
+
+// headHeldWriter keeps a stream's head waiting until let closes, which is before the adapter runs the
+// body and after the stream has taken its place.
+type headHeldWriter struct {
+	http.ResponseWriter
+
+	let <-chan struct{}
+}
+
+func (w *headHeldWriter) WriteHeader(status int) {
+	<-w.let
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *headHeldWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // raiseOnQueue delivers a consumer's signal as a bus would, onto every stream of u-1.
 func (r *streamRig) raiseOnQueue(names ...string) {

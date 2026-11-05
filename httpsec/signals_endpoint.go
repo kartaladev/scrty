@@ -62,6 +62,7 @@ func (e *sessionSignals) Intercept(ex *Exchange, next Next) error {
 	}
 
 	start := newStreamStart(reload, ex, s, wanted, state)
+	start.stream.window = e.reasonWindow()
 
 	// Registered before Stream, because on fiber Stream returns before its body runs, and
 	// the place has to be held from here. If Stream returns nil its body runs exactly
