@@ -22,8 +22,7 @@ const defaultBrowserSessionIdle = 30 * time.Minute
 // clockSkewLeeway is how far ahead of the provider's clock a sign-in may claim to have
 // authenticated and still count as having done so now. Replicas' clocks differ a little,
 // and a sign-in made on one is presented to another. Further ahead than this, the claim is
-// not clock skew and the sign-in is refused. It is a proposed value, to be settled with the
-// design.
+// not clock skew and the sign-in is refused.
 const clockSkewLeeway = 60 * time.Second
 
 // ConsentAnswer is what the consumer's consent page answered.
