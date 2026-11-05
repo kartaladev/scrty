@@ -270,13 +270,39 @@ jobs:
           SPEC_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: make spec-check SPEC_BASE="$SPEC_BASE"
 
+  # The OpenID Foundation's conformance suite against the conformance OP, over
+  # Docker Compose: the Basic OP, Config OP, RP-initiated logout and back-channel
+  # logout plans. It builds the suite from a pinned commit, so it takes minutes.
+  # The suite's public name, localhost.emobix.co.uk, resolves to 127.0.0.1 in
+  # public DNS; the hosts entry keeps the job from depending on that lookup.
+  conformance:
+    name: conformance
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CONFORMANCE_OUT: ${{ runner.temp }}/conformance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: resolve the suite's public name locally
+        run: echo "127.0.0.1 localhost.emobix.co.uk" | sudo tee -a /etc/hosts
+      - name: make conformance
+        run: make conformance
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conformance-logs
+          path: ${{ env.CONFORMANCE_OUT }}
+          if-no-files-found: warn
+          retention-days: 14
+
   # The one check a ruleset requires. It runs whatever the other jobs did, and
   # fails unless every one of them succeeded: a cancelled or skipped job is not
   # a pass. It also fails when its own needs list omits a job in this file.
   ci-ok:
     name: ci-ok
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
-    needs: [format, vet, lint, generate, vuln, pincheck, tools-check, test, codeql, openspec]
+    needs: [format, vet, lint, generate, vuln, pincheck, tools-check, test, codeql, openspec, conformance]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

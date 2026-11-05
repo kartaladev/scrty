@@ -7,5 +7,14 @@
     "condition": "CheckIfAuthorizationEndpointError",
     "expected-result": "failure",
     "comment": "The request carries neither a PKCE challenge nor a nonce. scrty requires PKCE by default, and a confidential client registered PKCEOrNonce must send one of the two (design R1), so the provider refuses it, as RFC 9700 allows."
+  },
+  {
+    "test-name": "oidcc-claims-essential",
+    "variant": "*",
+    "configuration-filename": "*oidcc.json",
+    "current-block": "",
+    "condition": "EnsureUserInfoContainsName",
+    "expected-result": "warning",
+    "comment": "Support for the claims request parameter is OPTIONAL (OIDC Core 1.0 section 5.5), and the provider publishes claims_parameter_supported false. The test warns that UserInfo lacks name, which it asked for by that parameter. A fixture that returned name regardless would hide the gap, and would release a claim beyond the scope."
   }
 ]
