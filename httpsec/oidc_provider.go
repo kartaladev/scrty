@@ -518,18 +518,19 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // alone, as that session is the provider's own.
 //
 // The chain has one session manager, the built-in bearers', which New requires them all to share,
-// and the endpoint reads the sign-in from it. A consumer's own bearer must publish a session that manager holds, as WithSessions
-// requires of the sessions it is given. One published from any other manager reads as ended: the
-// resume ends that family's grants and browser sessions at the provider, and answers it as a
-// sign-in to redo (ErrOIDCReauthenticate).
+// and the endpoint reads the sign-in from it. A consumer's own bearer must publish a session that
+// manager holds, as WithSessions requires of the sessions it is given. One published from any other
+// manager reads as ended: the resume ends that family's grants and browser sessions at the provider,
+// and answers it as a sign-in to redo (ErrOIDCReauthenticate).
 //
 // A 401 from the resume endpoint or from the user's consents (the list, and a revocation under it)
 // always carries a WWW-Authenticate challenge, including when the bearer ahead of them refused the
 // request. With DPoP off, a request that presented an Authorization line with the Bearer scheme whose
 // token the chain refused is challenged with error="invalid_token" (RFC 6750 section 3.1), provided a
-// built-in bearer reads that scheme; any other, with no code. With DPoP on, a refusal of the proof, for
-// a nonce or for want of a caller carries DPoP's own challenge alone, as anywhere on the chain. Only these endpoints are challenged: a refusal elsewhere on the chain is answered as
-// it is there.
+// built-in bearer reads that scheme. Any other 401 there is challenged with no code. With DPoP on, a
+// refusal of the proof, for a nonce or for want of a caller carries DPoP's own challenge alone, as
+// anywhere on the chain. Only these endpoints are challenged: a refusal elsewhere on the chain is
+// answered as it is there.
 func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
 	return func(c *config) error {
 		if err := requireDep(optionOIDCProvider, "provider", p); err != nil {

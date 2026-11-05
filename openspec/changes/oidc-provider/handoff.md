@@ -351,3 +351,13 @@ Non-blocking: `WithIDGenerator`'s godoc should say IDs must be non-zero and uniq
 Clean: resume race on live sign-ins, `checkDPoP`, refused-refresh log, `WithIDGenerator` flows, redaction, removed code.
 
 **Next, before step 1 of the list above:** fold these three (Opus: finding 1 is ordering), rerun the gate, re-review the fold, then push and mark #72 ready.
+
+## Update: fifth session (supersedes everything above where they differ)
+
+**The three findings and the fold's own review are done** (`63a3b4cd`, `0d4fafe1`, recorded in R26). The local gate is clean on `27a56059`; only a godoc rewrap and this note follow it. #72 is pushed and marked ready. **Open: 14.2, 14.3, 15.2, 15.3, which all wait on CI.** The worktree is unchanged.
+
+**Next:** watch CI. Tick 14.2 when the job appears and reports all four plans, and 14.3, 15.2 and 15.3 on green. Triage as 14.3 says. Delete this note before archive.
+
+**Coordination:** `session-signal` reported #73 back in draft with 11 new tasks, so #72 is ready first, and it rebases onto us after #72 merges. If #73 somehow lands first, merge `main` in, and its `Stream` double has the shape `Stream(ctx, contentType, body)`, not the current one.
+
+**For the user's review, each in R26:** `EndSignIn` deletes browser sessions before sweeping; silent authentication withholds its code when `Touch` fails; a 401 at resume and consents carries a challenge, with every other chain left bare as a follow-up; a consumer's bearer over another manager is a stated limit, with no option, and two built-in bearers over different managers are refused; a logout finish whose sweep failed leaves a narrow accepted limit.
