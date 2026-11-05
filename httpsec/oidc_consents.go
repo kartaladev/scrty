@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidcprovider"
 )
@@ -91,18 +92,14 @@ func (g *oidcConsentsGroup) serveList(ex *Exchange, _ Next) error {
 
 // caller is the user the request is made by: the one the sign-in the chain judged belongs to.
 //
+// A 401 it returns is challenged on its way out of the provider's outer router, as is any the bearer
+// ahead of it answers.
+//
 // Anything that authenticated without a session, an API key or Basic credentials, is no sign-in.
 // The provider cannot tell that a session owes a step, so that is judged here: the gates ahead of
 // this endpoint refuse such a session first on a chain enabling them, and this holds the line on one
 // that does not.
 func (g *oidcConsentsGroup) caller(ex *Exchange) (identity.UserID, error) {
-	user, err := g.judgeCaller(ex)
-
-	return user, challengeOIDCSignIn(ex, err)
-}
-
-// judgeCaller is caller, up to the challenge a 401 carries.
-func (g *oidcConsentsGroup) judgeCaller(ex *Exchange) (identity.UserID, error) {
 	s := ex.Session
 	if s == nil || ex.Authentication == nil {
 		return "", ErrAuthenticationRequired
@@ -145,7 +142,7 @@ type oidcConsentClients struct {
 func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 	g := c.group
 
-	prefix := strings.TrimSuffix(g.op.paths[OIDCConsents], "/") + "/"
+	prefix := g.op.consentClientPrefix()
 	if !strings.HasPrefix(ex.Request.Path(), prefix) {
 		return next(ex)
 	}
@@ -180,23 +177,35 @@ func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 }
 
 // challengeOIDCSignIn adds to a 401 of an endpoint resting on a sign-in the challenge RFC 9110 section
-// 15.5.2 requires, and returns err as it came. Nothing about the sign-in is named, as with a request
-// bearing no token at UserInfo (RFC 6750 section 3.1). With DPoP on, it names that scheme too, and that
-// scheme alone once it is required (RFC 9449 section 7.2). A refusal for want of a caller is left to
-// DPoP's own challenge on its way back through the chain, which would otherwise repeat this one.
-func challengeOIDCSignIn(ex *Exchange, err error) error {
+// 15.5.2 requires, and returns err as it came. It is the one place that challenges those endpoints: the
+// outer router calls it for whatever comes back from the chain, the bearer's refusals included, so a
+// response is challenged once.
+//
+// With DPoP off, a request presenting one Authorization line with the Bearer scheme, whose token left
+// no session published, was refused for the token, and is told so with error="invalid_token" (RFC 6750
+// section 3.1). That code is defined for the Bearer scheme, so it is answered only on a chain with a
+// built-in bearer reading that scheme: under WithBearerScheme or WithSessionBearerScheme naming another,
+// neither a line under that scheme nor a Bearer line, which nothing read, gets it. Anything else, no
+// credential, a session owing a step, a repeated line, a sign-in to redo, gets the challenge with no
+// code. Nothing about the sign-in is named, as with a request bearing no token at UserInfo.
+//
+// With DPoP on, it names that scheme too, and that scheme alone once it is required (RFC 9449 section
+// 7.2). A refusal DPoP's own challenge answers on its way back through the chain is left to it
+// (dpopAnswersChallenge): this one would stand ahead of it, and a client reading the first line would
+// not see the error it has to act on.
+func (op *oidcEndpoints) challengeOIDCSignIn(ex *Exchange, err error) error {
 	if err == nil || StatusForError(err) != http.StatusUnauthorized {
 		return err
 	}
 
 	v := ex.dpop()
 	if v == nil {
-		ex.Writer.AddHeader(headerWWWAuthenticate, oidcNoTokenChallenge)
+		ex.Writer.AddHeader(headerWWWAuthenticate, op.bearerRefusalChallenge(ex))
 
 		return err
 	}
 
-	if errors.Is(err, ErrAuthenticationRequired) {
+	if dpopAnswersChallenge(err) {
 		return err
 	}
 
@@ -206,6 +215,31 @@ func challengeOIDCSignIn(ex *Exchange, err error) error {
 	}
 
 	return err
+}
+
+// dpopAnswersChallenge reports whether dpopVerifier.challenge sets a challenge for err, which it does
+// for exactly these errors. A test holds the two to one set.
+func dpopAnswersChallenge(err error) bool {
+	return errors.Is(err, ErrDPoPNonceRequired) || errors.Is(err, ErrInvalidDPoPProof) ||
+		errors.Is(err, ErrAuthenticationRequired) || errors.Is(err, authorize.ErrAuthenticationRequired)
+}
+
+// bearerRefusalChallenge is the challenge for a 401 with DPoP off: invalid_token for a request that
+// presented its one Authorization line under the Bearer scheme, on a chain whose bearer reads that scheme,
+// and has no session, which is a token the chain refused, and the code-less challenge for every other.
+func (op *oidcEndpoints) bearerRefusalChallenge(ex *Exchange) string {
+	if !op.readsBearerScheme {
+		return oidcNoTokenChallenge
+	}
+
+	lines := ex.Request.HeaderValues(oidcAuthorizationHeader)
+	if len(lines) == 1 && ex.Session == nil {
+		if _, ok := presentedCredential(lines[0], DefaultBearerScheme, false); ok {
+			return oidcChallenge(nil, false, oidcprovider.CodeInvalidToken)
+		}
+	}
+
+	return oidcNoTokenChallenge
 }
 
 // writeOIDCMethodNotAllowed refuses a method the endpoint does not serve, naming the one it does.

@@ -145,15 +145,12 @@ type oidcResumeDocument struct {
 //
 // Only an unknown handle is charged to the source. Freshness and a malformed answer are
 // the page's to cure, and a failure is no verdict on anyone.
-func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
-	return challengeOIDCSignIn(ex, g.answer(ex))
-}
-
-// answer is serve, up to the challenge a 401 carries.
+//
+// A 401 it returns is challenged on its way out of the provider's outer router (challengeOIDCSignIn).
 //
 // The sign-in is read a second time once the provider has written what the resume leaves, before
 // any of it is handed out (confirmSignIn).
-func (g *oidcResumeGroup) answer(ex *Exchange) error {
+func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 	setOIDCNoStore(ex.Writer)
 
 	if ex.Request.Method() != http.MethodPost {
@@ -234,6 +231,11 @@ func (g *oidcResumeGroup) answer(ex *Exchange) error {
 // it just the same. Loading it again would also be a verdict with effects, reuse revoking the family
 // of a window that closed while this request ran.
 //
+// The list is read from the chain's session manager, the built-in bearer's, which is the only one the
+// chain has (WithSessions refuses any other). A session a consumer's own bearer published from another
+// manager is not in it, so it reads as ended: what this resume wrote is ended and ErrOIDCReauthenticate
+// answered. A consumer's bearer must publish sessions of the chain's manager.
+//
 // Gone, the sign-in has ended or passed a deadline, and the provider ends whatever this resume left
 // of it, with ErrOIDCReauthenticate answered. A store that cannot say fails closed, with the failure
 // answered and nothing ended: the sign-in cannot be confirmed live, and it may be. What was written
@@ -268,6 +270,9 @@ func (g *oidcResumeGroup) confirmSignIn(ctx context.Context, signIn *oidcprovide
 // Exchange.RecordPresentedToken: recording says which credential authenticated, and the
 // resume endpoint still wants it presented where the protocol puts it. A consumer's own
 // bearer reaches this endpoint by reading the Authorization header.
+//
+// The session must be one the chain's manager holds, the built-in bearer's. A consumer's bearer
+// publishing one from another manager is not refused here, but confirmSignIn reads it as ended.
 //
 // The provider's SignIn cannot say that a session owes a step, so that is judged here. The
 // gates ahead of this endpoint refuse such a session first on a chain enabling them, and

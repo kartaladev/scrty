@@ -256,6 +256,38 @@ func (f *opFixture) bearer(t *testing.T, m *session.Sessions) httpsec.Option {
 	})
 }
 
+// signedBearer is a signed-token bearer over m, under scheme.
+func (f *opFixture) signedBearer(t *testing.T, m *session.Sessions, scheme string) httpsec.Option {
+	t.Helper()
+
+	gen, err := token.NewGenerator(f.keys, token.WithoutIssuer(), token.WithoutAudience())
+	require.NoError(t, err)
+
+	return httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+		Verifier: gen,
+		Sessions: m,
+		Users:    NewMockUserLoader(gomock.NewController(t)),
+	}, httpsec.WithBearerScheme(scheme))
+}
+
+// twoBearers is two signed-token bearers under schemes of their own, over first and second.
+func twoBearers(t *testing.T, f *opFixture, first, second *session.Sessions) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{f.signedBearer(t, first, httpsec.DefaultBearerScheme), f.signedBearer(t, second, "Partner")}
+}
+
+// pages is what a provider needs beside itself and its bearer.
+func (f *opFixture) pages(t *testing.T) []httpsec.Option {
+	t.Helper()
+
+	return []httpsec.Option{
+		httpsec.EnableJWKSEndpoint(f.keys),
+		httpsec.EnableSecurityHeaders(),
+		httpsec.EnableCSRFProtection(),
+	}
+}
+
 // wired is every option a provider needs beside itself, over the provider's own
 // keys and a manager that reports to it.
 func (f *opFixture) wired(t *testing.T, p *oidcprovider.Provider) []httpsec.Option {
@@ -595,6 +627,131 @@ func TestOIDCProvider_Construction(t *testing.T) {
 				return withOptions(t, nil, httpsec.WithOIDCProviderPath(httpsec.OIDCEndpoint(200), "/x"))
 			},
 			assert: refused("WithOIDCProviderPath"),
+		},
+		{
+			name: "two bearers over two managers, the provider enabled last",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append(f.pages(t), twoBearers(t, f, reporting(t, p), reporting(t, p))...), httpsec.EnableOIDCProvider(p))
+			},
+			assert: refused("EnableOIDCProvider", "EnableBearerToken", "one session manager"),
+		},
+		{
+			name: "two bearers over two managers, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...), twoBearers(t, f, reporting(t, p), reporting(t, p))...)
+			},
+			assert: refused("EnableOIDCProvider", "EnableBearerToken", "one session manager"),
+		},
+		{
+			name: "two bearers over one manager, the provider enabled last",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+				m := reporting(t, p)
+
+				return append(append(f.pages(t), twoBearers(t, f, m, m)...), httpsec.EnableOIDCProvider(p))
+			},
+			assert: built,
+		},
+		{
+			name: "two bearers over one manager, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+				m := reporting(t, p)
+
+				return append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...), twoBearers(t, f, m, m)...)
+			},
+			assert: built,
+		},
+		{
+			// A bearer with no manager is refused by its own option, whichever came first: the provider's
+			// check neither panics over it nor reads it as a second manager.
+			name: "a bearer with no manager beside one that has one, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...), twoBearers(t, f, nil, reporting(t, p))...)
+			},
+			assert: refused("EnableBearerToken", "needs a session manager"),
+		},
+		{
+			name: "a bearer with no manager behind one that has one, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...), twoBearers(t, f, reporting(t, p), nil)...)
+			},
+			assert: refused("EnableBearerToken", "needs a session manager"),
+		},
+		{
+			name: "a bearer with no manager between two over two managers, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...),
+					f.signedBearer(t, reporting(t, p), httpsec.DefaultBearerScheme),
+					f.signedBearer(t, nil, "Between"),
+					f.signedBearer(t, reporting(t, p), "Partner"))
+			},
+			assert: refused("EnableOIDCProvider", "one session manager"),
+		},
+		{
+			// Each mode reads only its own credentials, and the option refusing the pair runs behind this
+			// check when the provider comes first.
+			name: "a session bearer and a signed bearer over two managers, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...),
+					f.bearer(t, reporting(t, p)),
+					f.signedBearer(t, reporting(t, p), "Partner"))
+			},
+			assert: refused("EnableOIDCProvider", "one session manager"),
+		},
+		{
+			name: "a bearer with no manager beside one that has one, the provider enabled last",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append(f.pages(t), twoBearers(t, f, reporting(t, p), nil)...), httpsec.EnableOIDCProvider(p))
+			},
+			assert: refused("EnableBearerToken", "needs a session manager"),
+		},
+		{
+			// With the provider first its check is the one that runs: no nil stands between it and the two
+			// real managers behind.
+			name: "a bearer with no manager ahead of two over two managers, the provider enabled first",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+
+				return append(append(append([]httpsec.Option{httpsec.EnableOIDCProvider(p)}, f.pages(t)...),
+					f.signedBearer(t, nil, "First")),
+					twoBearers(t, f, reporting(t, p), reporting(t, p))...)
+			},
+			assert: refused("EnableOIDCProvider", "one session manager"),
 		},
 		{
 			name: "the bearer's session manager does not report to the provider",

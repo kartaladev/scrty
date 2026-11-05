@@ -34,6 +34,8 @@ type TestOIDCGroup struct {
 	Inner bool
 
 	SettleErr, FlushErr error
+	// Answer is what its handler returns, and nil answers 204.
+	Answer error
 
 	calls           atomic.Int32
 	settledWith     bool
@@ -71,6 +73,11 @@ func (g *TestOIDCGroup) WiredWithLogger() bool { return g.wiredWithLogger }
 func (g *TestOIDCGroup) routes() []oidcRoute {
 	return []oidcRoute{{path: g.Path, inner: g.Inner, handle: func(ex *Exchange, _ Next) error {
 		g.calls.Add(1)
+
+		if g.Answer != nil {
+			return g.Answer
+		}
+
 		ex.Writer.WriteHeader(204)
 
 		return nil

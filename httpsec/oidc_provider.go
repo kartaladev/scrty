@@ -51,6 +51,9 @@ type oidcEndpoints struct {
 	// sessions is the manager the chain's bearer resolves sessions through,
 	// settled by wireOIDCProvider.
 	sessions *session.Sessions
+	// readsBearerScheme reports whether a built-in bearer on the chain reads the Bearer scheme, settled
+	// by wireOIDCProvider.
+	readsBearerScheme bool
 	// log is the chain's logger, handed over when the chain is wired.
 	log *slog.Logger
 	// now reads the chain's clock.
@@ -172,6 +175,24 @@ type oidcOuterRouter struct {
 	op *oidcEndpoints
 }
 
+// Intercept answers the routes the outer router holds, and passes on everything else. A 401 coming
+// back from the chain for a request to the resume endpoint or the user's consents, which rest on a
+// sign-in the chain judges, is challenged here (challengeOIDCSignIn), for the bearer ahead of them
+// refuses a request without it ever reaching them. Everything else comes back as it went.
+func (r *oidcOuterRouter) Intercept(ex *Exchange, next Next) error {
+	path := ex.Request.Path()
+	if h, ok := r.routes[path]; ok {
+		return h(ex, next)
+	}
+
+	err := next(ex)
+	if err != nil && r.op.restsOnSignIn(path) {
+		return r.op.challengeOIDCSignIn(ex, err)
+	}
+
+	return err
+}
+
 func (r *oidcOuterRouter) flushRefusalLogs() error {
 	var errs []error
 
@@ -184,6 +205,19 @@ func (r *oidcOuterRouter) flushRefusalLogs() error {
 	return errors.Join(errs...)
 }
 
+// restsOnSignIn reports whether path is one of the endpoints answering behind the bearer, for the
+// sign-in it judged: the resume, the consents list, and the paths under the list's. The paths are read
+// at the request, so they are final.
+func (op *oidcEndpoints) restsOnSignIn(path string) bool {
+	return path == op.paths[OIDCResume] || path == op.paths[OIDCConsents] ||
+		strings.HasPrefix(path, op.consentClientPrefix())
+}
+
+// consentClientPrefix is what a path under the consents list begins with: the list's path and a "/".
+func (op *oidcEndpoints) consentClientPrefix() string {
+	return strings.TrimSuffix(op.paths[OIDCConsents], "/") + "/"
+}
+
 // wireOIDCProvider settles the provider's groups against the assembled
 // configuration, once every option has been applied.
 func (c *config) wireOIDCProvider() error {
@@ -193,6 +227,7 @@ func (c *config) wireOIDCProvider() error {
 	}
 
 	op.sessions = bearerSessions(c)
+	op.readsBearerScheme = bearerReadsScheme(c, DefaultBearerScheme)
 
 	for _, g := range op.groups {
 		if err := g.settle(c); err != nil {
@@ -201,6 +236,25 @@ func (c *config) wireOIDCProvider() error {
 	}
 
 	return nil
+}
+
+// bearerReadsScheme reports whether a built-in bearer on the chain reads scheme, which a bearer compares
+// without regard to case.
+func bearerReadsScheme(c *config, scheme string) bool {
+	var reads bool
+
+	_ = eachInterceptor(c, func(b *sessionBearer) error {
+		reads = reads || strings.EqualFold(b.scheme, scheme)
+
+		return nil
+	})
+	_ = eachInterceptor(c, func(b *bearerToken) error {
+		reads = reads || strings.EqualFold(b.scheme, scheme)
+
+		return nil
+	})
+
+	return reads
 }
 
 // wire hands the provider and its groups what exists only once the chain does.
@@ -322,11 +376,14 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // session, clearing the cookie.
 //
 // A retry behaves as follows. The handle is spent last of all, and the browser
-// session goes after everything but the handle, because it is what lets the browser
-// ask again. A failure anywhere (a store outage, answered as the chain's error
-// handling does, a 500 by default) leaves the browser its session, its cookie and the
-// handle, and posting the same answer again, or asking again at end-session, finishes
-// the logout and tells no client twice. While a logout is failing that browser session
+// session goes after everything but the handle and a final sweep of grants and codes,
+// because it is what lets the browser ask again. A failure (a store outage, answered as
+// the chain's error handling does, a 500 by default) leaves the browser its session, its
+// cookie and the handle, and posting the same answer again, or asking again at
+// end-session, finishes the logout and tells no client twice. The one failure that
+// cannot leave them is that final sweep's, its delete having succeeded: a retry from that
+// browser finds no session and answers success, and a code written between the passes
+// can still make tokens until it expires. While a logout is failing that browser session
 // stays usable, and nothing falls back on a hint or a first-party session to finish,
 // which would let an ID token's holder end a sign-in from another browser. After a
 // success the same post is an unknown handle, 400, and only unknown handles count
@@ -397,6 +454,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // these is a configuration error naming this option:
 //
 //   - no bearer mode, because a resume needs a sign-in credential;
+//   - built-in bearers over more than one session manager, whatever their schemes,
+//     because a live sign-in of any but the one the endpoints read would read as ended
+//     and have its grants ended (see "What the resume endpoint reads");
 //   - no EnableJWKSEndpoint, or one given a *signingkey.Keys other than the
 //     *signingkey.Keys the provider signs with. Only two of them can be told apart:
 //     a wrapper on either side may hold the very keys the other publishes, and
@@ -456,6 +516,20 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // where it was presented. A consumer's own bearer reaches the endpoint by reading the
 // Authorization header. A consent stage may stand on the browser session's cookie
 // alone, as that session is the provider's own.
+//
+// The chain has one session manager, the built-in bearers', which New requires them all to share,
+// and the endpoint reads the sign-in from it. A consumer's own bearer must publish a session that manager holds, as WithSessions
+// requires of the sessions it is given. One published from any other manager reads as ended: the
+// resume ends that family's grants and browser sessions at the provider, and answers it as a
+// sign-in to redo (ErrOIDCReauthenticate).
+//
+// A 401 from the resume endpoint or from the user's consents (the list, and a revocation under it)
+// always carries a WWW-Authenticate challenge, including when the bearer ahead of them refused the
+// request. With DPoP off, a request that presented an Authorization line with the Bearer scheme whose
+// token the chain refused is challenged with error="invalid_token" (RFC 6750 section 3.1), provided a
+// built-in bearer reads that scheme; any other, with no code. With DPoP on, a refusal of the proof, for
+// a nonce or for want of a caller carries DPoP's own challenge alone, as anywhere on the chain. Only these endpoints are challenged: a refusal elsewhere on the chain is answered as
+// it is there.
 func EnableOIDCProvider(p *oidcprovider.Provider, opts ...OIDCProviderOption) Option {
 	return func(c *config) error {
 		if err := requireDep(optionOIDCProvider, "provider", p); err != nil {
@@ -593,14 +667,42 @@ func findInterceptor[T any](c *config) (T, bool) {
 }
 
 // checkBearer requires a bearer mode, whichever one: the resume is how a sign-in
-// reaches the provider, and it reads the credential only through one.
+// reaches the provider, and it reads the credential only through one. It requires
+// every built-in bearer to share one manager, for the endpoints read one: a live
+// sign-in of any other would read as ended, and the resume would end its family.
+//
+// A bearer given no manager is passed over: its own option refuses it, whichever
+// comes first, and it says what is missing better than this would.
 func (op *oidcEndpoints) checkBearer(c *config) error {
 	if !hasInterceptor[*bearerToken](c) && !hasInterceptor[*sessionBearer](c) {
 		return newConfigError("%s needs a bearer mode, because a resume needs a sign-in credential: "+
 			"enable EnableSessionBearer or EnableBearerToken", optionOIDCProvider)
 	}
 
-	return nil
+	var shared *session.Sessions
+
+	same := func(m *session.Sessions) error {
+		if m == nil {
+			return nil
+		}
+
+		if shared != nil && shared != m {
+			return newConfigError("%s reads every sign-in through one session manager, and the chain's bearers "+
+				"(EnableBearerToken, EnableSessionBearer) were given more than one, so a live sign-in of the "+
+				"other would read as ended and have its grants ended: give them all the same manager",
+				optionOIDCProvider)
+		}
+
+		shared = m
+
+		return nil
+	}
+
+	if err := eachInterceptor(c, func(b *sessionBearer) error { return same(b.sessions) }); err != nil {
+		return err
+	}
+
+	return eachInterceptor(c, func(b *bearerToken) error { return same(b.sessions) })
 }
 
 // checkJWKS requires the key set endpoint, and refuses one that publishes other

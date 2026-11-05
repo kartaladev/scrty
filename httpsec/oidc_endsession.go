@@ -182,9 +182,11 @@ func (g *oidcEndSessionGroup) serve(ex *Exchange, _ Next) error {
 
 // finishLogout does what the chain owes a sign-in whose grants the provider has ended: its first-party
 // sessions go, then its browser session, and only then the cookie. The browser session is what lets
-// the browser ask again, so it goes last, and a store failing anywhere here answers an error and leaves
-// the browser that session and its cookie: asking again finishes the end, and RP-Initiated Logout
-// section 2 is met by a success that means it.
+// the browser ask again, so it goes last, and a store failing here answers an error and leaves the
+// browser that session and its cookie: asking again finishes the end, and RP-Initiated Logout section 2
+// is met by a success that means it. The limit is a sweep failing after that session's delete succeeded:
+// no browser session is left, so a retry from that browser finds none and answers success, and a code
+// written between the passes in that window can still make tokens until it expires.
 //
 // The end is reported as a logout's is, and only for a family this deleted: one already gone was
 // ended by something else, which reported it. The report comes once the browser session has been tried,

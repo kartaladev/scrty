@@ -13,7 +13,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 )
 
-// metadataPath is where the issuer's discovery document is served once task 10.1 lands.
+// metadataPath is where the issuer's discovery document is served.
 const metadataPath = "/.well-known/openid-configuration"
 
 // TestCORS_OIDCProvider pins how the CORS layer treats the provider's endpoints: the five that
@@ -94,7 +94,7 @@ func TestCORS_OIDCProvider(t *testing.T) {
 		{name: "userinfo", path: "/oauth2/userinfo"},
 		{name: "revocation", path: "/oauth2/revoke"},
 		{name: "introspection", path: "/oauth2/introspect"},
-		{name: "metadata", path: metadataPath, served: "the metadata documents (task 10.1)"},
+		{name: "metadata", path: metadataPath, served: "the metadata documents"},
 	}
 
 	// Endpoints that carry a user's browser, and so never a CORS header.
