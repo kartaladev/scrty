@@ -135,6 +135,17 @@ Deliveries SHALL run on a bounded pool that survives a delivery ending its gorou
 - **WHEN** the request that ended a sign-in is cancelled as its delivery starts
 - **THEN** the delivery still runs
 
+### Requirement: A failed logout can be retried and finishes
+An end through the end-session endpoint or its confirmation SHALL end grants first, first-party sessions next, and the browser session last, so that a failure answers an error, leaves the browser able to retry, and a retry from it finishes the end. It SHALL NOT answer success while a grant or session of that sign-in lives on.
+
+#### Scenario: A grant store failure, then a retry
+- **WHEN** a logout confirmation fails because the grant store is down, and the browser retries once it is back
+- **THEN** the first attempt answers an error, and after the retry the sign-in's grants and sessions have ended
+
+#### Scenario: A session store failure, then a retry
+- **WHEN** a logout confirmation ends the grants, but deleting the first-party sessions fails, and the browser retries
+- **THEN** the first attempt answers an error and clears no cookie, and after the retry the sign-in's sessions have ended
+
 ### Requirement: Logout tokens follow the back-channel logout format
 A logout token SHALL be a signed JWT with header `typ` `logout+jwt`. It SHALL carry `iss`, `aud` the client's identifier, `iat`, `exp` no more than 2 minutes after `iat`, a unique `jti`, `events`, `sub`, and `sid` of the ended sign-in, equal to the `sid` of the ID tokens from it. The `events` member SHALL hold exactly `http://schemas.openid.net/event/backchannel-logout` with an empty object. It SHALL NOT carry `nonce`. It SHALL be signed with the client's ID token algorithm.
 

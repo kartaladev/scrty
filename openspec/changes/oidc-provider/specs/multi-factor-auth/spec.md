@@ -11,4 +11,4 @@ When the OpenID Provider is in use, an operator reset of a user's MFA enrolment 
 
 #### Scenario: Consumer keeps grants
 - **WHEN** the consumer keeps grants on MFA reset, and an operator resets `u-1`'s enrolment
-- **THEN** `u-1`'s grants keep working, and `u-1`'s sessions still end
+- **THEN** `u-1`'s sessions still end, and `u-1`'s grants holding `offline_access` keep working, as a grant without it ends with its sign-in

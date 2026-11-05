@@ -11,7 +11,7 @@ When the OpenID Provider is in use, completing an account recovery SHALL revoke 
 
 #### Scenario: Consumer keeps grants
 - **WHEN** the consumer keeps grants on recovery, and a recovery completes for `u-1`
-- **THEN** `u-1`'s grants keep working
+- **THEN** `u-1`'s grants holding `offline_access` keep working, as a grant without it ends with its sign-in
 
 #### Scenario: No provider
 - **WHEN** the OpenID Provider is not in use and a recovery completes

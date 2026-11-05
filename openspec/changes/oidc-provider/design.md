@@ -1380,7 +1380,18 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **One event per outcome.** A refresh reuse yields two events, the reuse and the revocation, through a chain as well as outside one. The chain's emitter stays off the lineage manager's context, so the same reuse is not reported a third time as `authn_token_reuse`. A code replay likewise yields two. `GrantRevoked` is reported only by the call that newly revoked the row, with the cause the store keeps. `CodeReplayed` may repeat, as each replay is a real presentation. `GrantStore.Revoke` returns whether this call revoked the grant, following `ConsentStore.Revoke`, so racing callers cannot both report it; the store suite pins this under 32 racers on every adapter. A replay reports before its lineage delete, as a revocation does, so a sink that blocks spends the revocation's budget after the row has already ended the grant.
 - **Only what happened.** `GrantCreated` is reported once the credential is handed out. A failed dependency usually decided nothing, so it reports nothing. A failed grant end is the exception: the session did end, and a grant outlived it, so `SignInsEnded` logs it and reports `scrty_grant_end_failed`, as `http-security-chain` requires and OWASP's logging guidance lists session management failures. Grants that did end are reported as they end.
 - **Passkey clones.** The `passkey` package alone revokes nothing, as it holds no provider. `passkey.WithGrantRevoker` supplies one at construction, and `passkey.WithoutCloneGrantRevocation` keeps grants; keep wins if both are given. Injecting the chain's provider into a built manager was rejected: it mutates a manager two chains may share. So "revoke by default" holds on a chain with `EnableOIDCProvider` and `EnablePasskeys`, which refuses a manager that has decided neither. A chain using only `(*Passkeys).MFAMethod()` cannot be seen by that check, as the godoc states. A passkey manager takes no raw session store, because a store reports nothing to the provider.
+- **A failed clone revocation** reports `scrty_grant_revoke_failed`, as suspension happens once and nothing retries it. Recovery and an MFA reset return theirs.
+- **Accepted:** a redundant report failing after a successful logout can fire `scrty_grant_end_failed` though nothing outlived the sign-in. A rare false alarm is safer than risking a missed one.
 - **The default and the override.** No sink means no events and no clock read. `WithSecurityEvents` sets one, and a chain's emitter takes its place on the context. `RevokeUserGrants` puts the consumer's own cause in `Cause`, unchanged.
+
+#### R26. A logout's order, and what the suite expects
+
+- **The order (`REPRODUCED` 2026-11-05).** An end deleted the browser session even when the grant write failed, so a retry from that browser found none, and its confirmation answered success with grants and sessions live. RP-Initiated Logout §2 says the OP MUST log out an End-User who says yes. An end through the endpoints now runs grants, first-party sessions, then the browser session, and spends its handle last. While a logout is failing the browser session stays usable, as the first-party session does, and the user has been told it failed.
+- **Rejected:** falling back on a hint, which lets an ID token's holder end a sign-in from another browser, against §2's MUST ask; and falling back on the first-party session, at a CSRF-exempt endpoint, which the order makes unnecessary. `EndSignIn` keeps writing both stores for the observer path, as nothing retries an observer (T4).
+- **"Keep grants".** The option keeps grants holding `offline_access`. A grant without it ends with its sign-in, whatever the option says, because T4 and R2 define what a sign-in's end does.
+- **The logout page** does not show who is asking: §2 requires asking, not naming, and no read exists for a logout handle.
+- **UserInfo CSRF.** A cross-site POST to UserInfo stays refused, as `csrf-protection` says "exactly these" endpoints are exempt. An allowlisted origin passes, and a consumer may exempt it. The token never comes from a cookie, so nothing is at risk either way.
+- **The conformance suite's expected results.** `oidcc-claims-essential` warns, because `claims` support is OPTIONAL (OIDC Core §5.5) and the provider publishes `claims_parameter_supported: false`; a fixture returning `name` regardless would hide the gap and release a claim beyond the scope. `oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported` is skipped, because `request` is OPTIONAL and the provider MUST return `request_not_supported` (§6.1), which it does. Whether official certification accepts a warning is unverified.
 
 #### R16. One end-observer option, shared with `session-signals`
 
@@ -1634,6 +1645,10 @@ Reasoned from scrty's own settled specs and the established design.
 
 **Researched (accessed 2026-11-05):**
 - [OpenTelemetry, trace SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/): the batching processor's `maxQueueSize`, default 2048, drops spans when reached, and `Shutdown` includes a flush.
+
+### R26
+
+**Researched (accessed 2026-11-05):** [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §5.5 and §6.1, read directly. [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), §2, as the reviewer quoted it. [OpenID Foundation, submission of OP results](https://openid.net/certification/op_submission/): says nothing found on warnings, so that question stays unverified.
 
 ### R23 to R25
 

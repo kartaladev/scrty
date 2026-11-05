@@ -11,7 +11,7 @@ When the OpenID Provider is in use, suspending a passkey as a suspected clone SH
 
 #### Scenario: Consumer keeps grants
 - **WHEN** the consumer keeps grants on clone suspension, and a passkey of `u-1` is suspended
-- **THEN** `u-1`'s grants keep working
+- **THEN** `u-1`'s grants holding `offline_access` keep working, as a grant without it ends with its sign-in
 
 #### Scenario: User removes a passkey
 - **WHEN** user `u-1` removes one of their own passkeys
