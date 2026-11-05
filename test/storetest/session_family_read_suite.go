@@ -93,6 +93,13 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 					return assertReadsAgree(ctx, t, s, r, user, family, now, moment)
 				}
 
+				// A sign-in still owing a second factor is live, and both reads list it.
+				pending := familySession("sess-pending", user, suiteID(2704))
+				pending.MFA = session.MFAPending
+				require.NoError(t, s.Create(ctx, pending))
+				require.Len(t, assertReadsAgree(ctx, t, s, r, user, pending.FamilyID, suiteStart, "pending"), 1,
+					"a sign-in owing a second factor is live")
+
 				got := read(suiteStart, "created")
 				require.Len(t, got, 1, "a new sign-in is read by its one session")
 				assertListed(t, first, got[0])
@@ -198,6 +205,13 @@ func sessionFamilyReadCases() []suiteCase[session.Store] {
 				got, err := r.ListByFamily(ctx, "u-1", live.FamilyID, suiteStart.Add(sessionAbsolute))
 				require.NoError(t, err)
 				assert.Empty(t, got, "at its absolute deadline it is not")
+
+				// An idle deadline set past the absolute one must not keep it alive.
+				pastAbsolute := sessionRecord("sess-d", "u-1")
+				pastAbsolute.IdleExpiresAt = suiteStart.Add(sessionAbsolute + time.Hour)
+				require.NoError(t, s.Create(ctx, pastAbsolute))
+				assert.Empty(t, assertReadsAgree(ctx, t, s, r, "u-1", pastAbsolute.FamilyID, suiteStart.Add(sessionAbsolute), "absolute only"),
+					"at its absolute deadline, with its idle deadline ahead, it is not")
 			}),
 		familyReadCase("a family read carries a sign-in's deadlines, authentication time and upstream identifiers",
 			func(t *testing.T, ctx context.Context, s session.Store, r session.FamilyReader, _ *clockwork.FakeClock) {

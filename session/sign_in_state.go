@@ -71,7 +71,7 @@ var errListingAnsweredNotFound = errors.New("session: the store answered a listi
 // is an empty result (see Store.ListByUser), so a store failing with ErrNotFound
 // is a failure too, and comes back as ErrListUnavailable without it.
 //
-// Two limits follow from reading only a listing. Neither read shows a superseded
+// Two limits follow from what the store reads. Neither read shows a superseded
 // session, so where a successor dies before its predecessor, under a successor
 // lifetime shorter than the grace window or idle timeout, the answer is
 // ErrNotFound while the predecessor can still load or renew. And a store fails a

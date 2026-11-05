@@ -296,6 +296,12 @@ const (
 	sessionFamilyReadOmitsState sessionDefect = "family-read-omits-state"
 	// ListByFamily hands back the record it holds, not a copy.
 	sessionFamilyReadSharesRecord sessionDefect = "family-read-shares-record"
+	// ListByFamily judges a session by its idle deadline alone, so one past
+	// its absolute deadline is still answered.
+	sessionFamilyReadIgnoresAbsolute sessionDefect = "family-read-ignores-absolute"
+	// ListByFamily leaves out a sign-in still owing a second factor, which
+	// ListByUser lists.
+	sessionFamilyReadSkipsPendingMFA sessionDefect = "family-read-skips-pending-mfa"
 	// Save writes the caller's sign-in metadata rather than keeping the
 	// stored one, as columns left in the UPDATE would.
 	sessionSaveWritesMetadata sessionDefect = "save-writes-metadata"
@@ -758,6 +764,12 @@ func (s *sessionStore) ListByFamily(_ context.Context, user identity.UserID, fam
 		}
 		unexpired := !expiredSession(sess, now) || s.defect == sessionFamilyReadIncludesExpired ||
 			s.defect == sessionFamilyReadAnswersPredecessor
+		if s.defect == sessionFamilyReadIgnoresAbsolute {
+			unexpired = now.Before(sess.IdleExpiresAt)
+		}
+		if s.defect == sessionFamilyReadSkipsPendingMFA && sess.MFA == session.MFAPending {
+			continue
+		}
 		if !sameUser || !sameFamily || !live || !unexpired {
 			continue
 		}

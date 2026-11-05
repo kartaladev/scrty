@@ -11,17 +11,26 @@ import (
 // FamilyReader is what a Store may also offer, so a read of one sign-in does
 // not list every sign-in of the user. It is optional, and a Store gains nothing
 // it must implement. Sessions.SignInState uses it when the store has it, and
-// uses Store.ListByUser, the default, when it does not; the answers are the
-// same. The stores of this repository offer it, and so does the store
-// NewEncryptedStore returns, whatever it wraps.
+// uses Store.ListByUser, the default, when it does not. The stores of this
+// repository offer it, and so does the store NewEncryptedStore returns,
+// whatever it wraps.
 //
 // What it buys over the default is a smaller read: it costs one family's rows
 // instead of all of the user's, and a row of another family that the store
-// cannot read cannot fail it.
+// cannot read cannot fail it. That is the one difference in the answers: apart
+// from it, and from the nil family, which a family read answers with nothing
+// where a listing may list a row stored in it, the two read the same sessions.
 //
 // A store offering it must agree with its own ListByUser: a family read at now
-// answers exactly the sessions of that family a listing at now answers, as a
-// sign-in renews, rotates and ends. The conformance suite holds a store to it.
+// answers the sessions of that family a listing at now answers, as a sign-in
+// renews, rotates and ends, with those exceptions. The conformance suite holds
+// a store to it.
+//
+// A store that embeds a concrete store, such as *MemoryStore, and overrides
+// ListByUser inherits the embedded store's ListByFamily, which reads the
+// embedded store and not the override. Such a store must override ListByFamily
+// too, or embed the Store interface instead, which hides the embedded store's
+// family read so that SignInState lists through the override.
 //
 //go:generate mockgen -source=family_reader.go -package=session_test -destination=family_reader_mock_test.go -typed
 type FamilyReader interface {

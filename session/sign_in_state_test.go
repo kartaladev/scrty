@@ -769,6 +769,20 @@ func (s oneUnreadableRowStore) ListByUser(context.Context, identity.UserID, time
 	return nil, errStoreQuotes
 }
 
+// listingOverrideStore is a consumer's store that embeds the Store interface,
+// not a MemoryStore, and answers a listing from its own source of truth. The
+// interface hides any family read of what it embeds, so SignInState lists, and
+// the listing it overrides is the one it reads.
+type listingOverrideStore struct {
+	session.Store
+
+	truth session.Store
+}
+
+func (s listingOverrideStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
+	return s.truth.ListByUser(ctx, user, now)
+}
+
 // familyReadingStore is the same store offering the family read: only a read of
 // the family holding the row fails on it.
 type familyReadingStore struct{ oneUnreadableRowStore }
@@ -826,7 +840,10 @@ func TestSessions_SignInState_ConsumerStore(t *testing.T) {
 		familyRead bool
 		// readUnreadable reads the sign-in holding the row, not its neighbour.
 		readUnreadable bool
-		assert         func(t *testing.T, got session.SignInState, err error)
+		// overridesListing is a store embedding the Store interface, over an
+		// empty store, whose own listing holds the sign-ins.
+		overridesListing bool
+		assert           func(t *testing.T, got session.SignInState, err error)
 	}
 
 	cases := []testCase{
@@ -837,6 +854,7 @@ func TestSessions_SignInState_ConsumerStore(t *testing.T) {
 		{name: "sealed, with a family read, another sign-in's unreadable row fails nothing", wrap: sealed, familyRead: true, assert: answered},
 		{name: "sealed, with a family read, the sign-in holding the row fails", wrap: sealed, familyRead: true, readUnreadable: true, assert: unavailable},
 		{name: "sealed, without one, the decorator lists, and the row fails every sign-in", wrap: sealed, assert: unavailable},
+		{name: "embedding the Store interface, an overridden listing is the read that answers", wrap: plain, overridesListing: true, assert: answered},
 	}
 
 	for _, tc := range cases {
@@ -854,6 +872,10 @@ func TestSessions_SignInState_ConsumerStore(t *testing.T) {
 			var store session.Store = oneUnreadableRowStore{Store: memory, unreadable: holding.FamilyID}
 			if tc.familyRead {
 				store = familyReadingStore{oneUnreadableRowStore{Store: memory, unreadable: holding.FamilyID}}
+			}
+			if tc.overridesListing {
+				empty := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+				store = listingOverrideStore{Store: empty, truth: memory}
 			}
 			reader := managerFor(t, session.WithStore(tc.wrap(t, store)), session.WithClock(clk))
 

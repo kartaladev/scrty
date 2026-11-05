@@ -188,6 +188,8 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionFamilyReadOmitsState,
 		"a family read carries a sign-in's deadlines, authentication time and upstream identifiers"),
 	sessionVariant(sessionFamilyReadSharesRecord, "a session a family read answers is the caller's own copy"),
+	sessionVariant(sessionFamilyReadIgnoresAbsolute, "a family read judges expiry by the time the caller passes, not the store's clock"),
+	sessionVariant(sessionFamilyReadSkipsPendingMFA, "a family read agrees with the listing across a renewal, a strict rotation and an end"),
 	{
 		// The family read is optional: a store offering none passes the suite.
 		name: "session-without-a-family-read",
