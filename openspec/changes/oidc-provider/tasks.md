@@ -439,7 +439,7 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 
 ## 15. Integration and release gate
 
-- [ ] 15.1 Amend `release-readiness`: its gate names the `conformance` job, its first changelog entry summarises this change, and its README task drops the `prompt=none` limitation in favour of R2's and R9's. Update its `plans.md` through `/superpowers:writing-plans` (`tasks-plans`). Verify: `openspec validate release-readiness --strict`.
+- [x] 15.1 Amend `release-readiness`: its gate names the `conformance` job, its first changelog entry summarises this change, and its README task drops the `prompt=none` limitation in favour of R2's and R9's. Update its `plans.md` through `/superpowers:writing-plans` (`tasks-plans`). Verify: `openspec validate release-readiness --strict`.
 - [ ] 15.2 Run one whole-branch review against every requirement this change's specs add or modify (`subagent-delegation`), and fold its findings in. Verify: the review reports nothing open.
 - [ ] 15.3 Run the final gate. Verify:
   - `make check` passes in the core module;
