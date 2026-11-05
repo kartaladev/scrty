@@ -280,19 +280,19 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    env:
-      CONFORMANCE_OUT: ${{ runner.temp }}/conformance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: resolve the suite's public name locally
         run: echo "127.0.0.1 localhost.emobix.co.uk" | sudo tee -a /etc/hosts
       - name: make conformance
+        env:
+          CONFORMANCE_OUT: ${{ runner.temp }}/conformance
         run: make conformance
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: conformance-logs
-          path: ${{ env.CONFORMANCE_OUT }}
+          path: ${{ runner.temp }}/conformance
           if-no-files-found: warn
           retention-days: 14
 
