@@ -242,10 +242,15 @@ func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } 
 //
 // When an observer is set, Delete and DeleteByUserExcept read the session they
 // were given from the store first, to learn its user and family. A read that
-// fails does not stop the deletion: the report then leaves out what it could
-// not learn. With no observer they make no such read. With one set, each makes
-// exactly one store read before the write, inside any transaction the consumer
-// attached to the context.
+// fails for any reason but the session being gone or expired returns the
+// failure and deletes nothing, so the caller can ask again after an outage.
+// Asking again does not help with ErrUnreadable, a session the encrypted store
+// cannot open, such as one sealed under a retired key: they keep failing for it,
+// and DeleteByUser, which reads nothing, is the way to end it, along with the
+// rest of that user's sessions. With no observer they make no such read. With
+// one set, each makes exactly one store read before the write, inside any
+// transaction the consumer attached to the context. RevokeFamily reads nothing,
+// which is why a logout ends a sign-in with it.
 //
 // A nil observer, typed nil included, is a configuration error from New.
 func WithEndObserver(o EndObserver) Option {

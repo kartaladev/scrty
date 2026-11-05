@@ -526,9 +526,25 @@ func (m *Sessions) Save(ctx context.Context, s *Session) error {
 }
 
 // Delete removes the session with this identifier.
+//
+// With an end observer it first reads the session, to report its user and
+// family, and a read that fails for any reason but the session being gone or
+// expired returns the failure and removes nothing, so the caller can ask again
+// after an outage. Asking again does not help with ErrUnreadable, a session the
+// encrypted store cannot open, such as one sealed under a retired key: Delete
+// keeps failing for it. DeleteByUser, which reads nothing, still ends it, along
+// with the rest of that user's sessions.
+//
+// A logout must not depend on that read: it ends the sign-in with RevokeFamily,
+// which reads nothing, as the whole sign-in is what a logout means to end.
 func (m *Sessions) Delete(ctx context.Context, id string) error {
+	s, err := m.readForReport(ctx, id)
+	if err != nil {
+		return err
+	}
+
 	report := EndReport{Cause: EndDeleted}
-	if s := m.readForReport(ctx, id); s != nil {
+	if s != nil {
 		report.User, report.Family = s.UserID, s.FamilyID
 	}
 
@@ -560,11 +576,25 @@ func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error
 //
 // A keep naming another user's session, or none, is left untouched and every
 // session of this user goes; an empty keep ends them all.
+//
+// With an end observer it first reads keep, to report the family kept, and a
+// read that fails for any reason but the session being gone or expired returns
+// the failure and removes nothing: without the family, the report would end
+// the sign-in being kept. The caller can ask again after an outage. Asking again
+// does not help when keep is ErrUnreadable, a session the encrypted store cannot
+// open, such as one sealed under a retired key: this keeps failing for it.
+// DeleteByUser, which reads nothing, still ends the user's sessions, keep's
+// included.
 func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	s, err := m.readForReport(ctx, keep)
+	if err != nil {
+		return 0, err
+	}
+
 	report := EndReport{Cause: EndUserSessionsExcept, User: user}
 	// A keep naming another user's session keeps nothing of this user's, and
 	// that user's family is not this report's to name.
-	if s := m.readForReport(ctx, keep); s != nil && s.UserID == user {
+	if s != nil && s.UserID == user {
 		report.KeptFamily = s.FamilyID
 	}
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -27,8 +26,9 @@ const (
 	// user, because the call reads no session.
 	EndFamilyRevoked
 	// EndDeleted is Sessions.Delete. It names the user and the family the
-	// session was read to have, or neither when the read failed or found
-	// nothing, as it does for an expired session.
+	// session was read to have, or neither when the read found nothing, as it
+	// does for an expired session. A read that fails sends no report, because
+	// the deletion does not happen.
 	//
 	// Delete removes one session and not its family, so a member of the family
 	// named, such as the successor of a session deleted inside its renewal
@@ -39,12 +39,13 @@ const (
 	EndUserSessions
 	// EndUserSessionsExcept is Sessions.DeleteByUserExcept. It names the user,
 	// no family, and as KeptFamily the family of the session kept. KeptFamily
-	// is the nil family when the kept session could not be read: it has
-	// expired, it does not belong to the user, or the store read failed. A
+	// is the nil family when the read did not find the kept session to be the
+	// user's: it has gone or expired, or it does not belong to the user. A
 	// family may therefore have been spared without the report naming it. A
 	// kept session that has expired is already dead, so nothing live was
 	// spared then. An observer ending things for a user treats a nil
-	// KeptFamily as nothing spared.
+	// KeptFamily as nothing spared. A read that fails sends no report, because
+	// the deletion does not happen.
 	EndUserSessionsExcept
 	// EndExternalSession is Sessions.DeleteByExternalSession. It names the
 	// upstream issuer and session, and neither user nor family.
@@ -77,10 +78,10 @@ type EndReport struct {
 	// session deleted.
 	Family id.ID
 	// KeptFamily is the family a bulk end spared. It is the nil family when
-	// the kept session could not be read: it has expired, it does not belong
-	// to the user, or the store read failed. A family may therefore have been
-	// spared without the report naming it. A kept session that has expired is
-	// already dead. An observer ending things for a user treats a nil
+	// the read did not find the kept session to be the user's: it has gone or
+	// expired, or it does not belong to the user. A family may therefore have
+	// been spared without the report naming it. A kept session that has expired
+	// is already dead. An observer ending things for a user treats a nil
 	// KeptFamily as nothing spared.
 	KeptFamily id.ID
 	// ExternalIssuer is the upstream issuer that selected the sessions.
@@ -170,24 +171,20 @@ func (m *Sessions) tellEndObserver(ctx context.Context, o EndObserver, r EndRepo
 // straight from the store: Load would judge it, and could revoke its family
 // or record a presentation. With no observer it reads nothing.
 //
-// A failed read is nil and does not stop the deletion, whose own write decides
-// the call. A session the store does not hold, or holds as expired, is an
-// expected answer. Anything else leaves a report short of what it could have
-// said, so it is logged at debug, without the store's text or the identifier.
-func (m *Sessions) readForReport(ctx context.Context, id string) *Session {
+// A session the store does not hold, or holds as expired, is nil and no error:
+// the deletion has nothing live to name. Any other failure comes back, and the
+// caller writes nothing: a report that named no one would leave the session's
+// grants live with nothing left to retry, and one that named no kept family
+// would end the sign-in the caller meant to keep.
+func (m *Sessions) readForReport(ctx context.Context, id string) (*Session, error) {
 	if id == "" || len(m.observing()) == 0 {
-		return nil
+		return nil, nil
 	}
 
-	s, err := m.store.Load(ctx, id)
-	if err != nil {
-		if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrExpired) {
-			m.logger.LogAttrs(ctx, slog.LevelDebug, "session: the session being deleted could not be read for its end report",
-				diag.Failure("end_report_read", err)...)
-		}
-
-		return nil
+	s, err := m.loadStored(ctx, id, "session: the session could not be read for its end report")
+	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrExpired) {
+		return nil, nil
 	}
 
-	return s
+	return s, err
 }
