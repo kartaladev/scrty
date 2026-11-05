@@ -170,7 +170,7 @@ Each correctness task starts from the failing test its row in the design names. 
 - [x] 9.8 Return the chain's endpoint from `perRequest` (R10), with a zero-value `Chain` still answering `ErrSessionSignalsDisabled`, and move the frame walk and `endedWriter` to `internal/diag`, with the stream's headers through one helper (R11), as refactors under green tests. Add a row pinning the agreed frame limit and that no value is logged. Verify: `go test -race -count=1 ./httpsec/ ./internal/diag/`, and the `httpsec/fibersec` suite.
 - [x] 9.9 Godoc R12 on `PublishSignal`, `ReportCredentialChange` and `ReloadContext`, and update the README: the reason for a deleted session, the throttle answer and its count, the capped origin, `FamilyReader`, and the new `Stream` for a consumer's adapter. Verify: `go doc ./httpsec Chain.PublishSignal` says it, and the README's client harness still passes.
 - [ ] 9.10 Run the final gate on the tree rebased onto `main`: `make lint fmt-check vet generate-check pincheck tools-check`, every module's suite with `-race`, `govulncheck`, `go mod tidy -diff`, and 16 concurrent copies of the signal conformance rows for 3 rounds. Verify: every command's output is clean, and CI on the pull request is green.
-- [ ] 9.11 Review group 9 against R1 to R12 and the spec scenarios they added, on Opus, with each finding reproduced or labelled UNREPRODUCED. Verify: the review is recorded and its findings are resolved.
+- [x] 9.11 Review group 9 against R1 to R12 and the spec scenarios they added, on Opus, with each finding reproduced or labelled UNREPRODUCED. Verify: the review is recorded and its findings are resolved.
 
 ## Workflow follow-up
 

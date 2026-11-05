@@ -158,7 +158,7 @@ When a stream's sign-in ends, by logout on any device, an ended sign-in, the rev
 - **THEN** the stream sends `session_ended` with the reason `all_ended`
 
 #### Scenario: Another sign-in's provider logout
-- **WHEN** a user has a federated sign-in and a password sign-in, the user's sessions from that provider are ended, and the password sign-in then reaches its deadline
+- **WHEN** a user has a federated sign-in and a password sign-in, the user's sessions from that provider are ended, a read of the password sign-in then answers that it is alive, and it then reaches its deadline
 - **THEN** the password sign-in's stream sends `session_ended` with the reason `expired`, and not `provider_logout`
 
 ### Requirement: A stream follows its sign-in and never harms it

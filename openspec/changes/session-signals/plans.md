@@ -376,7 +376,7 @@ const RecoveryKindName = "passkey"
 
 ### Tasks 9.1–9.11: Findings from reviewing the pull request (design R1–R12)
 
-The failing tests already exist, in the session's disposable copies under its scratchpad: `triage-a/httpsec/triage_{t1,t2,t4,t5t6}_test.go` and `triage-b/httpsec/triage_{origin,credchange,tenant,zero}_test.go`. Each dispatch brings its own in under behaviour names, and sees them fail on the tree before fixing. They are not committed as they stand.
+Each dispatch brought in the disposable test that proved its finding, under a behaviour name, and saw it fail on the tree before fixing (the design's "Where the proofs landed" names them).
 
 **Dispatches.** Writers in one package each get a worktree. 9.7 changes a signature every test compiles against, so it lands before anything else in `httpsec`.
 
