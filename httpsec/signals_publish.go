@@ -35,12 +35,17 @@ const (
 // A signal that is dropped is gone, and the default bus reaches only this replica's streams, so
 // a consumer must not rely on it alone: the notice sent out of band stays the record.
 //
+// By default a chain's set lacks credential_changed (SessionSignals.Signals), and then nothing is
+// raised at all: no stream of the chain can send it, so a consumer's bus is handed nothing, and nil is
+// returned whether or not that bus could have taken it. Put the signal in the set to send it. Every
+// replica sharing a bus is expected to run the same set, because a replica lacking the signal raises
+// none, and its streams send none that another replica raised.
+//
 // It returns ErrSessionSignalsDisabled on a chain without EnableSessionSignals, ErrInvalidSignal
 // for a kind other than the three above, and ErrSignalsBusy when a consumer's bus could not take
 // the signal, or, on either bus, after CloseSessionSignals, since nil would say it was sent. A user
-// with no open stream is not an error, and neither is a chain whose set of
-// signals lacks credential_changed: no stream sends it, so nothing is sent. The signal is raised
-// on a detached context, since a bus outlives the request, and ctx is not used.
+// with no open stream is not an error. The signal is raised on a detached context, since a bus
+// outlives the request, and ctx is not used.
 func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, kind CredentialKind) error {
 	e := c.signalsEndpoint()
 	if e == nil {
@@ -56,8 +61,16 @@ func (c *Chain) ReportCredentialChange(_ context.Context, user identity.UserID, 
 	return e.raiseCredentialChange(user, kind) //nolint:contextcheck // detached on purpose: a bus outlives the request, and ctx is documented as unused
 }
 
-// raiseCredentialChange hands a credential_changed of a known kind to the hub, which never blocks.
+// raiseCredentialChange hands a credential_changed of a known kind to the hub, which never blocks. A
+// chain whose set lacks the signal raises nothing: no stream of it could send one, and a consumer's bus
+// is not to carry what it cannot, or to report busy for it. Every raise passes here, so that holds of
+// the chain's endpoints and of ReportCredentialChange alike. Every replica is expected to run the same
+// set, or a signal from a replica holding it reaches no stream of one that does not.
 func (e *sessionSignals) raiseCredentialChange(user identity.UserID, kind CredentialKind) error {
+	if !e.set[SignalCredentialChanged] {
+		return nil
+	}
+
 	// The kind is one of the three constants, so it needs no escaping.
 	data := json.RawMessage(`{"kind":"` + string(kind) + `"}`)
 

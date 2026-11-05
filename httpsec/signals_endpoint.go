@@ -196,7 +196,10 @@ type streamStart struct {
 	state session.SignInState
 
 	// source and origin are the client's address and Origin header, for the stream's
-	// open and close logs. They never reach the stream.
+	// open and close logs. They never reach the stream. The origin is cut to
+	// crossSiteOriginLogLimit: Sec-Fetch-Site: none passes with any Origin, so its size is the
+	// client's to choose, and a stream holds this for its whole life. There is no override, as only
+	// a log reads it: a longer one is named in part.
 	source, origin string
 }
 
@@ -209,6 +212,7 @@ func newStreamStart(
 	reload context.Context, ex *Exchange, s *session.Session, wanted signalFilter, state session.SignInState,
 ) streamStart {
 	source := strings.Clone(ex.Request.ClientIP())
+	origin := ex.Request.Header("Origin")
 	upstream := upstreamDigest(state.ExternalIssuer, state.ExternalSessionID)
 
 	// The digest is all a stream holds of the upstream session, which identifies a session
@@ -223,7 +227,7 @@ func newStreamStart(
 		reload: reload,
 		state:  state,
 		source: source,
-		origin: strings.Clone(ex.Request.Header("Origin")),
+		origin: strings.Clone(origin[:min(len(origin), crossSiteOriginLogLimit)]),
 	}
 }
 

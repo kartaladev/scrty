@@ -237,7 +237,8 @@ type SessionSignals struct {
 	ReconnectDelay time.Duration
 
 	// BusyDelay is the retry a request is answered with, ±30% per refusal, when a cap
-	// is reached or a dependency fails at admission (EnableSessionSignals says which).
+	// is reached, a dependency fails at admission or a sign-in is throttled
+	// (EnableSessionSignals says which).
 	//
 	// Default: 30 seconds. It must be at least 1 millisecond, the smallest retry a stream
 	// can state.
@@ -269,13 +270,15 @@ type SessionSignals struct {
 	ReloadContext func(context.Context) context.Context
 
 	// RetryableError decides whether a failure on the stream's path is one a client should
-	// come back from. It is asked only about an error StatusForError maps to a 5xx, returned
-	// to the chain on GET at Path, and not about what a client's hang-up or a writer that
-	// cannot stream returned. Returning true answers 200 with only a retry, as a dependency
-	// failure is, counted in SessionSignalStats.ReloadFailures. Returning false sends the
+	// come back from. It is asked about an error StatusForError maps to a 5xx, and about a
+	// ratelimit.ErrThrottled once a sign-in is published, returned to the chain on GET at Path,
+	// and not about what a client's hang-up or a writer that cannot stream returned. Returning
+	// true answers 200 with only a retry, counted in SessionSignalStats.ReloadFailures for a
+	// failure and in SessionSignalStats.Throttled for a throttle. Returning false sends the
 	// error through the chain's error mapping, as any other request's, and counts nothing:
-	// use it for a refusal of your own that maps to a 5xx. Mind what that answer does: a 5xx
-	// stops a browser's EventSource for good, and no later request of that page is made.
+	// use it for a refusal of your own that maps to a 5xx, or a throttle that is to be 401. Mind
+	// what that answer does: a 5xx or a 401 stops a browser's EventSource for good, and no later
+	// request of that page is made.
 	//
 	// An authenticate.ErrUnavailable from a consumer's authenticator on this path is 401, to keep
 	// a refusal from telling an account's existence, so it is not asked about and not retried:
@@ -284,8 +287,9 @@ type SessionSignals struct {
 	//
 	// A panic in it is recovered and logged without its value, and the failure is retried.
 	//
-	// Default: nil, every such failure is retried, because a store failure in a consumer's
-	// authenticator cannot be told from any other and must not end an EventSource for good.
+	// Default: nil, every such failure and throttle is retried, because a store failure in a
+	// consumer's authenticator cannot be told from any other, a policy cannot write an answer of its
+	// own, and neither must end an EventSource for good.
 	RetryableError func(error) bool
 
 	// ReloadTimeout bounds one reload, the session read and the user read sharing it. A
@@ -418,7 +422,11 @@ type SignalEnvelope struct {
 // or the user store included: anything the chain's error mapping would answer with a 5xx.
 // So a consumer's interceptor that refuses this path with an error of its own that
 // StatusForError does not know is taken for a failure, and should write its answer itself;
-// a rate limit answered that way stays the consumer's. An answer begun before the failure
+// a rate limit answered that way stays the consumer's, as does an error mapping to a 429,
+// which is an answer it chose. A ratelimit.ErrThrottled, which is how a policy says the same,
+// is told to retry too once a sign-in is published, and only then: before one, Basic over its
+// limit keeps the 401 of any wrong password, and a retry there would be a lock oracle. It is
+// counted in SessionSignalStats.Throttled, since nothing failed. An answer begun before the failure
 // is not written over. It takes no place, closes no stream and charges nothing, and only GET
 // on the stream's path is answered so, so every other 5xx of the chain stands. A fetch() client
 // sees a 200 with no session event. It hides from a dashboard of statuses, so it is logged
@@ -496,6 +504,9 @@ type sessionSignals struct {
 
 	// reloads is what this replica's streams counted of their reloads.
 	reloads streamReloadCounts
+
+	// throttled is how many requests for the stream a throttled sign-in was answered with only a retry.
+	throttled atomic.Uint64
 
 	// cors is the chain's CORS layer, and nil without one. log and sampler are the
 	// chain's. All three are settled last, by wire.
@@ -912,7 +923,7 @@ const (
 // names no one's fault: "ended" is also what a stream says with no report at all.
 func endReason(cause session.EndCause) string {
 	switch cause {
-	case session.EndLogout, session.EndDeleted:
+	case session.EndLogout:
 		return reasonLogout
 	case session.EndReuse:
 		return reasonReuse
@@ -920,7 +931,7 @@ func endReason(cause session.EndCause) string {
 		return reasonAllEnded
 	case session.EndUserExternalIssuer, session.EndExternalSession:
 		return reasonProviderLogout
-	case session.EndByHandle, session.EndFamilyRevoked:
+	case session.EndByHandle, session.EndFamilyRevoked, session.EndDeleted:
 		return reasonEnded
 	default:
 		return reasonEnded

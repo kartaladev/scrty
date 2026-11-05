@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // orderSessionSignalsRetry is where a request for the stream that cannot be served now is answered
@@ -31,6 +32,7 @@ const streamClosingRetryLeast = time.Second
 const (
 	msgStreamCapReached       = "httpsec: session signal stream refused: a cap is reached"
 	msgStreamDependencyFailed = "httpsec: session signal stream refused: a dependency failed"
+	msgStreamThrottled        = "httpsec: session signal stream refused: a sign-in is throttled"
 )
 
 // sessionSignalsRetry answers what a retry could fix on the stream's path. It is registered with
@@ -70,7 +72,9 @@ func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, 
 	}
 
 	closing, overCap := errors.Is(err, errStreamsClosed), errors.Is(err, ErrTooManyStreams)
-	if !closing && !overCap && !e.isDependencyFailure(entered, ex, err) {
+	throttled := e.isThrottledSignIn(entered, ex, err)
+
+	if !closing && !overCap && !throttled && !e.isDependencyFailure(entered, ex, err) {
 		return err
 	}
 
@@ -91,6 +95,14 @@ func (e *sessionSignals) answerRetryOnly(entered context.Context, ex *Exchange, 
 
 	if overCap {
 		e.logRetryOnly(ex.Context(), "cap-reached", msgStreamCapReached) //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
+
+		return nil
+	}
+
+	if throttled {
+		// Nothing failed, so this is no reload failure: it is a consumer's limit doing its work.
+		e.throttled.Add(1)
+		e.logRetryOnly(ex.Context(), "throttled", msgStreamThrottled) //nolint:contextcheck // the answer and its records go on the exchange's current context; entered only classifies the failure
 
 		return nil
 	}
@@ -145,6 +157,23 @@ func (e *sessionSignals) streamOnlyRetry(ex *Exchange, delay time.Duration) erro
 
 		return nil
 	})
+}
+
+// isThrottledSignIn reports whether err is a throttle on a sign-in that has been published, which a
+// retry could fix, unless SessionSignals.RetryableError says otherwise. A policy cannot write an answer
+// of its own, so its ratelimit.ErrThrottled would otherwise be a 401 that ends an EventSource for good.
+//
+// Only a published sign-in qualifies. Before one, a request has proved nothing, and an answer that told
+// Basic over its limit from a wrong password would sit beside a concealed lock as an oracle, so those
+// keep the 401 every refused credential gets. Only what the chain's mapping answers 401 qualifies, so
+// that an outage that also wraps a throttle stays an outage, and an error mapping to a 429 is not this:
+// a consumer chose that answer. A client that has left is told nothing, as isDependencyFailure says.
+func (e *sessionSignals) isThrottledSignIn(entered context.Context, ex *Exchange, err error) bool {
+	if ex.Session == nil || !errors.Is(err, ratelimit.ErrThrottled) || errors.Is(entered.Err(), context.Canceled) {
+		return false
+	}
+
+	return StatusForError(err) == http.StatusUnauthorized && e.retryable(ex, err) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
 }
 
 // isDependencyFailure reports whether err is a failure of something the request depends on, and not

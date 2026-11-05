@@ -1558,11 +1558,11 @@ func TestSessionSignals_Heartbeat_Ends(t *testing.T) {
 			assert: reasonIs("logout", 1, 0),
 		},
 		{
-			name: "deleting the session names logout",
+			name: "deleting the session names ended",
 			end: func(t *testing.T, r *streamRig, s *session.Session) {
 				require.NoError(t, r.sessions.Delete(t.Context(), s.ID))
 			},
-			assert: reasonIs("logout", 1, 0),
+			assert: reasonIs("ended", 1, 0),
 		},
 		{
 			name: "an ended sign-in names ended",

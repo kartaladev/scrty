@@ -754,7 +754,7 @@ func TestSessionSignals_Construction_EndReports(t *testing.T) {
 
 	cases := []testCase{
 		{"logout says logout", session.EndReport{Cause: session.EndLogout, User: user, Family: family}, reason("logout")},
-		{"a deleted session says logout", session.EndReport{Cause: session.EndDeleted, User: user, Family: family}, reason("logout")},
+		{"a deleted session says ended", session.EndReport{Cause: session.EndDeleted, User: user, Family: family}, reason("ended")},
 		{"an ended handle says ended", session.EndReport{Cause: session.EndByHandle, User: user, Family: family}, reason("ended")},
 		{"reuse says reuse", session.EndReport{Cause: session.EndReuse, User: user, Family: family}, reason("reuse")},
 		{"a revoked family says ended", session.EndReport{Cause: session.EndFamilyRevoked, Family: family}, reason("ended")},

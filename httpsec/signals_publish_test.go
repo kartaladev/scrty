@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -390,4 +391,168 @@ func TestSessionSignals_Publish_BusyBus(t *testing.T) {
 			require.ErrorIs(t, err, httpsec.ErrSignalsBusy)
 		})
 	}
+}
+
+// TestSessionSignals_CredentialChanged_OnlyWhenTheSetHoldsIt is the signal on its way to a shared bus.
+// With no stream able to send it, a broker is handed nothing, and it cannot take a place in the queue
+// from anything else or report busy for what was never going to be sent.
+func TestSessionSignals_CredentialChanged_OnlyWhenTheSetHoldsIt(t *testing.T) {
+	t.Parallel()
+
+	const changePath = "/account/password"
+
+	changeOpts := func(r *streamRig) []httpsec.Option {
+		return []httpsec.Option{httpsec.EnablePasswordChangeGate(r.sessions,
+			httpsec.WithPasswordChangeEndpoint(changePath, func(ex *httpsec.Exchange) error {
+				ex.Writer.WriteHeader(http.StatusNoContent)
+
+				return nil
+			}))}
+	}
+
+	report := func(t *testing.T, r *streamRig) {
+		t.Helper()
+
+		require.NoError(t, r.chain.ReportCredentialChange(t.Context(), "u-1", httpsec.CredentialPassword))
+	}
+
+	endpoint := func(t *testing.T, r *streamRig) {
+		t.Helper()
+
+		require.Equal(t, http.StatusNoContent, r.callAs(t, r.signIn(t).ID, changePath, "change"))
+	}
+
+	type testCase struct {
+		name string
+		set  []httpsec.Signal
+		act  func(t *testing.T, r *streamRig)
+		want []string
+	}
+
+	cases := []testCase{
+		{name: "a report on the default set publishes nothing", act: report},
+		{name: "an endpoint on the default set publishes nothing", act: endpoint},
+		{name: "a report on a set without it publishes nothing", set: endedOnly, act: report},
+		{name: "a report on a set holding it publishes", set: withCredentialChanged, act: report, want: []string{"credential_changed"}},
+		{name: "an endpoint on a set holding it publishes", set: withCredentialChanged, act: endpoint, want: []string{"credential_changed"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				var (
+					mu        sync.Mutex
+					published []string
+				)
+
+				bus := NewMockSignalBus(gomock.NewController(t))
+				subscribeBlocks(bus)
+				bus.EXPECT().Publish(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(_ context.Context, e httpsec.SignalEnvelope) error {
+						mu.Lock()
+						defer mu.Unlock()
+
+						published = append(published, e.Name)
+
+						return nil
+					}).AnyTimes()
+
+				r := newStreamRig(t, streamSetup{
+					signals: httpsec.SessionSignals{Bus: bus, Signals: tc.set},
+					opts:    changeOpts,
+				})
+				t.Cleanup(httpsec.SignalHubProbeOf(r.chain).Close)
+
+				tc.act(t, r)
+				synctest.Wait()
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				assert.Equal(t, tc.want, published)
+			})
+		})
+	}
+}
+
+// TestSessionSignals_ReportCredentialChange_FullQueue is a bus that has stopped taking signals: a chain
+// able to send this one reports busy, and one that cannot has nothing to be busy with.
+func TestSessionSignals_ReportCredentialChange_FullQueue(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		set    []httpsec.Signal
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "on the default set it never answers busy",
+			assert: func(t *testing.T, err error) {
+				assert.NoError(t, err)
+			},
+		},
+		{
+			name: "on a set holding it a full queue answers busy",
+			set:  withCredentialChanged,
+			assert: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, httpsec.ErrSignalsBusy)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			synctest.Test(t, func(t *testing.T) {
+				bus := NewMockSignalBus(gomock.NewController(t))
+				subscribeBlocks(bus)
+				bus.EXPECT().Publish(gomock.Any(), gomock.Any()).DoAndReturn(
+					func(ctx context.Context, _ httpsec.SignalEnvelope) error {
+						<-ctx.Done()
+
+						return ctx.Err()
+					}).AnyTimes()
+
+				r := newStreamRig(t, streamSetup{
+					signals: httpsec.SessionSignals{Bus: bus, BusQueue: 1, BusTimeout: time.Minute, Signals: tc.set},
+				})
+				t.Cleanup(httpsec.SignalHubProbeOf(r.chain).Close)
+
+				var err error
+
+				for range 3 {
+					if err = r.chain.ReportCredentialChange(t.Context(), "u-1", httpsec.CredentialPassword); err != nil {
+						break
+					}
+
+					synctest.Wait()
+				}
+
+				tc.assert(t, err)
+			})
+		})
+	}
+}
+
+// TestSessionSignals_CredentialChanged_FromABusOnADefaultSet is a signal from a replica running another
+// set, which is a misconfiguration: this replica's streams still send only what their set holds.
+func TestSessionSignals_CredentialChanged_FromABusOnADefaultSet(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		r := newStreamRig(t, streamSetup{})
+		s := r.open(t, r.signIn(t).ID)
+
+		httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+			User: "u-1", Name: string(httpsec.SignalCredentialChanged), Data: json.RawMessage(`{"kind":"password"}`),
+		})
+		synctest.Wait()
+
+		assert.Equal(t, []string{"session"}, s.sent())
+	})
 }

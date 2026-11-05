@@ -530,7 +530,10 @@ func (m *Sessions) Save(ctx context.Context, s *Session) error {
 	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }
 
-// Delete removes the session with this identifier.
+// Delete removes the session with this identifier, and reports EndDeleted to the end observers: one
+// session is gone, for a reason no one has named, which a stream reports as ended. It is for an
+// administrator's job or the like. A consumer's logout calls Logout instead, which ends the whole
+// sign-in, a renewal's successor included, and reports EndLogout.
 func (m *Sessions) Delete(ctx context.Context, id string) error {
 	report := EndReport{Cause: EndDeleted}
 	if s := m.readForReport(ctx, id); s != nil {

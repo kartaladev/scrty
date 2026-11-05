@@ -24,6 +24,11 @@ type SessionSignalStats struct {
 	// SessionSignals.ReloadContext shows, since no stream of that chain ever opens.
 	ReloadFailures uint64
 
+	// Throttled is how many requests for the stream a ratelimit.ErrThrottled on a published sign-in
+	// answered with only a retry. Such a request is 200 on every dashboard that counts statuses, and
+	// no dependency failed, so it is not in ReloadFailures.
+	Throttled uint64
+
 	// ConsecutiveReloadFailures is the reads in a row that failed, added up over the streams now open,
 	// and zero when every open stream's last read succeeded. A single total that any success reset
 	// would hide one user's unreadable session behind everyone else's streams. Being a sum, it scales
@@ -63,6 +68,7 @@ func (c *Chain) SessionSignalStats() SessionSignalStats {
 		Open:                      open,
 		RefusedByCap:              refused,
 		ReloadFailures:            failures,
+		Throttled:                 e.throttled.Load(),
 		ConsecutiveReloadFailures: inRow,
 		BusDropped:                dropped,
 		BusPublishFailures:        publishFailures,
