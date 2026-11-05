@@ -449,6 +449,29 @@ func (s *MemoryStore) ListByUser(_ context.Context, user identity.UserID, now ti
 	return listed, nil
 }
 
+// ListByFamily is ListByUser narrowed to family, as FamilyReader states it. The
+// nil family names none and lists nothing. It scans the store under its read
+// lock, once per call, as ListByUser does, and copies only the family's
+// sessions, so what it saves over a listing is the copies of the user's other
+// sign-ins: the scan still grows with every session the store holds.
+func (s *MemoryStore) ListByFamily(_ context.Context, user identity.UserID, family id.ID, now time.Time) ([]*Session, error) {
+	if family.IsZero() {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var listed []*Session
+	for _, rec := range s.records {
+		if rec.FamilyID == family && rec.UserID == user && !rec.superseded() && !rec.expired(now) {
+			listed = append(listed, rec.clone())
+		}
+	}
+
+	return listed, nil
+}
+
 // DeleteExpired removes every expired session and reports how many went: a
 // live one once either of its deadlines passes, and a superseded one once its
 // RetainUntil passes, or its own deadlines when it has none.
@@ -708,7 +731,10 @@ func (s *MemoryStore) SuccessorPresented(_ context.Context, id string) (bool, er
 	return !successor.FirstPresentedAt.IsZero() || successor.superseded(), nil
 }
 
-var _ Store = (*MemoryStore)(nil)
+var (
+	_ Store        = (*MemoryStore)(nil)
+	_ FamilyReader = (*MemoryStore)(nil)
+)
 
 // MemoryStoreOption configures a MemoryStore.
 type MemoryStoreOption func(*MemoryStore)

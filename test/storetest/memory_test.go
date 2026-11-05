@@ -84,6 +84,22 @@ func TestEncryptedSessionStore(t *testing.T) {
 	storetest.RunSessionStoreSuite(t, newStore)
 }
 
+// The wrapper over a store with no family read still offers one, by listing and
+// narrowing, and must hold to the same suite.
+func TestEncryptedSessionStore_OverAStoreWithNoFamilyRead(t *testing.T) {
+	t.Parallel()
+
+	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+		t.Helper()
+
+		memory := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))))
+		s, err := session.NewEncryptedStore(struct{ session.Store }{memory}, xorCipher{})
+		require.NoError(t, err)
+
+		return s
+	})
+}
+
 // The in-memory one-time store carries a reaper, so its run requires one.
 func TestMemoryOneTimeStore(t *testing.T) {
 	t.Parallel()

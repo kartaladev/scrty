@@ -89,6 +89,34 @@ func (ginAdapter) Serve(
 	return res
 }
 
+// Listen serves spec's chain on a real server, behind gin. Its shutdown is
+// net/http's, which does not end an open stream by itself.
+func (ginAdapter) Listen(
+	t *testing.T,
+	spec httpsecconformance.ChainSpec,
+	writeTimeout time.Duration,
+) httpsecconformance.StreamServer {
+	t.Helper()
+
+	engine := gin.New()
+	engine.Use(ginsec.Middleware(spec.NewChain(t)))
+	engine.GET(httpsecconformance.SlowWritePath, func(gc *gin.Context) {
+		httpsecconformance.WriteSlowly(gc.Writer)
+	})
+
+	var handler http.Handler = engine
+	if spec.Compress {
+		handler = httpsecconformance.Gzip(handler)
+	}
+
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Config.WriteTimeout = writeTimeout
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	return httpsecconformance.StreamServer{URL: srv.URL, CompressesStream: true}
+}
+
 // ginRoute is one application route, preceded by the guard the scenario asked
 // for.
 func ginRoute(

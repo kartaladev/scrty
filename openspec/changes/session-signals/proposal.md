@@ -54,6 +54,7 @@ This change gives the front end a feed of its own: few signals, typed, and only 
 - `framework-adapters`: `ResponseWriter` gains a required `Stream` method, and each adapter supports streaming. A streamed response flushes each event, holds no response buffer, and has its write deadline extended.
 - `http-security-chain`: the stream endpoint's place in the chain. It answers only authenticated requests and records no session activity. CORS governs a cross-origin read.
 - `sessions`: the manager reports when a sign-in ends, is revoked with its family or is ended with the user's other sign-ins, so signals can be raised where sessions are ended rather than inferred.
+- `account-recovery`: a completed recovery says what it removed, so a stream still open can hear of it.
 
 ## Impact
 
@@ -61,13 +62,14 @@ This change gives the front end a feed of its own: few signals, typed, and only 
   - `httpsec`: the endpoint, the stream writer, the signal types, the bus port and its in-process default.
   - `httpsec/ginsec` and `httpsec/fibersec`: flushing and streaming.
   - `session`: the end-of-sign-in report.
+  - `recovery` and `authenticate/passkey`: `Result.Removed`, saying what a recovery removed, and `RecoveryKindName`.
   - `test/httpsecconformance`: stream scenarios on all three adapters.
 - **API:**
-  - new: `EnableSessionSignals` and `SessionSignals`, the signal names, `PublishSignal` for the consumer's signals, `ReportCredentialChange`, `CloseSessionSignals`, the bus port, and `session.WithEndObserver` with `(*Sessions).AddEndObserver`, the option shared with `oidc-provider`;
+  - new: `EnableSessionSignals` and `SessionSignals`, the signal names, `PublishSignal` for the consumer's signals, `ReportCredentialChange`, `CloseSessionSignals`, the bus port, `session.WithEndObserver` with `(*Sessions).AddEndObserver`, the option shared with `oidc-provider`, and the optional `session.FamilyReader`;
   - **breaking:** `ResponseWriter.Stream`, with `ErrStreamingUnsupported` and `ErrStreamingStarted`.
 - **Dependencies:** none new. The stream uses net/http's `http.ResponseController`.
   - *Unverified:* fiber v3 streams through fasthttp's body stream writer, a different model from net/http. Its fit is the first thing the design must establish.
-- **Order:** after `close-security-gaps`, whose security-event emission points (D13) and session-management endpoints this change raises signals beside; before `release-readiness` tags `v0.1.0`. `bff-resource-server` is not required. Its cookie session will work with the stream when it lands.
+- **Order:** after `close-security-gaps`, whose security-event emission points (D13) and session-management endpoints this change raises signals beside; before `release-readiness` tags `v0.1.0`. `bff-resource-server` is not required. Its cookie session will work with the stream when it lands. Against `oidc-provider`, whichever is ready first merges first (agreed 2026-11-05, and the user may overrule it).
 - **Operations:**
   - one long-lived connection per open stream;
   - a proxy in front must not buffer `text/event-stream`;

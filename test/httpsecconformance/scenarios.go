@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/gzhttp"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -364,6 +365,34 @@ type ChainSpec struct {
 	// those settings have no effect on the chain. An adapter whose framework
 	// has no such setting, such as net/http, ignores it.
 	FrameworkTrustsProxies bool
+
+	// Compress asks a StreamAdapter to put its framework's response compression in front of
+	// the chain, outside every middleware of the chain's, as an application that
+	// compresses all its responses would. net/http and gin wrap the whole handler in
+	// Gzip, which is gzhttp; fiber, whose middleware has no such slot, uses its own
+	// compress middleware ahead of the chain. Serve ignores it.
+	//
+	// Fiber's middleware skips any response marked Cache-Control: no-transform, and the
+	// signal stream is always marked so. On fiber the stream therefore stays uncompressed,
+	// and the row that uses Compress checks that no-transform is honoured there
+	// (StreamServer.CompressesStream is false), where net/http and gin must compress.
+	Compress bool
+
+	// Built, when set, is called with each chain NewChain builds, so a scenario can reach
+	// the chain the adapter serves, to raise a signal on it.
+	Built func(*httpsec.Chain)
+}
+
+// Gzip wraps next in the real gzhttp handler, as an application that compresses its
+// responses would put in front of the chain. It is what net/http and gin use for
+// ChainSpec.Compress.
+func Gzip(next http.Handler) http.Handler {
+	wrap, err := gzhttp.NewWrapper()
+	if err != nil {
+		panic(err)
+	}
+
+	return wrap(next)
 }
 
 // NewChain builds the scenario's chain, plus whatever options the adapter adds
@@ -374,6 +403,10 @@ func (s ChainSpec) NewChain(t *testing.T, extra ...httpsec.Option) *httpsec.Chai
 
 	c, err := httpsec.New(append(append([]httpsec.Option(nil), s.Options...), extra...)...)
 	require.NoError(t, err)
+
+	if s.Built != nil {
+		s.Built(c)
+	}
 
 	return c
 }
@@ -488,6 +521,14 @@ type Scenario struct {
 	// which is why a scenario that uses it keeps whatever must outlive one
 	// request, such as a challenge store, in the stores and not in the chain.
 	Steps func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result)
+
+	// Stream, when set, is the whole row, and Build, Request, Assert and Steps are
+	// left empty: a streamed response needs a real listener and a client reading
+	// it while it is open, neither of which one finished Result can give.
+	//
+	// It is handed a function that stands the adapter's framework up for a chain.
+	// The row is skipped on an adapter that is not a StreamAdapter.
+	Stream func(t *testing.T, listen func(ChainSpec) StreamServer)
 }
 
 // Adapter runs one scenario on one framework.
@@ -528,7 +569,7 @@ func Scenarios() []Scenario {
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
 		twoCookiesAreBothSent(),
-	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios())...)
+	}, slices.Concat(proxyScenarios(), reauthScenarios(), oidcScenarios(), oidcAssuranceScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios(), lockoutScenarios(), holdScenarios(), headerScenarios(), corsScenarios(), sessionManagementScenarios(), csrfScenarios(), dpopScenarios(), subjectScenarios(), streamScenarios(), signalsScenarios(), signalsThrottleScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

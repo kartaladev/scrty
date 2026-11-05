@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -118,6 +120,74 @@ func TestOIDCLogout_CompletesWhileSessionReadsFail(t *testing.T) {
 			store.armed.Store(false)
 
 			tc.assert(t, f, store, s, grant, a)
+		})
+	}
+}
+
+// endReports records what a manager reports ending.
+type endReports struct {
+	mu   sync.Mutex
+	seen []session.EndReport
+}
+
+func (r *endReports) SignInsEnded(_ context.Context, report session.EndReport) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.seen = append(r.seen, report)
+}
+
+func (r *endReports) got() []session.EndReport {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return slices.Clone(r.seen)
+}
+
+// TestOIDCLogout_ReportsALogout pins that every logout tells end observers it was a logout, naming
+// the user, so that a stream of the sign-in says "logout" rather than the "ended" of a revocation made
+// for a reason no one named.
+func TestOIDCLogout_ReportsALogout(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		prepare func(t *testing.T, f *signInEnds, s *session.Session, browser string) func(...flowChange) flowAnswer
+	}
+
+	cases := []testCase{{
+		name: "the chain's logout",
+		prepare: func(t *testing.T, f *signInEnds, _ *session.Session, _ string) func(...flowChange) flowAnswer {
+			t.Helper()
+
+			return func(change ...flowChange) flowAnswer {
+				r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, f.issuer+httpsec.DefaultLogoutPath, http.NoBody)
+				require.NoError(t, err)
+
+				return f.serve(t, r, change)
+			}
+		},
+	}}
+	for _, path := range logoutPaths() {
+		cases = append(cases, testCase{name: "end-session, " + path.name, prepare: path.prepare})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reports := &endReports{}
+			f := newSignInEnds(t, endsSetup{})
+			require.NoError(t, f.sessions.AddEndObserver(reports))
+
+			s := f.signIn(t)
+			grant := f.grantFrom(t, s, endsOnlineScope)
+
+			tc.prepare(t, f, s, grant.browser)(flowBearer(s.ID))
+
+			assert.Equal(t, []session.EndReport{{
+				Cause: session.EndLogout, User: s.UserID, Family: s.FamilyID, At: f.clk.Now(),
+			}}, reports.got())
 		})
 	}
 }

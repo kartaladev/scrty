@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kartaladev/scrty/httpsec"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
@@ -96,6 +97,34 @@ func nethttpRoute(
 	}
 
 	return handler
+}
+
+// Listen serves spec's chain on a real server. Its shutdown does not end an open
+// stream by itself: net/http's waits for the handler, whose context it leaves
+// alone, so a stream ends through what the application closes.
+func (nethttpAdapter) Listen(
+	t *testing.T,
+	spec httpsecconformance.ChainSpec,
+	writeTimeout time.Duration,
+) httpsecconformance.StreamServer {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+httpsecconformance.SlowWritePath, func(w http.ResponseWriter, _ *http.Request) {
+		httpsecconformance.WriteSlowly(w)
+	})
+
+	handler := spec.NewChain(t).Middleware()(mux)
+	if spec.Compress {
+		handler = httpsecconformance.Gzip(handler)
+	}
+
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Config.WriteTimeout = writeTimeout
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	return httpsecconformance.StreamServer{URL: srv.URL, CompressesStream: true}
 }
 
 // nethttpGuard builds the guard the scenario named.

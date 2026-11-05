@@ -133,6 +133,31 @@ type Result struct {
 	// (WithoutRecoveryGrantRevocation), and when the recovery is held.
 	GrantsNotRevoked bool
 
+	// Removed is the authenticators the recovery removed, the same list the
+	// notice to the user names: what the reset policy chose, less nothing
+	// the user held back, so an authenticator the user proved in this
+	// recovery is not in it. It is set on the result of a recovery that
+	// completes at once and on the result of Finish, and is empty when the
+	// recovery is held (Held is set), when the reset removed nothing, and
+	// when a ResetPolicy kept everything.
+	//
+	// A reference carries the Kind of the authenticator kind that removed
+	// it, MFAKind for an MFA method and a consumer's own kind name for one
+	// registered with WithAuthenticatorKinds, and the kind's own ID. Its
+	// Channel is empty: the plan names each authenticator by kind and
+	// identifier alone, so a channel a kind listed is not carried here. A
+	// consumer's kind may put an identifier of a device or an address in
+	// the ID: handle it with the care the notice is given, and do not send
+	// it to a client or a log.
+	//
+	// A recovery that fails after removing some authenticators returns an
+	// error and no Result. The kinds are removed one after another and a
+	// removal already made stays made, so Removed reports nothing of it,
+	// the notice to the user is not sent, and a caller that raises a
+	// signal from Removed raises none. A consumer that needs to know what
+	// such a recovery took lists what the user still holds.
+	Removed []AuthenticatorRef
+
 	// Held is set, and nothing else is, when the recovery is held: it carries
 	// the completion token Finish takes and the instant it can be presented.
 	Held *Hold
@@ -386,7 +411,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		}
 	}
 
-	res := &Result{Details: c.details}
+	res := &Result{Details: c.details, Removed: slices.Clone(c.plan)}
 
 	if r.grants != nil {
 		if err := r.grants.RevokeUserGrants(ctx, c.user, grantRevocationCause); err != nil {

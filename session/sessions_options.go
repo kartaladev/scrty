@@ -205,8 +205,9 @@ func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } 
 //
 //   - a family revoked for reuse (EndReuse) and a family revoked
 //     (EndFamilyRevoked, from RevokeFamily);
-//   - a session deleted (EndDeleted, from Delete) and a sign-in ended by its
-//     handle (EndByHandle, from EndSignIn);
+//   - a session deleted (EndDeleted, from Delete), a sign-in logged out
+//     (EndLogout, from Logout) and a sign-in ended by its handle (EndByHandle,
+//     from EndSignIn);
 //   - a user's sessions deleted (EndUserSessions, from DeleteByUser), with one
 //     kept (EndUserSessionsExcept, from DeleteByUserExcept), and a user's other
 //     sign-ins ended (EndOtherSignIns, from EndOtherSignIns);
@@ -249,12 +250,13 @@ func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } 
 // and DeleteByUser, which reads nothing, is the way to end it, along with the
 // rest of that user's sessions. With no observer they make no such read. With
 // one set, each makes exactly one store read before the write, inside any
-// transaction the consumer attached to the context. RevokeFamily reads nothing,
-// which is why a logout ends a sign-in with it.
+// transaction the consumer attached to the context. Logout and RevokeFamily read
+// nothing, which is why a logout does not depend on such a read.
 //
 // A nil observer, typed nil included, is a configuration error from New.
+// AddEndObserver adds one to a manager already built.
 func WithEndObserver(o EndObserver) Option {
-	return func(m *Sessions) { m.endObservers = append(m.endObservers, o) }
+	return func(m *Sessions) { m.appendEndObserver(o) }
 }
 
 // CreateOption configures one session as it is created, rather than the

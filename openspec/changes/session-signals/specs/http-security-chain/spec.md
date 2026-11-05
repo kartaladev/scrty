@@ -33,11 +33,30 @@ A request for the signal stream SHALL NOT record activity on its session, unlike
 - **THEN** it is told the stream request does not
 
 ### Requirement: A cross-origin stream is governed by CORS
-A cross-origin request for the signal stream SHALL be answered only for an origin the chain's CORS policy allows with credentials. Any other origin SHALL be refused with 403 before a stream opens, by its `Sec-Fetch-Site` and `Origin` headers as unsafe requests are judged, whether or not CSRF protection is enabled. A request carrying neither header SHALL pass. The stream changes no state, so CSRF protection SHALL NOT require a token for it.
+A cross-origin request for the signal stream SHALL be answered only for an origin the chain's CORS policy names: with credentials allowed for a stream authenticated by a cookie, where a wildcard SHALL NOT count; and with or without them, a wildcard included, for a stream authenticated by an `Authorization` header. `Origin: null` SHALL never pass.
 
 #### Scenario: Allowed origin
 - **WHEN** CORS allows `https://app.example.com` with credentials and a page there opens the stream
 - **THEN** the stream opens with that origin's CORS headers
+
+#### Scenario: Bearer page on an allowed origin, without credentials
+- **WHEN** CORS names `https://app.example.com` without credentials, and a page there sends a `fetch()` of the stream with an `Authorization` header
+- **THEN** the stream opens
+
+#### Scenario: Wildcard CORS and a bearer token
+- **WHEN** CORS allows `*`, and a page on another site sends a `fetch()` of the stream with an `Authorization` header
+- **THEN** the stream opens
+
+#### Scenario: An echoed origin varies
+- **WHEN** the stream's response echoes an allowed origin
+- **THEN** it carries `Vary: Origin`
+
+#### Scenario: Preflight for a bearer client
+- **WHEN** CORS allows `https://app.example.com` with the `Authorization` header, and a page there sends the preflight for a `fetch()` of the stream
+- **THEN** the preflight is answered by CORS with that origin and header allowed, and no stream opens for the preflight
+
+### Requirement: A stream from an untrusted origin is refused before it opens
+A request from any other origin SHALL be refused with 403 before a stream opens, by its `Sec-Fetch-Site` and `Origin` headers as unsafe requests are judged, whether or not CSRF protection is enabled, and SHALL NOT be reported as a CSRF attack. A request carrying neither header SHALL pass. The stream changes no state, so CSRF protection SHALL NOT require a token for it.
 
 #### Scenario: Other origin
 - **WHEN** a page on `https://evil.example` opens the stream with the user's cookies
@@ -47,13 +66,13 @@ A cross-origin request for the signal stream SHALL be answered only for an origi
 - **WHEN** CSRF protection is not enabled and a request for the stream carries `Sec-Fetch-Site: cross-site` from an origin CORS does not allow
 - **THEN** it is refused with 403
 
+#### Scenario: Wildcard CORS and a cookie
+- **WHEN** CORS allows `*`, and a page on another site opens the stream with the user's cookies
+- **THEN** it is refused with 403
+
 #### Scenario: Client without fetch metadata
 - **WHEN** a non-browser client requests the stream with a valid bearer token and neither `Sec-Fetch-Site` nor `Origin`
 - **THEN** the stream opens
-
-#### Scenario: Preflight for a bearer client
-- **WHEN** CORS allows `https://app.example.com` with the `Authorization` header, and a page there sends the preflight for a `fetch()` of the stream
-- **THEN** the preflight is answered by CORS with that origin and header allowed, and no stream opens for the preflight
 
 #### Scenario: Cookie stream without a CSRF token
 - **WHEN** CSRF protection is enabled and a same-origin page opens the stream with its cookie session and no CSRF token

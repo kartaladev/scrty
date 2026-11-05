@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,13 @@ import (
 
 // This file exposes what the package's tests need and consumers must not have.
 // It is a test file, so nothing here reaches a production build.
+
+// NewHTTPResponseWriterWithStreamWindow is NewHTTPResponseWriter with another
+// write window, which is how a test shows what the length of StreamWriteWindow
+// is for. A consumer has no such option: the window is one constant.
+func NewHTTPResponseWriterWithStreamWindow(w http.ResponseWriter, window time.Duration) ResponseWriter {
+	return &httpResponseWriter{w: w, streamWindow: window}
+}
 
 // Committed reports whether w has already sent a status or a body. It is the
 // unexported signal the default error handling reads before writing a status

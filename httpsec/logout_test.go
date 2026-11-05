@@ -692,6 +692,107 @@ func TestLogoutEndsTheWholeSignIn(t *testing.T) {
 	assert.False(t, later.handlerRan)
 }
 
+// logoutEndRecorder is an end observer keeping what it was told. Observers run
+// on the request's goroutine, so it needs no lock.
+type logoutEndRecorder struct{ reports []session.EndReport }
+
+func (r *logoutEndRecorder) SignInsEnded(_ context.Context, report session.EndReport) {
+	r.reports = append(r.reports, report)
+}
+
+// TestLogout_ReportsLogoutCause pins what the chain's logout tells the
+// manager's end observers. Telling a logout from an administrator's revocation
+// and naming the user is what lets an observer speak to that user's other tabs.
+func TestLogout_ReportsLogoutCause(t *testing.T) {
+	t.Parallel()
+
+	const user = identity.UserID("u-1")
+
+	type testCase struct {
+		name string
+		// bearing returns the session the request is authenticated with, and
+		// the identifiers the logout must leave gone.
+		bearing func(ctx context.Context, t *testing.T, m *session.Sessions) (bearing *session.Session, gone []string)
+		assert  func(t *testing.T, bearing *session.Session, got []session.EndReport)
+	}
+
+	oneLogoutReport := func(t *testing.T, bearing *session.Session, got []session.EndReport) {
+		t.Helper()
+
+		require.Len(t, got, 1, "one logout is one report")
+		assert.Equal(t, session.EndLogout, got[0].Cause, "cause (EndLogout=%d, EndFamilyRevoked=%d)",
+			session.EndLogout, session.EndFamilyRevoked)
+		assert.Equal(t, user, got[0].User, "the report must name the user")
+		assert.Equal(t, bearing.FamilyID, got[0].Family, "the report must name the family")
+	}
+
+	cases := []testCase{
+		{
+			name: "a session names its user and family",
+			bearing: func(ctx context.Context, t *testing.T, m *session.Sessions) (*session.Session, []string) {
+				t.Helper()
+
+				s, err := m.Create(ctx, user)
+				require.NoError(t, err)
+
+				return s, []string{s.ID}
+			},
+			assert: oneLogoutReport,
+		},
+		{
+			name: "a session inside its renewal window takes its successor with it",
+			bearing: func(ctx context.Context, t *testing.T, m *session.Sessions) (*session.Session, []string) {
+				t.Helper()
+
+				s, err := m.Create(ctx, user)
+				require.NoError(t, err)
+				next, _, err := m.RotateWithGrace(ctx, s, 30*time.Second)
+				require.NoError(t, err)
+
+				return s, []string{s.ID, next.ID}
+			},
+			assert: oneLogoutReport,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := &logoutEndRecorder{}
+			store := must.Must(session.NewMemoryStore())
+			m, err := session.New(session.WithStore(store), session.WithEndObserver(rec))
+			require.NoError(t, err)
+			s, gone := tc.bearing(t.Context(), t, m)
+
+			auth := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+				if err := ex.PublishSession(&authenticate.Authentication{
+					Principal: &identity.Principal{ID: user},
+				}, s); err != nil {
+					return err
+				}
+
+				return next(ex)
+			})
+			chain, err := httpsec.New(
+				httpsec.RegisterInterceptor(auth, httpsec.OrderBearerToken),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: m}),
+			)
+			require.NoError(t, err)
+
+			out := serve(t, chain, logoutRequest(t.Context(), http.MethodPost, httpsec.DefaultLogoutPath, false))
+			require.NoError(t, out.err)
+			require.Equal(t, http.StatusOK, out.rec.Code)
+
+			tc.assert(t, s, rec.reports)
+			for _, sid := range gone {
+				_, loadErr := store.Load(t.Context(), sid)
+				assert.ErrorIs(t, loadErr, session.ErrNotFound, "the logout left a member of the family live")
+			}
+		})
+	}
+}
+
 // The OIDC manager's end-session step is what EnableOIDCLogin hands logout, so
 // it has to satisfy logout's port.
 var _ httpsec.EndSessionBuilder = (&oidc.RelyingParty{}).EndSessionBuilder()

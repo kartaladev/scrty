@@ -437,6 +437,8 @@ type Store interface {
 	//
 	// A listed session's ID may be empty: a store that keeps only a digest of
 	// the identifier cannot return it, and a sign-in is named by its FamilyID.
+	//
+	// A store may also offer FamilyReader, this contract narrowed to one family.
 	ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*Session, error)
 
 	// DeleteExpired removes every expired session and reports how many went:

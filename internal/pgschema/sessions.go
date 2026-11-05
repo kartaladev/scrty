@@ -89,6 +89,14 @@ FROM sessions WHERE id_digest = $1`
 FROM sessions
 WHERE user_id = $1 AND superseded_at IS NULL AND idle_expires_at > $2 AND absolute_expires_at > $2`
 
+	// SessionListByFamily is SessionListByUser narrowed to family $3, and built
+	// from it, so the two cannot disagree on what counts as live. It reads the
+	// same columns in the same order, and a row of another family is never read,
+	// so one that will not decode cannot fail it. It is answered through the
+	// sessions_family or the sessions_user index, whichever the planner prefers;
+	// it needs no index of its own.
+	SessionListByFamily = SessionListByUser + ` AND family_id = $3`
+
 	// SessionSuccessorPresented reads, in one row, whether the current
 	// successor of the session with digest $1 was used at $2: true when that
 	// successor is loadable and was presented or has been superseded, false
@@ -268,8 +276,8 @@ WHERE external_issuer = $1 AND external_session_id = $2 AND $1 <> '' AND $2 <> '
 	SessionDeleteByUserIssuer = `DELETE FROM sessions WHERE user_id = $1 AND external_issuer = $2 AND $2 <> ''`
 )
 
-// sessionReadHead and sessionReadMid are the columns SessionSelect and
-// SessionListByUser read around the two sealed ones: the head runs up to the
+// sessionReadHead and sessionReadMid are the columns SessionSelect,
+// SessionListByUser and SessionListByFamily read around the two sealed ones: the head runs up to the
 // provider ID token, and the mid from it to the CSRF token. The statements
 // put the token column, or an empty string in its place, between them.
 const (

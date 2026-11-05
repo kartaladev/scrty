@@ -204,7 +204,7 @@ func (op *oidcEndpoints) finishLogout(ex *Exchange, ended *oidcprovider.SignInSe
 
 	// Detached so a client hanging up cannot leave the family live; WithoutCancel keeps the
 	// context's values, so a consumer's transaction is still joined.
-	n, err := op.sessions.RevokeFamily(context.WithoutCancel(ctx), ended.Family)
+	n, err := op.sessions.Logout(context.WithoutCancel(ctx), user, ended.Family)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
 	}

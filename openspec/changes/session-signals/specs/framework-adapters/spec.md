@@ -13,16 +13,47 @@ The framework-neutral response writer SHALL let an interceptor stream a response
 - **WHEN** a consumer's own response writer reports that it cannot stream and a client requests the signal stream
 - **THEN** the response is 501
 
+### Requirement: A writer that cannot flush is reported as unable to stream
+A response writer that cannot flush, such as a consumer's wrapper hiding the underlying writer, or a server timeout handler, SHALL be reported as unable to stream, not treated as a client that left.
+
+#### Scenario: A wrapper that hides the writer
+- **WHEN** a consumer's middleware wraps the response writer with no way to reach the one beneath, and a client requests the signal stream
+- **THEN** the response is 501, nothing else is written, and no reconnection loop follows
+
 ### Requirement: Starting a stream sends the response head once
-Starting a stream SHALL send the status and every header set before it, on every adapter. Starting a stream after the response has begun, or a second time, SHALL fail and write nothing.
+Starting a stream SHALL send the status and every header set before it, on every adapter. Starting a stream after the response has begun, or a second time, SHALL fail and write nothing. Once a stream has started successfully, its body SHALL run exactly once, so that what it holds is always released. On an adapter that runs the body after the chain has returned, a chain that refused SHALL get its refusal sent, and the body SHALL run on an already-ended context.
 
 #### Scenario: Headers set before streaming are sent
 - **WHEN** an interceptor sets `Cache-Control: no-store` and a CORS header, and then starts a stream, on any of the three adapters
 - **THEN** the client receives both headers with the streamed response
 
+#### Scenario: Refused after starting, where the body runs later
+- **WHEN** an interceptor refuses the request after a stream was started, on fiber
+- **THEN** the client receives the refusal and no stream, and the body runs once on an already-ended context
+
+#### Scenario: Refused after starting, where the body runs inline
+- **WHEN** an interceptor refuses the request after a stream was started, on net/http or gin
+- **THEN** the body has already run once and its stream has been sent, and the refusal changes nothing the client received
+
 #### Scenario: Stream after the response began
 - **WHEN** an interceptor has already written a body and then starts a stream
 - **THEN** starting the stream fails and nothing more is written
+
+#### Scenario: The content type goes with the stream
+- **WHEN** an interceptor starts a stream with a content type, on any of the three adapters
+- **THEN** the client receives that type with the streamed response
+
+#### Scenario: A refusal carries no stream type
+- **WHEN** starting a stream is refused, or on fiber the chain refuses after starting one
+- **THEN** the refusal does not carry the stream's content type, and a type the framework or the error handler sets is what the client receives
+
+#### Scenario: A consumer's own type stays on a refusal
+- **WHEN** a consumer sets `Content-Type` itself and starting a stream is then refused
+- **THEN** the refusal carries the consumer's type, not the stream's
+
+#### Scenario: A refusal after the head has gone carries the stream's type
+- **WHEN** on net/http or gin a wrapper above the bottom of the writer chain refuses to flush only once the status has been named
+- **THEN** the client has received status 200 and the stream's type, because the head was sent before the refusal could be known
 
 ### Requirement: A streamed response is not ended by the server's write deadline
 While a response is streamed, each adapter SHALL keep a configured write deadline from ending it, by extending the deadline as each write is made. A response that is not streamed SHALL keep the deadline as configured.
