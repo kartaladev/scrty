@@ -429,8 +429,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 ## 14. OpenID conformance in CI (P9)
 
 - [x] 14.1 Add a conformance OP command to the `test` module (R5): the provider's defaults served over `https` on a self-signed certificate; `client` and `client2` with secrets, registered as `PKCEOrNonce` and for the refresh grant; server-rendered plain-form login, consent and logout pages that resume through the provider's Go API; and users holding profile, email, phone and address claims. Verify: it starts locally, and the suite's discovery test reaches it.
-- [ ] 14.2 Add `make conformance` and a CI job `conformance` in `split-ci-jobs`' shape: the job calls the target, the target is outside `make check`, `ci-ok` requires the job, the suite is pinned to a full commit hash because it is built from source, and the images the job names are pinned by digest for `pincheck`. It starts the suite and the OP with Docker Compose, and runs `scripts/run-test-plan.py` over the Basic OP, Config OP, RP-initiated logout and back-channel logout plans, with one expected failure, `oidcc-ensure-request-without-nonce-succeeds-for-code-flow`. It fails on any unexpected `FAILED`, `WARNING` or `INTERRUPTED` result, and on an expected one that stops occurring, and keeps the logs as an artifact. Verify: the job runs on a pull request and reports all four plans.
-- [ ] 14.3 Triage every failing test:
+- [x] 14.2 Add `make conformance` and a CI job `conformance` in `split-ci-jobs`' shape: the job calls the target, the target is outside `make check`, `ci-ok` requires the job, the suite is pinned to a full commit hash because it is built from source, and the images the job names are pinned by digest for `pincheck`. It starts the suite and the OP with Docker Compose, and runs `scripts/run-test-plan.py` over the Basic OP, Config OP, RP-initiated logout and back-channel logout plans, with one expected failure, `oidcc-ensure-request-without-nonce-succeeds-for-code-flow`. It fails on any unexpected `FAILED`, `WARNING` or `INTERRUPTED` result, and on an expected one that stops occurring, and keeps the logs as an artifact. Verify: the job runs on a pull request and reports all four plans.
+- [x] 14.3 Triage every failing test:
   - a provider defect gets a failing unit test in its owning package, then the fix;
   - a job misconfiguration is fixed in the job;
   - nothing is added to the expected-failures file without a decision recorded in `design.md`.
@@ -440,8 +440,8 @@ The risks the design labels `UNREPRODUCED` (H2, H3, H4, token-type confusion) ar
 ## 15. Integration and release gate
 
 - [x] 15.1 Amend `release-readiness`: its gate names the `conformance` job, its first changelog entry summarises this change, and its README task drops the `prompt=none` limitation in favour of R2's and R9's. Update its `plans.md` through `/superpowers:writing-plans` (`tasks-plans`). Verify: `openspec validate release-readiness --strict`.
-- [ ] 15.2 Run one whole-branch review against every requirement this change's specs add or modify (`subagent-delegation`), and fold its findings in. Verify: the review reports nothing open.
-- [ ] 15.3 Run the final gate. Verify:
+- [x] 15.2 Run one whole-branch review against every requirement this change's specs add or modify (`subagent-delegation`), and fold its findings in. Verify: the review reports nothing open.
+- [x] 15.3 Run the final gate. Verify:
   - `make check` passes in the core module;
   - the `test` module's full suite passes with `-race` against PostgreSQL 15 and 18;
   - the `conformance` job is green.
