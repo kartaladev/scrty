@@ -73,7 +73,10 @@ func TestRefreshTokenStore(t *testing.T) {
 		},
 		{
 			name: "a store an adapter built replaces the default",
-			opts: []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(supplied))},
+			opts: []oidcprovider.Option{
+				oidcprovider.WithRefreshTokenStore(oplineage.New(supplied)),
+				oidcprovider.WithRefreshSuccessorKey(successorKeyA),
+			},
 			assert: func(t *testing.T, p *oidcprovider.Provider, err error) {
 				t.Helper()
 				require.NoError(t, err)

@@ -384,9 +384,20 @@ type refreshFixture struct {
 	grants  *hookedGrants
 	lineage *hookedLineage
 	access  *hookedAccessTokens
+	// key is what replicas are given, and nil gives them none.
+	key []byte
 }
 
+// newRefreshFixture is a provider over a store its replicas share, all under successorKeyA.
 func newRefreshFixture(t *testing.T, opts ...oidcprovider.Option) *refreshFixture {
+	t.Helper()
+
+	return newRefreshFixtureWith(t, successorKeyA, true, opts...)
+}
+
+// newRefreshFixtureWith is newRefreshFixture under key, which nil leaves out, and with shared false
+// leaves the provider its own private lineage store, where it draws its key.
+func newRefreshFixtureWith(t *testing.T, key []byte, shared bool, opts ...oidcprovider.Option) *refreshFixture {
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(exchangeFixtureStart)
@@ -401,13 +412,16 @@ func newRefreshFixture(t *testing.T, opts ...oidcprovider.Option) *refreshFixtur
 	lineage := &hookedLineage{Store: memory}
 	grants := &hookedGrants{GrantStore: grantStore}
 	access := &hookedAccessTokens{AccessTokenStore: accessStore}
-	x := newExchangeFixtureOn(t, clk, append([]oidcprovider.Option{
-		oidcprovider.WithGrantStore(grants),
-		oidcprovider.WithRefreshTokenStore(oplineage.New(lineage)),
-		oidcprovider.WithAccessTokenStore(access),
-	}, opts...)...)
+	base := []oidcprovider.Option{oidcprovider.WithGrantStore(grants), oidcprovider.WithAccessTokenStore(access)}
+	if shared {
+		base = append(base, oidcprovider.WithRefreshTokenStore(oplineage.New(lineage)))
+	}
+	if key != nil {
+		base = append(base, oidcprovider.WithRefreshSuccessorKey(key))
+	}
+	x := newExchangeFixtureOn(t, clk, append(base, opts...)...)
 
-	return &refreshFixture{exchangeFixture: x, grants: grants, lineage: lineage, access: access}
+	return &refreshFixture{exchangeFixture: x, grants: grants, lineage: lineage, access: access, key: key}
 }
 
 // liveHeads is how many of u-1's lineage records could still be rotated from.
@@ -445,6 +459,16 @@ func (f *refreshFixture) replicaLoading(
 
 	loader := NewMockUserLoader(gomock.NewController(t))
 	loader.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).DoAndReturn(load).AnyTimes()
+	base := []oidcprovider.Option{
+		oidcprovider.WithClock(f.clk),
+		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
+		oidcprovider.WithGrantStore(replicaGrants{GrantStore: f.grants}),
+		oidcprovider.WithRefreshTokenStore(oplineage.New(f.lineage)),
+		oidcprovider.WithAccessTokenStore(f.access),
+	}
+	if f.key != nil {
+		base = append(base, oidcprovider.WithRefreshSuccessorKey(f.key))
+	}
 	p, err := oidcprovider.New(oidcprovider.Deps{
 		Issuer:       issuer,
 		Registry:     f.registry,
@@ -454,13 +478,7 @@ func (f *refreshFixture) replicaLoading(
 		ConsentURL:   issuer + "/consent",
 		LogoutURL:    issuer + "/logout",
 		LoggedOutURL: issuer + "/bye",
-	}, append([]oidcprovider.Option{
-		oidcprovider.WithClock(f.clk),
-		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
-		oidcprovider.WithGrantStore(replicaGrants{GrantStore: f.grants}),
-		oidcprovider.WithRefreshTokenStore(oplineage.New(f.lineage)),
-		oidcprovider.WithAccessTokenStore(f.access),
-	}, opts...)...)
+	}, append(base, opts...)...)
 	require.NoError(t, err)
 
 	return p
@@ -773,6 +791,8 @@ func TestProvider_Refresh(t *testing.T) {
 	type testCase struct {
 		name string
 		opts []oidcprovider.Option
+		// keyless leaves the shared store without a key, for rows that turn the same successor off.
+		keyless bool
 		// ctx modifies the request's context, and nil leaves it alone.
 		ctx func(context.Context) context.Context
 		// start is the grant the row works on, and nil is startBilling.
@@ -2377,8 +2397,9 @@ func TestProvider_Refresh(t *testing.T) {
 			},
 		},
 		{
-			name: "window_set_by_the_consumer: zero turns the same successor off, and nothing derives",
-			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
+			name:    "window_set_by_the_consumer: zero turns the same successor off, and nothing derives",
+			keyless: true,
+			opts:    []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
 				s.newest = assertRefreshWorks(t, f, s, s.first.RefreshToken).RefreshToken
@@ -2426,8 +2447,9 @@ func TestProvider_Refresh(t *testing.T) {
 			},
 		},
 		{
-			name: "window_set_by_the_consumer: zero holds on a clock behind the rotation's, with no key to read",
-			opts: []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
+			name:    "window_set_by_the_consumer: zero holds on a clock behind the rotation's, with no key to read",
+			keyless: true,
+			opts:    []oidcprovider.Option{oidcprovider.WithRefreshSuccessorWindow(0)},
 			arrange: func(t *testing.T, f *refreshFixture, s *refreshScene) {
 				t.Helper()
 				ahead := f.replica(t, oidcprovider.WithRefreshSuccessorWindow(0),
@@ -3027,7 +3049,11 @@ func TestProvider_Refresh(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			f := newRefreshFixture(t, tc.opts...)
+			key := successorKeyA
+			if tc.keyless {
+				key = nil
+			}
+			f := newRefreshFixtureWith(t, key, true, tc.opts...)
 			start := tc.start
 			if start == nil {
 				start = startBilling
@@ -3159,6 +3185,7 @@ func TestProvider_Refresh_MalformedTokens(t *testing.T) {
 			x := newExchangeFixture(t,
 				oidcprovider.WithGrantStore(grants),
 				oidcprovider.WithRefreshTokenStore(oplineage.New(NewMockLineageSessionStore(ctrl))),
+				oidcprovider.WithRefreshSuccessorKey(successorKeyA),
 			)
 
 			res, err := x.p.Token(t.Context(), refreshRequest("billing-web", tc.raw, nil))
@@ -3176,10 +3203,12 @@ func TestProvider_RefreshSuccessorKey(t *testing.T) {
 	seed := [32]byte{7, 7, 7}
 
 	type testCase struct {
-		name   string
-		opts   func(key []byte) []oidcprovider.Option
-		key    []byte
-		assert func(t *testing.T, f *refreshFixture, s *refreshScene, key []byte)
+		name string
+		opts func(key []byte) []oidcprovider.Option
+		key  []byte
+		// private leaves the provider its own lineage store, the only one whose key it may draw.
+		private bool
+		assert  func(t *testing.T, f *refreshFixture, s *refreshScene, key []byte)
 	}
 	withKey := func(key []byte) []oidcprovider.Option {
 		return []oidcprovider.Option{oidcprovider.WithRefreshSuccessorKey(key)}
@@ -3224,7 +3253,8 @@ func TestProvider_RefreshSuccessorKey(t *testing.T) {
 			},
 		},
 		{
-			name: "with no key, 32 bytes drawn once from the provider's random source derive it",
+			name:    "with no key, 32 bytes drawn once from the provider's random source derive it",
+			private: true,
 			opts: func([]byte) []oidcprovider.Option {
 				return []oidcprovider.Option{oidcprovider.WithRandom(rand.NewChaCha8(seed))}
 			},
@@ -3240,17 +3270,6 @@ func TestProvider_RefreshSuccessorKey(t *testing.T) {
 					"later reads of the source, which issued this very grant, do not move the key")
 			},
 		},
-		{
-			name: "two providers drawing their own keys derive different successors",
-			assert: func(t *testing.T, f *refreshFixture, s *refreshScene, _ []byte) {
-				t.Helper()
-				res := assertRefreshWorks(t, f, s, s.first.RefreshToken)
-				assert.NotEqual(t, successorUnder(make([]byte, 32), s.grant.Family, s.secretOf(t, s.first.RefreshToken)), s.secretOf(t, res.RefreshToken))
-				other, err := f.replica(t).Token(t.Context(), s.request)
-				require.NoError(t, err)
-				assert.NotEqual(t, res.RefreshToken, other.RefreshToken)
-			},
-		},
 	}
 
 	for _, tc := range cases {
@@ -3261,7 +3280,7 @@ func TestProvider_RefreshSuccessorKey(t *testing.T) {
 			if tc.opts != nil {
 				opts = tc.opts(tc.key)
 			}
-			f := newRefreshFixture(t, opts...)
+			f := newRefreshFixtureWith(t, nil, !tc.private, opts...)
 			tc.assert(t, f, startBilling(t, f), tc.key)
 		})
 	}

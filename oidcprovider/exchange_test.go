@@ -1169,6 +1169,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				return []oidcprovider.Option{
 					oidcprovider.WithGrantStore(grants),
 					oidcprovider.WithRefreshTokenStore(oplineage.New(lineages)),
+					oidcprovider.WithRefreshSuccessorKey(successorKeyA),
 				}
 			},
 			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
@@ -1190,7 +1191,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				lineages := NewMockLineageSessionStore(gomock.NewController(t))
 				lineages.EXPECT().Create(gomock.Any(), gomock.Any()).Return(errOutage)
 
-				return []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(lineages))}
+				return []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(lineages)), oidcprovider.WithRefreshSuccessorKey(successorKeyA)}
 			},
 			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
 				t.Helper()
@@ -1221,6 +1222,7 @@ func TestProvider_ExchangeCode(t *testing.T) {
 				return []oidcprovider.Option{
 					oidcprovider.WithGrantStore(grants),
 					oidcprovider.WithRefreshTokenStore(oplineage.New(NewMockLineageSessionStore(ctrl))),
+					oidcprovider.WithRefreshSuccessorKey(successorKeyA),
 				}
 			},
 			arrange: func(t *testing.T, x *exchangeFixture) (issuedCode, oidcprovider.TokenRequest) {
@@ -1854,7 +1856,7 @@ func TestProvider_CodeReplay(t *testing.T) {
 					return 0, nil
 				})
 
-				return []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(lineages))}
+				return []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(lineages)), oidcprovider.WithRefreshSuccessorKey(successorKeyA)}
 			},
 			run: func(t *testing.T, x *exchangeFixture, _ *barrierGrants) {
 				t.Helper()
@@ -2309,6 +2311,7 @@ func TestProvider_CodeReplay(t *testing.T) {
 				return []oidcprovider.Option{
 					oidcprovider.WithGrantStore(&watchedGrants{GrantStore: memory}),
 					oidcprovider.WithRefreshTokenStore(oplineage.New(lineages)),
+					oidcprovider.WithRefreshSuccessorKey(successorKeyA),
 					oidcprovider.WithCodeTokenStore(&contextTokens{Store: tokens}),
 				}
 			},
@@ -2470,7 +2473,7 @@ func TestProvider_CodeReplay_BudgetEnds(t *testing.T) {
 						return 0, nil
 					}).AnyTimes()
 
-				return []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(lineages))}, func() { hang.Store(true) }
+				return []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(oplineage.New(lineages)), oidcprovider.WithRefreshSuccessorKey(successorKeyA)}, func() { hang.Store(true) }
 			},
 			assert: assertBudgetEnded,
 		},
@@ -2584,6 +2587,7 @@ func TestProvider_CodeReplay_PartWay(t *testing.T) {
 			x := newExchangeFixture(t,
 				oidcprovider.WithGrantStore(grants),
 				oidcprovider.WithRefreshTokenStore(oplineage.New(lineages)),
+				oidcprovider.WithRefreshSuccessorKey(successorKeyA),
 			)
 
 			c := x.issue(t)

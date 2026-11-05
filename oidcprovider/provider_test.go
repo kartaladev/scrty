@@ -1,6 +1,7 @@
 package oidcprovider_test
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -9,7 +10,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/oplineage"
 	"github.com/kartaladev/scrty/oidcprovider"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -95,8 +98,58 @@ func TestNew_Construction(t *testing.T) {
 	var typedNilKeys *signingkey.Keys
 	registry := NewMockClientRegistry(gomock.NewController(t))
 
+	durable, err := session.NewMemoryStore()
+	require.NoError(t, err)
+	durableStore := oplineage.New(durable)
+	sharedKey := bytes.Repeat([]byte("k"), 32)
+	refusedWithoutKey := func(t *testing.T, p *oidcprovider.Provider, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, oidcprovider.ErrConfig)
+		assert.ErrorContains(t, err, "WithRefreshSuccessorKey")
+		assert.ErrorContains(t, err, "WithRefreshSuccessorWindow(0)")
+		assert.Nil(t, p)
+	}
+
 	cases := []testCase{
 		{name: "minimum wiring builds", assert: built},
+
+		// A durable refresh-token store needs a successor key all replicas share.
+		{
+			name:   "a refresh token store with no key is refused",
+			opts:   []oidcprovider.Option{oidcprovider.WithRefreshTokenStore(durableStore)},
+			assert: refusedWithoutKey,
+		},
+		{
+			name: "a refresh token store with no key is refused, window option after",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithRefreshTokenStore(durableStore),
+				oidcprovider.WithRefreshSuccessorWindow(time.Second),
+			},
+			assert: refusedWithoutKey,
+		},
+		{
+			name: "a refresh token store with no key is refused, window option before",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithRefreshSuccessorWindow(time.Second),
+				oidcprovider.WithRefreshTokenStore(durableStore),
+			},
+			assert: refusedWithoutKey,
+		},
+		{
+			name: "a refresh token store with a 32-byte key builds",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithRefreshTokenStore(durableStore), oidcprovider.WithRefreshSuccessorKey(sharedKey),
+			},
+			assert: built,
+		},
+		{
+			name: "a refresh token store with the window off and no key builds",
+			opts: []oidcprovider.Option{
+				oidcprovider.WithRefreshSuccessorWindow(0), oidcprovider.WithRefreshTokenStore(durableStore),
+			},
+			assert: built,
+		},
+		{name: "memory stores with no options draw their own key", assert: built},
 
 		// Issuer.
 		{name: "issuer with a query", deps: setIssuer("https://id.example.com?x=1"), assert: refused("Issuer")},

@@ -38,6 +38,9 @@ import (
 // The cases of TestOIDCProvider_Durable are whole scenarios, each with its own setup, so they
 // share a table by name and an assert closure over one environment, not a single call.
 
+// durSuccessorKey is the key every provider these tests build shares, as replicas over one store must.
+var durSuccessorKey = []byte("durable tests successor key, 32+")
+
 const (
 	durOpaqueSecret = "fedcba9876543210fedcba9876543210"
 	durScope        = "openid email"
@@ -206,6 +209,7 @@ func (e *durEnv) build(
 		oidcprovider.WithAssertionIDStore(st.assertions),
 		oidcprovider.WithBrowserSessionStore(st.browser),
 		oidcprovider.WithRefreshTokenStore(st.lineage),
+		oidcprovider.WithRefreshSuccessorKey(durSuccessorKey),
 		oidcprovider.WithConsentStore(consents),
 	}, opts...)...)
 	require.NoError(t, err)
@@ -550,7 +554,7 @@ func TestOIDCProvider_Durable(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "a restarted provider refreshes the first's token and the old one re-rotates under a fresh key",
+			name: "a restarted provider under a changed key refreshes the first's token and the old one re-rotates",
 			assert: func(t *testing.T, e *durEnv) {
 				first := e.build(t, nil)
 				issued := e.issue(t, first, durWeb)
@@ -558,10 +562,10 @@ func TestOIDCProvider_Durable(t *testing.T) {
 
 				rt1 := e.mustRefresh(t, first, durWeb, rt0).RefreshToken
 
-				// A restart draws a new random key, so it cannot derive the successor the first
-				// provider answered: the token inside its grace rotates again, and the first
-				// answer is knocked out (R20, the limit stated).
-				second := e.build(t, nil)
+				// A restart under another key cannot derive the successor the first provider
+				// answered: the token inside its grace rotates again, and the first answer is
+				// knocked out (R20, the limit stated).
+				second := e.build(t, nil, oidcprovider.WithRefreshSuccessorKey([]byte("a-changed-successor-key-of-32-bytes!")))
 				res := e.mustRefresh(t, second, durWeb, rt0)
 				assert.NotEqual(t, rt1, res.RefreshToken, "a fresh key re-rotates")
 				assert.Equal(t, 1, e.heads(t, familyOf(t, rt0)), "one head remains")

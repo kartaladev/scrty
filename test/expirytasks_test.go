@@ -587,6 +587,7 @@ func (e *opEnv) deploy(t *testing.T, opts ...oidcprovider.Option) {
 		oidcprovider.WithAssertionIDStore(st.assertions),
 		oidcprovider.WithBrowserSessionStore(st.browser),
 		oidcprovider.WithRefreshTokenStore(st.lineage),
+		oidcprovider.WithRefreshSuccessorKey([]byte("expiry-tasks successor key, 32 by")),
 		oidcprovider.WithConsentStore(e.consents),
 	}, opts...)...)
 	require.NoError(t, err)

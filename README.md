@@ -274,6 +274,11 @@ page resumes the request once the user has signed in.
 ### Wiring
 
 ```go
+// With a durable refresh-token store (WithRefreshTokenStore), every replica needs the same
+// successor key, 32 bytes or more, from your configuration. It serves this purpose alone.
+// Over the default in-memory stores, one is drawn for you.
+successorKey := mustDecode(os.Getenv("OP_REFRESH_SUCCESSOR_KEY"))
+
 op, err := oidcprovider.New(oidcprovider.Deps{
     Issuer:       "https://id.example.com",
     Clients:      clients,
@@ -283,7 +288,7 @@ op, err := oidcprovider.New(oidcprovider.Deps{
     ConsentURL:   "https://id.example.com/consent",
     LogoutURL:    "https://id.example.com/logout",
     LoggedOutURL: "https://id.example.com/bye",
-})
+}, oidcprovider.WithRefreshSuccessorKey(successorKey))
 if err != nil {
     return err
 }

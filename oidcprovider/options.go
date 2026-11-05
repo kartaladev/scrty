@@ -220,6 +220,9 @@ func (c *config) validate() error {
 	if c.successorWindow < 0 || c.successorWindow > session.MaxRenewalGrace {
 		return fmt.Errorf("%w: WithRefreshSuccessorWindow: must be between 0 and %s", ErrConfig, session.MaxRenewalGrace)
 	}
+	if c.lineageSet && !c.successorKeySet && c.successorWindow != 0 {
+		return fmt.Errorf("%w: WithRefreshTokenStore: a durable store outlives a drawn key, as a restart or another replica derives a different successor: give WithRefreshSuccessorKey the same key on every replica, or WithRefreshSuccessorWindow(0) to derive none", ErrConfig)
+	}
 	if c.successorKeySet && c.successorWindow == 0 {
 		return fmt.Errorf("%w: WithRefreshSuccessorKey: has no meaning under WithRefreshSuccessorWindow(0), which derives nothing", ErrConfig)
 	}
@@ -475,19 +478,23 @@ func WithRandom(r io.Reader) Option {
 // with no write. Two tabs presenting one token at once therefore both hold a live token. It must be
 // at least 32 bytes, or New fails with an error matching ErrConfig, and it is copied. It is a secret:
 // under it, a successor can only be had by presenting the token to the provider, and its holder can
-// compute the live head from any past token, offline, with nothing fired.
+// compute the live head from any past token, offline, with nothing fired. It serves this purpose
+// alone: do not reuse another secret of the application's for it, or use it for anything else.
 //
 // The default is 32 random bytes drawn once in New from the provider's random source (WithRandom),
-// which needs no configuration and fits a provider alone over its stores. A source that cannot supply
-// them fails New with an error matching ErrConfig. Replicas sharing their stores share this key too,
-// or the limit below is theirs. With a window of zero, no successor is derived and no default drawn,
-// so a key given together with WithRefreshSuccessorWindow(0) is a contradiction: New fails with an
-// error matching ErrConfig, whichever option comes first.
+// which needs no configuration and fits a provider alone over its default stores, which end with the
+// process as that key does. A source that cannot supply them fails New with an error matching ErrConfig.
+// Given WithRefreshTokenStore, whose records outlive a restart and which replicas share, no default is
+// drawn and the key is required: New fails with an error matching ErrConfig unless every replica is given
+// the same key, or WithRefreshSuccessorWindow(0). With a window of zero, no successor is derived and no
+// default drawn, so a key given together with WithRefreshSuccessorWindow(0) is a contradiction: New fails
+// with an error matching ErrConfig, whichever option comes first.
 //
 // The limit: with no shared key, or after the key changes, a provider derives a different successor,
 // finds no match, and rotates the token again: the client receives tokens with the grant live, under a
 // successor drawn at random, and the successor issued before is knocked out, so a holder presenting it
-// next reads as reuse. Nothing is refused, because a provider cannot know how many replicas it has.
+// next reads as reuse. Replicas given different keys are not told apart, as a provider cannot know what
+// another holds.
 func WithRefreshSuccessorKey(key []byte) Option {
 	return func(c *config) {
 		c.successorKey, c.successorKeySet = &successorKey{key: slices.Clone(key)}, true
@@ -595,7 +602,10 @@ func WithBrowserSessionStore(s BrowserSessionStore) Option {
 // a private session.MemoryStore of the provider's own, which is lost with the process
 // and not shared between instances. A SQL adapter's NewRefreshTokenStore builds a
 // durable one, and nothing outside scrty can build one from a session.Store. The zero
-// RefreshTokenStore holds nothing, and fails construction.
+// RefreshTokenStore holds nothing, and fails construction. A store given here is taken to
+// outlive the process and to be shared by replicas, even with one replica today, so it also
+// needs WithRefreshSuccessorKey, the same on each, or WithRefreshSuccessorWindow(0): otherwise
+// New fails with an error matching ErrConfig.
 func WithRefreshTokenStore(s RefreshTokenStore) Option {
 	return func(c *config) { c.lineage, c.lineageSet = s, true }
 }

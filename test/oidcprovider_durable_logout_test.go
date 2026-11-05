@@ -91,7 +91,8 @@ func TestOIDCProvider_DurableHintParkWithoutBrowserSessions(t *testing.T) {
 			}, oidcprovider.WithClock(e.clk), oidcprovider.WithoutBrowserSessions(),
 				oidcprovider.WithPendingRequestStore(st.pending), oidcprovider.WithCodeStore(st.codes), oidcprovider.WithGrantStore(st.grants),
 				oidcprovider.WithCodeTokenStore(st.tokens), oidcprovider.WithAccessTokenStore(st.access), oidcprovider.WithAssertionIDStore(st.assertions),
-				oidcprovider.WithRefreshTokenStore(st.lineage), oidcprovider.WithConsentStore(consents))
+				oidcprovider.WithRefreshTokenStore(st.lineage), oidcprovider.WithRefreshSuccessorKey(durSuccessorKey),
+				oidcprovider.WithConsentStore(consents))
 			require.NoError(t, err)
 			issued := e.issue(t, p, durWeb)
 

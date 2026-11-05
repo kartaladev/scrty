@@ -67,9 +67,9 @@ func (k *successorKey) derive(family id.ID, secret string) []byte {
 	return mac.Sum(nil)
 }
 
-// drawSuccessorKey fills in the default key, which a window of zero has no use for. A source that
-// cannot supply it fails New, as a provider must not degrade silently, with the source's own text
-// left out.
+// drawSuccessorKey fills in the default key, which a window of zero has no use for, and which a
+// durable store never gets, as New has refused it by now. A source that cannot supply it fails New,
+// as a provider must not degrade silently, with the source's own text left out.
 func (c *config) drawSuccessorKey() error {
 	if c.successorKeySet || c.successorWindow == 0 {
 		return nil
