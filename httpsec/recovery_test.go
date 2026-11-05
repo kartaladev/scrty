@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +26,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/must"
@@ -3147,6 +3150,303 @@ func TestRecovery_SignInMetadata(t *testing.T) {
 				}
 			})
 			tc.assert(t, s)
+		})
+	}
+}
+
+// eventsNamed picks the events of one name out of what a chain reported.
+func eventsNamed(events []event.Event, name string) []event.Event {
+	var out []event.Event
+	for _, e := range events {
+		if e.Name == name {
+			out = append(out, e)
+		}
+	}
+
+	return out
+}
+
+// TestRecovery_GrantRevocation pins, through the chain, spec account-recovery "A
+// recovery that cannot revoke grants spends nothing, or says so": a first
+// failure is a dependency failure charged to no one, and a second is the
+// recovery's success, reported where the chain reports the recovery.
+func TestRecovery_GrantRevocation(t *testing.T) {
+	t.Parallel()
+
+	errOutage := errors.New("grant store secret text")
+
+	type world struct {
+		*recoveryHarness
+
+		calls  atomic.Int32
+		events *eventRecorder
+		// responded is what a consumer responder was handed, when a case set one.
+		responded *httpsec.RecoveryResult
+	}
+
+	// firstFailure asserts out is a first revocation's failure, answered as a
+	// dependency failure.
+	firstFailure := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, errOutage)
+		require.ErrorIs(t, out.err, recovery.ErrDependency)
+		assert.NotErrorIs(t, out.err, recovery.ErrRefused)
+		assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+		assert.NotContains(t, out.err.Error(), "secret text")
+	}
+
+	// completedDespite asserts the chain answered the recovery's success, in the
+	// response it always answers, and reported what went wrong.
+	completedDespite := func(t *testing.T, w *world, out served) {
+		t.Helper()
+
+		doc := recovered(t, w.recoveryHarness, out)
+		assert.Len(t, doc.RecoveryCodes, 10, "the saved set is reissued")
+
+		var members map[string]any
+		require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &members))
+		assert.ElementsMatch(t,
+			[]string{"access_token", "token_type", "expires_at", "recovery_codes", "remaining", "low"},
+			slices.Collect(maps.Keys(members)), "the default response does not change")
+
+		assert.Equal(t, 1, w.sender.sentWithSubject("recovered"), "the notice is still sent")
+
+		events := w.events.all()
+
+		failed := eventsNamed(events, event.GrantRevokeFailed)
+		require.Len(t, failed, 1, "one failure is reported, through the chain's sink")
+		assert.Equal(t, e2eUser, failed[0].User)
+		assert.Equal(t, e2eSource, failed[0].ClientIP)
+		assert.Equal(t, event.OutcomeFailure, failed[0].Outcome)
+		assert.Empty(t, failed[0].Cause)
+
+		completed := eventsNamed(events, event.RecoveryCompleted)
+		require.Len(t, completed, 1)
+		assert.Equal(t, event.OutcomeSuccess, completed[0].Outcome, "the recovery succeeded")
+		assert.Equal(t, "grants_not_revoked", completed[0].Cause, "the chain's report of it records the flag, by a word consumers may match on")
+	}
+
+	// finished holds a recovery and presents its finish once the hold is over,
+	// returning the completion token and the finish's answer.
+	finished := func(t *testing.T, w *world) (string, served) {
+		t.Helper()
+
+		held := w.hold(t)
+		require.Zero(t, w.calls.Load(), "starting a hold revokes nothing")
+
+		w.clock.Advance(recoveryHoldDelay)
+
+		return held.completion, w.finish(t, held.completion)
+	}
+
+	// codes is a complete request over a saved code and an issued code.
+	codes := func(t *testing.T, w *world) url.Values {
+		t.Helper()
+
+		return recoveryForm(
+			httpsec.RecoverySavedCodeParam, w.saved(t),
+			httpsec.RecoveryIssuedCodeParam, w.issued(t))
+	}
+
+	chargesNoOne := func(t *testing.T, w *world) {
+		t.Helper()
+
+		w.recOpts = append(w.recOpts,
+			httpsec.WithRecoveryLimiter(countingLimiter(t, 0)),
+			httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)))
+	}
+
+	type testCase struct {
+		name    string
+		failAt  []int32
+		arrange func(t *testing.T, w *world)
+		// act runs the requests, and returns the answer the case asserts on.
+		act    func(t *testing.T, w *world) served
+		assert func(t *testing.T, w *world, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:    "a first failure is charged to no source and no user, reports nothing, and the same request then recovers",
+			failAt:  []int32{1},
+			arrange: chargesNoOne,
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				values := codes(t, w)
+				firstFailure(t, w.complete(t, values))
+				assert.Equal(t, []string{event.RecoveryStarted}, namesOf(w.events.all()),
+					"a dependency failure is no refusal, and reports nothing past the start that issued the code")
+				assert.Zero(t, w.sender.sentWithSubject("recovered"), "no notice claims a recovery that failed")
+
+				return w.complete(t, values)
+			},
+			assert: func(t *testing.T, w *world, out served) {
+				t.Helper()
+
+				doc := recovered(t, w.recoveryHarness, out)
+				assert.Len(t, doc.RecoveryCodes, 10, "the same saved code recovers once the revoker is back")
+				assert.Empty(t, eventsNamed(w.events.all(), event.RecoveryRefused))
+				assert.Empty(t, eventsNamed(w.events.all(), event.GrantRevokeFailed))
+			},
+		},
+		{
+			name:   "a right MFA code with a first failure answers 500, charges no source, and the next code recovers",
+			failAt: []int32{1},
+			arrange: func(t *testing.T, w *world) {
+				t.Helper()
+
+				w.enrolTOTP(t)
+				chargesNoOne(t, w)
+			},
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				saved, code := w.saved(t), w.totpCode(t)
+				firstFailure(t, w.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, saved,
+					httpsec.RecoveryMFAMethodParam, "totp",
+					httpsec.RecoveryMFACodeParam, code)))
+
+				require.Error(t, w.totp.Verify(t.Context(), e2eUser, []byte(code)), "that MFA code is spent")
+				require.NoError(t, w.codes.Confirm(t.Context(), e2eUser, saved), "the saved code is not")
+				assert.Zero(t, w.sender.sentWithSubject("recovered"), "no notice claims a recovery that failed")
+
+				return w.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, saved,
+					httpsec.RecoveryMFAMethodParam, "totp",
+					httpsec.RecoveryMFACodeParam, w.totpCode(t)))
+			},
+			assert: func(t *testing.T, w *world, out served) {
+				t.Helper()
+
+				doc := recovered(t, w.recoveryHarness, out)
+				assert.Len(t, doc.RecoveryCodes, 10, "the same saved code recovers with the next MFA code")
+				assert.Empty(t, eventsNamed(w.events.all(), event.RecoveryRefused))
+			},
+		},
+		{
+			name:   "a second failure is the recovery's success, charged to no source",
+			failAt: []int32{2},
+			arrange: func(t *testing.T, w *world) {
+				t.Helper()
+
+				w.recOpts = append(w.recOpts, httpsec.WithRecoveryLimiter(countingLimiter(t, 0)))
+			},
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				return w.complete(t, codes(t, w))
+			},
+			assert: completedDespite,
+		},
+		{
+			name:   "a consumer's responder is handed the flag",
+			failAt: []int32{2},
+			arrange: func(_ *testing.T, w *world) {
+				w.recOpts = append(w.recOpts, httpsec.WithRecoveryResponder(func(ex *httpsec.Exchange, res httpsec.RecoveryResult) error {
+					w.responded = &res
+					ex.Writer.WriteHeader(http.StatusNoContent)
+
+					return nil
+				}))
+			},
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				return w.complete(t, codes(t, w))
+			},
+			assert: func(t *testing.T, w *world, out served) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				require.NotNil(t, w.responded)
+				assert.True(t, w.responded.Recovery.GrantsNotRevoked)
+			},
+		},
+		{
+			name: "both succeeding revokes twice and records nothing",
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				return w.complete(t, codes(t, w))
+			},
+			assert: func(t *testing.T, w *world, out served) {
+				t.Helper()
+
+				recovered(t, w.recoveryHarness, out)
+				assert.Equal(t, int32(2), w.calls.Load())
+
+				events := w.events.all()
+				assert.Empty(t, eventsNamed(events, event.GrantRevokeFailed))
+
+				completed := eventsNamed(events, event.RecoveryCompleted)
+				require.Len(t, completed, 1)
+				assert.Empty(t, completed[0].Cause)
+			},
+		},
+		{
+			name:    "a finish's first failure leaves the same token able to finish",
+			failAt:  []int32{1},
+			arrange: func(_ *testing.T, w *world) { w.withHold() },
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				completion, out := finished(t, w)
+				firstFailure(t, out)
+				assert.Zero(t, w.sender.sentWithSubject("recovered"))
+				assert.Empty(t, eventsNamed(w.events.all(), event.RecoveryRefused))
+
+				return w.finish(t, completion)
+			},
+			assert: func(t *testing.T, w *world, out served) {
+				t.Helper()
+
+				recovered(t, w.recoveryHarness, out)
+			},
+		},
+		{
+			name:    "a finish's second failure is the recovery's success",
+			failAt:  []int32{2},
+			arrange: func(_ *testing.T, w *world) { w.withHold() },
+			act: func(t *testing.T, w *world) served {
+				t.Helper()
+
+				_, out := finished(t, w)
+
+				return out
+			},
+			assert: completedDespite,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			w := &world{recoveryHarness: newRecoveryHarness(t), events: &eventRecorder{}}
+
+			revoker := NewMockGrantRevoker(gomock.NewController(t))
+			revoker.EXPECT().RevokeUserGrants(gomock.Any(), e2eUser, "recovery").AnyTimes().DoAndReturn(
+				func(context.Context, identity.UserID, string) error {
+					if slices.Contains(tc.failAt, w.calls.Add(1)) {
+						return errOutage
+					}
+
+					return nil
+				})
+
+			w.coreOpts = append(w.coreOpts, recovery.WithGrantRevoker(revoker))
+			w.chainOpts = append(w.chainOpts, httpsec.EnableSecurityEvents(w.events.sink))
+
+			if tc.arrange != nil {
+				tc.arrange(t, w)
+			}
+
+			w.build(t)
+
+			tc.assert(t, w, tc.act(t, w))
 		})
 	}
 }

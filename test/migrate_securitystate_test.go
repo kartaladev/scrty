@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"io/fs"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -19,6 +20,8 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/store/migrate"
@@ -77,13 +80,19 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// securityStateTables lists the fifteen tables the security-state set creates.
-var securityStateTables = []string{
+// providerTables lists the nine tables the provider's migration adds to the set.
+var providerTables = []string{
+	"op_clients", "op_pending_requests", "op_browser_sessions", "op_authorization_codes", "op_consents",
+	"op_grants", "op_refresh_tokens", "op_access_tokens", "op_client_assertions",
+}
+
+// securityStateTables lists the twenty-four tables the security-state set creates.
+var securityStateTables = append([]string{
 	"sessions", "signing_keys", "login_attempts", "login_failure_streaks", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
 	"recovery_codes", "account_recoveries", "passkey_credentials", "passkey_user_handles",
 	"rate_limit_buckets",
-}
+}, providerTables...)
 
 // column is one column of the security-state set as the catalogue reports
 // it: the type from format_type (which carries any precision modifier, so the
@@ -139,6 +148,47 @@ func defaulted(name, typ, def string) column { return column{name: name, typ: ty
 // absent value that must round-trip as absent.
 func optional(name, typ string) column { return column{name: name, typ: typ, nullable: true} }
 
+// sessionTableColumns pins the sessions table, and the refresh-token lineage table
+// a session store runs over unchanged (T7).
+var sessionTableColumns = []column{
+	required("id", colUUID),
+	required("id_digest", colBytea),
+	required("user_id", colText),
+	required("created_at", colTimestamptz),
+	required("last_accessed_at", colTimestamptz),
+	required("idle_expires_at", colTimestamptz),
+	required("absolute_expires_at", colTimestamptz),
+	defaulted("first_factor", colText, defEmptyText),
+	defaulted("mfa_state", colSmallint, "0"),
+	optional("mfa_satisfied_at", colTimestamptz),
+	defaulted("password_change_pending", colBoolean, "false"),
+	defaulted("external_provider", colText, defEmptyText),
+	defaulted("external_issuer", colText, defEmptyText),
+	defaulted("external_session_id", colText, defEmptyText),
+	defaulted("external_id_token", colText, defEmptyText),
+	defaulted("data", colJSONB, defEmptyObject),
+	optional("enrolment_origin_deadline", colTimestamptz),
+	optional("enrolment_generation", colUUID),
+	optional("recovered_at", colTimestamptz),
+	defaulted("mfa_at_first_factor", colBoolean, "false"),
+	defaulted("federated_amr", colJSONB, defEmptyArray),
+	defaulted("federated_acr", colText, defEmptyText),
+	defaulted("family_id", colUUID, "gen_random_uuid()"),
+	defaulted("family_created_at", colTimestamptz, "now()"),
+	optional("superseded_at", colTimestamptz),
+	optional("accept_until", colTimestamptz),
+	optional("successor_digest", colBytea),
+	optional("first_presented_at", colTimestamptz),
+	optional("retain_until", colTimestamptz),
+	defaulted("authenticated_at", colTimestamptz, "now()"),
+	defaulted("rotated_strictly", colBoolean, "false"),
+	optional("client_ip", colText),
+	optional("user_agent", colText),
+	optional("binding_kind", colText),
+	optional("binding_thumbprint", colText),
+	optional("csrf_token", colText),
+}
+
 // securityStateColumns pins each table's exact columns, with their types,
 // nullability and defaults, against design.md's table model (decision 2) and
 // the column encodings of decision 9 (bytea for the signing key envelope and
@@ -153,44 +203,154 @@ func optional(name, typ string) column { return column{name: name, typ: typ, nul
 // verification charge: mfa_enrolments.verify_attempts and
 // verify_window_until.
 var securityStateColumns = map[string][]column{
-	"sessions": {
+	"op_clients": {
 		required("id", colUUID),
-		required("id_digest", colBytea),
-		required("user_id", colText),
-		required("created_at", colTimestamptz),
-		required("last_accessed_at", colTimestamptz),
-		required("idle_expires_at", colTimestamptz),
-		required("absolute_expires_at", colTimestamptz),
-		defaulted("first_factor", colText, defEmptyText),
-		defaulted("mfa_state", colSmallint, "0"),
-		optional("mfa_satisfied_at", colTimestamptz),
-		defaulted("password_change_pending", colBoolean, "false"),
-		defaulted("external_provider", colText, defEmptyText),
+		required("client_id", colText),
+		defaulted("name", colText, defEmptyText),
+		required("client_type", colSmallint),
+		defaulted("application_type", colSmallint, "0"),
+		required("auth_method", colText),
+		defaulted("pkce", colSmallint, "0"),
+		optional("jwks", colBytea),
+		defaulted("jwks_uri", colText, defEmptyText),
+		defaulted("redirect_uris", colJSONB, defEmptyArray),
+		defaulted("post_logout_redirect_uris", colJSONB, defEmptyArray),
+		defaulted("back_channel_logout_uri", colText, defEmptyText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("resources", colJSONB, defEmptyArray),
+		defaulted("default_audience", colJSONB, defEmptyArray),
+		defaulted("resource_identifier", colText, defEmptyText),
+		defaulted("grant_types", colJSONB, defEmptyArray),
+		defaulted("first_party", colBoolean, "false"),
+		defaulted("offline_access", colSmallint, "0"),
+		defaulted("id_token_alg", colText, defEmptyText),
+		defaulted("id_token_lifetime_ns", colBigint, "0"),
+		defaulted("access_token_lifetime_ns", colBigint, "0"),
+		defaulted("opaque_access_tokens", colBoolean, "false"),
+		defaulted("require_binding", colSmallint, "0"),
+		defaulted("refresh_grace_ns", colBigint, "0"),
+		defaulted("grant_idle_timeout_ns", colBigint, "0"),
+		defaulted("grant_absolute_lifetime_ns", colBigint, "0"),
+		defaulted("disable_rotation", colBoolean, "false"),
+		defaulted("end_grants_with_sign_in", colBoolean, "false"),
+		defaulted("keep_public_web_grants_past_sign_in", colBoolean, "false"),
+		defaulted("metadata", colJSONB, defEmptyObject),
+		defaulted("secrets", colJSONB, defEmptyArray),
+	},
+	"op_pending_requests": {
+		required("id", colUUID),
+		required("handle_digest", colBytea),
+		required("flow_digest", colBytea),
+		required("client_id", colText),
+		defaulted("redirect_uri", colText, defEmptyText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("resources", colJSONB, defEmptyArray),
+		defaulted("state", colText, defEmptyText),
+		defaulted("nonce", colText, defEmptyText),
+		defaulted("challenge", colText, defEmptyText),
+		defaulted("prompt", colJSONB, defEmptyArray),
+		optional("max_age", colBigint),
+		defaulted("id_token_hint_subject", colText, defEmptyText),
+		defaulted("dpop_jkt", colText, defEmptyText),
+		defaulted("login_hint", colText, defEmptyText),
+		defaulted("ui_locales", colJSONB, defEmptyArray),
+		defaulted("claims_locales", colJSONB, defEmptyArray),
+		defaulted("acr_values", colJSONB, defEmptyArray),
+		required("parked_at", colTimestamptz),
+		required("expires_at", colTimestamptz),
+		required("stage", colSmallint),
+		optional("sign_in", colJSONB),
+	},
+	"op_browser_sessions": {
+		required("id", colUUID),
+		required("digest", colBytea),
+		required("user_ref", colText),
+		required("sign_in_family", colUUID),
+		required("authenticated_at", colTimestamptz),
+		defaulted("amr", colJSONB, defEmptyArray),
+		defaulted("acr", colText, defEmptyText),
+		required("sign_in_absolute_expires_at", colTimestamptz),
 		defaulted("external_issuer", colText, defEmptyText),
 		defaulted("external_session_id", colText, defEmptyText),
-		defaulted("external_id_token", colText, defEmptyText),
-		defaulted("data", colJSONB, defEmptyObject),
-		optional("enrolment_origin_deadline", colTimestamptz),
-		optional("enrolment_generation", colUUID),
-		optional("recovered_at", colTimestamptz),
-		defaulted("mfa_at_first_factor", colBoolean, "false"),
-		defaulted("federated_amr", colJSONB, defEmptyArray),
-		defaulted("federated_acr", colText, defEmptyText),
-		defaulted("family_id", colUUID, "gen_random_uuid()"),
-		defaulted("family_created_at", colTimestamptz, "now()"),
-		optional("superseded_at", colTimestamptz),
-		optional("accept_until", colTimestamptz),
-		optional("successor_digest", colBytea),
-		optional("first_presented_at", colTimestamptz),
-		optional("retain_until", colTimestamptz),
-		defaulted("authenticated_at", colTimestamptz, "now()"),
-		defaulted("rotated_strictly", colBoolean, "false"),
-		optional("client_ip", colText),
-		optional("user_agent", colText),
-		optional("binding_kind", colText),
-		optional("binding_thumbprint", colText),
-		optional("csrf_token", colText),
+		required("idle_expires_at", colTimestamptz),
+		required("absolute_expires_at", colTimestamptz),
 	},
+	"op_authorization_codes": {
+		required("token_id", colUUID),
+		required("client_id", colText),
+		defaulted("redirect_uri", colText, defEmptyText),
+		defaulted("challenge", colText, defEmptyText),
+		defaulted("nonce", colText, defEmptyText),
+		defaulted("dpop_jkt", colText, defEmptyText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("resources", colJSONB, defEmptyArray),
+		required("user_ref", colText),
+		required("sign_in_family", colUUID),
+		required("authenticated_at", colTimestamptz),
+		defaulted("amr", colJSONB, defEmptyArray),
+		defaulted("acr", colText, defEmptyText),
+		required("sign_in_absolute_expires_at", colTimestamptz),
+		defaulted("external_issuer", colText, defEmptyText),
+		defaulted("external_session_id", colText, defEmptyText),
+		required("grant_family", colUUID),
+		defaulted("offline", colBoolean, "false"),
+		defaulted("ends_with_sign_in", colBoolean, "false"),
+		required("expires_at", colTimestamptz),
+	},
+	"op_consents": {
+		required("id", colUUID),
+		required("user_ref", colText),
+		required("client_id", colText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("offline", colBoolean, "false"),
+		required("last_given_at", colTimestamptz),
+	},
+	"op_grants": {
+		required("family", colUUID),
+		defaulted("user_ref", colText, defEmptyText),
+		defaulted("client_id", colText, defEmptyText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("resources", colJSONB, defEmptyArray),
+		optional("auth_time", colTimestamptz),
+		defaulted("amr", colJSONB, defEmptyArray),
+		defaulted("acr", colText, defEmptyText),
+		defaulted("key_binding", colText, defEmptyText),
+		defaulted("cert_binding", colText, defEmptyText),
+		optional("code_id", colUUID),
+		optional("sign_in_family", colUUID),
+		defaulted("external_issuer", colText, defEmptyText),
+		defaulted("external_session_id", colText, defEmptyText),
+		defaulted("offline", colBoolean, "false"),
+		defaulted("ends_with_sign_in", colBoolean, "false"),
+		defaulted("holds_lineage", colBoolean, "false"),
+		optional("created_at", colTimestamptz),
+		optional("expires_at", colTimestamptz),
+		defaulted("revoked", colBoolean, "false"),
+		optional("revoked_at", colTimestamptz),
+		defaulted("revoke_cause", colText, defEmptyText),
+		optional("sign_in_ended_at", colTimestamptz),
+	},
+	"op_access_tokens": {
+		required("id", colUUID),
+		required("digest", colBytea),
+		required("grant_family", colUUID),
+		required("client_id", colText),
+		required("user_ref", colText),
+		defaulted("scopes", colJSONB, defEmptyArray),
+		defaulted("audience", colJSONB, defEmptyArray),
+		defaulted("confirmation", colJSONB, defEmptyObject),
+		required("issued_at", colTimestamptz),
+		required("expires_at", colTimestamptz),
+		defaulted("revoked", colBoolean, "false"),
+	},
+	"op_client_assertions": {
+		required("id", colUUID),
+		required("client_id", colText),
+		required("jti", colText),
+		required("held_until", colTimestamptz),
+	},
+	"sessions":          sessionTableColumns,
+	"op_refresh_tokens": sessionTableColumns,
 	"signing_keys": {
 		required("id", colUUID),
 		required("kid", colText),
@@ -345,6 +505,65 @@ var securityStateColumns = map[string][]column{
 // seek on. An index that is added, dropped, moved to another table, made
 // unique or not, or whose columns are reordered fails the comparison.
 var securityStateIndexes = map[string][]string{
+	"op_clients": {
+		"CREATE UNIQUE INDEX op_clients_pkey ON op_clients USING btree (id)",
+		"CREATE UNIQUE INDEX op_clients_client_id_key ON op_clients USING btree (client_id)",
+	},
+	"op_pending_requests": {
+		"CREATE UNIQUE INDEX op_pending_requests_pkey ON op_pending_requests USING btree (id)",
+		"CREATE UNIQUE INDEX op_pending_requests_handle_digest_key ON op_pending_requests USING btree (handle_digest)",
+		"CREATE INDEX op_pending_requests_expiry ON op_pending_requests USING btree (expires_at)",
+	},
+	"op_browser_sessions": {
+		"CREATE UNIQUE INDEX op_browser_sessions_pkey ON op_browser_sessions USING btree (id)",
+		"CREATE UNIQUE INDEX op_browser_sessions_digest_key ON op_browser_sessions USING btree (digest)",
+		"CREATE INDEX op_browser_sessions_user_issuer ON op_browser_sessions USING btree (user_ref, external_issuer)",
+		"CREATE INDEX op_browser_sessions_sign_in ON op_browser_sessions USING btree (sign_in_family)",
+		"CREATE INDEX op_browser_sessions_external_session ON op_browser_sessions USING btree (external_issuer, external_session_id)",
+		"CREATE INDEX op_browser_sessions_idle_expiry ON op_browser_sessions USING btree (idle_expires_at)",
+		"CREATE INDEX op_browser_sessions_absolute_expiry ON op_browser_sessions USING btree (absolute_expires_at)",
+	},
+	"op_authorization_codes": {
+		"CREATE UNIQUE INDEX op_authorization_codes_pkey ON op_authorization_codes USING btree (token_id)",
+		"CREATE INDEX op_authorization_codes_user_client ON op_authorization_codes USING btree (user_ref, client_id)",
+		"CREATE INDEX op_authorization_codes_user_issuer ON op_authorization_codes USING btree (user_ref, external_issuer)",
+		"CREATE INDEX op_authorization_codes_sign_in ON op_authorization_codes USING btree (sign_in_family)",
+		"CREATE INDEX op_authorization_codes_external_session ON op_authorization_codes USING btree (external_issuer, external_session_id)",
+		"CREATE INDEX op_authorization_codes_expiry ON op_authorization_codes USING btree (expires_at)",
+	},
+	"op_consents": {
+		"CREATE UNIQUE INDEX op_consents_pkey ON op_consents USING btree (id)",
+		"CREATE UNIQUE INDEX op_consents_user_ref_client_id_key ON op_consents USING btree (user_ref, client_id)",
+	},
+	"op_grants": {
+		"CREATE UNIQUE INDEX op_grants_pkey ON op_grants USING btree (family)",
+		"CREATE INDEX op_grants_user ON op_grants USING btree (user_ref)",
+		"CREATE INDEX op_grants_user_client ON op_grants USING btree (user_ref, client_id)",
+		"CREATE INDEX op_grants_user_issuer ON op_grants USING btree (user_ref, external_issuer)",
+		"CREATE INDEX op_grants_sign_in ON op_grants USING btree (sign_in_family)",
+		"CREATE INDEX op_grants_external_session ON op_grants USING btree (external_issuer, external_session_id)",
+		"CREATE INDEX op_grants_expiry ON op_grants USING btree (expires_at)",
+		"CREATE INDEX op_grants_revoked ON op_grants USING btree (revoked_at)",
+	},
+	"op_refresh_tokens": {
+		"CREATE UNIQUE INDEX op_refresh_tokens_pkey ON op_refresh_tokens USING btree (id)",
+		"CREATE UNIQUE INDEX op_refresh_tokens_id_digest_key ON op_refresh_tokens USING btree (id_digest)",
+		"CREATE INDEX op_refresh_tokens_external_session ON op_refresh_tokens USING btree (external_issuer, external_session_id) WHERE (external_session_id <> ''::text)",
+		"CREATE INDEX op_refresh_tokens_user_issuer ON op_refresh_tokens USING btree (user_id, external_issuer) WHERE (external_issuer <> ''::text)",
+		"CREATE INDEX op_refresh_tokens_user ON op_refresh_tokens USING btree (user_id)",
+		"CREATE INDEX op_refresh_tokens_idle_expiry ON op_refresh_tokens USING btree (idle_expires_at)",
+		"CREATE INDEX op_refresh_tokens_absolute_expiry ON op_refresh_tokens USING btree (absolute_expires_at)",
+		"CREATE INDEX op_refresh_tokens_family ON op_refresh_tokens USING btree (family_id)",
+	},
+	"op_access_tokens": {
+		"CREATE UNIQUE INDEX op_access_tokens_pkey ON op_access_tokens USING btree (id)",
+		"CREATE INDEX op_access_tokens_expiry ON op_access_tokens USING btree (expires_at)",
+	},
+	"op_client_assertions": {
+		"CREATE UNIQUE INDEX op_client_assertions_pkey ON op_client_assertions USING btree (id)",
+		"CREATE UNIQUE INDEX op_client_assertions_client_id_jti_key ON op_client_assertions USING btree (client_id, jti)",
+		"CREATE INDEX op_client_assertions_expiry ON op_client_assertions USING btree (held_until)",
+	},
 	"sessions": {
 		"CREATE UNIQUE INDEX sessions_pkey ON sessions USING btree (id)",
 		"CREATE UNIQUE INDEX sessions_id_digest_key ON sessions USING btree (id_digest)",
@@ -471,7 +690,7 @@ type schemaCheck struct {
 func securityStateSchemaChecks(versionTable string) []schemaCheck {
 	return []schemaCheck{
 		{
-			name:  "fresh database has the fifteen tables and the version table",
+			name:  "fresh database has the twenty-four tables and the version table",
 			query: `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1`,
 			assert: func(t *testing.T, rows []string) {
 				want := append(slices.Clone(securityStateTables), versionTable)
@@ -510,12 +729,14 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 		{
 			name: "every user reference is text",
 			query: `SELECT table_name || ':' || data_type FROM information_schema.columns
-			         WHERE column_name = 'user_id' AND table_schema = current_schema()`,
+			         WHERE column_name IN ('user_id', 'user_ref') AND table_schema = current_schema()`,
 			assert: func(t *testing.T, rows []string) {
-				// sessions, mfa_enrolments, api_keys, oidc_links, oidc_handoffs,
-				// recovery_codes, account_recoveries, passkey_credentials,
-				// passkey_user_handles
-				require.Len(t, rows, 9)
+				// user_id: sessions, mfa_enrolments, api_keys, oidc_links,
+				// oidc_handoffs, recovery_codes, account_recoveries,
+				// passkey_credentials, passkey_user_handles, op_refresh_tokens.
+				// user_ref: op_browser_sessions, op_authorization_codes, op_consents,
+				// op_grants, op_access_tokens.
+				require.Len(t, rows, 15)
 				for _, r := range rows {
 					assert.True(t, strings.HasSuffix(r, ":text"), r)
 				}
@@ -545,6 +766,7 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 					"recovery_codes.spent_at:YES:",
 					"account_recoveries.completed_at:YES:",
 					"account_recoveries.cancelled_at:YES:",
+					"op_grants.revoked_at:YES:",
 				}, rows)
 			},
 		},
@@ -680,13 +902,14 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 
 // securityStateMigrationCount is how many migration files the security-state
 // set holds.
-const securityStateMigrationCount = 4
+const securityStateMigrationCount = 5
 
 // Versions of the security-state migrations the family tests address.
 const (
 	versionSecurityState   int64 = 20260926000000
 	versionSessionFamilies int64 = 20261021000000
 	versionStrictRotation  int64 = 20261101000000
+	versionSessionSignIns  int64 = 20261102000000
 )
 
 // sessionColumnsAndIndexes describes the sessions table as sorted column and
@@ -1602,7 +1825,7 @@ func TestSecurityStateMigrations_SessionSignIns(t *testing.T) {
 				require.NoError(t, err)
 				before := sessionColumnsAndIndexes(t, db)
 
-				_, err = p.Up(t.Context())
+				_, err = p.UpTo(t.Context(), versionSessionSignIns)
 				require.NoError(t, err)
 				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db), "the migration changed the sessions table")
 
@@ -1669,4 +1892,622 @@ func TestSecurityStateMigrations_SignInStateReadsBackEmpty(t *testing.T) {
 			assert.Empty(t, listed[0].CSRFToken)
 		})
 	}
+}
+
+// providerOutsideSchema describes every table of the set outside the provider's migration,
+// as sorted column and index lines: what the migration must leave as it found it.
+func providerOutsideSchema(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	lines := queryStrings(t, db, `SELECT c.relname || ' col ' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+	        || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
+	        || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
+	   FROM pg_attribute a
+	   JOIN pg_class c ON c.oid = a.attrelid
+	   JOIN pg_namespace n ON n.oid = c.relnamespace
+	   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+	  WHERE n.nspname = current_schema() AND c.relkind = 'r'
+	    AND a.attnum > 0 AND NOT a.attisdropped AND c.relname NOT LIKE 'op\_%'
+	  UNION ALL
+	  SELECT tablename || ' idx ' || indexdef FROM pg_indexes
+	   WHERE schemaname = current_schema() AND tablename NOT LIKE 'op\_%'`)
+	slices.Sort(lines)
+
+	return lines
+}
+
+// sessionRows returns the stored sessions, each as every column's value.
+func sessionRows(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	return queryStrings(t, db, `SELECT to_jsonb(s)::text FROM sessions s ORDER BY id`)
+}
+
+// holdSessions stores one plain and one superseded session.
+func holdSessions(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
+		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at,
+		 superseded_at, accept_until, retain_until, client_ip, data)
+		VALUES ('0192f000-0000-7000-8000-0000000000c1', '\x01', 'u-1', now(), now(), now(), now(),
+		        NULL, NULL, NULL, '203.0.113.7', '{"k":"v"}'),
+		       ('0192f000-0000-7000-8000-0000000000c2', '\x02', 'u-2', now(), now(), now(), now(),
+		        now(), now(), now(), NULL, '{}')`)
+	require.NoError(t, err)
+}
+
+// orderedShape describes table's columns in their order, then its indexes with the
+// table's own name replaced by "T", so two tables of one shape compare equal.
+func orderedShape(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+
+	columns := queryStrings(t, db, `SELECT a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+	        || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
+	        || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
+	   FROM pg_attribute a
+	   JOIN pg_class c ON c.oid = a.attrelid
+	   JOIN pg_namespace n ON n.oid = c.relnamespace
+	   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+	  WHERE n.nspname = current_schema() AND c.relname = $1 AND a.attnum > 0 AND NOT a.attisdropped
+	  ORDER BY a.attnum`, table)
+
+	indexes := queryStrings(t, db, `SELECT indexdef FROM pg_indexes
+	   WHERE schemaname = current_schema() AND tablename = $1`, table)
+	for i, def := range indexes {
+		indexes[i] = strings.ReplaceAll(def, table, "T")
+	}
+	slices.Sort(indexes)
+
+	return append(columns, indexes...)
+}
+
+// recordColumns names the column holding each field of one port record. A field mapped
+// to "" is deliberately not a column of table, and the entry's comment says why.
+type recordColumns struct {
+	record  any
+	table   string
+	columns map[string]string
+}
+
+// flatSignIn maps a SignIn's fields to the columns of a table that can be selected by
+// its sign-in.
+var flatSignIn = map[string]string{
+	"User":              "user_ref",
+	"Family":            "sign_in_family",
+	"AuthenticatedAt":   "authenticated_at",
+	"AMR":               "amr",
+	"ACR":               "acr",
+	"AbsoluteExpiresAt": "sign_in_absolute_expires_at",
+	"ExternalIssuer":    "external_issuer",
+	"ExternalSessionID": "external_session_id",
+}
+
+// providerRecordColumns covers every record the provider's ports hold.
+var providerRecordColumns = []recordColumns{
+	{
+		// Secret is nil once registered: only the digests in RegisteredClient.Secrets are kept.
+		record: oidcprovider.Client{},
+		table:  "op_clients",
+		columns: map[string]string{ //nolint:gosec // field-to-column names, no credential
+			"ID": "client_id", "Name": "name", "Type": "client_type", "ApplicationType": "application_type",
+			"AuthMethod": "auth_method", "PKCE": "pkce", "Secret": "", "JWKS": "jwks", "JWKSURI": "jwks_uri",
+			"RedirectURIs": "redirect_uris", "PostLogoutRedirectURIs": "post_logout_redirect_uris",
+			"BackChannelLogoutURI": "back_channel_logout_uri", "Scopes": "scopes", "Resources": "resources",
+			"DefaultAudience": "default_audience", "ResourceIdentifier": "resource_identifier",
+			"GrantTypes": "grant_types", "FirstParty": "first_party", "OfflineAccess": "offline_access",
+			"IDTokenAlg": "id_token_alg", "IDTokenLifetime": "id_token_lifetime_ns",
+			"AccessTokenLifetime": "access_token_lifetime_ns", "OpaqueAccessTokens": "opaque_access_tokens",
+			"RequireBinding": "require_binding", "RefreshGrace": "refresh_grace_ns",
+			"GrantIdleTimeout": "grant_idle_timeout_ns", "GrantAbsoluteLifetime": "grant_absolute_lifetime_ns",
+			"DisableRotation": "disable_rotation", "EndGrantsWithSignIn": "end_grants_with_sign_in",
+			"KeepPublicWebGrantsPastSignIn": "keep_public_web_grants_past_sign_in", "Metadata": "metadata",
+		},
+	},
+	{
+		// The embedded Client is the entry above.
+		record:  oidcprovider.RegisteredClient{},
+		table:   "op_clients",
+		columns: map[string]string{"Client": "", "Secrets": "secrets"},
+	},
+	{
+		record: oidcprovider.PendingRequest{},
+		table:  "op_pending_requests",
+		columns: map[string]string{ //nolint:gosec // field-to-column names, no credential
+			"ID": "id", "HandleDigest": "handle_digest", "FlowDigest": "flow_digest", "ClientID": "client_id",
+			"RedirectURI": "redirect_uri", "Scopes": "scopes", "Resources": "resources", "State": "state",
+			"Nonce": "nonce", "Challenge": "challenge", "Prompt": "prompt", "MaxAge": "max_age",
+			"IDTokenHintSubject": "id_token_hint_subject", "DPoPJKT": "dpop_jkt", "LoginHint": "login_hint",
+			"UILocales": "ui_locales", "ClaimsLocales": "claims_locales", "ACRValues": "acr_values",
+			"ParkedAt": "parked_at", "ExpiresAt": "expires_at", "Stage": "stage", "SignIn": "sign_in",
+		},
+	},
+	{
+		// SignIn is flattened, in the entry after this one, as a selector reads its fields.
+		record: oidcprovider.BrowserSession{},
+		table:  "op_browser_sessions",
+		columns: map[string]string{
+			"Digest": "digest", "SignIn": "", "IdleExpiresAt": "idle_expires_at",
+			"AbsoluteExpiresAt": "absolute_expires_at",
+		},
+	},
+	{record: oidcprovider.SignIn{}, table: "op_browser_sessions", columns: flatSignIn},
+	{
+		// SignIn is flattened, in the entry after this one, as a selector reads its fields.
+		record: oidcprovider.CodeRecord{},
+		table:  "op_authorization_codes",
+		columns: map[string]string{
+			"TokenID": "token_id", "ClientID": "client_id", "RedirectURI": "redirect_uri",
+			"Challenge": "challenge", "Nonce": "nonce", "DPoPJKT": "dpop_jkt", "Scopes": "scopes",
+			"Resources": "resources", "SignIn": "", "GrantFamily": "grant_family", "Offline": "offline",
+			"EndsWithSignIn": "ends_with_sign_in", "ExpiresAt": "expires_at",
+		},
+	},
+	{record: oidcprovider.SignIn{}, table: "op_authorization_codes", columns: flatSignIn},
+	{
+		record: oidcprovider.Consent{},
+		table:  "op_consents",
+		columns: map[string]string{
+			"User": "user_ref", "ClientID": "client_id", "Scopes": "scopes", "Offline": "offline",
+			"LastGivenAt": "last_given_at",
+		},
+	},
+	{
+		record: oidcprovider.Grant{},
+		table:  "op_grants",
+		columns: map[string]string{
+			"Family": "family", "User": "user_ref", "ClientID": "client_id", "Scopes": "scopes",
+			"Resources": "resources", "AuthTime": "auth_time", "AMR": "amr", "ACR": "acr",
+			"KeyBinding": "key_binding", "CertBinding": "cert_binding", "CodeID": "code_id", "SignInFamily": "sign_in_family",
+			"ExternalIssuer": "external_issuer", "ExternalSessionID": "external_session_id",
+			"Offline": "offline", "EndsWithSignIn": "ends_with_sign_in", "HoldsLineage": "holds_lineage",
+			"CreatedAt": "created_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
+			"RevokedAt": "revoked_at", "RevokeCause": "revoke_cause", "SignInEndedAt": "sign_in_ended_at",
+		},
+	},
+	{
+		record: oidcprovider.AccessTokenRecord{},
+		table:  "op_access_tokens",
+		columns: map[string]string{
+			"ID": "id", "Digest": "digest", "GrantFamily": "grant_family", "ClientID": "client_id",
+			"User": "user_ref", "Scopes": "scopes", "Audience": "audience", "Confirmation": "confirmation",
+			"IssuedAt": "issued_at", "ExpiresAt": "expires_at", "Revoked": "revoked",
+		},
+	},
+}
+
+// credentialNamedColumns is every provider column whose name could suggest a credential,
+// with why it holds none. A new one must be added here, by someone who has checked.
+var credentialNamedColumns = []string{
+	"op_authorization_codes.token_id",           // the code token's identifier, not its secret
+	"op_clients.access_token_lifetime_ns",       // a duration
+	"op_clients.id_token_alg",                   // an algorithm's name
+	"op_clients.id_token_lifetime_ns",           // a duration
+	"op_clients.opaque_access_tokens",           // a setting
+	"op_clients.secrets",                        // digests and deadlines only
+	"op_grants.code_id",                         // the code's identifier, not its secret
+	"op_pending_requests.flow_digest",           // a digest
+	"op_pending_requests.handle_digest",         // a digest
+	"op_pending_requests.id_token_hint_subject", // a subject
+	"op_refresh_tokens.password_change_pending", // a flag
+	"op_refresh_tokens.csrf_token",              // sealed, as on sessions
+	"op_refresh_tokens.external_id_token",       // sealed, as on sessions
+}
+
+// opLookup is one lookup a provider store makes, and the index that must serve it.
+type opLookup struct {
+	name    string
+	table   string
+	index   string
+	where   string
+	args    string
+	columns []string
+}
+
+// signInLookups returns the five shapes SignInSelector.Validate accepts, on table,
+// whose index for the user alone is byUser.
+func signInLookups(table, byUser string) []opLookup {
+	const (
+		user   = `'u-1'`
+		family = `'0192f000-0000-7000-8000-0000000000d1'`
+		issuer = `'https://idp.example.com'`
+		stream = `'x-9'`
+	)
+
+	return []opLookup{
+		{
+			name: table + " by family", table: table, index: table + "_sign_in",
+			where: `sign_in_family = $1`, args: family,
+			columns: []string{"sign_in_family"},
+		},
+		{
+			name: table + " by user", table: table, index: byUser,
+			where: `user_ref = $1`, args: user,
+			columns: []string{"user_ref"},
+		},
+		{
+			name: table + " by user except a family", table: table, index: byUser,
+			where: `user_ref = $1 AND sign_in_family IS DISTINCT FROM $2`, args: user + `, ` + family,
+			columns: []string{"user_ref"},
+		},
+		{
+			name: table + " by upstream session", table: table, index: table + "_external_session",
+			where: `external_issuer = $1 AND external_session_id = $2`, args: issuer + `, ` + stream,
+			columns: []string{"external_issuer", "external_session_id"},
+		},
+		{
+			name: table + " by user and upstream issuer", table: table, index: table + "_user_issuer",
+			where: `user_ref = $1 AND external_issuer = $2`, args: user + `, ` + issuer,
+			columns: []string{"user_ref", "external_issuer"},
+		},
+	}
+}
+
+// providerLookups is every lookup the provider's stores make other than by primary key.
+func providerLookups() []opLookup {
+	const (
+		digest = `'\x01'::bytea`
+		user   = `'u-1'`
+		client = `'billing-web'`
+		when   = `'2026-11-04T00:00:00Z'::timestamptz`
+	)
+
+	expired := func(name, table, index, column string) opLookup {
+		return opLookup{
+			name: name, table: table, index: index,
+			where: column + ` < $1`, args: when, columns: []string{column},
+		}
+	}
+	userAndClient := func(name, table, index string) opLookup {
+		return opLookup{
+			name: name, table: table, index: index,
+			where: `user_ref = $1 AND client_id = $2`, args: user + `, ` + client,
+			columns: []string{"user_ref", "client_id"},
+		}
+	}
+
+	lookups := []opLookup{
+		{
+			name: "client by its identifier", table: "op_clients", index: "op_clients_client_id_key",
+			where: `client_id = $1`, args: client, columns: []string{"client_id"},
+		},
+		{
+			name: "pending request by handle", table: "op_pending_requests", index: "op_pending_requests_handle_digest_key",
+			where: `handle_digest = $1`, args: digest, columns: []string{"handle_digest"},
+		},
+		{
+			name: "browser session by digest", table: "op_browser_sessions", index: "op_browser_sessions_digest_key",
+			where: `digest = $1`, args: digest, columns: []string{"digest"},
+		},
+		{
+			name: "consents of a user", table: "op_consents", index: "op_consents_user_ref_client_id_key",
+			where: `user_ref = $1`, args: user, columns: []string{"user_ref"},
+		},
+		{
+			name: "assertion identifier of a client", table: "op_client_assertions", index: "op_client_assertions_client_id_jti_key",
+			where: `client_id = $1 AND jti = $2`, args: client + `, 'j-1'`, columns: []string{"client_id", "jti"},
+		},
+		userAndClient("held codes of a user and client", "op_authorization_codes", "op_authorization_codes_user_client"),
+		userAndClient("consent of a user and client", "op_consents", "op_consents_user_ref_client_id_key"),
+		userAndClient("grants of a user and client", "op_grants", "op_grants_user_client"),
+		expired("expired pending requests", "op_pending_requests", "op_pending_requests_expiry", "expires_at"),
+		expired("browser sessions past idle", "op_browser_sessions", "op_browser_sessions_idle_expiry", "idle_expires_at"),
+		expired("browser sessions past absolute", "op_browser_sessions", "op_browser_sessions_absolute_expiry", "absolute_expires_at"),
+		expired("expired codes", "op_authorization_codes", "op_authorization_codes_expiry", "expires_at"),
+		expired("expired grants", "op_grants", "op_grants_expiry", "expires_at"),
+		expired("long revoked grants", "op_grants", "op_grants_revoked", "revoked_at"),
+		expired("expired access tokens", "op_access_tokens", "op_access_tokens_expiry", "expires_at"),
+		expired("expired assertion identifiers", "op_client_assertions", "op_client_assertions_expiry", "held_until"),
+	}
+	lookups = append(lookups, signInLookups("op_grants", "op_grants_user")...)
+	lookups = append(lookups, signInLookups("op_authorization_codes", "op_authorization_codes_user_client")...)
+	lookups = append(lookups, signInLookups("op_browser_sessions", "op_browser_sessions_user_issuer")...)
+
+	return lookups
+}
+
+// genericPlan returns the plan of lookup with its index as the table's only choice: in
+// a transaction it rolls back, every other plain index of the table is dropped and
+// sequential scans are priced out, so what an empty table's statistics would pick cannot
+// decide the answer. The plan is the generic one a prepared statement can reach, in which
+// a parameter proves no partial index's predicate, so an index only a literal value can
+// use does not count.
+func genericPlan(t *testing.T, db *sql.DB, lookup opLookup) string {
+	t.Helper()
+
+	conn, err := db.Conn(t.Context())
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, conn.Close()) }()
+
+	tx, err := conn.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, tx.Rollback()) }()
+
+	exec := func(stmt string) {
+		t.Helper()
+
+		_, err := tx.ExecContext(t.Context(), stmt)
+		require.NoError(t, err, stmt)
+	}
+
+	others := queryStrings(t, db, `SELECT indexname FROM pg_indexes
+		WHERE schemaname = current_schema() AND tablename = $1 AND indexname <> $2
+		  AND indexdef NOT LIKE 'CREATE UNIQUE %'`, lookup.table, lookup.index)
+	for _, index := range others {
+		exec(`DROP INDEX ` + index)
+	}
+	exec(`SET LOCAL enable_seqscan = off`)
+	exec(`SET LOCAL plan_cache_mode = force_generic_plan`)
+	exec(`PREPARE op_lookup AS SELECT 1 FROM ` + lookup.table + ` WHERE ` + lookup.where)
+	defer exec(`DEALLOCATE op_lookup`)
+
+	rows, err := tx.QueryContext(t.Context(), `EXPLAIN EXECUTE op_lookup(`+lookup.args+`)`)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, rows.Close()) }()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		require.NoError(t, rows.Scan(&line))
+		plan.WriteString(line + "\n")
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+
+	return plan.String()
+}
+
+// indexLeadingColumn returns the first column of the named index in the applied schema.
+func indexLeadingColumn(t *testing.T, db *sql.DB, index string) string {
+	t.Helper()
+
+	got := queryStrings(t, db, `SELECT a.attname FROM pg_index i
+		JOIN pg_class c ON c.oid = i.indexrelid
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+		WHERE c.relname = $1 AND c.relnamespace = current_schema()::regnamespace`, index)
+	require.Len(t, got, 1, "index %s", index)
+
+	return got[0]
+}
+
+// indexCondition returns the plan's index condition, and "" when it has none.
+func indexCondition(plan string) string {
+	for line := range strings.SplitSeq(plan, "\n") {
+		if strings.Contains(line, "Index Cond") {
+			return line
+		}
+	}
+
+	return ""
+}
+
+// TestMigrations pins the migrations this set adds on top of its own earlier tests.
+//
+// The cases share the theme, not a setup shape: some compare a database before and
+// after the migration, and the rest read the applied schema.
+func TestMigrations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("oidc_provider", func(t *testing.T) {
+		t.Parallel()
+
+		set := migrate.SecurityState()
+
+		type testCase struct {
+			name string
+			run  func(t *testing.T, db *sql.DB, p *goose.Provider)
+		}
+
+		cases := []testCase{
+			{
+				name: "the tables pgschema names are the provider's nine",
+				run: func(t *testing.T, _ *sql.DB, _ *goose.Provider) {
+					assert.ElementsMatch(t, providerTables, pgschema.OIDCProviderTables())
+					assert.Contains(t, providerTables, pgschema.RefreshTokenTable)
+				},
+			},
+			{
+				name: "applied over a database holding sessions, the tables exist and the sessions are unchanged",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.UpTo(t.Context(), versionSessionSignIns)
+					require.NoError(t, err)
+					holdSessions(t, db)
+					rows, schema := sessionRows(t, db), providerOutsideSchema(t, db)
+					require.Len(t, rows, 2)
+
+					_, err = p.Up(t.Context())
+					require.NoError(t, err)
+
+					for _, tbl := range providerTables {
+						assert.True(t, regclassExists(t, db, tbl), "table %s should exist", tbl)
+					}
+					assert.Equal(t, rows, sessionRows(t, db))
+					assert.Equal(t, schema, providerOutsideSchema(t, db))
+				},
+			},
+			{
+				name: "rolled back, exactly the nine are gone",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.UpTo(t.Context(), versionSessionSignIns)
+					require.NoError(t, err)
+					holdSessions(t, db)
+					rows, schema := sessionRows(t, db), providerOutsideSchema(t, db)
+
+					_, err = p.Up(t.Context())
+					require.NoError(t, err)
+					for _, tbl := range providerTables {
+						require.True(t, regclassExists(t, db, tbl), "table %s should exist before the rollback", tbl)
+					}
+
+					_, err = p.DownTo(t.Context(), versionSessionSignIns)
+					require.NoError(t, err)
+
+					for _, tbl := range providerTables {
+						assert.False(t, regclassExists(t, db, tbl), "table %s should be gone", tbl)
+					}
+					assert.Equal(t, rows, sessionRows(t, db))
+					assert.Equal(t, schema, providerOutsideSchema(t, db))
+				},
+			},
+			{
+				name: "the lineage table is the sessions table, column by column and index by index",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.Up(t.Context())
+					require.NoError(t, err)
+
+					sessions := orderedShape(t, db, "sessions")
+					require.NotEmpty(t, sessions)
+					assert.Equal(t, sessions, orderedShape(t, db, pgschema.RefreshTokenTable))
+				},
+			},
+			{
+				name: "a session statement names no column the lineage table lacks",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.Up(t.Context())
+					require.NoError(t, err)
+
+					// A row written by the session store's own insert, over the fixed name.
+					insert := strings.ReplaceAll(pgschema.SessionInsert, "sessions", pgschema.RefreshTokenTable)
+					result, err := db.ExecContext(t.Context(), insert,
+						"0192f000-0000-7000-8000-0000000000e1", []byte{1}, "u-1", time.Now(), time.Now(), time.Now(), time.Now(),
+						"", 0, nil, false, "", "", "", "", "{}", nil, nil, nil, "[]", "", false,
+						"0192f000-0000-7000-8000-0000000000e2", time.Now(), nil, nil, nil, nil, time.Now(), nil,
+						nil, nil, nil, nil, nil)
+					require.NoError(t, err)
+					n, err := result.RowsAffected()
+					require.NoError(t, err)
+					assert.Equal(t, int64(1), n)
+
+					assert.Empty(t, sessionRows(t, db), "the lineage row is not a session")
+				},
+			},
+			{
+				name: "a grant can be a revocation recorded first, with everything else unset",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.Up(t.Context())
+					require.NoError(t, err)
+
+					_, err = db.ExecContext(t.Context(), `INSERT INTO op_grants (family, revoked, revoked_at, revoke_cause, sign_in_ended_at)
+						VALUES ('0192f000-0000-7000-8000-0000000000f1', true, now(), 'sign_in_ended', now())`)
+					require.NoError(t, err)
+
+					got := queryStrings(t, db, `SELECT concat_ws('|', user_ref = '', client_id = '', scopes = '[]', resources = '[]',
+							amr = '[]', acr = '', key_binding = '', cert_binding = '', external_issuer = '', external_session_id = '',
+							NOT offline, NOT ends_with_sign_in, NOT holds_lineage,
+							auth_time IS NULL, code_id IS NULL, sign_in_family IS NULL, created_at IS NULL, expires_at IS NULL)
+						FROM op_grants`)
+					assert.Equal(t, []string{"t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t"}, got,
+						"no value is invented, and a NULL created_at is what tells it from a stored grant")
+				},
+			},
+			{
+				name: "a handle digest is one request's, and an assertion identifier one client's",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.Up(t.Context())
+					require.NoError(t, err)
+
+					affected := func(query string) int64 {
+						t.Helper()
+
+						result, err := db.ExecContext(t.Context(), query)
+						require.NoError(t, err, query)
+						n, err := result.RowsAffected()
+						require.NoError(t, err)
+
+						return n
+					}
+
+					pending := func(id string) string {
+						return `INSERT INTO op_pending_requests (id, handle_digest, flow_digest, client_id, parked_at, expires_at, stage)
+							VALUES ('` + id + `', '\x01', '\x02', 'billing-web', now(), now(), 0) ON CONFLICT (handle_digest) DO NOTHING`
+					}
+					assert.Equal(t, int64(1), affected(pending("0192f000-0000-7000-8000-000000000101")))
+					assert.Equal(t, int64(0), affected(pending("0192f000-0000-7000-8000-000000000102")))
+
+					assertion := func(id, client string) string {
+						return `INSERT INTO op_client_assertions (id, client_id, jti, held_until)
+							VALUES ('` + id + `', '` + client + `', 'j-1', now()) ON CONFLICT (client_id, jti) DO NOTHING`
+					}
+					assert.Equal(t, int64(1), affected(assertion("0192f000-0000-7000-8000-000000000103", "billing-web")))
+					assert.Equal(t, int64(0), affected(assertion("0192f000-0000-7000-8000-000000000104", "billing-web")))
+					assert.Equal(t, int64(1), affected(assertion("0192f000-0000-7000-8000-000000000105", "billing-ios")))
+				},
+			},
+			{
+				name: "no column is named for a credential it would hold in clear",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.Up(t.Context())
+					require.NoError(t, err)
+
+					got := queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
+						WHERE table_schema = current_schema() AND table_name LIKE 'op\_%'
+						  AND column_name ~ '(secret|token|code|handle|flow|credential|password|assertion)'`)
+					assert.ElementsMatch(t, credentialNamedColumns, got)
+
+					bytes := queryStrings(t, db, `SELECT table_name || '.' || column_name FROM information_schema.columns
+						WHERE table_schema = current_schema() AND table_name LIKE 'op\_%' AND table_name <> 'op_clients'
+						  AND table_name <> $1 AND data_type = 'bytea'`, pgschema.RefreshTokenTable)
+					assert.ElementsMatch(t, []string{
+						"op_pending_requests.handle_digest", "op_pending_requests.flow_digest",
+						"op_browser_sessions.digest", "op_access_tokens.digest",
+					}, bytes, "the only binary values the records hold are digests")
+				},
+			},
+			{
+				name: "every field of every provider record has its column",
+				run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+					_, err := p.Up(t.Context())
+					require.NoError(t, err)
+
+					for _, rc := range providerRecordColumns {
+						typ := reflect.TypeOf(rc.record)
+						held := queryStrings(t, db, `SELECT column_name FROM information_schema.columns
+							WHERE table_schema = current_schema() AND table_name = $1`, rc.table)
+						for field := range typ.Fields() {
+							column, named := rc.columns[field.Name]
+							if !assert.True(t, named, "%s.%s is mapped to no column of %s", typ.Name(), field.Name, rc.table) || column == "" {
+								continue
+							}
+							assert.Contains(t, held, column, "%s.%s", typ.Name(), field.Name)
+						}
+					}
+				},
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				db, p := freshSecurityState(t, set)
+				tc.run(t, db, p)
+			})
+		}
+
+		t.Run("lookups", func(t *testing.T) {
+			t.Parallel()
+
+			db, p := freshSecurityState(t, set)
+			_, err := p.Up(t.Context())
+			require.NoError(t, err)
+
+			for _, lookup := range providerLookups() {
+				t.Run(lookup.name, func(t *testing.T) {
+					plan := genericPlan(t, db, lookup)
+
+					assert.NotContains(t, plan, "Seq Scan", "no index serves this lookup")
+					assert.Contains(t, plan, lookup.index)
+					condition := indexCondition(plan)
+					for _, column := range lookup.columns {
+						assert.Contains(t, condition, column, "the plan does not seek on this column:\n%s", plan)
+					}
+
+					// An index seeks on a column only when it leads it, or follows columns the lookup
+					// also names, so the kept index's leading column must be one the lookup names.
+					assert.Contains(t, lookup.columns, indexLeadingColumn(t, db, lookup.index),
+						"the index is not led by a looked-up column:\n%s", plan)
+				})
+			}
+		})
+	})
 }

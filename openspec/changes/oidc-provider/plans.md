@@ -72,7 +72,7 @@
 - **Messy `scope` values.** A `scope` with doubled spaces or duplicates (`openid  openid profile`) is split on single spaces with empty items dropped and duplicates removed. It is accepted, and the token's `scope` is `openid profile`. Test added to 6.1.
 - **Reserved characters in `state`, and a query in the redirect URI.** A `state` holding `&`, `=`, `#` and spaces comes back byte-identical after URL decoding. A registered redirect URI that already has a query (`https://rp.example.com/cb?tenant=a`) keeps it, with `code`, `state` and `iss` appended. Test added to 6.7 (success) and 6.1 (error redirect).
 - **A Basic secret containing `:`.** The decoded header is split at the first `:`, and each half is URL-decoded afterwards, so `a%3Ab` authenticates the secret `a:b`. Test added to 4.5.
-- **Two tabs refreshing at once.** Two concurrent refreshes with one token, both within the grace window, both receive tokens, and the grant stays live. Test added to 7.5 (`-race`).
+- **Two tabs refreshing at once.** Two concurrent refreshes with one token, within 10 seconds of the rotation, both receive the same successor, and the grant stays live through the next refresh, whichever write landed last (R20). Test added to 7.5 (`-race`).
 - **Oversized parameters.** A value past R11's bounds, any other authorization parameter over 4 KiB, or more than 10 `resource` values, is answered `invalid_request` before anything is parked or stored, and the oversized `state` is not reflected. Test added to 6.1.
 - **Double-clicked consent, or a lost resume response.** A handle's stage is single-use, so the second attempt is refused as an unknown handle, and the user restarts from the relying party. No code is issued twice. Test added to 6.6.
 - **A `state` that changes between tabs.** Two parallel requests share one flow cookie, and each keeps its own `state` and `nonce`. Test added to 6.2.
@@ -99,6 +99,12 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 | F, after H2 | H4: logout and revocation | 11.1, 11.8, 11.2–11.4; 11.5–11.7 | `httpsec/oidc_endsession.go`, `oidc_logout_confirm.go`, `oidc_consents.go`, `logout.go`, `oidc_backchannel.go` (the RP-side upstream logout), `session_management.go`, `password_change.go`, the passkey assertion path, `csrf.go` (provider exemptions), `recovery/hold.go`, `authenticate/mfa/reset.go` | Opus (logout ordering; ports in several packages) |
 | G | X: integration | 12.6, 13.1; 14.1–14.2; 14.3 per finding | `test/oidcprovider_durable_test.go`, `test/httpsecconformance/oidcprovider_scenarios.go`, `test/cmd/conformanceop/`, `test/conformance/`, the `conformance` target in `Makefile`, and the `conformance` job and `ci-ok`'s needs in the CI workflow `split-ci-jobs` leaves | Sonnet for 12.6, 13.1, 14.1 and 14.2 (scenarios the plan lists); Opus for each 14.3 defect fix |
 | H | main session plus reviewer | 15.1–15.3 | OpenSpec artifacts | Opus whole-branch reviewer |
+| I (parallel, worktrees) | R: recovery | 16.1 | `recovery/recover_complete.go`, `recovery/hold.go`, `recovery/grants.go`, `event/event.go` (one godoc), `httpsec/recovery.go`, their tests | Opus (an ordering around spending a credential) |
+| I | B: POST bounce | 16.2 | `httpsec/oidc_authorize.go`, `oidc_endsession.go`, `httpsec/oidc_post_bounce_test.go` (new), `test/httpsecconformance/oidcprovider_scenarios.go` | Opus (a cookie boundary across endpoints) |
+| I | E: end reports | 16.3 | `session/sessions.go`, `session/end_observer.go`, their tests, `oidcprovider/end_report_read_test.go` (new), `httpsec/oidc_logout_read_test.go` (new) | Opus (a guarantee a mistake would pass tests and still break) |
+| I | K: successor key | 16.4 | `oidcprovider/options.go`, `oidcprovider/refresh.go`, their tests, `test/expirytasks_test.go`, `test/oidcprovider_durable_test.go`, `test/oidcprovider_durable_logout_test.go`, `README.md` (provider section) | Sonnet (a construction check the finding states) |
+| I | H: hint outage | 16.5 | `oidcprovider/authorize.go`, `oidcprovider/endsession.go` (tests only), their tests | Sonnet (a stated answer at a known seam) |
+| J, after I | main session plus reviewer | 16.6, 16.7 | OpenSpec artifacts | Opus whole-branch reviewer |
 
 **The status table.** `httpsec/errors.go`'s table is owned by H1. Later lanes add their sentinels in their own files and append rows inside their worktrees. The main session resolves the table merge (a few lines, stated when it happens).
 
@@ -109,7 +115,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 1.1: Recheck the merged in-flight changes
 - [ ] Rebase this change's branch onto `main`, which holds `pre-release-api-fixes` and `close-security-gaps`.
 - [ ] Read the merged code with gopls and record in `design.md`:
-  - the exact names this plan assumes and leaves open. The placeholders below are `dpop.VerifyIssuingProof`, `httpsec.certThumbprint`, `bindingVerifiers`, the CSRF exemption option, the events sink type, and `token.Generator`'s final shape;
+  - the exact names this plan assumes and leaves open, which the plan's later tasks now use;
   - each difference from the design, R6's retire rule and key cap included.
 - [ ] Rewrite every plan line that names a placeholder with the merged name. That is a plan edit (`tasks-plans`), done here before any lane starts.
 - [ ] Run `openspec validate oidc-provider --strict`. Expected: `Change 'oidc-provider' is valid`.
@@ -169,10 +175,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a `Lifetime` past a `LifetimeReporter`'s window gives `ErrConfig`;
   - `Claims: {"iss": "x"}` gives `ErrConfig` and an empty string, and so do `sub`, `iat`, `exp` and `jti`;
   - an issuer built for `signingkey.ES256` over a key source holding it signs ES256.
-- [ ] FAIL; implement. Add `TestJWXAllowList` entries only for new jwx calls. PASS. Commit.
+- [ ] FAIL; implement. Extend the allow-list in `token/integration_test.go`, which `TestProductionSourceGuards` and `TestJOSEAllowListIsHonest` read, only for new jwx calls. PASS. Commit.
 
 ### Task 2.4: Chain refusal and docs
-**Files:** Test `httpsec/bearer_tokentype_test.go`; Modify godoc in `token/doc.go`
+**Files:** Test `httpsec/bearer_tokentype_test.go`; Modify the package godoc in `token/claims.go`
 - [ ] Red `TestBearer_RefusesOtherTokenTypes`. `EnableBearerToken` gets an ID token (`typ` `JWT`) and an access token (`at+jwt`), both from a `token.Issuer` over the chain's own keys and issuer. Each answers 401 and reaches the error handler as the uniform authentication failure.
 - [ ] Run it. If it passes before 2.2's code, it is not testing the change, so drop 2.2's check temporarily to see it fail. Green comes from 2.2. Godoc names the default type. Run `go doc ./token WithTokenType`. Commit.
 
@@ -213,7 +219,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a store mock failing the write calls no observer;
   - `DeleteExpired` calls none.
 - [ ] FAIL. Implement:
-  - `Delete` and `DeleteByUserExcept` load the session first, only when observers exist, to learn its family. A failed load does not block the deletion; the report then carries the user and a nil family;
+  - `Delete` and `DeleteByUserExcept` load the session first, only when observers exist, to learn its family. A failed load does not block the deletion. `Delete` then reports no user and a nil family, since it holds only an identifier, and `DeleteByUserExcept` reports the user and a nil `KeptFamily`;
   - reports are sent after the store write returns nil.
 - [ ] PASS with `-race`. Commit.
 - [ ] Red rows on `TestSessions_EndObserver`: a caller's context cancelled before the report reaches the observer uncancelled, with its values kept (`context.WithoutCancel`); the first of two observers panicking leaves the second called and the end unchanged, with a log line carrying none of the report. FAIL; implement; PASS; commit.
@@ -377,10 +383,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - keys: `ID id.ID`, `HandleDigest []byte`, `FlowDigest []byte`;
     - the request: `ClientID`, `RedirectURI`, `Scopes`, `Resources`, `State`, `Nonce`, `Challenge`, `Prompt []string`, `MaxAge *int`, `IDTokenHintSubject`, `DPoPJKT`, `LoginHint`, `UILocales`, `ClaimsLocales`, `ACRValues`;
     - progress: `ParkedAt`, `ExpiresAt`, `Stage`, `SignIn *SignIn`.
-  - `type PendingRequestStore interface { Create(ctx, *PendingRequest) error; Load(ctx context.Context, handleDigest []byte) (*PendingRequest, error); Advance(ctx context.Context, handleDigest []byte, from, to Stage, s *SignIn) error; DeleteExpired(ctx context.Context, before time.Time) (int, error) }`. `Advance` returns `ErrNotFound` unless the stored stage equals `from`.
+  - `type PendingRequestStore interface { Create(ctx, *PendingRequest) error; Load(ctx context.Context, handleDigest []byte) (*PendingRequest, error); Advance(ctx context.Context, handleDigest []byte, from, to Stage, s *SignIn) error; DeleteExpired(ctx context.Context, before time.Time) (int, error) }`. `Advance` returns `ErrNotFound` unless the stored stage equals `from` and `to` is a strictly forward move: login to consent or done, consent to done, logout to done.
 - **Sign-ins:** `type SignIn struct { User identity.UserID; Family id.ID; AuthenticatedAt time.Time; AMR []string; ACR string; AbsoluteExpiresAt time.Time; ExternalIssuer, ExternalSessionID string }`.
 - **Code records:**
-  - `type CodeRecord struct { TokenID id.ID; ClientID, RedirectURI, Challenge, Nonce, DPoPJKT string; Scopes, Resources []string; SignIn SignIn; GrantFamily id.ID; Offline bool; ExpiresAt time.Time }`. `SignIn` already holds the upstream issuer and session (R7);
+  - `type CodeRecord struct { TokenID id.ID; ClientID, RedirectURI, Challenge, Nonce, DPoPJKT string; Scopes, Resources []string; SignIn SignIn; GrantFamily id.ID; Offline, EndsWithSignIn bool; ExpiresAt time.Time }`. Issuing a code (6.7) sets `EndsWithSignIn` from the client. `SignIn` already holds the upstream issuer and session (R7);
   - `type CodeStore interface { Create(ctx, *CodeRecord) error; Load(ctx, tokenID id.ID) (*CodeRecord, error); DeleteExpired(ctx, before time.Time) (int, error) }`.
 - **Consents:**
   - `type Consent struct { User identity.UserID; ClientID string; Scopes []string; Offline bool; LastGivenAt time.Time }`;
@@ -402,8 +408,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - `RevokeByUserAndClient(ctx, user, clientID, cause, at) ([]Grant, error)`, each also writing a tombstone for each matching unspent code, `Offline` or not (R7);
     - `EndSignIns(ctx, sel SignInSelector, at time.Time) ([]Grant, error)`, which also writes a tombstone for the `GrantFamily` of each matching unspent code without `Offline`;
     - `DeleteExpired(ctx, now time.Time, keepRevoked time.Duration) (int, error)`;
-    - `DeleteOrphans(ctx, lineageExists func(id.ID) (bool, error), olderThan time.Time) (int, error)`.
-- **Tombstones across the code and grant stores (R7).** The tombstones above span `CodeStore` and `GrantStore`, so `GrantStore` takes a `func(ctx, sel SignInSelector, includeOffline bool) ([]id.ID, error)` from `CodeStore`, wired by `oidcprovider.New`, and writes the tombstones through its own `Revoke`. A store outage on either fails the call.
+- **Tombstones across the code and grant stores (R7).** The tombstones above span `CodeStore` and `GrantStore`, so `CodeStore` embeds `UnspentCodes`, with `UnspentBySignIn(ctx, sel, includeOffline, at)` and `UnspentByClient(ctx, user, clientID, at)`, and `oidcprovider.New` joins them through `GrantStore.UseCodes(UnspentCodes) error`. The grant store writes each tombstone itself, with the sign-in-ended mark when an end recorded it. A listing excluding offline codes still includes one with `EndsWithSignIn`. `EndSignIns` does not touch browser sessions. A store outage on either fails the call.
 - **Browser sessions (R2):**
   - `type BrowserSession struct { Digest []byte; SignIn SignIn; IdleExpiresAt, AbsoluteExpiresAt time.Time }`;
   - `type BrowserSessionStore interface { Put(ctx, *BrowserSession) error; Load(ctx, digest []byte, now time.Time) (*BrowserSession, error); Touch(ctx, digest []byte, idleUntil time.Time) error; Delete(ctx, digest []byte) error; DeleteBySignIn(ctx, sel SignInSelector) (int, error); DeleteExpired(ctx, before time.Time) (int, error) }`.
@@ -460,9 +465,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
     - an upstream issuer and session match only grants that recorded them;
   - an invalid selector shape → `ErrConfig`;
   - `DeleteExpired` keeps a revoked grant until `keepRevoked` passes;
-  - `DeleteOrphans` removes a grant whose lineage is missing and which is older than the cutoff.
 - [ ] FAIL; implement; PASS; commit.
-- [ ] Red rows on the grant suite (R7, R10): `EndSignIns` for a sign-in with an unspent code leaves that code's `GrantFamily` revoked, and a later `Create` keeps it revoked; an `Offline` code survives `EndSignIns` and not `RevokeByUser`; `DeleteOrphans` skips a grant with `HoldsLineage` false. FAIL; implement; PASS; commit.
+- [ ] Red rows on the grant suite (R7, R10): `EndSignIns` for a sign-in with an unspent code leaves that code's `GrantFamily` revoked, and a later `Create` keeps it revoked; an `Offline` code survives `EndSignIns` and not `RevokeByUser`. FAIL; implement; PASS; commit.
 
 ### Task 5.5: The lineage store type
 **Files:** Create `internal/oplineage/oplineage.go`, `oidcprovider/lineage.go`; Test `oidcprovider/lineage_test.go`
@@ -499,12 +503,12 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ## Task group 6: authorization and consent (lane A)
 
 **Interfaces produced:**
-- `func (p *Provider) Authorize(ctx context.Context, params url.Values) (AuthorizeResult, error)`
+- `func (p *Provider) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error)`, with `AuthorizeInput{Params url.Values; FlowSecret, BrowserSessionSecret string; IdleTimeout time.Duration}`, the last filled by H1 from the chain's manager, and which prints redacted as `AuthorizeResult` does
   - `type AuthorizeResult struct { Location string; FlowSecret string }`. `FlowSecret` is empty unless the request was parked.
   - The error is `ErrInvalidAuthorization` (the client or redirect URI is unredirectable) or a dependency failure. Every redirectable error comes back as a `Location` carrying `error`.
 - `func (p *Provider) PendingRequest(ctx context.Context, handle, flowSecret string) (*PendingView, error)`
-  - `type PendingView struct { ClientID, ClientName string; Scopes, GrantedScopes []string; Prompt []string; MaxAge *int; LoginHint, UILocales string; Stage Stage }`
-- `func (p *Provider) Resume(ctx context.Context, handle, flowSecret string, s SignIn, answer *ConsentAnswer) (string, error)`
+  - `type PendingView struct { ClientID, ClientName string; Scopes, GrantedScopes []string; Prompt []string; MaxAge *int; LoginHint string; UILocales, ClaimsLocales, ACRValues []string; Stage Stage }`. `GrantedScopes` is everything the user has given that client
+- `func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, error)`, with `ResumeInput` and `ResumeResult` as built in `oidcprovider/resume.go`. Both print redacted. H1 fills `IdleTimeout` from the chain's manager
   - `type ConsentAnswer struct { Deny bool; Scopes []string }`. It is nil at the login stage.
   - It returns `redirect_to`. The errors are `ErrUnknownHandle`, `ErrReauthenticate`, `ErrConsentMalformed` or a dependency failure.
 - `func consentNeeded(c *RegisteredClient, req *PendingRequest, remembered *Consent) bool`, unexported and table-tested.
@@ -541,7 +545,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - with a fixed clock, a resume at 10 min 1 s → `ErrUnknownHandle`;
   - with `WithPendingRequestLifetime(5*time.Minute)`, one at 6 min → `ErrUnknownHandle`.
 - [ ] FAIL; implement; PASS; commit.
-- [ ] Red rows on `TestProvider_Park` (R9): `Authorize` given a flow secret that a live request holds keeps it, and returns it as the `FlowSecret`; two requests parked with it both resume, each with its own `state` and `nonce`. FAIL; implement; PASS; commit.
+- [ ] Red rows on `TestProvider_Park` (R9): `Authorize` given a flow secret of the shape the provider mints keeps it, and returns it as the `FlowSecret`; two requests parked with it both resume, each with its own `state` and `nonce`. FAIL; implement; PASS; commit.
 
 ### Task 6.3: The page view
 - [ ] Red `TestProvider_PendingRequest`:
@@ -632,9 +636,9 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `type ClaimSource interface { Claims(ctx context.Context, user identity.UserID, scopes []string) (map[string]any, error) }`, set with `WithClaimSource`;
   - `func (p *Provider) UserInfo(ctx context.Context, at *AccessToken) (map[string]any, error)`.
 - **Ending grants:**
-  - `func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) error`;
+  - `func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientToNotify, error)`;
   - `func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport)`, which implements `session.EndObserver`;
-  - `func (p *Provider) RevokeUserGrants(ctx context.Context, user identity.UserID, cause RevocationCause) error`;
+  - `func (p *Provider) RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error`, a plain `string` so a port needs no import of `oidcprovider`;
   - `func (p *Provider) Consents(ctx context.Context, user identity.UserID) ([]ConsentView, error)`;
   - `func (p *Provider) RevokeConsent(ctx context.Context, user identity.UserID, clientID string) error`.
 - **Back-channel delivery:** `type LogoutDelivery interface { Deliver(ctx context.Context, uri string, logoutToken string) error }`, set with `WithLogoutDelivery`. The default posts through the outbound client with a 5 s timeout.
@@ -660,6 +664,23 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red `after_exchange`: a replay → `invalid_grant`, then the refresh token → `invalid_grant`.
 - [ ] Red `concurrent`: 16 goroutines exchanging one code get exactly one success.
 - [ ] FAIL; implement. A replay (onetime reports the code consumed) calls `GrantStore.Revoke(record.GrantFamily, CauseCodeReplay)` and the lineage manager's `RevokeFamily`. Revoking opaque tokens is handled by their grant check in 7.4. Run with `go test -race`: PASS. Commit.
+- [ ] Red rows on `TestProvider_CodeReplay` (R17), each seen failing first:
+  - `invalid_replay`, as a table of a wrong verifier, no verifier, and another client: `invalid_grant`, and `Load(F).Revoked` stays false. The earlier row saying another client's replay revokes is replaced by this one;
+  - `valid_within_the_minute`: 30 s past the code's expiry, after another issue has run the default stores' sweeps, a valid replay gets `invalid_grant` and `Load(F).Revoked` is true;
+  - `valid_past_the_minute`: 2 min past expiry, after a sweep, a valid replay gets `invalid_grant` and `Load(F).Revoked` stays false;
+  - `consumer_store_retains`: code stores that keep the spent code past the minute revoke on a later valid replay;
+  - `end_reaches_exchange_in_flight`: a code spent, `Create` held at a barrier, the clock 61 s on, another issue sweeps, `EndSignIns` runs, `Create` released: the grant ends revoked.
+- [ ] Red rows on `TestProvider_ExchangeCode`:
+  - a store failure during the spend, and a transient failure of the read after it, for the owner and for another client: `oidcprovider: dependency failure`, with the cause wrapped, and no `invalid_grant`;
+  - a caller hanging up at the check and at the spend: the error matches `context.Canceled`, and no ERROR line is logged, including from `token/onetime`.
+- [ ] A spend or check failure wraps the fixed `errCodeStoreUnanswered`, or `ctx.Err()` when the caller has gone, and not the store's own error, which `token/onetime` keeps to itself and logs at ERROR. A failure of the read after it wraps the real error.
+- [ ] FAIL; implement:
+  - `refuseSpentCode` revokes only when `record.ClientID == rc.ID` and `codeBindingsHold` passes; once the secret matches, an unspent and unexpired token is a dependency failure carrying `ctx.Err()` when the caller has gone;
+  - the default stores keep a code a minute past its expiry, through one constant, `codeKeptPastExpiry`. `MemoryCodeStore.Create` sweeps at `now.Add(-codeKeptPastExpiry)`. `DeleteExpiredBefore`'s argument is a cutoff on when a token was *issued*, and it removes only what has also expired by the store's clock, so moving the cutoff keeps nothing past expiry: the default token store's inner `MemoryStore` reads a clock lagging by that minute, which it reads only when sweeping;
+  - `token/onetime` logs a store failure the caller caused below ERROR, through `internal/hangup.ByCaller`.
+
+  Run with `go test -race`: PASS. Commit.
+- [ ] **Task 7.2 stays unticked until 7.5** adds the refresh-refused assertions to `racing_commit` and `after_exchange`. Tick 7.1 when this lane merges.
 
 ### Task 7.3: ID tokens
 **Files:** Create `oidcprovider/idtoken.go`
@@ -672,6 +693,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `sid` equal to the sign-in family's text, and the same after the sign-in renews;
   - an ES256 client signs with ES256;
   - `IDTokenLifetime` of 10 min gives 600.
+- [ ] Red row (R18): a key source failing at signing answers a dependency failure, with the code unspent, no grant row and no lineage, and the same request then succeeds. Mint before `tokens.Consume`, for `record.GrantFamily`.
 - [ ] Red row (R6): a chain reading usernames does not change `sub`, which is `Grant.User`. FAIL; implement through `token.Issuer`, one per algorithm the keys hold, built in `New`; PASS; commit.
 
 ### Task 7.4: Access tokens
@@ -683,7 +705,12 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `AccessTokenLifetime` of 15 min;
   - `cnf.jkt` when `Binding.JKT` is set;
   - an opaque client gets `at.<id>.<secret>`, stored as a digest, and `VerifyAccessToken` refuses it once its grant is revoked;
-  - `VerifyAccessToken` on an ID token or an `rt.` value → `invalid_token`.
+  - `VerifyAccessToken` on an ID token or an `rt.` value → `invalid_token`;
+  - `VerifyAccessToken` on a token whose grant row is gone → refused as revoked, because a revoked row is swept while a token set to a longer lifetime can outlive it;
+  - a `resource` outside the allowlist or the grant, at the exchange → `invalid_target` with the code unspent, judged before the spend beside `codeBindingsHold` (R18);
+  - a code granted one resource, `openid` in scope, exchanged with none named → `aud` is exactly that resource, with no issuer (R15);
+  - a code granted several, exchanged with none named → `invalid_target`, the code unspent, and the same code naming one succeeds (R15);
+  - a code granted none → the default audience with the issuer for `openid`, else the issuer alone; `AllowedResources` is never a default.
 - [ ] FAIL; implement; PASS; commit.
 
 ### Task 7.5: Refresh
@@ -706,12 +733,23 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a client absolute lifetime of 7 days ends at 7 days;
   - the refreshed ID token keeps `auth_time`, `sub` and `aud`, with no `nonce`.
 - [ ] Red, the Review Focus row `TestProvider_Refresh/two_tabs_within_grace`: two concurrent refreshes with `r1` both succeed under `-race`, and the grant stays live.
-- [ ] FAIL. Implement over a private `session.Sessions` built in `New` with:
+- [ ] FAIL. Implement over a private `session.Sessions`, built per request because a registry's clients change over time (R13), with:
   - the lineage store;
   - `WithIdleTimeout` and `WithAbsoluteTimeout` per client, applied through `WithAbsoluteLifetime` at creation;
   - a `WithReuseObserver` that calls `GrantStore.Revoke(F, CauseReuse)`.
 
   `WithUnusedSuccessorRecovery` is never passed. Use `RotateWithGraceIssuing` with the client's grace. PASS with `-race`; commit.
+- [ ] Red rows on `TestProvider_Refresh` (R20):
+  - `two_tabs_same_successor`: a raced pair, and a pair 1 s apart, both answered the same `r2`, one head left, and `r2` then refreshes with the grant live;
+  - `diverged_holders_are_caught`: `r2` rotated to `r3`, the grace passed, and `r2` presented: revoked with cause `reuse`;
+  - `after_the_window_re_rotates`: `r1` presented 20 s after its rotation receives a new random successor, the grant live, and the knocked-out `r2` presented past its grace revokes;
+  - `a_thief_missing_the_window_is_caught`: a thief refreshing 20 s from the victim each cycle diverges, and reuse fires within two cycles;
+  - `window_set_by_the_consumer`: zero turns the same successor off, and `TestProvider_RefreshSuccessorWindow_Limits`: a value over `session.MaxRenewalGrace`, or a negative one, is `ErrConfig`;
+  - `walks_to_the_head`: `r1` → `r2` → `r3` inside the window, then `r1` presented, answers `r3`;
+  - `second_read_after_the_first_write`: with the user load held open, tab one's write lands between tab two's two reads, and tab two is answered the same `r2`, not a dependency failure or a reuse;
+  - `another_key_re_rotates`: `r1` re-presented to a provider with another key inside the grace receives tokens, and the grant is not revoked;
+  - `no_key_no_successor`: nothing but the provider can compute `r2`: with `r1` rotated, a successor derived under another key is refused, and writes nothing.
+- [ ] FAIL; implement `func WithRefreshSuccessorWindow(d time.Duration) Option`, defaulting to 10 s, and `func WithRefreshSuccessorKey(key []byte) Option` (at least 32 bytes, else `ErrConfig`; the default is 32 random bytes drawn once in `New`, and a source that cannot supply them fails `New` with `ErrConfig`) and `HMAC-SHA256(key, family, presented secret)`, through the per-request manager's `WithRandom` or `oidcprovider`'s own read of the stored successor digest. Replace the rows pinning the old behaviour, including `two_tabs_the_token_knocked_out_is_reuse`, and `doc.go`'s sentence on it.
 - [ ] Red rows on `TestProvider_Refresh`, H6 first (R8): `rt.<real family>.<never issued>` → `invalid_grant`, with no write of any kind, and the real token still works. An omitted `scope` means the grant's; scopes the client has lost are left out and reported, and regained later when allowed again; a removed client → `invalid_client`. FAIL; implement; PASS; commit.
 
 ### Task 7.6: Revocation and introspection
@@ -735,7 +773,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 **Files:** Create `oidcprovider/userinfo.go`, `claims.go`
 - [ ] Red `TestProvider_UserInfo`:
   - `openid profile` for a user named "Ada" → `{"sub", "name", "preferred_username"}`, with no `email`;
-  - `openid email` with the default source → `{"sub"}` only, because `identity.Details` has no email field;
+  - `openid email` with the default source, for the username `ada@example.com` → `{"sub", "email", "email_verified": false}`;
+  - `openid email` for the username `ada`, or `Ada <ada@example.com>` → `{"sub"}` only: the username must be exactly an address (`mail.ParseAddress`, with its `Address` equal to the username);
   - a consumer source releasing `department` for `org` → returned unchanged;
   - a token without `openid` → `insufficient_scope`;
   - a disabled user → `invalid_token`;
@@ -747,7 +786,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 7.8: Ending grants
 **Files:** Create `oidcprovider/endsignin.go`
 - [ ] Red `TestProvider_EndSignIn`:
-  - each `session.EndReport` cause maps to the right `SignInSelector`;
+  - `SignInsEnded` chooses its `SignInSelector` from the report's fields, not by listing causes, so a cause added later cannot silently stop ending grants: a family selects that family, a user with a `KeptFamily` the user except it, a user with an issuer that pair, an issuer with an upstream session that pair, and a user alone the whole user. So `EndDeleted` selects the family, and `EndUserSessionsExcept` or `EndOtherSignIns` with a nil `KeptFamily` select the whole user. A row asserts an unknown cause naming a family still ends it;
+  - a report naming nobody ends nothing and is logged;
   - the online grant is revoked and the offline one survives;
   - an `EndsWithSignIn` client loses both;
   - the clients returned are queued for delivery, once each;
@@ -756,6 +796,14 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red `TestProvider_RevokeUserGrants`: every grant of `u-1` is revoked with the cause, and `RevokeConsent` revokes only `(u-1, billing-web)` grants and forgets the consent.
 - [ ] FAIL; implement; PASS; commit.
 - [ ] Red row (R2): `EndSignIn` by each selector also deletes the browser sessions, through `DeleteBySignIn`, and a failure there fails the call. FAIL; implement; PASS; commit.
+
+- [ ] Rows from R21, each seen failing first:
+  - `TestProvider_Refresh`: a disabled user's refresh whose row cannot be marked answers a dependency failure with the family intact, and presenting again marks the row and ends its access tokens;
+  - `TestProvider_RevokeUserGrants_Consent`: no consent but a grant ends that client's grants only; neither is `ErrForeignConsent`;
+  - `TestClient_Validation`: a `ResourceIdentifier` equal to the issuer, not an absolute URI, with a fragment, or on a public client fails construction, named;
+  - `TestProvider_EndSignIn`: a hanging grant store does not spare the browser sessions, each store on its own `revocationBudget`; a report with a session and no issuer selects only that session;
+  - `TestProvider_Introspect`: a refresh token's `exp` honours a shortened idle timeout and absolute lifetime; a public client naming no token is `invalid_client`;
+  - `TestProvider_UserInfo`: `json.RawMessage("null")` is left out; a consumer's `[]` and `{}` stay.
 
 ### Task 7.9: Logout tokens and delivery
 **Files:** Create `oidcprovider/backchannel.go`
@@ -766,10 +814,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `sub`, `sid`, no `nonce`, and the client's ID token algorithm.
 - [ ] Red `TestProvider_BackChannelDelivery`:
   - an `httptest.NewTLSServer` receives one form POST with `logout_token`;
-  - a server that never answers: `EndSignIn` returns within 50 ms, and the delivery times out after 5 s on a fake clock;
+  - a server that never answers: `EndSignIn` returns within 50 ms, and the delivery times out after 5 s under `synctest`;
   - a 500 answer → logged and reported, with no retry;
   - a consumer `LogoutDelivery` receives the URI and token instead.
-- [ ] FAIL. Deliver on a goroutine with `context.WithoutCancel` and a 5 s timeout, tracked by a `sync.WaitGroup` that `(*Provider).Close(ctx)` waits on. PASS with `-race`; commit.
+- [ ] FAIL. Deliver on a goroutine with `context.WithoutCancel` and a 5 s timeout, tracked by the pool that `Shutdown` drains (R14). PASS with `-race`; commit.
 - [ ] Red rows on `TestProvider_LogoutToken`: `events` is exactly `{"http://schemas.openid.net/event/backchannel-logout":{}}`, and `sid` equals the ID tokens'.
 - [ ] Red rows on `TestProvider_BackChannelDelivery` (`-race`, R14): a 302 is not followed and is reported as failed; 204 is a success; with 8 workers and a queue of 1024 a further delivery is dropped and reported; a delivery ending its goroutine is replaced, with the pool's size unchanged; `Shutdown` drains until its context ends, and reports what it leaves; a store or fetch cut off by `Shutdown` is not reported as a failure; a cancelled caller's context still delivers. FAIL; implement; PASS; commit.
 - [ ] `Provider` gains `Start(ctx) error` and `Shutdown(ctx) error`, following `signingkey`'s pattern. `EnableOIDCProvider`'s godoc names them.
@@ -799,9 +847,12 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - enabled twice;
   - the end-session path set to the chain's logout path;
   - two provider paths equal;
-  - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`;
+  - a session manager on the chain (bearer, renewal or logout deps) without `session.WithEndObserver(p)`, checked in `c.checkAfterWiring` so an observer added during wiring counts (R23);
   - a client with `RequireBinding: BindingDPoP` and no `EnableDPoP`;
-  - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (1.1's merged name).
+  - `(*Provider).DPoPEnabled()` differing from whether `EnableDPoP` is on → `ErrConfig` naming `WithDPoP`;
+  - `(*Provider).AssertionTokenEndpoint()` not empty and differing from the chain's token URL, after the prefix and path options → `ErrConfig` naming `WithAssertionTokenEndpoint`;
+  - `EnableJWKSEndpoint` given a `*signingkey.Keys` other than the one `(*Provider).SigningManager` answers → `ErrConfig`, and a consumer's wrapped provider of any other type, which cannot be compared → built, as the godoc says;
+  - a provider-only chain (`EnableSessionBearer`, `EnableJWKSEndpoint`, `EnableOIDCProvider`, `EnableDPoP`) → built, because the provider adds `"EnableOIDCProvider"` to `bindingVerifiers` (`httpsec/options.go`).
 - [ ] FAIL; implement; PASS; commit.
 - [ ] Red rows on `TestOIDCProvider_Construction` (R2, R11): browser sessions on without CSRF protection refused; `WithoutBrowserSessions` without it built; no security headers refused; `WithOIDCPagesCarryFrameAncestors` without them built. FAIL; implement; PASS; commit.
 
@@ -883,6 +934,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 - [ ] Red rows on `TestOIDCToken` (R11): `client_secret` in a POST's query → 400 `invalid_request`; an empty parameter counts as omitted; `Secure()` false is refused. FAIL; implement; PASS; commit.
 
 ### Task 9.2: Binding at the token endpoint
+
+**Where the check lives:** `RequireBinding` is enforced in `Provider.Token`, before the spend and before a rotation, and not only in `httpsec`, so a direct caller of `Provider.Token` cannot get a Bearer token for a client that requires binding.
 - [ ] Red `TestOIDCToken_SenderConstrained`:
   - a public client with a `k1` proof → `cnf.jkt(k1)` and `token_type` `DPoP`, and a refresh with a `k2` proof → `invalid_dpop_proof`;
   - a proof with another `htu` → 400 `invalid_dpop_proof`, and the code still exchanges;
@@ -890,7 +943,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a `RequireBinding: BindingDPoP` client without a proof → `invalid_dpop_proof`, and the code is unspent;
   - `dpop_jkt(k1)` exchanged with `k2` → `invalid_grant`;
   - a TLS client certificate `C` with no proof → `cnf["x5t#S256"]` of `C`.
-- [ ] FAIL; implement by calling D8's issuing-proof verification before `p.Token`; PASS; commit.
+- [ ] FAIL; implement by calling `issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential)` before `p.Token`, and mapping its `session.KeyBinding{JKT, X5TS256}` to `Binding{JKT, X5T}`; PASS; commit.
 - [ ] Red rows on `TestOIDCToken_SenderConstrained` (R12): nonces on and a proof with none → 400 `{"error":"use_dpop_nonce"}` with `DPoP-Nonce` and `no-store`, and the same code exchanges with that nonce; a proof and a certificate → `cnf.jkt` alone; a refresh of a bound public grant → `token_type` `DPoP`; a confidential client refreshing with no proof → `Bearer`, and a required one refused; a `DPoP` header while DPoP is off → ignored, `Bearer`. FAIL; implement; PASS; commit.
 
 ### Task 9.3: Revocation and introspection endpoints
@@ -915,8 +968,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 9.5: A refresh token is never a sign-in
 - [ ] Red `TestRefreshToken_NotASignIn`. An `rt.…` value is refused as an unknown credential at each of:
   - `EnableSessionBearer`;
-  - `EnableSessionRenewal`;
-  - `EnableBearerToken`.
+  - `EnableSessionRenewal`.
 
   The session store mock asserts no `Load` call for the `EnableSessionBearer` case.
 - [ ] It may pass at once, because `session.ValidIdentifier` already refuses the value. Then invert temporarily: let the bearer accept any identifier and see the test fail, as `golang-tdd.md` asks. Commit.
@@ -926,7 +978,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - a preflight from an allowed origin to `/oauth2/token` is allowed;
   - a cross-origin GET to `/oauth2/authorize` from an allowed origin carries no `Access-Control-*` header;
   - the same holds for `/oauth2/logout`.
-- [ ] FAIL; implement as a provider-registered exclusion in `cors.go` (a path set read at construction); PASS; commit.
+- [ ] FAIL; implement as a provider-registered exclusion in `cors.go` (the settled paths, read at request time); PASS; commit.
 - [ ] Red rows on `TestCORS_OIDCProvider`: a preflight for `DPoP` is allowed; `DPoP-Nonce` and `WWW-Authenticate` are exposed; no credentials are allowed; `/authorize/resume` and `/logout/confirm` never carry CORS headers. FAIL; implement; PASS; commit.
 
 ---
@@ -964,7 +1016,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 11.1: The end-session endpoint (R3)
 **Files:** Create `httpsec/oidc_endsession.go`; Test `httpsec/oidc_endsession_test.go`
 - [ ] Red `TestOIDCEndSession`, a table:
-  - a hint naming the browser session's sign-in, expired included → `p.EndSignIn({Family: sid})` then `sessions.RevokeFamily`, and a 303 to the logged-out page;
+  - a hint naming the browser session's sign-in, expired included → `p.EndSignIn({Family: sid})` then `sessions.RevokeFamily`, and a 303 to the logged-out page. `session-signals` changes that call to `Logout(ctx, user, family)` at its rebase, as `Logout` is on its branch and this change merges first;
   - with a registered `post_logout_redirect_uri` and `state=s-1` → 303 there with `state=s-1`; no `state` → none added; an unregistered URI, or one with a query added → the logged-out page, the sign-in still ended;
   - `WithLogoutConfirmation` → 303 to the logout page with a handle, nothing ended;
   - no hint, a hint with an unpublished `kid`, or a valid hint for another sign-in → the same, with `StageLogout` parked;
@@ -1025,10 +1077,10 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 
 ### Task 11.6: Revocation on security events (T8)
 **Files:** Modify `recovery/hold.go`, `authenticate/mfa/reset.go`, `httpsec/password_change.go`, `httpsec/session_management.go`, the passkey assertion path in `httpsec`
-- [ ] Ports, each declared in its own package: `interface{ RevokeUserGrants(ctx context.Context, user identity.UserID, cause oidcprovider.RevocationCause) error }`. The cause is a string type, so the packages take a `string` alias to avoid importing `oidcprovider`. Options:
+- [ ] Ports, each declared in its own package: `interface{ RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error }`, importing nothing from `oidcprovider`. Options:
   - `recovery`: `WithGrantRevoker(r)` and `WithoutRecoveryGrantRevocation()`;
   - `mfa`: `ResetDeps.Grants` and `WithoutResetGrantRevocation()`;
-  - `httpsec`: `WithPasswordChangeGrantRevocation()` (off by default), `WithoutPasskeyCloneGrantRevocation()`, and the session-management body field `"revoke_application_access": true`.
+  - `httpsec`: `WithPasswordChangeGrantRevocation()` (off by default), and the session-management body field `"revoke_application_access": true`.
 - [ ] Red:
   - `TestRecoverer_RevokesGrants`: revoked, offline grants included; the keep option keeps them; a revoker error is returned; with no revoker, the behaviour is unchanged;
   - `TestResetEnrolment_RevokesGrants`: revoked after the removals; a failure is returned after them; the keep option keeps grants while sessions still end;
@@ -1042,8 +1094,8 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - cross-site POSTs to authorize, token, revoke, introspect and logout are not refused by CSRF;
   - cross-site POSTs to resume, `/logout/confirm` and `/consents` are refused, a consent answer with the victim's handle included;
   - each exempt endpoint still runs the throttle.
-- [ ] FAIL; register the exemptions through D6's API (1.1's merged name) from `EnableOIDCProvider`; PASS.
-- [ ] Godoc and README: logout, consents, and the four event options with their defaults. Commit.
+- [ ] FAIL; register the exemptions from `EnableOIDCProvider`, each the exact method and path `WithCSRFExemption(method, pattern)` takes, on the chain's CSRF layer; PASS.
+- [ ] Godoc and README: logout, consents, and each event's option with its default. Commit.
 
 ---
 
@@ -1051,7 +1103,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 
 ### Task 12.1: The migration
 **Files:** Create `store/migrate/securitystate/20261103000000_oidc_provider.sql`, `internal/pgschema/oidcprovider.go`; Test `test/migrate_securitystate_test.go`
-- [ ] Tables: `op_clients`, `op_pending_requests`, `op_authorization_codes`, `op_consents`, `op_grants`, `op_refresh_tokens` (the `sessions` schema), `op_access_tokens` and `op_client_assertions`.
+- [ ] Tables: `op_clients`, `op_pending_requests`, `op_authorization_codes`, `op_consents`, `op_grants`, `op_refresh_tokens` (the `sessions` schema), `op_access_tokens`, `op_client_assertions` and `op_browser_sessions`.
 - [ ] Indexes on `op_grants`: `(user_ref)`, `(user_ref, client_id)`, `(sign_in_family)` and `(external_issuer, external_session_id)`. Unique `(client_id, jti)` on assertions. Unique `handle_digest` on pending requests.
 - [ ] Red `TestMigrations/oidc_provider`:
   - applied over a database holding sessions → the tables exist and the session rows are unchanged;
@@ -1068,27 +1120,29 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - `lineage_not_a_session`: an identifier created through the lineage store → `ErrNotFound` from the adapter's `NewSessionStore`;
   - `no_credential_in_any_column`: `SELECT *` from every `op_` table after an issue, compared against the code, refresh token and client secret.
 - [ ] Conditional writes:
-  - `Advance` is `UPDATE … WHERE stage = $from`;
-  - `Grant.Create` is `INSERT … ON CONFLICT (family) DO UPDATE SET … , revoked = op_grants.revoked OR EXCLUDED.revoked`;
+  - `Advance` checks the move, then is `UPDATE … WHERE stage = $from`;
+  - `Grant.Create` is `INSERT … ON CONFLICT (family) DO UPDATE SET … , revoked = op_grants.revoked OR EXCLUDED.revoked WHERE <the row is a tombstone>`, and no row affected is the refusal the suite requires, keeping any sign-in-ended mark;
   - `Revoke` is `INSERT … ON CONFLICT DO UPDATE SET revoked = true` (the first cause kept);
-  - `EndSignIns` is one `UPDATE … WHERE <selector> AND sign_in_ended_at IS NULL RETURNING *`;
+  - `EndSignIns`, `RevokeByUser` and `RevokeByUserAndClient` are `pgschema.GrantBulkWrite`: a Hold in ascending `family` order, then a Write over the set it took;
+  - `pgxstore` and `gormstore` reuse `internal/pgschema`'s statements, row types and encodings, and wire `storetest.RunGrantOrderRaces` and `ClientStoreSuite`;
   - `AssertionID.Record` is `INSERT … ON CONFLICT DO NOTHING`, with a row count of 1 meaning new.
 - [ ] Run `go test -race -run 'Test<Adapter>Store' ./<a>/...` in `test/` against PostgreSQL 15 and 18: PASS. Commit per adapter.
-- [ ] Each adapter also implements `BrowserSessionStore` and `CodeStore.UnspentBySignIn`, driven by the suites. `DeleteOrphans` carries `holds_lineage`.
+- [ ] Each adapter also implements `BrowserSessionStore` and `CodeStore.UnspentBySignIn`, driven by the suites.
 
 ### Task 12.5: Expiry tasks
 **Files:** Create `oidcprovider/expiry.go`; Test `test/expirytasks_test.go`
 - [ ] `func ExpiryTasks(p *Provider) []expiry.Task`, with these task names:
   - `oidc-provider.pending-requests`, `oidc-provider.codes` (the onetime purge plus the code records), `oidc-provider.access-tokens` and `oidc-provider.assertion-ids`;
-  - `oidc-provider.grants`, with `keepRevoked` equal to the code lifetime;
+  - `oidc-provider.codes`, sweeping a record only one minute past its expiry, so an exchange in flight keeps what an end needs. The onetime purge must keep the code's token as long (R17). `DeleteExpiredBefore`'s argument is a cutoff on when a token was issued, so a durable purge passes `now - maxCodeLifetime - 1 minute`, not `now - 1 minute`: the maximum, as `keepRevoked` uses, so that lowering the configured lifetime in a redeploy cannot purge a code in flight early. Spent tokens then stay up to 11 minutes, which is harmless, since a replay whose record has gone revokes nothing. Prove it on each backend with a replay inside the minute after the task has run;
+  - `oidc-provider.grants`, with `keepRevoked` one minute past the longest code lifetime, as the memory store keeps it, so a code spent as it expires cannot land after its tombstone is swept;
   - `oidc-provider.refresh-tokens` (the lineage `DeleteExpired`);
-  - `oidc-provider.orphaned-grants`, with a 10 min cutoff.
 - [ ] Red `TestExpiryTasks_OIDCProvider`:
   - after the clock passes, each task deletes only expired rows;
   - a revoked grant survives until the code lifetime passes;
-  - the orphan task removes a grant with no lineage row.
+  - there is no orphan task, and a grant whose lineage went idle stays stored, its client told when the sign-in ends, on each durable backend and the memory defaults (R19).
 - [ ] FAIL; implement; PASS; commit.
-- [ ] Add browser sessions to the task list, and a row proving the orphan sweep spares a grant with `HoldsLineage` false (R10).
+- [ ] Add browser sessions to the task list.
+- [ ] Remove the orphan pass (R19): `GrantStore.DeleteOrphans`, its memory implementation and `orphanable`, each adapter's, `pgschema.GrantOrphanCandidates`, `GrantOrphanDelete`, `GrantOrphanPage` and their tests, the suite rows, and the row in `exchange_test.go` that relied on it. `Grant.HoldsLineage` and its column stay, as H4's rule reads them. Regenerate the `GrantStore` mock. A lineage that cannot be written still answers a dependency failure, and that row then asserts the grant is kept and refused at refresh once 7.5 lands.
 
 ### Task 12.6: Durable round trip (lane X)
 - [ ] Red `TestOIDCProvider_Durable`, per backend: authorize → resume → exchange. Then build a second `Provider` over the same database (a restart) and refresh with the first's refresh token. Then revoke. Every step succeeds. FAIL until wired; PASS; commit.
@@ -1124,7 +1178,7 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 ### Task 14.2: `make conformance` and the CI job
 **Files:** Modify `Makefile`, and the CI workflow `split-ci-jobs` leaves
 - [ ] Add `make conformance`, outside `make check`, which brings up the compose file and runs `scripts/run-test-plan.py --expected-failures-file test/conformance/expected-failures.json` over `oidcc-basic-certification-test-plan`, `oidcc-config-certification-test-plan`, `oidcc-rp-initiated-logout-certification-test-plan` and `oidcc-backchannel-rp-initiated-logout-certification-test-plan`. The runner already fails on an unexpected result, and on an expected one that stops occurring.
-- [ ] Pin the suite's image by digest, so `pincheck` passes.
+- [ ] Pin the suite to a full commit hash, at `475e8bf` or newer, since it builds from source, and pin every image the job names by digest, so `pincheck` passes. The target creates the export directory before calling `run-test-plan.py --export-dir`, which requires it to exist.
 - [ ] Add the job `conformance`, which calls that target, runs on pull requests and on `main`, uploads the logs with `actions/upload-artifact` pinned by SHA, and is in `ci-ok`'s `needs`.
 - [ ] Verify: the job appears on the PR and reports all four plans, and a deliberately failing module fails `ci-ok`.
 
@@ -1152,3 +1206,105 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - the `conformance` job, confirmed green.
 
   Each must pass.
+
+---
+
+## Task group 16: the code review of #72 (R27)
+
+Each defect was `UNREPRODUCED` when this group was written, and R27 records each test that then failed. The first step of each task is its failing test, and a test that passes before the fix means the claim was wrong: stop, report it, and the main session removes that part of R27. A compile error is not a red step. Each dispatch reports the failing output it saw.
+
+**Review Focus for this group:**
+- A retried recovery after the first revocation fails: the same proofs succeed, or with an MFA proof the same code and the next MFA code, and no attempt was charged as a refusal.
+- A cross-site POST carrying a malformed body: refused as before, with no redirect built from what could not be parsed.
+- A repeated parameter in a bounced POST, such as two `resource` values: both reach the GET, in order, as `url.Values.Encode` gives them.
+- `DeleteByUserExcept` with an empty `keep`: reads nothing, as `readForReport` already skips an empty identifier, and every session goes.
+- A caller hanging up during a hint's key read: answers its own context error, not `server_error`, as a redirect no one will follow says nothing.
+
+### Task 16.1: A recovery's two revocations
+**Files:** Modify `recovery/recover_complete.go`, `recovery/hold.go`, `recovery/grants.go`, `event/event.go`, `httpsec/recovery.go`. Test: `recovery/recover_grants_test.go` (new), `httpsec/recovery_test.go`.
+
+**Produces:** `Result.GrantsNotRevoked bool`, true only when the second revocation failed. `func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID) error`. `recovery.ErrDependency`, which a first failure matches and the chain answers 500. `event.CauseGrantsNotRevoked`.
+
+- [ ] Write `TestRecover_GrantRevocation`, one table on a revoker whose failure position is set per row, with an `assert` closure:
+  - fails first: the error matches `ErrDependency`'s wrap behind `errTextGrants`, no proof is spent, no record is written, and the same request then succeeds;
+  - fails second only: `Result.Session` is stored, `Result.Codes` is reissued when a saved code was spent, the notice is sent, `Result.GrantsNotRevoked` is true, and one `event.GrantRevokeFailed` names the user;
+  - succeeds both times: called twice, `GrantsNotRevoked` false, no event;
+  - `WithoutRecoveryGrantRevocation`: never called.
+- [ ] Write `TestFinish_GrantRevocation`: starting a hold calls the revoker zero times; a first failure at `Finish` leaves the record pending and the token usable, and the retry succeeds; a second failure completes as above.
+- [ ] Run `go test -race -run 'TestRecover_GrantRevocation|TestFinish_GrantRevocation' -count=1 ./recovery/` and confirm: the fail-second row fails because the recovery returned `errTextGrants`, and the fail-first row because a proof was spent.
+- [ ] Add rows to `TestRecover_GrantRevocation`: a wrong MFA code revokes nothing and leaves the other code unspent; a right MFA code with a failing first revocation matches `ErrDependency`, leaves the other code unspent, and a retry with the next MFA code succeeds; a caller hanging up after `Verify` accepted still revokes.
+- [ ] In `recover`, when `hold <= 0`, verify an MFA proof first, then call `revokeGrantsFirst`, then spend the issued and saved codes. Once `Verify` has accepted, the revocation runs detached from the caller's cancellation. With no MFA proof it runs on the caller's `ctx`, before anything is spent. In `finish`, call it after `issueSession` and before `ctx = context.WithoutCancel(ctx)`. A hang-up there logs at DEBUG, as `issueSession` does.
+- [ ] In `complete`, a failure of `RevokeUserGrants` logs `msgGrantsFailed`, reports `event.GrantRevokeFailed`, sets `res.GrantsNotRevoked`, and carries on.
+- [ ] Update the godoc of `WithGrantRevoker`, `Result` and `event.GrantRevokeFailed`, which today names only a passkey clone. In `httpsec/recovery.go`, keep the existing response and record the flag where the chain reports the recovery. Add a test there that the chain's answer is the recovery's success.
+- [ ] Verify: `go test -race -count=1 ./recovery/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint run ./recovery/... ./httpsec/...` showing `0 issues.`
+
+### Task 16.2: A POST with no flow cookie becomes a GET
+**Files:** Modify `httpsec/oidc_authorize.go`, `httpsec/oidc_endsession.go`. Test: `httpsec/oidc_post_bounce_test.go`, `test/httpsecconformance/oidcprovider_scenarios.go`.
+
+**Produces:** `func bounceOIDCPost(ex *Exchange, endpoint string, params url.Values) error`, in `oidc_authorize.go`, which writes the 303 to `endpoint`, the address the metadata publishes (`op.publicURL`).
+
+- [ ] Write `TestOIDCFormPost_NoFlowCookie`, one table across both endpoints, with an `assert` closure:
+  - an empty POST to end-session with no cookie: 303, `Location` is the endpoint's published address with no query, no `Set-Cookie`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`;
+  - a POST to authorize with two `resource` values, a `state` of `a&b=c #d` and an `id_token_hint`: `Location`'s query parses back to the same `url.Values`;
+  - a POST holding a valid flow cookie: no bounce, answered as today;
+  - a GET with no cookie: not bounced, and sets the cookie as today;
+  - a malformed body: refused as today, with no `Location`;
+  - nothing parked, and nothing charged, shown by `throttle`'s limit not moving over repeated bounces.
+- [ ] Write `TestOIDCFormPost_ParkedRequestSurvives`: park a request holding cookie `c`, POST empty to end-session with no cookie, and assert no `Set-Cookie` and that resuming with `c` succeeds.
+- [ ] Run `go test -race -run 'TestOIDCFormPost' -count=1 ./httpsec/` and confirm the failures show a `Set-Cookie` and a 303 to the login page, not a compile error.
+- [ ] In both handlers, after the throttle's `admit` and `readOIDCAuthorizeParams`, and before the provider is called: when the method is POST and the flow cookie is absent, `return bounceOIDCPost(ex, op.publicURL(<the endpoint's path>), params)`.
+- [ ] Add the scenario to `test/httpsecconformance/oidcprovider_scenarios.go`, so net/http, gin and fiber all assert it. Verify from `test/`: `go test -race -run 'TestConformance(NetHTTP|Gin|Fiber)' -count=1 .`
+- [ ] Run `make conformance`, and confirm `oidcc-ensure-post-request-succeeds` passes and no new result appears. A failure stops the task, and goes back to the main session, as R27 says.
+- [ ] Browser check: serve a page on a second host that form-posts to the provider, in a real browser. Confirm the POST carries no flow cookie, and the redirected GET does. Report the browser and version, and the main session records it in R27. A browser withholding the cookie stops the task.
+- [ ] Verify: `go test -race -count=1 ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint run ./httpsec/...` showing `0 issues.`
+
+### Task 16.3: An end that cannot read its report
+**Files:** Modify `session/end_observer.go`, `session/sessions.go`. Test: `session/end_observer_test.go`, `oidcprovider/end_report_read_test.go`, `httpsec/oidc_logout_read_test.go`.
+
+**Produces:** `func (m *Sessions) readForReport(ctx context.Context, id string) (*Session, error)`, which answers nil and no error when there is no observer, the identifier is empty, or the session is gone or expired.
+
+- [ ] Write `TestSessions_EndReportRead`, one table over a store whose `Load` fails, with an `assert` closure:
+  - `Delete` with an observer: errors, the session is still stored, and no observer is called;
+  - `DeleteByUserExcept` with an observer: errors, and every session of the user is still stored;
+  - either with no observer: proceeds, and `Load` is not called;
+  - `Delete` with `ErrNotFound` from `Load`: proceeds;
+  - `DeleteByUserExcept` with an empty `keep`: proceeds with no read;
+  - `RevokeFamily` while `Load` fails: the family goes and the observer is told.
+- [ ] Write `TestProvider_FailedEndReportRead` in `oidcprovider`: over a real manager wired with `SignInsEnded`, a failed read leaves the deleted sign-in's grants and the kept sign-in's grants live, and sends no logout token.
+- [ ] Write `TestOIDCLogout_CompletesWhileSessionReadsFail` in `httpsec`: the chain's logout and end-session both end the sign-in with a store whose `Load` fails after the bearer has admitted the request.
+- [ ] Run them with `go test -race -run 'TestSessions_EndReportRead' -count=1 ./session/`, and confirm the `Delete` row fails because the session was deleted.
+- [ ] Change `readForReport` and its two callers. The failure comes back through `storeFailed`, with text naming the read. Point `Delete`'s godoc away from itself for a logout, at `Logout` once `session-signals` merged.
+- [ ] Verify: `go test -race -count=1 ./session/ ./oidcprovider/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.` The main session tells the `session-signals` session when this merges (16.7).
+
+### Task 16.4: A durable store needs a successor key
+**Files:** Modify `oidcprovider/options.go`, `oidcprovider/refresh.go`, `test/expirytasks_test.go`, `test/oidcprovider_durable_test.go`, `test/oidcprovider_durable_logout_test.go`, `README.md`. Test: the file holding `oidcprovider`'s construction table.
+
+- [ ] Add rows to that table, each with an `assert` closure:
+  - `WithRefreshTokenStore` with no key: `New` fails matching `ErrConfig`, and the text names `WithRefreshSuccessorKey` and `WithRefreshSuccessorWindow(0)`, in both option orders;
+  - with a 32-byte key: builds;
+  - with `WithRefreshSuccessorWindow(0)` and no key: builds;
+  - memory stores with no options: builds, and draws its own key.
+- [ ] Run `go test -race -run 'TestNew|Construction' -count=1 ./oidcprovider/`, and confirm the first row fails because `New` returned no error.
+- [ ] Add the check beside the existing successor checks in `oidcprovider/options.go`. It reads `c.lineageSet`, `c.successorKeySet` and `c.successorWindow`.
+- [ ] Give the three durable test files a key, and the README's provider wiring a line showing one, loaded from configuration. Update the godoc of `WithRefreshSuccessorKey`, saying the key serves this purpose alone and removing "Nothing is refused", and of `WithRefreshTokenStore`.
+- [ ] Verify: `go test -race -count=1 ./oidcprovider/`; from `test/`, `go test -race -count=1 -p 2 -timeout 45m .` on the default image and with `SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`; `go vet`, `gofmt -l`, and `golangci-lint` showing `0 issues.`
+
+### Task 16.5: A key outage judging a hint
+**Files:** Modify `oidcprovider/authorize.go`. Test: `oidcprovider/authorize_test.go`, `oidcprovider/endsession_test.go`.
+
+- [ ] Write `TestAuthorize_HintKeysUnavailable`, one table over a key source that fails, with an `assert` closure:
+  - a valid client and redirect URI with a `state`: `Location` is the redirect URI with `error=server_error` and that `state`, nothing is parked, and the log holds `error_type` and no key text;
+  - the same with `prompt=none`: the same answer;
+  - an unknown client: `ErrInvalidAuthorization`, with no redirect;
+  - the caller's context ended during the read: its own context error, with no redirect.
+- [ ] Write `TestEndSession_HintKeysUnavailable`: with a `post_logout_redirect_uri`, the answer is an error matching `ErrDependency`, `Location` is empty, and nothing ends.
+- [ ] Run `go test -race -run 'HintKeysUnavailable' -count=1 ./oidcprovider/`, and confirm the first row fails because `Authorize` returned the error. The end-session test pins today's behaviour, so invert it temporarily to see it notice, and report that.
+- [ ] In `validate`, when `readRequest` fails with an error matching `ErrDependency`, log only the type, as `Authorize` does, and return `&redirectRefusal{code: codeServerError, redirectURI: redirectURI, state: reading.reflectableState()}`. A failure of `validateTarget` is untouched.
+- [ ] Verify: `go test -race -count=1 ./oidcprovider/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.`
+
+### Task 16.6: Whole-branch review
+- [ ] A fresh Opus reviewer checks the branch diff against the requirements 16.1 to 16.5 add or change, and whatever a change in `session` or the recovery order reaches: the passkey paths calling `DeleteByUserExcept`, and held recoveries. It reports `REPRODUCED` or `UNREPRODUCED` and edits nothing. Findings go to fresh dispatches of the owning lanes. Verify: a re-review reports nothing open.
+
+### Task 16.7: The final gate again
+- [ ] The main session runs `make check`, and the `test` module under `-race` on PostgreSQL 15 and 18. It pushes, and confirms the `conformance` job and every other job are green and that CodeQL reports no new alert on #72.
+- [ ] Tell the `session-signals` session about the new `sessions` requirement and the `readForReport` signature, as its rebase carries both.

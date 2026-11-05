@@ -26,6 +26,17 @@ type SessionRevoker interface {
 	DeleteByUser(ctx context.Context, user identity.UserID) error
 }
 
+// resetGrantCause is the cause a reset revokes the user's grants with.
+const resetGrantCause = "mfa_reset"
+
+// GrantRevoker revokes every grant an application holds for a user, those with
+// offline access included. *oidcprovider.Provider satisfies it.
+type GrantRevoker interface {
+	// RevokeUserGrants revokes every grant of user, recording cause. Revoking
+	// what is already revoked is not an error.
+	RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error
+}
+
 // EnrolmentRemover removes a user's enrolment, pending or confirmed. TOTP
 // satisfies it through RemoveEnrolment.
 type EnrolmentRemover interface {
@@ -38,7 +49,7 @@ type EnrolmentRemover interface {
 // depends on the options: every dependency a step needs must be given unless
 // that step is turned off by its explicit option, and a missing one is an
 // ErrConfig before anything is written. A nil dependency is never read as an
-// opt-out.
+// opt-out, apart from Grants, whose absence means no provider is in use.
 type ResetDeps struct {
 	// Enrolments removes the user's enrolment on every method to reset, in
 	// order. Always required: an empty list, or an absent entry, is an
@@ -48,6 +59,17 @@ type ResetDeps struct {
 	// Sessions ends the user's sessions. Required unless
 	// WithoutResetSessionRevocation.
 	Sessions SessionRevoker
+
+	// Grants revokes the user's application grants. Nil means no provider is in
+	// use and the reset revokes none, which is the one field where absence is
+	// not an ErrConfig: nothing else in the reset depends on a provider. A typed
+	// nil is an ErrConfig. A consumer running the OpenID provider must set it
+	// (the provider's Provider.RevokeUserGrants satisfies it): this package
+	// cannot see a provider, so with Grants nil a reset revokes no grant, and
+	// the user's refresh tokens keep working after it. It is needed whatever Sessions is: a raw session.Store
+	// ends sessions with no report a provider could see, so the provider learns
+	// of the reset through this field alone.
+	Grants GrantRevoker
 
 	// Users loads the user's details for the contact address. Required unless
 	// WithoutResetNotification.
@@ -66,6 +88,7 @@ type ResetDeps struct {
 // newResetConfig is.
 type resetConfig struct {
 	revokeSessions bool
+	keepGrants     bool
 	notify         bool
 	clock          clock.Clock
 	message        func(at time.Time) (subject, body string)
@@ -101,6 +124,17 @@ type ResetOption func(*resetConfig)
 // revokes sessions elsewhere, as part of the same administrative action.
 func WithoutResetSessionRevocation() ResetOption {
 	return func(c *resetConfig) { c.revokeSessions = false }
+}
+
+// WithoutResetGrantRevocation keeps the user's application grants, replacing the
+// default of revoking every one of them when ResetDeps.Grants is given. With no
+// ResetDeps.Grants it changes nothing. The sessions end as usual.
+//
+// What it gives up: a reset can mean the second factor is in someone else's
+// hands, and a grant kept is what they would keep, for as long as its refresh
+// token lives.
+func WithoutResetGrantRevocation() ResetOption {
+	return func(c *resetConfig) { c.keepGrants = true }
 }
 
 // WithoutResetNotification sends nothing, replacing the default of notifying
@@ -191,14 +225,18 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 //  2. deletes every session of the user, so a session that satisfied MFA with
 //     the lost authenticator ends (default; WithoutResetSessionRevocation keeps
 //     them);
-//  3. notifies the user at the address the contact resolver gives, by default
+//  3. revokes every application grant of the user, when ResetDeps.Grants is
+//     given (default; WithoutResetGrantRevocation keeps them). With Grants nil
+//     it revokes none, since this package cannot see a provider: a consumer
+//     using the OpenID provider must set it;
+//  4. notifies the user at the address the contact resolver gives, by default
 //     the username (default; WithoutResetNotification turns it off).
 //
 // The removals come first and are never undone. A removal that fails stops the
 // reset and is returned: the sessions are kept and no notification is sent,
 // because telling the user their second factors were reset would be false
 // while one remains; the removals already done stay done. Any failure after
-// the removals — deleting sessions, loading the user, resolving the address or
+// the removals — deleting sessions, revoking grants, loading the user, resolving the address or
 // sending the message — is returned after them, never swallowed, and the steps
 // after the failing one are not run. Either way the caller retries the reset,
 // which removes an absent enrolment without error. The user's MFA requirement is
@@ -251,6 +289,12 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 		}
 	}
 
+	if deps.Grants != nil && !c.keepGrants {
+		if err := deps.Grants.RevokeUserGrants(ctx, user, resetGrantCause); err != nil {
+			return diag.Wrap(err, "mfa: reset removed the enrolment but could not revoke the grants")
+		}
+	}
+
 	if !c.notify {
 		return nil
 	}
@@ -272,6 +316,10 @@ func (d ResetDeps) check(c resetConfig) error {
 
 	if c.revokeSessions && nilcheck.IsNil(d.Sessions) {
 		return fmt.Errorf("%w: reset requires a session revoker, or WithoutResetSessionRevocation", ErrConfig)
+	}
+
+	if d.Grants != nil && nilcheck.IsNil(d.Grants) {
+		return fmt.Errorf("%w: reset grant revoker is a typed nil; leave it out when no provider is in use", ErrConfig)
 	}
 
 	if c.messageUnset {

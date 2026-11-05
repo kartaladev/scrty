@@ -56,6 +56,16 @@ type Request interface {
 
 	Query(name string) string
 
+	// RawQuery is the query string exactly as the client sent it: no leading
+	// "?", nothing decoded, and nothing dropped, so a pair the framework could
+	// not parse is still in it. An empty query is "".
+	//
+	// It exists for a check that must not depend on how a framework parses:
+	// the token endpoints refuse a client credential sent in the query by
+	// scanning it, where Query and QueryValues would not show a pair the
+	// framework silently discarded.
+	RawQuery() string
+
 	// QueryValues returns every value of the query parameter name, in the
 	// order the client sent them, and nil when the parameter is absent. It is
 	// what lets an interceptor refuse a parameter sent more than once rather

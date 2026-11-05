@@ -15,7 +15,7 @@ export PATH := $(BIN):$(PATH)
 # workspace, so the per-module loops below skip it; tools-check gates it instead.
 MODULES := $(shell go list -m -f '{{.Dir}}')
 
-.PHONY: tools tools-check check fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate spec-check
+.PHONY: tools tools-check check fmt-check vet lint test test-isolated vuln generate-check pincheck sbom release-gate spec-check conformance
 
 # GOWORK=off because tools/ is deliberately outside go.work: in workspace mode the
 # tool pattern resolves against the workspace modules, which declare no tools.
@@ -174,3 +174,59 @@ spec-check:
 		fi; \
 	done; \
 	exit $$failed
+
+# The OpenID Foundation's conformance suite against the conformance OP, in Docker Compose.
+# Outside `check`: it builds the suite from source and takes minutes, so CI runs it as its own
+# job. The suite is pinned by the full commit hash in compose.yaml, which is read from there so
+# it is named once; the runner script comes from a checkout of the same commit.
+#
+# All four plans run in ONE invocation: the expected failure occurs only in the Basic plan,
+# and the runner fails any plan run alone for an expected result that "did not happen".
+# CONFORMANCE_OUT receives the runner's exports and the containers' logs (default: a fresh
+# temporary directory). The stack is torn down, volumes included, whatever the outcome, and the
+# target keeps the status of the run.
+CONFORMANCE_DIR := $(CURDIR)/test/conformance
+CONFORMANCE_COMPOSE := docker compose -f $(CONFORMANCE_DIR)/compose.yaml
+CONFORMANCE_SUITE_REF := $(shell sed -n 's|.*conformance-suite\.git\#\([0-9a-f]\{40\}\).*|\1|p' $(CONFORMANCE_DIR)/compose.yaml | head -n 1)
+CONFORMANCE_PLANS := \
+	"oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]" \
+	"oidcc-config-certification-test-plan" \
+	"oidcc-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]" \
+	"oidcc-backchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
+
+conformance:
+	@set -eu -o pipefail; \
+	ref="$(CONFORMANCE_SUITE_REF)"; \
+	if [ -z "$$ref" ]; then echo "conformance: no suite commit hash in compose.yaml"; exit 1; fi; \
+	out="$${CONFORMANCE_OUT:-$$(mktemp -d)}"; \
+	work="$$(mktemp -d)"; \
+	mkdir -p "$$out/export"; \
+	echo "conformance: logs and exports in $$out"; \
+	teardown() { \
+		rc=$$?; trap - EXIT; \
+		$(CONFORMANCE_COMPOSE) logs --no-color > "$$out/compose.log" 2>&1 || true; \
+		$(CONFORMANCE_COMPOSE) down -v || true; \
+		rm -rf "$$work"; \
+		exit $$rc; \
+	}; \
+	trap teardown EXIT; \
+	git init -q "$$work/suite"; \
+	git -C "$$work/suite" fetch -q --depth 1 https://gitlab.com/openid/conformance-suite.git "$$ref"; \
+	git -C "$$work/suite" checkout -q FETCH_HEAD; \
+	python3 -m venv "$$work/venv"; \
+	"$$work/venv/bin/pip" install -q -r "$$work/suite/scripts/requirements.txt"; \
+	$(CONFORMANCE_COMPOSE) up -d --build; \
+	for i in $$(seq 1 120); do \
+		code="$$(curl -ksS -o /dev/null -w '%{http_code}' https://localhost.emobix.co.uk:8443/api/runner/available || true)"; \
+		[ "$$code" = 200 ] && break; \
+		if [ "$$i" = 120 ]; then echo "conformance: the suite did not come up"; exit 1; fi; \
+		sleep 5; \
+	done; \
+	cd "$(CONFORMANCE_DIR)"; \
+	CONFORMANCE_SERVER=https://localhost.emobix.co.uk:8443 CONFORMANCE_DEV_MODE=1 \
+		"$$work/venv/bin/python" "$$work/suite/scripts/run-test-plan.py" \
+		--export-dir "$$out/export" \
+		--expected-failures-file expected-failures.json \
+		--expected-skips-file expected-skips.json \
+		--verbose \
+		$(foreach p,$(CONFORMANCE_PLANS),$(p) oidcc.json) 2>&1 | tee "$$out/run-test-plan.log"

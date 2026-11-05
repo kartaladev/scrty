@@ -85,7 +85,7 @@ A code exchange SHALL be answered with `invalid_grant` when the code's user no l
 - **THEN** the response is `invalid_grant`
 
 ### Requirement: A code is used once, and its replay revokes what it issued
-A code SHALL be exchanged at most once, also under concurrent requests. A code presented again after its exchange SHALL be answered with `invalid_grant`, and SHALL revoke the grant the first exchange created, with its refresh tokens and opaque access tokens. When the replay arrives while the first exchange is still being completed, the grant SHALL still end revoked, and no refresh token from it SHALL work afterwards.
+A code SHALL be exchanged at most once, also under concurrent requests. A code presented again after its exchange SHALL be answered with `invalid_grant`, and a valid replay SHALL revoke the grant the first exchange created, with its refresh tokens and opaque access tokens. When the replay arrives while the first exchange is still being completed, the grant SHALL still end revoked, and no refresh token from it SHALL work afterwards.
 
 #### Scenario: Concurrent exchanges
 - **WHEN** two exchanges of one code arrive at once
@@ -98,6 +98,25 @@ A code SHALL be exchanged at most once, also under concurrent requests. A code p
 #### Scenario: Replay racing the first exchange
 - **WHEN** a replay of a code arrives after the first exchange has spent the code, and before the first exchange has stored its grant
 - **THEN** once both requests finish, the grant is revoked, and the refresh token the first exchange returned is refused
+
+### Requirement: Only a valid replay revokes, for a stated window
+A replay is valid when it comes from the client the code was issued to, authenticated, with the code's redirect URI, verifier and key binding all holding. An invalid replay SHALL revoke nothing, because whoever holds only a leaked code could otherwise end the user's grant. Detection SHALL last until at least one minute past the code's expiry.
+
+#### Scenario: Invalid replay
+- **WHEN** a spent code is presented with a wrong verifier, with no verifier, or by another client
+- **THEN** the request receives `invalid_grant`, and the grant the first exchange created stays live
+
+#### Scenario: Replay within the detection window, after a sweep
+- **WHEN** a valid replay arrives less than one minute past the code's expiry, after the default stores have swept
+- **THEN** the request receives `invalid_grant`, and the grant is revoked
+
+#### Scenario: Replay past the detection window
+- **WHEN** a valid replay arrives after the default stores have forgotten the code, later than one minute past its expiry
+- **THEN** the request receives `invalid_grant`, no token is issued, and the grant stays live
+
+#### Scenario: A store that keeps spent codes longer
+- **WHEN** a consumer's code stores keep a spent code past that minute, and a valid replay arrives while they hold it
+- **THEN** the request receives `invalid_grant`, and the grant is revoked
 
 ### Requirement: Token responses are JSON and never cached
 A successful token response SHALL be 200 with a JSON body holding `access_token`, `token_type`, `expires_in` and `scope`. It SHALL add `id_token` when the grant's scopes include `openid`, and `refresh_token` when the client is registered for the refresh grant. Every token endpoint response, success or error, SHALL carry `Cache-Control: no-store`.
@@ -120,7 +139,7 @@ An ID token SHALL be a signed JWT with header `typ` `JWT`, carrying:
 
 #### Scenario: Claims after a password and TOTP sign-in
 - **WHEN** a user signs in with a password and a TOTP code, and the client exchanges its code from a request carrying `nonce=n-1`
-- **THEN** the ID token carries `nonce` `n-1`, `amr` naming both factors, `aud` and `azp` the client, and `auth_time` the time of that sign-in
+- **THEN** the ID token carries `nonce` `n-1`, `amr` holding `pwd` and `mfa`, `aud` and `azp` the client, and `auth_time` the time of that sign-in
 
 #### Scenario: Authentication time is not the exchange time
 - **WHEN** the user signed in at 10:00, and the code is exchanged at 10:04
@@ -157,7 +176,7 @@ By default an access token SHALL be a signed JWT with header `typ` `at+jwt`, car
 - **THEN** the access token's `aud` is the issuer, and it is accepted only at the provider's own endpoints
 
 ### Requirement: A default audience stays usable at UserInfo
-When no `resource` was given and the token's scope holds `openid`, the issuer SHALL be added to a default audience.
+When no `resource` was named at either request and the token's scope holds `openid`, the issuer SHALL be added to a default audience.
 
 #### Scenario: Default audience with openid
 - **WHEN** a client whose default audience is `https://api.example.com` exchanges a code granted `openid`, without `resource`
@@ -175,11 +194,19 @@ A consumer MAY set the lifetime per client, up to the cap the signing keys allow
 - **THEN** that client's access tokens expire 15 minutes after issue
 
 ### Requirement: Token-endpoint resources stay within the grant
-`resource` values at the token endpoint SHALL be a subset of those granted at the authorization request, when any were. A refresh token SHALL stay bound to the whole original grant, whichever subset one request narrowed to.
+`resource` values at the token endpoint SHALL be a subset of those granted at the authorization request, when any were. When a code was granted resources and the exchange names none, one granted resource SHALL be the audience, exactly as if it had been named, and several SHALL be refused, because a token valid at several services lets any one of them use it at the others. A refresh token SHALL stay bound to the whole original grant, whichever subset one request narrowed to.
 
 #### Scenario: Narrower resource at the token endpoint
 - **WHEN** a code was granted `https://orders.example.com` and `https://billing.example.com`, and the exchange sends `resource=https://billing.example.com`
 - **THEN** the access token's `aud` is `https://billing.example.com`, and a later refresh may ask for `https://orders.example.com`
+
+#### Scenario: One resource granted, none named at the token endpoint
+- **WHEN** a code granted `openid` and only `https://orders.example.com` is exchanged without `resource`
+- **THEN** the access token's `aud` is exactly `https://orders.example.com`
+
+#### Scenario: Several resources granted, none named at the token endpoint
+- **WHEN** a code granted `https://orders.example.com` and `https://billing.example.com` is exchanged without `resource`
+- **THEN** the response is 400 with `{"error":"invalid_target"}`, the code stays unspent, and the same code exchanged with `resource=https://billing.example.com` succeeds
 
 #### Scenario: Resource outside the grant
 - **WHEN** a code was granted only `https://orders.example.com`, and the exchange sends another resource the client is allowed
@@ -193,7 +220,7 @@ A consumer MAY register a client for opaque access tokens. They SHALL carry at l
 - **THEN** its unexpired access token is refused at UserInfo and reported inactive by introspection
 
 ### Requirement: Refresh tokens rotate on every use
-A refresh token SHALL carry at least 128 bits from a cryptographically secure source, SHALL be stored only as a digest, and SHALL have a format no sign-in path of the chain accepts. A successful refresh SHALL return a new refresh token and supersede the one presented. The superseded token SHALL be accepted again only within a grace window, 30 seconds by default, for a client retrying a lost response.
+A refresh token SHALL carry at least 128 bits, from a cryptographically secure source or derived under a secret key, SHALL be stored by a durable store only as a digest, and SHALL have a format no sign-in path of the chain accepts. A successful refresh SHALL return a new refresh token and supersede the one presented. The superseded token SHALL be accepted again only within a grace window, 30 seconds by default, for a client retrying a lost response.
 
 #### Scenario: Rotation
 - **WHEN** a client refreshes with token `r1`
@@ -202,6 +229,34 @@ A refresh token SHALL carry at least 128 bits from a cryptographically secure so
 #### Scenario: Retry within the grace window
 - **WHEN** a client refreshes with `r1`, loses the response, and presents `r1` again 10 seconds later
 - **THEN** it receives tokens, and the grant is not revoked
+
+#### Scenario: Two tabs refresh at once
+- **WHEN** two requests present `r1` within 10 seconds of its rotation, on a provider holding its derivation key
+- **THEN** both receive the same successor `r2`, one head remains, and a later refresh with `r2` succeeds with the grant live
+
+#### Scenario: Re-presented after the same-successor window
+- **WHEN** `r1` is presented again 20 seconds after its rotation, inside its grace window
+- **THEN** it receives tokens with a new successor, the grant is not revoked, and the previous successor presented past its own grace revokes the grant
+
+#### Scenario: Re-presented after the window, with its successor rotated
+- **WHEN** `r1` is rotated to `r2`, `r2` is rotated to `r3`, and `r1` is presented 20 seconds after its rotation, inside its grace window
+- **THEN** the response is `invalid_grant`, and the grant is revoked
+
+#### Scenario: Consumer sets the same-successor window
+- **WHEN** a consumer sets the window to zero, and `r1` is presented again inside its grace window
+- **THEN** it receives tokens with a new successor, as no re-presentation answers the same one
+
+#### Scenario: A replica without the shared key
+- **WHEN** `r1` is presented again within the same-successor window to a provider whose derivation key differs from the one that derived its successor
+- **THEN** it receives tokens with a new successor, and the grant is not revoked
+
+#### Scenario: A durable store without a derivation key
+- **WHEN** a provider is built with a durable refresh-token store, no derivation key, and the same-successor window left on
+- **THEN** building fails with a configuration error naming the derivation key and the window
+
+#### Scenario: A durable store with the window off
+- **WHEN** a provider is built with a durable refresh-token store, no derivation key, and the same-successor window set to zero
+- **THEN** it builds, and no re-presentation answers the same successor
 
 #### Scenario: Consumer widens the grace window
 - **WHEN** the consumer sets a client's grace window to 2 minutes, and `r1` is presented again 90 seconds after its rotation
@@ -420,7 +475,7 @@ For an active token the introspection answer SHALL hold `active`, `scope`, `clie
 - **THEN** the answer holds `active` true with its `sub`, `scope`, `client_id` and `exp`
 
 ### Requirement: Grant records are durable through the store adapters
-Authorization codes, grants, refresh-token lineages, opaque access tokens, consent and pending requests SHALL each be kept in a store with an in-memory default and durable SQL adapters. No store SHALL hold a code, handle, refresh token, opaque access token or client secret in clear.
+Authorization codes, grants, refresh-token lineages, opaque access tokens, consent and pending requests SHALL each be kept in a store with an in-memory default and durable SQL adapters. No durable store SHALL hold a code, handle, refresh token, opaque access token or client secret in clear.
 
 #### Scenario: Restart with a durable store
 - **WHEN** the provider uses durable stores and is restarted between issuing a refresh token and its use
@@ -445,10 +500,10 @@ No code, handle, refresh token, access token, ID token, client secret or client 
 - **THEN** the new ID token's `sub` is unchanged
 
 ### Requirement: Every code exchange records a grant
-A code exchange SHALL record a grant, also for a client not registered for the refresh grant. Such a grant SHALL hold no refresh-token lineage, SHALL NOT be treated as orphaned, and SHALL expire at the deadline of the sign-in it came from. Its access tokens name it, so replay and revocation reach them at the provider's own endpoints, and back-channel logout can find its client.
+A code exchange SHALL record a grant, also for a client not registered for the refresh grant. Such a grant SHALL hold no refresh-token lineage, and SHALL expire at the deadline of the sign-in it came from. Its access tokens name it, so replay and revocation reach them at the provider's own endpoints, and back-channel logout can find its client.
 
 #### Scenario: Client without the refresh grant
-- **WHEN** a client registered only for `authorization_code` exchanges a code, and the sweep's orphan pass then runs
+- **WHEN** a client registered only for `authorization_code` exchanges a code, and the sweep then runs
 - **THEN** the grant is kept until its sign-in's deadline
 
 #### Scenario: Back-channel logout without a refresh token

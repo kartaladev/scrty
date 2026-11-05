@@ -79,6 +79,68 @@ func (c *MockSessionRevokerDeleteByUserCall) DoAndReturn(f func(context.Context,
 	return c
 }
 
+// MockGrantRevoker is a mock of GrantRevoker interface.
+type MockGrantRevoker struct {
+	ctrl     *gomock.Controller
+	recorder *MockGrantRevokerMockRecorder
+	isgomock struct{}
+}
+
+// MockGrantRevokerMockRecorder is the mock recorder for MockGrantRevoker.
+type MockGrantRevokerMockRecorder struct {
+	mock *MockGrantRevoker
+}
+
+// NewMockGrantRevoker creates a new mock instance.
+func NewMockGrantRevoker(ctrl *gomock.Controller) *MockGrantRevoker {
+	mock := &MockGrantRevoker{ctrl: ctrl}
+	mock.recorder = &MockGrantRevokerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockGrantRevoker) EXPECT() *MockGrantRevokerMockRecorder {
+	return m.recorder
+}
+
+// RevokeUserGrants mocks base method.
+func (m *MockGrantRevoker) RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RevokeUserGrants", ctx, user, cause)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RevokeUserGrants indicates an expected call of RevokeUserGrants.
+func (mr *MockGrantRevokerMockRecorder) RevokeUserGrants(ctx, user, cause any) *MockGrantRevokerRevokeUserGrantsCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RevokeUserGrants", reflect.TypeOf((*MockGrantRevoker)(nil).RevokeUserGrants), ctx, user, cause)
+	return &MockGrantRevokerRevokeUserGrantsCall{Call: call}
+}
+
+// MockGrantRevokerRevokeUserGrantsCall wrap *gomock.Call
+type MockGrantRevokerRevokeUserGrantsCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockGrantRevokerRevokeUserGrantsCall) Return(arg0 error) *MockGrantRevokerRevokeUserGrantsCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockGrantRevokerRevokeUserGrantsCall) Do(f func(context.Context, identity.UserID, string) error) *MockGrantRevokerRevokeUserGrantsCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockGrantRevokerRevokeUserGrantsCall) DoAndReturn(f func(context.Context, identity.UserID, string) error) *MockGrantRevokerRevokeUserGrantsCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockEnrolmentRemover is a mock of EnrolmentRemover interface.
 type MockEnrolmentRemover struct {
 	ctrl     *gomock.Controller

@@ -16,7 +16,7 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
 - **Keys and tokens.**
   - `token/signingkey` rotates RS256 (default), ES256 or EdDSA keys and publishes them.
   - `httpsec.EnableJWKSEndpoint` serves the key set at `/.well-known/jwks.json`.
-  - `token.Generator.Generate(ctx, id, principal)` signs a fixed claim set: `jti`, `iss`, `sub`, `iat`, `exp`, and an optional audience. It cannot carry `nonce`, `azp`, `auth_time`, `acr`, `amr`, `scope` or `client_id`. In #68 it gains a required `SubjectMode()`, and `sub` defaults to the user identifier.
+  - `token.Generator.Generate(ctx, id, principal)` signs a fixed claim set: `jti`, `sub`, `iat`, `exp`, `iss` unless `WithoutIssuer` waives it, and an optional audience. `ConfirmingGenerator.GenerateWith` adds only `cnf`. It cannot carry `nonce`, `azp`, `auth_time`, `acr`, `amr`, `scope` or `client_id`. In #68 it gains a required `SubjectMode()`, and `sub` defaults to the user identifier.
   - A token's lifetime is capped at the key lifetime minus the rotation interval (23 hours by default) when the key source reports them. Since #68 a signing key retires one reload interval after its tokens can have expired, and leaves the store one grace later.
   - A test pins the package's use of jwx to a reviewed allow-list.
 - **Sessions** (`session`).
@@ -27,16 +27,32 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
   - **Session bearer:** `httpsec.EnableSessionBearer` accepts a session's own identifier as the bearer credential.
 - **Single-use credentials.** `token/onetime` issues a credential for a purpose and a subject, stores only its hash, and makes check-then-consume structural: a refusal between the check and the consume leaves the credential unspent.
 - **Client-style secrets.** `authenticate/apikey` shows a 256-bit secret once and keeps a SHA-256 digest.
-- **One login completion.** `completeLogin` (`httpsec/complete.go`) closes form login, magic link, OIDC handoff and passkey passwordless. MFA verify and recovery completion issue on their own.
+- **One login completion.** `completeLogin` (`httpsec/complete.go`) closes form login and passkey passwordless. Magic link and OIDC handoff run its two halves, `prepareLogin` and `commit`, around spending their single-use credential. MFA verify and recovery completion issue on their own.
 - **Landed since this design was written.** `close-security-gaps` was archived on 2026-11-03 (#45, #66), so its D-numbers below now name built code and settled specs:
   - DPoP (`EnableDPoP`, D8) and certificate binding (`EnableCertificateBinding`, D9);
   - CORS (D5), security headers (D4), CSRF (D6), trusted proxies with `Request.Host()` and `Request.Secure()` (D2, D7);
   - security events (D13), and session management: `EnableSessionManagement`, `Sessions.ListSignIns`, `EndSignIn` and `EndOtherSignIns` (D12).
 - **In flight.**
   - `pre-release-api-fixes` (merged in #68, archived 2026-11-04): `sub` is the user identifier by default, with username options; a chain whose generators disagree with its bearer fails to build; a login whose principal has no identifier fails matching `token.ErrNoSubject`; key retirement and deletion as above. R6 records what follows.
-  - `split-ci-jobs` (CI shape merged in #68; the change is still active on `main`, with two tasks open): one CI job per check behind an aggregate `ci-ok`, each calling a `make` target. R5 places the conformance job in that shape.
+  - `split-ci-jobs` (CI shape merged in #68; the change is still active on `main`, with two tasks open): one CI job per check behind an aggregate `ci-ok`, each calling a `make` target except `codeql`. R5 places the conformance job in that shape.
   - `session-signals`: defines its own `session.WithEndObserver`, which collides with T4. R16 resolves it.
   - `bff-resource-server`: the cookie session and the resource-server mode, both still waiting on its open questions. Its exploration notes ask whether scrty or an external IdP is the authority for browser apps. An OpenID Provider in scrty makes scrty an authority, which that change should take into account when it resumes. R2 no longer waits for its cookie session.
+- **Rechecked against the merged code (task 1.1, 2026-11-04, `main` at `b18db5c`, with #68 as `0080ee2` and #70 as `b18db5c`).** What the plan left open, as merged:
+
+  | The design's term | As merged |
+  |---|---|
+  | D8's proof verification, for a non-bearer endpoint | unexported `issuingBinding(ctx, ex.dpop(), ex.certBinding(), ex.Request, ex.bearerCredential) (session.KeyBinding, error)`, `httpsec/dpop.go`. No `dpop` package exists. The provider's endpoints live in `httpsec`, so they call it directly. It records the proof, refuses a missing proof under `Require`, and with a proof and a certificate binds the proof's key alone, as R12 needs |
+  | The `jti` and nonce stores | `ReplayStore` (`Record`) for `jti`. There is no nonce store: nonces are sealed by `NonceCipher` and refused with `ErrDPoPNonceRequired` |
+  | Internal set of binding verifiers (D8) | `bindingVerifiers []string`, `httpsec/options.go` |
+  | Certificate thumbprint (D9) | unexported `certificateThumbprint(*x509.Certificate) string`, and `Exchange.presentedThumbprint`. `session.KeyBinding{JKT, X5TS256}` holds the binding |
+  | CSRF exemption (D6) | `WithCSRFExemption(method, pattern string) CSRFOption`, one exact method and path, where `*` matches one segment |
+  | CORS routes (D5) | not matched at all: a policy covers the whole chain. Task 9.6's provider-registered exclusion in `cors.go` is therefore needed, and is the only way to meet RFC 9700 §2.6 |
+  | Security events (D13) | `event.Sink func(ctx, event.Event)`; `Event` has `Name`, `At`, `Outcome`, `User`, `ClientIP`, `Factor`, `Session` |
+  | Session listing (D12) | `Sessions.ListSignIns`, `EndSignIn(ctx, user, handle)`, `EndOtherSignIns(ctx, user, current)`, and `DELETE /sessions`. `Sessions.IdleTimeout()` exists, as R2 assumes |
+  | `token.Generator` | `Generate`, `SubjectMode` and an embedded `Verifier`. `ConfirmingGenerator` adds `GenerateWith`. `SubjectUserID` is the zero value and the default. The lifetime check reads `signingkey.LifetimeReporter` |
+  | CI (R5) | `ci-ok` has a hand-written `needs`, and `.github/scripts/ci-needs-check.sh` fails when any other job is missing from it. `pincheck` covers workflow references: `docker://` needs `@sha256:`, and others a 40-character SHA with a `# <tag>` comment |
+
+  None of it changes a decision. The corrections it caused are in this section and R6, and `plans.md` now uses these names.
 - **The established design** has no OpenID Provider side, so there is no inherited behaviour to follow or depart from here. Every decision below rests on the standards and established practice listed in References.
 
 ## Goals / Non-Goals
@@ -55,6 +71,7 @@ Read on `main` at `eb1f22a`, plus the in-flight changes' artifacts, and refreshe
 - **Implicit and hybrid flows, and the resource owner password grant.** RFC 9700 and the OAuth 2.1 draft deprecate them.
 - **Front-channel logout and OIDC Session Management.** Both depend on third-party cookies, which browsers now block.
 - **Official certification.** v1 runs the suite as a CI gate. Certification on the hosted suite is the maintainer's later step.
+- **`user-email`:** an email of the user's own, separate from the username, with a true verified state: columns on `users`, `identity.Details` fields, and the default store persisting what it now discards. v1 releases a username that is an address, with `email_verified` false (R21). A consumer needing more uses `WithClaimSource` until then. Deferred by the user for a quicker release; a stored email would take precedence over the username, so it only adds.
 
 ## Decisions
 
@@ -317,7 +334,7 @@ D+ keeps D's reuse of `session` unchanged and adds four guards. Together they ma
  [3] binding set and proof key != binding -------------------------> invalid_dpop_proof (C5)
    |
    v
- [4] lineage.LoadForRenewal(secret)
+ [4] a direct read compares the family first, so a client naming its own family beside another grant's secret reaches nothing (`REPRODUCED` 2026-11-04, a departure from the established design); then lineage.LoadForRenewal(secret)
        superseded past grace ==> family revoked; ReuseObserver marks
        the grant row revoked --------------------------------------> invalid_grant (C3, C4)
        s.FamilyID != family ---------------------------------------> invalid_grant
@@ -344,10 +361,10 @@ D+ keeps D's reuse of `session` unchanged and adds four guards. Together they ma
 **What D+ costs:**
 - **Two writes at the code exchange** (lineage and grant row), first drafted as one transaction through each adapter's `WithTx`, and ordered without one by T9:
   - a lineage without a grant row fails closed at [2];
-  - a grant row without a lineage is an orphan for the sweeper.
+  - a grant row without a lineage reads as revoked at refresh, and stays until its deadline (R19).
 - **A second migrated table** with the session schema. It is reached only through that constructor.
 - **A grant-row store:** in-memory, `sqlstore`, `pgxstore` and `gormstore`, a migration and a conformance suite.
-- **Two sweep tasks**, one renamed (`expiry.Task` supports it), plus an orphan sweep.
+- **Two sweep tasks**, one renamed (`expiry.Task` supports it).
 - **Unused sign-in fields on lineage records** (MFA state, confinement marks). They are harmless, because the provider alone constructs those records with a fixed set of create options.
 - **One extra read per refresh** (the grant row).
 
@@ -371,10 +388,10 @@ Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
   - **Why the other options can't do this:** the lineage alone has no tombstone, which is why A and D as drafted cannot close the race.
 
 - **H3, `auth_time` overstated.** `Prepare` sets `AuthenticatedAt` to the current time (`session/prepared.go:84`). A grant created at the code exchange would claim the exchange time as `auth_time`, and overstate freshness to a relying party checking `max_age`. The grant must copy the sign-in's `AuthenticatedAt`, `amr` and `acr` explicitly.
-- **H4, an orphaned grant row.** Reuse revocation deletes the lineage but not the grant row. The `ReuseObserver` marks it revoked, and the sweeper removes it. The observer is not called when the revocation itself fails, so the refresh path must treat a missing lineage as revoked. *Reads* as revoked, refusing the request and writing nothing: R8.
+- **H4, an orphaned grant row.** Reuse revocation deletes the lineage but not the grant row. The provider marks it revoked before deleting the family where it judges the reuse itself, and otherwise the `ReuseObserver` does (R20), and the sweep removes it after that. The observer is not called when the revocation itself fails, so the refresh path must treat a missing lineage as revoked. *Reads* as revoked, refusing the request and writing nothing: R8.
 - **H5 and H6:** added by the refresh, in R7 and R8.
 - **Access tokens outlive revocation (C7).** A JWT access token stays valid until its expiry whatever the grant storage. P4 answers this with a short lifetime and an opaque option.
-- **Token-type confusion (C10).** `token`'s verifier checks no `typ` today, and P4 signs access tokens over the same key source as first-party tokens. Each token type must validate only as itself.
+- **Token-type confusion (C10), `REPRODUCED` 2026-11-04.** `token`'s verifier checked no `typ`, and P4 signs access tokens over the same key source as first-party tokens, so an `at+jwt` token passed a default verifier (`TestVerifier_TokenType`, failing before the fix with `Expected error with "token: invalid" in chain but got nil`). jwx also wrote `typ: JWT` on first-party tokens by itself. Each token type now validates only as itself.
 
 #### Sub-decisions that follow (decided 2026-11-02, as recommended)
 
@@ -392,7 +409,7 @@ Each of these is `UNREPRODUCED` and becomes a red test for the chosen option.
   - a fixed-table refresh-token store constructor in `sqlstore`, `pgxstore` and `gormstore`;
   - a grant-row store with its in-memory default, three SQL adapters and a conformance suite;
   - the security-state migration;
-  - two sweep tasks plus an orphan sweep.
+  - two sweep tasks.
 - **Left alone:** `session.Store` and `close-security-gaps` D12, so the two changes need no coordination.
 - **The audit's risks, closed explicitly:**
   - the `typ` checks in `token`;
@@ -495,7 +512,7 @@ req, err := op.PendingRequest(ctx, handle)
 |---|---|---|
 | Login and consent pages | the consumer's URLs, required at construction | none needed: the consumer owns the pages |
 | Handle lifetime | 10 minutes | `WithPendingRequestLifetime`, bounded by a maximum the specs fix |
-| Resume path, handle parameter name | documented constants | replaceable |
+| Resume path, handle parameter name | documented constants | the path by `WithOIDCProviderPath`. The parameter name has no override: only the consumer's own pages read it, so it is a documented convention (`library-design` rule 3) |
 | Two pages or one | two stages | one page may handle both, by reading the request with `PendingRequest` and resuming twice |
 
 **Rejected:**
@@ -610,7 +627,7 @@ Cache-Control: no-store
 header  {"typ":"at+jwt","alg":"RS256","kid":"..."}
 claims  {"iss":"https://id.example.com","sub":"u-1","aud":"https://api.example.com",
          "client_id":"billing-web","scope":"openid profile","iat":..,"exp":iat+300,
-         "jti":"...","auth_time":..,"acr":"..","amr":["pwd","otp"],"cnf":{"jkt":".."}}
+         "jti":"...","auth_time":..,"acr":"..","amr":["pwd","mfa"],"cnf":{"jkt":".."}}
 ```
 
 - **Claims:** the RFC 9068 set, plus `auth_time`, `acr` and `amr` copied from the grant (H3). `cnf` is present when the token is sender-constrained (P6).
@@ -782,10 +799,11 @@ The maximum assertion lifetime is fixed in the specs.
 
 **Default and override:** not consumer-facing.
 
-**Verified 2026-11-04,** from the suite's source at commit `a5b9635` (nothing was built or run; task 1.2 confirms by running it). R1, R2 and R5 follow from these:
-- **Plans:** `oidcc-basic-certification-test-plan` and `oidcc-config-certification-test-plan`. The logout plans are `oidcc-rp-initiated-logout-certification-test-plan` and `oidcc-backchannel-rp-initiated-logout-certification-test-plan`.
-- **TLS:** the Config plan fails on plain `http`: it requires every endpoint and the issuer to be `https`. The suite's server-side calls trust any certificate, and its own CI runs a self-signed provider, so a self-signed certificate should work. That the browser engine accepts it too is inferred, not verified.
-- **Runner:** `scripts/run-test-plan.py` is in the upstream repository. It exits non-zero on unexpected failures, warnings or skips, and on an expected result that does not occur.
+**Verified 2026-11-04,** from the suite's source at commit `a5b9635`, and then by building and running it at `475e8bf` (task 1.2), against a throwaway stand-in rather than a real OP. Each line says which facts a run confirmed. R1, R2 and R5 follow from these:
+- **Plans (confirmed by a run):** `oidcc-basic-certification-test-plan` (35 modules, including every module R1, R2 and R5 name) and `oidcc-config-certification-test-plan` (one module, `oidcc-discovery-endpoint-verification`). The logout plans are `oidcc-rp-initiated-logout-certification-test-plan` (11 modules) and `oidcc-backchannel-rp-initiated-logout-certification-test-plan` (2 modules).
+- **TLS (confirmed by a run):** the Config plan fails on plain `http`: the discovery URL, the issuer and every endpoint must be `https`. A self-signed certificate is accepted on both sides: the server side fetched discovery and JWKS with it, and the scripted browser loaded `/authorize` from it with no certificate error.
+- **Runner:** `scripts/run-test-plan.py [--export-dir D] [--expected-failures-file F] [--expected-skips-file F] <plan[variant]> <config.json>` (options confirmed by a run). `--export-dir` must already exist. From its source, not yet exercised: it exits non-zero on unexpected failures, warnings or skips, and on an expected result that does not occur. An expected failure is an entry with `test-name`, `variant`, `configuration-filename`, `current-block`, `condition`, `expected-result` and `comment`.
+- **The suite is built from source (read from its compose files).** Its compose files build the server from a Maven jar, and pin only their `mongo` and `maven` images. Whether a published image exists was not checked. R5's pin follows from this.
 - **Browser:** HtmlUnit, not a real browser. Its comment says it "barfs at a lot of modern javascript". Whether `fetch` works there is unverified, so the conformance OP's pages are plain server-rendered forms (R5).
 - **Clients:** the Basic plan needs `client` and `client2`, each with a secret, and `oidcc-refresh-token` presents one's refresh token as the other.
 **Cross-change:** `release-readiness`'s gate must name the conformance job, which is a change to that change's tasks when this one is planned.
@@ -930,7 +948,7 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
   - upstream session;
   - user and upstream issuer.
 
-  (R2 and R7: it also deletes the matching browser sessions, and records a revocation for each matching unspent code.) It revokes the matching grants without `offline_access` (or every matching grant of a client tied to its sign-in), sets the sign-in-ended mark on every matching grant, and returns only the grants it newly marked.
+  (R7: it also records a revocation for each matching unspent code. R2: the provider deletes the matching browser sessions itself, through `DeleteBySignIn`, because they are another store.) It revokes the matching grants without `offline_access` (or every matching grant of a client tied to its sign-in), sets the sign-in-ended mark on every matching grant, and returns only the grants it newly marked.
 - **Why:**
   - every way a sign-in ends can be matched to its grants without a lookup `session.Store` lacks. Decision 5 keeps the port unchanged, and an upstream back-channel logout knows only the upstream session;
   - returning only newly marked grants makes "a client SHALL be notified at most once for one ended sign-in" (`oidc-provider-logout`) a store guarantee. The chain's logout and the session manager can both report one end, and the second report finds nothing new to notify.
@@ -956,6 +974,13 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 - **Two kinds of call:**
   - **The chain's logout** calls the provider *before* deleting, so a grant-store failure can fail the logout (`http-security-chain`).
   - **The manager's report** comes *after* the store write. Its failure is logged and reported as an event, and never undoes the end.
+- **Settled while building it (2026-11-04):**
+  - **A write that matches nothing is still reported.** `Delete` and `DeleteByUser` return no count, so the manager cannot tell. `SignInsEnded` must therefore accept a repeat, which T3's "newly marked" guarantees, and a report naming nobody, which it ignores.
+  - **An upstream delete with an empty issuer or session is not reported.** Its contract says it ends nothing, and `{User: u}` with no issuer could read as all of `u`'s sign-ins.
+  - **`EndDeleted` ends the family's grants.** `Delete` removes one record, so during a renewal window the family's successor can outlive it. The provider cannot tell, since decision 5 keeps `session.Store` without a family lookup. Ending the grants costs at most one more login, and leaving them would keep online grants alive after an explicit delete, so the safe side is to end them. With no family known, as for a session already expired or gone, no grant can be matched, and the provider logs that.
+  - **A nil `KeptFamily` spares nothing.** It is nil when the kept session is gone, expired or another user's. A failed read sends no report, as nothing is deleted (R27). The provider then ends all of that user's online grants. A sign-in it should have spared must log in again, which is the safe mistake.
+  - **On reuse, end observers run before `WithReuseObserver`.** A panic in the reuse observer still propagates, as it did before.
+  - **Raw stores do not report.** `authenticate/mfa` reset and the `passkey` revoker (`clone.go`, `manage.go`) accept anything with the store's method, so a consumer can hand them a `session.Store`, which ends sessions with no report that `ReportsEndsTo` could see. Sub-decision 4's grant ports cover MFA reset and clone detection. Lane H4 checks the `manage.go` path when it wires them (task 11.x).
 - **Rejected:**
   - asking the consumer to remember to wire an observer, with no check;
   - a chain-side wrapper around the session manager, which would miss calls the consumer makes on the manager directly.
@@ -982,12 +1007,23 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 #### T7. The lineage store is a type only the adapters can build
 
 - **What it decides:** `oidcprovider.RefreshTokenStore` is a struct whose only field is unexported. The SQL adapters build it through a scrty `internal` package, over a session store bound to the fixed `op_refresh_tokens` table. The in-memory default is a private `session.MemoryStore` inside the provider.
+- **Limit:** package `unsafe` can still fill the type, as it can any Go type, and the godoc says so.
+- **The default's sweep:** the private `session.MemoryStore` only sweeps once started, and the provider has no lifecycle, so a wrapper sweeps on `Create` and `Supersede`, at most once a minute, by the same rule `Load` applies.
 - **Why it holds across modules:** Go's `internal` rule is path-based, so the nested adapter modules can import it and a consumer cannot. That is decision 5's guard 1 made structural: no exported function turns a sign-in `session.Store` into a lineage store.
+
+
+- **What the adapters settled.**
+  - **Binding.** `sqlstore` and `pgxstore` bind a handle in `conn`. `gormstore` binds at the connection, with `lineagePool` on `Statement.ConnPool`, because its session statements come in two kinds, `pgschema`'s text and what gorm builds from its model, and a connection sees both as the text the server is sent. Each adapter's suite now runs a lineage inside a caller's transaction, by `WithTx` and by a resolver.
+  - **Direct statements in `gormstore`.** The provider stores run `pgschema`'s text on `Statement.ConnPool`, because gorm's `Exec` reads `@>` as a named argument. That path skips gorm's processor, so the stores apply for themselves what it would give:
+    - **The default:** with `gorm.Config.DefaultContextTimeout` unset, nothing changes.
+    - **The override:** set, it bounds each statement, by the configuration of the handle the operation resolved to, and a context with its own deadline wins, as with gorm. A store's own BEGIN and COMMIT are not bounded by it; `DefaultTransactionTimeout` bounds the whole transaction, and a context deadline bounds the call.
+    - **`DryRun`:** a handle in that mode runs nothing, and is answered `gorm.ErrDryRunModeUnsupported`.
+  - **Row reads in `gormstore` (`REPRODUCED` 2026-11-04, then fixed).** Under `PrepareStmt: true`, a failed prepare made `Row().Scan` panic, at every row read in the package, including older ones. Reads now go through `Rows()`, which stays on gorm's processor path and returns the failure. They keep `Row.Scan`'s contract, including the error from closing the rows, because a `RETURNING` write outside a transaction can fail its commit only there, which would otherwise report a charge that was rolled back.
 
 #### T8. Grant revocation on security events is a one-method port in each package that needs it
 
 - **What it decides:**
-  - `recovery`, `authenticate/mfa` (`ResetDeps`), the passkey clone path in `httpsec`, and the password-change gate each declare a one-method port for revoking a user's grants with a cause;
+  - `recovery`, `authenticate/mfa` (`ResetDeps`), `authenticate/passkey`'s clone path, and the password-change gate each declare a one-method port for revoking a user's grants with a cause;
   - `*oidcprovider.Provider` satisfies all of them;
   - when the port is supplied, revocation is the default, and an option per package keeps grants (sub-decision 4). The chain supplies the provider to its own endpoints when it is enabled.
 - **Why:** none of those packages imports `oidcprovider`, so no import cycle can form, and each states its own default and override (`library-design`).
@@ -996,7 +1032,7 @@ Breaking the specs into tasks showed where they say *what* must happen and not y
 
 - **What it decides:** this departs from decision 5's "one transaction through each adapter's `WithTx`". The exchange writes the grant row first, keeping any tombstone, and the lineage second. No transaction port joins the two stores.
 - **Why it is safe in every interleaving:**
-  - a failure between the two writes leaves a grant row with no lineage. The client got an error and holds no refresh token, and the orphan sweep removes the row (decision 5, H4). A grant recorded to hold no lineage is not an orphan (R10);
+  - a failure between the two writes leaves a grant row with no lineage. The client got an error and holds no refresh token, a refresh on it would read as revoked (H4), and the row stays until its deadline (R19);
   - a replay that lands between the two writes marks the grant row revoked. The lineage then created is unusable, because every refresh reads the grant row first (decision 5, step [2]);
   - a lineage can never exist without its grant row, which is the state that would fail open.
 - **Why not a transaction:** it would need a transaction port across stores that consumers may supply separately, and adapters that share one database handle. That buys nothing the order does not already guarantee.
@@ -1012,7 +1048,7 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **The problem.** Every Basic OP module but one, `oidcc-ensure-request-with-valid-pkce-succeeds`, sends no `code_challenge`, and the suite does not adapt. Its own summary says "OpenID Connect does not require servers to support PKCE". An OP refusing such a request fails each module at `CheckIfAuthorizationEndpointError`. So "PKCE for every client, no option" and "the defaults pass Basic OP" cannot both hold.
 - **What the standards allow.** RFC 9700 §2.1.1: public clients MUST use PKCE, it is RECOMMENDED for confidential clients, and "confidential OpenID Connect clients MAY use the nonce parameter". OAuth 2.1 draft-17 §7.5.1.1 agrees: required unless the client is confidential and the server has reasonable assurance of the nonce. ASVS 10.4.6 requires PKCE outright, so using the option gives that level up.
 - **The decision.** The default is unchanged. A client setting `PKCEOrNonce`, for a confidential client only, accepts a request carrying a challenge or a `nonce`, and refuses one carrying neither. The exchange now has to check the downgrade itself (RFC 9700 §4.8.2), since a code without a challenge can exist.
-- **The cost at conformance.** `oidcc-ensure-request-without-nonce-succeeds-for-code-flow` sends neither, so it fails under this setting. It is recorded as the one expected failure (R5). A later official certification would need to settle it with the Foundation: whether certification accepts it was not checked.
+- **The cost at conformance.** `oidcc-ensure-request-without-nonce-succeeds-for-code-flow` sends neither, so it fails under this setting. It is recorded as an expected failure (R5), and R26 records the suite's other expected results. A later official certification would need to settle it with the Foundation: whether certification accepts it was not checked.
 
 | | Default | Override |
 |---|---|---|
@@ -1067,7 +1103,7 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 #### R5. The gate runs the logout plans too, in `split-ci-jobs`' shape (the added plans decided 2026-11-04)
 
 - **Plans.** Basic OP and Config OP as before, plus RP-initiated logout and back-channel logout, because v1 ships both and the Foundation's suite tests them (the suite's own CI runs them against its reference provider). The added plans cost CI time, not yet measured, and the user accepted that on 2026-11-04.
-- **The job.** A `make conformance` target and a `conformance` job, in the shape `split-ci-jobs` set (#68): the job calls the target a contributor runs, the target is outside `make check`, and `ci-ok` requires the job. The suite is pinned by digest for `pincheck`.
+- **The job.** A `make conformance` target and a `conformance` job, in the shape `split-ci-jobs` set (#68): the job calls the target a contributor runs, the target is outside `make check`, and `ci-ok` requires the job. The suite is pinned to a full commit hash, because it is built from source, and the images the job names are pinned by digest for `pincheck`. This corrects the first wording, which assumed a suite image.
 - **The server.** `https` on a self-signed certificate, because the Config plan refuses `http`. The loopback `http` issuer stays for unit tests, without the `__Host-` prefix, which needs `Secure` (R9).
 - **The pages.** The conformance OP serves plain server-rendered forms that resume through the provider's Go API, because the suite drives HtmlUnit. It configures `client` and `client2`, both with PKCE-or-nonce (R1), and users holding profile, email, phone and address claims so the scope modules have something to check.
 - **Expected results.** The expected-failures file holds one entry, `oidcc-ensure-request-without-nonce-succeeds-for-code-flow` (R1). The runner fails if it stops failing, so it cannot go stale. Anything else found by task 14.3 is fixed or brought back as a decision, never added silently.
@@ -1077,25 +1113,139 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 - **`sub` is always the user identifier.** `pre-release-api-fixes` says an OP's `sub` must never be reassigned, and then offers username modes. So the mode must not reach the provider: `sub` in every provider token is the grant's user identifier, on a chain reading usernames too.
 - **The provider takes a key source, not a generator.** `oidcprovider.New` takes `signingkey.KeySource` through the required `Deps.Keys`, which P1's sketch omitted, and builds its own `token.Issuer`s, one per algorithm and over the provider's issuer. Consequently: a username-mode generator cannot reach it, an issuer mismatch cannot be wired, and `token.Generator`, already gaining a required method in #68, gains no other. Task 2.3's typed issue moves from `Generator` to `Issuer`. The chain's subject check needs no tenth route. *Rejected:* an optional interface on `Generator`, as `ConfirmingGenerator` is, because the consumer's generator would still carry a mode.
 - **Per-client lifetimes meet the key cap.** A token lifetime above key lifetime minus rotation (23 hours by default) would be refused by `token` for a generator. The issuer applies the same, and construction names the client. A consumer's durable registry is checked as each client is read (R13).
-- **Retired keys and old hints.** Core §3.1.2.2 says the OP SHOULD accept expired hints for a recent session, but the provider can verify only what it still publishes: about 25 hours by default. An old hint cannot be judged, which is different from forged, so it counts as no hint (or `login_required` with `prompt=none`). At logout that means asking. *Rejected:* verifying against keys kept until the store deletes them, which would need a port for it and buys one more key lifetime.
+- **Retired keys and old hints.** Core §3.1.2.2 says the OP SHOULD accept expired hints for a recent session, but the provider can verify only what it still publishes: by default, a key is published until about 24 hours and 1 minute after its creation, so a hint stays verifiable for about 23 to 24 hours after it was issued. A rotation outage lengthens that. An old hint cannot be judged, which is different from forged, so it counts as no hint (or `login_required` with `prompt=none`). At logout that means asking. *Rejected:* verifying against keys kept until the store deletes them, which would need a port for it and buys one more key lifetime.
 - **A sign-in with no identifier.** #68 makes a login with one fail matching `token.ErrNoSubject`. The resume does the same, for a session stored before that or by a consumer's own path, and issues no code.
 - **A session only a late renewal may recover** is not a sign-in that can resume. #68's `admit` passes such a session on for the renewal endpoint only.
 - **Cross-check.** A JWKS provider that is the same manager as the key source can be checked at construction. A wrapped one cannot, and the godoc says so, as #68 does for wrapped verifiers.
+- **What `token.Issuer` settled while being built (2026-11-04).**
+  - **It issues everything but the first-party type.** `Issue.Type` equal to `TypeFirstParty` is refused, so an issuer cannot stand in for a generator with its subject mode.
+  - **Options.** `NewIssuer` takes `WithTokenLifetime` and `WithClock`, with the generator's 15-minute default, and refuses every other `Option`, since a generator's alg, subject mode or type would mean nothing there.
+  - **Further refusals.** `aud` as a further claim, because it would silently override `Issue.Audience`, an empty `Issue.ID`, and a `cnf` that `WithConfirmation` would refuse, because it would mint a token `Verify` refuses.
+  - **Comparison.** `typ` folds ASCII letters only, so `applİcatİon/scrty+jwt` is refused.
+  - **Tokens issued before this change** carry `typ: JWT` and are refused. Nothing is tagged yet, so this needs no migration.
 - **Background work.** #68's `signingkey` treats a store call cut off by `Shutdown` as no failure, and `notify` replaces a worker whose delivery ends its goroutine. Back-channel delivery follows both (R14).
 
 #### R7. An outstanding code does not outlive the sign-in or the user's grants (H5)
 
 - **The gap.** `EndSignIn` and `RevokeUserGrants` act on grant rows, but a code issued before they ran has no row yet. So a logout, recovery or MFA reset followed within the code's lifetime (60 s by default, 10 minutes at most) by its exchange creates a live grant after the event meant to end it. `UNREPRODUCED`.
-- **The decision.** Both operations also record a revocation for family `F` of each matching unspent code, reusing the H2 tombstone: the exchange reads it and answers `invalid_grant`, and if it races, the grant is stored revoked. Logout spares codes holding `offline_access`, as it spares such grants. The code record adds the upstream issuer and session, for T3's selectors. No override, because it only carries the existing decisions to a case they missed.
+- **The decision.** Both operations also record a revocation for family `F` of each matching unspent code, reusing the H2 tombstone: the exchange reads it and answers `invalid_grant`, and if it races, the grant is stored revoked. Logout spares codes holding `offline_access`, as it spares such grants, unless the client is tied to its sign-in, which the code record states as `EndsWithSignIn`. The code record adds the upstream issuer and session, for T3's selectors. No override, because it only carries the existing decisions to a case they missed.
 - **Also.** The exchange reads the user, as a refresh does, so a user disabled within those seconds gets no grant.
+- **Settled while building the stores (2026-11-04).**
+  - **"Unspent" means still held.** The spend lives in `token/onetime`, so a code store lists every unexpired record. That over-reaches harmlessly: a spent code's grant matches the same operation, and tombstones are swept.
+  - **An end's tombstone carries the sign-in-ended mark, and `Create` over it keeps the revocation and the mark,** so a racing exchange cannot make a client be notified twice. A plain revocation carries no mark.
+  - **Joining.** `GrantStore.UseCodes(UnspentCodes) error` joins the two stores from `New`. A different code store is refused, because replacing it would silently break the first provider's revocations. Two providers may share both stores.
+  - **`Create` is refused over a stored grant, and only fills a tombstone.**
+  - **No default store grows without bound, and none needs a consumer to sweep it.** The provider's defaults for lineages, code tokens and assertion identifiers sweep on write, at most once a minute, by the provider's clock.
+  - **Browser sessions.** `Put` refuses a digest already held, an empty digest or a zero deadline, and lowers an idle deadline past the absolute one. `Touch` only extends, by one conditional write. `WithBrowserSessionStore` with `WithoutBrowserSessions` is a configuration error.
+  - **`AccessTokenStore.Revoke` answers `ErrNotFound` for a missing token,** which the provider maps to success (task 7.6, RFC 7009).
+  - **The schema (task 12.1).**
+    - `op_clients`, `op_consents`, `op_client_assertions` and `op_browser_sessions` have a uuid key with no default plus a unique natural key, as the settled spec requires, so adapters mint the uuid.
+    - In `op_grants`, a NULL `created_at` marks a tombstone. An adapter writes a stored grant's time even when it is zero, never NULL, and the suite pins a second `Create` being refused over such a grant.
+    - `holds_lineage` defaults to false, as the memory store's tombstone has it, and `Create` writes it explicitly.
+    - `max_age` is `bigint`, and lists and maps are `jsonb`, as on sessions.
+  - **Text a request can carry.** PostgreSQL refuses a NUL byte or invalid UTF-8 in text and jsonb, and the memory store accepts them, so a request carrying them would answer 500 only on durable stores. The authorization request refuses them as `invalid_request` before anything is parked.
+  - **A `jti` over 1024 bytes is refused as `invalid_client`** before the store, because a unique index has a row-size limit (`index row size 3016 exceeds btree version 4 maximum 2704`). The bound is a proposed value.
+  - **One lock order across every bulk write (`REPRODUCED` 2026-11-04, then fixed).** `RevokeByUser` and `EndSignIns` took rows in opposite orders, and PostgreSQL aborted one with `40P01` in 91 of 150 rounds, with no injected blocker, so a revocation or an end could be lost. Every statement taking more than one `op_grants` row now takes them in ascending `family` order, with stored grants and tombstones as one stream, because an `ON CONFLICT` on a new key waits like a row lock. `pgschema.GrantBulkWrite` is a Hold, an `INSERT ... SELECT ... ORDER BY family ON CONFLICT DO UPDATE ... WHERE false`, and a Write over the set it took. A re-review confirmed on PostgreSQL 15 and 18, under six plan settings, that suppressed rows are locked and in order. No retry and no advisory lock, since this holds. *Limit:* a consumer's own transaction that has already written a later family can still deadlock, and gets `40P01` to retry.
+  - **A grant stored while an end waits.** A grant with no held code, stored during an end's Hold, is left for the next end. The provider never stores one, since each grant comes from an exchange whose code is held.
+  - **A code's record is swept a minute past its expiry,** as tombstones are, because an exchange in flight can otherwise lose the record an end needs in order to reach its grant (`REPRODUCED` at store level).
+  - **`Advance` moves strictly forward:** login, consent, done, with login to done allowed. Nothing leaves done, and a logout request moves only to done.
+  - **What no store can close:** a code created after `EndSignIns` has listed the codes. No store can. A request resting on a browser session is closed by `EndSignIn`'s order, which deletes browser sessions before sweeping, and a resume on a bearer by the chain's check after its writes (R26).
+
+#### R17. Replay detection: valid requests only, for a stated window
+
+- **The gap (`REPRODUCED` 2026-11-04, by `TestProvider_CodeReplay` rows added with the fix).** The spec promised that a replay revokes, with no limit and no condition. The default stores forget a spent code at its expiry, so a replay soon after 60 seconds revoked nothing. And any replay revoked, so a wrong verifier, or another client, could end a grant while holding only a leaked code.
+- **Revocation needs a valid request.** A replay revokes only when it comes from the client the code was issued to, authenticated, with the code's redirect URI, verifier and key binding holding. OAuth 2.1 §7.5.3 names the alternative as a denial of service. An invalid replay is still `invalid_grant`.
+- **Detection lasts until at least a minute past the code's expiry.** The user chose this over keeping spent codes for a day or for the grant's lifetime. Both of those store a row per exchange, to detect a replay of a code that can no longer yield tokens, and they lengthen the time a leaked public-client code and verifier can end a grant. RFC 6749 §4.1.2 asks for revocation "when possible". The default token store and record store therefore both sweep a minute past expiry, matching the durable stores' tasks, and past that a valid replay is `invalid_grant` with nothing revoked. What is lost is a compromise signal, not protection.
+- **The default and the override.** The minute is a floor stated in the spec, not an option. A consumer's own code stores may retain spent codes longer, and detection then lasts as long as they hold them. Both stores must retain together, and a consumer sweeping its own stores gives up the floor if it sweeps sooner than a minute past expiry, which `CodeStore`'s and the options' godoc state.
+- **Limits accepted with it:**
+  - **A spend failure's cause stays in the log.** A failure at the check or the spend is a dependency failure wrapping fixed text, not the store's error, because `token/onetime` keeps that from its caller and logs its type at ERROR. Recording it per request would add a decorator for a cause already logged.
+  - **A store hung past the request's own deadline logs at DEBUG.** `token/onetime` now asks `hangup.ByCaller`, as every other path does, and a context past its deadline is a hang-up by that rule. Under per-request deadlines, a hung store therefore shows nothing at default log levels from this path, and a magic link or recovery token is still answered as invalid. Treating only a cancellation as a hang-up here would make this path disagree with the others, so changing it belongs to the rule as a whole.
+  - **A code store needs read-your-writes.** A lost spend that reads back as unspent answers 500 rather than a refusal and revocation, until the code is presented again. It fails closed (`UNREPRODUCED`, no such store exists).
+- **Options left for later.** None is in v1. Each can be added after a tag without breaking a consumer, because each only lengthens detection or adds a signal, and the spec's minute stays a floor:
+  - **A retention option,** for example `WithSpentCodeRetention`, defaulting to the minute. It keeps spent codes for a period the consumer chooses, and fits a deployment that wants the compromise signal for a day. It costs a row per exchange for that period.
+  - **Retention for the grant's lifetime.** The same option with the grant's lifetime as its value, up to 90 days by default. It honours the spec's first wording, for the highest storage.
+  - **A compact spent-code record.** It holds the token identifier, a secret digest, the client and the grant family instead of the whole record, so long retention stores less. It needs a store contract and a migration, so it fits only alongside one of the above.
+  - **What would reopen this:** a consumer asking for the signal, a conformance or certification requirement on late replays, or a final OAuth 2.1 that requires more than draft-17 does.
+
+#### R18. Tokens are signed before the code is spent
+
+- **The gap.** Signing after both writes would burn the code on a key failure, and leave a live grant and lineage nobody holds.
+- **The order.** Signing has no side effect, so it joins the refusal checks, and the spend stays last among them, as every one-time credential in scrty does. The exchange judges `resource`, mints the JWTs for the grant family the code already names, then spends, then writes the grant row and the lineage in T9's order, and only then stores an opaque access token. A key failure is a dependency failure with the code unspent, and the client may retry.
+- **What it costs.** Two racing exchanges both sign, and the loser discards its tokens unreturned. Reaching that needs the client's authentication and the code's bindings, so an outsider cannot use it to spend signing work. A store failure after the spend still burns the code and leaves records nobody holds. They fail safe, as no token was returned.
+- **The default and the override.** This is an order, not a policy, so there is no option. Reasoned from scrty's own settled specs and the established design.
+- **Limits accepted with minting:**
+  - **A token can outlive its grant at a resource server.** `exp` is `iat` plus the lifetime, as the spec fixes, and `expires_in` matches it, even when the grant or sign-in ends sooner. The provider's own endpoints refuse it from that moment, while a resource server verifying offline accepts it until `exp`. Short lifetimes are what bound that, as for any self-contained token.
+  - **A very large registered audience.** The verifier's size bound follows the request bounds, so a client registering audiences totalling tens of kilobytes would get tokens the provider's own endpoints refuse. It fails closed, and needs a configuration no real client has.
+
+#### R20. A re-presented refresh token answers the same successor
+
+- **The gap (`REPRODUCED` 2026-11-04).** Two requests presenting one token inside its grace both received tokens, as the Review Focus asks, but the second re-rotated, knocking out the first's token. With shared storage, whichever write landed last decided: if it kept the knocked-out token, the next refresh read as reuse and revoked the grant. Under simulated timing that was 26% to 47% of pairs starting together, and 0.3% to 38% at 5 ms apart. The jitter is a model, not a browser measurement.
+- **The decision, by the user.** A successor secret is `HMAC-SHA256(key, family, presented secret)`, not random. Re-presenting a token within 10 seconds of its rotation derives the same successor, finds its digest already stored, and answers it with no write, walking to the head if that successor has rotated too. One head remains, and with the chain still, whichever tab's write lands last holds a live token. After the window, inside the grace, a re-presentation re-rotates with a random successor, as a lost response always could.
+- **Why a window, and not the whole grace (`REPRODUCED` 2026-11-04).** The same successor removes the divergence reuse detection relies on. Across the whole grace, a thief staying within a grace of the victim was never caught: 200 cycles over 16h40m with a 5-minute grace fired nothing, and it would last to the grant's absolute lifetime. No test can tell such a thief from a second tab. A short window keeps the fix, because the race had faded to 0% by 100 ms in the measurements, and a tab with shared storage already holds `r2` after that. A thief must now land within the window on every cycle, and one miss diverges and fires detection. That is harder, and not impossible, and it matters most to a public client without DPoP, which relies on rotation (RFC 9700 §2.2.2). Rejected by the user: the whole grace with this limit stated; and no same successor at all.
+- **Why a key.** Deriving with no key would let anyone holding a stale token compute its live successor, with no presentation for reuse detection to see. Under the key, a successor can only be had by presenting the token to the provider. So a leaked key is as serious as that: its holder can compute the live head from any past token, offline, and nothing fires.
+- **The default and the override.** The default key is 32 bytes drawn once in `New`, which needs no configuration and fits the memory stores, which end with the process as that key does. A durable store outlives a drawn key, so `WithRefreshTokenStore` with no key and the window on fails `New` with `ErrConfig` (R27). A source that cannot supply the bytes fails `New` too, as a provider must not degrade silently. `WithRefreshSuccessorKey` supplies at least 32 bytes shared across replicas, and replaces that default. `WithRefreshSuccessorWindow` replaces the 10 seconds, a proposed value reasoned from the measured race and not from a standard. It is at most `session.MaxRenewalGrace`, a client's grace still bounds it, and zero turns the same successor off.
+- **The limit, stated.** With no shared key, or after the key changes, a replica derives a different successor, finds no match, and re-rotates with a random one, as deriving again would collide with the record it knocked out. Two tabs on mismatched replicas therefore do not converge. That is no worse than without this decision. A provider cannot know how many replicas it has, but it does know when its store outlives the key, and R27 refuses that wiring. The limit that remains is a key changed, or replicas given different ones. `seal.Cipher` cannot supply the key, because it only seals, and should give a different value each time.
+- **How far it reaches.** Only a record's first rotation derives, so a re-rotation can never collide with a derived identifier already stored. The window is half-open, ending at exactly its length, as the grace does. A walk follows the chain while each link is inside its window, carries this key's digest, and has a successor inside its grace, and it stops at 8 links, a proposed value. Past those, nothing is answered from the chain, and the re-rotation reads as reuse. With the window at zero nothing derives, so no key is drawn, a source that cannot supply one then builds, and supplying a key is refused at construction as a contradiction. A rotation `SupersededAt` ahead of the provider's clock is judged by the size of the difference, so replicas a little apart still converge, and one lagging by the window or more does not stretch it.
+- **What it does not change.** A token presented past its grace still revokes the grant. So does one presented after the window whose successor has already rotated, even inside its grace, as `session` has always judged it: a stale tab can reach this, and only the window softens it. A tab keeping a private copy after the other has rotated and the grace has passed cannot be told from a thief, under any design. A stale tab re-presenting after the window can still knock out a token, as before this decision.
+- **Our own design.** The vendors consulted tolerate reuse in a window, and none documents a deterministic successor. Also rejected: keeping the knocked-out token valid inside the grace, which changes `session`, the memory store, three adapters and conformance, and still fails when the next refresh comes after the grace, as it usually does with 5-minute access tokens; and accepting the limit, which leaves browser clients to serialize their refreshes.
+- **Options left for later.** Deriving the key from a consumer's key management service, or several live sibling tokens per head, can be added without breaking a consumer.
+
+**Other limits accepted on the refresh path:**
+
+- **A token's own idle deadline still rules (`REPRODUCED` 2026-11-04).** `session` judges a superseded record's stored idle deadline, so a presentation inside the window or grace that also falls past that deadline is refused, with nothing revoked. A retry or a second tab loses out there, and a thief who rotated just before it is not exposed until the token is presented again past the grace. It needs a client dormant for about the idle timeout, 30 days by default. Changing it would change `session`'s contract for every consumer.
+- **A slow user load gets no verdict.** A record re-read before rotating that is superseded and past its grace answers a dependency failure, not reuse, as the token was presented in time. That narrows the gap and does not close it, because the read and the rotation are still apart. It costs one read per rotation.
+- **A response can be overtaken.** The head can move during a walk's read, so a tab is answered a token that is good inside its window, and is reuse past its grace. No re-read closes that, as any response can be overtaken in flight.
+- **A failed second read after rotating fails closed.** The client can retry inside the grace. A false reuse alarm needs an outage outlasting the grace, and answering tokens on an unread grant row would be worse.
+- **The memory stores hold refresh identifiers in process memory.** Only a durable store is held to storing digests, and a process's memory holds the secrets while handling them anyway.
+- **`refreshAttempts` is 8, with no override.** Past it the answer is a dependency failure and nothing is revoked. With a shared key, racers converge on one successor, so only rotations that keep conflicting reach it, such as under mismatched keys. Only a token holder can reach it, and a retry inside the grace works. The value is proposed.
+- **A refresh stores an opaque token first.** Unlike the exchange (R18), a refresh stores it in the signing step, before the rotation's write, so an access-token store outage cannot burn the presented token and raise a false reuse alarm at a retry past the grace. Any error answer then revokes that one record, detached, and a failure of that is logged.
+- **Reuse marks the grant row first.** A reuse the provider judges itself marks the row, then deletes the family, so a failed mark answers a dependency failure with the lineage intact, and presenting the token again retries. A reuse the manager finds on the re-rotation path deletes first, and only the observer marks the row. If that write fails it is logged: the grant reads as revoked at every refresh (H4), but its opaque tokens stay valid until their own expiry, as nothing is left to present. In practice that needs mismatched keys and a failing store together.
+
+#### R21. What ending, revoking and claims settled
+
+- **A disabled user's refresh marks the row first (`REPRODUCED` 2026-11-04).** Deleting the family when the mark failed left nothing to retry through: the next refresh was refused before it could mark the row, and access tokens read as live until they expired. A replayed code keeps its old order, because it can retry through the code record.
+- **A first-party client's grants can be ended (`REPRODUCED`).** Such a client skips consent, so requiring a remembered consent left a user no way to end one client's grants, short of every client's. The refusal now needs neither a consent nor a grant.
+- **A resource server's identifier cannot be the issuer (`REPRODUCED`).** The issuer is in every default-audience `openid` token, so that value would show a client nearly every token at introspection. `ResourceIdentifier` must be an absolute URI with no fragment, not the issuer, on a confidential client, or the client fails construction.
+- **Ending a sign-in budgets each store on its own (`REPRODUCED`).** A hanging grant store would otherwise spare the browser sessions, and nothing retries an observer. The grant store, the hand-on and the browser delete each have 10 seconds, so hanging stores can delay a logout's answer by up to 20 seconds, and its success is unaffected.
+- **Empty claims (OIDC Core §5.3.2).** A null or an empty string is omitted. Any other value of a consumer's stays, as a consumer's `groups: []` is its own (`library-design` rule 5).
+- **The default claim source reads an email from the username, decided by the user.** `identity.Details` holds no email, and the default stores discard one by a settled decision. A username that is exactly an email address is released as `email`, as recovery's contact resolver already defaults to the username, and just-in-time provisioning uses the email as the username.
+  - **`email_verified` is always false from this source.** A username proves nothing about who controls that address, even for a just-in-time user whose upstream proved it, as nothing records that. Claiming true would be a false statement a relying party might trust.
+  - **The default and the override.** A consumer's `WithClaimSource` replaces it, and is how a true `email_verified`, or an address apart from the username, is released.
+  - **Not an account key.** The address stays out of every lookup, as matching on it would let a caller take over an account by claiming it.
+  - **Rejected:** email columns on `users`, with a true verified state, which reverse the settled decision and touch a migration and three adapters for a column nothing else reads; and both together.
+  - **Options left for later.** Those columns can be added without breaking a consumer, with a stored email taking precedence over the username.
+- **Accepted:** a superseded token is inactive at introspection even inside its grace, and a disabled user's token stays active there until its grant is revoked, bounded by its lifetime. A caller who hangs up before the first read at revocation revokes nothing, as no credential was yet judged. All of this ran on the memory stores; task 12.6 carries the durable round trip.
+- **What the durable round trip does not cover.** It runs on all three adapters and PostgreSQL 15 and 18, and scans every table for credentials. Two limits remain. No sealed column holds a value, because the provider writes neither of the columns the migration seals, `external_id_token` and `csrf_token`; sealing is proved by the session stores' own suites. `op_client_assertions` is empty at the scan, because no client in the scenario authenticates by assertion, so the scan is proved to read that table and not to find a row in it.
 
 #### R8. A family identifier is not a credential (H6)
 
 - **The gap.** The refresh token's family is not a secret, yet H4's "missing lineage reads as revoked" could be read as writing a revocation, and the revocation endpoint could revoke by the family alone. Either way, a value holding a real family and a made-up secret would end someone's grant: from any client's own grants, or from a public client that needs no secret. `UNREPRODUCED`.
-- **The decision.** A secret that matches no record of the grant refuses with `invalid_grant` and writes nothing, at refresh and at revocation. Presenting a superseded secret at revocation or introspection is not a reuse, which only a refresh detects. No override.
+- **The decision.** A secret that matches no record of the grant writes nothing: a refresh refuses it with `invalid_grant`, and revocation answers success, as RFC 7009 has it. Presenting a superseded secret at revocation or introspection is not a reuse, which only a refresh detects. No override.
 
 #### R9. The flow cookie across tabs, hosts and browsers
 
+- **What the flow cookie keeps (settled while building, 2026-11-04).** A presented value of the shape the provider mints, 32 bytes of unpadded base64url, is kept without asking whether a live request holds it, because `PendingRequestStore` has no lookup by it and an attacker can obtain a live value by starting a request of their own. `__Host-` is what stops planting. Any other value is replaced.
+- **What authorization requests settled while being built (2026-11-04).**
+  - A `nonce` under `PKCEOrNonce` needs `openid`, because with no ID token nothing would ever check it.
+  - `max_age` above int32 is refused, so later arithmetic cannot overflow.
+  - `offline_access` dropped with no scope left is `invalid_request`.
+  - Under `WithDPoP`, a `dpop_jkt` that is not a SHA-256 thumbprint is `invalid_request`, rather than letting the user log in for a code that can never be exchanged.
+  - `id_token_hint` has its own bound of 8 KiB, a proposed value, because a genuine ID token can exceed the general 4 KiB.
+  - `WithDPoP()` tells the provider DPoP is on, since a chain cannot change a built provider, and `EnableOIDCProvider` compares `(*Provider).DPoPEnabled()` with `EnableDPoP` (task 8.1).
+- **What resuming settled while being built (2026-11-04).**
+  - **Write order.** The code token, then its record, then any browser session, and the stage's conditional write is the commit point. Secrets are released only after it. A racing loser gets an unknown handle, and leaves records whose secrets nobody saw, which expire.
+  - **After the commit point,** a failure remembering consent, or deleting or touching a browser session, is logged. The user still gets their code, and at worst is asked for consent again.
+  - **The consent stage binds the sign-in presented then,** and re-judges freshness against it, since the login stage's sign-in may have ended. A denial grants nothing, so it skips that check.
+  - **A hint naming another user** answers `login_required` and spends the handle, because the request has been answered. It is judged after freshness, so what the page can fix comes first.
+  - **Answering from a browser session (task 6.8).**
+    - `prompt=select_account` skips the session, so it reaches the consumer's page. Core §3.1.2.1 requires a selection or an error, and the provider's job here is to show it.
+    - The code is written, then the session is looked at through `Touch`, and `ErrNotFound` withholds it, so an end before the look is refused and an end after it finds the code, because an end deletes browser sessions before it sweeps (R26). A look that fails for any other reason withholds the code too, as a dependency failure, at silent authentication and consent alike. At consent, this and the user check run before the stage is spent, so a refusal leaves the handle unspent.
+    - `Touch` runs only when the session produced a code or parked at consent, so refused silent polling cannot keep a session alive. Successful polling extends it, up to the absolute deadline.
+    - A store failure after validation answers `server_error` by redirect, with `state` and `iss`, as P3 says, under `prompt=none` or not. A failure reading the client has no validated redirect URI, so it is an error with no redirect.
+  - **The client is judged as it is now (`REPRODUCED`, then fixed).** A code could be sent to a redirect URI the client had since unregistered. `rejudge` now runs at every resume, for a denial too. It refuses when the URI or code grant is gone, when `openid` was parked and is gone, or when no scope is left, and it leaves out other withdrawn scopes and resources. A consent answer naming a withdrawn scope has it dropped, as refresh does (R13).
+  - **A future authentication time** more than 60 seconds ahead needs re-authentication (`REPRODUCED`, then fixed). The leeway is a proposed value, matching `nbf`'s.
+  - **What the chain must refuse (task 8.5).** `SignIn` cannot express a session owing MFA or recoverable only by a late renewal, so the provider refuses only one past its deadline, or with no deadline, authentication time or family.
+  - **`ResumeInput.IdleTimeout`** carries the manager's idle timeout, because the provider holds no manager (R2). Zero uses a 30-minute default, pinned to `session.New`'s.
 - **Two tabs.** T5's single cookie was overwritten by each new request, so a second tab killed the first, and a cross-site navigation to `/authorize` could do the same. A browser holding a valid flow cookie now keeps it, and each pending request stores its digest. `__Host-` stops another host planting one. *Rejected:* a cookie per handle. It lets a hostile site stuff cookies through repeated navigations, up to a header-size denial of service. node-oidc-provider scopes its cookie by path, which `__Host-`'s `Path=/` rules out.
 - **Same origin.** Login and consent URLs must be on the issuer's origin, refused at construction otherwise. T5's `__Host-` already made other hosts fail, only at first use.
 - **Another browser.** A magic link opened elsewhere, or recovery on another device, cannot resume, since the flow binding is exactly what refuses it. That is the attack P1 stops. The README states it, and the user starts again from the relying party.
@@ -1103,8 +1253,8 @@ R1, R2, R3, R4's audience rule and R5's added plans reverse or widen something t
 
 #### R10. Every exchange records a grant, including for clients with no refresh token
 
-- **The gap.** Clients registered only for `authorization_code` had no stated grant, while H2's tombstone, `gid` (R4) and back-channel logout all need one, and T9's orphan sweep would delete it.
-- **The decision.** The row is always written, with a flag saying it holds no lineage, which is what the orphan pass and H4's rule check. It expires at the sign-in's deadline, so an ID-token-only client still gets its logout token.
+- **The gap.** Clients registered only for `authorization_code` had no stated grant, while H2's tombstone, `gid` (R4) and back-channel logout all need one.
+- **The decision.** The row is always written, with a flag saying it holds no lineage, which is what H4's rule checks. It expires at the sign-in's deadline, so an ID-token-only client still gets its logout token.
 
 #### R11. Parsing and transport rules the specs left out
 
@@ -1129,10 +1279,34 @@ The user confirmed on 2026-11-04 that DPoP support is required. P6 stands, and D
 | A `DPoP` header while DPoP is off | ignored; `token_type` `Bearer` tells the client | RFC 9449 §5 |
 | A bound sign-in at the resume | refused without its proof, as anywhere on the chain | `sender-constrained-tokens` |
 | CORS for browser clients | `DPoP` allowed, `DPoP-Nonce` exposed | RFC 9449 §8 |
+| A public client's first proof at a refresh, on a grant unbound at the exchange | `invalid_dpop_proof` before any rotation, leaving the token usable (`REPRODUCED` 2026-11-05: it was answered `DPoP`, and the next refresh with no proof succeeded). A refresh token issued beside a proof must be bound, and the RFC does not say a client may start DPoP later. Binding there takes a store write and a race. A client recovers with a new authorization | RFC 9449 §5 |
+| A public client's certificate | the grant stores its thumbprint, and a refresh must present the same certificate, refused with `invalid_request` before any rotation (`REPRODUCED` 2026-11-05: it refreshed with none, and downgraded to `Bearer`). RFC 8705 names no code here, and `invalid_grant` would tell the client to discard its token | RFC 8705 §4 |
+| An unbound public grant presenting a certificate at a refresh | allowed. The access token carries `x5t#S256`, and the grant stays unbound. Unlike a proof, RFC 8705's binding is a SHOULD, and a client may send a TLS certificate it never meant as a binding, so refusing would break it | RFC 8705 §4 |
+| Proofs from an unauthenticated source | accepted. A proof is judged before the client, so such a request writes one replay row with nothing charged. RFC 9449 §4.3 lets the checks run in any order. A row is small and lives for the proof's window, nothing is amplified, and `DPoP.Replay` already states that the store is bounded only by the admitted request rate. A client signs a new proof for each request, so burning one costs it nothing | RFC 9449 §4.3, §11.1 |
+| A limiter that cannot answer | fails closed as `invalid_client`, as the chain's other flows do. A healthy client is then told its credentials are wrong during the outage, which is accepted so an outage does not lift the guess limit | reasoned |
+| A shared source | a proxy not declared as trusted makes every client one source, so 10 bad requests limit them all. The chain's trusted-proxy setting is the override | reasoned |
 
 #### R13. Clients over time
 
 - **A consumer's registry cannot be checked at construction.** "Wiring mistakes fail at construction" held only for configured clients. A client read from a durable registry passes the same validation when read. A failure counts as an unknown client and is logged with the setting.
+- **What the client layer settled while being built (2026-11-04).**
+  - **Secrets do not print.** `Client.Secret` and `ClientSecret.Digest` are `SecretBytes`, which renders `[REDACTED]` under every format verb and in JSON, and still assigns from `[]byte`.
+  - **`JWKS` holds public keys only.** An `oct` key, or any key with `d`, is a configuration error at construction and on a registry read. `private_key_jwt` takes exactly one of `JWKS` and `JWKSURI`.
+  - **Logout pages are required.** `Deps.LogoutURL` and `Deps.LoggedOutURL` are both required at `New`, so a forgotten URL cannot silently turn a mandatory feature off.
+  - **Registry reads.** A client read back is validated in full, and one that fails, answers with another client's ID, or holds a raw `Secret`, is treated as unknown and logged. That includes a key algorithm the provider cannot sign, as R6 says.
+  - **Rotation.** `NewClientSecret(secret, expiresAt)` builds a digest entry, and `(*MemoryRegistry).PutRegistered` registers up to two. A durable registry returns `RegisteredClient` values built with `NewClientSecret`, so `ClientStore` gains no rotation method.
+  - **The JWKS cross-check.** `(*Provider).SigningManager()` answers the provider's `*signingkey.Keys`, or nil for a wrapped source, and the chain refuses only when both sides are managers that differ. `EnableOIDCProvider` calls it for a JWKS provider that is a `*signingkey.Keys` (task 8.1), and a wrapped provider builds, since it cannot be compared.
+  - **Client authentication's open choices.**
+    - More than one method is `invalid_request`, by RFC 6749 §5.2 as R11 says. RFC 7521 §4.2.1 reads as `invalid_client`, through a fetched summary only. A missing or wrong `client_assertion_type`, a mismatched `client_id`, and a non-Basic `Authorization` scheme are `invalid_client`.
+    - An assertion's payload must be a JSON object, because jwx's parse recurses into a JWS payload, and an inner `at+jwt` or `alg: none` token would otherwise supply the claims (`REPRODUCED`, then fixed).
+    - A key whose `key_ops` omits `verify` is not used (RFC 7517 §4.3).
+    - `nbf` allows 60 seconds of leeway, with no option, and `iat` is ignored.
+    - An assertion with no `kid` tries each held key and never refetches, so a rotated key without a `kid` waits for the cache lifetime.
+    - An outage stays a dependency failure, including a failed `kid` refetch within its window, and an expired key set is never served in place of a failed fetch.
+  - **Client key sets have their own cache** (`clientkeys.go`), a departure from P7's "cached through the relying party's". That cache is unexported and tied to `*RelyingParty`, and sharing it means changes outside `oidcprovider/`. It follows the same design: per client, single-flight, and an unknown `kid` refetching at most once per 30-second cooldown. A failed fetch waits one fixed window rather than backing off. `WithClientKeysTTL` replaces its 15-minute default, which matches `oidc.DefaultDiscoveryTTL`.
+  - **A moved token endpoint.** `AudienceIssuerOrTokenEndpoint` derives issuer + `/oauth2/token`, but the chain can move the path, and the provider cannot see that. `WithAssertionTokenEndpoint(url)` states it, and `EnableOIDCProvider` compares `(*Provider).AssertionTokenEndpoint()` with the chain's real token path at construction (task 8.1). *Rejected:* a setter the chain calls, which would change a built provider.
+  - **A replay across `exp` is refused, for any store (`REPRODUCED` 2026-11-04, then fixed).** A replay could pass the `exp` check just before expiry, and then reach the identifier store after it. A store that forgets at `until` then answered "new", so one assertion was accepted twice, on the system clock with nothing injected (`TestAuthenticateClient_PrivateKeyJWT_ReplayAcrossExpiry`, `expected: 1, actual: 4`). The provider now reads the clock again after `Record` answers new, and refuses if `exp` has passed, which protects a consumer's store too. `MemoryAssertionIDStore` holds a pair until `DeleteExpired` removes it, and the provider's default sweeps a pair only a minute past its `until`. A new assertion reusing a `jti` is therefore refused for that minute.
+  - **Refused schemes need no list.** `javascript:`, `data:`, `vbscript:` and `file:` hold no period, so they already fail R11's private-use rule for a native client and the `https` rule for any other. A separate list changed no outcome.
 - **Secret rotation.** One digest per client forces downtime to rotate. A client may hold a second, and a secret may carry an expiry. Keycloak's rotation policy has an old-secret expiry in the same way. Default: one secret, no expiry.
 - **Client key rotation.** An unknown `kid` refetches `jwks_uri`, at most once per cooldown, 30 s by default, as the relying party's key-set cache already does (`oidc.DefaultJWKSRefetchCooldown`).
 - **Assertion typing.** `draft-ietf-oauth-rfc7523bis` says a client assertion SHOULD be typed `client-authentication+jwt`, and that rejecting an untyped one is NOT RECOMMENDED. That is accepted, and a token of another type is refused, so an access token cannot authenticate a client.
@@ -1143,14 +1317,90 @@ The user confirmed on 2026-11-04 that DPoP support is required. P6 stands, and D
 
 #### R14. Back-channel delivery is bounded, and follows no redirect
 
-- **Bounded.** The specs said asynchronous and nothing more. A logout storm could then start goroutines without limit. Delivery uses a bounded pool and queue, stopped by the provider's `Shutdown`, and a worker that ends its goroutine is replaced, as #68 does in `notify`. A drop is reported as a failed delivery. Defaults (*proposed*): 8 workers, a queue of 1024, each replaceable; a consumer delivery takes over all of it.
+- **Bounded.** The specs said asynchronous and nothing more. A logout storm could then start goroutines without limit. Delivery uses a bounded pool and queue, stopped by the provider's `Shutdown`, and a worker that ends its goroutine is replaced, as #68 does in `notify`. A drop is reported as a failed delivery. Defaults (*proposed*): 8 workers, a queue of 1024, each replaceable through `WithLogoutDeliveryPool`, and a bound on each delivery through `WithLogoutDeliveryTimeout`. A consumer delivery replaces the POST and runs on the same pool and within the same bound. Workers start on demand, one goroutine per delivery, so `Start` launches nothing and only enforces `signingkey`'s sentinels. A delivery left behind past its bound holds no worker, and at most twice the workers can be left behind at once; past that a delivery fails with the `busy` reason.
+- **Reports cannot hold anything (`REPRODUCED` 2026-11-04).** A log handler or sink could delay `EndSignIn`, stop its browser-session deletes by panicking, keep a worker, or hold `Shutdown` past its context. Reports now run on two bounded lanes, started on demand: `records`, one goroutine in order, for log lines; and `events`, up to 64, for the sink. Two, because one bound would let 64 hung sinks stop the log lines. Past 1024 waiting on a lane the newest loses, counted as `lost_events` or `lost_records`, with notes that are not failures counted apart as `lost_notes`. A report is counted from the moment it is owed, so a nil `Shutdown` means every report has been made, and what `Shutdown` finds has room no later end can take. A log handler that panics can lose a line, which `lost_records` counts, and one that always panics can leave that count unsaid, as the godoc states. This follows the common telemetry shape, a bounded queue that drops when full and flushes at shutdown. There is no option, because the bound protects the provider from its sink: a consumer who cannot accept it gives a sink that returns promptly. `EndSignIn` runs grants, browser deletes, hand-on, then its own report, so a hung synchronous sink holds the response and not the deletes.
+- **What counts as failed.** A POST or consumer delivery cut off by `Shutdown` is reported as `shutdown`, as the client may not have been told. A store or fetch cut off is only logged. A status, panic or goexit arriving together with the stop or the bound keeps its real reason. A 200 or 204 is judged by status without reading the body, so an oversized body is still a success (`outbound.PostFormStatus`).
 - **Context.** It keeps the caller's values, and not its cancellation.
 - **Protocol.** Back-Channel §2.8: 200 and 204 are success. §2.5: retransmit only for a recoverable failure, so one attempt by default, and a consumer's queue may do more. The specs read found nothing on redirects, so following none is scrty's own choice, since a target is a registered URI. The `events` value is exactly `{}`, as the suite checks.
-- **Outbound policy.** The confined client restricts schemes, origins and redirects, and has no private-address rule, so a first-party relying party on an internal address is reachable. Nothing to override.
+- **Outbound policy.** The confined client restricts schemes, origins and redirects, and has no private-address rule, so a first-party relying party on an internal address is reachable. `WithLogoutOutbound` replaces the client for delivery. A client from `WithOutbound` is copied through `outbound.Client.WithoutRedirects`, so "follows no redirect" holds under every option (`REPRODUCED` 2026-11-04: such a client followed a 307 and sent the token again). That client's own time bound still applies, as its godoc states.
 
 #### R15. Multiple resources follow RFC 8707 §2.2
 
 A `resource` at the token endpoint must be within the code's or grant's resources, not only the client's allowlist. The token narrows and the refresh token stays bound to the whole grant, so a later refresh may ask for another of them. Outside that is `invalid_target`. The token's audience is what was asked for: node-oidc-provider allows one audience per token, while RFC 8707 permits more, so it stays permitted, and the client chooses.
+
+**A code granted resources, exchanged with none named.** The standards settle one case and leave the other to the server, and the user chose:
+
+- **One granted:** the audience is exactly that resource, as if it had been named. RFC 9068 §3's example redeems a code from an authorization request naming one resource, with `openid` in scope, into a token whose `aud` is that resource alone. No issuer is added, matching that example and what an explicit `resource` gets (R4), so such a token cannot call UserInfo.
+- **Several granted:** `invalid_target`, judged before the spend, so the code stays unspent and the client can retry naming what it wants. RFC 8707 §2.2 leaves acceptance to local policy, and its §3 warns that any audience of a multi-audience token can use it at the others. A client that wants that names them all at the token endpoint, and it stays permitted.
+- **None granted:** nothing changes. The client's `DefaultAudience` applies, with the issuer added for `openid`, and otherwise the issuer alone. `AllowedResources` is never a default.
+- **Rejected:** all granted resources, which spans services without the client asking; and the default audience regardless, which contradicts RFC 9068's example and can reach a service the user never approved.
+- **The default and the override.** The rule has no option, because it follows from what was granted. A consumer chooses the outcome by what its client names, and through `DefaultAudience`.
+
+**Options left for later.** A per-client setting choosing the issuer's addition, or a `defaultResource` hook, can be added without breaking a consumer. Neither is in v1.
+
+#### R19. No orphan sweep
+
+- **The gap (`REPRODUCED` 2026-11-04).** The established design removed a grant whose lineage was missing, to clean up after a failure between T9's two writes. A lineage past its idle timeout is swept too, so the pass also removed live grants of live sign-ins, and their clients were no longer told when the sign-in ended (`oidc-provider-logout`). The pass also loaded every live grant on every run, an extrapolated 15 minutes at a million grants, and gave a consumer no override.
+- **The decision, by the user.** There is no orphan pass, and `GrantStore` has no `DeleteOrphans`. This departs from the established design, for the defect above. A grant stays until its own deadline. A row left by a failure between the two writes is harmless: the client got an error and holds no token, a refresh on it reads as revoked (H4), and an end may send its client one logout token for a sign-in it holds nothing from, which a receiver must tolerate anyway.
+- **Rejected:** a "lineage written" mark set after the second write, which keeps the cleanup at the cost of a third write with its own failure case and a column; and accepting the loss, which breaks the logout spec.
+- **The default and the override.** Rows leave through the grant sweep at their deadline, so the longest a leftover lasts is the client's absolute lifetime, 90 days by default, which a consumer sets per client. There is nothing else to override.
+- **Options left for later.** A one-time cleanup task, or the mark above, can be added without breaking a consumer if leftovers ever prove costly in practice.
+
+#### R22. An issuer with a path
+
+- **The gap (`REPRODUCED` 2026-11-05).** The construction check of P7 compared the assertion token endpoint with the path the chain serves. An issuer of `https://id.example.com/auth` behind a router stripping `/auth` was refused, with no setting that worked: moving the prefix stopped the routes matching, and stating the stripped URL refused clients naming the real one.
+- **The decision.** The issuer states the public URL, and the served path is planned separately, as Keycloak and node-oidc-provider do. A public URL is the issuer's origin, plus the served path when that is at or under the issuer's path, and otherwise plus the issuer's path and the served path. The check and the metadata documents share this rule. Paths compare in their escaped form, so an encoded spelling does not pass.
+- **The default and the override.** No configuration for a stripped chain or for a prefix including the issuer's path. `WithAssertionTokenEndpoint` still states the URL outright.
+- **The limit.** A chain cannot see at construction whether a router strips. A chain mounted without stripping must include the issuer's path in its prefix, or the published URLs do not reach it. `EnableOIDCProvider`'s godoc says so.
+- **Rejected:** a public-path option, which restates what the issuer already says and can disagree with it.
+
+#### R23. What the chain's construction settled
+
+- **Slots.** `OrderOIDCProvider` is 250, inside CSRF and outside Basic and bearer, for the endpoints a client calls. `OrderOIDCProviderSession` is 850, inside the gates and session touch and outside the authorization stage, so a consumer's rules do not reach resume or consents.
+- **The check after wiring.** A wire step cannot return an error, and runs in option order. `checkAfterWiring` runs after every one, so a manager that gains an observer counts wherever its option stands. Every manager the chain records is checked, not only the bearer's.
+- **Binding the chain cannot verify.** A client requiring DPoP or a certificate is refused at construction when the chain does not verify it. The spec states the DPoP case, and certificates are the same wiring mistake (`library-design`, rule 6). A consumer's own registry cannot be listed, so `Provider.RequiresBinding` answers false for it and such a client is refused at the token endpoint instead.
+- **Framing.** Security headers must restrict framing in the document profile, not only be enabled. `frame-ancestors` may hold `'none'`, `'self'` and named `https` origins, in a typed policy or a raw header. RFC 9700 §4.16's own example names an origin, and OWASP accepts one where framing is needed, so refusing them was stricter than the standard. `*`, a scheme, a wildcard host, a plain `http` origin, an empty or missing directive, and report-only are refused. RFC 9700 §4.16 asks for the older measures too unless a server explicitly drops browsers without CSP level 2. The chain's settled profile sends no `X-Frame-Options`, and this is that explicit choice: a consumer who needs them adds the header with `WithHeader`. `WithOIDCPagesCarryFrameAncestors` remains the override. A route-matched profile cannot be seen at construction, as the godoc says.
+- **Paths.** `WithOIDCProviderPath` takes the whole request path, and the prefix does not apply to it. A path holding a character that needs escaping, such as a space, `?`, `#` or `%`, could not be published and compared as served, and is refused.
+- **Status.** `ErrDependency` answers 500 before the challenge and table checks, whatever it wraps.
+- **`amr` for a local sign-in.** Values follow RFC 8176, asserted only when known. A password gives `pwd`, a satisfied second factor adds `mfa`, and a federated sign-in keeps the upstream's values. A session records that a second factor was met, not which, and RFC 8176 lets `mfa` stand without naming methods, so TOTP is not named; recording the method would change the session schema. A passkey or magic link alone asserts no method, as no registered value can be truthfully claimed: a passkey cannot be told apart as `hwk` or `swk`. A local sign-in has no `acr`, as scrty defines no levels. `WithOIDCSignInAssurance` replaces the mapping whole.
+
+#### R24. What the token endpoint settled
+
+- **Defaults, each *proposed*.** A throttle of 10 failures per source in 15 minutes, replaceable with `WithOIDCTokenLimiter`, and a 64 KiB body bound with 413 above it, replaceable with `WithOIDCTokenBodyLimit`. A throttled source, an unattributable address and a limiter that cannot answer all read as `invalid_client`.
+- **Browser endpoints.** A throttled source, a limiter that cannot answer and an unattributable source answer 429 at authorize and resume (RFC 6585), through `ErrOIDCThrottled`. RFC 9110 §15.5.2 says a 401 must carry `WWW-Authenticate`, which these cannot, and a consumer's page reads 401 as "sign the user in", so it could loop. The token endpoints keep `invalid_client`, the answer RFC 6749 gives a client.
+- **Reading an authorization request.** A GET parses the raw query strictly and refuses what does not parse, as a POST does, and passes every parameter to the provider, so no fixed list can silently drop one. An unsupported request object answers `request_not_supported` before other parameters are read (OIDC Core §6.1, §6.2).
+- **Resume.** A login stage needs a credential in the `Authorization` header, so a consumer's interceptor reading another place cannot resume. Two `Authorization` lines are refused. Consent may still stand on the browser cookie alone.
+- **Refusals.** A missing required certificate answers `invalid_request`: RFC 8705 names no code, and `invalid_grant` would tell the client to discard its code. A proof plus a certificate from a client requiring mTLS is refused, as the token would carry only `cnf.jkt`. A repeated `Authorization` header answers `invalid_request`.
+- **A credential in the query.** `httpsec.Request` gains `RawQuery`, so the refusal reads the query as received. Go's parser silently drops a pair it cannot decode, so `client_secret=%zz` was not refused (`REPRODUCED` 2026-11-05). Changing what `QueryValues` keeps was rejected: it misses `a=1;client_secret=abc`, and changes what the chain's other checks see. The interface change is free before the first tag.
+- **Order.** `AuthenticateClient` is never called before `Token`, because an assertion is single-use. The proof is judged before client authentication, so a valid proof with a wrong secret still records its `jti`. Invalid proofs are charged to the source. Refused grants, nonce requests and failures are not.
+
+#### R25. What the provider's events settled
+
+- **Fields and names.** `event.Event` gains `Client` and `Cause`, with nine names under `scrty_`. A client is named only when the registry held it, so presented text never reaches an event.
+- **One event per outcome.** A refresh reuse yields two events, the reuse and the revocation, through a chain as well as outside one. The chain's emitter stays off the lineage manager's context, so the same reuse is not reported a third time as `authn_token_reuse`. A code replay likewise yields two. `GrantRevoked` is reported only by the call that newly revoked the row, with the cause the store keeps. `CodeReplayed` may repeat, as each replay is a real presentation. `GrantStore.Revoke` returns whether this call revoked the grant, following `ConsentStore.Revoke`, so racing callers cannot both report it; the store suite pins this under 32 racers on every adapter. A replay reports before its lineage delete, as a revocation does, so a sink that blocks spends the revocation's budget after the row has already ended the grant.
+- **Only what happened.** `GrantCreated` is reported once the credential is handed out. A failed dependency usually decided nothing, so it reports nothing. A failed grant end is one exception, and a failed clone revocation the other, as below: the session did end, and a grant outlived it, so `SignInsEnded` logs it and reports `scrty_grant_end_failed`, as `http-security-chain` requires and OWASP's logging guidance lists session management failures. Grants that did end are reported as they end.
+- **Passkey clones.** The `passkey` package alone revokes nothing, as it holds no provider. `passkey.WithGrantRevoker` supplies one at construction, and `passkey.WithoutCloneGrantRevocation` keeps grants; keep wins if both are given. Injecting the chain's provider into a built manager was rejected: it mutates a manager two chains may share. So "revoke by default" holds on a chain with `EnableOIDCProvider` and `EnablePasskeys`, which refuses a manager that has decided neither. A chain using only `(*Passkeys).MFAMethod()` cannot be seen by that check, as the godoc states. A passkey manager takes no raw session store, because a store reports nothing to the provider.
+- **A failed clone revocation** reports `scrty_grant_revoke_failed`, as suspension happens once and nothing retries it, through the chain's emitter on the request's context. Off a chain there is no event, only the log, which is never sampled away. An MFA reset returns its failure. A recovery returns one before its codes are spent. It reports one after them through its own sink (`recovery.WithSecurityEvents`), or the chain's when a chain runs it, and completes (R27).
+- **Accepted:** a redundant report failing after a successful logout can fire `scrty_grant_end_failed` though nothing outlived the sign-in. A rare false alarm is safer than risking a missed one.
+- **The default and the override.** No sink means no events and no clock read. `WithSecurityEvents` sets one, and a chain's emitter takes its place on the context. `RevokeUserGrants` puts the consumer's own cause in `Cause`, unchanged.
+
+#### R26. A logout's order, and what the suite expects
+
+- **A sign-in's end racing a resume (`REPRODUCED` 2026-11-05).** An end between the bearer's load and the provider's writes left a live browser session, which then outlived the sign-in, against `oidc-provider-authorization`, and a code that made a live grant. A resume now checks after its writes that the sign-in's family still has a live head, through `ListSignIns`. If not, it ends the family and answers `ErrOIDCReauthenticate`; a failed check answers 500 and hands out nothing. An end before that check is caught by it, and an end after it finds the code and browser session already written, so the window R7 accepted is closed for ends through the chain. Consent resting on the browser session alone writes its code before its look at the session, as silent SSO does. Reading the presented identifier again was rejected (`REPRODUCED`): under strict rotation a live sign-in reads as ended, a grace closing mid-request reads as reuse and revokes the family, and an outage failed open. The cost is one user's listing per resume, as `session.Store` has no family lookup. A sign-in that merely expires between the two reads is treated as ended.
+- **An end's own order (`REPRODUCED` 2026-11-05, `TestProvider_EndSignIn_ReachesARequestInProgress`).** `EndSignIn` swept codes and then deleted browser sessions, so a code written between the two passed its look at the session, missed the sweep and exchanged for tokens after the end, on the ends that run one pass: `session.EndSignIn`, `EndOtherSignIns` and reuse. It now deletes first. A look after the delete finds nothing and withholds the code. A look before the delete had its code already written, so the sweep that follows reaches it. Each store is still written whatever became of the other, each on its own budget. A code the end spares under R7, holding `offline_access` for a client not ending its grants with the sign-in, makes tokens as before. No option, because the order is what makes the guarantee hold.
+- **A limit of that order (`REPRODUCED` 2026-11-05, in a review's scratch copy; accepted, for the user's review).** A logout's finish whose browser delete succeeds and whose sweep then fails leaves no browser session, so a retry from that browser answers success, and a code written between the logout's two passes makes tokens until it expires: 60 seconds by default. It needs that race and a grant store failing at exactly the finish, and the failure is logged. The earlier order also deleted the browser session when its sweep failed (from reading the code). Rejected: sweeping before the delete as well, which breaks "each store is written whatever became of the other"; and letting the retry reach the family through its handle, which keeps a spent logout's state alive for a case this narrow.
+- **A failed look fails closed (`REPRODUCED` 2026-11-05, `TestProvider_BrowserSession_Failures`).** Silent authentication logged a failed `Touch` and released the code, where consent answered a dependency failure. That look is the last one to exclude an end, so an outage now withholds the code at both. The cost is that a browser-session store outage fails silent authentication with `server_error`. A `Touch` after the answer is owed, as at a denial, still only logs: no code rests on it. No option: the provider would be accepting a code it could not show had not outlived its sign-in.
+- **A 401 at `/resume` and `/consents` always carries a challenge (`REPRODUCED` 2026-11-05, `TestOIDCSignInEndpoints_UnauthorizedCarriesAChallenge`).** RFC 9110 §15.5.2 says a 401 MUST carry one, and a bad bearer refused before those routes had none. The outer router now adds it on the way back, including the paths under the consents list. A refused `Bearer` token with DPoP off gets `error="invalid_token"` (RFC 6750 §3.1), when a built-in bearer reads that scheme, as that RFC defines the code for it alone. Anything else, a custom scheme included, gets the challenge with no code. DPoP's own challenges are unchanged, each answered once. No option, because it is a MUST of the protocol the provider states it follows.
+- **Limits accepted.** `mfa.ResetEnrolment` revokes nothing when `ResetDeps.Grants` is nil: a package function cannot see a provider, and nothing may change when none is in use, so a consumer using the provider must set it, as its godoc states. A 401 from elsewhere in the chain still has no challenge, as `TestOIDCSignInEndpoints_ChallengeStaysOnItsOwnPaths` pins: login, MFA verification, passkey management, recovery, renewal, logout, and a bad bearer at the consumer's own routes. This predates the change, and bare status answers are the chain's settled default, so changing what every chain answers is a follow-up of its own.
+- **One session manager (`REPRODUCED` 2026-11-05, `TestOIDCResume_ConsumerBearerSessionsAreReadFromTheChainsManager`).** A resume's check reads the manager of the chain's built-in bearer. A consumer's interceptor publishing a session from another manager therefore reads as ended: the resume ends that family at the provider and answers `ErrOIDCReauthenticate`. The default stands with no option, and the godoc states the limit (`library-design` rule 4). `EnableOIDCProvider` already requires a built-in bearer, and `WithSessions` already refuses any manager but that bearer's, for the same reason: a manager the bearer does not read would end sessions in use. An option here would allow what `WithSessions` refuses. Rejected: a new option naming the manager. Two built-in bearers over different managers are refused when `EnableOIDCProvider` builds (`REPRODUCED` 2026-11-05: a live sign-in of the first read as ended; pinned by `TestOIDCProvider_Construction`), since the check could only read one of them (`library-design` rule 6). The consumer's override is a chain with one manager.
+- **A fixed list of assertion algorithms.** `assertionAlgs` has no option. It holds only asymmetric algorithms, because a client's registered keys are public and nothing symmetric could safely be keyed by them, and a client's own key type bounds what can verify for it. There is no per-client or provider setting to narrow it further, which a later option could add without breaking a consumer.
+
+- **The order (`REPRODUCED` 2026-11-05).** An end deleted the browser session even when the grant write failed, so a retry from that browser found none, and its confirmation answered success with grants and sessions live. RP-Initiated Logout §2 says the OP MUST log out an End-User who says yes. An end through the endpoints now runs grants, first-party sessions, then the browser session, and spends its handle last through `Provider.SpendLogout`. A caller off the chain does the same, finishing with `EndSignIn(Ended)`, or its handle lives until its deadline. Two confirmations of one handle may both answer 200: each is idempotent, and one logout event fires. While a logout is failing the browser session stays usable, as the first-party session does, and the user has been told it failed.
+- **Rejected:** falling back on a hint, which lets an ID token's holder end a sign-in from another browser, against §2's MUST ask; and falling back on the first-party session, at a CSRF-exempt endpoint, which the order makes unnecessary. `EndSignIn` keeps writing both stores for the observer path, as nothing retries an observer (T4).
+- **"Keep grants".** The option keeps grants holding `offline_access`. A grant without it ends with its sign-in, whatever the option says, because T4 and R2 define what a sign-in's end does.
+- **The logout page** does not show who is asking: §2 requires asking, not naming, and no read exists for a logout handle.
+- **UserInfo CSRF.** A cross-site POST to UserInfo stays refused, as `csrf-protection` says "exactly these" endpoints are exempt. An allowlisted origin passes, and a consumer may exempt it. The token never comes from a cookie, so nothing is at risk either way.
+- **The conformance suite's expected results.** `oidcc-claims-essential` warns, because `claims` support is OPTIONAL (OIDC Core §5.5) and the provider publishes `claims_parameter_supported: false`; a fixture returning `name` regardless would hide the gap and release a claim beyond the scope. `oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported` is skipped, because `request` is OPTIONAL and the provider MUST return `request_not_supported` (§6.1), which it does. Whether official certification accepts a warning is unverified.
 
 #### R16. One end-observer option, shared with `session-signals`
 
@@ -1163,17 +1413,49 @@ A `resource` at the token endpoint must be within the code's or grant's resource
   - from D5: the context keeps the caller's values and not its cancellation, panics are recovered, and the kept family is named. T4 first said "the caller's context", where a hang-up could have dropped a revocation.
 - **Follow-up in another change.** `session-signals`' design and tasks must follow, including no longer refusing a manager that already has an observer. Task 1.3 did that on 2026-11-04. Whichever change lands first adds the option, and the other adds to it. `session-signals` also adds `(*Sessions).AddEndObserver`, because its chain option wires itself to a built manager; this change needs no such call, since `EnableOIDCProvider` checks the wiring with `ReportsEndsTo`. The wire reasons stay `session-signals`' own, mapped from `EndCause`. Each change carries the shared `sessions` requirements word for word, and the one that lands second drops them from its delta.
 
+#### R27. What the code review of #72 settled
+
+Decided by the user on 2026-11-05, after a code review. Group 16 saw each defect's test fail before its fix, so each is now `REPRODUCED`, with the tests named below: `TestRecover_GrantRevocation`, `TestOIDCFormPost_NoFlowCookie`, `TestSessions_EndReportRead`, `TestNew_Construction` and `TestAuthorize_HintKeysUnavailable`.
+
+- **A recovery revokes grants twice, and only the second failure completes.**
+  - **The gap.** A failed `RevokeUserGrants` aborted a recovery after its proofs were spent and authenticators removed, with no session stored and saved codes not reissued. The user could not retry, and an attacker's `offline_access` token stayed live. `RevokeUserGrants`' godoc relies on the event being able to ask again, which is not true here.
+  - **The default.** Once the proofs pass every check, and immediately before the first is spent, the recovery revokes the grants. An outage there is a dependency failure with nothing spent, so the user retries, as the check-then-consume rule asks. After the sessions end it revokes again, as a live session could have minted a grant in between. If only that second revocation fails, the recovery completes: `Result` says the grants were not revoked, so the consumer can tell the user and retry the idempotent `RevokeUserGrants`, and the failure is logged and reports `scrty_grant_revoke_failed` through the recoverer's sink. The user's recovery notice is still sent, as NIST SP 800-63B-4 requires. This narrows sub-decision 4 for that second failure only. A user locked out of a compromised account is worse than one grant the operator is told about, and no source requires failing closed there, though OWASP's intent is that what a thief holds ends with the recovery. The first failure matches `recovery.ErrDependency`, which the chain answers 500, charging no source. The chain records the second on `RecoveryCompleted`, with `event.CauseGrantsNotRevoked` as its cause.
+  - **An MFA proof comes first (decided by the user, 2026-11-05).** An MFA method's `Verify` checks a code and records its time step in one call, so no MFA check exists that spends nothing. Revoking before it let one stolen code plus any wrong MFA code end all the user's grants (`REPRODUCED`: the wrong-MFA row of `TestRecover_GrantRevocation`, "a refused MFA proof must not reach the revoker"). So a recovery completing at once with an MFA proof verifies it, then revokes, then spends its other code. If that revocation fails, the MFA code is spent and the other code is not, so the user retries with the next MFA code: about 30 seconds for TOTP, and an emailed or texted code must be requested again. Once `Verify` has accepted, the revocation runs detached from the caller's cancellation, as the spend already does. Rejected: a check-only call on `mfa.Method`, a breaking change to a public port that a one-way code method may not be able to offer; no first revocation with an MFA proof, and back to one revocation, each of which turns an outage into a completed recovery with live grants.
+  - **The first revocation's cost.** It is not side-effect free. A proof holder who then loses the race to spend, or whose spend fails, has still ended the grants, and with an MFA proof has spent that code too. Only someone holding valid proofs can reach it, and ending grants is what they came to do. A client hanging up during a revocation that succeeds spends nothing further when no MFA proof is involved, and has still ended the grants (`REPRODUCED` before its fix, in a row of `TestRecover_GrantRevocation`). A held recovery revokes nothing when it starts, because a held recovery may yet be cancelled by the real user, and runs the same two steps at its finish. A finish that loses a race to that cancel has already ended the grants, as the revocation runs before the finish's write: keeping R27's order accepts this, and the godoc states it.
+  - **The override.** `WithoutRecoveryGrantRevocation` still keeps grants on purpose. There is no option to abort after the proofs are spent, because it would spend them for nothing.
+  - **Rejected.** Revoking only after the spend, as first proposed, which turned every outage into a recovery with live grants; and revoking only before it, which misses a grant minted in between. Earlier steps failing, such as the session delete, are not changed here: they predate this change and were not claimed.
+- **A POST with no flow cookie becomes a GET.**
+  - **The gap.** A flow cookie is `SameSite=Lax`, so a cross-site form POST to a CSRF-exempt endpoint sends none. The provider minted one, and its `Set-Cookie` replaced the browser's, orphaning every request parked in its other tabs. Any page could do it with an empty POST to end-session. Such a POST also sees no browser session.
+  - **The default.** With no flow cookie, a form POST answers 303 to the endpoint's published address, the one the metadata states, with its parameters in the query, with `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, setting nothing and charging nothing. 303 is the code RFC 9700 §4.12 and OIDC Core §16.22 call unambiguous for turning a POST into a GET, though both speak of redirects to a client. A top-level GET carries Lax cookies, including the browser session, so single sign-on works by POST too.
+  - **The override.** None. A consumer's pages are not on this path, and a switch would only bring back a way to break other tabs (`library-design` rule 4). The limits, stated: `id_token_hint`, `login_hint`, `logout_hint` and `state` sent by POST reach the URL, as a GET's do, where they can be logged. OIDC Core §16.21 warns that a request's contents can reveal something about the user, and no source read forbids them in a query. So does a misbehaving client's `client_secret` in the body, as the bounce carries every parameter. A long request may also meet a proxy's URL limit or the server's own: on fiber's defaults (`ReadBufferSize`, 8 KiB) an `id_token_hint` of the 8 KiB this endpoint reads comes back 431 (`REPRODUCED`: `TestRepro_FiberBounceOfPostWithinBoundsReachesEndpoint`, a throwaway test). A browser that reached the provider on another hostname may hold no cookies at the issuer's. A POST holding the cookie avoids all of these. The login and logout pages the consumer serves keep RFC 9700 §4.2.4's advice: no third-party content.
+  - **Checked (2026-11-05).** In Chrome 156.0.8078.80, over TLS with `__Host-`, `Secure`, `HttpOnly` and `Lax`, and in Firefox 157.0.1, over plain http with the loopback cookie's attributes, a cross-site POST carried no cookie and its redirected GET carried it. That used a harness imitating the provider's 303, not the provider. The suite's `oidcc-ensure-post-request-succeeds` passes. Its scripted browser follows redirects itself, then requires a code, matching `state` and `iss`, a token exchange, ID token checks and UserInfo, so it never looks at the 303: it does not vouch for the 303, and the tests and the browser check do.
+  - **Rejected.** A cookie name per flow, which lets any page pile up cookies until the site's requests fail; and accepting it.
+- **An end that cannot read its report changes nothing.**
+  - **The gap.** A failed read for a report still deleted. `Delete` then reported no user or family, so its grants stayed live with no event. `DeleteByUserExcept` reported no kept family, widening the selector to the whole user, which revoked the kept sign-in's grants and sent logout tokens for a live sign-in.
+  - **The default.** With an observer, a read failing for any reason other than gone or expired returns the failure before any write, so the caller may retry and nothing is half done. RP-Initiated Logout §2 says the OP MUST log out a user who says yes, and OWASP makes server-side invalidation mandatory at logout, so this must not reach a logout. It does not: the chain's logout and `finishLogout` both end a sign-in through `Logout`, added by `session-signals`, which like `RevokeFamily` reads nothing, and a test pins that. `AddEndObserver` also means a chain with session signals and no provider refuses the same failed read on passkey removal, as a nil `KeptFamily` would tell a kept sign-in that all had ended. What it reaches is `DeleteByUserExcept`, from passkey removal's two passes, and `Delete` called directly, which has no production caller and whose godoc points a logout at `Logout`.
+  - **The limits, stated.** A session the encrypted store cannot open, such as one sealed under a retired key (`ErrUnreadable`), is neither gone nor expired, so asking again keeps failing: `DeleteByUser` is the way out, and it ends the user's other sessions too. On passkey removal's second pass, which does not undo the removal, a failed read leaves a login that landed between the passes live, logged at ERROR, while the removal notice still says the user's other sessions were signed out, as a failed write there already did and a test pins (`REPRODUCED`: `TestRepro_RemoveNoticeDoesNotClaimSignedOutWhenALoginSurvives`, a throwaway test). The code stays: changing the notice for a narrow window of one login was not worth a second wording. A recovery's session delete failing after the first revocation is also unchanged: the proofs are spent and a retry needs others, which predates this change (see Rejected, above).
+  - **The override.** None: a manager with no observer does not read and is unchanged. A consumer who wants the deletion regardless has no observer to be told.
+  - **Rejected.** Deleting with a report marked incomplete, as grants would stay live with nothing left to retry.
+- **A durable store needs a shared successor key.**
+  - **The gap.** R20's key is drawn per process. Over shared stores, or after a restart, two tabs do not converge, and one of them can read as reuse and revoke the grant, logged as theft. Durable stores are the normal multi-replica setup.
+  - **The default.** `WithRefreshTokenStore` with no `WithRefreshSuccessorKey` and the window on fails `New` with `ErrConfig`, naming both ways out. This applies with one replica as well, because a restart loses a drawn key. Memory stores keep the drawn key.
+  - **The override.** `WithRefreshSuccessorKey`, or `WithRefreshSuccessorWindow(0)`, which turns the same successor off. It costs a durable consumer one required setting (`library-design` rules 1 and 6). The godoc says the key serves this purpose alone, as OWASP's key management guidance advises.
+  - **R20 reviewed again.** RFC 9700 §4.14.2 expects a replay to be seen and revoked, and describes no grace window. R20's window departs from that for one short period. It was decided and flagged then, and this does not change it.
+- **A key outage judging a hint redirects.** With the client and redirect URI valid, a failed key read answers `server_error` and the request's `state` at the redirect URI (RFC 6749 §4.1.2.1, OIDC Core §3.1.2.6), as other dependency failures do, and logs only the error's type. A silent flow would otherwise end on an error page and the client would never hear. No option, because the standard defines this answer. `temporarily_unavailable` would also fit, and `server_error` is kept to match the provider's other dependency failures. **End-session is different:** RP-Initiated Logout §4 forbids post-logout redirection when a hint cannot be validated, so a key outage there stays an error at the OP, pinned by a test.
+- **Left as follow-ups.** They are costs, not defects, and none claims wrong behaviour: `refuseSpentCode` copying `token/onetime`'s private code format and hash, which is the one to do first, as a change there would silently stop replays revoking; the derived successor reaching the manager through a `bytes.Reader` as `WithRandom`; `corsScope` recomputing paths per request; each client read re-validating and re-parsing its JWKS; and the unreachable copy into `ClientCredentials.Query`.
+
 ## Risks / Trade-offs
 
 - **[The tag waits for this whole change, and for a green conformance run]** → v1 stays at the scope above, and every follow-up only adds. The task breakdown sizes it; P9 makes the conformance job part of the gate.
 - **[No certified library underneath]** → the conformance suite in CI (P9), plus test-first coverage of the pitfalls the advisories cluster on: exact redirect matching, code reuse revoking what it issued, refresh reuse, and token binding.
 - **[A refresh token mistaken for a sign-in]** → three built-in paths turn a stored session identifier into a sign-in. Decision 5 (D+) keeps refresh tokens out of all three by a fixed table and a token format no sign-in path accepts.
-- **[A replayed code racing the first exchange leaves a live grant]** (H2, `UNREPRODUCED`) → the grant row's revoked flag, keyed by the family the code records (decision 5).
-- **[A grant overstating `auth_time`]** (H3, `UNREPRODUCED`) → the grant copies the sign-in's authentication facts explicitly.
+- **[A replayed code racing the first exchange leaves a live grant]** (H2, `REPRODUCED` 2026-11-04) → the grant row's revoked flag, keyed by the family the code records (decision 5).
+- **[A grant overstating `auth_time`]** (H3, `REPRODUCED` 2026-11-04) → the grant copies the sign-in's authentication facts explicitly.
 - **[Error bodies depart from the library's default]** → limited to the provider's endpoints, recorded in P3, and pinned by tests against RFC 6749's examples.
 - **[RS256 by default conflicts with FAPI 2.0]** → recorded in P8. A FAPI profile is a later, additive switch.
 - **[A cookie now stands for a sign-in at the provider's own endpoints]** (R2) → it is `__Host-`, `HttpOnly`, single-purpose, stored as a digest, capped by the sign-in's timeouts and ended with it, and CSRF protection is required with it. It does not see markers placed on the sign-in afterwards; the godoc states that.
 - **[Basic OP passes only with `PKCEOrNonce` and one expected failure]** (R1, R5) → recorded, and the runner fails if the entry goes stale. Official certification may need more, and was not checked.
+- **[A code issued as its sign-in ends]** (R7, R26) → closed for ends through the chain: a resume checks after its writes that the sign-in's family is live, and ends it otherwise. A caller of the Go API off the chain owns the same check.
 - **[A hint older than the key retention cannot be judged]** (R6) → it counts as no hint, so the user is asked at logout. No sign-in ends on a value that cannot be verified.
 - **[Two active changes define one option]** (R16) → task 1.3 aligns `session-signals` before either is implemented.
 - **[A sign-in credential held by the login page's JavaScript]** → it is the credential the page already holds to sign in, kept in memory only. The resume adds no new exposure, and `bff-resource-server`'s cookie session could remove it later (P1).
@@ -1181,7 +1463,7 @@ A `resource` at the token endpoint must be within the code's or grant's resource
 - **[Strict `private_key_jwt` audience refusing older clients]** → clients built to Core's token-endpoint audience fail until they send the issuer. The compatibility option exists and is documented as accepting the ambiguity CVE-2025-27370 describes (P7).
 - **[Clickjacking on the consumer's login and consent pages]** → RFC 9700 §4.16 puts it on the authorization server, but the pages are the consumer's. D4's headers cover pages served through the chain; the README states the requirement for any other page.
 - **[`close-security-gaps` D8 refusing a provider-only chain with DPoP]** → amended there on 2026-11-02: DPoP is refused only when no enabled feature verifies bound credentials (P6).
-- **[Conformance facts come from reading the suite's source, not running it]** → task 1.2 runs it once, and corrects anything recorded here before the gate relies on it.
+- **[Conformance modules have not yet met a real OP]** → task 1.2 ran the suite against a stand-in, which confirms plans, modules and TLS but not how each module judges a provider. R1 and R2's module results stay read from source until 14.1 and 14.2 run them.
 
 ## Migration Plan
 
@@ -1288,7 +1570,7 @@ Also reasoned from `close-security-gaps` D8 and D9.
 **Researched (accessed 2026-11-02):**
 - [OpenID Connect OP conformance profiles](https://openid.net/certification/connect_op_testing/): what Basic OP and Config OP cover and the clients they need. The exact test lists are in a profile PDF that could not be read, so they are unverified.
 - [Conformance suite repository](https://gitlab.com/openid/conformance-suite) and [its build-and-run wiki](https://gitlab.com/openid/conformance-suite/-/wikis/Developers/Build-&-Run): running the suite locally with Docker.
-- Conformance suite source at commit `a5b9635`, read 2026-11-04 and not run: `OIDCCBasicTestPlan`, `OIDCCConfigTestPlan`, `AbstractOIDCCServerTest`, `OIDCCEnsureRequestWithValidPkceSucceeds`, `AbstractOIDCCSameAuthTwiceServerTest`, `CheckDiscEndpointAllEndpointsAreHttps`, `BrowserControl`, `scripts/run-test-plan.py`. It replaces the profile PDF that could not be read.
+- Conformance suite: run at `475e8bf` on 2026-11-04 against a stand-in (P9 says which facts), and its source at commit `a5b9635`, read the same day: `OIDCCBasicTestPlan`, `OIDCCConfigTestPlan`, `AbstractOIDCCServerTest`, `OIDCCEnsureRequestWithValidPkceSucceeds`, `AbstractOIDCCSameAuthTwiceServerTest`, `CheckDiscEndpointAllEndpointsAreHttps`, `BrowserControl`, `scripts/run-test-plan.py`. It replaces the profile PDF that could not be read.
 
 The decision that a green run gates the tag (P9) is reasoned from decision 1: no certified library sits underneath.
 
@@ -1362,3 +1644,108 @@ The decision that a green run gates the tag (P9) is reasoned from decision 1: no
 R6, R7, R8, R9, R10 and R16 are otherwise reasoned from scrty's own settled specs and code at `501a1a6`, and from `session-signals`' design.
 
 The user chose D+ and sub-decisions 2 to 6 on 2026-11-02, and confirmed P1 to P9 the same day. The code paths, the option failure modes and H2 to H4 come from an independent review of scrty's own code (`session`, `httpsec`, the SQL stores, `expiry`) and of `close-security-gaps` D8 and D12. They are reasoned from the code, not reproduced.
+
+### R17: replay detection
+
+**Researched (accessed 2026-11-04):**
+- [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.txt), §4.1.2: deny a code used more than once, and "SHOULD revoke (when possible)" what it issued.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §4.2.4: invalidate a code after first use, and SHOULD revoke on a second attempt.
+- [OAuth 2.1, draft-ietf-oauth-v2-1-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt), §7.5.3: revoke only on a valid request, and why an invalid one must not. It is a draft.
+- [node-oidc-provider, `authorization_code.js`](https://raw.githubusercontent.com/panva/node-oidc-provider/main/lib/actions/grants/authorization_code.js): an expired code is refused before its consumed check, so that path revokes nothing.
+- [ory/fosite, `flow_authorize_code_token.go`](https://raw.githubusercontent.com/ory/fosite/master/handler/oauth2/flow_authorize_code_token.go): a used code revokes, and a code the store cannot find is `invalid_grant` with nothing revoked.
+
+### R15: a resource named only at the authorization request
+
+**Researched (accessed 2026-11-04):**
+- [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.txt), §3: a code from a request naming one resource redeems to a token with that `aud`, and a request with no resource uses a default.
+- [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.txt), §2.1, §2.2 and §3: `invalid_target`, acceptance by local policy, and the warning about several audiences.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §2.3: audience-restrict to one resource server or a small set.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html): searched, and it does not mention resource indicators.
+- [node-oidc-provider `resourceIndicators`](https://github.com/panva/node-oidc-provider/blob/main/docs/README.md): several granted resources must be named at the token endpoint.
+
+### R19: no orphan sweep
+
+Reasoned from scrty's own settled specs and the established design.
+
+### R20: the same successor on re-presentation
+
+**Researched (accessed 2026-11-04):**
+- [Auth0, refresh token rotation](https://auth0.com/docs/secure/tokens/refresh-tokens/configure-refresh-token-rotation): a new token inside the leeway, and only the previous token may be reused.
+- [Ory Hydra, graceful token refresh](https://www.ory.com/docs/hydra/guides/graceful-token-refresh): a new token on each use, in one chain, described as a workaround for clients that cannot be fixed.
+- [Okta, refresh tokens](https://developer.okta.com/docs/guides/refresh-tokens/main/): the previous token stays valid for a grace period, 30 seconds by default.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), [OAuth 2.1, draft-17](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-17.txt) and [browser-based apps, draft-26](https://www.ietf.org/archive/id/draft-ietf-oauth-browser-based-apps-26.txt): searched for concurrent refresh, and silent on it.
+
+### R22: an issuer with a path
+
+**Researched (accessed 2026-11-05):**
+- [Keycloak, using a reverse proxy](https://www.keycloak.org/server/reverseproxy): a non-root path may be stated in the `hostname` URL, sent as `X-Forwarded-Prefix`, or matched with `http-relative-path`.
+- [node-oidc-provider, documentation](https://raw.githubusercontent.com/panva/node-oidc-provider/main/docs/README.md): shows an issuer with and without a path at one mount path, and what the host must route for each. Only the first half of the page was read.
+
+### R14: reports on bounded lanes
+
+**Researched (accessed 2026-11-05):**
+- [OpenTelemetry, trace SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/): the batching processor's `maxQueueSize`, default 2048, drops spans when reached, and `Shutdown` includes a flush.
+
+### R27
+
+**Researched (accessed 2026-11-05), for a POST with no flow cookie:**
+- [draft-ietf-httpbis-rfc6265bis-20](https://www.ietf.org/archive/id/draft-ietf-httpbis-rfc6265bis-20.txt), §5.6.7.1, §5.8.3: a Lax cookie goes with a cross-site top-level navigation only on a safe method, judged by the current redirect hop. An expired draft, read by a research agent; whether a later version changes this was not checked.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §3.1.2.1, and [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), §2: each endpoint must support GET and POST, and states how each serializes parameters. Neither says what a POST's response must be. The rest of OIDC Core was not read for this.
+- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110), §15.4, §15.4.4: a 303 leads to a GET or HEAD retrieval, and prevailing practice changes the method.
+
+**Primary documentation, for a POST with no flow cookie:**
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), §4.12: 303 is the status that unambiguously turns a POST into a GET; §4.2.4: `Referrer-Policy: no-referrer` and no third-party content; §4.16: clickjacking.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §16.21, §16.22: a request's contents can reveal something about the user, and 303 is preferable.
+
+**Researched (accessed 2026-11-05), for a recovery's two revocations:**
+- [OWASP Forgot Password Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html): invalidate existing sessions after recovery from a compromise, and notify the user. Grants and a failed invalidation are not covered.
+- [NIST SP 800-63B-4, section 4](https://pages.nist.gov/800-63-4/sp800-63b/events/): account recovery shall cause a notification. Section 5, on sessions, was not read.
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), §4.14.2: an authorization server may revoke refresh tokens on a security event. A may, not a must.
+- [OWASP ASVS, V7](https://github.com/OWASP/ASVS/blob/master/5.0/en/0x16-V7-Session-Management.md), 7.4.3: an option to end other sessions after a factor changes. Read on the master branch, so the number may differ from a tag.
+
+**Researched (accessed 2026-11-05), for an end that cannot read its report:**
+- [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), §2: the OP must log out a user who says yes.
+- [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html): the application must invalidate the session on the server at logout.
+
+**Researched (accessed 2026-11-05), for a durable store's key:**
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700), §4.14.2: a replay reveals a breach, with no grace window described. Silent on keyed successors and on sharing a key.
+- [OWASP Key Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Key_Management_Cheat_Sheet.html): a single key for one purpose. Part of the page was read through a tool's summary.
+
+**Researched (accessed 2026-11-05), for a key outage:**
+- [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), §4.1.2.1: `server_error` at the redirect URI.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §3.1.2.6: errors return to the redirection URI with `state`.
+- [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), §4: no post-logout redirection when validation fails.
+
+All sources were read by a research agent, with quotes reported. R27 names the test that reproduced each defect.
+
+### R26
+
+**Primary documentation, for the 401 challenges:** [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110), §15.5.2: a 401 must carry `WWW-Authenticate`. [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750), §3.1: a presented token that failed should be answered `invalid_token`. [RFC 9449](https://www.rfc-editor.org/rfc/rfc9449), §7.2: the DPoP challenge.
+
+An end's order, a failed look and the one session manager are reasoned from scrty's own settled specs and reproduced tests.
+
+**Researched (accessed 2026-11-05):** [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §5.5 and §6.1, read directly. [RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html), §2, as the reviewer quoted it. [OpenID Foundation, submission of OP results](https://openid.net/certification/op_submission/): says nothing found on warnings, so that question stays unverified.
+
+### R23 to R25
+
+**Researched (accessed 2026-11-05), for R25's failed grant end:**
+- [OWASP, Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html): session management failures and application errors are among what to always log.
+
+**Researched (accessed 2026-11-05), for R24's browser endpoints:**
+- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110), §15.5.2, and [RFC 6585](https://www.rfc-editor.org/rfc/rfc6585), §4: a 401 carries a challenge, and 429 is the code for too many requests. The reviewer read §15.5.2 and this session did not re-read either.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §6.1, §6.2: the codes for an unsupported request object, as the reviewer read them.
+
+**Researched (accessed 2026-11-05), for R23's `amr`:**
+- [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176.txt), §2: the registered values, and that `mfa` may stand with or without the specific methods.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §2: `amr` and `acr` are optional, and `amr` values should come from that registry.
+
+**Researched (accessed 2026-11-05), for R23's framing:**
+- [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.txt), §4.16: authorization servers must prevent clickjacking, and its example allows one named origin in `frame-ancestors`.
+- [OWASP, Clickjacking Defense Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html): `'none'` unless a need is identified; `'self'` and named origins are accepted.
+
+Reasoned from scrty's own settled specs and reproduced tests. R24's certificate refusal relies on [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705) naming no error code, as the implementing lane reported; this has not been re-checked.
+
+### R21: an email from the username
+
+Reasoned from scrty's own settled specs and the user's decision. [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), §5.1 and §5.4, accessed 2026-11-04: `email` and `email_verified` are the `email` scope's claims; §5.3.2: a claim not returned is omitted, not a null or an empty string.
+

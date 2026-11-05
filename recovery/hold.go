@@ -307,19 +307,24 @@ func (r *Recoverer) cancelURL(token string) string {
 // than refused, since its loss is already remedied; a listing failure is
 // returned with the record still pending; the
 // recovery-pending session is built and its credential issued through the
-// issuer (WithCredentialIssuer); the record is completed by one conditional
+// issuer (WithCredentialIssuer); the user's application grants are revoked
+// (WithGrantRevoker); the record is completed by one conditional
 // write, and losing it, to a racing cancel or finish, is ErrRefused, with the
-// credential discarded; the token is consumed; and the completion sequence
-// runs from the reset on, exactly as Recover's does, storing the session
-// last.
+// credential discarded, though a finish that lost to the real user's cancel has
+// already ended the grants, as that revocation runs before the write; the token is consumed; and the completion sequence
+// runs from the reset on, exactly as Recover's does, revoking the grants again
+// and storing the session last. Starting the hold revoked nothing.
 //
-// An issuing failure is a dependency failure, not a refusal: the record stays
-// pending and the token usable, nothing is removed, ended or replaced, and
-// the same finish succeeds once the issuer is healthy.
+// An issuing failure, or a failure of that first revocation (ErrDependency), is
+// a dependency failure, not a refusal: the record stays pending and the token
+// usable, nothing is removed, ended or replaced, and the same finish succeeds
+// once the dependency is healthy. A failure of the second revocation does not
+// stop the finish, as Recover describes (Result.GrantsNotRevoked).
 //
 // A token past the completion window, or of another purpose, is ErrRefused.
 // Everything from the conditional write on runs detached from ctx's
-// cancellation; the issuer runs before it, on ctx itself.
+// cancellation; the issuer and the first revocation run before it, on ctx
+// itself.
 //
 // opts change the session the finish creates: WithFinishKeyBinding binds it.
 // With none it is unbound.
@@ -389,6 +394,12 @@ func (r *Recoverer) finish(ctx context.Context, completionToken string, opts ...
 	// issued leaves the record pending and the token usable.
 	issued, err := r.issueSession(ctx, details, now, o.binding, o.sessionOpts)
 	if err != nil {
+		return nil, err
+	}
+
+	// Before the record is completed for the same reason: an outage here leaves
+	// the finish able to be retried.
+	if err := r.revokeGrantsFirst(ctx, rec.User); err != nil {
 		return nil, err
 	}
 

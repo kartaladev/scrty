@@ -34,6 +34,10 @@
 // longer than a configurable maximum before decoding anything, so the work an
 // unauthenticated request can buy is bounded.
 //
+// A verifier accepts only the one token type it is for, read from the typ header
+// after the signature has been checked, and no option makes it accept any type.
+// See "Token types".
+//
 // These rules are pinned by a test that reads this package's own source and
 // fails on any use of the JOSE library outside a reviewed allow-list, because
 // a single option could otherwise undo them where no behavioural test would
@@ -56,6 +60,26 @@
 // Issuing for a principal with no value for the chosen subject fails with
 // ErrNoSubject.
 //
+// # Token types
+//
+// Every token declares its kind in its typ header, and a verifier refuses every
+// kind but its own as an invalid token, so tokens signed by the same keys, with
+// the same issuer and audience, do not stand in for one another (RFC 8725 section
+// 3.12). A token with no typ is refused too.
+//
+// A generator declares TypeFirstParty, "scrty+jwt", and a verifier accepts it, by
+// default. WithTokenType replaces the first, and refuses the type of another kind
+// of token; WithVerifyTokenType replaces the second, and takes any one type, such
+// as TypeAccessToken for a resource server. Types are compared without regard to
+// case and with an "application/" prefix ignored.
+//
+// A Generator's first-party tokens carry its subject mode. Every other kind comes
+// from an Issuer, built by NewIssuer over a key source, an algorithm and an issuer
+// identifier. It issues a token of the type declared by each Issue, for the
+// subject and audience named there, with further claims, which cannot replace the
+// token's own. On a verified token, Claims.Audience and Claims.Claim read them
+// back.
+//
 // # No jwx in the public surface
 //
 // No exported signature in this package carries a type from the underlying
@@ -70,6 +94,7 @@ package token
 
 import (
 	"errors"
+	"slices"
 
 	"github.com/lestrrat-go/jwx/v4/jwt"
 )
@@ -196,4 +221,32 @@ func (c *Claims) ID() string {
 	}
 
 	return id
+}
+
+// Audience reports the values the token carries in aud. The slice is the caller's
+// own. It is empty when the token carries none, on the zero value, and for claims
+// a consumer's Verifier reported through NewClaims, which carries none.
+func (c *Claims) Audience() []string {
+	if c == nil || c.tok == nil {
+		return nil
+	}
+
+	audience, _ := c.tok.Audience()
+
+	return slices.Clone(audience)
+}
+
+// Claim reports the value of the named claim, as the verified token carries it,
+// and whether it carries one. Further claims read back as JSON decodes them: a
+// list as []any, an object as map[string]any.
+//
+// The value belongs to these Claims, so a caller must not change one it gets
+// back. Reports false on the zero value, and for claims a consumer's Verifier
+// reported through NewClaims, which carries none.
+func (c *Claims) Claim(name string) (any, bool) {
+	if c == nil || c.tok == nil {
+		return nil, false
+	}
+
+	return c.tok.Field(name)
 }

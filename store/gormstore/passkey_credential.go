@@ -398,7 +398,7 @@ func (s *PasskeyCredentialStore) returning(ctx context.Context, op, query string
 	if err != nil {
 		return false, failed(op, err)
 	}
-	err = q.Raw(query, args...).Row().Scan(dest...)
+	err = scanRow(q.Raw(query, args...), dest...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

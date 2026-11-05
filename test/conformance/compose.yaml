@@ -1,0 +1,99 @@
+# The OpenID Foundation conformance suite and the conformance OP, side by side.
+#
+#   docker compose -f test/conformance/compose.yaml up -d --build
+#
+# The suite listens on https://localhost.emobix.co.uk:8443 (that name resolves to 127.0.0.1 in
+# public DNS), and runs its plans with scripts/run-test-plan.py from the pinned checkout.
+# The OP is https://op:9443 inside the compose network; the suite's server reaches it, and its
+# scripted browser (HtmlUnit) signs in on its pages. Nothing here is for production: every
+# certificate is self-signed and every secret is in oidcc.json.
+#
+# The suite is built from source at one full commit hash, because it publishes no image per
+# commit. Every image is pinned by digest. To move either, change the whole line and run a
+# plan again. Name and hash of the suite:
+#   https://gitlab.com/openid/conformance-suite  475e8bf0b18e887767184c21388ffe7d783df2c6
+
+name: scrty-conformance
+
+services:
+  mongodb:
+    image: mongo:6.0.13@sha256:b415b12f638e2685d06c58ab7fb5943577c50fadec6d9340ef67d21aeac72070
+    logging: &logs
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+
+  # The suite's server. Its jar is built from the pinned checkout, then run with the dev profile
+  # and devmode, which is what lets scripts/run-test-plan.py call it without a token.
+  server:
+    build:
+      context: https://gitlab.com/openid/conformance-suite.git#475e8bf0b18e887767184c21388ffe7d783df2c6
+      args:
+        # The build reads the commit it is built from (git-commit-id-maven-plugin).
+        BUILDKIT_CONTEXT_KEEP_GIT_DIR: "1"
+      dockerfile_inline: |
+        FROM maven:3-eclipse-temurin-21@sha256:9673eef9ed503146591667ffb92eaaa22f1b8899ed60d9df0df4da3f3a1214a6 AS build
+        WORKDIR /src
+        COPY . .
+        RUN --mount=type=cache,target=/root/.m2 mvn -B clean package -DskipTests=true
+        FROM eclipse-temurin:21@sha256:ebfbb18d11ff163ee83b21258acf12248af48d22a0fdfdc68fa1a1516c05976a
+        COPY --from=build /src/target/fapi-test-suite.jar /server/
+        ENTRYPOINT ["java", "-Djdk.tls.maxHandshakeMessageSize=65536", "-jar", "/server/fapi-test-suite.jar", \
+          "--fintechlabs.base_url=https://localhost.emobix.co.uk:8443", \
+          "--fintechlabs.base_mtls_url=https://localhost.emobix.co.uk:8444", \
+          "--fintechlabs.devmode=true", \
+          "--spring.profiles.active=dev", \
+          "--spring.mongodb.uri=mongodb://mongodb:27017/test_suite"]
+    depends_on:
+      - mongodb
+    logging: *logs
+
+  # The suite's TLS front. It also answers to the suite's public name inside the network, so the
+  # suite's own browser, and the OP delivering back-channel logout, reach it by that name.
+  nginx:
+    build:
+      context: https://gitlab.com/openid/conformance-suite.git#475e8bf0b18e887767184c21388ffe7d783df2c6:nginx
+      dockerfile_inline: |
+        FROM nginx:1.27.3@sha256:bc2f6a7c8ddbccf55bdb19659ce3b0a92ca6559e86d42677a5a02ef6bda2fcef
+        RUN apt-get update \
+          && apt-get install -y --no-install-recommends openssl \
+          && openssl req -x509 -nodes -days 30 -newkey rsa:2048 \
+            -keyout /etc/ssl/private/nginx-selfsigned.key \
+            -out /etc/ssl/certs/nginx-selfsigned.crt \
+            -subj "/CN=localhost" \
+          && rm -rf /var/lib/apt/lists/*
+        COPY nginx.conf /etc/nginx/nginx.conf
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8444:8444"
+    networks:
+      default:
+        aliases:
+          - localhost.emobix.co.uk
+    depends_on:
+      - server
+    logging: *logs
+
+  # The provider under test: scrty's defaults, from this repository, as the plans' fixtures name.
+  op:
+    build:
+      context: ../..
+      dockerfile_inline: |
+        FROM golang:1.27@sha256:c292963ad0e5f51e843c726edc204a4e4c26a859ba1e4d736d91028aa3633048 AS build
+        WORKDIR /src
+        COPY . .
+        RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+          cd test && CGO_ENABLED=0 go build -trimpath -o /conformanceop ./cmd/conformanceop
+        FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+        COPY --from=build /conformanceop /conformanceop
+        ENTRYPOINT ["/conformanceop"]
+    command:
+      - -addr=:9443
+      - -issuer=https://op:9443
+      - -suite-url=https://localhost.emobix.co.uk:8443
+      - -alias=scrty
+      - -san=op
+    ports:
+      - "127.0.0.1:9443:9443"
+    logging: *logs

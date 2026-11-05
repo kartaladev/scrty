@@ -264,6 +264,314 @@ no assurance, so a required user is challenged or refused on every request.
 The full list, with the reasoning behind each one, is in the `oidc` package's "Limits" godoc
 (`go doc github.com/kartaladev/scrty/authenticate/oidc`).
 
+## OpenID Provider
+
+`httpsec.EnableOIDCProvider` makes the chain an OpenID Provider for the authorization code flow.
+The provider itself is `oidcprovider.Provider`, and the login and consent pages are yours: the
+library parks each authorization request under a handle, sends the browser to your page, and your
+page resumes the request once the user has signed in.
+
+### Wiring
+
+```go
+// With a durable refresh-token store (WithRefreshTokenStore), every replica needs the same
+// successor key, 32 bytes or more, from your configuration. It serves this purpose alone.
+// Over the default in-memory stores, one is drawn for you.
+successorKey := mustDecode(os.Getenv("OP_REFRESH_SUCCESSOR_KEY"))
+
+op, err := oidcprovider.New(oidcprovider.Deps{
+    Issuer:       "https://id.example.com",
+    Clients:      clients,
+    Keys:         keys, // the same *signingkey.Keys EnableJWKSEndpoint publishes
+    Users:        users,
+    LoginURL:     "https://id.example.com/login",
+    ConsentURL:   "https://id.example.com/consent",
+    LogoutURL:    "https://id.example.com/logout",
+    LoggedOutURL: "https://id.example.com/bye",
+}, oidcprovider.WithRefreshSuccessorKey(successorKey))
+if err != nil {
+    return err
+}
+// When the application stops, op.Shutdown(ctx) ends back-channel delivery. The chain
+// neither starts nor stops the provider, and op.Start is optional.
+
+// Every session manager on the chain reports sign-in ends to the provider, or grants
+// would outlive a logout. New refuses a chain with one that does not.
+sessions, err := session.New(session.WithStore(store), session.WithEndObserver(op))
+if err != nil {
+    return err
+}
+
+chain, err := httpsec.New(
+    httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+    httpsec.EnableJWKSEndpoint(keys),
+    httpsec.EnableCSRFProtection(),
+    httpsec.EnableSecurityHeaders(),
+    httpsec.EnableOIDCProvider(op),
+)
+```
+
+`EnableOIDCProvider`'s godoc lists every wiring mistake `New` refuses. Its endpoints answer under
+`/oauth2` (`WithOIDCProviderPrefix`, `WithOIDCProviderPath`).
+
+A passkey manager on the same chain takes a session manager, never a store: `passkey.Deps.Sessions`
+must be a `*session.Sessions` (or a wrapper with a `ReportsEndsTo` method) built with
+`session.WithEndObserver(op)`, because a bare `session.Store` ends sessions with no report a provider
+could see. `New` refuses a chain whose passkey manager is built over a session manager that does not
+report to the provider, and one whose manager was told neither `passkey.WithGrantRevoker(op)` nor
+`passkey.WithoutCloneGrantRevocation()`.
+
+### The login and consent pages
+
+Both pages are on the issuer's origin: the same scheme, host and port. `oidcprovider.New` refuses a
+URL on another, because the flow cookie, `__Host-scrty-op-flow`, is not sent to it.
+
+A page receives the handle as the `req` query parameter. To show the user who is asking, it reads
+the pending request, which holds the client's name and the scopes and no secret:
+
+```go
+view, err := httpsec.PendingOIDCRequest(ctx, op, httpsec.NewHTTPRequest(r), r.URL.Query().Get(oidcprovider.HandleParam))
+```
+
+A page in the browser resumes with `fetch`, with the sign-in in the `Authorization` header, and then
+navigates. The resume answers 200 with the next URL, and never a redirect, so that the browser's
+navigation is the page's own:
+
+```js
+const res = await fetch("/oauth2/authorize/resume", {
+  method: "POST",
+  headers: { "Authorization": `Bearer ${credential}`, "Content-Type": "application/json" },
+  body: JSON.stringify({ req: handle }),
+});
+if (res.ok) window.location = (await res.json()).redirect_to;
+```
+
+The consent page posts to the same endpoint, `{"req": handle, "scopes": ["openid", "profile"]}` to
+grant or `{"req": handle, "deny": true}` to deny. While the browser session is on, which is the
+default, it needs no `Authorization` header, because the browser session answers for the user who
+signed in. Under `oidcprovider.WithoutBrowserSessions` there is no browser session to answer, so the
+consent page sends the sign-in in the `Authorization` header as the login page does.
+
+| Answer | Means | What the page does |
+|---|---|---|
+| 200 `{"redirect_to": ...}` | the next page, or the client with a code or an error | navigates there |
+| 400, `ErrOIDCUnknownHandle` | the handle is unknown, expired, spent or bound to another browser | the user starts again from the relying party |
+| 400, `ErrOIDCConsentMalformed` | the answer does not fit the request | answers again; the handle is unspent |
+| 401, `ErrAuthenticationRequired` | no sign-in, or something else than one: an API key, Basic credentials, a second `Authorization` line, or a session an interceptor read from anywhere but the `Authorization` header are refused | signs the user in, and resumes again |
+| 401, `ErrOIDCReauthenticate` | the sign-in is too old for the request's `prompt` or `max_age`, or a consent stage came with no valid browser session (it ended, idled out, or the provider has none) | authenticates the user again, and resumes again |
+| 413, `ErrRequestTooLarge` | the body is over the resume body limit | sends less |
+| 429, `ErrOIDCThrottled` | the source is over its limit, the limiter could not answer, or the source could not be attributed. The answer has an empty body and no `WWW-Authenticate` | waits, and does not sign the user in again: this is not a sign-in problem |
+| the chain's refusal for that state | the session owes a second factor, an enrolment, a recovery or a password change, or a bound sign-in came without its proof | finishes that step, and resumes again |
+
+The sign-in is read only from the `Authorization` header, through the chain's bearer, never from the
+query. A request must carry exactly one `Authorization` line, as at the token endpoint, and a consumer's
+own interceptor that publishes a session must read it from that header: one reading the query or a
+cookie is refused, even when it records the credential with `RecordPresentedToken`. A session a late
+renewal alone could recover cannot resume.
+
+The authorization endpoint's refusals of a throttled source answer 429 too, with no `Location`. Both
+browser endpoints do so rather than the 401 the chain's other throttled flows answer, because a 401
+here reads as "sign the user in" and a page may loop on it. The token endpoints keep their 401.
+
+A server-rendered page can skip the `fetch`, and resume through the Go API: `op.Resume`, with
+`ResumeInput` built from the cookies `httpsec.OIDCFlowCookie` and `httpsec.OIDCBrowserSessionCookie`.
+It then answers for what the chain would have judged: `SignIn` cannot say a session owes a step, so
+the page must not pass one that does. The page must also set `ResumeResult.BrowserSessionSecret`
+as a cookie, named `httpsec.OIDCBrowserSessionCookie`, `HttpOnly`, `Secure`, `SameSite=Lax` and with
+`Path=/`, or single sign-on silently fails: the next authorization finds no browser session, and
+shows the login page again.
+
+Under an issuer built with `oidcprovider.WithLoopbackHTTPIssuer`, for local development, both cookies
+lose the `__Host-` prefix and `Secure`, because a browser refuses the prefix over plain http.
+
+### Pages served outside the chain
+
+`New` requires `EnableSecurityHeaders`, with a document profile forbidding framing, because the login
+and consent pages must not be framed. If your pages are served outside the chain, have them carry
+`frame-ancestors` themselves, and state that with `httpsec.WithOIDCPagesCarryFrameAncestors()`. The
+chain takes the statement on trust, as it cannot see those pages.
+
+### A login finished in another browser
+
+The flow cookie binds a request to the browser that started it, so a resume from any other browser
+is an unknown handle. A magic link opened elsewhere, or a recovery completed on another device, signs
+the user in there, but cannot finish the request. The user starts again from the relying party. This
+is deliberate: the binding is what stops someone else's browser completing a request.
+
+One browser's tabs share one flow cookie, so requests parked in several tabs can each be resumed.
+
+### The browser session
+
+After a login stage resumes, the provider sets `__Host-scrty-op-session`. While it is valid, an
+authorization in that browser skips the login page, unless `prompt` asks for `login` or
+`select_account` or `max_age` is not met; `prompt=none` answers from it; and the consent stage may
+rest on it. That is single sign-on between your relying parties.
+
+It lives no longer than the sign-in as far as the provider can tell: it takes the sign-in's absolute
+deadline and the session manager's `IdleTimeout()` without use, and it ends when the sign-in ends.
+Activity elsewhere does not extend it, which errs short.
+
+What it does not see is a marker placed on the sign-in afterwards, such as a required password
+change. An admin's forced change that matters must end the sign-in, which does reach it. It issues no
+first-party credential, and only the provider reads it.
+
+`oidcprovider.WithoutBrowserSessions()` turns it off, and CSRF protection stops being required. Every
+request then shows the login page, `prompt=none` always answers `login_required`, and every logout
+asks. **This fails the OpenID Foundation's Basic OP conformance plan**, whose `prompt=none` modules
+expect a second request in the same browser to succeed.
+
+### Logout
+
+The end-session endpoint, `/oauth2/logout`, is OpenID Connect RP-Initiated Logout 1.0: `GET` or
+`POST` with `id_token_hint`, `post_logout_redirect_uri`, `state` and `client_id`. A valid hint whose
+`sid` names the sign-in of the browser's own session ends that sign-in without asking, and the answer
+is a 303 to the client's registered `post_logout_redirect_uri` (with its `state`), or else to your
+`LoggedOutURL`. Every other request ends nothing: it is parked under a handle bound to the flow
+cookie, and the browser goes by a 303 to your `LogoutURL` with the handle as `req`. A provider built
+with `oidcprovider.WithLogoutConfirmation` asks every time, and so does one built with
+`oidcprovider.WithoutBrowserSessions`. A request that cannot be judged, or whose hint fails its checks,
+is refused with 400 `ErrOIDCInvalidEndSession` and is never redirected.
+
+Your logout page asks the user, and posts the answer to the confirmation, `/oauth2/logout/confirm`,
+from the same browser. It cannot name who is asking: `PendingRequest` refuses a logout's handle, and
+RP-Initiated Logout section 2 requires the question, not a name.
+
+```js
+const res = await fetch("/oauth2/logout/confirm", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ req: handle, confirmed: true }), // false, or anything else, declines
+});
+if (res.ok) window.location = (await res.json()).redirect_to;
+```
+
+The page sends no `Authorization` header: the browser's cookies answer. It must send `Content-Type:
+application/json`, and the confirmation stays under CSRF protection, so only a page of the issuer's
+origin can post it. A confirmation ends the sign-in of the browser's own session, whichever sign-in the
+request's hint named, so holding someone's ID token ends nothing of theirs from another browser. A
+decline ends nothing and goes to `LoggedOutURL`.
+
+| Answer | Means | What the page does |
+|---|---|---|
+| 200 `{"redirect_to": ...}` | answered | navigates there |
+| 400, `ErrOIDCUnknownHandle` | the handle is unknown, expired, spent, bound to another browser, or no logout request | sends the user back to the relying party |
+| 429, `ErrOIDCThrottled` | the source is over its limit | waits |
+| the chain's error handling, a 500 by default | a store failed | posts the same answer again |
+
+**A retry.** Ending a sign-in revokes the grants that do not outlive it (those without `offline_access`)
+and tells each client that registered a back-channel logout URI, then deletes its first-party sessions,
+then its browser session and cookie, and spends the handle last of all. A store failing anywhere in that
+answers a 500 and leaves the browser its session, its cookie and the handle, so posting the same answer
+again, or the relying party's request again, finishes the logout and tells no client twice. While a logout
+is failing that browser session stays usable, and the user is not logged out: only the success says so.
+Nothing falls back on a hint or a first-party session to finish, because that would let an ID token's holder
+end a sign-in from another browser. After a success the same post is an unknown handle, and only unknown
+handles count against the throttle.
+
+A caller serving these answers off the chain owes the same order: `EndSession` and `ConfirmLogout` end the
+grants and name the sign-in in `Ended`, the caller deletes its first-party sessions and finishes with
+`EndSignIn(Ended)`, clears the cookie, and for a confirmation calls `SpendLogout(handle, flowSecret)`.
+
+### Consents
+
+`GET /oauth2/consents` lists the signed-in user's own consents as `[{client_id, client_name, scopes,
+offline_access, last_given_at}]`. `DELETE /oauth2/consents/<client_id>` forgets the user's consent to
+that client and revokes their grants and outstanding codes of it, offline access included, so the next
+authorization asks again. A client the caller holds neither a consent nor a grant of is a 404
+`ErrOIDCForeignConsent`. Both need a full session, are never cached, and refuse a cross-site request.
+The endpoint answers every path below `/oauth2/consents`, so `New` refuses a chain endpoint placed
+there. A consumer who wants other member names serves its own page from `op.Consents`.
+
+### What revokes grants
+
+A grant outlives a sign-in only when it holds `offline_access`. Each other event has a default and an
+option that changes it:
+
+| Event | Default | Keep or change with |
+|---|---|---|
+| A sign-in ends (logout, end-session, session management, a deletion) | grants without offline access end | none: it is what an end means |
+| Session management ends every other sign-in | grants survive | the request body `{"revoke_application_access":true}` revokes every grant, offline access and the current sign-in's included |
+| Account recovery completes | all the user's grants revoked, through the chain's provider: once before its codes are spent, and again after its sessions end | `recovery.WithoutRecoveryGrantRevocation` keeps them; `recovery.WithGrantRevoker` names another revoker |
+| Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given; with it nil, **none**, since the package cannot see a provider, so a consumer using the provider must set it | `mfa.WithoutResetGrantRevocation` keeps them |
+| A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(op)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
+| Password change | grants kept | `httpsec.WithPasswordChangeGrantRevocation` revokes all before the new password is written |
+
+`mfa.ResetEnrolment` revokes nothing when `ResetDeps.Grants` is nil, because it cannot see a provider and
+no change is wanted where none is in use. A consumer using the provider sets `Grants` to `op`, or a reset
+leaves the user's refresh tokens working.
+
+A clone's revocation that fails leaves the refusal standing, is logged every time, and is reported as
+`scrty_grant_revoke_failed` on a request a chain watches: suspending happens once, so nothing asks again.
+
+A recovery revokes twice, and only the first failure stops it. The first runs once the proofs pass and
+before the issued and saved codes are spent, so a failure there is a dependency failure
+(`recovery.ErrDependency`, 500 on the chain) with those codes unspent and nothing charged, and the user
+retries. An MFA proof is verified before it, so a wrong code ends nothing, and a retry after the failure
+needs the next MFA code. The second runs after the sessions end, as a live session could have minted a
+grant in between. Its proofs are spent, so a failure there does not stop the recovery: it completes with
+`recovery.Result.GrantsNotRevoked` set, the failure is logged and reported as `scrty_grant_revoke_failed`,
+and the chain's `scrty_recovery_completed` carries the cause `event.CauseGrantsNotRevoked`. The default
+response does not change, and a `httpsec.WithRecoveryResponder` reads the flag, to tell the user and call
+`op.RevokeUserGrants` again. A held recovery revokes nothing when it starts, and takes both steps at its finish.
+
+Keeping grants gives up what each option's godoc says: after a recovery, a reset or a clone, a grant
+kept is a way back in for whoever took it, for as long as its refresh token lives. A consumer who runs
+its own flow calls `op.RevokeUserGrants(ctx, user, cause)`.
+
+### Cross-site requests
+
+A relying party calls the provider from its own origin, which a browser marks cross-site. With
+`EnableCSRFProtection`, `POST` to these endpoints skips the cross-site check, because that is how
+they are reached; each keeps its throttle, its body limit and its client authentication:
+
+| Endpoint | Path (default) | Cross-site `POST` |
+|---|---|---|
+| Authorization | `/oauth2/authorize` | exempt |
+| Token | `/oauth2/token` | exempt |
+| Revocation | `/oauth2/revoke` | exempt |
+| Introspection | `/oauth2/introspect` | exempt |
+| End-session | `/oauth2/logout` | exempt |
+| Resume | `/oauth2/authorize/resume` | refused, 403 `ErrCrossSiteRequest` |
+| Logout confirmation | `/oauth2/logout/confirm` | refused |
+| Consents | `/oauth2/consents` | refused |
+
+The last three may rest on the browser session, a cookie, so a cross-site page can never reach them:
+a consent answer or a logout confirmation posted from another site, with the victim's handle in it, is
+refused before the handler runs.
+
+The exemptions follow the paths the provider serves (`WithOIDCProviderPrefix`,
+`WithOIDCProviderPath`) and are exact, compared with the path as the client sent it. A trailing slash,
+another case, a dot segment or an escaped spelling such as `/oauth2/%74oken` is another route, and is
+judged as any route is. Only `POST` is exempt. No option removes the exemptions.
+
+UserInfo is not exempt, though a client may `POST` its access token there (RFC 6750 section 2.2). The
+token travels in the request and no cookie is involved, so nothing about it can be forged cross-site;
+but a browser client on another origin sends an `Origin` the check judges. Trust that origin through
+`EnableCORS` or `WithCSRFTrustedOrigins`, or exempt the route yourself:
+`httpsec.WithCSRFExemption(http.MethodPost, "/oauth2/userinfo")`.
+
+### Defaults
+
+| Setting | Default | Replace with |
+|---|---|---|
+| Endpoint paths | under `/oauth2` | `WithOIDCProviderPrefix`, `WithOIDCProviderPath` |
+| Authorization throttle | 300 parked or invalid-client requests per source a minute | `WithOIDCAuthorizeLimiter`, `WithRateLimiterFactory` |
+| Resume throttle | 30 unknown handles per source a minute | `WithOIDCResumeLimiter`, `WithRateLimiterFactory` |
+| Token throttle | 10 failed client authentications per source in 15 minutes | `WithOIDCTokenLimiter`, `WithRateLimiterFactory` |
+| Authorization form body | `DefaultLoginBodyLimit` | `WithOIDCAuthorizeBodyLimit` |
+| Resume body | `DefaultLoginBodyLimit` | `WithOIDCResumeBodyLimit` |
+| End-session throttle | 300 requests per source a minute that park a logout or are refused; one ending a sign-in without asking is not counted | `WithOIDCEndSessionLimiter`, `WithRateLimiterFactory` |
+| Logout confirmation throttle | 30 unknown handles per source a minute | `WithOIDCLogoutConfirmLimiter`, `WithRateLimiterFactory` |
+| End-session and confirmation bodies | `DefaultLoginBodyLimit` | `WithOIDCEndSessionBodyLimit`, `WithOIDCLogoutConfirmBodyLimit` |
+| Browser session | on | `oidcprovider.WithoutBrowserSessions` |
+| Exempt from CSRF | `POST` to authorization, token, revocation, introspection and end-session | add a route with `httpsec.WithCSRFExemption`; the provider's own cannot be removed |
+| Cookie names | `__Host-scrty-op-flow`, `__Host-scrty-op-session` | none: the prefix is what stops another host planting one |
+
+The throttles are per process unless the limiter is shared between replicas. They fail closed: a
+limiter that cannot answer, and a source that cannot be attributed, are refused like a source over its
+limit, 429 at the authorization, resume, end-session and logout confirmation endpoints and
+`invalid_client` at the token endpoints.
+
 ## Letting required users enrol
 
 By default, a user who must use a second factor and has none is refused outright: enrolment is a
@@ -569,7 +877,9 @@ manager, err := passkey.New(passkey.Deps{
 
 `Verifier`, `Users`, `Sender`, `Sessions` and the repudiation contact have no default (`Sessions` may be
 left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
-`passkey.WithoutSessionRevocationOnClone` given); everything else does:
+`passkey.WithoutSessionRevocationOnClone` given). `Sessions` takes a session manager, never a bare
+`session.Store`; on a chain with `EnableOIDCProvider` it must be built with `session.WithEndObserver(op)`.
+Everything else has a default:
 
 | What | Default | Replaced by |
 |---|---|---|
@@ -594,7 +904,7 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | A consumer challenge kind raised on a passkey request (`WithChallengeEnforcer`) | refused with a `ChallengeError` of that kind on every passkey registration and management endpoint | `httpsec.WithPasskeyRegistrationResolving(kinds...)`: the four registration endpoints serve the named kinds under every other rule, nothing is marked, and listing, rename and removal still refuse them; no kinds, `ChallengeNone`, a built-in kind or an undeclared kind is `ErrConfig` at `New` |
 | Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
 | Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
-| Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
+| Log sampling | each refusal, clone or queue failure reason at most once a minute, and never a clone's failed grant revocation, which nothing asks again | `passkey.WithLogInterval` |
 
 The removal endpoint (`POST <prefix>/remove`) reads the optional `other_sessions` field from the same
 form body as `id`: `keep` keeps the user's other sessions, `end` ends them, and absent applies the
@@ -2007,6 +2317,11 @@ webhook, from both checks. Every other protection still applies to it.
   `é` (`/webhooks/café`): it could never match, so write it in its escaped form
   (`/webhooks/caf%C3%A9`, `/webhooks/a%20b`). An escaped segment is kept and
   matches only that escaped form.
+- With `EnableOIDCProvider`, `POST` to the provider's authorization, token,
+  revocation, introspection and end-session endpoints is exempt, at the paths
+  the provider serves them, because relying parties call them cross-site. The
+  resume, the logout confirmation and `/consents` stay judged (see "OpenID
+  Provider").
 - With OIDC login, `POST` to the back-channel logout endpoint (the
   `WithOIDCBackchannelLogoutPath` prefix followed by one provider name) is
   exempt by default, because the provider calls it server to server. The
@@ -2025,7 +2340,7 @@ webhook, from both checks. Every other protection still applies to it.
 | Trusted origins | the CORS layer's, never `*` | `httpsec.WithCSRFTrustedOrigins`, `httpsec.WithoutCORSOriginsTrustedForCSRF` |
 | Token names | header `X-CSRF-Token`, field `csrf_token` | `httpsec.WithCSRFTokenNames` |
 | Token source | 32 random bytes stored on the sign-in | `httpsec.WithCSRFTokens` |
-| Exempt routes | the OIDC back-channel logout endpoint only | `httpsec.WithCSRFExemption`, `httpsec.WithoutBackchannelLogoutExemption` |
+| Exempt routes | the OIDC back-channel logout endpoint, and the provider's authorization, token, revocation, introspection and end-session endpoints | `httpsec.WithCSRFExemption`, `httpsec.WithoutBackchannelLogoutExemption` |
 
 ## DPoP
 

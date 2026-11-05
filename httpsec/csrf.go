@@ -104,9 +104,12 @@ type csrfLayer struct {
 //   - Token source: 32 random bytes stored on the sign-in when it is created,
 //     carried by its renewals, compared in constant time (WithCSRFTokens).
 //     Sign-ins store a token only while this source is in use.
-//   - Exempt routes: none but the OIDC back-channel logout endpoint, by POST
-//     (WithCSRFExemption adds one; WithoutBackchannelLogoutExemption removes
-//     the back-channel one).
+//   - Exempt routes: none but the OIDC back-channel logout endpoint, by POST,
+//     and, with EnableOIDCProvider, POST to the provider's authorization, token,
+//     revocation, introspection and end-session endpoints, wherever it serves
+//     them (WithCSRFExemption adds one; WithoutBackchannelLogoutExemption
+//     removes the back-channel one; the provider's cannot be removed, since a
+//     relying party reaches them cross-site by design).
 func EnableCSRFProtection(opts ...CSRFOption) Option {
 	const option = "EnableCSRFProtection"
 

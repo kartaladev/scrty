@@ -234,6 +234,11 @@ func (m *Passkeys) findOwn(ctx context.Context, user identity.UserID, cid id.ID)
 // session the chain no longer loads. With no revoker, the manager is only
 // valid when both revocations are turned off
 // (WithoutSessionRevocationOnRemoval, WithoutSessionRevocationOnClone).
+//
+// A session.Store has the two deleting methods and does not satisfy it, by
+// ReportsEndsTo: a store ends sessions with no report, so whatever relies on being
+// told of an end, such as an OpenID Provider ending the grants of a sign-in, would
+// not be, and could not find that out.
 type SessionRevoker interface {
 	// DeleteByUser ends every session of user.
 	DeleteByUser(ctx context.Context, user identity.UserID) error
@@ -243,9 +248,22 @@ type SessionRevoker interface {
 	// whichever of its identifiers the request presented; its other,
 	// superseded sessions end with the user's other sign-ins.
 	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
+	// ReportsEndsTo reports whether an end through this revoker is reported to the
+	// observer o (see session.Sessions.ReportsEndsTo). A wrapper around a manager
+	// forwards it.
+	ReportsEndsTo(o session.EndObserver) bool
 }
 
 var _ SessionRevoker = (*session.Sessions)(nil)
+
+// ReportsEndsTo reports whether the sessions this manager ends are reported to the
+// observer o, so that a component relying on being told can refuse a manager wired
+// to a revoker that would not tell it. A manager ending no session has nothing to
+// report, so the answer is true: one with no revoker, and one given a revoker with
+// both WithoutSessionRevocationOnRemoval and WithoutSessionRevocationOnClone.
+func (m *Passkeys) ReportsEndsTo(o session.EndObserver) bool {
+	return (m.keepOnRemoval && m.keepOnClone) || nilcheck.IsNil(m.sessions) || m.sessions.ReportsEndsTo(o)
+}
 
 // WithoutSessionRevocationOnRemoval keeps the user's other sessions when a
 // passkey is removed, replacing the default of ending every session but the

@@ -82,7 +82,7 @@ func (s *PasskeyHandleStore) Assign(ctx context.Context, user identity.UserID, o
 	}
 
 	var held []byte
-	err = q.Raw(pgschema.PasskeyHandleOfUser, string(user)).Row().Scan(&held)
+	err = scanRow(q.Raw(pgschema.PasskeyHandleOfUser, string(user)), &held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, failed(op, storekit.ErrPasskeyHandleHeld)
 	}
@@ -102,7 +102,7 @@ func (s *PasskeyHandleStore) UserFor(ctx context.Context, handle []byte) (identi
 		return "", false, failed(op, err)
 	}
 	var user string
-	err = q.Raw(pgschema.PasskeyHandleUser, storekit.OrEmpty(handle)).Row().Scan(&user)
+	err = scanRow(q.Raw(pgschema.PasskeyHandleUser, storekit.OrEmpty(handle)), &user)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

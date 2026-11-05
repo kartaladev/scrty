@@ -53,6 +53,10 @@ func (h *httpRequest) Query(n string) string  { return h.r.URL.Query().Get(n) }
 // spelling in URL.RawPath whenever it differs from the default encoding.
 func (h *httpRequest) EscapedPath() string { return h.r.URL.EscapedPath() }
 
+// RawQuery is the query as sent: net/http keeps it undecoded in URL.RawQuery,
+// including a pair URL.Query would drop.
+func (h *httpRequest) RawQuery() string { return h.r.URL.RawQuery }
+
 // QueryValues returns every value of the parameter, in the order sent.
 func (h *httpRequest) QueryValues(n string) []string { return h.r.URL.Query()[n] }
 

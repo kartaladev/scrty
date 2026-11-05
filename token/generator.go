@@ -2,6 +2,7 @@ package token
 
 import (
 	"context"
+	"crypto"
 	"errors"
 	"fmt"
 	"time"
@@ -78,6 +79,9 @@ type Generator interface {
 // Option configures a Generator. Every default NewGenerator applies has an
 // option here that replaces it. The issuer and the audience have no default:
 // each must be configured or explicitly waived.
+//
+// NewIssuer takes WithTokenLifetime and WithClock only, and refuses every other
+// Option with ErrConfig, whatever value it carries.
 type Option func(*config)
 
 // WithIssuer sets the iss claim of issued tokens, and the issuer the generator
@@ -133,7 +137,10 @@ func WithTokenLifetime(d time.Duration) Option {
 // source must hold a current key for it at issue time; there is no fallback to
 // another algorithm and none to an unsigned token.
 func WithSigningAlg(alg signingkey.Alg) Option {
-	return func(c *config) { c.alg = alg }
+	return func(c *config) {
+		c.alg = alg
+		c.algSet = true
+	}
 }
 
 // WithClock sets the time source for iat, exp and the generator's own
@@ -163,7 +170,29 @@ func WithClock(clk clock.Clock) Option { return Option(setClock(clk)) }
 // authenticate.NewJWTAuthenticator refuses a mismatch too, when its verifier is
 // this generator.
 func WithUsernameSubject() Option {
-	return func(c *config) { c.subject = SubjectUsername }
+	return func(c *config) {
+		c.subject = SubjectUsername
+		c.subjectSet = true
+	}
+}
+
+// WithTokenType replaces the type a generator declares in the typ header of
+// every token it issues, and the type its own Verify accepts. Default:
+// TypeFirstParty, "scrty+jwt".
+//
+// A verifier built separately accepts only its own declared type, so it needs
+// WithVerifyTokenType with the same value.
+//
+// A blank typ, and one equal to TypeAccessToken, TypeIDToken or TypeLogoutToken,
+// fails construction with ErrConfig. Those are compared as a verifier compares
+// them, without regard to case and with an "application/" prefix ignored,
+// because a first-party token declaring another kind's type would validate as
+// that kind wherever keys are shared.
+func WithTokenType(typ string) Option {
+	return func(c *config) {
+		c.tokenType = typ
+		c.tokenTypeSet = true
+	}
 }
 
 // JWTGenerator is the Generator this package provides: it signs JWTs with the
@@ -180,8 +209,8 @@ type JWTGenerator struct{ cfg *config }
 // configured, with WithIssuer and WithAudience, or waived by name, with
 // WithoutIssuer and WithoutAudience. There is no default that issues and checks
 // neither. Defaults: a 15-minute lifetime; RS256; the system clock; the
-// principal's user identifier as the subject. Each is an Option naming its own
-// default.
+// principal's user identifier as the subject; TypeFirstParty as the declared
+// type. Each is an Option naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
 //
@@ -192,9 +221,10 @@ type JWTGenerator struct{ cfg *config }
 // is neither configured nor waived, or is both, when either is configured
 // empty or blank (the empty string, or white space alone; the refusal names
 // the waiver to use instead), when the lifetime is zero or
-// less or is not a whole number of seconds, and when a key source that reports
-// its own key lifetime and rotation interval could not keep a key published for
-// as long as the tokens would live.
+// less or is not a whole number of seconds, when a key source that reports its
+// own key lifetime and rotation interval could not keep a key published for as
+// long as the tokens would live, and when the declared type is blank or belongs
+// to another kind of token.
 func NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, error) {
 	cfg := newConfig()
 	cfg.keys = keys
@@ -213,6 +243,9 @@ func NewGenerator(keys signingkey.KeySource, opts ...Option) (*JWTGenerator, err
 		return nil, err
 	}
 	if err := cfg.validateLifetime(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateFirstPartyType(); err != nil {
 		return nil, err
 	}
 
@@ -276,23 +309,9 @@ func (g *JWTGenerator) GenerateWith(
 
 	cfg := g.cfg
 
-	// Asked for on every token and dropped once it has signed, never kept:
-	// a source may hand back a signer bound to ctx, which is only safe
-	// because nothing here outlives this call.
-	kid, signer, err := cfg.keys.Signer(ctx, cfg.alg)
-	switch {
-	case errors.Is(err, signingkey.ErrNoKey):
-		// Never fall back to another algorithm, and never to an unsigned
-		// token. Keys rotate, so this cannot be a construction check.
-		return "", diag.Wrap(err, fmt.Sprintf("token: no current key for algorithm %q", cfg.alg))
-	case err != nil:
-		// The source could not answer. That is an outage, not a missing key,
-		// and its text is the consumer's: kept reachable, never rendered.
-		return "", diag.Wrap(err, textSignerUnavailable)
-	case nilcheck.IsNil(signer):
-		// A source that reports no error and hands over nothing has not
-		// answered either. Signing with it would panic inside the JOSE stack.
-		return "", errSignerUnavailable
+	kid, signer, err := cfg.currentSigner(ctx)
+	if err != nil {
+		return "", err
 	}
 
 	now := cfg.clock.Now()
@@ -316,18 +335,51 @@ func (g *JWTGenerator) GenerateWith(
 		return "", fmt.Errorf("token: build claims: %w", err)
 	}
 
-	// The kid goes into the protected header directly, so verification can
-	// select the key. Signing with the crypto.Signer the key source handed
-	// over avoids a round trip through a JWK, which would re-encode and
-	// re-decode the private key on every call and discard its precomputed
-	// values.
+	return cfg.sign(claims, kid, signer, cfg.tokenType)
+}
+
+// currentSigner asks the key source for the signer of the configured algorithm.
+//
+// It is asked for on every token and dropped once it has signed, never kept: a
+// source may hand back a signer bound to ctx, which is only safe because nothing
+// here outlives this call.
+func (c *config) currentSigner(ctx context.Context) (string, crypto.Signer, error) {
+	kid, signer, err := c.keys.Signer(ctx, c.alg)
+	switch {
+	case errors.Is(err, signingkey.ErrNoKey):
+		// Never fall back to another algorithm, and never to an unsigned
+		// token. Keys rotate, so this cannot be a construction check.
+		return "", nil, diag.Wrap(err, fmt.Sprintf("token: no current key for algorithm %q", c.alg))
+	case err != nil:
+		// The source could not answer. That is an outage, not a missing key,
+		// and its text is the consumer's: kept reachable, never rendered.
+		return "", nil, diag.Wrap(err, textSignerUnavailable)
+	case nilcheck.IsNil(signer):
+		// A source that reports no error and hands over nothing has not
+		// answered either. Signing with it would panic inside the JOSE stack.
+		return "", nil, errSignerUnavailable
+	}
+
+	return kid, signer, nil
+}
+
+// sign signs claims with signer, declaring kid and typ in the protected header.
+//
+// The kid goes into the protected header directly, so verification can select
+// the key. Signing with the crypto.Signer the key source handed over avoids a
+// round trip through a JWK, which would re-encode and re-decode the private key
+// on every call and discard its precomputed values.
+func (c *config) sign(claims jwt.Token, kid string, signer crypto.Signer, typ string) (string, error) {
 	headers := jws.NewHeaders()
 	if err := headers.Set(jws.KeyIDKey, kid); err != nil {
 		return "", fmt.Errorf("token: set key identifier: %w", err)
 	}
+	if err := headers.Set(jws.TypeKey, typ); err != nil {
+		return "", fmt.Errorf("token: set token type: %w", err)
+	}
 
 	signed, err := jwt.Sign(claims,
-		jwt.WithKey(cfg.signature, signer, jws.WithProtectedHeaders(headers)))
+		jwt.WithKey(c.signature, signer, jws.WithProtectedHeaders(headers)))
 	if err != nil {
 		// The failure may be the consumer's own crypto.Signer refusing to
 		// sign — a KMS or HSM outage, say — so its error is kept reachable

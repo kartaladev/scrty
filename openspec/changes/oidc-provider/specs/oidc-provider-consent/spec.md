@@ -105,6 +105,17 @@ A grant at the consent stage SHALL be remembered for that user and client, addin
 - **WHEN** the user granted `openid profile` and later `openid email` to one client
 - **THEN** the remembered consent for that client covers `openid profile email`
 
+### Requirement: A first-party client's grants can be ended
+A user holding no remembered consent for a client, but holding grants of it, SHALL still be able to end those grants, as a first-party client skips consent. Revoking is refused only when the user holds neither.
+
+#### Scenario: A first-party client's grant, with no consent held
+- **WHEN** a user with a grant of a first-party client, and no remembered consent for it, revokes consent for that client
+- **THEN** that user's grants of that client are revoked, no other client's are, and the request succeeds
+
+#### Scenario: Neither consent nor a grant
+- **WHEN** a user with no consent and no grant of a client revokes consent for it
+- **THEN** the request is refused, and nothing changes
+
 ### Requirement: Users and consumers can revoke consent
 The provider SHALL let the consumer revoke a user's consent for a client, and SHALL offer an endpoint where a signed-in user revokes their own consent for a client. Revoking consent SHALL forget the remembered scopes and SHALL revoke every grant of that user and client, so their refresh tokens stop working at once.
 

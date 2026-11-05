@@ -65,6 +65,10 @@ func (r request) Path() string {
 // fasthttp's original path, read from the request line and never decoded.
 func (r request) EscapedPath() string { return string(r.c.Request().URI().PathOriginal()) }
 
+// RawQuery returns the query as sent: fasthttp's query string, never decoded
+// and never split into arguments, so a pair it could not parse is still in it.
+func (r request) RawQuery() string { return string(r.c.Request().URI().QueryString()) }
+
 // QueryValues returns every value of the parameter, in the order sent, and nil
 // when it is absent. Each value is copied, because fasthttp's are views into a
 // buffer it reuses for the next request on the connection.

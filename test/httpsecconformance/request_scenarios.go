@@ -2,6 +2,7 @@ package httpsecconformance
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -32,6 +33,7 @@ func requestScenarios() []Scenario {
 		verifyBodyCodeWinsOverTheQuery(),
 		formFieldInBodyAndQueryAnswersTheBody(),
 		formFieldOnlyInTheQueryAnswersTheQuery(),
+		theRawQueryIsAsSent(),
 		multipartFormFieldInBodyAndQueryAnswersTheBody(),
 		aGETWithABodyReadsTheQuery(),
 		readingAFieldLeavesTheBodyReadable(),
@@ -175,6 +177,28 @@ func verifyBodyCodeWinsOverTheQuery() Scenario {
 // interceptor is the only thing that ever runs, and it answers directly.
 const formFieldPath = "/form-field"
 
+// echoHeader carries what an echoing interceptor read. The echo answers through
+// a header and the status, never the body, so a request's text is not written
+// into a response body. The value is base64-encoded, so any bytes the request
+// held remain a legal header value; echoed decodes it.
+const echoHeader = "X-Echo"
+
+// echo answers 200 with value, encoded, in echoHeader and no body.
+func echo(ex *httpsec.Exchange, value string) {
+	ex.Writer.SetHeader(echoHeader, base64.RawStdEncoding.EncodeToString([]byte(value)))
+	ex.Writer.WriteHeader(http.StatusOK)
+}
+
+// echoed is what an echoing interceptor read, decoded from the response.
+func echoed(t *testing.T, res Result) string {
+	t.Helper()
+
+	got, err := base64.RawStdEncoding.DecodeString(res.Header.Get(echoHeader))
+	require.NoError(t, err, "the echo header holds base64")
+
+	return string(got)
+}
+
 // formFieldEchoOption is a consumer interceptor that reads field "x" through
 // the framework-neutral abstraction and answers with what it read. It is the
 // case the framework-adapters precedence promise exists for: a consumer
@@ -183,8 +207,7 @@ const formFieldPath = "/form-field"
 func formFieldEchoOption() httpsec.Option {
 	return httpsec.RegisterInterceptor(
 		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
-			ex.Writer.WriteHeader(http.StatusOK)
-			_, _ = ex.Writer.Write([]byte(ex.Request.FormValue("x")))
+			echo(ex, ex.Request.FormValue("x"))
 
 			return nil
 		}),
@@ -215,7 +238,7 @@ func formFieldInBodyAndQueryAnswersTheBody() Scenario {
 		}),
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
-			assert.Equal(t, "body", res.Body)
+			assert.Equal(t, "body", echoed(t, res))
 		},
 	}
 }
@@ -232,7 +255,45 @@ func formFieldOnlyInTheQueryAnswersTheQuery() Scenario {
 		}),
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
-			assert.Equal(t, "query", res.Body)
+			assert.Equal(t, "query", echoed(t, res))
+		},
+	}
+}
+
+// rawQueryEchoBuild wires an interceptor that answers with the request's raw
+// query, as the adapter hands it to the chain.
+func rawQueryEchoBuild(t *testing.T) ChainSpec {
+	effects := newEffects(t)
+
+	echo := httpsec.RegisterInterceptor(
+		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
+			echo(ex, ex.Request.RawQuery())
+
+			return nil
+		}),
+		httpsec.OrderJWKS,
+	)
+
+	return ChainSpec{Options: []httpsec.Option{echo}, Effects: effects}
+}
+
+// theRawQueryIsAsSent is the row that stands behind the token endpoints'
+// refusal of a credential in the query: each adapter must hand the chain the
+// query exactly as sent, including the pairs its own parser would drop.
+func theRawQueryIsAsSent() Scenario {
+	const query = "client%5Fsecret=%zz;a=1&b=%41"
+
+	return Scenario{
+		Name:  "the raw query is exactly as the client sent it",
+		Build: rawQueryEchoBuild,
+		Request: sending(RequestSpec{
+			Method:        http.MethodGet,
+			Path:          formFieldPath + "?" + query,
+			ClientAddress: ClientAddress,
+		}),
+		Assert: func(t *testing.T, res Result) {
+			assert.NoError(t, res.Refusal)
+			assert.Equal(t, query, echoed(t, res))
 		},
 	}
 }
@@ -269,7 +330,7 @@ func multipartFormFieldInBodyAndQueryAnswersTheBody() Scenario {
 		Request: sending(multipartFormRequest(formFieldPath+"?x=query", "x", "body")),
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
-			assert.Equal(t, "body", res.Body)
+			assert.Equal(t, "body", echoed(t, res))
 		},
 	}
 }
@@ -290,7 +351,7 @@ func aGETWithABodyReadsTheQuery() Scenario {
 		}),
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
-			assert.Equal(t, "query", res.Body)
+			assert.Equal(t, "query", echoed(t, res))
 		},
 	}
 }
@@ -310,8 +371,7 @@ func formFieldThenBodyOption() httpsec.Option {
 				return err
 			}
 
-			ex.Writer.WriteHeader(http.StatusOK)
-			_, _ = ex.Writer.Write([]byte(field + "|" + string(body)))
+			echo(ex, field+"|"+string(body))
 
 			return nil
 		}),
@@ -344,7 +404,7 @@ func readingAFieldLeavesTheBodyReadable() Scenario {
 		}),
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
-			assert.Equal(t, "body|x=body", res.Body)
+			assert.Equal(t, "body|x=body", echoed(t, res))
 		},
 	}
 }
@@ -484,8 +544,7 @@ func uploadReaderOption() httpsec.Option {
 		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, _ httpsec.Next) error {
 			field := ex.Request.FormValue("x")
 
-			ex.Writer.WriteHeader(http.StatusOK)
-			_, _ = ex.Writer.Write([]byte(field + "|" + parsedUploadSize(ex.Request)))
+			echo(ex, field+"|"+parsedUploadSize(ex.Request))
 
 			return nil
 		}),
@@ -545,7 +604,7 @@ func anOversizedUploadIsLeftIntact() Scenario {
 		Assert: func(t *testing.T, res Result) {
 			assert.NoError(t, res.Refusal)
 			assert.Equal(t, http.StatusOK, res.Status)
-			assert.Equal(t, "query|"+strconv.Itoa(uploadFileSize), res.Body,
+			assert.Equal(t, "query|"+strconv.Itoa(uploadFileSize), echoed(t, res),
 				"the field read answered from the query, and the upload stayed whole for the handler")
 		},
 	}

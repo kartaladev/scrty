@@ -63,6 +63,7 @@ Settled with the specs on 2026-11-02.
 - `cors`: the provider's token, UserInfo, metadata and JWKS endpoints may be called cross-origin; the authorization endpoint never is.
 - `csrf-protection` (added by `close-security-gaps`): the provider's authorization, token, revocation, introspection and end-session endpoints are exempt from the cross-site check, which relying parties cross by design; the resume, logout confirmation and consent endpoints stay protected.
 - `security-events` (added by `close-security-gaps`): grants, consent, code replay, refresh reuse, revocation and failed logout delivery are reported as events.
+- `outbound-http-confinement`: a client can be copied to follow no redirect, and a form POST can be judged by its status alone, both for back-channel delivery (R14).
 
 ## Impact
 

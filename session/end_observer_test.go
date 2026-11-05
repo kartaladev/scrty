@@ -1154,23 +1154,21 @@ func TestSessions_EndObserver_ReadBeforeWrite(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed read does not stop Delete, whose report then names no one",
+			name: "a failed read stops Delete, naming neither the store's text nor the identifier",
 			expect: func(store *MockStore) {
 				store.EXPECT().Load(gomock.Any(), sid).Return(nil, errStoreQuotes)
-				store.EXPECT().Delete(gomock.Any(), sid).Return(nil)
 			},
 			act: deleteIt,
 			assert: func(t *testing.T, calls []endCall, logs string, err error) {
-				require.NoError(t, err)
-				require.Len(t, calls, 1)
-				assert.Equal(t, session.EndReport{Cause: session.EndDeleted, At: createdAt}, calls[0].report)
-				assert.Contains(t, logs, "level=DEBUG")
-				assert.NotContains(t, logs, "alice@example.com", "the store's text reached the log")
-				assert.NotContains(t, logs, sid, "the identifier reached the log")
+				hidesStoreText()(t, err)
+				assert.EqualError(t, err, textEndReportRead)
+				assert.NotContains(t, err.Error(), sid)
+				assert.Empty(t, calls)
+				assert.Empty(t, logs, "the caller has the failure, so it is not logged as well")
 			},
 		},
 		{
-			name: "a store answering neither a session nor an error is a failed read",
+			name: "a store answering neither a session nor an error holds no session, as every read takes it",
 			expect: func(store *MockStore) {
 				store.EXPECT().Load(gomock.Any(), sid).Return(nil, nil)
 				store.EXPECT().Delete(gomock.Any(), sid).Return(nil)
@@ -1197,16 +1195,17 @@ func TestSessions_EndObserver_ReadBeforeWrite(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed read does not stop DeleteByUserExcept, whose report names no kept family",
+			name: "a failed read stops DeleteByUserExcept, naming neither the store's text nor the identifier",
 			expect: func(store *MockStore) {
 				store.EXPECT().Load(gomock.Any(), sid).Return(nil, errStoreQuotes)
-				store.EXPECT().DeleteByUserExcept(gomock.Any(), endUser, sid).Return(2, nil)
 			},
 			act: deleteOthers,
-			assert: func(t *testing.T, calls []endCall, _ string, err error) {
-				require.NoError(t, err)
-				require.Len(t, calls, 1)
-				assert.Equal(t, session.EndReport{Cause: session.EndUserSessionsExcept, User: endUser, At: createdAt}, calls[0].report)
+			assert: func(t *testing.T, calls []endCall, logs string, err error) {
+				hidesStoreText()(t, err)
+				assert.EqualError(t, err, textEndReportRead)
+				assert.NotContains(t, err.Error(), sid)
+				assert.Empty(t, calls)
+				assert.Empty(t, logs, "the caller has the failure, so it is not logged as well")
 			},
 		},
 		{
@@ -1337,6 +1336,283 @@ func TestSessions_EndObserver_ReadBeforeWrite(t *testing.T) {
 			err := tc.act(t.Context(), m)
 
 			tc.assert(t, f.calls, f.logs.String(), err)
+		})
+	}
+}
+
+// textEndReportRead is what a read for an end's report fails with.
+const textEndReportRead = "session: the session could not be read for its end report"
+
+// loadFailingStore is a memory store whose Load fails with loadErr, or with the
+// context's error as a store on a network would, while every write still works,
+// so a row sees what a failed read left behind.
+type loadFailingStore struct {
+	*session.MemoryStore
+
+	loadErr error
+	loads   atomic.Int32
+}
+
+func (s *loadFailingStore) Load(ctx context.Context, sid string) (*session.Session, error) {
+	s.loads.Add(1)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+
+	return s.MemoryStore.Load(ctx, sid)
+}
+
+// TestSessions_EndReportRead pins that an end which cannot read what its report
+// must say changes nothing, so its caller can ask again. Over a store really
+// holding the sessions, a row sees what stands afterwards.
+func TestSessions_EndReportRead(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// unobserved builds the manager with no observer.
+		unobserved bool
+		loadErr    error
+		ctx        func(ctx context.Context) context.Context
+		act        func(ctx context.Context, m *session.Sessions, f *observedFixture) (int, error)
+		assert     func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error)
+	}
+
+	deleteA := func(ctx context.Context, m *session.Sessions, f *observedFixture) (int, error) {
+		return 0, m.Delete(ctx, f.a.ID)
+	}
+	deleteAllButA := func(ctx context.Context, m *session.Sessions, f *observedFixture) (int, error) {
+		return m.DeleteByUserExcept(ctx, endUser, f.a.ID)
+	}
+
+	stored := func(t *testing.T, store *loadFailingStore, s *session.Session) bool {
+		t.Helper()
+
+		_, err := store.MemoryStore.Load(t.Context(), s.ID)
+		if err != nil {
+			require.ErrorIs(t, err, session.ErrNotFound)
+		}
+
+		return err == nil
+	}
+
+	// changedNothing is every row whose read stops the end.
+	changedNothing := func(t *testing.T, f *observedFixture, store *loadFailingStore, n int) {
+		t.Helper()
+
+		assert.Zero(t, n)
+		assert.True(t, stored(t, store, f.a), "the session named is still stored")
+		assert.True(t, stored(t, store, f.b), "the user's other session is still stored")
+		assert.Empty(t, f.calls, "no observer is told of an end that did not happen")
+		assert.EqualValues(t, 1, store.loads.Load())
+	}
+
+	cases := []testCase{
+		{
+			name:    "Delete with an observer fails and changes nothing",
+			loadErr: errStoreQuotes,
+			act:     deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				changedNothing(t, f, store, n)
+				hidesStoreText()(t, err)
+				assert.EqualError(t, err, textEndReportRead)
+			},
+		},
+		{
+			name:    "DeleteByUserExcept with an observer fails and changes nothing",
+			loadErr: errStoreQuotes,
+			act:     deleteAllButA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				changedNothing(t, f, store, n)
+				hidesStoreText()(t, err)
+				assert.EqualError(t, err, textEndReportRead)
+			},
+		},
+		{
+			// Asking again will not help here, but the family is still unknown, so
+			// the report could not name it. DeleteByUser still reaches the session.
+			name:    "a session that cannot be opened is not gone, so Delete fails with that answer",
+			loadErr: session.ErrUnreadable,
+			act:     deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				changedNothing(t, f, store, n)
+				isBare(session.ErrUnreadable)(t, err)
+			},
+		},
+		{
+			name: "a request hung up before the read fails Delete and changes nothing",
+			ctx: func(ctx context.Context) context.Context {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cancelled
+			},
+			act: deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				changedNothing(t, f, store, n)
+				require.ErrorIs(t, err, context.Canceled)
+			},
+		},
+		{
+			name:       "Delete with no observer proceeds without reading",
+			unobserved: true,
+			loadErr:    errStoreQuotes,
+			act:        deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, _ int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.False(t, stored(t, store, f.a))
+				assert.True(t, stored(t, store, f.b))
+				assert.Zero(t, store.loads.Load(), "Load is not called")
+			},
+		},
+		{
+			name:       "DeleteByUserExcept with no observer proceeds without reading",
+			unobserved: true,
+			loadErr:    errStoreQuotes,
+			act:        deleteAllButA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, 1, n)
+				assert.True(t, stored(t, store, f.a))
+				assert.False(t, stored(t, store, f.b))
+				assert.Zero(t, store.loads.Load(), "Load is not called")
+			},
+		},
+		{
+			name:    "Delete proceeds when the read finds the session gone",
+			loadErr: session.ErrNotFound,
+			act:     deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, _ int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.False(t, stored(t, store, f.a))
+				require.Len(t, f.calls, 1)
+				assert.Equal(t, session.EndReport{Cause: session.EndDeleted, At: createdAt}, f.calls[0].report)
+			},
+		},
+		{
+			name:    "Delete proceeds when the store wraps its answer that the session is gone",
+			loadErr: fmt.Errorf("the row: %w", session.ErrNotFound),
+			act:     deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, _ int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.False(t, stored(t, store, f.a))
+				require.Len(t, f.calls, 1)
+			},
+		},
+		{
+			name:    "Delete proceeds when the read finds the session expired",
+			loadErr: session.ErrExpired,
+			act:     deleteA,
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, _ int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.False(t, stored(t, store, f.a))
+				require.Len(t, f.calls, 1)
+				assert.Equal(t, session.EndReport{Cause: session.EndDeleted, At: createdAt}, f.calls[0].report)
+			},
+		},
+		{
+			name:    "DeleteByUserExcept proceeds when the read finds the kept session gone",
+			loadErr: session.ErrNotFound,
+			act:     deleteAllButA,
+			assert: func(t *testing.T, f *observedFixture, _ *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, 1, n)
+				require.Len(t, f.calls, 1)
+				assert.Equal(t, session.EndReport{Cause: session.EndUserSessionsExcept, User: endUser, At: createdAt}, f.calls[0].report)
+			},
+		},
+		{
+			name:    "DeleteByUserExcept with an empty keep proceeds with no read",
+			loadErr: errStoreQuotes,
+			act: func(ctx context.Context, m *session.Sessions, _ *observedFixture) (int, error) {
+				return m.DeleteByUserExcept(ctx, endUser, "")
+			},
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, 2, n)
+				assert.False(t, stored(t, store, f.a))
+				assert.False(t, stored(t, store, f.b))
+				assert.Zero(t, store.loads.Load(), "Load is not called")
+				require.Len(t, f.calls, 1)
+			},
+		},
+		{
+			name:    "RevokeFamily while reads fail ends the family and tells the observer",
+			loadErr: errStoreQuotes,
+			act: func(ctx context.Context, m *session.Sessions, f *observedFixture) (int, error) {
+				return m.RevokeFamily(ctx, f.a.FamilyID)
+			},
+			assert: func(t *testing.T, f *observedFixture, store *loadFailingStore, n int, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				assert.Equal(t, 1, n)
+				assert.False(t, stored(t, store, f.a))
+				assert.True(t, stored(t, store, f.b))
+				assert.Zero(t, store.loads.Load(), "a revocation reads nothing")
+				require.Len(t, f.calls, 1)
+				assert.Equal(t, session.EndReport{Cause: session.EndFamilyRevoked, Family: f.a.FamilyID, At: createdAt}, f.calls[0].report)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := &observedFixture{clk: clockwork.NewFakeClockAt(createdAt), logs: &bytes.Buffer{}}
+			store := &loadFailingStore{MemoryStore: must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))}
+
+			opts := []session.Option{session.WithStore(store), session.WithClock(f.clk), session.WithLogger(f.logger())}
+			if !tc.unobserved {
+				first, _ := f.observers()
+				opts = append(opts, session.WithEndObserver(first))
+			}
+			f.m = managerFor(t, opts...)
+
+			var err error
+			f.a, err = f.m.Create(t.Context(), endUser)
+			require.NoError(t, err)
+			f.b, err = f.m.Create(t.Context(), endUser)
+			require.NoError(t, err)
+
+			store.loadErr = tc.loadErr
+			store.loads.Store(0)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			n, err := tc.act(ctx, f.m, f)
+
+			tc.assert(t, f, store, n, err)
 		})
 	}
 }

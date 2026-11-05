@@ -15,12 +15,58 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
+)
+
+// The OpenID Provider's refusals the protocol does not let its endpoints answer
+// themselves. Each wraps the oidcprovider refusal it reports, so a consumer matching
+// either identity reaches it, and StatusForError answers the two alike.
+var (
+	// ErrOIDCInvalidAuthorization refuses an authorization request naming an invalid
+	// client or redirect URI, which cannot be answered by redirecting to the client.
+	// It maps to 400.
+	ErrOIDCInvalidAuthorization = fmt.Errorf("httpsec: invalid authorization request: %w",
+		oidcprovider.ErrInvalidAuthorization)
+
+	// ErrOIDCUnknownHandle refuses a pending-request handle that is unknown, expired,
+	// spent or not bound to the browser presenting it. It maps to 400.
+	ErrOIDCUnknownHandle = fmt.Errorf("httpsec: unknown pending request: %w", oidcprovider.ErrUnknownHandle)
+
+	// ErrOIDCConsentMalformed refuses a consent answer that does not fit its request,
+	// such as one granting scopes that were not requested. It maps to 400.
+	ErrOIDCConsentMalformed = fmt.Errorf("httpsec: malformed consent answer: %w", oidcprovider.ErrConsentMalformed)
+
+	// ErrOIDCReauthenticate refuses a resume whose sign-in is not fresh enough for the
+	// request's prompt or max_age. It maps to 401: the user signs in again.
+	ErrOIDCReauthenticate = fmt.Errorf("httpsec: the sign-in must be repeated: %w", oidcprovider.ErrReauthenticate)
+
+	// ErrOIDCThrottled refuses a request to the authorization, resume, end-session or
+	// logout confirmation endpoint that the endpoint will not hear: its source is over the
+	// limit, the limiter could not answer, or the source cannot be attributed. It fails closed, as ratelimit.ErrThrottled does,
+	// and wraps it, so a consumer matching either identity reaches it.
+	//
+	// It maps to 429 (RFC 6585 section 4), where the chain's other throttled flows answer
+	// 401. Those endpoints are visited by a browser, and a 401 there reads as "sign
+	// the user in", which a page may answer by sending the browser back at once. The
+	// token endpoints keep the 401 their clients are told to expect.
+	ErrOIDCThrottled = fmt.Errorf("httpsec: too many requests: %w", ratelimit.ErrThrottled)
+
+	// ErrOIDCInvalidEndSession refuses an end-session request that must end nothing and
+	// must not be redirected: an id_token_hint failing its checks under a key still
+	// published, a hint whose audience is not client_id, or parameters that cannot be
+	// read. It maps to 400.
+	ErrOIDCInvalidEndSession = fmt.Errorf("httpsec: invalid end-session request: %w",
+		oidcprovider.ErrInvalidEndSession)
+
+	// ErrOIDCForeignConsent refuses a consent listing or revocation for a user other
+	// than the signed-in one. It maps to 404, as another user's passkey does.
+	ErrOIDCForeignConsent = fmt.Errorf("httpsec: no such consent: %w", oidcprovider.ErrForeignConsent)
 )
 
 // The refusals this package defines itself. Every other refusal a consumer
@@ -220,6 +266,10 @@ var statusTable = []statusRow{
 	{authenticate.ErrUnavailable, http.StatusUnauthorized},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
+
+	// A browser endpoint of the OpenID Provider that will not hear its source. It wraps
+	// ratelimit.ErrThrottled, so its row must stand ahead of the one below.
+	{ErrOIDCThrottled, http.StatusTooManyRequests},
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
 
 	// A wrong second-factor code, at verification or enrolment, and the
@@ -311,6 +361,16 @@ var statusTable = []statusRow{
 	// authentic, but in conflict with the record's state. A client can retry
 	// once the hold is over, which a 403 would not say.
 	{recovery.ErrNotYetCompletable, http.StatusConflict},
+
+	// The OpenID Provider's refusals its endpoints do not answer themselves. The
+	// provider's own sentinels are the rows, so the chain's, which wrap them, and
+	// the provider's reaching here unwrapped answer alike.
+	{oidcprovider.ErrInvalidAuthorization, http.StatusBadRequest},
+	{oidcprovider.ErrUnknownHandle, http.StatusBadRequest},
+	{oidcprovider.ErrConsentMalformed, http.StatusBadRequest},
+	{oidcprovider.ErrInvalidEndSession, http.StatusBadRequest},
+	{oidcprovider.ErrReauthenticate, http.StatusUnauthorized},
+	{oidcprovider.ErrForeignConsent, http.StatusNotFound},
 
 	// A rotation that lost a concurrent renewal of the same session. The
 	// session core's sentinel is the row, so the chain's own, which wraps it,
@@ -410,7 +470,9 @@ var statusTable = []statusRow{
 // generator's error stays reachable for a consumer's own handler. An
 // automation-challenge verifier that could not answer (ErrChallengeUnavailable)
 // is 500 in the same way, whatever its own error wraps, while a request the
-// verifier refused (ErrChallengeRequired) is 403.
+// verifier refused (ErrChallengeRequired) is 403. So is a dependency of the
+// OpenID Provider that failed (oidcprovider.ErrDependency), and a dependency that
+// stopped a recovery before any code but an MFA one was spent (recovery.ErrDependency).
 //
 // A challenge is checked next, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
@@ -452,6 +514,12 @@ func StatusForError(err error) int {
 	// So is a challenge verifier that could not answer, whatever its own
 	// error wraps: an outage never reads to the client as a refusal.
 	if errors.Is(err, ErrChallengeUnavailable) {
+		return http.StatusInternalServerError
+	}
+
+	// And a dependency of the OpenID Provider or of a recovery that failed,
+	// whatever its own error wraps.
+	if errors.Is(err, oidcprovider.ErrDependency) || errors.Is(err, recovery.ErrDependency) {
 		return http.StatusInternalServerError
 	}
 

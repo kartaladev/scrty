@@ -47,6 +47,7 @@ type observed struct {
 	escaped  string
 	header   string
 	query    string
+	rawQuery string
 	states   []string
 	errors   []string
 	form     string
@@ -71,6 +72,7 @@ func observe(r httpsec.Request, limit int64) observed {
 		escaped:     r.EscapedPath(),
 		header:      r.Header("Authorization"),
 		query:       r.Query("next"),
+		rawQuery:    r.RawQuery(),
 		states:      r.QueryValues("state"),
 		errors:      r.QueryValues("error"),
 		form:        r.FormValue("username"),
@@ -109,6 +111,24 @@ func TestFiberExchange(t *testing.T) {
 				assert.Equal(t, "/login", got.path)
 				assert.Equal(t, "Bearer abc", got.header)
 				assert.Equal(t, "/home", got.query)
+			},
+		},
+		{
+			name: "the raw query is as sent, a pair Go cannot parse included",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/cb?client%5Fsecret=%zz;a=1&b=%41", nil)
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "client%5Fsecret=%zz;a=1&b=%41", got.rawQuery)
+			},
+		},
+		{
+			name: "no query is an empty raw query",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/cb", nil)
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Empty(t, got.rawQuery)
 			},
 		},
 		{

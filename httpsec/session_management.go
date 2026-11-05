@@ -1,6 +1,8 @@
 package httpsec
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
@@ -10,6 +12,17 @@ import (
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/session"
 )
+
+// sessionManagementBodyLimit is how many body bytes ending the other sign-ins
+// reads: one small JSON document.
+const sessionManagementBodyLimit int64 = 4 << 10
+
+// textSessionManagementUnreadable is the text a body the transport failed to
+// deliver is refused behind: the transport's own text is not the library's.
+const textSessionManagementUnreadable = "httpsec: the request could not be read"
+
+// userRequestGrantCause is the cause the user's own choice revokes grants with.
+const userRequestGrantCause = "user_request"
 
 // DefaultSessionManagementPrefix is where EnableSessionManagement answers
 // when the consumer names no prefix (WithSessionManagementPrefix).
@@ -56,6 +69,10 @@ type SignInEndResponder func(ex *Exchange) error
 type sessionManagement struct {
 	sessions *session.Sessions
 	now      func() time.Time
+
+	// grants is the chain's provider, handed over at assembly, and nil on a
+	// chain without one, which offers no choice to revoke application access.
+	grants userGrantRevoker
 
 	prefix  string
 	window  time.Duration
@@ -143,6 +160,20 @@ func WithSignInEndResponder(fn SignInEndResponder) SessionManagementOption {
 //	DELETE /sessions/{handle} ends that sign-in's family (session.Sessions.EndSignIn)
 //	DELETE /sessions          ends every sign-in but the current one (session.Sessions.EndOtherSignIns)
 //
+// On a chain with EnableOIDCProvider, ending every other sign-in also takes the
+// user's choice to revoke application access, a JSON body of
+// {"revoke_application_access":true}. Off by default: with no body, or false, the
+// user's grants with offline access survive, and only the grants the ended
+// sign-ins gave without it end with them. When chosen, every grant of the user
+// ends, offline access included and those from the current sign-in, while the
+// current sign-in itself is kept. A body that cannot be read as that document is
+// ErrMalformedRequest (400) and one over 4 KiB ErrRequestTooLarge, each with
+// nothing ended. The other sign-ins end first, so a provider outage cannot keep
+// one alive: the failure then answers as the chain's handling does, 500 by
+// default, with them ended, and the same request revokes once the provider
+// recovers. Without a provider there is nothing to revoke, and the body is not
+// read.
+//
 // A sign-in is a session family, so a renewed session is one sign-in, and its
 // handle is the family identifier: never a session identifier, which no
 // response carries. The sign-in the request's own session belongs to is
@@ -215,6 +246,7 @@ func EnableSessionManagement(opts ...SessionManagementOption) Option {
 			}
 
 			m.sessions = c.sessions
+			m.grants = c.grantRevoker()
 
 			return nil
 		})
@@ -344,6 +376,11 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 		return m.respEnd(ex)
 	}
 
+	revokeAccess, err := m.revokeAccessChosen(ex.Request)
+	if err != nil {
+		return err
+	}
+
 	n, err := m.sessions.EndOtherSignIns(ex.Context(), s.UserID, s)
 	if err != nil {
 		return err
@@ -355,7 +392,42 @@ func (m *sessionManagement) Intercept(ex *Exchange, next Next) error {
 		emitEvent(ex.Context(), sessionEvent(event.SignInEnded, event.OutcomeSuccess, s))
 	}
 
+	if revokeAccess {
+		if err := m.grants.RevokeUserGrants(ex.Context(), s.UserID, userRequestGrantCause); err != nil {
+			return err
+		}
+	}
+
 	return m.respEnd(ex)
+}
+
+// revokeAccessChosen reads the user's choice to revoke application access out of
+// the body of a request to end their other sign-ins. A chain without a provider
+// offers no such choice, and does not read the body.
+func (m *sessionManagement) revokeAccessChosen(r Request) (bool, error) {
+	if m.grants == nil {
+		return false, nil
+	}
+
+	body, err := r.Body(sessionManagementBodyLimit)
+
+	switch {
+	case errors.Is(err, ErrRequestTooLarge):
+		return false, ErrRequestTooLarge
+	case err != nil:
+		return false, refusedAs(ErrMalformedRequest, textSessionManagementUnreadable, err)
+	case len(bytes.TrimSpace(body)) == 0:
+		return false, nil
+	}
+
+	var doc struct {
+		RevokeApplicationAccess bool `json:"revoke_application_access"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return false, ErrMalformedRequest
+	}
+
+	return doc.RevokeApplicationAccess, nil
 }
 
 // signInListDocument is the listing's default answer. Its member names are

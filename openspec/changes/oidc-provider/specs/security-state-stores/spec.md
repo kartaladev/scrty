@@ -55,15 +55,22 @@ A grant store SHALL end sign-ins in one operation, selected by family, by user, 
 - **WHEN** sign-in `s-1`, from which `billing-web` and `billing-ios` hold grants, is ended once by the chain's logout and once by the session manager's report
 - **THEN** the first operation returns both grants, and the second returns none
 
-### Requirement: Ending a sign-in reaches its codes and browser sessions
-The same operation SHALL delete the matching browser sessions, and SHALL record a revocation for the grant named by each matching unspent code that does not hold `offline_access`. Revoking every grant of a user, or of a user and client, SHALL record one for each such code whether or not it holds `offline_access`.
+### Requirement: Ending a sign-in reaches its codes
+The same operation SHALL record a revocation for the grant named by each matching unspent code that does not hold `offline_access`, or that belongs to a client tied to its sign-in. That revocation SHALL carry the mark of having outlived the sign-in, and a grant stored over it SHALL keep both. Revoking every grant of a user, or of a user and client, SHALL record one for each such code whether or not it holds `offline_access`.
 
 #### Scenario: Outstanding code
 - **WHEN** a sign-in ends while an unspent code without `offline_access` from it is outstanding, and the exchange then stores its grant
 - **THEN** the grant is stored revoked
 
+#### Scenario: Outstanding offline code of a client tied to its sign-in
+- **WHEN** a sign-in ends while an unspent code with `offline_access`, of a client tied to its sign-in, is outstanding, and the exchange then stores its grant
+- **THEN** the grant is stored revoked, and a second report of that end returns nothing
+
+### Requirement: A browser session store deletes by sign-in
+A browser session store SHALL delete the sessions matching any selector a sign-in can end by. The provider SHALL call it whenever it ends a sign-in.
+
 #### Scenario: Browser session of the sign-in
-- **WHEN** a sign-in ends by any selector
+- **WHEN** the provider ends a sign-in by any selector
 - **THEN** its browser sessions can no longer be loaded
 
 ### Requirement: A grant records the sign-in it came from
@@ -74,7 +81,11 @@ A grant SHALL record the family of the sign-in it came from, and the upstream is
 - **THEN** `g-1` is revoked when it does not hold `offline_access`, and returned
 
 ### Requirement: Expired provider records are swept
-Expired pending requests, browser sessions, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. The orphan pass SHALL remove only a grant of a client that was issued a refresh token and whose lineage is missing, never a grant recorded to hold none. A revoked grant SHALL be kept until every code that could still name it has expired.
+Expired pending requests, browser sessions, codes, opaque access tokens, assertion identifiers, and grants past their deadlines or revoked SHALL be removable by the expiry sweep. A grant SHALL NOT be removed because its lineage is missing: it stays until its own deadline, so that an end of its sign-in still reaches its client. A revoked grant SHALL be kept until every code that could still name it has expired.
+
+#### Scenario: A grant whose lineage went idle
+- **WHEN** a grant's lineage has passed its idle timeout and been swept, the grant is unexpired, and its sign-in then ends
+- **THEN** the grant is still stored, and its client is told of the end
 
 #### Scenario: Sweep
 - **WHEN** the sweep runs after pending requests and codes expired

@@ -9,6 +9,10 @@ Defines how a relying party asks the provider to log the user out, and how the p
 ### Requirement: The end-session endpoint ends the browser's sign-in without asking only on a matching hint
 The end-session endpoint SHALL accept GET and form POST with `id_token_hint`, `logout_hint`, `client_id`, `post_logout_redirect_uri`, `state` and `ui_locales`. A valid hint SHALL be an ID token this provider issued, judged by its type, signature and issuer, expiry ignored, whose audience equals `client_id` when given. When a valid hint's `sid` names the sign-in of the browser's session, the provider SHALL end that sign-in as a logout does, without asking.
 
+#### Scenario: Keys unavailable while judging a logout hint
+- **WHEN** an end-session request carries a hint and a `post_logout_redirect_uri`, and the verification keys cannot be read
+- **THEN** the failure is answered at the provider, nothing ends, and the browser is not redirected to the relying party
+
 #### Scenario: Logout with a matching hint
 - **WHEN** a relying party sends the browser to the end-session endpoint with a valid hint naming the browser session's sign-in
 - **THEN** that sign-in ends, and the grants without `offline_access` from it are revoked
@@ -134,6 +138,17 @@ Deliveries SHALL run on a bounded pool that survives a delivery ending its gorou
 #### Scenario: User hangs up during logout
 - **WHEN** the request that ended a sign-in is cancelled as its delivery starts
 - **THEN** the delivery still runs
+
+### Requirement: A failed logout can be retried and finishes
+An end through the end-session endpoint or its confirmation SHALL end grants first, first-party sessions next, and the browser session last, so that a failure answers an error, leaves the browser able to retry, and a retry from it finishes the end. It SHALL NOT answer success while a grant or session of that sign-in lives on.
+
+#### Scenario: A grant store failure, then a retry
+- **WHEN** a logout confirmation fails because the grant store is down, and the browser retries once it is back
+- **THEN** the first attempt answers an error, and after the retry the sign-in's grants and sessions have ended
+
+#### Scenario: A session store failure, then a retry
+- **WHEN** a logout confirmation ends the grants, but deleting the first-party sessions fails, and the browser retries
+- **THEN** the first attempt answers an error and clears no cookie, and after the retry the sign-in's sessions have ended
 
 ### Requirement: Logout tokens follow the back-channel logout format
 A logout token SHALL be a signed JWT with header `typ` `logout+jwt`. It SHALL carry `iss`, `aud` the client's identifier, `iat`, `exp` no more than 2 minutes after `iat`, a unique `jti`, `events`, `sub`, and `sid` of the ended sign-in, equal to the `sid` of the ID tokens from it. The `events` member SHALL hold exactly `http://schemas.openid.net/event/backchannel-logout` with an empty object. It SHALL NOT carry `nonce`. It SHALL be signed with the client's ID token algorithm.

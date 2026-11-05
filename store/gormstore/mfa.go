@@ -384,9 +384,9 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 		return time.Time{}, false, failed(op, err)
 	}
 	var until time.Time
-	err = q.Raw(pgschema.EnrolmentChargeVerifyAttempt,
+	err = scanRow(q.Raw(pgschema.EnrolmentChargeVerifyAttempt,
 		string(user), storekit.Time(at), storekit.Time(at.Add(window).Truncate(time.Microsecond)), limit,
-	).Row().Scan(&until)
+	), &until)
 	if errors.Is(err, sql.ErrNoRows) {
 		return time.Time{}, false, nil
 	}

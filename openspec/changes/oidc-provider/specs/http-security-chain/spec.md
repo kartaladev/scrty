@@ -45,12 +45,46 @@ Building a chain with the provider SHALL fail with a configuration error naming 
 - **WHEN** the consumer sets the provider's end-session path to the chain's logout path
 - **THEN** construction fails with a configuration error
 
+### Requirement: A provider path is one that can be published as served
+Building a chain SHALL fail with a configuration error naming the option when a provider path or prefix holds a character that would need escaping in a URL path, because it could then not be published and compared as served.
+
+#### Scenario: A space in the prefix
+- **WHEN** the consumer sets the provider's prefix to `/o p`
+- **THEN** construction fails with a configuration error naming the option
+
+### Requirement: The provider and the chain must agree
+Building a chain with the provider SHALL fail with a configuration error naming the provider when:
+- the JWKS endpoint publishes a different signing-key manager from the one the provider signs with;
+- the provider accepts assertions naming a token endpoint other than its public URL;
+- a client the provider can list requires a binding the chain does not verify;
+- the provider and the chain disagree on whether DPoP is on.
+
+#### Scenario: A consumer's own registry
+- **WHEN** a client in a consumer's own registry requires a binding the chain does not verify
+- **THEN** the chain builds, as such a registry cannot be listed, and the client is refused at the token endpoint
+
+#### Scenario: Keys that differ
+- **WHEN** the provider signs with one `*signingkey.Keys`, and the JWKS endpoint publishes another
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: A wrapped key source
+- **WHEN** the consumer wraps the signing-key manager the JWKS endpoint publishes, and gives the wrapper to the provider
+- **THEN** the chain builds
+
 ### Requirement: The provider requires the protections its pages rest on
 The provider also requires two protections its pages rest on. CSRF protection SHALL be enabled while browser sessions are on, because the consent stage and the logout confirmation then rest on a cookie. Security headers SHALL be enabled, unless the consumer states that its login and consent pages carry `frame-ancestors` themselves. Otherwise construction SHALL fail with a configuration error naming the provider.
 
 #### Scenario: Browser sessions without CSRF protection
 - **WHEN** the provider is enabled with its default browser sessions on a chain without CSRF protection
 - **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: Security headers that allow framing
+- **WHEN** the provider is enabled with security headers whose document policy has no `frame-ancestors`, is report-only, or allows `*`, a scheme, a wildcard host or a plain `http` origin
+- **THEN** construction fails with a configuration error naming the provider
+
+#### Scenario: A named origin may frame the pages
+- **WHEN** the document policy's `frame-ancestors` holds only `'self'` and `https://ext.example.org:8000`
+- **THEN** the chain builds
 
 #### Scenario: Security headers missing
 - **WHEN** the provider is enabled on a chain without security headers, and the consumer has not stated that its pages carry `frame-ancestors`

@@ -94,6 +94,10 @@ type Passkeys struct {
 	keepOnRemoval bool
 	keepOnClone   bool
 
+	grants            GrantRevoker
+	grantsSet         bool
+	keepGrantsOnClone bool
+
 	registration   *onetime.Tokens
 	login          *onetime.Tokens
 	purgeMu        sync.Mutex
@@ -323,6 +327,8 @@ func (m *Passkeys) validate() error {
 		missing = "unknown clone response"
 	case m.clonePolicySet && m.clonePolicy == nil:
 		missing = "the clone policy must not be nil"
+	case m.grantsSet && nilcheck.IsNil(m.grants):
+		missing = "the grant revoker must not be nil"
 	case m.clockSet && nilcheck.IsNil(m.clock):
 		missing = "the clock must not be nil"
 	case m.randomSet && nilcheck.IsNil(m.random):
@@ -549,6 +555,7 @@ const (
 	msgRefused          = "passkey: assertion refused"
 	msgClone            = "passkey: suspected clone"
 	msgSessionsNotEnded = "passkey: the user's sessions could not all be ended"
+	msgGrantsNotRevoked = "passkey: the user's application grants could not be revoked"
 
 	msgUnsettledNotRemoved = "passkey: a passkey whose registration failed after it was stored could not be removed"
 )

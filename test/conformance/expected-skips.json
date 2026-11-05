@@ -1,0 +1,8 @@
+[
+  {
+    "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "*oidcc.json",
+    "comment": "The request parameter is OPTIONAL, and an OP that does not support it MUST return request_not_supported (OIDC Core 1.0 section 6.1), which the provider does; the suite then reports the module as skipped."
+  }
+]

@@ -11,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/oidcprovider"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -44,6 +45,10 @@ type EndSessionBuilder interface {
 // nothing is deleted and the caller gets a 500.
 type logout struct {
 	sessions *session.Sessions
+
+	// provider is the OpenID Provider on the same chain, handed over by the
+	// chain's wiring, and nil for none.
+	provider *oidcprovider.Provider
 
 	// endSession is the optional end-session step, nil for none.
 	endSession EndSessionBuilder
@@ -83,6 +88,8 @@ func (l *logout) wire(c *Chain) {
 // A session the store could not delete is refused behind fixed text, never the
 // store's own, and the store's error still matches through errors.Is and
 // errors.As.
+//
+// With the OpenID Provider on the chain, the sign-in ends there first (see end).
 func (l *logout) Intercept(ex *Exchange, next Next) error {
 	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path {
 		return next(ex)
@@ -142,11 +149,26 @@ func (l *logout) clearBrowserData(ex *Exchange) {
 // with an identifier inside its renewal window does not leave the successor
 // live. Every stored session belongs to a family; one with none is refused by
 // the manager rather than deleted alone. Nothing left to end is not an error.
+//
+// With the OpenID Provider on the chain, the sign-in ends there first: a grant
+// that cannot be revoked refuses the logout with the session still in place, so
+// asking again finishes it, where the manager's report could only log the failure
+// with the session already gone. The clients to tell are handed on without waiting,
+// so a delivery that fails costs the logout nothing. The manager's report of the
+// logout then finds nothing left to end, and tells no client twice.
 func (l *logout) end(ctx context.Context, s *session.Session) error {
 	// Detached so a client hanging up cannot leave the family live;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
 	// still joined.
-	n, err := l.sessions.Logout(context.WithoutCancel(ctx), s.UserID, s.FamilyID)
+	detached := context.WithoutCancel(ctx)
+
+	if l.provider != nil && !s.FamilyID.IsZero() {
+		if _, err := l.provider.EndSignIn(detached, oidcprovider.SignInSelector{Family: s.FamilyID}); err != nil {
+			return err
+		}
+	}
+
+	n, err := l.sessions.Logout(detached, s.UserID, s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrNotFound) {
 		return err
 	}
@@ -248,6 +270,15 @@ type LogoutOption func(*logout) error
 // default is nil: no end-session step, and every logout answers as above,
 // unless EnableOIDCLogin is on the chain, which supplies its manager's step
 // when this one is nil (WithOIDCRPInitiatedLogout turns that off).
+//
+// With EnableOIDCProvider on the same chain, the sign-in ends through the provider
+// before its sessions are deleted: its grants without offline_access are revoked,
+// its browser sessions go, and the clients that held a grant from it are told. A
+// store of the provider's that fails refuses the logout with
+// oidcprovider.ErrDependency, 500 by default, with the session still in place, so
+// that the logout can be retried. A client that could not be told fails nothing. This
+// has no override, because a logout that left an online grant alive would report
+// an end that had not happened.
 func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
 
@@ -274,6 +305,13 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 
 		c.useSessions(d.Sessions)
 		c.wire(l.wire)
+		// Read once every option has applied, as the provider may be enabled after
+		// logout.
+		c.wire(func(*Chain) {
+			if c.oidcProvider != nil {
+				l.provider = c.oidcProvider.provider
+			}
+		})
 		c.register(l, OrderLogout)
 
 		return nil

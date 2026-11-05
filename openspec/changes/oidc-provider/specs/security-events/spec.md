@@ -18,6 +18,10 @@ Each event SHALL name the client and the user when known. It SHALL NOT carry a c
 - **WHEN** a refresh token is reused after its grace window
 - **THEN** one event reports the reuse with the client and user, and one reports the grant revoked for reuse, and neither carries the token
 
+#### Scenario: Reuse of a grant already revoked
+- **WHEN** a refresh token is reused after its grace window, on a grant something else has already revoked
+- **THEN** one event reports the reuse, and no second revocation is reported
+
 #### Scenario: No sink
 - **WHEN** no sink is configured and a code is replayed
 - **THEN** no event is emitted, and the replay is still refused and still revokes the grant

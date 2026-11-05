@@ -64,6 +64,12 @@ var errNilLink = errors.New("httpsec: the link store returned no link and no err
 // provider asked to end is the safe outcome, and the deletes are idempotent,
 // so a provider that retries because it never heard the answer ends nothing
 // twice.
+//
+// With EnableOIDCProvider on the chain, the sessions it ends also end at the
+// provider: the session manager reports each to it (session.WithEndObserver, which
+// the chain requires), so the grants without offline_access from those sign-ins are
+// revoked and their clients told. The answer does not change, and a failure there is
+// the provider's to log: the sessions have ended, and a retry would find none.
 func (i *oidcInterceptor) backchannel(ex *Exchange, provider string) error {
 	ctx := ex.Context()
 

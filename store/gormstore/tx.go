@@ -42,8 +42,10 @@ type txKey struct{}
 // stores never commit or roll back tx: its outcome belongs to the caller, and
 // so does the outcome of every store write made inside it.
 //
-// The stores run on tx's connection only. Conditions, a logger or any other
-// session state chained on tx do not carry into their statements.
+// The stores run on tx's connection, with tx's handle configuration: its
+// gorm.Config, such as DefaultContextTimeout, and its callbacks and plugins.
+// Statement state chained on tx (conditions, a model, selected columns) and
+// its logger do not carry into their statements.
 //
 // A nil tx attaches nothing: ctx is returned unchanged, so a transaction an
 // outer WithTx attached still applies. A store configured with WithTxResolver
@@ -88,6 +90,16 @@ func WithTx(ctx context.Context, tx *gorm.DB) context.Context {
 // The handle returned is a fresh session on the resolved one's connection
 // (see opSession), never the resolved handle itself.
 func (c *config) conn(ctx context.Context) (q *gorm.DB, ambient bool, err error) {
+	q, ambient, err = c.resolveConn(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return c.boundTo(q), ambient, nil
+}
+
+// resolveConn is conn's resolution, before the handle is bound to the store's table.
+func (c *config) resolveConn(ctx context.Context) (q *gorm.DB, ambient bool, err error) {
 	if c.resolver != nil {
 		h, ok := c.resolver(ctx)
 		if !ok {
@@ -198,7 +210,7 @@ func readCommitted(ctx context.Context, db *gorm.DB, fn func(*gorm.DB) error) er
 // returned as the driver gave it.
 func requireReadCommitted(ctx context.Context, q *gorm.DB) error {
 	var level string
-	if err := savepointSession(ctx, q).Raw(pgschema.CurrentIsolation).Row().Scan(&level); err != nil {
+	if err := scanRow(savepointSession(ctx, q).Raw(pgschema.CurrentIsolation), &level); err != nil {
 		return err
 	}
 	if !pgschema.ReadCommittedOrWeaker(level) {

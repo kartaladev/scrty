@@ -706,6 +706,50 @@ func (f *constructionFixture) observed(t *testing.T) bool {
 	return f.store.loads.Load() > 0
 }
 
+// TestSessionSignals_Construction_RefusedByLaterCheck pins that a build refused by a check
+// that runs after the wiring, here the provider's reporting check, leaves no observer on
+// the manager. The row without signals is the control: it shows the manager is one that
+// observed reports on correctly.
+func TestSessionSignals_Construction_RefusedByLaterCheck(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		signals bool
+	}
+
+	cases := []testCase{
+		{name: "without signals"},
+		{name: "with signals", signals: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newConstructionFixture(t)
+			w := newGrantWorld(t)
+
+			opts := []httpsec.Option{
+				f.bearer,
+				httpsec.EnableJWKSEndpoint(tokenKeys()),
+				httpsec.EnableSecurityHeaders(),
+				httpsec.EnableCSRFProtection(),
+				httpsec.EnableOIDCProvider(w.p),
+			}
+			if tc.signals {
+				opts = append(opts, httpsec.EnableSessionSignals(httpsec.SessionSignals{}))
+			}
+
+			_, err := httpsec.New(opts...)
+
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.ErrorContains(t, err, "does not report sign-in ends to the provider")
+			assert.False(t, f.observed(t), "a failed build left an observer on the manager")
+		})
+	}
+}
+
 // TestSessionSignals_Construction_ConsumerObserverStillTold pins that a manager's own
 // observer is told after the chain added its hub, and that the positive control of
 // observed holds.

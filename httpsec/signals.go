@@ -895,9 +895,10 @@ func (e *sessionSignals) settleBus(option string) error {
 	return nil
 }
 
-// wire is the chain's last step for the stream. Nothing after it can fail, which is
-// why the hub joins the session manager here, so a failed build leaves no observer on a
-// manager the consumer goes on using.
+// wire is the chain's last step for the stream. The hub joins the session manager only
+// as a commit, which runs after every check that can refuse the build, so a failed build
+// leaves no observer on a manager the consumer goes on using. The checks therefore never
+// see the hub among a manager's observers.
 func (e *sessionSignals) wire(c *config, ch *Chain) {
 	e.log = ch.logger
 	e.sampler = ch.sampler
@@ -914,7 +915,7 @@ func (e *sessionSignals) wire(c *config, ch *Chain) {
 	ch.perRequest.signals = e
 
 	// It refuses only a nil observer, and the hub is not one.
-	_ = e.sessions.AddEndObserver(e.hub)
+	c.commit(func() { _ = e.sessions.AddEndObserver(e.hub) })
 }
 
 // signalsEndpoint is the chain's stream endpoint, and nil on a chain without one, a zero-value

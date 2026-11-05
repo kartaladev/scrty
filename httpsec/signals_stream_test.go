@@ -2071,7 +2071,7 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 			},
 		},
 		{
-			name:  "a delete but one whose kept session could not be read holds no all_ended for the stream it spared",
+			name:  "a delete but one whose kept session could not be read ends nothing, so holds no all_ended for that stream",
 			setup: setup,
 			assert: func(t *testing.T, r *streamRig) {
 				b, stream := providerLogoutOfAnother(t, r)
@@ -2079,8 +2079,9 @@ func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
 				fail := func(context.Context) error { return errors.New("the store is down") }
 				r.loadHook.Store(&fail)
 				r.act(func() {
-					_, err := r.sessions.DeleteByUserExcept(t.Context(), "u-1", b.ID)
-					require.NoError(t, err)
+					n, err := r.sessions.DeleteByUserExcept(t.Context(), "u-1", b.ID)
+					require.Error(t, err, "without the kept family the report would end the sign-in being kept")
+					require.Zero(t, n)
 				})
 				r.loadHook.Store(nil)
 				advance(time.Second)

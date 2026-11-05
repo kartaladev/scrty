@@ -94,6 +94,16 @@ func (r stubRequest) QueryValues(n string) []string {
 	}
 	return []string{v}
 }
+
+// RawQuery spells the single-valued query map once, in key order.
+func (r stubRequest) RawQuery() string {
+	values := url.Values{}
+	for k, v := range r.query {
+		values.Set(k, v)
+	}
+
+	return values.Encode()
+}
 func (r stubRequest) ClientIP() string { return r.clientIP }
 func (r stubRequest) Host() string     { return r.host }
 func (r stubRequest) Secure() bool     { return r.secure }

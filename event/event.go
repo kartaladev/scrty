@@ -39,7 +39,29 @@ type Event struct {
 	// of the session the outcome concerns, and empty when it concerns none.
 	// It is never the identifier itself, which is a credential.
 	Session string
+
+	// Client is the identifier of the OAuth client the outcome concerns, as
+	// the OpenID provider registered it, and empty where none applies or none
+	// is known: a client authentication refused for an identifier the
+	// registry does not hold names no client, as a failed login names no user.
+	// A client identifier is public, never a credential.
+	Client string
+
+	// Cause is why the outcome came about, in a fixed word, and empty where
+	// the name says it all. It is the cause a grant was revoked for, the reason
+	// a back-channel logout delivery failed, or CauseGrantsNotRevoked on a
+	// RecoveryCompleted whose grants could not be revoked. It is never the text
+	// of an error, and never a value a request supplied. The one exception to the
+	// fixed word is a cause a consumer named when it revoked a user's grants:
+	// that is the consumer's own, and is carried unchanged.
+	Cause string
 }
+
+// CauseGrantsNotRevoked is the Cause of a RecoveryCompleted a chain reports for a
+// recovery that completed with its second grant revocation failed
+// (recovery.Result.GrantsNotRevoked). The GrantRevokeFailed beside it names the
+// user.
+const CauseGrantsNotRevoked = "grants_not_revoked"
 
 // Sink receives security events.
 //
@@ -212,7 +234,9 @@ const (
 	RecoveryStarted = "scrty_recovery_started"
 
 	// RecoveryCompleted is an account recovery completed, and its
-	// recovery-pending session stored.
+	// recovery-pending session stored. Its Cause is CauseGrantsNotRevoked when
+	// the chain reports a recovery whose second grant revocation failed, and
+	// empty otherwise.
 	RecoveryCompleted = "scrty_recovery_completed"
 
 	// RecoveryRefused is an account recovery's completion refused for its
@@ -258,6 +282,88 @@ const (
 
 	// SigningKeyRotated is a new signing key minted and stored by rotation.
 	SigningKeyRotated = "scrty_signing_key_rotated"
+
+	// GrantCreated is a grant stored for an authorization code exchanged, by
+	// the OpenID provider, reported once everything the exchange answers with
+	// is stored too, so that a failure handing out nothing reports nothing. It
+	// names the client and the user.
+	GrantCreated = "scrty_grant_created"
+
+	// ConsentGiven is a user's consent to a client answered at the consent
+	// stage, and the authorization code issued on it. It names the client and
+	// the user.
+	ConsentGiven = "scrty_consent_given"
+
+	// ConsentDenied is a user's denial of a client at the consent stage, a
+	// failure outcome as a refusal is. It names the client and the user.
+	ConsentDenied = "scrty_consent_denied"
+
+	// ConsentRevoked is a user's consent to a client withdrawn, reported
+	// beside the revocation of the grants that came of it (GrantRevoked). It
+	// names the client and the user.
+	ConsentRevoked = "scrty_consent_revoked"
+
+	// ClientAuthRefused is a client authentication the OpenID provider refused
+	// as invalid_client: a wrong secret, an assertion that does not verify or
+	// was replayed, a method the client did not register. It names the client
+	// only when the registry holds the identifier presented, and no user. A
+	// registry or store that failed, and a request refused as malformed
+	// (invalid_request), are not reported.
+	ClientAuthRefused = "scrty_client_auth_refused"
+
+	// CodeReplayed is an authorization code presented after it was spent, by
+	// the client it was issued to, reported once the grant it created stands
+	// revoked. Each such presentation is one, and the one that revoked the
+	// grant is reported beside GrantRevoked with the cause code_replay. It names
+	// the client and the user.
+	CodeReplayed = "scrty_code_replayed"
+
+	// RefreshReused is a refresh token presented after its successor took
+	// over and its grace window ended, reported once the grant stands revoked,
+	// beside GrantRevoked with the cause reuse unless something else had
+	// revoked it first. It names the client and the user, never the token. A
+	// refresh token is no session, so it never reports AuthnTokenReuse too.
+	RefreshReused = "scrty_refresh_reused"
+
+	// GrantRevoked is a grant of the OpenID provider revoked, one event per
+	// grant, by the first revocation alone, as a later one changes nothing,
+	// with its cause in Cause: reuse, code_replay, sign_in_ended,
+	// consent_revoked, revoked_by_client, user_disabled, or the cause a
+	// consumer named when it revoked a user's grants, which it carries
+	// unchanged. It names the client and the user.
+	GrantRevoked = "scrty_grant_revoked"
+
+	// LogoutDeliveryFailed is a back-channel logout token the OpenID provider
+	// did not deliver to a client that registered a URI for it. Cause is one
+	// of client, sign, post, status, delivery, timeout, panic, goexit, busy,
+	// queue_full or shutdown. It names the client and the user, and never the
+	// logout token, the URI or the error. A drop for a client with no URI to
+	// tell is not reported, and the delivery's failure never undoes the
+	// logout.
+	LogoutDeliveryFailed = "scrty_logout_delivery_failed"
+
+	// GrantEndFailed is a sign-in's end the OpenID provider could not carry
+	// through to its grants or browser sessions: the sign-in had already ended,
+	// and the grants it should have ended may stand until a later end selects
+	// them. It names the user when the end's report does, which an end of
+	// one family does not, and carries no cause, as a store's error is
+	// never reported. The failure never undoes or delays the sign-in's end.
+	GrantEndFailed = "scrty_grant_end_failed"
+
+	// GrantRevokeFailed is a user's application grants that could not be revoked
+	// where nothing asks again. It names the user and carries no cause, as a
+	// revoker's error is never reported, and the failure is logged either way.
+	//
+	// It reports two things. A suspected passkey clone: the credential is
+	// suspended and the login refused, but the grants stand, and suspending
+	// happens once. It is reported on a request a chain watches, as the passkey
+	// manager has no sink of its own, and it never changes the refusal. And an
+	// account recovery's second revocation, after its proofs were spent: the
+	// recovery completes, and recovery.Result.GrantsNotRevoked says so. It is
+	// reported through the recoverer's sink (recovery.WithSecurityEvents), or the
+	// chain's when a chain runs it. A recovery's first revocation is not reported:
+	// it spends nothing but an MFA code, if one was a proof, so the user can retry it.
+	GrantRevokeFailed = "scrty_grant_revoke_failed"
 )
 
 // Names returns every event name the library reports: the OWASP Logging
@@ -273,6 +379,8 @@ func Names() []string {
 		MFAVerified, MFAVerifyFail, MFAEnrolled, MFARemoved, PasskeyRegistered, PasskeyRemoved,
 		RecoveryStarted, RecoveryCompleted, RecoveryRefused, Reauthenticated, ReauthenticationFail,
 		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
-		SigningKeyRotated,
+		SigningKeyRotated, GrantCreated, ConsentGiven, ConsentDenied, ConsentRevoked,
+		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
+		GrantEndFailed, GrantRevokeFailed,
 	}
 }

@@ -370,13 +370,54 @@ func (c *Client) Get(ctx context.Context, rawURL string, header http.Header) (*R
 // most here: a 307 or 308 answer that would resend either somewhere else is
 // refused before the redirected request goes out.
 func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values, header http.Header) (*Response, error) {
+	return c.do(ctx, http.MethodPost, rawURL, formHeader(header), form.Encode())
+}
+
+// formHeader is header, left as it was given, with the form content type set.
+func formHeader(header http.Header) http.Header {
 	h := header.Clone()
 	if h == nil {
 		h = http.Header{}
 	}
 	h.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	return c.do(ctx, http.MethodPost, rawURL, h, form.Encode())
+	return h
+}
+
+// PostFormStatus sends form as PostForm does, under every check PostForm makes,
+// and answers with the status alone. No byte of the response body is read, so
+// neither the bound on a body nor a body breaking off can fail the call: it is
+// for a caller whose endpoint is judged by its status, and whose answer's content
+// would only cost it the verdict.
+func (c *Client) PostFormStatus(ctx context.Context, rawURL string, form url.Values, header http.Header) (int, error) {
+	var status int
+	err := c.exchange(ctx, http.MethodPost, rawURL, formHeader(header), form.Encode(), func(res *http.Response) error {
+		status = res.StatusCode
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return status, nil
+}
+
+// WithoutRedirects returns a copy of the client that follows no redirect, whatever
+// cap it was built with, with every other check and bound the same. A redirect
+// answer fails the call before anything is sent again, as WithMaxRedirects(0) does.
+//
+// It is for a component whose protocol forbids a redirect and that was handed a
+// client built elsewhere. The client it is called on keeps its own cap, and a
+// CheckRedirect the consumer gave it stays in place behind the cap.
+func (c *Client) WithoutRedirects() *Client {
+	copied := *c
+	copied.maxRedirects = 0
+	if c.hc != nil { // The zero value has no client to copy, and sends nothing.
+		copied.hc = copied.install(c.hc)
+	}
+
+	return &copied
 }
 
 // AllowsScheme reports whether the client sends requests to URLs with this
@@ -439,8 +480,41 @@ func (c *Client) do(
 	header http.Header,
 	body string,
 ) (*Response, error) {
-	if err := c.checkTarget(rawURL); err != nil {
+	var out *Response
+	err := c.exchange(ctx, method, rawURL, header, body, func(res *http.Response) error {
+		// One byte more than the bound is read, so that a document exactly at it is
+		// accepted and the first byte over it is seen without reading the rest.
+		read, err := io.ReadAll(io.LimitReader(res.Body, c.maxBytes+1))
+		if err != nil {
+			return fmt.Errorf("outbound: reading the response from %s: %w", rawURL, err)
+		}
+		if int64(len(read)) > c.maxBytes {
+			return fmt.Errorf(
+				"%w: the response from %s is longer than the %d byte limit, so none of it is used",
+				ErrRefused, rawURL, c.maxBytes)
+		}
+		out = &Response{Status: res.StatusCode, Header: res.Header, Body: read}
+
+		return nil
+	})
+	if err != nil {
 		return nil, err
+	}
+
+	return out, nil
+}
+
+// exchange sends one request under every check, and hands the response to answer
+// only once it has passed them, still within the time bound.
+func (c *Client) exchange(
+	ctx context.Context,
+	method, rawURL string,
+	header http.Header,
+	body string,
+	answer func(*http.Response) error,
+) error {
+	if err := c.checkTarget(rawURL); err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -448,7 +522,7 @@ func (c *Client) do(
 
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, strings.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("outbound: building the request: %w", err)
+		return fmt.Errorf("outbound: building the request: %w", err)
 	}
 	for name, values := range header {
 		for _, v := range values {
@@ -458,25 +532,13 @@ func (c *Client) do(
 
 	res, err := c.hc.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("outbound: %s %s: %w", method, rawURL, err)
+		return fmt.Errorf("outbound: %s %s: %w", method, rawURL, err)
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	if err := c.checkResponse(res, rawURL); err != nil {
-		return nil, err
+		return err
 	}
 
-	// One byte more than the bound is read, so that a document exactly at it is
-	// accepted and the first byte over it is seen without reading the rest.
-	read, err := io.ReadAll(io.LimitReader(res.Body, c.maxBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("outbound: reading the response from %s: %w", rawURL, err)
-	}
-	if int64(len(read)) > c.maxBytes {
-		return nil, fmt.Errorf(
-			"%w: the response from %s is longer than the %d byte limit, so none of it is used",
-			ErrRefused, rawURL, c.maxBytes)
-	}
-
-	return &Response{Status: res.StatusCode, Header: res.Header, Body: read}, nil
+	return answer(res)
 }

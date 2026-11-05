@@ -661,7 +661,7 @@ func (u *supersession) Begin(ctx context.Context, _ DBTX) (DBTX, error) {
 	}
 	u.tx = tx
 
-	return tx, nil
+	return u.s.c.boundTo(tx), nil
 }
 
 func (u *supersession) Commit(context.Context) error {

@@ -1,0 +1,14 @@
+# The build context of the conformance OP (test/conformance/compose.yaml) is the repository
+# root. Send only what `go build` of the OP needs: the workspace's modules and go.work.
+#
+# .claude holds a git-ignored reference snapshot that must never leave the working tree, so it
+# is excluded first and by name; keep that line whatever else changes here.
+.claude
+.git
+.github
+.bin
+.idea
+openspec
+tools
+test/conformance
+**/.DS_Store

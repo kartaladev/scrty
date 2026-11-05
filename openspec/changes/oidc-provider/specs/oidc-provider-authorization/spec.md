@@ -175,8 +175,23 @@ A browser already holding a valid flow cookie SHALL keep it, so that requests pa
 - **WHEN** one browser starts two authorization requests in two tabs, and completes the login page in the first tab after the second was parked
 - **THEN** the first tab's resume succeeds, and so does the second's
 
+### Requirement: A form POST with no flow cookie cannot replace the browser's cookie
+A browser does not send a `SameSite=Lax` cookie on a cross-site POST, so a form POST to the authorization or end-session endpoint with no flow cookie SHALL NOT mint one. It SHALL be answered with 303 to the same endpoint, carrying the same parameters in the query, with `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, no `Set-Cookie`, nothing parked and nothing charged to the source's throttle. A form POST that presents a flow cookie SHALL be answered directly.
+
+#### Scenario: Cross-site POST to the end-session endpoint
+- **WHEN** a page on another site submits an empty form POST to the end-session endpoint, in a browser with a request parked in another tab
+- **THEN** the response is 303 to the end-session endpoint with no `Set-Cookie`, and the parked request can still be resumed
+
+#### Scenario: Cross-site POST with a browser session
+- **WHEN** a relying party on another site sends an authorization request by form POST, in a browser with a browser session, and consent is not needed
+- **THEN** the redirected GET is answered from the browser session with a code
+
+#### Scenario: Same-site POST holding the cookie
+- **WHEN** a form POST to the authorization endpoint presents a valid flow cookie
+- **THEN** it is answered directly, with no redirect to the endpoint itself
+
 ### Requirement: The strings a request carries are bounded
-Each string a request carries SHALL be bounded, and a request past a bound SHALL be answered with `invalid_request` and nothing parked. By default `state`, `nonce`, `login_hint` and each `resource` SHALL be at most 2048 bytes and `scope` at most 4096 bytes, each replaceable by the consumer.
+Each string a request carries SHALL be bounded, and a request past a bound SHALL be answered with `invalid_request` and nothing parked. By default `state`, `nonce`, `login_hint` and each `resource` SHALL be at most 2048 bytes, `scope` at most 4096 bytes and `id_token_hint` at most 8192 bytes, each replaceable by the consumer.
 
 #### Scenario: Oversized state
 - **WHEN** a request for a registered client and redirect URI carries a `state` of 1 MiB
@@ -292,8 +307,19 @@ A browser session SHALL expire at the sign-in's absolute deadline, and after the
 - **WHEN** a browser session is not used for longer than the sign-in manager's idle timeout, and an authorization then starts
 - **THEN** the login page is shown
 
+### Requirement: A code answered from a browser session does not outlive its sign-in
+A code answered from a browser session SHALL make no tokens once that sign-in has ended, even when the request overlapped the end, unless the end spares it because it holds `offline_access` for a client that does not end its grants with the sign-in. A code SHALL NOT be released when the browser session could not be looked at after the code was written.
+
+#### Scenario: A request overlapping the end
+- **WHEN** a sign-in's end is in progress, and a silent authorization or a consent answered from its browser session writes a code the end does not spare
+- **THEN** either the request is refused or the code is answered with `invalid_grant` at the token endpoint
+
+#### Scenario: Browser session store failing
+- **WHEN** the browser session cannot be looked at after a silent authorization wrote its code, for a reason other than the session being gone
+- **THEN** no code leaves, and the failure is answered as a dependency failure
+
 ### Requirement: A browser session skips the login stage
-An authorization request whose browser holds a valid browser session SHALL skip the login stage, unless `prompt` includes `login` or `max_age` is not met. The user SHALL be checked as a refresh checks one, and a missing or disabled user SHALL count as no session. When consent is not needed, the browser SHALL be redirected with 303 and the code.
+An authorization request whose browser holds a valid browser session SHALL skip the login stage, unless `prompt` includes `login` or `select_account`, or `max_age` is not met. The user SHALL be checked as a refresh checks one, and a missing or disabled user SHALL count as no session. When consent is not needed, the browser SHALL be redirected with 303 and the code.
 
 #### Scenario: Second relying party in one browser
 - **WHEN** a user signed in through one client's authorization, and a second client with no consent needed starts an authorization in that browser
@@ -354,6 +380,10 @@ When a request carries `id_token_hint`, the provider SHALL accept it only if it 
 #### Scenario: Silent request with a matching hint
 - **WHEN** a request carries `prompt=none` and a hint for the browser session's user, and consent is not needed
 - **THEN** a code is issued, and the ID token carries the same `sub`
+
+#### Scenario: Keys unavailable while judging a hint
+- **WHEN** a request with a valid client and redirect URI carries a hint, and the verification keys cannot be read
+- **THEN** the browser is redirected to the redirect URI with `error=server_error` and the request's `state`, and nothing is parked
 
 #### Scenario: Access token offered as a hint
 - **WHEN** a request carries an access token this provider issued as `id_token_hint`
@@ -426,3 +456,36 @@ Requests to the authorization and resume endpoints SHALL pass through the chain'
 #### Scenario: Requested assurance not met
 - **WHEN** a request carries `acr_values=urn:example:high`, and the sign-in does not meet it
 - **THEN** the request still succeeds, and the view shows the requested values so the consumer's page may ask for more
+
+### Requirement: A request carries only text a durable store can hold
+A request parameter holding a NUL byte or invalid UTF-8 SHALL be refused as `invalid_request`, with nothing parked and without echoing the value, once the client and redirect URI are valid. An unknown parameter is ignored and never stored.
+
+#### Scenario: NUL in the state
+- **WHEN** a request from a valid client and redirect URI has a `state` holding a NUL byte
+- **THEN** it is answered with a redirect carrying `invalid_request`, and nothing is parked
+
+### Requirement: Only a client registered for the code grant reaches the flow
+A client registered without the `authorization_code` grant SHALL be answered with a redirect carrying `unauthorized_client`, with nothing parked, once its redirect URI is valid.
+
+#### Scenario: Refresh-only client
+- **WHEN** a client registered only for `refresh_token` sends an authorization request with a valid redirect URI
+- **THEN** it is answered with a redirect carrying `unauthorized_client`, `state` and `iss`
+
+### Requirement: A resume judges the client as it is now
+Every resume SHALL judge the parked request against the client as read at that moment. If the parked redirect URI is no longer registered, the client lost the code grant, `openid` was parked and may no longer be asked for, or no scope is left, the resume SHALL be refused as an unknown handle, with no redirect. A scope or resource the client may no longer use, and `offline_access` for a client that lost the refresh grant, SHALL be left out, and the request SHALL carry on.
+
+#### Scenario: Redirect URI removed after parking
+- **WHEN** a client stops registering a redirect URI, and a request parked with it resumes
+- **THEN** the resume is refused as an unknown handle, and the browser is not sent to that URI
+
+#### Scenario: Scope withdrawn after parking
+- **WHEN** a client may no longer ask for `profile`, and a request parked with `openid profile` resumes
+- **THEN** the code is issued for `openid` alone
+
+### Requirement: An authentication time in the future is not fresh
+A sign-in whose authentication time is more than 60 seconds ahead of the provider's clock SHALL be refused as needing re-authentication, whatever the request's `prompt` or `max_age`. Within 60 seconds it SHALL count as now.
+
+#### Scenario: A year ahead
+- **WHEN** a sign-in authenticated a year ahead of the provider's clock resumes a request with `max_age=300`
+- **THEN** the resume asks for re-authentication
+

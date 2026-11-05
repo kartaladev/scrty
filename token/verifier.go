@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/kartaladev/scrty/internal/diag"
@@ -33,6 +34,9 @@ type Verifier interface {
 	// token has one string that verifies and a consumer may key a revocation
 	// list, a replay cache or a rate-limit bucket on it. No option relaxes
 	// this.
+	//
+	// A token that does not declare the type this verifier is for, in its typ
+	// header, is rejected too. See WithVerifyTokenType.
 	Verify(ctx context.Context, token string) (*Claims, error)
 }
 
@@ -109,6 +113,20 @@ func WithVerifyMaxTokenSize(size int) VerifyOption {
 // verifier with no clock could not judge exp, nbf or iat at all.
 func WithVerifyClock(clk clock.Clock) VerifyOption { return VerifyOption(setClock(clk)) }
 
+// WithVerifyTokenType sets the one type the verifier accepts in a token's typ
+// header. Default: TypeFirstParty, "scrty+jwt". A token declaring another type,
+// or none, is refused as an invalid token, whatever else about it is valid. So
+// a verifier for first-party tokens refuses an access token signed with the same
+// keys, issuer and audience, and one for access tokens takes TypeAccessToken.
+//
+// The comparison ignores case and an "application/" prefix on either side. The
+// value is otherwise taken literally: no option or value makes a verifier accept
+// any type, because that would give up the separation between kinds of token
+// this check exists for. An empty or blank typ fails construction with ErrConfig.
+func WithVerifyTokenType(typ string) VerifyOption {
+	return func(c *config) { c.tokenType = typ }
+}
+
 // JWTVerifier is the Verifier this package provides: it checks a JWT's
 // signature against the keys of a signingkey.KeySource, and its claims against
 // the configured issuer, audience and clock.
@@ -123,15 +141,16 @@ type JWTVerifier struct{ cfg *config }
 // audience: each is enforced, with WithVerifyIssuer and WithVerifyAudience, or
 // waived by name, with WithoutVerifyIssuer and WithoutVerifyAudience. There is
 // no default that checks neither. Defaults: the system clock; an 8192-byte
-// maximum token size. Each is a VerifyOption naming its own default.
+// maximum token size; TypeFirstParty as the one accepted type. Each is a
+// VerifyOption naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
 // Construction fails with ErrConfig when no key source is supplied, when the
 // clock is nil, when the maximum token size is not positive, when the issuer
 // or the audience is neither configured nor waived, when either is both
-// configured and waived, and when either is configured empty or blank (the
-// empty string, or white space alone; the refusal names the waiver to use
-// instead). A port given as a non-nil interface holding a nil
+// configured and waived, when either is configured empty or blank (the empty
+// string, or white space alone; the refusal names the waiver to use instead),
+// and when the accepted type is empty or blank. A port given as a non-nil interface holding a nil
 // pointer — what an unchecked constructor error hands over — counts as
 // absent.
 func NewVerifier(opts ...VerifyOption) (*JWTVerifier, error) {
@@ -150,13 +169,16 @@ func NewVerifier(opts ...VerifyOption) (*JWTVerifier, error) {
 	if err := cfg.validateClaims(verifierClaims); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(normalizeTokenType(cfg.tokenType)) == "" {
+		return nil, fmt.Errorf("%w: the token type given to WithVerifyTokenType is empty or blank", ErrConfig)
+	}
 
 	return &JWTVerifier{cfg: cfg}, nil
 }
 
-// Verify checks raw's signature against the key source and its claims against
-// the configured issuer, audience and clock, and returns the claims. See
-// Verifier.
+// Verify checks raw's signature against the key source, its claims against the
+// configured issuer, audience and clock, and its declared type against the one
+// this verifier is for, and returns the claims. See Verifier.
 func (v *JWTVerifier) Verify(ctx context.Context, raw string) (*Claims, error) {
 	return v.cfg.verify(ctx, raw)
 }
@@ -221,6 +243,12 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 		return nil, classify(err)
 	}
 
+	// After the signature, so what is read is what the key signed, and before
+	// anything is handed back.
+	if err := c.checkTokenType(raw); err != nil {
+		return nil, err
+	}
+
 	// Read once, here, so a malformed binding is a refusal of the token
 	// rather than a binding that silently reads as none.
 	cnf, err := readConfirmation(tok.Field(confirmationClaim))
@@ -229,6 +257,37 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	}
 
 	return &Claims{tok: tok, cnf: cnf}, nil
+}
+
+// errOtherTokenType is the cause every refused type wraps. The presented type is
+// never rendered: it is the presenter's input.
+var errOtherTokenType = errors.New("the token does not declare the type this verifier is for")
+
+// checkTokenType refuses a verified token whose typ is not the verifier's, so one
+// kind of token is not accepted as another where keys, issuer and audience are
+// shared.
+//
+// It parses the header with the JOSE stack rather than decoding it here, so the
+// type is read by the parser that read the signature's header, and a member
+// spelled TYP stays a member of another name.
+func (c *config) checkTokenType(raw string) error {
+	message, err := jws.Parse([]byte(raw))
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+
+	// canonicalCompact has held raw to a single signature.
+	signatures := message.Signatures()
+	if len(signatures) != 1 {
+		return fmt.Errorf("%w: %w", ErrInvalid, errOtherTokenType)
+	}
+
+	typ, ok := signatures[0].ProtectedHeaders().Type()
+	if !ok || normalizeTokenType(typ) != normalizeTokenType(c.tokenType) {
+		return fmt.Errorf("%w: %w", ErrInvalid, errOtherTokenType)
+	}
+
+	return nil
 }
 
 // keySet renders the keys a source supplied as the set the JOSE stack selects

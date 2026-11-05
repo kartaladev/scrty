@@ -337,8 +337,8 @@ echo "probe: $version resolves for every published module"
 
 ### Task 5.2, 5.5, 5.6 additions (dispatch R5, and the main session for 5.6)
 
-- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
-- [ ] **5.5:** add the *Known limitations* section listed in task 5.5, each limit in one sentence that names the default and what a consumer can do about it.
+- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Summarise `oidc-provider` under **Added** as the OpenID Provider a consumer can now run, naming the four conformance plans it passes. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
+- [ ] **5.5:** add the *Known limitations* section listed in task 5.5, each limit in one sentence that names the default and what a consumer can do about it. The two provider limits are R2's and R9's, as task 5.5 states them, and match the wording of the README's provider section; `prompt=none` is no longer a limitation of its own.
 - [ ] **5.6 (main session):** a Sonnet research agent reports, for each listed claim, the test that pins the fixed behaviour (`rg` for the claim's scenario, then `go test -run` it) or that none exists. The main session writes the outcomes into `design.md`.
 
 ### Task 6.1–6.2: Release-gate stability (dispatch R10)
@@ -349,7 +349,7 @@ echo "probe: $version resolves for every published module"
 ### Task 7.1–7.2: Integration gate (main session)
 
 - [ ] **7.1:** dispatch a fresh Sonnet reviewer that edits nothing. It gets both spec deltas (`module-layout`, `release-policy`), the design, and `git diff main...HEAD`. Findings are labelled `REPRODUCED` (with a failing check) or `UNREPRODUCED`, and go back to the owning dispatch.
-- [ ] **7.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, and keep the outputs.
+- [ ] **7.2:** run `make check`, `make release-check VERSION=v0.1.0` (on a clean tree) and `openspec validate release-readiness --strict`, confirm with `gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)"` that the `conformance` job is green on the commit, and keep the outputs. `conformance` stays a CI job, outside `make release-check`, because it needs Docker and a suite built from source.
 
 ### Task 8.1–8.2: First release (maintainer)
 

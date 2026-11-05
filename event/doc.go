@@ -21,6 +21,9 @@
 //     consumer's own login flow records;
 //   - mfa.WithThrottleSecurityEvents and mfa.WithResetSecurityEvents, for a
 //     throttled verification and a removed enrolment;
+//   - oidcprovider.WithSecurityEvents, for the OpenID provider's grants,
+//     consents, client authentications and logout deliveries run outside a
+//     chain;
 //   - recovery.WithSecurityEvents, for a recovery run outside a chain;
 //   - session.WithSecurityEvents, for a reuse the session manager detects
 //     outside a chain;
@@ -118,14 +121,35 @@
 //   - scrty_challenge_refused: a request the automation challenge refused.
 //   - scrty_signing_key_rotated: a signing key minted and stored by
 //     rotation.
+//   - scrty_grant_created: a grant stored for an authorization code the
+//     OpenID provider exchanged.
+//   - scrty_consent_given: a user's consent answered at the consent stage.
+//   - scrty_consent_denied: a user's denial answered at the consent stage.
+//   - scrty_consent_revoked: a user's consent to a client withdrawn.
+//   - scrty_client_auth_refused: a client authentication refused as
+//     invalid_client.
+//   - scrty_code_replayed: an authorization code presented after it was
+//     spent.
+//   - scrty_refresh_reused: a refresh token presented after its grace window.
+//   - scrty_grant_revoked: a grant revoked, with its cause.
+//   - scrty_logout_delivery_failed: a back-channel logout token not
+//     delivered to a client that registered a URI for it.
+//   - scrty_grant_end_failed: a sign-in's end the OpenID provider could not
+//     carry through to its grants or browser sessions, reported off the end's
+//     path, so a sink that blocks never holds it.
+//   - scrty_grant_revoke_failed: a suspected passkey clone whose user's
+//     application grants could not be revoked, which nothing asks again.
 //
 // # What an event carries
 //
 // An Event carries its name, when it happened, its outcome, the user it
 // concerns when one is known, the resolved client address, the first factor
-// where one applies, and the digest of the session's identifier. It never
-// carries the identifier itself, a password, a token, a one-time code, a link
-// secret, a key, a DPoP proof, a certificate, a CSRF token or a stored hash.
+// where one applies, the digest of the session's identifier, the OAuth client
+// an OpenID provider outcome concerns, and the cause of a revocation or a
+// failed delivery, in a fixed word. It never carries the identifier itself, a
+// password, a token, a one-time code, an authorization code, a client secret
+// or assertion, a link secret, a key, a DPoP proof, a certificate, a CSRF
+// token or a stored hash.
 //
 // # Only what happened
 //
@@ -134,8 +158,11 @@
 // credential handed out: a credential issued and then discarded, because its
 // session could not be stored or a racing request won, reports nothing. A
 // request whose own context ended before a verdict, and a dependency that
-// failed, report no failure or refusal. A verdict beside a hang-up is still a
-// verdict: a bearer token the verifier refused on a request that had also
+// failed, report no failure or refusal, with two exceptions, each for an outcome
+// that had already happened and that nothing will ask about again: the provider's
+// scrty_grant_end_failed, for a sign-in that had already ended, and
+// scrty_grant_revoke_failed, for a credential that had already been suspended. A verdict
+// beside a hang-up is still a verdict: a bearer token the verifier refused on a request that had also
 // ended is refused, and reported.
 //
 // # Limits

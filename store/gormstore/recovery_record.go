@@ -183,7 +183,7 @@ func (s *RecoveryRecordStore) LatestCompletion(ctx context.Context, user identit
 		return time.Time{}, false, failed(op, err)
 	}
 	var latest sql.NullTime
-	if err := q.Raw(pgschema.RecoveryRecordLatestCompletion, string(user)).Row().Scan(&latest); err != nil {
+	if err := scanRow(q.Raw(pgschema.RecoveryRecordLatestCompletion, string(user)), &latest); err != nil {
 		return time.Time{}, false, failed(op, err)
 	}
 	if !latest.Valid {

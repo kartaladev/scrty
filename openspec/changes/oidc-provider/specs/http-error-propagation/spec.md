@@ -39,3 +39,26 @@ The library SHALL expose a public refusal error for a resume whose sign-in is no
 #### Scenario: Re-authentication needed
 - **WHEN** a resume's sign-in authenticated before the request's `max_age` allows
 - **THEN** the error reaching the consumer's error handler is identifiable as the provider's re-authentication refusal, and maps to 401
+
+### Requirement: A 401 at the resume and consent endpoints carries a challenge
+Every 401 at the provider's resume, consent listing and consent revocation endpoints SHALL carry one `WWW-Authenticate` challenge per scheme, whichever part of the chain refused the request. With DPoP off, a `Bearer` token a built-in bearer refused SHALL get `error="invalid_token"`, and any other 401 no error code. With DPoP on, the challenge SHALL name the `DPoP` scheme. A 401 elsewhere SHALL be unaffected.
+
+#### Scenario: Unknown bearer token at the resume endpoint
+- **WHEN** a resume presents a `Bearer` token the chain refuses, with DPoP off
+- **THEN** the response is 401 with `WWW-Authenticate: Bearer error="invalid_token"`, once
+
+#### Scenario: A custom bearer scheme
+- **WHEN** a chain's bearer reads a scheme of the consumer's, and a resume presents a token that scheme refuses
+- **THEN** the response is 401 with a `Bearer` challenge carrying no error code
+
+#### Scenario: An invalid DPoP proof at the consent listing
+- **WHEN** a consent listing presents an invalid DPoP proof
+- **THEN** the response is 401 with one `DPoP` challenge naming `invalid_dpop_proof`, and no other challenge
+
+#### Scenario: No credential at the consent listing
+- **WHEN** a consent listing presents no credential, with DPoP off
+- **THEN** the response is 401 with a `Bearer` challenge carrying no error code
+
+#### Scenario: Unknown bearer token at a consumer's route
+- **WHEN** a request presents a `Bearer` token the chain refuses, at a path that is not one of those endpoints
+- **THEN** the response is 401 with no challenge from the provider

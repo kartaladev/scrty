@@ -1,14 +1,29 @@
 package passkey
 
+//go:generate mockgen -source=clone.go -destination=clone_mock_test.go -package=passkey_test -typed
+
 import (
 	"context"
 	"errors"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/id"
 )
+
+// cloneGrantCause is the cause a suspended clone revokes the user's grants with.
+const cloneGrantCause = "passkey_clone"
+
+// GrantRevoker revokes every grant an application holds for a user, those with
+// offline access included. *oidcprovider.Provider satisfies it.
+type GrantRevoker interface {
+	// RevokeUserGrants revokes every grant of user, recording cause. Revoking
+	// what is already revoked is not an error.
+	RevokeUserGrants(ctx context.Context, user identity.UserID, cause string) error
+}
 
 // CloneResponse is what the library does about a suspected clone when no
 // consumer clone policy is set.
@@ -24,8 +39,9 @@ type CloneResponse uint8
 const (
 	// CloneSuspend refuses the login or verification with ErrCloneSuspected,
 	// suspends the credential, ends every session of its user (unless
-	// WithoutSessionRevocationOnClone), queues the Suspended notice and
-	// writes a sampled warning. It is the default.
+	// WithoutSessionRevocationOnClone), revokes the user's application grants
+	// (WithGrantRevoker), queues the Suspended notice and writes a sampled
+	// warning. It is the default.
 	CloneSuspend CloneResponse = iota + 1
 	// CloneSignalOnly allows the login or verification, leaves the stored
 	// counter as it is, and writes a sampled warning naming the credential's
@@ -143,6 +159,7 @@ func (m *Passkeys) onCounterRefused(ctx context.Context, c *Credential, res *Ass
 
 		if suspended {
 			ended := m.endSessionsOnClone(ctx, c)
+			m.revokeGrantsOnClone(ctx, c)
 			m.notify(ctx, noticeSuspended, now, nil, ended)
 		}
 
@@ -173,6 +190,34 @@ func (m *Passkeys) endSessionsOnClone(ctx context.Context, c *Credential) bool {
 	}
 
 	return true
+}
+
+// revokeGrantsOnClone revokes every application grant of c's user after c was
+// suspended as a suspected clone, unless WithoutCloneGrantRevocation was given
+// or there is no revoker. It runs under a context the caller cannot cancel, so a
+// client that disconnects does not leave the grants alive.
+//
+// A credential suspends once, so nothing will ask again, and what is written here
+// is all an operator gets to know the grants are still live by. A failure is
+// therefore logged every time at error level, with no sampling, as one key would
+// hide another user's, and reported as event.GrantRevokeFailed on a request a chain
+// watches. The refusal stands either way.
+func (m *Passkeys) revokeGrantsOnClone(ctx context.Context, c *Credential) {
+	if m.grants == nil || m.keepGrantsOnClone {
+		return
+	}
+
+	ctx = context.WithoutCancel(ctx)
+
+	err := m.grants.RevokeUserGrants(ctx, c.User, cloneGrantCause)
+	if err == nil {
+		return
+	}
+
+	m.logger.LogAttrs(ctx, slog.LevelError, msgGrantsNotRevoked, append(diag.Failure("clone", err), credentialAttr(c.ID))...)
+	eventsink.Send(ctx, event.Event{
+		Name: event.GrantRevokeFailed, At: m.clock.Now(), Outcome: event.OutcomeFailure, User: c.User,
+	})
 }
 
 // recordAllowedClone records the backup state and last use of an assertion
@@ -236,4 +281,50 @@ func (a CloneAction) String() string {
 // the session that presented the clone included.
 func WithoutSessionRevocationOnClone() Option {
 	return func(m *Passkeys) { m.keepOnClone = true }
+}
+
+// WithGrantRevoker revokes every application grant of the credential's user,
+// those with offline access included, when a suspected clone suspends a passkey.
+// It is how a provider learns of the clone: a session manager given as
+// Deps.Sessions that was not built with the provider as its end observer ends
+// sessions with no report a provider could see.
+//
+// The default is no revoker, and no grant is revoked, since this package alone
+// has no provider. A chain with EnableOIDCProvider and EnablePasskeys refuses a
+// manager with neither this option nor WithoutCloneGrantRevocation, so the default
+// cannot silently leave grants alive there. A chain that uses the manager only
+// through MFAMethod, without EnablePasskeys, cannot be seen by that check, and a
+// consumer there must pass this option themselves.
+//
+// The revocation runs only when this call's suspension is the one that suspended
+// the credential: never for CloneSignalOnly, CloneAllow or CloneRefuse, and once
+// for racing assertions. Its failure is logged every time, reported as
+// event.GrantRevokeFailed on a request a chain watches (the manager has no sink of
+// its own, so off a chain the log is all there is), and the refusal stands.
+// Removing a passkey by the user's own request revokes nothing.
+//
+// A nil revoker, typed nil included, is a configuration error from New.
+func WithGrantRevoker(r GrantRevoker) Option {
+	return func(m *Passkeys) { m.grants, m.grantsSet = r, true }
+}
+
+// WithoutCloneGrantRevocation keeps the user's application grants when a
+// suspected clone suspends a passkey, replacing the revocation WithGrantRevoker
+// sets up. Given with WithGrantRevoker, in either order, it wins and the grants
+// are kept. It also tells a chain with a provider that keeping them was meant.
+// The user's sessions end as usual (WithoutSessionRevocationOnClone).
+//
+// What it gives up: a suspected clone means someone else may hold the
+// authenticator, and a grant kept is what they would keep, for as long as its
+// refresh token lives.
+func WithoutCloneGrantRevocation() Option {
+	return func(m *Passkeys) { m.keepGrantsOnClone = true }
+}
+
+// CloneGrantsDecided reports whether the manager was told what a suspended clone
+// does to the user's application grants: WithGrantRevoker or
+// WithoutCloneGrantRevocation was given. A chain with a provider reads it to
+// refuse a manager that was told neither.
+func (m *Passkeys) CloneGrantsDecided() bool {
+	return m.grants != nil || m.keepGrantsOnClone
 }

@@ -31,6 +31,10 @@ type config struct {
 	clock        clock.Clock
 	resealOnRead bool
 
+	// lineage binds a session store to the fixed lineage table. Only
+	// NewRefreshTokenStore sets it, and no option can.
+	lineage bool
+
 	// honours is the set of optionKinds the constructing store declared.
 	honours optionKind
 
@@ -88,8 +92,10 @@ func WithTxResolver(r TxResolver) Option {
 // WithIDGenerator replaces the source of the identifiers a store mints for
 // records that carry none of their own. It is honoured by the minting stores:
 // sessions, signing keys, login attempts, MFA enrolments, OIDC flows, saved
-// recovery codes, and the identity store (the users, role grants and
-// password-history entries it creates). The default is id.NewV7Generator,
+// recovery codes, the identity store (the users, role grants and
+// password-history entries it creates), and the OpenID Provider's consent,
+// assertion-identifier, browser-session, client and refresh-token lineage
+// stores (the identifiers of their rows). The default is id.NewV7Generator,
 // whose identifiers sort by the moment they were minted.
 //
 // Given to any other store, whose records arrive with their own identifier, it

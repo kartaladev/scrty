@@ -127,6 +127,11 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q *gorm.DB, op strin
 // on gorm's prepared-statement connection.
 func savepointSession(ctx context.Context, q *gorm.DB) *gorm.DB {
 	h := q.Session(&gorm.Session{NewDB: true, Context: ctx})
+	// A lineage store's connection wraps the real one, which a savepoint, naming no
+	// table, runs on directly.
+	if l, ok := h.Statement.ConnPool.(*lineagePool); ok {
+		h.Statement.ConnPool = l.ConnPool
+	}
 	if p, ok := h.Statement.ConnPool.(*gorm.PreparedStmtTX); ok {
 		h.Statement.ConnPool = p.Tx
 	}
