@@ -386,7 +386,7 @@ The failing tests already exist, in the session's disposable copies under its sc
 | 1 (parallel) | E2 | 9.6 | `session/`, `store/{sqlstore,pgxstore,gormstore}`, `internal/pgschema`, `test/storetest` | Opus: several packages, and a read whose mistake would pass the tests and still be wrong |
 | 2 (parallel) | E3 | 9.1, 9.2, 9.3, 9.5 | `signals_retry.go`, `signals_endpoint.go`, `signals_publish.go`, `signals.go`, `signals_close.go`, `resolve.go`, `session/sessions.go` godoc, their tests | Opus: which refusals are final is security-critical |
 | 2 (parallel) | E4 | 9.4 | `signals_stream.go`, the notice's type in `signals.go`, `signals_bus.go`'s `deliverEnd`, their tests | Opus: ordering in the stream's loop |
-| 3 | E5 | 9.8, 9.9 | `signals.go`'s lookup, `signals_bus.go`, `nethttp.go`, `fibersec/exchange.go`, `internal/diag`, `README.md` | Opus: a refactor that must keep behaviour |
+| 3 | E5 | 9.8, 9.9 | `signals.go`'s lookup, `signals_bus.go`, `signals_endpoint.go`'s and `signals_retry.go`'s headers, `nethttp.go`, `fibersec/exchange.go`, `internal/diag`, `README.md` | Opus: a refactor that must keep behaviour |
 | 4 | main, one reviewer | 9.11, then 9.10 | — | Opus reviewer. The review runs before the gate, as `subagent-delegation.md` requires |
 
 Each dispatch gets a fresh reviewer that edits nothing, on Opus. Findings go to a fresh dispatch of that lane. **Run `make lint` in every dispatch's verification:** it stops at the first failing module, so run `golangci-lint run ./...` in each module a dispatch changed.
