@@ -970,9 +970,25 @@ func envelopeForEnd(r session.EndReport) (SignalEnvelope, bool) {
 // it. It says why, if the store then says gone within two heartbeats of at, so a report
 // whose end did not happen cannot name a later real end. The wake channel carries
 // nothing, so it has its own field.
+//
+// A report naming the stream's family or upstream session keeps its window whatever a read
+// answers, since a report can arrive before its write is visible. So one that ended nothing
+// can still name a later end in its window. That is a stated limit: the report of a superseded
+// session's deletion names a family that stays live, and only the window bounds it.
+//
+// A user-wide report can still name what it did not end, in two orderings, both stated limits. It
+// replaces a family's notice as any later report does, so taking it back leaves neither. And one that
+// arrives with no read begun after it, as during the wait for a report, names a store's gone that no
+// read has tied to it. Each costs a label, and needs two reports or an end within a moment of each other.
 type endNotice struct {
 	reason string
 	at     time.Time
+
+	// broad says the report named no family and no upstream session, only a user, so that it may
+	// be about another of the user's sign-ins. A read begun after it that answers alive takes it
+	// back (streamLoop.takeBackBroad). There is no option for this, as for streamReportGrace: it
+	// protects a label.
+	broad bool
 }
 
 // queuedSignal is one credential_changed or app.* signal on a stream's queue.

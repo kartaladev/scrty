@@ -422,6 +422,10 @@ type streamReading struct {
 	// since the store had already ended whatever they report.
 	notes uint64
 
+	// broad is the user-wide end notice held when the read started, nil for none: the one its
+	// answer can take back (streamLoop.takeBackBroad).
+	broad *endNotice
+
 	// overdue says the read is past its timeout, already counted as a failure, so that any answer
 	// it still gives is discarded.
 	overdue bool
@@ -881,6 +885,10 @@ func (l *streamLoop) startRead() {
 	answer := make(chan streamRead, 1)
 	l.reading = &streamReading{answer: answer, timedOut: timed.Done(), cancel: cancel, notes: st.notes.Load()}
 
+	if n := st.notice.Load(); n != nil && n.broad {
+		l.reading.broad = n
+	}
+
 	user, family := st.user, st.family
 
 	go func() {
@@ -927,6 +935,8 @@ func (l *streamLoop) onAnswer(ctx context.Context, read streamRead) string {
 	if !reading.overdue {
 		l.settleHold(reading.notes)
 
+		l.takeBackBroad(reading, read)
+
 		if reason := l.answer(ctx, read); reason != "" {
 			return reason
 		}
@@ -938,6 +948,20 @@ func (l *streamLoop) onAnswer(ctx context.Context, read streamRead) string {
 	}
 
 	return ""
+}
+
+// takeBackBroad drops the user-wide notice held when reading started, if the session store then answered
+// that it holds the sign-in: that report was about another of the user's sign-ins, and must not name a
+// later end of this one. A read begun before the notice says nothing of it, because a report may arrive
+// before its write is visible, so such a notice waits for the read its wake starts. Compared by identity,
+// so that a notice arriving during the read stays.
+//
+// A reuse is never taken back. Every reuse the session manager reports names its family, so one naming
+// only a user comes from a bus's sender, who must not be able to erase a family's reuse with it.
+func (l *streamLoop) takeBackBroad(reading *streamReading, read streamRead) {
+	if reading.broad != nil && read.sessionErr == nil && !read.gone {
+		l.start.stream.notice.CompareAndSwap(reading.broad, nil)
+	}
 }
 
 // onReadTimeout is ReloadTimeout passing on the read in flight, which counts as a failure at once,

@@ -364,6 +364,7 @@ func (h *signalHub) deliverEnd(e SignalEnvelope) {
 	case e.Upstream != "":
 		h.registry.deliverEndToUpstream(e.Upstream, n)
 	case e.User != "":
+		n.broad = true
 		h.registry.deliverEndToUser(e.User, e.Kept, n)
 	}
 }

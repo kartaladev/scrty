@@ -1888,6 +1888,305 @@ func TestSessionSignals_BusWakeUp(t *testing.T) {
 	})
 }
 
+// wakeUserWide delivers a session_ended naming only the user, as a report of several sign-ins does.
+func (r *streamRig) wakeUserWide(s *session.Session, reason string) {
+	httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+		User: s.UserID, Name: string(httpsec.SignalSessionEnded), Reason: reason,
+	})
+	synctest.Wait()
+}
+
+// TestSessionSignals_BusWakeUp_UserWideReport pins that a report naming no family names only a sign-in
+// it ended: a read begun after it that answers alive takes it back, and a report naming the family
+// keeps its window.
+func TestSessionSignals_BusWakeUp_UserWideReport(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "https://idp.example"
+
+	// The idle deadline is what ends a sign-in inside the report's window of two heartbeats.
+	setup := streamSetup{
+		sameClock: true,
+		idle:      5 * time.Minute,
+		signals:   httpsec.SessionSignals{Signals: endedOnly},
+	}
+
+	// providerLogoutOfAnother ends a provider's sign-in, and hands back the password sign-in's stream.
+	providerLogoutOfAnother := func(t *testing.T, r *streamRig) (*session.Session, *riggedStream) {
+		t.Helper()
+
+		r.signIn(t, session.WithExternalSession("idp", issuer, "upstream-a", "id-token"))
+
+		b := r.signIn(t)
+		stream := r.open(t, b.ID)
+
+		return b, stream
+	}
+
+	endProvider := func(t *testing.T, r *streamRig) {
+		t.Helper()
+
+		r.act(func() {
+			_, err := r.sessions.DeleteByUserAndExternalIssuer(t.Context(), "u-1", issuer)
+			require.NoError(t, err)
+		})
+		advance(time.Second)
+	}
+
+	runStreamCases(t, []streamCase{
+		{
+			name:  "a provider logout of another sign-in does not name this one's expiry",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				_, stream := providerLogoutOfAnother(t, r)
+
+				advance(5*time.Minute - 10*time.Second)
+				endProvider(t, r)
+				r.requireLive(t, stream)
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "expired")
+			},
+		},
+		{
+			name:  "a provider logout of another sign-in does not name an end nobody reported",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				b, stream := providerLogoutOfAnother(t, r)
+
+				endProvider(t, r)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), b.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a provider logout of this sign-in names its end",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				a := r.signIn(t, session.WithExternalSession("idp", issuer, "upstream-a", "id-token"))
+				stream := r.open(t, a.ID)
+
+				r.act(func() {
+					_, err := r.sessions.DeleteByUserAndExternalIssuer(t.Context(), "u-1", issuer)
+					require.NoError(t, err)
+				})
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "provider_logout")
+			},
+		},
+		{
+			name:  "ending the other sign-ins holds no all_ended for the stream it spared",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				b, stream := providerLogoutOfAnother(t, r)
+
+				r.act(func() {
+					_, err := r.sessions.EndOtherSignIns(t.Context(), "u-1", r.stored(t, b.ID))
+					require.NoError(t, err)
+				})
+				advance(time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), b.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a delete but one holds no all_ended for the stream it spared",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				b, stream := providerLogoutOfAnother(t, r)
+
+				r.act(func() {
+					_, err := r.sessions.DeleteByUserExcept(t.Context(), "u-1", b.ID)
+					require.NoError(t, err)
+				})
+				advance(time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), b.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a delete but one whose kept session could not be read holds no all_ended for the stream it spared",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				b, stream := providerLogoutOfAnother(t, r)
+
+				fail := func(context.Context) error { return errors.New("the store is down") }
+				r.loadHook.Store(&fail)
+				r.act(func() {
+					_, err := r.sessions.DeleteByUserExcept(t.Context(), "u-1", b.ID)
+					require.NoError(t, err)
+				})
+				r.loadHook.Store(nil)
+				advance(time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), b.ID))
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "ended")
+			},
+		},
+		{
+			name:  "a read begun before a user-wide report says nothing of it, since a report can beat its write",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				held := r.holdUserReads(t)
+				held.waitForRead(t)
+
+				// The read has its answer from the session store, and the report comes behind it.
+				r.wakeUserWide(s, "all_ended")
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held.letGo()
+				synctest.Wait()
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "all_ended")
+			},
+		},
+		{
+			name:  "a read that takes back a user-wide report leaves the family's report behind it",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				held := r.holdUserReads(t)
+
+				r.wakeUserWide(s, "all_ended")
+				require.EqualValues(t, 1, held.entered.Load(), "the report's wake began the read")
+
+				// The read began after the first report, and before this one, whose write comes later.
+				r.wakeWith(s, "logout")
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				held.letGo()
+				synctest.Wait()
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			name:  "a read that answers alive leaves a report naming the family its window",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "logout")
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, 20*time.Second, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			name:  "a read that answers alive leaves a report naming the upstream session its window",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				a := r.signIn(t, session.WithExternalSession("idp", issuer, "upstream-a", "id-token"))
+				stream := r.open(t, a.ID)
+
+				httpsec.SignalHubProbeOf(r.chain).Deliver(httpsec.SignalEnvelope{
+					Upstream: httpsec.UpstreamDigest(issuer, "upstream-a"),
+					Name:     string(httpsec.SignalSessionEnded),
+					Reason:   "provider_logout",
+				})
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), a.ID))
+
+				advanceUntil(t, 20*time.Second, "the end", stream.closed)
+				r.requireEnded(t, stream, "provider_logout")
+			},
+		},
+		{
+			// The limit endNotice states: the report names the family, which stays live on its
+			// successor, so nothing tells it from a report that arrived before its write.
+			name:  "a report of a superseded session's delete names the sign-in's expiry within its window",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.act(func() {
+					_, _, err := r.sessions.RotateWithGrace(t.Context(), r.stored(t, s.ID), 5*time.Minute)
+					require.NoError(t, err)
+				})
+
+				advance(5*time.Minute - 10*time.Second)
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+				r.wakeWith(s, "logout")
+				advance(time.Second)
+				r.requireLive(t, stream)
+
+				advanceUntil(t, time.Minute, "the end", stream.closed)
+				r.requireEnded(t, stream, "logout")
+			},
+		},
+		{
+			name:  "a user-wide report taken back leaves a held reuse naming the end",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeWith(s, "reuse")
+				advance(2 * time.Second)
+
+				r.wakeUserWide(s, "all_ended")
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, 20*time.Second, "the end", stream.closed)
+				r.requireEnded(t, stream, "reuse")
+			},
+		},
+		{
+			// No session manager reports reuse without a family, so only a bus's sender can, and
+			// taking this back would let one erase a family's reuse behind it.
+			name:  "a read that answers alive does not take back a user-wide reuse",
+			setup: setup,
+			assert: func(t *testing.T, r *streamRig) {
+				s := r.signIn(t)
+				stream := r.open(t, s.ID)
+
+				r.wakeUserWide(s, "reuse")
+				advance(2 * time.Second)
+				r.requireLive(t, stream)
+
+				require.NoError(t, r.inner.Delete(t.Context(), s.ID))
+
+				advanceUntil(t, 20*time.Second, "the end", stream.closed)
+				r.requireEnded(t, stream, "reuse")
+			},
+		},
+	})
+}
+
 // raiseOnQueue delivers a consumer's signal as a bus would, onto every stream of u-1.
 func (r *streamRig) raiseOnQueue(names ...string) {
 	for _, name := range names {
