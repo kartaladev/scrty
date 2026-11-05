@@ -21,7 +21,7 @@ A per-request policy's throttle on the session-signal stream answers a client wi
 
 ## Impact
 
-`httpsec/bearer.go`, `httpsec/session_bearer.go`, `httpsec/signals_retry.go` and their tests, plus a conformance row in `test/httpsecconformance`. No API or migration changes.
+`httpsec/bearer.go`, `httpsec/session_bearer.go`, `httpsec/signals_retry.go`, the `bearerCredential` godoc in `httpsec/exchange.go`, and their tests, plus a conformance row in `test/httpsecconformance`. No API or migration changes.
 
 ## References
 

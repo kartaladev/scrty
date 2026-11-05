@@ -19,7 +19,9 @@
 
 *Rejected:* recording whenever `ex.Authentication != nil`. A review tried it and it works, but other code reads `bearerCredential` (`issuingBinding`, `oidc_resume`, `mfa_verify`), and this would widen what every non-stream refusal leaves on the exchange for no benefit here. *Rejected:* teaching `streamByCookie` to read `Authorization` alone: admission judges a request as bearer only when the chain recorded a credential and `Authorization` carries it, so that a consumer's cookie authenticator calling `RecordPresentedToken` stays a cookie, and a header alone proves nothing.
 
-**Why it is safe:** the credential has verified at that point, and it is a bearer's own header, which a cross-site page cannot attach as it can a cookie. The answer reveals only what the same request learns when unthrottled.
+**Why it is safe:** the credential has verified at that point, and only a page that sent it on that request gets this answer, which reveals only what the same request learns when unthrottled.
+
+**Limit (REPRODUCED by review):** this holds for a credential a page must attach itself. A consumer who reads a bearer under a scheme a browser attaches by itself, as `WithBearerScheme("Basic")` or `WithSessionBearerScheme("Basic")` can, gets a cross-site request judged as a bearer: from a CORS wildcard's origin it answers 200, unthrottled as well. The unthrottled case predates this change, and is the worse one, because it can open a stream and take a place. Its fix is a separate decision for the maintainer: refuse such schemes at construction, judge them as cookies, or document the line. The built-in `EnableBasicAuth` records no credential, so it stays on the cookie rule. A browser's CORS rules should block a credentialed read of a wildcard's response, which was not run in a browser (UNREPRODUCED).
 
 ## Risks / Trade-offs
 

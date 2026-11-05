@@ -426,8 +426,9 @@ func (a cookieAskedAfterTheBearer) Intercept(ex *httpsec.Exchange, next httpsec.
 	})
 }
 
-// TestSessionSignals_Caps_ThrottledCookie is a browser's own path: EventSource can send nothing but a
-// cookie, and it is a consumer's authenticator that reads it.
+// TestSessionSignals_Caps_ThrottledCookie is the throttled stream's table: a throttled cookie, which is
+// all an EventSource can send, and a session bearer and a signed bearer, each with the rows that bound
+// when a throttle is recorded and what it hears back.
 func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 	t.Parallel()
 
@@ -672,6 +673,22 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 		})
 	}
 
+	// throttleWithoutMarkFirst denies the bearer's own phase with an error that wraps ErrThrottled but
+	// carries no mark, and then throttles whatever asks next with a marked one.
+	throttleWithoutMarkFirst := func(t *testing.T) policy.Policy {
+		t.Helper()
+
+		var asked atomic.Int64
+
+		return policyDeciding(t, policy.PerRequest, func(*policy.Input) policy.Decision {
+			if asked.Add(1) == 1 {
+				return policy.Decision{Outcome: policy.Deny, Reason: fmt.Errorf("%w: %w", httpsec.ErrChallengeUnavailable, ratelimit.ErrThrottled)}
+			}
+
+			return policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}
+		})
+	}
+
 	cases := []testCase{
 		{
 			// The policy runs before the cross-site rule, so its denial's event is out by the time the rule
@@ -871,6 +888,13 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 				name:        "a " + kind.name + " denied by a policy for any other reason records nothing, though its caller is published",
 				cookieAbove: true,
 				deciding:    otherwiseDeniedFirst,
+				cors:        wildcard,
+				change:      fromAnotherSite("https://evil.example"),
+			})),
+			refusedAsACookie(of(testCase{
+				name:        "a " + kind.name + " denied with an unmarked error that wraps ErrThrottled records nothing",
+				cookieAbove: true,
+				deciding:    throttleWithoutMarkFirst,
 				cors:        wildcard,
 				change:      fromAnotherSite("https://evil.example"),
 			})),
