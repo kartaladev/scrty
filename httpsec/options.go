@@ -102,6 +102,11 @@ type config struct {
 	// among the others changes what they see.
 	afterWiring []func() error
 
+	// commits hold the steps that change something outside the chain, such as a
+	// session manager the consumer goes on using. They run after every check, so a
+	// refused build leaves that thing as it found it, and none of them can fail.
+	commits []func()
+
 	// events is the sink EnableSecurityEvents was given, and nil without one.
 	events event.Sink
 
@@ -298,6 +303,11 @@ func (c *config) wire(fn func(*Chain)) {
 // failure refuses the chain.
 func (c *config) checkAfterWiring(check func() error) {
 	c.afterWiring = append(c.afterWiring, check)
+}
+
+// commit records a step that must run only once the build can no longer be refused.
+func (c *config) commit(step func()) {
+	c.commits = append(c.commits, step)
 }
 
 // addSessionManager records a manager the chain was wired with. Asking whether
@@ -687,6 +697,10 @@ func (c *config) build() (*Chain, error) {
 		if err := check(); err != nil {
 			return nil, err
 		}
+	}
+
+	for _, step := range c.commits {
+		step()
 	}
 
 	return chain, nil
