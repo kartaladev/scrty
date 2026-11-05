@@ -285,6 +285,18 @@ type SessionSignals struct {
 	// an EventSource stops for good on it. A consumer's authenticator that wants a browser to
 	// retry through an outage returns an error that maps to a 5xx on this path.
 	//
+	// For a throttle it is handed the policy's own reason, as the policy gave it, and not the
+	// error the chain returned: a wrap a consumer's interceptor made outside EvaluatePerRequest
+	// does not reach it.
+	//
+	// A per-request throttle fires only after the credential succeeded and its session was
+	// published. A consumer that verifies a password on every request, publishes a session and
+	// uses a per-request policy as a guess throttle therefore answers a right password with a
+	// retry (200) and a wrong one with 401 on the stream's path, where elsewhere both are 401
+	// while throttled. A limit on guesses belongs at pre-authentication or stateless, where it
+	// fires before the credential is judged. Such a consumer returns false here for a throttle,
+	// which sends it through the chain's mapping and answers both alike.
+	//
 	// A panic in it is recovered and logged without its value, and the failure is retried.
 	//
 	// Default: nil, every such failure and throttle is retried, because a store failure in a

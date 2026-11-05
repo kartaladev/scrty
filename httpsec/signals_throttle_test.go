@@ -17,12 +17,14 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/session"
 )
 
 // throttledRecord is what the record of a throttled sign-in says.
@@ -400,6 +402,16 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 			},
 		},
 		{
+			name: "RetryableError is handed the policy's own reason, which a consumer may compare",
+			signals: httpsec.SessionSignals{RetryableError: func(err error) bool {
+				return err == ratelimit.ErrThrottled //nolint:errorlint // the point: the reason arrives as the policy gave it
+			}},
+			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+				requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+				assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
+			},
+		},
+		{
 			name:    "RetryableError returning false keeps the chain's mapping",
 			signals: httpsec.SessionSignals{RetryableError: func(error) bool { return false }},
 			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
@@ -431,6 +443,173 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 			resp, _ := f.openStream(t, "", withSignalsCookie(f.signIn(t, "u-1").ID))
 
 			tc.assert(t, f, resp)
+		})
+	}
+}
+
+// rightPasswordBasic is Basic auth whose authenticator accepts only the password "right".
+func rightPasswordBasic(t *testing.T) httpsec.Option {
+	t.Helper()
+
+	authn := NewMockAuthenticator(gomock.NewController(t))
+	authn.EXPECT().Authenticate(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+		func(_ context.Context, c identity.Credentials) (*authenticate.Authentication, error) {
+			if up, ok := c.(*identity.UsernamePassword); ok && string(up.Password) == "right" {
+				return &authenticate.Authentication{Principal: identity.PrincipalFromDetails(storedUser())}, nil
+			}
+
+			return nil, authenticate.ErrAuthenticationFailed
+		})
+
+	attempts := NewMockAttemptStore(gomock.NewController(t))
+	attempts.EXPECT().RecordFailure(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	attempts.EXPECT().Reset(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	return httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: attempts})
+}
+
+// statusOnTheStream asks for the stream with the given changes and returns its status and whether the
+// body is only a retry. The stream is cut after a short wait, since a stream that is admitted does not end.
+func statusOnTheStream(t *testing.T, f *signalsFixture, change ...func(*http.Request)) (status int, retried bool) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 600*time.Millisecond)
+	defer cancel()
+
+	resp := f.send(ctx, t, http.MethodGet, httpsec.DefaultSessionSignalsPath, "", change...)
+	body, _ := io.ReadAll(resp.Body)
+
+	return resp.StatusCode, strings.Contains(string(body), "retry:") && !strings.Contains(string(body), "event:")
+}
+
+// TestSessionSignals_Caps_BasicBesideAThrottledCookie is Basic outside the caller's own throttled
+// cookie: the throttle is the cookie's, so Basic's right password hears a retry and a wrong one a 401,
+// which is what each hears anyway as a stream and a 401 beside an unthrottled cookie. It tells nothing a
+// caller could not learn without the throttle.
+func TestSessionSignals_Caps_BasicBesideAThrottledCookie(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		throttled bool
+		assert    func(t *testing.T, right, wrong int, rightRetried bool)
+	}
+
+	cases := []testCase{
+		{
+			name:      "throttled: a right password hears a retry, a wrong one a 401",
+			throttled: true,
+			assert: func(t *testing.T, right, wrong int, rightRetried bool) {
+				assert.Equal(t, http.StatusOK, right)
+				assert.True(t, rightRetried, "a retry, not a stream")
+				assert.Equal(t, http.StatusUnauthorized, wrong)
+			},
+		},
+		{
+			name: "unthrottled twin: a right password hears the stream, a wrong one a 401",
+			assert: func(t *testing.T, right, wrong int, rightRetried bool) {
+				assert.Equal(t, http.StatusOK, right)
+				assert.False(t, rightRetried)
+				assert.Equal(t, http.StatusUnauthorized, wrong)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSignalsFixture(t, signalsSetup{withoutBearer: true, opts: func(f *signalsFixture) []httpsec.Option {
+				opts := []httpsec.Option{
+					httpsec.WithoutCSRFProtection(), httpsec.WithSessions(f.sessions), rightPasswordBasic(t),
+					httpsec.RegisterInterceptor(cookieJudgedPerRequest{consumerSessionCookie{sessions: f.sessions}}, httpsec.OrderBearerToken),
+				}
+				if tc.throttled {
+					opts = append(opts, httpsec.WithPolicyEngine(engineOf(t, phasePolicy(t,
+						policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))))
+				}
+
+				return opts
+			}})
+
+			own := withSignalsCookie(f.signIn(t, "u-1").ID)
+			right, rightRetried := statusOnTheStream(t, f, own, func(r *http.Request) { r.SetBasicAuth("victim", "right") })
+			wrong, _ := statusOnTheStream(t, f, own, func(r *http.Request) { r.SetBasicAuth("victim", "wrong") })
+
+			tc.assert(t, right, wrong, rightRetried)
+		})
+	}
+}
+
+// TestSessionSignals_Caps_ThrottleOfAProvenCredential is a consumer that verifies a password on every
+// request, publishes the session and uses a per-request policy as a guess throttle. That throttle fires
+// only after the credential succeeded, so by default a right password hears a retry on the stream and a
+// wrong one a 401; RetryableError returning false sends it through the chain's mapping, and both answer 401.
+func TestSessionSignals_Caps_ThrottleOfAProvenCredential(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		signals httpsec.SessionSignals
+		assert  func(t *testing.T, right, wrong int)
+	}
+
+	cases := []testCase{
+		{
+			name: "the default tells a right password from a wrong one",
+			assert: func(t *testing.T, right, wrong int) {
+				assert.Equal(t, http.StatusOK, right)
+				assert.Equal(t, http.StatusUnauthorized, wrong)
+			},
+		},
+		{
+			name:    "RetryableError returning false answers both alike",
+			signals: httpsec.SessionSignals{RetryableError: func(error) bool { return false }},
+			assert: func(t *testing.T, right, wrong int) {
+				assert.Equal(t, http.StatusUnauthorized, right)
+				assert.Equal(t, http.StatusUnauthorized, wrong)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSignalsFixture(t, signalsSetup{withoutBearer: true, signals: tc.signals, opts: func(f *signalsFixture) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.WithoutCSRFProtection(), httpsec.WithSessions(f.sessions),
+					httpsec.WithPolicyEngine(engineOf(t, phasePolicy(t,
+						policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))),
+					httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+						if ex.Request.Header("X-Pass") != "right" {
+							return authenticate.ErrAuthenticationFailed
+						}
+
+						s, err := f.sessions.Create(ex.Context(), "u-1", session.WithFirstFactor(factor.Password))
+						if err != nil {
+							return err
+						}
+
+						a := &authenticate.Authentication{Principal: identity.PrincipalFromDetails(storedUser())}
+						if err := ex.PublishSession(a, s); err != nil {
+							return err
+						}
+
+						if err := ex.EvaluatePerRequest(s, a.Principal); err != nil {
+							return err
+						}
+
+						return next(ex)
+					}), httpsec.OrderBearerToken),
+				}
+			}})
+
+			header := func(v string) func(*http.Request) { return func(r *http.Request) { r.Header.Set("X-Pass", v) } }
+			right, _ := statusOnTheStream(t, f, header("right"))
+			wrong, _ := statusOnTheStream(t, f, header("wrong"))
+
+			tc.assert(t, right, wrong)
 		})
 	}
 }

@@ -207,13 +207,17 @@ func (e *sessionSignals) onStreamPath(ex *Exchange) bool {
 // which a consumer can answer itself. Only what the mapping answers 401 qualifies, so that an outage
 // that also wraps a throttle stays an outage, and an error mapping to a 429 is not this: a consumer chose
 // that answer. A client that has left is told nothing, as isDependencyFailure says.
+//
+// RetryableError is handed the policy's own reason, with the mark taken off, so that a callback comparing
+// it to ratelimit.ErrThrottled by identity or by type still reads it. A wrap a consumer made outside
+// EvaluatePerRequest is not in what it is handed.
 func (e *sessionSignals) isThrottledSignIn(entered context.Context, ex *Exchange, err error) bool {
 	var throttle *perRequestThrottle
 	if !errors.As(err, &throttle) || errors.Is(entered.Err(), context.Canceled) {
 		return false
 	}
 
-	return StatusForError(err) == http.StatusUnauthorized && e.retryable(ex, err) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
+	return StatusForError(err) == http.StatusUnauthorized && e.retryable(ex, throttle.error) //nolint:contextcheck // only the classification above reads entered; a panic in RetryableError is logged on the exchange's current context
 }
 
 // isDependencyFailure reports whether err is a failure of something the request depends on, and not
