@@ -2,7 +2,9 @@ package httpsec
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
+	"errors"
 	"io"
 	"math"
 	"mime"
@@ -11,6 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
+
+	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // NewHTTPRequest adapts a net/http request.
@@ -359,11 +365,43 @@ func NewHTTPResponseWriter(w http.ResponseWriter) ResponseWriter {
 type httpResponseWriter struct {
 	w     http.ResponseWriter
 	wrote bool
+
+	// streaming is whether Stream has started, after which Write writes nothing.
+	streaming bool
+
+	// streamWindow replaces StreamWriteWindow in a test, and is zero otherwise.
+	streamWindow time.Duration
 }
 
-func (h *httpResponseWriter) SetHeader(n, v string) { h.w.Header().Set(n, v) }
-func (h *httpResponseWriter) AddHeader(n, v string) { h.w.Header().Add(n, v) }
-func (h *httpResponseWriter) SetCookie(c *Cookie)   { http.SetCookie(h.w, c) }
+// SetHeader has no effect once a response has begun. net/http would ignore it by then, but gin
+// holds the head until the first write, and so does a wrapper that buffers, either of which would
+// send it: so one chain answers one way on every adapter. A trailer goes through the framework's
+// own writer, which the handler behind the chain holds.
+func (h *httpResponseWriter) SetHeader(n, v string) {
+	if h.wrote {
+		return
+	}
+
+	h.w.Header().Set(n, v)
+}
+
+// AddHeader has no effect once a response has begun, as SetHeader has none.
+func (h *httpResponseWriter) AddHeader(n, v string) {
+	if h.wrote {
+		return
+	}
+
+	h.w.Header().Add(n, v)
+}
+
+// SetCookie has no effect once a response has begun, as SetHeader has none.
+func (h *httpResponseWriter) SetCookie(c *Cookie) {
+	if h.wrote {
+		return
+	}
+
+	http.SetCookie(h.w, c)
+}
 
 // WriteHeader sends the status, and ignores a second call. An interceptor that
 // answered the request itself keeps the status it chose: a later stage that
@@ -377,9 +415,286 @@ func (h *httpResponseWriter) WriteHeader(status int) {
 	h.w.WriteHeader(status)
 }
 
+// Write writes nothing once a stream has started, so that only what its body
+// writes reaches the client.
 func (h *httpResponseWriter) Write(b []byte) (int, error) {
+	if h.streaming {
+		return 0, ErrStreamingStarted
+	}
+
 	h.wrote = true
 	return h.w.Write(b)
+}
+
+// Stream runs body inline, once the head has been flushed with contentType on it, and
+// returns nil when it has. ctx is what body's context derives from, and the chain's own
+// is derived from the request's, so body's ends when the client leaves. See ResponseWriter.Stream for
+// the contract.
+//
+// What body returned is dropped, as it is on fiber, where it has nowhere to go: an
+// error from Stream means the body never ran, so a caller holding something for its
+// body to free would free it twice.
+//
+// http.ResponseController reaches the connection through any wrapper that has an
+// Unwrap method, which is how gin's writer is reached. A wrapper that can flush
+// but neither moves a deadline nor unwraps still streams, under whatever deadline
+// its server set: nothing can tell that from a server that set none.
+func (h *httpResponseWriter) Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error {
+	if h.wrote {
+		return ErrStreamingStarted
+	}
+
+	if !canFlush(h.w) {
+		return ErrStreamingUnsupported
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	ew := &httpEventWriter{
+		w:      h.w,
+		rc:     http.NewResponseController(h.w),
+		window: h.streamWindow,
+		cancel: cancel,
+	}
+	if ew.window == 0 {
+		ew.window = StreamWriteWindow
+	}
+
+	if err := h.sendHead(ew, contentType); err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			return ErrStreamingUnsupported
+		}
+
+		// The connection has gone. The failure has ended ctx.
+		ew.runBody(ctx, diag.NewEndedWriter(ctx), body)
+
+		return nil
+	}
+
+	ew.runBody(ctx, ew, body)
+
+	return nil
+}
+
+// sendHead moves the deadline and sends the status and headers, contentType among them,
+// or returns an error that says http.ErrNotSupported, which leaves the type as it found it.
+// The deadline comes first, because a chain may have taken longer than the server's write
+// timeout to get here.
+//
+// The status is named before the flush, because wrappers have their say on the way (a
+// session or metrics wrapper's WriteHeader, say), and because gin's writer holds 404 for
+// a path no route matches, which is what a chain's own endpoint is. What the flush then
+// does is up to the first wrapper with a Flush or a FlushError: one that compresses
+// holds the head until its first write.
+//
+// A FlushError is asked first in one place: at the bottom of the Unwrap chain, on a
+// writer with no SetWriteDeadline, which is a consumer's wrapper and not the connection.
+// canFlush has already looked below anything with an Unwrap, so only there can "not
+// supported" be real, and asking before a status is named leaves an ordinary answer
+// possible. It costs what ErrStreamingUnsupported says. Below other wrappers the status
+// is still named after it says yes, so that gin's writer does not hold 404, which is one
+// line of net/http's superfluous WriteHeader log per stream.
+//
+// The type goes on after the deadline, which can fail with nothing sent, and before the first
+// thing that can send the head: that FlushError can, and a real server copies the headers when
+// a status is named. So the two answers of "not supported" that come after it take it back. The
+// second comes from a wrapper above the bottom, and once the status has been named: a consumer's
+// wrapper that holds the head sends what is left, and a server that has copied the headers has
+// already answered 200, so the refusal cannot reach its client either way. Gin's writer holds
+// no head here: its FlushError calls WriteHeaderNow before it asks.
+func (h *httpResponseWriter) sendHead(ew *httpEventWriter, contentType string) error {
+	if err := ew.extend(); err != nil {
+		h.wrote, h.streaming = true, true
+
+		return err
+	}
+
+	takeBackType := h.setStreamType(contentType)
+
+	bottom, depth := bottomWriter(h.w)
+	_, moves := bottom.(interface{ SetWriteDeadline(time.Time) error })
+
+	if reporter, ok := bottom.(flushErrorer); ok && !moves {
+		err := reporter.FlushError()
+		if errors.Is(err, http.ErrNotSupported) {
+			takeBackType()
+
+			return err
+		}
+
+		if err != nil {
+			ew.cancel()
+		}
+
+		if err != nil || depth == 0 {
+			h.wrote, h.streaming = true, true
+
+			return err
+		}
+	}
+
+	h.wrote, h.streaming = true, true
+
+	h.w.WriteHeader(http.StatusOK)
+
+	err := ew.Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		h.streaming = false
+
+		takeBackType()
+	}
+
+	return err
+}
+
+// setStreamType puts a stream's type on the response, and returns what puts back the type that was
+// there, which may be a consumer's. An empty type sets none, so there is nothing to put back.
+func (h *httpResponseWriter) setStreamType(contentType string) (takeBack func()) {
+	if contentType == "" {
+		return func() {}
+	}
+
+	const name = "Content-Type"
+
+	header := h.w.Header()
+	before, had := header[name]
+
+	header.Set(name, contentType)
+
+	return func() {
+		if had {
+			header[name] = before
+		} else {
+			delete(header, name)
+		}
+	}
+}
+
+// maxResponseWrappers is how many layers of a writer are looked at. A chain longer than
+// this is taken for one that never ends, because a wrapper whose Unwrap returns itself
+// would otherwise hold its request for ever, and it counts as unable to flush.
+const maxResponseWrappers = 32
+
+// responseUnwrapper is what http.ResponseController follows through a wrapper.
+type responseUnwrapper interface {
+	Unwrap() http.ResponseWriter
+}
+
+// flushErrorer is the flush that can say it failed.
+type flushErrorer interface {
+	FlushError() error
+}
+
+// bottomWriter follows Unwrap to the layer that has none, and says how many it crossed.
+// It is nil for a chain longer than maxResponseWrappers.
+func bottomWriter(w http.ResponseWriter) (bottom http.ResponseWriter, depth int) {
+	for depth = range maxResponseWrappers {
+		u, ok := w.(responseUnwrapper)
+		if !ok {
+			return w, depth
+		}
+
+		w = u.Unwrap()
+	}
+
+	return nil, 0
+}
+
+// canFlush reports whether flushing w reaches a connection, without doing it, which
+// would send the head. It looks past a wrapper that has Unwrap before believing the
+// wrapper's own Flush: gin's writer always has one, which does nothing and returns no
+// error over a writer that cannot flush, so a stream over it would seem to work and
+// deliver nothing. Below the last Unwrap, a Flush or a FlushError is believed.
+func canFlush(w http.ResponseWriter) bool {
+	bottom, _ := bottomWriter(w)
+
+	switch bottom.(type) {
+	case flushErrorer, http.Flusher:
+		return true
+	default:
+		return false
+	}
+}
+
+// httpEventWriter is what the body of a net/http stream writes through.
+type httpEventWriter struct {
+	w      http.ResponseWriter
+	rc     *http.ResponseController
+	window time.Duration
+	cancel context.CancelFunc
+}
+
+// extend moves the write deadline. A writer with no deadline to move is not a
+// failure: see Stream.
+func (e *httpEventWriter) extend() error {
+	// The system clock and never the chain's: this is a real socket's deadline,
+	// which a controlled clock would set in the wrong place.
+	err := e.rc.SetWriteDeadline(clock.System().Now().Add(e.window))
+	if err == nil || errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+
+	e.cancel()
+
+	return err
+}
+
+func (e *httpEventWriter) Write(b []byte) (int, error) {
+	if err := e.extend(); err != nil {
+		return 0, err
+	}
+
+	n, err := e.w.Write(b)
+	if err != nil {
+		e.cancel()
+	}
+
+	return n, err
+}
+
+// Flush delivers what was written, and ends the body's context when it cannot.
+func (e *httpEventWriter) Flush() error {
+	if err := e.extend(); err != nil {
+		return err
+	}
+
+	err := e.rc.Flush()
+	if err != nil {
+		e.cancel()
+	}
+
+	return err
+}
+
+// runBody runs body, cutting the connection if it does not return. A recovery
+// middleware outside the adapter, such as gin.Recovery, would otherwise let the handler
+// return as usual, and net/http would write the end of the response, so a panic would
+// look like a complete stream. A deadline already passed is what cuts it: net/http's
+// write of that end fails and it closes the connection, and over HTTP/2 the stream is
+// reset at once.
+//
+// It recovers nothing. A panic goes on as it came, http.ErrAbortHandler and its stack
+// included, and so does runtime.Goexit, which a recover would not see. The deadline is
+// not one a wrapper that hides the connection lets through, so behind such a wrapper a
+// panic a middleware recovers can still look complete: see ErrStreamingUnsupported.
+func (e *httpEventWriter) runBody(
+	ctx context.Context,
+	w EventWriter,
+	body func(ctx context.Context, w EventWriter) error,
+) {
+	returned := false
+
+	defer func() {
+		if !returned {
+			_ = e.rc.SetWriteDeadline(time.Unix(1, 0))
+		}
+	}()
+
+	// There is no one to tell: see Stream.
+	_ = body(ctx, w)
+
+	returned = true
 }
 
 // committed reports whether a status or body has already gone out, so the

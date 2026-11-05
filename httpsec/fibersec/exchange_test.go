@@ -750,6 +750,52 @@ func TestFiberResponseWriter(t *testing.T) {
 			},
 		},
 		{
+			// net/http has sent the head by then and ignores the header. fiber has not, so its writer
+			// must refuse it, or one chain answers two ways on the two frameworks.
+			name: "a header set after the response has begun has no effect",
+			act: func(w httpsec.ResponseWriter) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.SetHeader("X-Late-Set", "1")
+			},
+			assert: func(t *testing.T, res response) {
+				assert.Equal(t, http.StatusServiceUnavailable, res.status)
+				assert.Empty(t, res.header.Get("X-Late-Set"))
+			},
+		},
+		{
+			name: "a header added after the response has begun has no effect",
+			act: func(w httpsec.ResponseWriter) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.AddHeader("X-Late-Add", "1")
+			},
+			assert: func(t *testing.T, res response) {
+				assert.Equal(t, http.StatusServiceUnavailable, res.status)
+				assert.Empty(t, res.header.Values("X-Late-Add"))
+			},
+		},
+		{
+			name: "a header added after the body has begun has no effect",
+			act: func(w httpsec.ResponseWriter) {
+				_, _ = w.Write([]byte("maintenance"))
+				w.AddHeader("X-Late-Add", "1")
+			},
+			assert: func(t *testing.T, res response) {
+				assert.Equal(t, "maintenance", res.body)
+				assert.Empty(t, res.header.Values("X-Late-Add"))
+			},
+		},
+		{
+			name: "a cookie set after the response has begun has no effect",
+			act: func(w httpsec.ResponseWriter) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.SetCookie(&httpsec.Cookie{Name: "sid", Value: "late", Path: "/"})
+			},
+			assert: func(t *testing.T, res response) {
+				assert.Equal(t, http.StatusServiceUnavailable, res.status)
+				assert.Empty(t, res.header.Values("Set-Cookie"))
+			},
+		},
+		{
 			name: "a session cookie keeps its flags and gains no expiry",
 			act: func(w httpsec.ResponseWriter) {
 				w.SetCookie(&httpsec.Cookie{

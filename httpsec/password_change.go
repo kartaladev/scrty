@@ -32,6 +32,13 @@ import (
 // the username stay until they leave the lockout window. A consumer who
 // changes passwords outside the chain clears them with
 // lockout.Policy.Reset.
+//
+// A nil return also means the password is changed: on a chain with
+// EnableSessionSignals the chain then raises credential_changed with kind
+// "password" to every open stream of the user, and the signal cannot be
+// recalled. A function that wrote a refusal to the response itself must
+// therefore not return nil, since nil would tell the user's other streams of
+// a change that did not happen: return the refusal as an error instead.
 type ChangePasswordFunc func(ex *Exchange) error
 
 // passwordChangeGate holds every session that owes a password change, and lets
@@ -233,6 +240,7 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 
 	// The password is changed by now, whether or not the session then saves.
 	emitEvent(ctx, sessionEvent(event.AuthnPasswordChange, event.OutcomeSuccess, s))
+	ex.credentialChanged(s.UserID, CredentialPassword)
 
 	g.clearFailures(ctx, username)
 
@@ -374,6 +382,10 @@ func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChange
 // An empty path, or no function, is refused: either would be an endpoint that
 // cannot answer, while the consumer believed their callers had a way out of
 // the gate.
+//
+// When fn returns nil the password is taken as changed, and a chain with
+// EnableSessionSignals raises credential_changed with kind "password"; see
+// ChangePasswordFunc. A function that refused the request must not return nil.
 func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChangeOption {
 	return func(g *passwordChangeGate) error {
 		switch {

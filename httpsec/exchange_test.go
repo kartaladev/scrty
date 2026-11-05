@@ -153,6 +153,11 @@ func (r *miniRequest) ClientCertificate() *x509.Certificate { return nil }
 // miniWriter writes the consumer's framework through the library's port.
 type miniWriter struct{ ex *miniExchange }
 
+// Stream reports what a consumer's framework with no streaming path reports.
+func (*miniWriter) Stream(context.Context, string, func(context.Context, httpsec.EventWriter) error) error {
+	return httpsec.ErrStreamingUnsupported
+}
+
 func (w *miniWriter) SetHeader(name, value string) {
 	if w.ex.outHeader == nil {
 		w.ex.outHeader = http.Header{}

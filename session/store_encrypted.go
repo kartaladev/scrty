@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -110,7 +111,12 @@ type encryptedStore struct {
 //
 // ListByUser opens nothing: a listing needs no sealed field, so it lists with
 // the cipher's keys unreachable or retired, and the sessions it returns carry
-// neither token, never an envelope in a token's place.
+// neither token, never an envelope in a token's place. ListByFamily is the same
+// read narrowed to one family. The returned store always offers it: it reads
+// through inner's FamilyReader when inner has one, and when inner has none it
+// lists through inner and keeps the one family, so a consumer's own store gains
+// nothing it must implement, and keeps the limit that listing brings (see
+// Sessions.SignInState).
 //
 // A failure of inner or of the cipher is returned behind fixed text of this
 // package — never naming the session identifier, which is the bearer
@@ -319,13 +325,50 @@ func (s *encryptedStore) ListByUser(ctx context.Context, user identity.UserID, n
 	if err != nil {
 		return nil, storeFailed(err, "session: the inner store could not list the user's sessions")
 	}
+
+	return withoutSealed(listed), nil
+}
+
+// ListByFamily passes the read on and opens nothing, as ListByUser does: it
+// asks inner's FamilyReader when inner has one, and otherwise lists through
+// inner and keeps the sessions of family, so the answer is the same narrowed
+// read either way. The nil family names none, and asks inner nothing.
+func (s *encryptedStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*Session, error) {
+	if family.IsZero() {
+		return nil, nil
+	}
+
+	const text = "session: the inner store could not list the sign-in's sessions"
+
+	if reader, ok := s.inner.(FamilyReader); ok {
+		listed, err := reader.ListByFamily(ctx, user, family, now)
+		if err != nil {
+			return nil, storeFailed(err, text)
+		}
+
+		return withoutSealed(listed), nil
+	}
+
+	listed, err := s.inner.ListByUser(ctx, user, now)
+	if err != nil {
+		return nil, storeFailed(err, text)
+	}
+	listed = slices.DeleteFunc(listed, func(sess *Session) bool { return sess == nil || sess.FamilyID != family })
+
+	return withoutSealed(listed), nil
+}
+
+// withoutSealed clears both tokens of every session listed, so no envelope is
+// ever handed back in a token's place. A caller needing a token loads the
+// session.
+func withoutSealed(listed []*Session) []*Session {
 	for _, sess := range listed {
 		if sess != nil {
 			sess.ExternalIDToken, sess.CSRFToken = "", ""
 		}
 	}
 
-	return listed, nil
+	return listed
 }
 
 func (s *encryptedStore) DeleteExpired(ctx context.Context) (int, error) {
@@ -389,4 +432,7 @@ func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (boo
 	return used, storeFailed(err, "session: the inner store could not read whether the session's successor was used")
 }
 
-var _ Store = (*encryptedStore)(nil)
+var (
+	_ Store        = (*encryptedStore)(nil)
+	_ FamilyReader = (*encryptedStore)(nil)
+)

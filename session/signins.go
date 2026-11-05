@@ -12,8 +12,8 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrListUnavailable is what Sessions.ListSignIns returns when the store
-// could not list the user's sessions. It is a dependency failure, not a
+// ErrListUnavailable is what Sessions.ListSignIns and Sessions.SignInState
+// return when the store could not list the user's sessions. It is a dependency failure, not a
 // verdict on the user: the store's own error stays reachable through
 // errors.Is and errors.As, behind this package's fixed text.
 var ErrListUnavailable = errors.New(textListUnavailable)
@@ -94,11 +94,7 @@ func (m *Sessions) ListSignIns(ctx context.Context, user identity.UserID, curren
 	now := m.clock.Now()
 	listed, err := m.store.ListByUser(ctx, user, now)
 	if err != nil {
-		if hangup.ByCaller(ctx, err) {
-			return nil, diag.Wrap(err, textListEnded, ctx.Err())
-		}
-
-		return nil, diag.Wrap(err, textListUnavailable, ErrListUnavailable)
+		return nil, listingFailed(ctx, err)
 	}
 
 	heads := make(map[id.ID]*Session, len(listed))
@@ -126,6 +122,17 @@ func (m *Sessions) ListSignIns(ctx context.Context, user identity.UserID, curren
 	}
 
 	return signIns, nil
+}
+
+// listingFailed is what a failed Store.ListByUser comes back as: matching
+// ctx's error when ctx ending first caused it, a hang-up, and ErrListUnavailable
+// otherwise, with the store's error reachable behind either.
+func listingFailed(ctx context.Context, err error) error {
+	if hangup.ByCaller(ctx, err) {
+		return diag.Wrap(err, textListEnded, ctx.Err())
+	}
+
+	return diag.Wrap(err, textListUnavailable, ErrListUnavailable)
 }
 
 // pendingOf is what a session in state st still owes: the state itself when
@@ -191,6 +198,7 @@ func (m *Sessions) EndSignIn(ctx context.Context, user identity.UserID, handle s
 	if _, err := m.store.DeleteFamily(ctx, family); err != nil {
 		return storeFailed(err, "session: the sign-in could not be ended")
 	}
+	m.reportEnd(ctx, EndReport{Cause: EndByHandle, User: user, Family: family})
 
 	return nil
 }
@@ -238,6 +246,7 @@ func (m *Sessions) EndOtherSignIns(ctx context.Context, user identity.UserID, cu
 
 		return n, storeFailed(err, "session: the user's other sign-ins could not be ended")
 	}
+	m.reportEnd(ctx, EndReport{Cause: EndOtherSignIns, User: user, KeptFamily: current.FamilyID})
 
 	return n, nil
 }

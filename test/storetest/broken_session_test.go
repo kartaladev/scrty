@@ -259,6 +259,49 @@ const (
 	// ListByUser also lists sessions past a deadline, as a query that does
 	// not judge expiry would.
 	sessionListIncludesExpired sessionDefect = "list-includes-expired"
+	// ListByUser leaves out what a sign-in's state reads: the upstream
+	// identifiers and the authentication time, as a query naming only the
+	// columns a listing of sign-ins shows would.
+	sessionListOmitsState sessionDefect = "list-omits-state"
+	// ListByUser lists a strictly rotated record alongside its successor, as a
+	// query filtering superseded rows by their grace window would.
+	sessionListIncludesStrict sessionDefect = "list-includes-strict"
+	// ListByFamily answers nothing, as a query on the wrong column would, so it
+	// disagrees with the listing from the first read.
+	sessionFamilyReadAnswersNothing sessionDefect = "family-read-answers-nothing"
+	// ListByFamily answers the family's superseded member and not its head, as
+	// a query reading the family's oldest row would.
+	sessionFamilyReadAnswersPredecessor sessionDefect = "family-read-answers-predecessor"
+	// ListByFamily also answers superseded members, as a query that does not
+	// filter on supersession would.
+	sessionFamilyReadIncludesSuperseded sessionDefect = "family-read-includes-superseded"
+	// ListByFamily answers a strictly rotated record alongside its successor,
+	// as a query filtering superseded rows by their grace window would.
+	sessionFamilyReadIncludesStrict sessionDefect = "family-read-includes-strict"
+	// ListByFamily also answers sessions past a deadline, as a query that does
+	// not judge expiry would.
+	sessionFamilyReadIncludesExpired sessionDefect = "family-read-includes-expired"
+	// ListByFamily judges expiry by the store's clock, not the time passed.
+	sessionFamilyReadUsesStoreClock sessionDefect = "family-read-uses-store-clock"
+	// ListByFamily ignores the user, as a query on family_id alone would.
+	sessionFamilyReadIgnoresUser sessionDefect = "family-read-ignores-user"
+	// ListByFamily matches the reference case-insensitively.
+	sessionFamilyReadFoldsCase sessionDefect = "family-read-folds-case"
+	// ListByFamily ignores the family, as a listing passed straight on would.
+	sessionFamilyReadIgnoresFamily sessionDefect = "family-read-ignores-family"
+	// ListByFamily reads the nil family as every family of the user.
+	sessionFamilyReadNilListsAll sessionDefect = "family-read-nil-lists-all"
+	// ListByFamily leaves out what a sign-in's state reads, as a query naming
+	// fewer columns than the listing would.
+	sessionFamilyReadOmitsState sessionDefect = "family-read-omits-state"
+	// ListByFamily hands back the record it holds, not a copy.
+	sessionFamilyReadSharesRecord sessionDefect = "family-read-shares-record"
+	// ListByFamily judges a session by its idle deadline alone, so one past
+	// its absolute deadline is still answered.
+	sessionFamilyReadIgnoresAbsolute sessionDefect = "family-read-ignores-absolute"
+	// ListByFamily leaves out a sign-in still owing a second factor, which
+	// ListByUser lists.
+	sessionFamilyReadSkipsPendingMFA sessionDefect = "family-read-skips-pending-mfa"
 	// Save writes the caller's sign-in metadata rather than keeping the
 	// stored one, as columns left in the UPDATE would.
 	sessionSaveWritesMetadata sessionDefect = "save-writes-metadata"
@@ -335,7 +378,10 @@ type sessionStore struct {
 	strayMembers map[id.ID]int
 }
 
-var _ session.Store = (*sessionStore)(nil)
+var (
+	_ session.Store        = (*sessionStore)(nil)
+	_ session.FamilyReader = (*sessionStore)(nil)
+)
 
 func newSessionStore(defect sessionDefect, clk clock.Clock) *sessionStore {
 	return &sessionStore{
@@ -673,9 +719,68 @@ func (s *sessionStore) ListByUser(_ context.Context, user identity.UserID, now t
 		case sessionListIgnoresUser:
 			match = true
 		}
-		live := sess.SupersededAt.IsZero() || s.defect == sessionListIncludesSuperseded
+		live := sess.SupersededAt.IsZero() || s.defect == sessionListIncludesSuperseded ||
+			(s.defect == sessionListIncludesStrict && sess.RotatedStrictly)
 		unexpired := !expiredSession(sess, now) || s.defect == sessionListIncludesExpired
 		if match && live && unexpired {
+			entry := cloneSession(sess)
+			if s.defect == sessionListOmitsState {
+				entry.ExternalIssuer, entry.ExternalSessionID, entry.AuthenticatedAt = "", "", time.Time{}
+			}
+			listed = append(listed, entry)
+		}
+	}
+	return listed, nil
+}
+
+func (s *sessionStore) ListByFamily(_ context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	listed := []*session.Session{}
+	if s.defect == sessionFamilyReadAnswersNothing {
+		return listed, nil
+	}
+	if family.IsZero() && s.defect != sessionFamilyReadNilListsAll {
+		return listed, nil
+	}
+	if s.defect == sessionFamilyReadUsesStoreClock {
+		now = s.clock.Now()
+	}
+	for _, sess := range s.records {
+		sameUser := sess.UserID == user
+		switch s.defect {
+		case sessionFamilyReadIgnoresUser:
+			sameUser = true
+		case sessionFamilyReadFoldsCase:
+			sameUser = strings.EqualFold(string(sess.UserID), string(user))
+		}
+		sameFamily := sess.FamilyID == family || s.defect == sessionFamilyReadIgnoresFamily ||
+			(s.defect == sessionFamilyReadNilListsAll && family.IsZero())
+		live := sess.SupersededAt.IsZero() || s.defect == sessionFamilyReadIncludesSuperseded ||
+			(s.defect == sessionFamilyReadIncludesStrict && sess.RotatedStrictly)
+		if s.defect == sessionFamilyReadAnswersPredecessor {
+			live = !sess.SupersededAt.IsZero() || sess.SuccessorDigest == nil && sess.CreatedAt.Equal(sess.FamilyCreatedAt)
+		}
+		unexpired := !expiredSession(sess, now) || s.defect == sessionFamilyReadIncludesExpired ||
+			s.defect == sessionFamilyReadAnswersPredecessor
+		if s.defect == sessionFamilyReadIgnoresAbsolute {
+			unexpired = now.Before(sess.IdleExpiresAt)
+		}
+		if s.defect == sessionFamilyReadSkipsPendingMFA && sess.MFA == session.MFAPending {
+			continue
+		}
+		if !sameUser || !sameFamily || !live || !unexpired {
+			continue
+		}
+		switch s.defect {
+		case sessionFamilyReadSharesRecord:
+			listed = append(listed, sess)
+		case sessionFamilyReadOmitsState:
+			entry := cloneSession(sess)
+			entry.ExternalIssuer, entry.ExternalSessionID, entry.AuthenticatedAt = "", "", time.Time{}
+			listed = append(listed, entry)
+		default:
 			listed = append(listed, cloneSession(sess))
 		}
 	}

@@ -258,6 +258,17 @@ var statusTable = []statusRow{
 	{ErrHostNotAllowed, http.StatusBadRequest},
 	{ErrCrossSiteRequest, http.StatusForbidden},
 
+	// A page on an untrusted origin asking for a signal stream. It has a row of its
+	// own, because it is not reported as a CSRF attack.
+	{ErrCrossSiteStream, http.StatusForbidden},
+
+	// Any method but GET on the signal stream's path, and a writer that cannot stream
+	// (a consumer's adapter, a wrapper with no Unwrap, http.TimeoutHandler), which is
+	// the server's limit and not the client's mistake. ErrStreamingStarted has no row:
+	// it is a consumer's interceptor having written first, which is a server fault.
+	{errSignalsMethod, http.StatusMethodNotAllowed},
+	{ErrStreamingUnsupported, http.StatusNotImplemented},
+
 	// A request the automation-challenge verifier refused: the client must
 	// pass the challenge, not present other credentials. A verifier that
 	// could not answer (ErrChallengeUnavailable) is not here: it is answered

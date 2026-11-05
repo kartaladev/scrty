@@ -1,6 +1,6 @@
-// Package diag keeps a dependency's error text out of what scrty writes.
+// Package diag keeps what a consumer's code holds out of what scrty writes.
 //
-// The rule it applies: the text of an error returned by a consumer's
+// The rule it applies to a failure: the text of an error returned by a consumer's
 // dependency — a store, a loader, a sender, a limiter — never reaches a log
 // record or the text of an error the library returns. That text is written by
 // code the library does not know, and can quote values the library never saw:
@@ -16,6 +16,11 @@
 //
 // A consumer who wants the dependency's full error logs it inside their own
 // implementation of the port, where they know what its text may contain.
+//
+// A recovered panic follows the same rule: a record says where it happened and
+// the value's Go type, through [PanicAttrs], and never the value.
+//
+// [EndedWriter] is here too, for what a stream's adapters share.
 //
 // The package is internal because it is a rule the library applies to itself,
 // not an API consumers need.

@@ -546,6 +546,11 @@ func WithoutCSRFProtection() Option {
 // is no override, because an authenticator running ahead of the check would
 // make the token optional. An interceptor that does not authenticate by a cookie, a bearer token's
 // for example, does not implement it.
+//
+// Such an interceptor that records activity on the session itself, or moves its
+// deadlines, first asks RecordsSessionActivity, which is false for the signal stream, so
+// that a stream held open does not keep an idle sign-in alive. Activity recorded by the
+// chain's own step needs no such question (OrderSessionTouch).
 type CookieAuthenticator interface {
 	// AuthenticatesByCookie marks the interceptor. It is never called.
 	AuthenticatesByCookie()

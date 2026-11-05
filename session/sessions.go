@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -72,6 +73,14 @@ type Sessions struct {
 	// reuseObserver is told about each detected reuse; nil tells no one.
 	reuseObserver         ReuseObserver
 	reuseObserverSupplied bool
+
+	// endObservers are told about each explicit end, in order. The list is
+	// replaced whole on every addition and never changed in place: readers
+	// load it without a lock (observing is the only read), and writers
+	// (appendEndObserver, from WithEndObserver and AddEndObserver) swap in a
+	// copy with compare-and-swap. A Sessions holds it by pointer for that
+	// reason and must not be copied.
+	endObservers atomic.Pointer[[]EndObserver]
 
 	// events is the sink WithSecurityEvents gave the manager, for the reuse
 	// it detects outside a chain.
@@ -221,6 +230,11 @@ func New(opts ...Option) (*Sessions, error) {
 	}
 	if m.reuseObserverSupplied && m.reuseObserver == nil {
 		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)
+	}
+	for i, o := range m.observing() {
+		if nilcheck.IsNil(o) {
+			return nil, fmt.Errorf("%w: end observer %d must not be nil", ErrConfig, i)
+		}
 	}
 	if m.storeSupplied && nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
@@ -516,15 +530,33 @@ func (m *Sessions) Save(ctx context.Context, s *Session) error {
 	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }
 
-// Delete removes the session with this identifier.
+// Delete removes the session with this identifier, and reports EndDeleted to the end observers: one
+// session is gone, for a reason no one has named, which a stream reports as ended. It is for an
+// administrator's job or the like. A consumer's logout calls Logout instead, which ends the whole
+// sign-in, a renewal's successor included, and reports EndLogout.
 func (m *Sessions) Delete(ctx context.Context, id string) error {
-	return storeFailed(m.store.Delete(ctx, id), "session: the session could not be deleted")
+	report := EndReport{Cause: EndDeleted}
+	if s := m.readForReport(ctx, id); s != nil {
+		report.User, report.Family = s.UserID, s.FamilyID
+	}
+
+	if err := m.store.Delete(ctx, id); err != nil {
+		return storeFailed(err, "session: the session could not be deleted")
+	}
+	m.reportEnd(ctx, report)
+
+	return nil
 }
 
 // DeleteByUser removes every session of this user, expired ones included: a
 // caller ending a user's sessions wants them gone, not filtered.
 func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	return storeFailed(m.store.DeleteByUser(ctx, user), "session: the user's sessions could not be deleted")
+	if err := m.store.DeleteByUser(ctx, user); err != nil {
+		return storeFailed(err, "session: the user's sessions could not be deleted")
+	}
+	m.reportEnd(ctx, EndReport{Cause: EndUserSessions, User: user})
+
+	return nil
 }
 
 // DeleteByUserExcept removes every session of this user except the one with
@@ -537,10 +569,18 @@ func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error
 // A keep naming another user's session, or none, is left untouched and every
 // session of this user goes; an empty keep ends them all.
 func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	report := EndReport{Cause: EndUserSessionsExcept, User: user}
+	// A keep naming another user's session keeps nothing of this user's, and
+	// that user's family is not this report's to name.
+	if s := m.readForReport(ctx, keep); s != nil && s.UserID == user {
+		report.KeptFamily = s.FamilyID
+	}
+
 	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
 	}
+	m.reportEnd(ctx, report)
 
 	return n, nil
 }
@@ -578,6 +618,9 @@ func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionI
 	if err != nil {
 		return n, storeFailed(err, "session: the provider session's sessions could not be deleted")
 	}
+	if issuer != "" && sessionID != "" {
+		m.reportEnd(ctx, EndReport{Cause: EndExternalSession, ExternalIssuer: issuer, ExternalSessionID: sessionID})
+	}
 
 	return n, nil
 }
@@ -589,6 +632,9 @@ func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user ident
 	if err != nil {
 		return n, storeFailed(err, "session: the user's sessions from the issuer could not be deleted")
 	}
+	if issuer != "" {
+		m.reportEnd(ctx, EndReport{Cause: EndUserExternalIssuer, User: user, ExternalIssuer: issuer})
+	}
 
 	return n, nil
 }
@@ -598,7 +644,37 @@ func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user ident
 // issue through rotation and renewal, so this ends that sign-in without
 // touching the user's sessions from other sign-ins. An unknown family ends
 // nothing and is not an error.
+//
+// End observers hear EndFamilyRevoked, which names the family and no user. It
+// is the end for a reason the manager is not told, such as an administrator's
+// revocation; a user logging out goes through Logout, which ends the same
+// sessions and says so.
 func (m *Sessions) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
+	return m.endFamily(ctx, family, EndReport{Cause: EndFamilyRevoked, Family: family})
+}
+
+// Logout ends the sign-in user is logging out of: every session of family,
+// superseded ones and a renewal's successor included, so logging out with an
+// identifier inside its renewal window leaves no live successor behind. It
+// ends what RevokeFamily ends and answers as RevokeFamily answers: the count of
+// sessions that went, an error for the nil family, a store failure behind fixed
+// text, and for a family that is not there, nothing ended and no error.
+//
+// End observers hear EndLogout naming user and family, which is what tells a
+// logout from a revocation. As with RevokeFamily, a write matching nothing is
+// still reported (see WithEndObserver).
+//
+// The manager reads no session here, so it does not check that family is
+// user's: user is what the report says and nothing else. A caller passes the
+// user and family of the session it authenticated. To end a sign-in a client
+// names by its handle, where ownership has to be judged, use EndSignIn.
+func (m *Sessions) Logout(ctx context.Context, user identity.UserID, family id.ID) (int, error) {
+	return m.endFamily(ctx, family, EndReport{Cause: EndLogout, User: user, Family: family})
+}
+
+// endFamily deletes family's sessions and, once the write has returned no
+// error, tells the end observers report.
+func (m *Sessions) endFamily(ctx context.Context, family id.ID, report EndReport) (int, error) {
 	if family.IsZero() {
 		return 0, errors.New("session: the nil family names no sessions to revoke")
 	}
@@ -607,6 +683,7 @@ func (m *Sessions) RevokeFamily(ctx context.Context, family id.ID) (int, error) 
 	if err != nil {
 		return n, storeFailed(err, "session: the family's sessions could not be deleted")
 	}
+	m.reportEnd(ctx, report)
 
 	return n, nil
 }

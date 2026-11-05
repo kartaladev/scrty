@@ -149,18 +149,151 @@ type Cookie = http.Cookie
 // NewHTTPResponseWriter, which is what a consumer gets when they wire nothing
 // of their own.
 type ResponseWriter interface {
-	// SetHeader replaces every value of the response header name with value.
+	// SetHeader replaces every value of the response header name with value. Once
+	// the response has begun, by WriteHeader, Write or Stream, it has no effect on the
+	// writers the library provides, whether or not the framework has yet sent the head. The
+	// library sets no stream's type through it: Stream is given that.
 	SetHeader(name, value string)
 
 	// AddHeader adds value to the response header name, keeping the values
 	// already set, as net/http's Header.Add does. It is how a list header
 	// such as Vary is extended without dropping what an outer layer or an
-	// earlier interceptor put there.
+	// earlier interceptor put there. It has no effect once the response has begun,
+	// as SetHeader has none.
 	AddHeader(name, value string)
 
+	// SetCookie adds a Set-Cookie header. It has no effect once the response has
+	// begun, as SetHeader has none.
 	SetCookie(c *Cookie)
 	WriteHeader(status int)
 	Write(b []byte) (int, error)
+
+	// Stream sends the status, every header set so far and contentType as the
+	// Content-Type, then has body write the rest of the response, each
+	// EventWriter.Flush reaching the client while the response stays open. The status
+	// is 200: a response that wants another answers with WriteHeader and does not
+	// stream. Headers and cookies set after Stream have no effect.
+	//
+	// The type is set only when the adapter commits the head, so a refusal carries none
+	// of it and has nothing to take back: an error from Stream, and a chain that refuses
+	// on fiber after Stream returned, leave Content-Type as they found it, for what answers
+	// the refusal to name, or for a framework or net/http to fill in. A response that had
+	// already begun keeps the headers it chose. contentType replaces a Content-Type set
+	// earlier when the stream goes out. An empty contentType sets none, so what was set
+	// earlier stands, and a consumer who names the type themselves and passes "" has it on
+	// a refusal too: a Content-Type set before a refused Stream stays on the refusal.
+	// Otherwise the response has whatever its framework gives one no one named a type for:
+	// nothing on net/http and gin, and fasthttp's default on fiber.
+	//
+	// One refusal carries the type to the client, and that is a stated limit. A wrapper above
+	// the bottom of the Unwrap chain can be asked whether it flushes only once the status is
+	// named, and asking sooner can itself send the head. If such a wrapper then says
+	// http.ErrNotSupported, Stream returns ErrStreamingUnsupported and puts the header back,
+	// but a real server has copied the headers at WriteHeader(200): the client receives
+	// status 200 with the stream's type, and whatever answers the refusal writes after it
+	// (under gin, a render) goes out under that status and that type.
+	//
+	// It returns ErrStreamingStarted, writing nothing and not running body, when
+	// the response has begun: after WriteHeader, after Write, or on a second call.
+	// Once a stream has started, WriteHeader has no effect, and Write writes
+	// nothing and returns ErrStreamingStarted, so nothing reaches the client but
+	// what body writes.
+	//
+	// A writer that cannot stream returns ErrStreamingUnsupported, having written
+	// nothing and without running body, and the signal stream answers such a
+	// request with 501. That is what a consumer's own writer over a framework
+	// with no way to deliver an open response returns, and what the net/http and
+	// gin writers return over an http.ResponseWriter that cannot flush.
+	//
+	// If Stream returns nil, body runs exactly once. If it returns an error, body
+	// never runs. So a caller may hold something for its body to free, and has only
+	// that error to free it on. What body returns goes nowhere on any adapter, so a body
+	// keeps its own record of how it ended.
+	//
+	// When Stream returns depends on the framework, so nothing after the call may
+	// rely on the body having run or on it not having run:
+	//   - net/http and gin run body inline. Stream returns once it has, with the
+	//     response already sent, so a chain that refuses afterwards changes nothing the
+	//     client received: its refusal has nowhere left to go. A connection already gone
+	//     runs body on an ended context, with a writer whose every call fails and whose
+	//     writes reach nothing. The chain's own context is what ctx normally is, so body's
+	//     context ends when the client leaves.
+	//   - fiber writes a response after its handlers have returned. Stream registers
+	//     body and returns nil at once, and body runs once the chain has returned, on a
+	//     context detached from ctx's cancellation. A goroutine reads the connection
+	//     while body runs, which is how a client leaving ends body's context, so the
+	//     response says Connection: close and the connection serves nothing after it. Its
+	//     context also ends at server shutdown and when it returns. If the chain refused,
+	//     or the connection has gone, body still runs: on an already-ended context, with
+	//     a writer whose every call fails and whose writes reach nothing, and the response
+	//     is the refusal and not a stream. Stream on a writer whose chain has returned
+	//     returns ErrStreamingStarted and body never runs, because the fiber context the
+	//     writer held is no longer this request's.
+	//
+	// On every adapter body's context carries ctx's values, and nothing else: read what
+	// the chain resolved through it, not through the exchange.
+	//
+	// Stream is called on the chain's own goroutine, before the chain returns. That is a stated
+	// limit: a writer handed to another goroutine while the chain unwinds is not safe to call on
+	// fiber, where the writer reaches a fiber context the framework releases and reuses, and no lock
+	// in the writer could make that safe. The one call promised from elsewhere is the refusal a
+	// Stream makes once its chain has returned (ErrStreamingStarted).
+	//
+	// A body that does not return, through a panic or runtime.Goexit, has run, and must
+	// not leave a response a client can take for a complete one:
+	//   - net/http and gin cut the connection and let the panic go on unchanged, to a
+	//     recovery middleware such as gin.Recovery or to the server, so a consumer sees
+	//     the value it would have seen without a stream, http.ErrAbortHandler included.
+	//     The cut needs a deadline to move, so behind a wrapper with no Unwrap that also
+	//     hides the deadline, a panic that a middleware recovers still looks complete.
+	//   - fiber runs the body on a goroutine no framework recovers, so it recovers and
+	//     logs a panic itself, logging nothing of its value, and the response ends as cut.
+	//     A refused stream, or a connection already gone, has no response of its own to
+	//     cut.
+	//
+	// On net/http and gin a client on HTTP/1.0 cannot tell, because a response there has
+	// no end to withhold. fiber answers such a client with HTTP/1.1 and chunks.
+	//
+	// On the adapters the library provides, body's context ends within a moment of the
+	// client leaving, with nothing written to notice it, and a client that half-closes
+	// its connection counts as having left. It also ends once a Write or a Flush has
+	// failed. body should return when it ends. The deadline it writes under, what a nil
+	// Flush promises, and how long a client that stops reading can hold a stream, are
+	// described on EventWriter and StreamWriteWindow.
+	//
+	// # A consumer's own adapter
+	//
+	// All of this is the contract, and a consumer's adapter keeps it or returns
+	// ErrStreamingUnsupported. In particular, it must:
+	//   - set contentType only once nothing can refuse the stream any more, or put back what
+	//     was there when it is refused, for a writer whose flush is both the question and the
+	//     head, and set none for an empty one. If it runs body after its chain has returned, that
+	//     is when the chain did not refuse;
+	//   - keep the server's write deadline from ending the stream, moving it by
+	//     StreamWriteWindow where a deadline exists, and end body's context when the client
+	//     leaves, including with nothing written. The signal stream counts on both: a
+	//     stream that never hears its client go keeps its place under the caps;
+	//   - if it runs body after its chain has returned, hold body back until then, as
+	//     fiber's writer does with a gate its middleware opens, and run it on an ended
+	//     context if the chain refused. A body started while the chain still runs can
+	//     send what the chain then refuses. Its body must not hold anything the framework
+	//     reuses, and Stream must refuse once nothing is left to open the gate;
+	//   - give body a context carrying ctx's values, and no cancellation from the end of
+	//     the handlers if it runs after them;
+	//   - keep a body that does not return from looking like a complete response, and
+	//     from hanging the client.
+	//
+	// The signal stream's own code recovers its panics, so these guards serve a consumer
+	// calling Stream directly.
+	//
+	// body must not read the exchange or anything it got from the exchange, on any
+	// adapter. Copy what it needs before calling Stream, strings included (with
+	// strings.Clone). On fiber the chain has returned by the time body runs, so the
+	// request and the strings it answered are views into buffers that are reused for
+	// other requests, and body could read another user's request. net/http and gin do
+	// not reuse them that way, and the rule is the same so that a stream written on one
+	// adapter is safe on the others.
+	Stream(ctx context.Context, contentType string, body func(ctx context.Context, w EventWriter) error) error
 }
 
 // Exchange is one request passing through the chain.
@@ -356,7 +489,8 @@ func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Ses
 // challenge handling the built-in authenticators apply, and returns their
 // refusal or nil.
 //
-// A denial is returned as the policy's reason. A challenge of a kind nothing
+// A denial is returned as the policy's reason. On the signal stream's own path, a throttle
+// matches it through errors.Is, and is not that very value. A challenge of a kind nothing
 // on the chain enforces is refused with a configuration error. Any other
 // challenge is marked where the gate enforcing it reads it, and nil is
 // returned so the request goes on to that gate: a built-in kind is marked on

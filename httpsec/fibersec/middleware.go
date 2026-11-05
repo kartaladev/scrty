@@ -68,7 +68,22 @@ import (
 // gives the handler no disconnect signal: its RequestCtx.Done() fires only at
 // server shutdown. The chain's context therefore ends when the request's
 // handling ends, not earlier, and a long-running interceptor must bound itself
-// with its own deadline.
+// with its own deadline. A stream is the exception: a goroutine reads its connection
+// while its body runs, and a client that leaves ends the body's context, as
+// httpsec.ResponseWriter.Stream says. fiber's in-memory App.Test transport has
+// nothing left to read once it has the request, which reads as the client leaving, so
+// a stream's body runs once on a context that ends at once under it: a stream is
+// tested on a real listener.
+//
+// # Streams and middleware outside the chain
+//
+// A stream's body waits until this handler has returned, and a chain that refused ends
+// it. Fiber middleware outside this one runs after that, so if it fails once the chain
+// has returned nil it cannot take the stream back: the gate has opened, and fiber's error
+// handler sets its status over the head of a stream that is live. The client gets that
+// status with the events. An EventSource refuses a non-200 answer, and what is sent is
+// the caller's own sign-in, but place middleware that can refuse a request inside this
+// one, behind the chain, so that a refusal is one the stream sees.
 //
 // A nil chain is a wiring mistake and panics here, at wiring time, rather than
 // on the first request a server takes.
@@ -121,7 +136,13 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		ctx, cancel := context.WithCancel(outer)
 		defer cancel()
 
-		ex := httpsec.NewExchange(ctx, request{c: fc}, &responseWriter{c: fc})
+		w := &responseWriter{c: fc, inChain: true}
+
+		// A chain that panics is refused as one that returned an error is.
+		refused := true
+		defer func() { w.chainReturned(refused) }()
+
+		ex := httpsec.NewExchange(ctx, request{c: fc}, w)
 
 		if err := run(ex); err != nil {
 			// What the route or a later handler returned goes back as it came,
@@ -134,6 +155,8 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 
 			return newRefusal(err)
 		}
+
+		refused = false
 
 		// A request the chain answered itself returns no error and called no
 		// Next, which is what stops the remaining fiber handlers: the chain has

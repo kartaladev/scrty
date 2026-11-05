@@ -1031,6 +1031,540 @@ chain, err := httpsec.New(
 | Notice device text | browser and platform family, never the raw user agent | `httpsec.WithSignInNoticeMessage` (it receives only the family text) |
 | Passkey removal notice | on | `httpsec.WithoutPasskeyRemovalNotification` |
 
+## Session signals
+
+`httpsec.EnableSessionSignals` adds a Server-Sent Events stream that tells a front end what happened
+to its own sign-in: that it ended and why, or that a deadline is close. It is off by default, needs
+no data migration, and carries no session identifier or credential. The session store decides
+whether a sign-in has ended, and a message on the bus only wakes the stream to read it, so a lost
+message costs at most a heartbeat and half a second.
+
+### Enabling it
+
+```go
+chain, err := httpsec.New(
+	httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+	httpsec.EnableSessionSignals(httpsec.SessionSignals{}), // every default; see below
+)
+```
+
+The stream answers `GET` at `Path` after every authentication interceptor, in the slot
+`httpsec.OrderSessionSignals`. Headers, proxies, CORS, CSRF, rate limits, authentication and the
+pending-session gates apply below it as on any protected route. Holding a stream open is not
+activity: it never moves the sign-in's idle deadline.
+
+A sign-in is required: a caller authenticated with none, by Basic, an API key or a token bound to
+no session, is refused with 403, and no credential at all with 401.
+
+### Who may open a stream
+
+CORS alone only decides which response headers an origin gets, so the stream applies a cross-site
+check of its own, whether or not CSRF protection is enabled. A refusal is 403,
+`httpsec.ErrCrossSiteStream`, before the stream takes a place. It is logged with sampling and is not
+reported as a CSRF attack.
+
+- `Sec-Fetch-Site` of `same-origin` or `none` passes. Any other value, `same-site` included, passes
+  only for a trusted origin.
+- With no `Sec-Fetch-Site`, no `Origin` or the request's own origin passes, and any other origin only
+  when trusted. Old browsers and non-browser clients send neither header.
+- `Origin: null` never passes.
+- **Trusted depends on how the stream authenticated.** A cookie needs an origin `EnableCORS` names,
+  exactly or by pattern, with `AllowCredentials`; `*` never counts. A credential in the
+  `Authorization` header, which a page can send only if it already holds it, needs any origin the
+  policy allows, and `*` counts. With no CORS layer, nothing cross-origin is trusted. A consumer's
+  bearer on a header of its own is judged as a cookie, the stricter of the two.
+
+**The limit.** Over HTTPS on a current browser, a foreign page cannot open a cookie stream. Over
+plain HTTP, or from a browser without Fetch Metadata, a cross-site tag or navigation sends neither
+header and passes, because non-browser clients send neither header either and must pass. So set
+`SameSite` and `Secure` on the session cookie.
+
+The CORS allowlist is the override. There is no switch to turn the check off, because a stream a
+foreign page can hold open uses up the victim's places.
+
+### The `EventSource` client (cookie session)
+
+`EventSource` gives up for good on any answer other than a 200 stream, and cannot read a status. So
+a cap, a dependency failure or a throttled sign-in answers 200 with only a longer `retry`, and the
+browser comes back later on its own, while 401, 403, 400, 405 and 501 stop it.
+
+```js
+// Use a module script (<script type="module">), so these names stay out of the page's globals.
+const signals = "/session/signals";
+let source, fallback, hiddenAt = null, ended = false;
+
+function connect() {
+  clearTimeout(fallback); // the previous stream's timer must not start polling for this one
+  source?.close();
+  hiddenAt = null;
+  source = new EventSource(signals);
+
+  // No session event: a proxy is holding the stream back, or a cap was reached.
+  fallback = setTimeout(startPolling, 10_000);
+
+  source.addEventListener("session", (e) => {
+    clearTimeout(fallback);
+    stopPolling();
+    showDeadlines(JSON.parse(e.data));
+  });
+  source.addEventListener("session_expiring", (e) => warn(JSON.parse(e.data)));
+  source.addEventListener("session_ended", (e) => finish(JSON.parse(e.data).reason));
+}
+
+// Report the end once, with the first reason: session_ended carries the real one.
+function finish(reason) {
+  if (ended) return;
+  ended = true;
+  clearTimeout(fallback);
+  source?.close();
+  signedOut(reason);
+}
+
+// A dead EventSource can sit with no error event on iOS and after sleep in Firefox, so it is
+// rebuilt when the page comes back (this also notes when it was hidden). JavaScript cannot see heartbeat comments, so a healthy
+// stream cannot be told from a silently dead one: rebuild only after a minute away, or when the
+// stream is not open. A shorter absence costs nothing, and a stream that died silently in it
+// is found only by the next error or the next longer absence.
+async function rebuild(force) {
+  if (document.visibilityState === "hidden") {
+    if (hiddenAt === null) hiddenAt = Date.now();
+    return;
+  }
+  if (ended) return;
+  const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+  hiddenAt = null;
+  if (!force && source?.readyState === EventSource.OPEN && away < 60_000) return;
+
+  // Probing an ordinary endpoint first keeps a 401 final.
+  let probe;
+  try {
+    probe = await fetch("/api/me");
+  } catch {
+    return; // offline: the answer is unknown, so try again on the next event
+  }
+  if (probe.status === 401) return finish("unauthenticated");
+  if (probe.ok) connect();
+}
+
+document.addEventListener("visibilitychange", () => rebuild(false));
+// pageshow also fires on the first load, which connect() below already covers.
+window.addEventListener("pageshow", (event) => event.persisted && rebuild(true));
+window.addEventListener("online", () => rebuild(false));
+
+connect();
+```
+
+- `/api/me` is any ordinary endpoint of yours that needs the sign-in.
+- From another origin, pass `{ withCredentials: true }` and allow that origin with
+  `AllowCredentials`.
+- The cap of 4 per sign-in refuses the fifth tab, not an existing one. Share one stream between tabs
+  (`BroadcastChannel` or a `SharedWorker`), and prefer HTTP/2, since browsers also limit HTTP/1.1
+  connections per host.
+
+### The `fetch()` client (bearer)
+
+A bearer client has no `EventSource` to retry for it, so it reads the stream itself. A dropped
+connection is its normal failure, so it retries on every error.
+
+```js
+// readEvents yields { name, data, retry } for each event. It handles an event split across
+// chunks, a multi-byte character split across chunks, CR, LF and CRLF line ends, and comments.
+async function* readEvents(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder(); // UTF-8
+  let rest = "", skipLF = false, event = { name: "", data: [], retry: undefined };
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return; // an event cut off before its blank line is dropped
+      let text = decoder.decode(value, { stream: true }); // keeps half a character for the next chunk
+      if (skipLF && text) { // the LF of a CRLF split in two
+        if (text.startsWith("\n")) text = text.slice(1);
+        skipLF = false;
+      }
+      if (text) skipLF = text.endsWith("\r");
+
+      const lines = (rest + text).split(/\r\n|\r|\n/);
+      rest = lines.pop(); // the unfinished line
+
+      for (const line of lines) {
+        if (line === "") {
+          if (event.name || event.data.length || event.retry !== undefined) {
+            yield { name: event.name, data: event.data.join("\n"), retry: event.retry };
+          }
+          event = { name: "", data: [], retry: undefined };
+        } else if (!line.startsWith(":")) { // a line starting with ":" is a comment
+          const i = line.indexOf(":");
+          const field = i < 0 ? line : line.slice(0, i);
+          const v = i < 0 ? "" : line.slice(i + 1).replace(/^ /, "");
+          if (field === "event") event.name = v;
+          else if (field === "data") event.data.push(v);
+          else if (field === "retry" && /^\d+$/.test(v)) event.retry = Number(v);
+        }
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+// Only these answers are final: a retry would not change them. Anything else, such as a
+// gateway's 502 or a 429, is a failure to wait out.
+const final = [400, 401, 403, 405, 501];
+const maxDelay = 300_000; // 5 minutes
+
+async function follow(signal) {
+  let retry = 5_000, failures = 0;
+
+  while (!signal.aborted) {
+    let healthy = false;
+
+    try {
+      // Read now, on every attempt. Never capture it outside this loop.
+      const token = currentAccessToken();
+      const response = await fetch("/session/signals", {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      });
+
+      if (final.includes(response.status)) return stopFor(response.status);
+
+      if (response.ok) {
+        for await (const event of readEvents(response.body)) {
+          if (event.retry !== undefined) retry = event.retry;
+          if (event.name === "session") healthy = true;
+          if (event.name) handle(event); // on session_ended, handle should abort signal: see below
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) return;
+      // A network failure or a dropped connection: retry below.
+    }
+
+    // A stream that never sent a session event (a cap, a failure, a 502) is a failure. The
+    // delay starts at the server's retry, doubles on each repeat, gains up to 30% jitter, and
+    // stops growing at maxDelay.
+    failures = healthy ? 0 : failures + 1;
+    const backoff = retry * 2 ** Math.max(0, Math.min(failures - 1, 10));
+    await sleep(Math.min(maxDelay, backoff * (1 + Math.random() * 0.3)));
+  }
+}
+```
+
+Your `handle` should abort `signal` on `session_ended`, because otherwise the client reconnects once, gets 401, and reports that in place of the event's reason. A sleep between attempts does not end early on an abort, so a page that needs to stop at once should also ignore what a late attempt delivers.
+
+Read the current credential on every attempt: reconnecting with a token captured before a renewal
+presents a superseded token, which revokes the sign-in's whole family. A 200 with a `retry` and no
+`session` event is a cap, a dependency failure, a throttle or a closing replica, so the client waits
+and tries again. Fall back to polling if the first `session` event does not arrive. Whether
+`stopFor(401)` should first try to renew the token is yours to decide.
+
+### Defaults
+
+Every field's zero value is its default, so `SessionSignals{}` works. A value outside its range is
+refused when the chain is built.
+
+| Field | Default |
+|---|---|
+| `Path` | `/session/signals` (`httpsec.DefaultSessionSignalsPath`) |
+| `Signals` | `SignalSessionEnded`, `SignalSessionExpiring` |
+| `Heartbeat` | 15 seconds, ±10% per stream; 5 to 60 seconds allowed |
+| `ExpiryWarning` | 2 minutes |
+| `AssuranceWindow` | 15 minutes (`httpsec.DefaultRecentAuthenticationWindow`); set it to your guards' window |
+| `MaxPerSignIn` | 4 |
+| `MaxPerUser` | 16 |
+| `MaxStreams` | 10 000, per replica |
+| `MaxPerSource` | 0, off |
+| `MaxAge` | 1 hour, ±10% per stream; `httpsec.NoMaxAge` turns it off |
+| `ReconnectDelay` | 5 seconds, ±30% per stream |
+| `BusyDelay` | 30 seconds, ±30% per refusal |
+| `Users` | the built-in bearer's user loader; a chain with no built-in bearer must set it |
+| `ReloadContext` | none: reads run on a context with none of the request's values |
+| `ReloadTimeout` | half of `Heartbeat`, within 2 to 10 seconds |
+| `RetryableError` | none: every failure the chain would answer with a 5xx on `Path`, and a per-request policy's throttle, is retried |
+| `Bus` | in-process, so with several replicas `session_ended` arrives within a heartbeat and half a second, and other signals reach only the replica that raised them |
+| `BusQueue` | 1024, for a consumer's `Bus` only |
+| `BusTimeout` | 5 seconds, for a consumer's `Bus` only |
+
+### What a stream does
+
+A stream's first bytes are a `retry` and a `session` event stating the sign-in's two deadlines and
+when it last authenticated. It then waits. Signals raised for it, such as `credential_changed` and
+your own `app.*`, go out as they arrive. What it says about the sign-in itself it says only when the
+store has just told it, and every read below acts on what the store then answers:
+
+| At | It reads | And sends |
+|---|---|---|
+| each heartbeat | the sign-in and the user | a `:` comment at once, and what the read finds |
+| a `session_ended` on the bus | the same, at once, then at most once a second | only what the read finds |
+| a warning, a lapse or a deadline falling due | the same, first | only what the read finds |
+
+What a read finds is `session` if a deadline or `authenticated_at` moved, `session_expiring` or
+`assurance_lapsed` if one has fallen due, `session_ended` if the sign-in is gone, and nothing if it
+holds and has not moved.
+
+If the sign-in is gone or its user is not active, the stream sends `session_ended` with the reason
+and closes, and a reconnection with that credential gets 401. At `MaxAge` it closes with no event, and
+the client reconnects and is judged again. When the client leaves, or a write fails, nothing is sent.
+`CloseSessionSignals` and a panic close it too, as the sections below say.
+
+A reason on the bus names the end only if the store says gone within two heartbeats of its arrival,
+and a report of `reuse` is not relabelled by a later one. With no such report the reason is `expired`
+if a deadline the stream holds has passed. Otherwise the stream waits half a second for a report,
+because a session manager reports an end only after the store's write has returned, and a read can land
+in between: a logout must not read as `ended` for that. It goes on sending comments meanwhile, holds
+back what is queued, and then says `ended`. An end with no report to come, as on another replica with
+the default bus, pays that half second on top of its heartbeat.
+
+While the store cannot answer, a stream stays open and goes on sending comments, says nothing else,
+and ends only at the sign-in's absolute deadline, with `expired`: the idle deadline may have moved in
+a store it cannot read. A store failing or timing out is logged with sampling.
+
+A read runs beside the stream, at most one at a time, and what asks for one while it runs is served
+when it returns. So a store that hangs stops neither the heartbeat, signals, `MaxAge`,
+`CloseSessionSignals` nor a client leaving, and past `ReloadTimeout` the read counts as a failure at
+once. A store that ignores its context costs one goroutine per stream until it returns, and that
+stream reads nothing further until then. Its place is free as soon as the stream closes, which does
+not wait for the read. The first read runs on the opening request, so such a store holds that request
+until it returns, holding no place.
+
+A stream's reads never present its sign-in, so a renewal, a rotation or a step-up elsewhere leaves it
+open, and it follows the sign-in to its new deadlines. It follows a renewal it took no part in too,
+including a thief's stream opened before the victim renewed, and `MaxAge` is what bounds that.
+`NoMaxAge` gives that bound up, along with the re-judging of a token or a policy.
+
+A panic in a stream, or in a loader or store it calls, is logged through the chain's logger with its
+type, phase, family and frames, and never its value. The stream then closes and frees its place.
+
+### The signals
+
+| Signal | Data | Sent when |
+|---|---|---|
+| `session` | `idle_deadline`, `absolute_deadline`, `authenticated_at` | always first, and when a read finds one moved |
+| `session_ended` | `reason`: `logout`, `ended`, `reuse`, `all_ended`, `provider_logout` or `expired` | the sign-in ended, whatever the narrowing says |
+| `session_expiring` | `deadline`: `idle` or `absolute`, and `at` | a deadline is within `ExpiryWarning` |
+| `assurance_lapsed` | `authenticated_at` | the last authentication is older than `AssuranceWindow` |
+| `credential_changed` | `kind`: `password`, `passkey` or `second_factor` | the user's credentials changed, and this stream's sign-in did not end with it |
+| `app.<name>` | your own JSON | you publish it |
+
+`logout` means a logout: the chain's own, or your call to `Sessions.Logout`, which ends the whole
+sign-in, a renewal's successor included. `ended` names no one's fault: it is what a sign-in revoked by
+an administrator says, what `Sessions.Delete` says, since one deleted session has no reason anyone
+named, and what a stream says with no report at all and no deadline passed (with one passed, it says
+`expired`). So a logout of your own calls `Logout` and not `Delete`, or other tabs hear `ended`.
+
+A stream never carries the audit feed, and no option makes it: no failed sign-ins, lockouts,
+rate-limit, CSRF, host or DPoP refusals, no client addresses, and nothing about another user. Those
+belong to `WithSecurityEvents`, which is the operator's.
+
+`credential_changed` is not in the default set: add `SignalCredentialChanged` to `SessionSignals.Signals` to
+have it raised. With it out of the set the chain raises and publishes nothing, and `ReportCredentialChange`
+returns nil. With it in, the chain raises it itself after a password change, a passkey registered or removed,
+and a second factor enrolled. A recovery raises it for the second factors and passkeys it removed, for
+a stream still open: by default a recovery ends the user's other sign-ins, so their streams hear
+`session_ended` instead, and only `recovery.WithoutSessionRevocation` leaves one to hear this. A
+consumer's own kinds of authenticator raise nothing. `recovery.Result.Removed` lists what went, and
+its `ID`s are yours to keep out of responses and logs.
+
+For a change you make elsewhere, such as an admin console or a reset of your own, report it **after
+it commits**, because a raised signal cannot be recalled:
+
+```go
+err := chain.ReportCredentialChange(ctx, userID, httpsec.CredentialPassword)
+```
+
+It names only the kind. It returns `ErrSessionSignalsDisabled` without `EnableSessionSignals`,
+`ErrInvalidSignal` for another kind, and, with `credential_changed` in the set, `ErrSignalsBusy` if your
+bus's queue is full or the streams have closed. With it out of the set it returns nil whatever the bus
+could take.
+
+To send a signal of your own to every open stream of a user:
+
+```go
+err := chain.PublishSignal(ctx, userID, "app.roles_changed", json.RawMessage(`{"roles":["editor"]}`))
+```
+
+The name is `app.` and 1 to 63 of `[a-z0-9._-]`, starting with a letter or digit. The data is JSON of
+at most 8 KiB, valid UTF-8, on one line, so compact it and do not `MarshalIndent` it, and it arrives
+byte for byte. Anything else returns `ErrInvalidSignal` and sends nothing. A client's `?signals=`
+narrowing applies. A user with no open stream is not an error.
+
+Both calls route by `UserID` alone, so a `UserID` must be unique across one chain, as the session store
+and the lockout store already assume. A multi-tenant consumer encodes its tenant into it: two tenants
+sharing a `UserID` hear each other's signals, whatever `ReloadContext` carries. An end naming one
+sign-in routes by its family and is not affected; a user-wide end crosses tenants, as the store's own
+delete does, which is one more reason to encode the tenant into the `UserID`.
+
+A stream can follow a thief who holds the session, so put nothing sensitive in the data: send a
+pointer, and let the client fetch the details through its own authorised request. A signal that is
+dropped is gone, and the default bus reaches only this replica's streams, so never rely on one alone.
+The out-of-band notice stays the record.
+
+### Running it
+
+Each heartbeat reads the sign-in and the user, so 10 000 streams at 15 seconds is about 670 session
+reads and 670 user reads per second on one replica. Jitter of ±10% spreads them out. `Heartbeat` can
+go to 60 seconds, which is about 170 of each. A shared bus lets you lengthen it without delaying
+`session_ended`, because a signal wakes the stream at once. Without one, a sign-in ended on another
+replica takes up to a heartbeat and half a second to arrive.
+
+The session read is one sign-in's, not the user's. A store may offer `session.FamilyReader`
+(`ListByFamily(ctx, user, family, now)`), which is optional: a store without it is read through
+`ListByUser`, and nothing breaks. With it, a read costs one family's rows, and another family's row that
+will not decode cannot fail it. Every store in this repository offers it, and the sealing store does
+whatever it wraps. The memory store has no index, so its `ListByFamily` saves copying the user's other
+sign-ins and still scans every record. A store of yours that embeds a concrete store, such as
+`*session.MemoryStore`, and overrides `ListByUser` inherits the embedded `ListByFamily`, which does not
+read the override: override both reads, or embed the `session.Store` interface, which hides the family
+read.
+
+Keep 1.1 × `Heartbeat` below the shortest idle timeout on the path. The longest gap between two bytes
+is 1.1 × `Heartbeat` plus the time of a write, because a comment goes out when its beat falls due,
+even while a read hangs: about 16.5 seconds at the default, and about 66 seconds at the 60-second
+maximum, which is past a proxy's 60-second default.
+The Envoy and corporate-proxy lines below rest on secondary sources and were not checked against
+those products' own documentation.
+
+- **nginx:** set `proxy_buffering off` on this path, and `proxy_read_timeout` above `Heartbeat` (its
+  default is 60 s). The stream sends `X-Accel-Buffering: no`, which works only where the proxy
+  honours it: `proxy_ignore_headers` can disable it.
+- **AWS ALB:** keep the idle timeout (default 60 s) above `Heartbeat`.
+- **CloudFront:** allows 30 s between packets by default, so keep `Heartbeat` below it.
+- **API Gateway:** a hard 15-minute limit on a streamed response, so set `MaxAge` below it.
+- **Envoy:** set the route's `timeout` to `0s`.
+- **Compression middleware:** exclude this path. A compressor that holds output back delivers
+  nothing while every write succeeds, and the place stays held. The stream sends
+  `Cache-Control: no-transform`, but whether middleware honours it is unverified, so do not rely on it.
+- **`http.Server.HTTP2.WriteByteTimeout`:** set it. Over HTTP/2 nothing else bounds a write to a
+  stalled TCP connection, because the adapter's write deadline cannot.
+- **TCP keepalive and dead peers:** a peer that vanishes holds its place until a write fails, keepalive
+  gives up or `MaxAge` passes. Keep keepalive on, which is the usual state: connections accepted from
+  Go's `net.Listen` have it on, and fasthttp's `ListenAndServe` listens through it. fasthttp's
+  `TCPKeepalive` field is not a switch that turns it off, because the server acts on the field only
+  when it is true. A listener you build yourself must enable keepalive itself.
+- **A gateway sharing one upstream HTTP/2 connection:** Go's server allows 250 concurrent streams on
+  a connection (its documented minimum is 100). Raise `http.Server.HTTP2.MaxConcurrentStreams` above
+  what that gateway will carry.
+- **fasthttp and fiber:** `Concurrency` counts every stream, so size it above `MaxStreams` plus your
+  ordinary load. `MaxConnsPerIP` counts connections, so a shared proxy address reaches it quickly.
+- **Kubernetes:** set `terminationGracePeriodSeconds` longer than the shutdown context, and add a
+  `preStop` wait so the load balancer stops sending new streams first.
+- **Corporate proxies:** some buffer a response until it ends, whatever it asks. The client's polling
+  fallback is what covers them.
+- **`http.StripPrefix`:** `Path` is the path the chain sees, so the inner one.
+- **Error responders:** yours must not redirect on this path. A redirect to a login page fails an
+  `EventSource` for good.
+- **A response-writer wrapper of your own:** it needs `Unwrap`. Without it the adapter cannot reach
+  the connection's write deadline, and one with no `Flush` either is answered 501
+  (`httpsec.ErrStreamingUnsupported`), as `http.TimeoutHandler` is.
+
+### Shutting down
+
+`http.Server.Shutdown` waits for active handlers and cancels nothing, so an open stream holds it until
+its deadline. Register `CloseSessionSignals` with it:
+
+```go
+srv.RegisterOnShutdown(func() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := chain.CloseSessionSignals(ctx); err != nil {
+		slog.Warn("session signal streams still closing", "error", err)
+	}
+})
+```
+
+Go runs it in a goroutine of its own and does not wait for it, so `Shutdown` is what then waits for the
+handlers. Keep the timeout inside `Shutdown`'s own deadline.
+
+Each stream closes with no event. Its last bytes are a `retry` of its own between 1 second and 3 ×
+`ReconnectDelay`, so a drained replica's clients spread out, and your load balancer can send them
+elsewhere. A stream requested afterwards gets 200 with only such a `retry`, and `Connection: close`,
+and is not registered: a 503 would stop an `EventSource` for good. A store failing on that request
+changes none of this. On HTTP/1.1 that closes the connection. On HTTP/2 Go's server takes it as a
+graceful GOAWAY for the whole connection: requests already on it finish, and the client's next request
+of any kind opens a new one. The call returns when every body has
+returned, or with its context's error. A body blocked in a write to a stalled client does not stop it
+returning, and a second call ends nothing new and waits on its own context.
+
+On fiber, fasthttp's `Done()` at shutdown ends streams too, and the call still ends a consumer's bus
+and refuses new streams. A chain never closed keeps its bus's two goroutines, and a signal still queued
+for the bus when it closes can be lost.
+
+### What an operator can read
+
+`chain.SessionSignalStats()` takes no lock on the delivery path, and is for your metrics, not for an
+untrusted caller.
+
+| Field | What it says |
+| --- | --- |
+| `Open` | streams holding a place on this replica |
+| `RefusedByCap` | requests a cap answered with only a `retry` |
+| `ReloadFailures` | reads on open streams that failed, timed out or panicked, and requests a failing dependency answered with only a `retry`, which is where a tenant-scoped store with no `ReloadContext` shows |
+| `Throttled` | requests a per-request policy's throttle answered with only a `retry`; no dependency failed, so they are not in `ReloadFailures` |
+| `ConsecutiveReloadFailures` | reads in a row that failed, added up over the open streams, so judge it against `Open` |
+| `BusSubscribed` | a consumer's bus has its subscription up |
+| `BusDropped` | signals a consumer's bus could not take, its queue being full |
+| `BusPublishFailures` | calls to a consumer's `Publish` that failed, timed out or panicked |
+| `StreamDropped` | signals a stream's own queue dropped, so one stalled tab does not read as a bus falling behind |
+
+### Limits
+
+- **Concurrent streams.** At most `MaxPerSignIn` (4) for a sign-in, `MaxPerUser` (16) for a user and
+  `MaxStreams` (10 000) overall, each counted per replica, so with N replicas a user can hold N times
+  `MaxPerUser`. `MaxPerSource` can cap a client address, and is off because every client shares one
+  address behind a proxy with no trusted-proxy setting. A request over a cap gets 200 with only a
+  longer `retry`, and existing streams are kept. It is logged at WARN with sampling, and counted in
+  `chain.SessionSignalStats()`.
+- **A dependency that fails.** A session or user store that cannot answer a request for the stream,
+  at an authenticator's read or at the stream's first, gets the same 200 with only a longer `retry`,
+  because a browser gives up for good on a 5xx. Only `GET` on `Path` is answered so, and every other
+  5xx of the chain stands. It takes the same WARN, and counts in `ReloadFailures`. A rate limit of
+  yours on this path stays yours when it writes its own answer, or returns an error
+  `httpsec.StatusForError` maps below a 5xx, except a per-request policy's `ErrThrottled`, which maps to
+  401 and answers 200 as the throttle bullet below says. Any other error is taken for a failing dependency,
+  because a store failing inside your authenticator must not end an `EventSource` for good. A
+  refusal of your own that maps to a 5xx can say so through `RetryableError`: returning false sends
+  it through the chain's error mapping and your error handler, and counts no failure. A 5xx is final
+  for a browser, so return false only for what a retry would not change. `authenticate.ErrUnavailable`
+  maps to 401, not a 5xx, so it is not retried and an `EventSource` stops on it: an authenticator of
+  your own that wants a browser to retry through an outage returns an error that maps to a 5xx here.
+- **A throttled sign-in.** A policy denying with `ratelimit.ErrThrottled` at the chain's per-request
+  phase, about the sign-in it judged, answers 200 with only a longer `retry`, logged with sampling and
+  counted in `Throttled`, because a 401 would end an `EventSource` that a retry would satisfy. Only that
+  throttle retries. Any other `ErrThrottled`, as from Basic, an API key or a concealed lock, keeps the
+  chain's mapping, because a session on the request says who is signed in, not whose credential was
+  refused. A per-request throttle fires only after a credential succeeded, so a policy used as a guess
+  throttle over a password verified on every request answers a right password with 200 and a wrong one
+  with 401 on this path. A limit on guesses belongs at pre-authentication or stateless, where it fires
+  before the credential is judged. `RetryableError` is asked about the throttle, with the policy's own
+  reason, and returning false sends it through the chain's mapping.
+- **A provider's logout.** A back-channel logout that ends sessions through the session manager
+  reaches their streams as `session_ended` with the reason `provider_logout`. One that names no
+  upstream session, under `BackchannelLogoutScopeAll`, ends every session of the user, and says
+  `all_ended`. Streams are matched by a digest of the issuer and the upstream session, and the raw
+  values stay out of a stream, the bus and the logs. On another replica with no shared bus, it arrives within a heartbeat and half a second.
+- **Logs.** Everything the stream logs goes to the logger given to the chain (`httpsec.WithLogger`),
+  never with a token or session identifier. The exception is an adapter's own recover, for a consumer
+  who calls `Stream` directly, which writes to `slog.Default`. A panic's record holds its type and at
+  most 32 frames, never its value. A stream holds the request's `Origin` cut to 256 bytes, the same as
+  a cross-site refusal's record, since `Sec-Fetch-Site: none` passes with one of any size. Only logs
+  read it, so a longer origin is named in part.
+- **An adapter of your own.** `ResponseWriter.Stream(ctx, contentType, body)` takes the stream's type,
+  and sets it only when the head is committed, so a refusal has nothing of it to take back: an error
+  from `Stream` leaves `Content-Type` as it found it, and your own type set before a refused `Stream`
+  stays on the refusal. An empty `contentType` sets none. An adapter over a framework that cannot
+  deliver an open response returns `httpsec.ErrStreamingUnsupported`, without running `body`. One
+  refusal cannot be helped: a response-writer wrapper above the bottom of the `Unwrap` chain can be
+  asked whether it flushes only once the status is named, and if it then says
+  `http.ErrNotSupported`, `Stream` still refuses, but a real server has already copied the headers, so
+  the client receives 200 with the stream's type, and on gin with what the refusal renders. No real
+  library is known to have that shape.
+- **The chain's authorizer.** It runs above the stream's slot, so it is not consulted for the stream
+  at all. What runs below the slot, including an interceptor you register there to gate the stream, is
+  not run again until the client reconnects, which `MaxAge` bounds.
+
 ## Behind a reverse proxy
 
 By default the chain attributes a request to its TCP peer, judges it secure only over TLS, and takes

@@ -746,6 +746,11 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 // configuration anyone asks for on purpose. Pass a logger over
 // slog.DiscardHandler to say so deliberately.
 //
+// A handler should not block. A record is written on the goroutine that raised it, and
+// that includes a call in a caller's transaction: a raising call on a sampled record waits
+// for the handler, as every log path of the chain does, so a handler that hangs holds that
+// call up.
+//
 // A record of a failed consumer dependency never carries that dependency's
 // error text: it carries a fixed reason and the error's Go type, as the
 // package doc's "A dependency's failure never reaches a record or a returned

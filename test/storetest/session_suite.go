@@ -313,7 +313,11 @@ const (
 // returns the user's live heads, one per family, judged at the time the caller
 // passes and matching the user reference exactly; and the sign-in state
 // (metadata, key binding, CSRF token) round-trips, a save keeps it, and a
-// supersession inserts it with the successor.
+// supersession inserts it with the successor. A store that also offers
+// session.FamilyReader is held to it: the read answers exactly what the store's
+// listing answers of that family, across a renewal and a strict rotation, and a
+// manager's answers are the same over either. For a store offering none, those
+// cases log that they did not run, and pass.
 //
 // newStore is called once per case and must return an empty store that reads
 // time from clk. The suite advances clk itself and never waits.
@@ -1127,6 +1131,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 	cases = append(cases, sessionActivityCases()...)
 	cases = append(cases, sessionFamilyCases()...)
 	cases = append(cases, sessionSignInCases()...)
+	cases = append(cases, sessionFamilyReadCases()...)
 	cases = append(cases, sessionSuccessorPresentedCases()...)
 	cases = append(cases, sessionStrictRotationCases()...)
 

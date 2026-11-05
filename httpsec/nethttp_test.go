@@ -877,6 +877,48 @@ func TestHTTPResponseWriter(t *testing.T) {
 			},
 		},
 		{
+			name: "a header set after the status changes nothing",
+			act: func(w httpsec.ResponseWriter) {
+				w.SetHeader("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.SetHeader("Content-Type", "text/event-stream")
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, _ httpsec.ResponseWriter) {
+				assert.Equal(t, "text/plain", rec.Header().Get("Content-Type"))
+			},
+		},
+		{
+			name: "a header added after the status changes nothing",
+			act: func(w httpsec.ResponseWriter) {
+				w.AddHeader("Vary", "Origin")
+				w.WriteHeader(http.StatusNoContent)
+				w.AddHeader("Vary", "Accept-Encoding")
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, _ httpsec.ResponseWriter) {
+				assert.Equal(t, []string{"Origin"}, rec.Header().Values("Vary"))
+			},
+		},
+		{
+			name: "a cookie set after the status changes nothing",
+			act: func(w httpsec.ResponseWriter) {
+				w.WriteHeader(http.StatusNoContent)
+				w.SetCookie(&httpsec.Cookie{Name: "sid", Value: "abc"})
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, _ httpsec.ResponseWriter) {
+				assert.Empty(t, rec.Header().Values("Set-Cookie"))
+			},
+		},
+		{
+			name: "a header set after a body with no explicit status changes nothing",
+			act: func(w httpsec.ResponseWriter) {
+				_, _ = w.Write([]byte("hi"))
+				w.SetHeader("X-Too-Late", "yes")
+			},
+			assert: func(t *testing.T, rec *httptest.ResponseRecorder, _ httpsec.ResponseWriter) {
+				assert.Empty(t, rec.Header().Get("X-Too-Late"))
+			},
+		},
+		{
 			name: "nothing written is not committed",
 			act:  func(httpsec.ResponseWriter) {},
 			assert: func(t *testing.T, _ *httptest.ResponseRecorder, w httpsec.ResponseWriter) {
