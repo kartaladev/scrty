@@ -116,7 +116,8 @@ func (f IsolationFixture) missing() []string {
 // its subject until the caller's transaction ends, and only its subject.
 //
 // A store that begins its own transactions, or runs a statement outside one,
-// at the database default fails the streak and the replacement cases.
+// at the database default fails the streak and the replacement cases. The streak
+// case needs a store's concurrent failures to wait on a database lock.
 func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 	t.Helper()
 
@@ -128,18 +129,47 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			s := f.Streaks(t)
 			at := suiteStart
 			since := at.Add(-time.Hour)
+			// Committed first, so the racers advance an existing row rather
+			// than take the conflict path of a row only inserted.
 			_, _, err := s.AddStreakFailure(t.Context(), "iso-streak", at, since, 1000)
 			require.NoError(t, err)
 
-			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, _ int) error {
-				_, _, err := s.AddStreakFailure(ctx, "iso-streak", at, since, 1000)
-				return err
-			})
+			// Overlap is forced, because releasing racers together does not
+			// make their statements overlap. A statement conflicts at
+			// REPEATABLE READ only if its snapshot predates another's commit,
+			// and racers that happen to run one after another never have one.
+			// The caller's transaction holds the row until a racer waits on
+			// it: that racer's snapshot predates the commit below.
+			tx := f.Begin(t, ReadCommitted)
+			_, _, err = s.AddStreakFailure(tx.Ctx, "iso-streak", at, since, 1000)
+			require.NoError(t, err)
+
+			raced := make(chan []error, 1)
+			go func() {
+				raced <- raceAll(t.Context(), isolationRacers, func(ctx context.Context, _ int) error {
+					_, _, err := s.AddStreakFailure(ctx, "iso-streak", at, since, 1000)
+					return err
+				})
+			}()
+
+			// Whatever the wait found, the lock is released and the racers
+			// joined before this case can end.
+			waited := awaitLockWaiter(t, f.Raw)
+			end := tx.Commit
+			if !waited {
+				end = tx.Rollback
+			}
+			endErr := end()
+			errs := <-raced
+			require.NoError(t, endErr)
+			if !waited {
+				return
+			}
 
 			assertNoErrors(t, errs, "a concurrent streak failure")
 			got, err := s.FailureStreak(t.Context(), "iso-streak", since)
 			require.NoError(t, err)
-			assert.Equal(t, 1+isolationRacers, got.Failures, "concurrent failures were not all counted")
+			assert.Equal(t, 2+isolationRacers, got.Failures, "concurrent failures were not all counted")
 		}},
 		{"of two overlapping saved-code replacements, only the later set remains", func(t *testing.T) {
 			s := f.RecoveryCodes(t)
@@ -444,6 +474,31 @@ WHERE locktype = 'advisory' AND NOT granted
   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiting)
 		return err == nil && waiting == 1
 	}, 10*time.Second, 10*time.Millisecond, "the later caller never waited on the earlier one's advisory lock")
+}
+
+// lockWaiterTimeout is how long awaitLockWaiter waits. A slow run only spends
+// more of it, and CI can starve the racers for many seconds.
+const lockWaiterTimeout = time.Minute
+
+// awaitLockWaiter waits until at least one session of raw's database waits on
+// a lock of any kind, and reports whether one did. When none does it fails t
+// without stopping it, so the caller can release what it holds first.
+//
+// It finds the sessions through pg_stat_activity because pg_locks gives no
+// database for a transactionid lock, the kind a session waits on when another
+// transaction holds the row it wants. One waiter is all it asks for: the later
+// ones queue on tuple locks, and a store may take other steps before it reaches
+// the lock.
+func awaitLockWaiter(t *testing.T, raw *sql.DB) bool {
+	t.Helper()
+
+	return assert.Eventually(t, func() bool {
+		var waiting int
+		err := raw.QueryRowContext(t.Context(), `SELECT count(*) FROM pg_locks AS l
+JOIN pg_stat_activity AS a ON a.pid = l.pid
+WHERE NOT l.granted AND a.datname = current_database()`).Scan(&waiting)
+		return err == nil && waiting >= 1
+	}, lockWaiterTimeout, 10*time.Millisecond, "no session ever waited on a lock the caller's transaction holds")
 }
 
 // The one-time records the isolation suite inserts: their purpose, and the
