@@ -337,7 +337,7 @@ echo "probe: $version resolves for every published module"
 
 ### Task 5.2, 5.5, 5.6 additions (dispatch R5, and the main session for 5.6)
 
-- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes` and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
+- [ ] **5.2:** in the `[0.1.0]` entry, add every item of `openspec/changes/archive/2026-10-24-pre-release-hardening/changelog-notes.md` under its change type, then `idiomatic-api-shape`'s breaking changes and the breaking items of `close-security-gaps`, `pre-release-api-fixes`, `session-signals` (the `ResponseWriter.Stream` break) and `oidc-provider` under **Changed**, and their new capabilities under **Added**. Delete the notes file. Verify with a line-by-line check against the deleted file (`git show HEAD:<path>`).
 - [ ] **5.5:** add the *Known limitations* section listed in task 5.5, each limit in one sentence that names the default and what a consumer can do about it.
 - [ ] **5.6 (main session):** a Sonnet research agent reports, for each listed claim, the test that pins the fixed behaviour (`rg` for the claim's scenario, then `go test -run` it) or that none exists. The main session writes the outcomes into `design.md`.
 
