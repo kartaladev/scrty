@@ -800,7 +800,52 @@ func (op *oidcEndpoints) checkDPoP(c *config) error {
 			optionOIDCProvider)
 	}
 
+	if c.dpop == nil {
+		return nil
+	}
+
+	for _, endpoint := range []OIDCEndpoint{OIDCToken, OIDCUserInfo} {
+		if err := op.checkDPoPURL(c.dpop, op.paths[endpoint]); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// checkDPoPURL refuses DPoP settings under which no proof naming the published URL of the endpoint
+// on path served could be accepted: a client takes that URL from the metadata, and the chain compares
+// it with DPoP.PublicURL followed by the request's path, or with the request's own URL when there is
+// no PublicURL. A consumer whose router strips the issuer's path names that path in PublicURL, as no
+// request says it. Only the token and UserInfo endpoints are held to this, as they are what a client
+// is told to send a proof to; the rest may be served as a consumer likes.
+func (op *oidcEndpoints) checkDPoPURL(v *dpopVerifier, served string) error {
+	published, err := url.Parse(op.publicURL(served))
+	if err != nil {
+		return newConfigError("%s has an issuer that is no URL", optionOIDCProvider)
+	}
+
+	base := strings.TrimSuffix(published.String(), served)
+	path := (&url.URL{Path: served}).EscapedPath()
+
+	if v.publicURL == nil {
+		if path == published.EscapedPath() {
+			return nil
+		}
+
+		return newConfigError("%s publishes %q, but a request reaches the chain at %q with nothing to say "+
+			"the rest, so no DPoP proof could be accepted: set DPoP.PublicURL to %q",
+			optionOIDCProvider, published.String(), served, base)
+	}
+
+	if normalisedURL(v.publicURL.Scheme, v.publicURL.Host, v.publicURL.EscapedPath()+path) ==
+		normalisedURL(published.Scheme, published.Host, published.EscapedPath()) {
+		return nil
+	}
+
+	return newConfigError("%s publishes %q, but EnableDPoP's PublicURL %q puts a request to %q at another "+
+		"URL, so no proof could be accepted: set DPoP.PublicURL to %q",
+		optionOIDCProvider, published.String(), v.publicURL.String(), served, base)
 }
 
 // checkBindings refuses a client the chain could not verify. A client requiring

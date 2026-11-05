@@ -3669,3 +3669,98 @@ func jktOf(t *testing.T, raw string) string {
 
 	return jkt
 }
+
+// TestProvider_Refresh_RefusalIsLogged: a refused refresh leaves a line naming the client and a fixed
+// reason, and never the token. What is no refusal is not logged as one.
+func TestProvider_Refresh_RefusalIsLogged(t *testing.T) {
+	t.Parallel()
+
+	const refusedLine = "a refresh was refused"
+
+	type testCase struct {
+		name   string
+		send   func(t *testing.T, f *refreshFixture, s *refreshScene) oidcprovider.TokenRequest
+		assert func(t *testing.T, logs string)
+	}
+
+	logged := func(reason string) func(*testing.T, string) {
+		return func(t *testing.T, logs string) {
+			t.Helper()
+
+			assert.Contains(t, logs, refusedLine)
+			assert.Contains(t, logs, "level=INFO")
+			assert.Contains(t, logs, "client=billing-web")
+			assert.Contains(t, logs, "reason="+reason)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a token of no shape",
+			send: func(_ *testing.T, _ *refreshFixture, s *refreshScene) oidcprovider.TokenRequest {
+				return s.again("rt.bad")
+			},
+			assert: logged(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "no token at all",
+			send: func(_ *testing.T, _ *refreshFixture, s *refreshScene) oidcprovider.TokenRequest {
+				return s.again("")
+			},
+			assert: logged(oidcprovider.CodeInvalidRequest),
+		},
+		{
+			name: "a scope the grant does not hold",
+			send: func(_ *testing.T, _ *refreshFixture, s *refreshScene) oidcprovider.TokenRequest {
+				req := s.again(s.first.RefreshToken)
+				req.Form.Set("scope", "not-granted")
+
+				return req
+			},
+			assert: logged(oidcprovider.CodeInvalidScope),
+		},
+		{
+			name: "a token presented again past its grace",
+			send: func(t *testing.T, f *refreshFixture, s *refreshScene) oidcprovider.TokenRequest {
+				t.Helper()
+
+				assertRefreshWorks(t, f, s, s.first.RefreshToken)
+				f.clk.Advance(30 * time.Second)
+
+				return s.again(s.first.RefreshToken)
+			},
+			assert: logged(oidcprovider.CodeInvalidGrant),
+		},
+		{
+			name: "a store that cannot answer is no refusal",
+			send: func(_ *testing.T, f *refreshFixture, s *refreshScene) oidcprovider.TokenRequest {
+				f.lineage.failLoad.Store(true)
+
+				return s.again(s.first.RefreshToken)
+			},
+			assert: func(t *testing.T, logs string) {
+				t.Helper()
+
+				assert.NotContains(t, logs, refusedLine)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newRefreshFixture(t)
+			s := startBilling(t, f)
+
+			req := tc.send(t, f, s)
+			_, err := f.p.Token(t.Context(), req)
+			require.Error(t, err)
+
+			logs := f.logs.String()
+			tc.assert(t, logs)
+			assert.NotContains(t, logs, s.secretOf(t, s.first.RefreshToken))
+			assert.NotContains(t, logs, s.first.RefreshToken)
+		})
+	}
+}

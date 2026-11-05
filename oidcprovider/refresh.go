@@ -91,8 +91,23 @@ var errRefreshContended = errors.New("oidcprovider: a refresh token's rotations 
 // presented in time. It says nothing of the token, which was not reused.
 var errRefreshTooSlow = errors.New("oidcprovider: a refresh outlasted the grace of the token it presented")
 
-// refresh answers a refresh request, in the order Token describes.
+// refresh answers a refresh request, and logs a refusal. The line holds the client and the code it was
+// refused with, a fixed word, and nothing of the token. It is informational, as what a client does is:
+// a failure is no refusal, and reports itself.
 func (p *Provider) refresh(ctx context.Context, r TokenRequest, rc *RegisteredClient) (*TokenResponse, error) {
+	res, err := p.judgeRefresh(ctx, r, rc)
+
+	var refusal *Error
+	if errors.As(err, &refusal) {
+		p.cfg.logger.LogAttrs(ctx, slog.LevelInfo, "oidcprovider: a refresh was refused",
+			slog.String("client", rc.ID), slog.String("reason", refusal.Code))
+	}
+
+	return res, err
+}
+
+// judgeRefresh decides a refresh request, in the order Token describes.
+func (p *Provider) judgeRefresh(ctx context.Context, r TokenRequest, rc *RegisteredClient) (*TokenResponse, error) {
 	raw := r.Form.Get(paramRefreshToken)
 	if raw == "" {
 		return nil, refuseRequest()

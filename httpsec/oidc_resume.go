@@ -1,9 +1,11 @@
 package httpsec
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/oidcprovider"
@@ -144,6 +146,14 @@ type oidcResumeDocument struct {
 // Only an unknown handle is charged to the source. Freshness and a malformed answer are
 // the page's to cure, and a failure is no verdict on anyone.
 func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
+	return challengeOIDCSignIn(ex, g.answer(ex))
+}
+
+// answer is serve, up to the challenge a 401 carries.
+//
+// The sign-in is read a second time once the provider has written what the resume leaves, before
+// any of it is handed out (confirmSignIn).
+func (g *oidcResumeGroup) answer(ex *Exchange) error {
 	setOIDCNoStore(ex.Writer)
 
 	if ex.Request.Method() != http.MethodPost {
@@ -199,11 +209,52 @@ func (g *oidcResumeGroup) serve(ex *Exchange, _ Next) error {
 		return oidcResumeRefusal(err)
 	}
 
+	// A denial grants nothing, so nothing it wrote could outlive the sign-in.
+	if signIn != nil && !doc.Deny {
+		if err := g.confirmSignIn(ctx, signIn); err != nil {
+			return err
+		}
+	}
+
 	if res.BrowserSessionSecret != "" {
 		setOIDCCookie(ex.Writer, g.op.provider, OIDCBrowserSessionCookie, res.BrowserSessionSecret)
 	}
 
 	return writeSuccessDocument(ex, oidcResumeDocument{RedirectTo: res.RedirectTo})
+}
+
+// confirmSignIn reads the sign-in again, now that the code and the browser session of the resume
+// are written and neither has left. The chain read it before those writes, so an end landing in
+// between reached neither of them. An end before this read is caught by it, and one after finds
+// them written and ends them with the rest.
+//
+// What is read is the sign-in, one session family with a live head, and not the identifier that was
+// presented: that identifier may rightly have stopped answering. A renewal leaves it superseded and
+// the family live, a strict rotation makes it load as gone at once, and a signed bearer's jti names
+// it just the same. Loading it again would also be a verdict with effects, reuse revoking the family
+// of a window that closed while this request ran.
+//
+// Gone, the sign-in has ended or passed a deadline, and the provider ends whatever this resume left
+// of it, with ErrOIDCReauthenticate answered. A store that cannot say fails closed, with the failure
+// answered and nothing ended: the sign-in cannot be confirmed live, and it may be. What was written
+// is then a code and a session no one was given the secret of, which expire. The stage stays spent,
+// so a resume that reached the client must start again, and one bound for the consent page may
+// answer it with the sign-in, which is read again then.
+func (g *oidcResumeGroup) confirmSignIn(ctx context.Context, signIn *oidcprovider.SignIn) error {
+	live, err := g.op.sessions.ListSignIns(ctx, signIn.User, nil)
+	if err != nil {
+		return err
+	}
+
+	if slices.ContainsFunc(live, func(s session.SignIn) bool { return s.Handle == signIn.Family }) {
+		return nil
+	}
+
+	if _, err := g.op.provider.EndSignIn(ctx, oidcprovider.SignInSelector{Family: signIn.Family}); err != nil {
+		return err
+	}
+
+	return ErrOIDCReauthenticate
 }
 
 // resumeSignIn is the sign-in the request's bearer authenticated, and nil when the

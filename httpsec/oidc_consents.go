@@ -3,6 +3,7 @@ package httpsec
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,6 +96,13 @@ func (g *oidcConsentsGroup) serveList(ex *Exchange, _ Next) error {
 // this endpoint refuse such a session first on a chain enabling them, and this holds the line on one
 // that does not.
 func (g *oidcConsentsGroup) caller(ex *Exchange) (identity.UserID, error) {
+	user, err := g.judgeCaller(ex)
+
+	return user, challengeOIDCSignIn(ex, err)
+}
+
+// judgeCaller is caller, up to the challenge a 401 carries.
+func (g *oidcConsentsGroup) judgeCaller(ex *Exchange) (identity.UserID, error) {
 	s := ex.Session
 	if s == nil || ex.Authentication == nil {
 		return "", ErrAuthenticationRequired
@@ -169,6 +177,35 @@ func (c *oidcConsentClients) Intercept(ex *Exchange, next Next) error {
 	ex.Writer.WriteHeader(http.StatusNoContent)
 
 	return nil
+}
+
+// challengeOIDCSignIn adds to a 401 of an endpoint resting on a sign-in the challenge RFC 9110 section
+// 15.5.2 requires, and returns err as it came. Nothing about the sign-in is named, as with a request
+// bearing no token at UserInfo (RFC 6750 section 3.1). With DPoP on, it names that scheme too, and that
+// scheme alone once it is required (RFC 9449 section 7.2). A refusal for want of a caller is left to
+// DPoP's own challenge on its way back through the chain, which would otherwise repeat this one.
+func challengeOIDCSignIn(ex *Exchange, err error) error {
+	if err == nil || StatusForError(err) != http.StatusUnauthorized {
+		return err
+	}
+
+	v := ex.dpop()
+	if v == nil {
+		ex.Writer.AddHeader(headerWWWAuthenticate, oidcNoTokenChallenge)
+
+		return err
+	}
+
+	if errors.Is(err, ErrAuthenticationRequired) {
+		return err
+	}
+
+	ex.Writer.AddHeader(headerWWWAuthenticate, dpopScheme+" algs="+strconv.Quote(v.algorithmNames()))
+	if !v.cfg.Require {
+		ex.Writer.AddHeader(headerWWWAuthenticate, oidcNoTokenChallenge)
+	}
+
+	return err
 }
 
 // writeOIDCMethodNotAllowed refuses a method the endpoint does not serve, naming the one it does.

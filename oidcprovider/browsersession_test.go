@@ -1296,7 +1296,8 @@ func TestProvider_BrowserSession_ConsentLooksBeforeItSpends(t *testing.T) {
 
 			tc.assert(t, err)
 			assert.Empty(t, answer.RedirectTo, "no code is released")
-			assert.Zero(t, codesHeld(t, f.parkFixture, "u-1", "billing-web"))
+			assert.Equal(t, 1, codesHeld(t, f.parkFixture, "u-1", "billing-web"),
+				"the look comes after the code is written, so that an end after it reaches the code; this one is never given to anyone")
 			stored, loadErr := f.store.Load(t.Context(), handleDigestOf(t, handleOf(t, res.Location)))
 			require.NoError(t, loadErr)
 			assert.Equal(t, oidcprovider.StageConsent, stored.Stage, "the handle stays unspent")

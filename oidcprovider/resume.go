@@ -117,7 +117,10 @@ func (ResumeResult) LogValue() slog.Value { return slog.StringValue(redacted) }
 // the way is a code and a session no one was ever given the secret of, which expire.
 //
 // A code carries the facts of the sign-in that was presented when it was issued, never a
-// value from the current time. Consent is remembered only from a grant, and offline access
+// value from the current time. An end of the sign-in can reach only a code already written, so a
+// caller that read SignIn before calling this must read it again after, and hand out nothing if
+// it has gone: the chain's resume endpoint does. A browser session standing in for a sign-in is
+// looked at here, after the code is written. Consent is remembered only from a grant, and offline access
 // only when offline_access is among the scopes granted. A store failing to remember it
 // costs the user a later question, and not the answer they were owed, so it is logged.
 func (p *Provider) Resume(ctx context.Context, in ResumeInput) (ResumeResult, error) {
@@ -288,12 +291,11 @@ func (p *Provider) resumeConsent(ctx context.Context, in ResumeInput, r *Pending
 		return ResumeResult{}, ErrReauthenticate
 	}
 
-	if err := p.confirmBrowserSession(ctx, session, in.IdleTimeout, now); err != nil {
-		return ResumeResult{}, err
-	}
-
 	target, err := p.issueCode(ctx, r, rc, s, granted)
 	if err != nil {
+		return ResumeResult{}, err
+	}
+	if err := p.confirmBrowserSession(ctx, session, in.IdleTimeout, now); err != nil {
 		return ResumeResult{}, err
 	}
 	if err := p.spendStage(ctx, r, StageConsent, StageDone, nil); err != nil {
@@ -344,10 +346,11 @@ func (p *Provider) consentSignIn(ctx context.Context, in ResumeInput, now time.T
 }
 
 // confirmBrowserSession takes the last look at the session an answer rests on, and records
-// its use, before the stage is spent: a session gone by now has ended, so the answer is a
-// browser that must authenticate, and no code is written. A session the answer rested on
-// none (digest nil) needs no look. Any failure other than the session being gone is a
-// dependency failure, since nothing is spent yet to lose.
+// its use, once the code is written and before the stage is spent: an end before this look
+// is caught by it, and one after finds the code. A session gone by now has ended, so the
+// answer is a browser that must authenticate, and the code written is one no one was given,
+// which expires. An answer resting on no session (digest nil) needs no look. Any failure other
+// than the session being gone is a dependency failure, since nothing is spent yet to lose.
 func (p *Provider) confirmBrowserSession(ctx context.Context, digest []byte, idle time.Duration, now time.Time) error {
 	if digest == nil {
 		return nil
