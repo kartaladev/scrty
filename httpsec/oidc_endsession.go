@@ -108,11 +108,10 @@ func WithOIDCEndSessionBodyLimit(n int64) OIDCProviderOption {
 //     from them;
 //  3. the source is asked before anything else is read, so a throttled source costs no parsing, no
 //     signature check and no store write;
-//  4. the provider judges the request. A refusal goes to the chain's error handling, with no
+//  4. a form POST with no flow cookie is bounced to a GET, by bounceOIDCPost, with nothing set,
+//     parked or charged, and so a sign-in ends only on a request that carries the browser's cookies;
+//  5. the provider judges the request. A refusal goes to the chain's error handling, with no
 //     Location, as RP-Initiated Logout section 4 forbids redirecting one; anything else is a 303.
-//
-// A form POST sent across sites carries no SameSite=Lax cookie, so it never matches the browser's
-// session and always asks. The GET a relying party's redirect makes does carry it.
 func (g *oidcEndSessionGroup) serve(ex *Exchange, _ Next) error {
 	setOIDCNoStore(ex.Writer)
 
@@ -142,9 +141,13 @@ func (g *oidcEndSessionGroup) serve(ex *Exchange, _ Next) error {
 		return err
 	}
 
+	presented, _ := ex.Request.Cookie(oidcCookieName(g.op.provider, OIDCFlowCookie))
+	if method == http.MethodPost && presented == "" {
+		return bounceOIDCPost(ex, g.op.publicURL(g.op.paths[OIDCEndSession]), params)
+	}
+
 	ctx := ex.Context()
 
-	presented, _ := ex.Request.Cookie(oidcCookieName(g.op.provider, OIDCFlowCookie))
 	browser, _ := ex.Request.Cookie(oidcCookieName(g.op.provider, OIDCBrowserSessionCookie))
 
 	res, err := g.op.provider.EndSession(ctx, oidcprovider.EndSessionInput{

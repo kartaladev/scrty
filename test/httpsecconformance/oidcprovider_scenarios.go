@@ -74,7 +74,11 @@ var opKeys = sync.OnceValue(func() *signingkey.Keys {
 func OIDCProviderScenarios() []Scenario {
 	return []Scenario{
 		opAuthorizeRedirects(),
-		opAuthorizeFormPostRedirects(),
+		opAuthorizeFormPostHoldingCookieRedirects(),
+		opAuthorizeFormPostBounces(),
+		opAuthorizeFormPostBounceIsAnsweredFromTheBrowserSession(),
+		opEndSessionFormPostBounces(),
+		opEndSessionFormPostBounceLeavesAParkedRequest(),
 		opAuthorizeRawQueryIsRefused(),
 		opResumeAnswersJSON(),
 		opTokenAnswersJSONNoStore(),
@@ -405,18 +409,51 @@ func opAuthorizeRedirects() Scenario {
 	}
 }
 
-func opAuthorizeFormPostRedirects() Scenario {
+// opFormPost is a form POST of body to target, with no cookie, as a browser sends one across sites
+// unless header says otherwise.
+func opFormPost(target, body string, header map[string]string) RequestSpec {
+	h := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	for k, v := range header {
+		h[k] = v
+	}
+
+	return RequestSpec{Method: http.MethodPost, Path: target, Header: h, Body: body, ClientAddress: ClientAddress}
+}
+
+// assertBounced pins a form POST with no flow cookie being sent back as a GET: 303 to endpoint, the
+// address the provider publishes, holding params in its query, with nothing set and nothing left
+// for a cache or a referrer. It returns the URL the browser goes to.
+func assertBounced(t *testing.T, res Result, endpoint string, params url.Values) *url.URL {
+	t.Helper()
+
+	require.NoError(t, res.Refusal)
+	require.Equal(t, http.StatusSeeOther, res.Status, res.Body)
+	assert.False(t, res.NoRouteRan)
+	assert.Empty(t, res.Body)
+	assert.Empty(t, res.Header.Values("Set-Cookie"), "the browser's cookies are left alone")
+	assertNoStore(t, res)
+	assert.Equal(t, "no-referrer", res.Header.Get("Referrer-Policy"))
+
+	loc, err := url.Parse(res.Header.Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, endpoint, loc.Scheme+"://"+loc.Host+loc.Path)
+
+	got, err := url.ParseQuery(loc.RawQuery)
+	require.NoError(t, err)
+	assert.Equal(t, params, got)
+
+	return loc
+}
+
+func opAuthorizeFormPostHoldingCookieRedirects() Scenario {
 	return Scenario{
-		Name:  "oidcprovider authorize by form POST redirects 303 with a flow cookie",
+		Name:  "oidcprovider authorize by form POST holding the flow cookie redirects 303 to the login page",
 		Build: opBuild,
-		Request: sending(RequestSpec{
-			Method:        http.MethodPost,
-			Path:          opAuthorizePath,
-			Header:        map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
-			Body:          opAuthorizeParams(opThirdParty).Encode(),
-			ClientAddress: ClientAddress,
-		}),
-		Assert: func(t *testing.T, res Result) {
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			browser, _, _ := opStartAuthorize(t, send, opThirdParty)
+
+			res := send(opFormPost(opAuthorizePath, opAuthorizeParams(opThirdParty).Encode(), browser.with(nil, spec, false)))
+
 			require.NoError(t, res.Refusal)
 			require.Equal(t, http.StatusSeeOther, res.Status, res.Body)
 			assert.False(t, res.NoRouteRan)
@@ -425,8 +462,77 @@ func opAuthorizeFormPostRedirects() Scenario {
 			require.NoError(t, err)
 			assert.Equal(t, "/login", loc.Path)
 			assert.NotEmpty(t, loc.Query().Get(oidcprovider.HandleParam))
+			assert.Empty(t, res.Header.Values("Set-Cookie"), "the cookie the browser holds is kept")
+		},
+	}
+}
 
-			assertHostCookie(t, assertOneSetCookiePerCookie(t, res, opFlowCookie)[0])
+func opAuthorizeFormPostBounces() Scenario {
+	params := opAuthorizeParams(opThirdParty)
+	params["resource"] = []string{"https://api.example.com/a", "https://api.example.com/b"}
+	params.Set("state", "a&b=c #d")
+
+	return Scenario{
+		Name:    "oidcprovider authorize by form POST with no flow cookie redirects 303 to itself, setting nothing",
+		Build:   opBuild,
+		Request: sending(opFormPost(opAuthorizePath, params.Encode(), nil)),
+		Assert: func(t *testing.T, res Result) {
+			assertBounced(t, res, OPIssuer+opAuthorizePath, params)
+		},
+	}
+}
+
+func opAuthorizeFormPostBounceIsAnsweredFromTheBrowserSession() Scenario {
+	return Scenario{
+		Name:  "oidcprovider authorize by form POST with no flow cookie is answered from the browser session on the GET",
+		Build: opBuild,
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			browser, _, _ := opSignedIn(t, spec, send)
+			params := opAuthorizeParams(opFirstParty)
+
+			// The browser holds its cookies, but a cross-site POST does not send them.
+			bounce := send(opFormPost(opAuthorizePath, params.Encode(), nil))
+			to := assertBounced(t, bounce, OPIssuer+opAuthorizePath, params)
+
+			// The adapter's test server is not at the issuer's host, and assertBounced has pinned
+			// the origin, so the browser's request goes there by its path and query.
+			res := send(opGet(to.RequestURI(), browser.with(nil, spec, false)))
+
+			require.NoError(t, res.Refusal)
+			require.Equal(t, http.StatusSeeOther, res.Status, res.Body)
+
+			loc, err := url.Parse(res.Header.Get("Location"))
+			require.NoError(t, err)
+			assert.Equal(t, OPCallback, loc.Scheme+"://"+loc.Host+loc.Path)
+			assert.NotEmpty(t, loc.Query().Get("code"))
+		},
+	}
+}
+
+func opEndSessionFormPostBounces() Scenario {
+	return Scenario{
+		Name:    "oidcprovider end-session by empty form POST with no flow cookie redirects 303 to itself, setting nothing",
+		Build:   opBuild,
+		Request: sending(opFormPost(opLogoutPath, "", nil)),
+		Assert: func(t *testing.T, res Result) {
+			assertBounced(t, res, OPIssuer+opLogoutPath, url.Values{})
+			assert.Equal(t, OPIssuer+opLogoutPath, res.Header.Get("Location"), "an empty query leaves no question mark")
+		},
+	}
+}
+
+func opEndSessionFormPostBounceLeavesAParkedRequest() Scenario {
+	return Scenario{
+		Name:  "oidcprovider end-session by form POST with no flow cookie leaves a request parked in another tab",
+		Build: opBuild,
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			browser, handle, _ := opStartAuthorize(t, send, opFirstParty)
+
+			assertBounced(t, send(opFormPost(opLogoutPath, "", nil)), OPIssuer+opLogoutPath, url.Values{})
+
+			res := opResume(spec, send, browser, opDoc(t, map[string]any{"req": handle}))
+			require.NoError(t, res.Refusal)
+			require.Equal(t, http.StatusOK, res.Status, res.Body)
 		},
 	}
 }

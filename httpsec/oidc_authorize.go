@@ -125,7 +125,9 @@ func WithOIDCAuthorizeBodyLimit(n int64) OIDCProviderOption {
 //     that cannot answer and a source that cannot be attributed are all refused with
 //     ErrOIDCThrottled, which answers 429: this endpoint is visited by a browser, and a
 //     401 there reads as "sign the user in";
-//  4. the provider judges the request. What it cannot answer by redirect goes to the
+//  4. a form POST with no flow cookie is bounced to a GET, by bounceOIDCPost, with nothing
+//     set, parked or charged;
+//  5. the provider judges the request. What it cannot answer by redirect goes to the
 //     chain's error handling, with no Location, and anything else is a 303.
 //
 // A request that parks is charged to its source, as is one naming an invalid client or
@@ -160,9 +162,13 @@ func (g *oidcAuthorizeGroup) serve(ex *Exchange, _ Next) error {
 		return err
 	}
 
+	presented, _ := ex.Request.Cookie(oidcCookieName(g.op.provider, OIDCFlowCookie))
+	if method == http.MethodPost && presented == "" {
+		return bounceOIDCPost(ex, g.op.publicURL(g.op.paths[OIDCAuthorize]), params)
+	}
+
 	ctx := ex.Context()
 
-	presented, _ := ex.Request.Cookie(oidcCookieName(g.op.provider, OIDCFlowCookie))
 	browser, _ := ex.Request.Cookie(oidcCookieName(g.op.provider, OIDCBrowserSessionCookie))
 
 	res, err := g.op.provider.Authorize(ctx, oidcprovider.AuthorizeInput{
@@ -190,6 +196,33 @@ func (g *oidcAuthorizeGroup) serve(ex *Exchange, _ Next) error {
 	}
 
 	ex.Writer.SetHeader("Location", res.Location)
+	ex.Writer.WriteHeader(http.StatusSeeOther)
+
+	return nil
+}
+
+// bounceOIDCPost answers a form POST that came with no flow cookie by sending the browser back
+// to endpoint, the address the provider publishes, by GET with params in the query. A browser
+// sends no SameSite=Lax cookie on a cross-site POST, so such a POST cannot tell a browser that
+// holds a flow cookie from one that does not, and setting one would replace the cookie its other
+// tabs' parked requests are bound to. The GET a 303 turns it into is a top-level navigation, which
+// carries the cookies, the browser session's included. So nothing is set, parked or charged here.
+//
+// The address is the published one and not the request's path, because a router stripping the
+// issuer's path leaves a path the browser cannot reach the chain at.
+//
+// There is no option to answer such a POST directly, because that would only bring back a way
+// for any page to break another tab's request. The cost is that a value sent by POST reaches the
+// URL, as a GET's does, where it can be logged, and Referrer-Policy keeps it out of what the next
+// page is told. A POST holding the cookie avoids both.
+func bounceOIDCPost(ex *Exchange, endpoint string, params url.Values) error {
+	location := endpoint
+	if query := params.Encode(); query != "" {
+		location += "?" + query
+	}
+
+	ex.Writer.SetHeader("Referrer-Policy", "no-referrer")
+	ex.Writer.SetHeader("Location", location)
 	ex.Writer.WriteHeader(http.StatusSeeOther)
 
 	return nil

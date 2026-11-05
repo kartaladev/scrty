@@ -303,9 +303,13 @@ func (w *logoutFlow) endSessionGET(t *testing.T, params url.Values, change ...fl
 	return w.serve(t, r, change)
 }
 
-// endSessionPOST sends params to the end-session endpoint by form POST.
+// endSessionPOST sends params to the end-session endpoint by form POST, holding a flow cookie, as
+// one with none is sent back as a GET and never reaches the provider. The cookie's value has the
+// wrong shape to keep, so a row that parks sees the flow cookie it expects being set.
 func (w *logoutFlow) endSessionPOST(t *testing.T, params url.Values, change ...flowChange) flowAnswer {
 	t.Helper()
+
+	change = append([]flowChange{flowCookieOf(flowCookie, "held")}, change...)
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
 		w.issuer+logoutEndSessionPath, strings.NewReader(params.Encode()))

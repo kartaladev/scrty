@@ -269,7 +269,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // EnableOIDCProvider puts the OpenID Provider p on the chain. The provider answers
 // the authorization code flow; the login and consent pages are the consumer's, and
 // resume a parked request through the OIDCResume endpoint (see PendingOIDCRequest,
-// and the README's "OpenID Provider").
+// and the README's "OpenID Provider"). The authorization endpoint (OIDCAuthorize)
+// takes GET and form POST, and a form POST with no flow cookie is first sent back
+// as a GET (see "Cross-site requests", below).
 //
 // Defaults, each with what replaces it:
 //
@@ -322,6 +324,19 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // chain applies: the endpoint's throttle, its body limit and its client
 // authentication. None of them takes a state-changing decision from a cookie alone.
 //
+// A browser sends no SameSite=Lax cookie on a cross-site POST. So a form POST to the
+// authorization or end-session endpoint with no flow cookie is answered with a 303
+// to that endpoint's published address, with its parameters in the query,
+// Cache-Control: no-store and Referrer-Policy: no-referrer. Nothing is set, parked or
+// charged to its source, and the provider does not judge the request until the GET,
+// which carries the browser's cookies. Setting a flow cookie on the POST would replace
+// the one the browser's other tabs have requests parked under, so no option turns this
+// off. The cost is that values sent by POST, id_token_hint, login_hint, logout_hint and
+// state among them, reach the URL as a GET's do, where they can be logged, and a long
+// request may meet a proxy's or the server's own URL limit, which on fiber's defaults
+// (ReadBufferSize, 8 KiB) is below the size this reads. A form POST holding the flow
+// cookie is answered directly, and avoids both.
+//
 // The resume, the logout confirmation and /consents are not exempt. The consent
 // stage and the logout confirmation may rest on the provider's browser session, a
 // cookie, so a cross-site POST to any of them is refused as ErrCrossSiteRequest
@@ -343,7 +358,9 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 //
 // The end-session endpoint (OIDCEndSession, "/oauth2/logout" by default) is
 // RP-Initiated Logout 1.0: GET or POST, with id_token_hint, post_logout_redirect_uri,
-// state and client_id. A valid hint whose sid names the sign-in of the browser's
+// state and client_id. A form POST with no flow cookie is first sent back as a GET
+// (see "Cross-site requests", above), and what follows is what the request that
+// reaches the provider is answered with. A valid hint whose sid names the sign-in of the browser's
 // own session ends that sign-in without asking, and the answer is a 303 to the
 // registered post_logout_redirect_uri (with state), or else to the provider's
 // LoggedOutURL. Any other request ends nothing: it is parked under a handle bound to

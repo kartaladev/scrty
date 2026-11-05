@@ -513,13 +513,29 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 			assert: parkedAtLogin,
 		},
 		{
-			name: "a valid form POST goes to the login page",
+			name: "a valid form POST holding the flow cookie goes to the login page",
 			send: func(t *testing.T, w *opFlow) flowAnswer {
 				t.Helper()
 
-				return w.authorizePOST(t, flowParams(flowWeb))
+				_, flow := w.park(t, flowWeb)
+
+				a := w.authorizePOST(t, flowParams(flowWeb), flowCookieOf(flowCookie, flow))
+
+				view, err := w.p.PendingRequest(t.Context(), a.location(t).Query().Get(oidcprovider.HandleParam), flow)
+				require.NoError(t, err)
+				assert.Equal(t, flowWeb, view.ClientID)
+				assert.Equal(t, []string{"openid", "profile"}, view.Scopes)
+
+				return a
 			},
-			assert: parkedAtLogin,
+			assert: func(t *testing.T, w *opFlow, a flowAnswer) {
+				t.Helper()
+
+				assert.Equal(t, http.StatusSeeOther, a.status)
+				assert.Equal(t, w.issuer+"/login", a.location(t).Scheme+"://"+a.location(t).Host+a.location(t).Path)
+				assert.Empty(t, a.header.Values("Set-Cookie"), "the cookie the browser holds is kept")
+				assert.False(t, a.passedOn)
+			},
 		},
 		{
 			name: "a POST's parameters come from its body, never its query",
@@ -531,7 +547,7 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 					w.issuer+flowAuthorizePath+"?"+params.Encode(), strings.NewReader("state=abc"))
 				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-				return w.serve(t, r, nil)
+				return w.serve(t, r, []flowChange{flowCookieOf(flowCookie, "held")})
 			},
 			assert: refusedUnredirected,
 		},
@@ -620,7 +636,8 @@ func TestOIDCAuthorizeEndpoint(t *testing.T) {
 			send: func(t *testing.T, w *opFlow) flowAnswer {
 				t.Helper()
 
-				return w.authorizePOST(t, flowParams(flowWeb, func(p url.Values) { p.Add("scope", "email") }))
+				return w.authorizePOST(t, flowParams(flowWeb, func(p url.Values) { p.Add("scope", "email") }),
+					flowCookieOf(flowCookie, "held"))
 			},
 			assert: redirectedWith("invalid_request"),
 		},
