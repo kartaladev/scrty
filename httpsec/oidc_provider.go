@@ -295,8 +295,10 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // request that cannot be judged, or whose hint fails its checks, is refused with
 // ErrOIDCInvalidEndSession and never redirected.
 //
-// The logout page (LogoutURL, the consumer's own, on the issuer's origin) shows
-// who is asked and posts the user's answer to the confirmation endpoint
+// The logout page (LogoutURL, the consumer's own, on the issuer's origin) asks the
+// user, naming no one, as PendingRequest refuses a logout's handle and RP-Initiated
+// Logout section 2 requires the question and not a name. It posts the answer to the
+// confirmation endpoint
 // (OIDCLogoutConfirm, "/oauth2/logout/confirm") from the same browser, with its
 // cookies, as Content-Type application/json:
 //
@@ -310,20 +312,21 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // not exempt from CSRF protection, so a page of another origin cannot post it.
 //
 // A confirmation ends the sign-in of the browser's own session, whichever sign-in
-// the request's hint named. Ending a sign-in deletes its first-party sessions,
-// revokes the grants that do not outlive it (those without offline access), deletes its browser session
-// (clearing the cookie), and tells each client that registered a back-channel
-// logout URI.
+// the request's hint named. Ending a sign-in revokes the grants that do not outlive
+// it (those without offline access) and tells each client that registered a
+// back-channel logout URI, then deletes its first-party sessions, then its browser
+// session, clearing the cookie.
 //
-// A retry behaves as follows. The handle is spent last, so a request that failed
-// (a store outage, answered as the chain's error handling does, a 500 by default)
-// leaves it live and the page may post the same answer again. After a success the
-// same post is an unknown handle, 400, and only unknown handles count against the
-// confirmation's throttle. When a store failed part-way, the sign-in's browser
-// session may already be gone with its grants still live: the retry then ends
-// nothing more, the failure is logged and reported as the event
-// scrty_grant_end_failed, and the sign-in's first-party sessions are left alone
-// so that the chain's logout, or any later end of that sign-in, finishes the end.
+// A retry behaves as follows. The handle is spent last of all, and the browser
+// session goes after everything but the handle, because it is what lets the browser
+// ask again. A failure anywhere (a store outage, answered as the chain's error
+// handling does, a 500 by default) leaves the browser its session, its cookie and the
+// handle, and posting the same answer again, or asking again at end-session, finishes
+// the logout and tells no client twice. While a logout is failing that browser session
+// stays usable, and nothing falls back on a hint or a first-party session to finish,
+// which would let an ID token's holder end a sign-in from another browser. After a
+// success the same post is an unknown handle, 400, and only unknown handles count
+// against the confirmation's throttle.
 //
 // # Consents
 //
@@ -368,10 +371,14 @@ func (op *oidcEndpoints) wire(ch *Chain) {
 // A passkey manager takes a session manager, not a store: passkey.Deps.Sessions
 // must report whether its ends reach the provider, which a bare session.Store
 // cannot. The manager given to EnablePasskeys must be built over a *session.Sessions
-// built with session.WithEndObserver(p), or New refuses the chain.
+// built with session.WithEndObserver(p), or New refuses the chain, unless the manager
+// ends no session at all: passkey.WithoutSessionRevocationOnRemoval and
+// passkey.WithoutSessionRevocationOnClone both given.
 //
-// A sign-in's end the provider could not carry through to its grants is logged and
-// reported as the event scrty_grant_end_failed, from outside the end's path.
+// A session manager's report of an end, which nothing retries, that the provider could
+// not carry through to its grants is logged and reported as the event
+// scrty_grant_end_failed, from outside the end's path. A logout the browser asked for
+// reports no such thing: it answers an error, and asking again finishes it.
 //
 // # The provider's lifecycle
 //

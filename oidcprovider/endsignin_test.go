@@ -864,6 +864,7 @@ func TestProvider_EndSignIn_ObserverFailure(t *testing.T) {
 			assert.Equal(t, 1, strings.Count(logs, "level=ERROR"), logs)
 			assert.NotContains(t, logs, errOutage.Error())
 			assert.NotContains(t, logs, "the-upstream-session")
+			assert.Contains(t, logs, "family="+signIn.Family.String(), "an end naming no user has only this to find it by")
 			tc.assert(t, e, s, digest)
 
 			require.NoError(t, e.p.Shutdown(t.Context()))

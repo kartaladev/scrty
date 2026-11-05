@@ -258,10 +258,11 @@ var _ SessionRevoker = (*session.Sessions)(nil)
 
 // ReportsEndsTo reports whether the sessions this manager ends are reported to the
 // observer o, so that a component relying on being told can refuse a manager wired
-// to a revoker that would not tell it. A manager with no revoker ends no session,
-// and has nothing to report, so the answer is true.
+// to a revoker that would not tell it. A manager ending no session has nothing to
+// report, so the answer is true: one with no revoker, and one given a revoker with
+// both WithoutSessionRevocationOnRemoval and WithoutSessionRevocationOnClone.
 func (m *Passkeys) ReportsEndsTo(o session.EndObserver) bool {
-	return nilcheck.IsNil(m.sessions) || m.sessions.ReportsEndsTo(o)
+	return (m.keepOnRemoval && m.keepOnClone) || nilcheck.IsNil(m.sessions) || m.sessions.ReportsEndsTo(o)
 }
 
 // WithoutSessionRevocationOnRemoval keeps the user's other sessions when a

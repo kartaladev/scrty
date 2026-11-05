@@ -119,7 +119,8 @@ type oidcLogoutConfirmDocument struct {
 //     no handle lookup;
 //  4. a body not declared as JSON is refused, which a cross-site form could not send, on top of what
 //     CSRF protection judges;
-//  5. the provider judges the handle, ends what the answer may end, and spends the handle last.
+//  5. the provider judges the handle and ends the grants the answer may end, the chain finishes that
+//     end, and the handle is spent last of all, so a failure anywhere leaves the page able to answer again.
 //
 // Only an unknown handle is charged to the source: a failure is no verdict on anyone.
 func (g *oidcLogoutConfirmGroup) serve(ex *Exchange, _ Next) error {
@@ -164,6 +165,10 @@ func (g *oidcLogoutConfirmGroup) serve(ex *Exchange, _ Next) error {
 
 	if err := g.op.finishLogout(ex, res.Ended, res.User); err != nil {
 		return err
+	}
+
+	if res.Ended != nil {
+		g.op.provider.SpendLogout(ctx, doc.Handle, flow)
 	}
 
 	return writeSuccessDocument(ex, oidcLogoutConfirmDocument{RedirectTo: res.RedirectTo})

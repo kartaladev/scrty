@@ -180,20 +180,19 @@ func (g *oidcEndSessionGroup) serve(ex *Exchange, _ Next) error {
 	return nil
 }
 
-// finishLogout does what the chain owes a sign-in the provider has ended: the browser-session
-// cookie goes, as its record has, and the sign-in's first-party sessions are deleted after the
-// provider's end succeeded, as the chain's logout does, so a failure there leaves them loadable.
+// finishLogout does what the chain owes a sign-in whose grants the provider has ended: its first-party
+// sessions go, then its browser session, and only then the cookie. The browser session is what lets
+// the browser ask again, so it goes last, and a store failing anywhere here answers an error and leaves
+// the browser that session and its cookie: asking again finishes the end, and RP-Initiated Logout
+// section 2 is met by a success that means it.
 //
 // The end is reported as a logout's is, and only for a family this deleted: one already gone was
-// ended by something else, which reported it. A store failing here answers an error with the
-// provider's end done, and the chain's logout, or any later end of the family, deletes the rest.
+// ended by something else, which reported it. The report comes once the browser session has been tried,
+// so that no sink holds that, and whatever became of it, so that a retry, finding the family gone, does
+// not lose it.
 func (op *oidcEndpoints) finishLogout(ex *Exchange, ended *oidcprovider.SignInSelector, user identity.UserID) error {
 	if ended == nil {
 		return nil
-	}
-
-	if op.provider.BrowserSessionsEnabled() {
-		clearOIDCCookie(ex.Writer, op.provider, OIDCBrowserSessionCookie)
 	}
 
 	ctx := ex.Context()
@@ -205,10 +204,22 @@ func (op *oidcEndpoints) finishLogout(ex *Exchange, ended *oidcprovider.SignInSe
 		return err
 	}
 
-	if err == nil && n > 0 {
+	deleted := err == nil && n > 0
+
+	_, endErr := op.provider.EndSignIn(ctx, *ended)
+
+	if deleted {
 		for _, name := range []string{event.SessionLogout, event.AuthnTokenRevoked} {
 			emitEvent(ctx, event.Event{Name: name, Outcome: event.OutcomeSuccess, User: user})
 		}
+	}
+
+	if endErr != nil {
+		return endErr
+	}
+
+	if op.provider.BrowserSessionsEnabled() {
+		clearOIDCCookie(ex.Writer, op.provider, OIDCBrowserSessionCookie)
 	}
 
 	return nil

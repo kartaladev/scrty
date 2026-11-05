@@ -540,6 +540,38 @@ func TestOIDCConsents(t *testing.T) {
 			},
 		},
 		{
+			name: "a challenge of the consumer's own, which no gate enforces first, reaches neither",
+			setup: flowSetup{chain: func(t *testing.T, _ *opFlow) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(challengingIn(t, policy.PerRequest, policy.ChallengeKind(100))),
+					httpsec.WithChallengeEnforcer(policy.ChallengeKind(100)),
+				}
+			}},
+			send: func(t *testing.T, w *opFlow, _ *consentsWorld) flowAnswer {
+				t.Helper()
+
+				bearer := signedIn(t, w)
+
+				a := w.consentsDELETE(t, consentsPath+"/"+flowWeb, bearer)
+				var challenge *httpsec.ChallengeError
+				require.ErrorAs(t, a.err, &challenge)
+				require.Equal(t, policy.ChallengeKind(100), challenge.Kind)
+
+				return w.consentsGET(t, consentsPath, bearer)
+			},
+			assert: func(t *testing.T, w *opFlow, world *consentsWorld, a flowAnswer) {
+				t.Helper()
+
+				var challenge *httpsec.ChallengeError
+				require.ErrorAs(t, a.err, &challenge)
+				assert.Equal(t, policy.ChallengeKind(100), challenge.Kind)
+				assert.Empty(t, a.body, "the list is not written")
+				nothingRevoked(t, w, world)
+			},
+		},
+		{
 			name: "a session owing a password change reaches neither, on a chain with no gate for it",
 			send: func(t *testing.T, w *opFlow, _ *consentsWorld) flowAnswer {
 				t.Helper()

@@ -427,8 +427,9 @@ with `oidcprovider.WithLogoutConfirmation` asks every time, and so does one buil
 `oidcprovider.WithoutBrowserSessions`. A request that cannot be judged, or whose hint fails its checks,
 is refused with 400 `ErrOIDCInvalidEndSession` and is never redirected.
 
-Your logout page shows who is asking and posts the answer to the confirmation, `/oauth2/logout/confirm`,
-from the same browser:
+Your logout page asks the user, and posts the answer to the confirmation, `/oauth2/logout/confirm`,
+from the same browser. It cannot name who is asking: `PendingRequest` refuses a logout's handle, and
+RP-Initiated Logout section 2 requires the question, not a name.
 
 ```js
 const res = await fetch("/oauth2/logout/confirm", {
@@ -452,14 +453,19 @@ decline ends nothing and goes to `LoggedOutURL`.
 | 429, `ErrOIDCThrottled` | the source is over its limit | waits |
 | the chain's error handling, a 500 by default | a store failed | posts the same answer again |
 
-**A retry.** The handle is spent last, so a failure leaves it live and the page may post again. After a
-success the same post is an unknown handle, and only unknown handles count against the throttle. When a
-store failed part-way, the browser session may already be gone with the grants still live: the retry
-then ends nothing more, the failure is logged and reported as the security event
-`scrty_grant_end_failed`, and the sign-in's first-party sessions are left alone so that the chain's
-logout, or any later end of that sign-in, finishes the end. Ending a sign-in deletes its first-party
-sessions and browser session, revokes the grants that do not outlive it (those without
-`offline_access`), and tells each client that registered a back-channel logout URI.
+**A retry.** Ending a sign-in revokes the grants that do not outlive it (those without `offline_access`)
+and tells each client that registered a back-channel logout URI, then deletes its first-party sessions,
+then its browser session and cookie, and spends the handle last of all. A store failing anywhere in that
+answers a 500 and leaves the browser its session, its cookie and the handle, so posting the same answer
+again, or the relying party's request again, finishes the logout and tells no client twice. While a logout
+is failing that browser session stays usable, and the user is not logged out: only the success says so.
+Nothing falls back on a hint or a first-party session to finish, because that would let an ID token's holder
+end a sign-in from another browser. After a success the same post is an unknown handle, and only unknown
+handles count against the throttle.
+
+A caller serving these answers off the chain owes the same order: `EndSession` and `ConfirmLogout` end the
+grants and name the sign-in in `Ended`, the caller deletes its first-party sessions and finishes with
+`EndSignIn(Ended)`, clears the cookie, and for a confirmation calls `SpendLogout(handle, flowSecret)`.
 
 ### Consents
 
@@ -484,6 +490,9 @@ option that changes it:
 | Second-factor enrolment reset (`mfa.ResetEnrolment`) | all revoked when `ResetDeps.Grants` is given | `mfa.WithoutResetGrantRevocation` keeps them |
 | A suspected passkey clone suspends a credential | none until decided: the chain refuses a manager told neither | `passkey.WithGrantRevoker(op)` revokes all; `passkey.WithoutCloneGrantRevocation` keeps them |
 | Password change | grants kept | `httpsec.WithPasswordChangeGrantRevocation` revokes all before the new password is written |
+
+A clone's revocation that fails leaves the refusal standing, is logged every time, and is reported as
+`scrty_grant_revoke_failed` on a request a chain watches: suspending happens once, so nothing asks again.
 
 Keeping grants gives up what each option's godoc says: after a recovery, a reset or a clone, a grant
 kept is a way back in for whoever took it, for as long as its refresh token lives. A consumer who runs
@@ -875,7 +884,7 @@ Everything else has a default:
 | A consumer challenge kind raised on a passkey request (`WithChallengeEnforcer`) | refused with a `ChallengeError` of that kind on every passkey registration and management endpoint | `httpsec.WithPasskeyRegistrationResolving(kinds...)`: the four registration endpoints serve the named kinds under every other rule, nothing is marked, and listing, rename and removal still refuse them; no kinds, `ChallengeNone`, a built-in kind or an undeclared kind is `ErrConfig` at `New` |
 | Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
 | Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
-| Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
+| Log sampling | each refusal, clone or queue failure reason at most once a minute, and never a clone's failed grant revocation, which nothing asks again | `passkey.WithLogInterval` |
 
 The removal endpoint (`POST <prefix>/remove`) reads the optional `other_sessions` field from the same
 form body as `id`: `keep` keeps the user's other sessions, `end` ends them, and absent applies the

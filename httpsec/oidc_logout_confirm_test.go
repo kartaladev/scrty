@@ -460,7 +460,10 @@ func TestOIDCLogoutConfirm(t *testing.T) {
 
 				w.grantsAt.outage.Store(false)
 
-				assertLogoutAnswer(t, w.confirm(t, logoutConfirmed(handle), flowCookieOf(flowCookie, flow)), bye)
+				a = w.confirm(t, logoutConfirmed(handle), flowCookieOf(flowCookie, flow), flowCookieOf(flowSession, in.browser))
+				assertLogoutAnswer(t, a, bye)
+				assertClearsBrowser(t, a)
+				w.assertEnded(t, in)
 			},
 		},
 		{

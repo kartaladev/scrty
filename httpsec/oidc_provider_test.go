@@ -645,6 +645,27 @@ func TestOIDCProvider_Construction(t *testing.T) {
 			assert: refused("EnableOIDCProvider", "EnablePasskeys", "session.WithEndObserver"),
 		},
 		{
+			name: "a passkey manager ending no session, over a session manager that does not report, builds",
+			build: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				p := f.provider(t)
+				users := NewMockUserLoader(gomock.NewController(t))
+				pm := must.Must(passkey.New(passkey.Deps{
+					Verifier: newPasskeyVerifierStub(t).mock,
+					Users:    users,
+					Sender:   exampleSender{},
+					Sessions: must.Must(session.New()),
+				}, passkey.WithRepudiationContact("help@example.com"), passkey.WithoutCloneGrantRevocation(),
+					passkey.WithoutSessionRevocationOnRemoval(), passkey.WithoutSessionRevocationOnClone()))
+
+				return append(f.wired(t, p),
+					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pm, Sessions: reporting(t, p), Users: users}),
+					httpsec.EnableOIDCProvider(p))
+			},
+			assert: built,
+		},
+		{
 			name: "form login's session manager does not report to the provider",
 			build: func(t *testing.T) []httpsec.Option {
 				t.Helper()

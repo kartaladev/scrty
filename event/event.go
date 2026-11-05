@@ -340,6 +340,15 @@ const (
 	// one family does not, and carries no cause, as a store's error is
 	// never reported. The failure never undoes or delays the sign-in's end.
 	GrantEndFailed = "scrty_grant_end_failed"
+
+	// GrantRevokeFailed is a suspected passkey clone whose user's application
+	// grants could not be revoked: the credential is suspended and the login
+	// refused, but the grants stand, and suspending happens once, so nothing
+	// asks again. It names the user and carries no cause, as a revoker's error
+	// is never reported. It is reported on a request a chain watches, as the
+	// passkey manager has no sink of its own, and the failure is logged either
+	// way. It never changes the refusal.
+	GrantRevokeFailed = "scrty_grant_revoke_failed"
 )
 
 // Names returns every event name the library reports: the OWASP Logging
@@ -357,6 +366,6 @@ func Names() []string {
 		SignInEnded, HostRefused, DPoPRefused, CertificateBindingRefused, ChallengeRefused,
 		SigningKeyRotated, GrantCreated, ConsentGiven, ConsentDenied, ConsentRevoked,
 		ClientAuthRefused, CodeReplayed, RefreshReused, GrantRevoked, LogoutDeliveryFailed,
-		GrantEndFailed,
+		GrantEndFailed, GrantRevokeFailed,
 	}
 }

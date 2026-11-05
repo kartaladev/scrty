@@ -53,7 +53,7 @@ func TestSecurityEvents_Names(t *testing.T) {
 					"scrty_grant_created", "scrty_consent_given", "scrty_consent_denied",
 					"scrty_consent_revoked", "scrty_client_auth_refused", "scrty_code_replayed",
 					"scrty_refresh_reused", "scrty_grant_revoked", "scrty_logout_delivery_failed",
-					"scrty_grant_end_failed",
+					"scrty_grant_end_failed", "scrty_grant_revoke_failed",
 				} {
 					assert.Contains(t, names, want)
 				}
@@ -76,8 +76,8 @@ func TestSecurityEvents_Names(t *testing.T) {
 						scrty++
 					}
 				}
-				assert.Equal(t, 27, scrty, "the outcomes the vocabulary does not name")
-				assert.Len(t, names, 18+27)
+				assert.Equal(t, 28, scrty, "the outcomes the vocabulary does not name")
+				assert.Len(t, names, 18+28)
 			},
 		},
 		{

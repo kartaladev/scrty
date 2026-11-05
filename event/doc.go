@@ -137,6 +137,8 @@
 //   - scrty_grant_end_failed: a sign-in's end the OpenID provider could not
 //     carry through to its grants or browser sessions, reported off the end's
 //     path, so a sink that blocks never holds it.
+//   - scrty_grant_revoke_failed: a suspected passkey clone whose user's
+//     application grants could not be revoked, which nothing asks again.
 //
 // # What an event carries
 //
@@ -156,8 +158,10 @@
 // credential handed out: a credential issued and then discarded, because its
 // session could not be stored or a racing request won, reports nothing. A
 // request whose own context ended before a verdict, and a dependency that
-// failed, report no failure or refusal, with one exception: the provider's
-// scrty_grant_end_failed, for a sign-in that had already ended. A verdict
+// failed, report no failure or refusal, with two exceptions, each for an outcome
+// that had already happened and that nothing will ask about again: the provider's
+// scrty_grant_end_failed, for a sign-in that had already ended, and
+// scrty_grant_revoke_failed, for a credential that had already been suspended. A verdict
 // beside a hang-up is still a verdict: a bearer token the verifier refused on a request that had also
 // ended is refused, and reported.
 //

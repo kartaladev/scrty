@@ -1,8 +1,10 @@
 package httpsec_test
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,6 +47,16 @@ var reportedElsewhere = map[string]string{
 
 // providerEventsPinned is where the OpenID provider's events are pinned.
 const providerEventsPinned = "oidcprovider TestProvider_Events, and TestProvider_Events_ThroughChain through a chain"
+
+// refusingGrantText is what refusingGrantRevoker says, which no event may repeat.
+const refusingGrantText = "the grant store holds row 42 and cannot reach it"
+
+// refusingGrantRevoker is a provider whose grants cannot be revoked.
+type refusingGrantRevoker struct{}
+
+func (refusingGrantRevoker) RevokeUserGrants(context.Context, identity.UserID, string) error {
+	return errors.New(refusingGrantText)
+}
 
 // accessToken is the access_token member of a JSON success document.
 func accessToken(t *testing.T, out served) string {
@@ -354,6 +366,23 @@ func TestSecurityEvents_Emitted(t *testing.T) {
 				}
 			},
 			assert: emitted(event.PasskeyRemoved, event.OutcomeSuccess),
+		},
+		{
+			name: event.GrantRevokeFailed,
+			run: func(t *testing.T) emittedRun {
+				rec := &eventRecorder{}
+				d := newPwlDeployment(t)
+				d.pkOpts = append(d.pkOpts, passkey.WithGrantRevoker(refusingGrantRevoker{}))
+				d.extra = append(d.extra, httpsec.EnableSecurityEvents(rec.sink))
+				d.build(t)
+
+				handle := d.seedCounted(t, e2eUser, "cred-1", passkey.StateActive, 5)
+				out := d.login(t, "cred-1", handle)
+				require.ErrorIs(t, out.err, passkey.ErrCloneSuspected, "the failure does not change the refusal")
+
+				return emittedRun{events: rec.all(), clientIP: "192.0.2.1", user: e2eUser, secrets: []string{refusingGrantText}}
+			},
+			assert: emitted(event.GrantRevokeFailed, event.OutcomeFailure),
 		},
 		{
 			name: event.RecoveryStarted,

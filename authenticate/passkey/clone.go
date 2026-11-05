@@ -7,8 +7,10 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -193,8 +195,13 @@ func (m *Passkeys) endSessionsOnClone(ctx context.Context, c *Credential) bool {
 // revokeGrantsOnClone revokes every application grant of c's user after c was
 // suspended as a suspected clone, unless WithoutCloneGrantRevocation was given
 // or there is no revoker. It runs under a context the caller cannot cancel, so a
-// client that disconnects does not leave the grants alive. Its failure is logged
-// at error level; the refusal stands either way.
+// client that disconnects does not leave the grants alive.
+//
+// A credential suspends once, so nothing will ask again, and what is written here
+// is all an operator gets to know the grants are still live by. A failure is
+// therefore logged every time at error level, with no sampling, as one key would
+// hide another user's, and reported as event.GrantRevokeFailed on a request a chain
+// watches. The refusal stands either way.
 func (m *Passkeys) revokeGrantsOnClone(ctx context.Context, c *Credential) {
 	if m.grants == nil || m.keepGrantsOnClone {
 		return
@@ -202,10 +209,15 @@ func (m *Passkeys) revokeGrantsOnClone(ctx context.Context, c *Credential) {
 
 	ctx = context.WithoutCancel(ctx)
 
-	if err := m.grants.RevokeUserGrants(ctx, c.User, cloneGrantCause); err != nil {
-		m.sampled(ctx, slog.LevelError, "clone|grants-not-revoked", msgGrantsNotRevoked,
-			append(diag.Failure("clone", err), credentialAttr(c.ID))...)
+	err := m.grants.RevokeUserGrants(ctx, c.User, cloneGrantCause)
+	if err == nil {
+		return
 	}
+
+	m.logger.LogAttrs(ctx, slog.LevelError, msgGrantsNotRevoked, append(diag.Failure("clone", err), credentialAttr(c.ID))...)
+	eventsink.Send(ctx, event.Event{
+		Name: event.GrantRevokeFailed, At: m.clock.Now(), Outcome: event.OutcomeFailure, User: c.User,
+	})
 }
 
 // recordAllowedClone records the backup state and last use of an assertion
@@ -286,8 +298,10 @@ func WithoutSessionRevocationOnClone() Option {
 //
 // The revocation runs only when this call's suspension is the one that suspended
 // the credential: never for CloneSignalOnly, CloneAllow or CloneRefuse, and once
-// for racing assertions. Its failure is logged and the refusal stands. Removing a
-// passkey by the user's own request revokes nothing.
+// for racing assertions. Its failure is logged every time, reported as
+// event.GrantRevokeFailed on a request a chain watches (the manager has no sink of
+// its own, so off a chain the log is all there is), and the refusal stands.
+// Removing a passkey by the user's own request revokes nothing.
 //
 // A nil revoker, typed nil included, is a configuration error from New.
 func WithGrantRevoker(r GrantRevoker) Option {

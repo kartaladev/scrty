@@ -3,6 +3,7 @@ package oidcprovider_test
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -79,6 +80,9 @@ func (s *logoutPendingStore) Advance(
 	if err := s.advanceErr.Load(); err != nil {
 		return *err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	return s.MemoryPendingRequestStore.Advance(ctx, digest, from, to, in)
 }
@@ -124,6 +128,7 @@ type logoutFixture struct {
 	family   id.ID
 	secret   string
 	grant    id.ID
+	logs     *lockedBuffer
 }
 
 const logoutFixtureURI = "https://rp.example.com/bye"
@@ -137,6 +142,7 @@ func newLogoutFixture(t *testing.T) *logoutFixture {
 		family: id.MustParse("00000000-0000-7000-8000-00000000000a"),
 		grant:  id.MustParse("00000000-0000-7000-8000-00000000000b"),
 		secret: base64.RawURLEncoding.EncodeToString(append(make([]byte, 31), 7)),
+		logs:   &lockedBuffer{},
 	}
 
 	clients := authzClients()
@@ -168,6 +174,7 @@ func newLogoutFixture(t *testing.T) *logoutFixture {
 		LoggedOutURL: issuer + "/bye",
 	},
 		oidcprovider.WithClock(f.clk),
+		oidcprovider.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))),
 		oidcprovider.WithPendingRequestStore(f.pending),
 		oidcprovider.WithBrowserSessionStore(f.browsers),
 		oidcprovider.WithGrantStore(f.grants),
@@ -317,15 +324,6 @@ func TestProvider_ConfirmLogout_Dependencies(t *testing.T) {
 		f.assertStands(t)
 	}
 
-	answered := func(t *testing.T, f *logoutFixture, res *oidcprovider.LogoutResult, err error) {
-		t.Helper()
-
-		require.NoError(t, err)
-		require.NotNil(t, res.Ended, "the sign-in ended, so the caller still owes its sessions")
-		assert.Equal(t, f.family, res.Ended.Family)
-		assert.Equal(t, "u-1", string(res.User))
-	}
-
 	cases := []testCase{
 		{
 			name:      "a registry down leaves the sign-in and the handle as they were",
@@ -351,16 +349,27 @@ func TestProvider_ConfirmLogout_Dependencies(t *testing.T) {
 			assert: outage,
 		},
 		{
-			name:      "a sign-in that ended is still answered when its handle cannot be spent",
-			confirmed: true,
-			fail:      func(f *logoutFixture) { f.pending.advanceErr.Store(&down) },
-			assert:    answered,
+			name: "a decline a racing answer spent first is an unknown handle",
+			fail: func(f *logoutFixture) { f.pending.advanceErr.Store(&gone) },
+			assert: func(t *testing.T, _ *logoutFixture, res *oidcprovider.LogoutResult, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, oidcprovider.ErrUnknownHandle)
+				assert.Nil(t, res)
+			},
 		},
 		{
-			name:      "a sign-in that ended is still answered when a racing answer spent its handle",
+			name:      "a confirmation ending a sign-in writes nothing to its handle, so no failure there matters",
 			confirmed: true,
-			fail:      func(f *logoutFixture) { f.pending.advanceErr.Store(&gone) },
-			assert:    answered,
+			fail:      func(f *logoutFixture) { f.pending.advanceErr.Store(&down) },
+			assert: func(t *testing.T, f *logoutFixture, res *oidcprovider.LogoutResult, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, res.Ended, "the sign-in is ending, so the caller still owes the rest")
+				assert.Equal(t, f.family, res.Ended.Family)
+				assert.Equal(t, "u-1", string(res.User))
+			},
 		},
 	}
 
@@ -377,6 +386,189 @@ func TestProvider_ConfirmLogout_Dependencies(t *testing.T) {
 
 			res, err := f.p.ConfirmLogout(t.Context(), handle, flow, f.secret, tc.confirmed)
 			tc.assert(t, f, res, err)
+		})
+	}
+}
+
+// TestProvider_LogoutFromTheBrowser pins what a caller off the chain is left to finish. Both requests
+// end the grants and leave the browser session, which is what lets the browser ask again, and asking
+// again is answered the same until the caller finishes with EndSignIn.
+func TestProvider_LogoutFromTheBrowser(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// ask makes the request, and returns the sign-in it says the caller owes.
+		ask func(t *testing.T, f *logoutFixture) func() *oidcprovider.SignInSelector
+	}
+
+	cases := []testCase{
+		{
+			name: "a hint naming the browser's sign-in",
+			ask: func(t *testing.T, f *logoutFixture) func() *oidcprovider.SignInSelector {
+				t.Helper()
+
+				in := f.matching(t)
+
+				return func() *oidcprovider.SignInSelector {
+					res, err := f.p.EndSession(t.Context(), in)
+					require.NoError(t, err)
+
+					return res.Ended
+				}
+			},
+		},
+		{
+			name: "a confirmation",
+			ask: func(t *testing.T, f *logoutFixture) func() *oidcprovider.SignInSelector {
+				t.Helper()
+
+				handle, flow := f.parked(t, url.Values{})
+
+				return func() *oidcprovider.SignInSelector {
+					res, err := f.p.ConfirmLogout(t.Context(), handle, flow, f.secret, true)
+					require.NoError(t, err)
+
+					return res.Ended
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newLogoutFixture(t)
+			ask := tc.ask(t, f)
+
+			ended := ask()
+			require.NotNil(t, ended)
+			assert.Equal(t, f.family, ended.Family)
+
+			g, err := f.grants.Load(t.Context(), f.grant)
+			require.NoError(t, err)
+			assert.True(t, g.Revoked, "the grants have ended")
+
+			_, err = f.browsers.Load(t.Context(), digestOf(t, f.secret), f.clk.Now())
+			require.NoError(t, err, "the browser session is what lets the browser ask again")
+
+			again := ask()
+			require.NotNil(t, again, "asking again is answered the same, so the caller can finish")
+
+			_, err = f.p.EndSignIn(t.Context(), *again)
+			require.NoError(t, err)
+
+			_, err = f.browsers.Load(t.Context(), digestOf(t, f.secret), f.clk.Now())
+			require.ErrorIs(t, err, oidcprovider.ErrNotFound, "the caller's EndSignIn finishes the end")
+
+			assert.Nil(t, ask(), "with the browser session gone, nothing is left to end")
+		})
+	}
+}
+
+// TestProvider_SpendLogout pins the last step of an answer that ended a sign-in: nothing about it is
+// returned, because the logout has happened and its answer is owed.
+func TestProvider_SpendLogout(t *testing.T) {
+	t.Parallel()
+
+	const failedSpend = "an answered logout's handle could not be spent"
+
+	gone, down := error(oidcprovider.ErrNotFound), error(errOutage)
+
+	type testCase struct {
+		name string
+		fail func(f *logoutFixture)
+		ctx  func(ctx context.Context) context.Context
+		// wrongFlow presents another browser's flow secret.
+		wrongFlow bool
+		assert    func(t *testing.T, f *logoutFixture, answerAgain func() error)
+	}
+
+	spent := func(t *testing.T, f *logoutFixture, answerAgain func() error) {
+		t.Helper()
+
+		f.pending.advanceErr.Store(nil)
+		require.ErrorIs(t, answerAgain(), oidcprovider.ErrUnknownHandle)
+		assert.NotContains(t, f.logs.String(), failedSpend)
+	}
+
+	cases := []testCase{
+		{name: "it spends the handle", assert: spent},
+		{
+			name: "a client that hung up does not stop it",
+			ctx: func(ctx context.Context) context.Context {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cancelled
+			},
+			assert: spent,
+		},
+		{
+			name: "a store that cannot spend it is logged, with nothing of its failure, and leaves it",
+			fail: func(f *logoutFixture) { f.pending.advanceErr.Store(&down) },
+			assert: func(t *testing.T, f *logoutFixture, answerAgain func() error) {
+				t.Helper()
+
+				assert.Contains(t, f.logs.String(), failedSpend)
+				assert.NotContains(t, f.logs.String(), errOutage.Error())
+
+				f.pending.advanceErr.Store(nil)
+				require.NoError(t, answerAgain())
+			},
+		},
+		{
+			name: "a racing answer that spent it first is no failure",
+			fail: func(f *logoutFixture) { f.pending.advanceErr.Store(&gone) },
+			assert: func(t *testing.T, f *logoutFixture, _ func() error) {
+				t.Helper()
+
+				assert.NotContains(t, f.logs.String(), failedSpend)
+			},
+		},
+		{
+			name:      "another browser's flow secret spends nothing",
+			wrongFlow: true,
+			assert: func(t *testing.T, f *logoutFixture, answerAgain func() error) {
+				t.Helper()
+
+				assert.NotContains(t, f.logs.String(), failedSpend)
+				require.NoError(t, answerAgain())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newLogoutFixture(t)
+			handle, flow := f.parked(t, url.Values{})
+
+			answerAgain := func() error {
+				_, err := f.p.ConfirmLogout(t.Context(), handle, flow, f.secret, true)
+
+				return err
+			}
+			require.NoError(t, answerAgain())
+
+			if tc.fail != nil {
+				tc.fail(f)
+			}
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			presented := flow
+			if tc.wrongFlow {
+				presented = f.secret
+			}
+
+			f.p.SpendLogout(ctx, handle, presented)
+			tc.assert(t, f, answerAgain)
 		})
 	}
 }

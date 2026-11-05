@@ -662,6 +662,17 @@ func TestOIDCEndSession(t *testing.T) {
 			assert: refused,
 		},
 		{
+			name: "a hint with more than one audience is refused, naming no one client",
+			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
+				t.Helper()
+
+				return logoutParams("id_token_hint", w.logoutHint(t, in.session.FamilyID, func(i *token.Issue) {
+					i.Audience = []string{flowWeb, flowFirstParty}
+				}))
+			},
+			assert: refused,
+		},
+		{
 			name: "an access token offered as a hint is refused",
 			params: func(t *testing.T, w *logoutFlow, in logoutSignIn) url.Values {
 				t.Helper()

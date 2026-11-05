@@ -35,8 +35,9 @@ type EndSessionResult struct {
 	Location string
 	// FlowSecret is the flow cookie's value when the request parked, and empty when it did not.
 	FlowSecret string
-	// Ended selects the sign-in the request ended by its family, and is nil when it ended none.
-	// Its first-party sessions, which the provider does not hold, are the caller's to delete.
+	// Ended selects the sign-in the request is ending by its family, and is nil when it ends none. Its
+	// grants have ended. The caller still owes the rest, in this order: its first-party sessions, which
+	// the provider does not hold, then EndSignIn(Ended) for its browser session.
 	Ended *SignInSelector
 	// User is the ended sign-in's user, and empty when Ended is nil.
 	User identity.UserID
@@ -46,8 +47,9 @@ type EndSessionResult struct {
 type LogoutResult struct {
 	// RedirectTo is where the page sends the browser.
 	RedirectTo string
-	// Ended selects the sign-in the answer ended by its family, and is nil when it ended none.
-	// Its first-party sessions, which the provider does not hold, are the caller's to delete.
+	// Ended selects the sign-in the answer is ending by its family, and is nil when it ends none. Its
+	// grants have ended. The caller still owes the rest, in this order: its first-party sessions, which
+	// the provider does not hold, then EndSignIn(Ended) for its browser session, then SpendLogout.
 	Ended *SignInSelector
 	// User is the ended sign-in's user, and empty when Ended is nil.
 	User identity.UserID
@@ -86,11 +88,19 @@ type endSessionRequest struct {
 // are the consumer's to choose. Nothing widens the rule on the URI, because it is what stops an open
 // redirect.
 //
+// What it ends without asking is the sign-in's grants, and no more: Ended says what the caller still
+// owes. An end goes grants, then first-party sessions, then browser session, because the browser
+// session is what lets the browser ask again. A caller off the chain deletes the sign-in's first-party
+// sessions and finishes with EndSignIn(Ended), which deletes the browser session, and clears the cookie
+// only once that has succeeded.
+//
 // A failing store, registry or key source matches ErrDependency, and one read before anything ends
-// leaves it all as it was. EndSignIn writes each of its stores whatever became of the other, so
-// when it fails the browser's session may have gone with the grants still live. The caller must then
-// leave the sign-in's first-party sessions alone: asking again from this browser finds no session
-// to end, and the chain's logout, or any other end of those sessions, is what finishes the end.
+// leaves it all as it was. A failure of the grants' write leaves the browser session and the first-party
+// sessions, so asking again from this browser finishes the end, and tells no one twice. While a logout
+// is failing that browser session stays usable, so an authorization request from the browser can still
+// be answered from it: a failed logout has not logged anyone out, and its answer says so. Nothing falls
+// back on the hint or on a first-party session to finish, as that would let a token's holder end a
+// sign-in from another browser, without the question section 2 requires.
 func (p *Provider) EndSession(ctx context.Context, in EndSessionInput) (*EndSessionResult, error) {
 	req, err := p.readEndSession(ctx, in.Params)
 	if err != nil {
@@ -267,10 +277,11 @@ func (p *Provider) browserSignIn(ctx context.Context, secret string) (*SignIn, e
 	return &session.SignIn, nil
 }
 
-// endFamily ends one sign-in, and returns the selector naming it.
+// endFamily ends one sign-in's grants, and returns the selector naming it. Its browser session stays,
+// because that is what lets this browser ask again: it goes last, with the EndSignIn that finishes.
 func (p *Provider) endFamily(ctx context.Context, family id.ID) (*SignInSelector, error) {
 	sel := SignInSelector{Family: family}
-	if _, err := p.EndSignIn(ctx, sel); err != nil {
+	if err := p.endGrantsOf(ctx, sel); err != nil {
 		return nil, err
 	}
 
@@ -294,8 +305,9 @@ func (p *Provider) endFamily(ctx context.Context, family id.ID) (*SignInSelector
 // asked, and need not follow it.
 //
 // The handle is spent last, once whatever had to end has ended, so a failure leaves the page able to
-// answer again. A failing store or registry matches ErrDependency, and EndSession says what a failure
-// in ending the sign-in leaves behind.
+// answer again. An answer ending nothing spends it here. One ending a sign-in leaves it to the caller,
+// who finishes as EndSession says, with EndSignIn(Ended), and then calls SpendLogout. A failing store or
+// registry matches ErrDependency, and EndSession says what a failure in ending the sign-in leaves behind.
 func (p *Provider) ConfirmLogout(
 	ctx context.Context, handle, flowSecret, browserSessionSecret string, confirmed bool,
 ) (*LogoutResult, error) {
@@ -322,16 +334,35 @@ func (p *Provider) ConfirmLogout(
 		}
 	}
 
+	// An end is not over yet: the caller still owes the sign-in's sessions, and the page may have to
+	// answer again, so SpendLogout is what spends this handle.
+	if result.Ended != nil {
+		return result, nil
+	}
+
 	if err := p.spendStage(ctx, r, StageLogout, StageDone, nil); err != nil {
-		if result.Ended == nil {
-			return nil, err
-		}
-		// The sign-in has ended, and the caller still owes its sessions, so the answer is owed. What
-		// a handle left unspent can do is end this browser's own session, which has gone.
-		p.logFailedAfterSpend(ctx, "oidcprovider: an answered logout's handle could not be spent", err)
+		return nil, err
 	}
 
 	return result, nil
+}
+
+// SpendLogout spends the handle of an answer that ended a sign-in, once the caller has finished that
+// end (see ConfirmLogout). The logout has happened by then and its answer is owed, so nothing here is
+// returned: a store that cannot spend the handle is logged, and a handle already spent by a racing
+// answer is no failure. A handle left unspent lives until its deadline, and answers again only by
+// ending what the browser then holds. It does not depend on the caller still listening.
+func (p *Provider) SpendLogout(ctx context.Context, handle, flowSecret string) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	defer cancel()
+
+	r, err := p.loadPending(detached, handle, flowSecret)
+	if err == nil {
+		err = p.spendStage(detached, r, StageLogout, StageDone, nil)
+	}
+	if err != nil && !errors.Is(err, ErrUnknownHandle) {
+		p.logFailedAfterSpend(ctx, "oidcprovider: an answered logout's handle could not be spent", err)
+	}
 }
 
 // endConfirmed ends what a confirmation may: the sign-in of the browser's session, or, with no

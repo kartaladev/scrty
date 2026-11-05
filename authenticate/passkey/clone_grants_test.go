@@ -3,6 +3,9 @@ package passkey_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,7 +13,9 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/event"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/eventsink"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -227,6 +232,128 @@ func TestClone_RevokesGrants(t *testing.T) {
 			}
 
 			tc.assert(t, e, err)
+		})
+	}
+}
+
+// TestClone_GrantRevocationFailure pins what is left of a revocation that failed.
+// A credential suspends once, so nothing would ask again: the operator has only
+// what is written and reported here to know that the grants are still live.
+func TestClone_GrantRevocationFailure(t *testing.T) {
+	t.Parallel()
+
+	const lost = "the user's application grants could not be revoked"
+
+	outage := errors.New("grant store secret text")
+
+	type testCase struct {
+		name string
+		// revoked is what the revoker answers.
+		revoked error
+		// watched puts a chain's delivery on the request.
+		watched bool
+		// suspensions is how many clones the credential store really suspends.
+		suspensions int
+		assert      func(t *testing.T, e *loginEnv, events []event.Event, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:        "a failure is reported to the chain the request runs in, naming the user and nothing of the failure",
+			revoked:     outage,
+			watched:     true,
+			suspensions: 1,
+			assert: func(t *testing.T, _ *loginEnv, events []event.Event, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
+				assert.NotErrorIs(t, err, outage, "the refusal is about the clone")
+				require.Len(t, events, 1)
+				assert.Equal(t, "scrty_grant_revoke_failed", events[0].Name)
+				assert.Equal(t, event.OutcomeFailure, events[0].Outcome)
+				assert.Equal(t, identity.UserID("u-1"), events[0].User)
+				assert.False(t, events[0].At.IsZero())
+				assert.Empty(t, events[0].Cause, "a store's error is never carried")
+				assert.NotContains(t, fmt.Sprintf("%+v", events[0]), outage.Error())
+			},
+		},
+		{
+			name:        "a failure on a request no chain watches is still logged, and the refusal stands",
+			revoked:     outage,
+			suspensions: 1,
+			assert: func(t *testing.T, e *loginEnv, events []event.Event, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
+				assert.Empty(t, events)
+				assert.Equal(t, 1, strings.Count(e.logs.String(), lost), e.logs.String())
+			},
+		},
+		{
+			name:        "every failure is logged: another user's must not be sampled away",
+			revoked:     outage,
+			suspensions: 3,
+			assert: func(t *testing.T, e *loginEnv, _ []event.Event, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
+				assert.Equal(t, 3, strings.Count(e.logs.String(), lost), e.logs.String())
+				assert.NotContains(t, e.logs.String(), outage.Error())
+			},
+		},
+		{
+			name:        "a revocation that succeeded reports no failure",
+			watched:     true,
+			suspensions: 1,
+			assert: func(t *testing.T, e *loginEnv, events []event.Event, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
+				assert.Empty(t, events)
+				assert.NotContains(t, e.logs.String(), lost)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				mu     sync.Mutex
+				events []event.Event
+			)
+
+			ctx := t.Context()
+			if tc.watched {
+				ctx = eventsink.With(ctx, func(_ context.Context, e event.Event) {
+					mu.Lock()
+					defer mu.Unlock()
+
+					events = append(events, e)
+				})
+			}
+
+			e := newLoginEnv(t, nil)
+			// Reporting each as the one that suspended leaves the credential active, which
+			// stands for as many credentials as a row needs, each suspended once.
+			e.creds.suspendHook = func(context.Context, id.ID) (bool, error) { return true, nil }
+
+			g := NewMockGrantRevoker(gomock.NewController(t))
+			g.EXPECT().RevokeUserGrants(gomock.Any(), identity.UserID("u-1"), "passkey_clone").
+				Return(tc.revoked).Times(tc.suspensions)
+			e.manager(t, passkey.WithGrantRevoker(g))
+
+			var err error
+			for range tc.suspensions {
+				challenge := e.begin(t)
+				_, err = e.m.Authenticate(ctx, assertion(challenge, func(b *assertionBody) { b.Count = 41 }), e.binding)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			tc.assert(t, e, events, err)
 		})
 	}
 }

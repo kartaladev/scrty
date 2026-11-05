@@ -71,6 +71,39 @@ func TestPasskeys_ReportsEndsTo(t *testing.T) {
 			},
 		},
 		{
+			name: "a revoker that does not, with removals keeping the sessions, still ends them at a clone",
+			wire: func(*testing.T, *passkey.Deps) []passkey.Option {
+				return []passkey.Option{passkey.WithoutSessionRevocationOnRemoval()}
+			},
+			assert: func(t *testing.T, reports bool) {
+				t.Helper()
+
+				assert.False(t, reports)
+			},
+		},
+		{
+			name: "a revoker that does not, with clones keeping the sessions, still ends them at a removal",
+			wire: func(*testing.T, *passkey.Deps) []passkey.Option {
+				return []passkey.Option{passkey.WithoutSessionRevocationOnClone()}
+			},
+			assert: func(t *testing.T, reports bool) {
+				t.Helper()
+
+				assert.False(t, reports)
+			},
+		},
+		{
+			name: "a revoker that does not, with both keeping the sessions, ends nothing to report",
+			wire: func(*testing.T, *passkey.Deps) []passkey.Option {
+				return []passkey.Option{passkey.WithoutSessionRevocationOnRemoval(), passkey.WithoutSessionRevocationOnClone()}
+			},
+			assert: func(t *testing.T, reports bool) {
+				t.Helper()
+
+				assert.True(t, reports)
+			},
+		},
+		{
 			name: "no revoker, so no session is ended",
 			wire: func(_ *testing.T, deps *passkey.Deps) []passkey.Option {
 				deps.Sessions = nil

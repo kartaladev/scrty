@@ -150,6 +150,8 @@ type endsSetup struct {
 	logoutFirst bool
 	// chain adds options, given the fixture with its manager built.
 	chain func(t *testing.T, f *signInEnds) []httpsec.Option
+	// sessions replaces the session manager's store.
+	sessions session.Store
 }
 
 func newSignInEnds(t *testing.T, setup endsSetup) *signInEnds {
@@ -206,9 +208,14 @@ func newSignInEnds(t *testing.T, setup endsSetup) *signInEnds {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = f.p.Shutdown(context.Background()) }) //nolint:usetesting // t.Context has ended by now
 
+	store := setup.sessions
+	if store == nil {
+		store = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+	}
+
 	f.sessions = must.Must(session.New(
 		session.WithClock(clk),
-		session.WithStore(must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))),
+		session.WithStore(store),
 		session.WithEndObserver(f.p),
 	))
 

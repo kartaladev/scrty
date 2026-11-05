@@ -34,7 +34,9 @@ type ClientToNotify struct {
 
 // EndSignIn ends the sign-ins sel selects, and returns the clients to notify, each of which has also
 // been handed on for back-channel delivery. This is what the chain's own logout calls, before it
-// deletes the session, so that a failure here can fail the logout.
+// deletes the session, so that a failure here can fail the logout. A logout the browser asks for, through
+// EndSession or ConfirmLogout, ends the grants there and finishes here, after the first-party sessions,
+// since the browser session this deletes is what lets the browser ask again.
 //
 // A grant without offline_access ends with its sign-in, and so does any grant of a client registered
 // with [Client].EndGrantsWithSignIn. A grant with offline_access otherwise survives, marked as having
@@ -73,6 +75,22 @@ func (p *Provider) EndSignIn(ctx context.Context, sel SignInSelector) ([]ClientT
 	p.reportEnded(ctx, ended)
 
 	return clients, dependencyFailure(ctx, errors.Join(grantErr, browserErr), "oidcprovider: end the sign-ins")
+}
+
+// endGrantsOf is EndSignIn up to, and not including, the browser sessions, for a request made from the
+// browser. Its browser session is what lets that browser ask again, so a failure here, or in deleting
+// the first-party sessions that follow, has to leave it. Asked again, it tells no one twice.
+func (p *Provider) endGrantsOf(ctx context.Context, sel SignInSelector) error {
+	grantCtx, endGrants := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	ended, err := p.stores.grants.EndSignIns(grantCtx, sel, p.cfg.clock.Now())
+	endGrants()
+
+	handCtx, endHandOn := context.WithTimeout(context.WithoutCancel(ctx), revocationBudget)
+	p.handOn(handCtx, clientsToNotify(ended))
+	endHandOn()
+	p.reportEnded(ctx, ended)
+
+	return dependencyFailure(ctx, err, "oidcprovider: end the sign-in's grants")
 }
 
 // handOn is where the clients of an ended sign-in leave for back-channel delivery. It never waits for a
@@ -120,11 +138,16 @@ func clientsToNotify(ended []Grant) []ClientToNotify {
 // each grant the end revokes is reported on this call, and a sink is called synchronously, so one that
 // blocks holds the logout's answer for as long as it blocks, which no budget here bounds.
 //
-// It has no error to return, and the sign-in has already ended, so a failure is logged and reported as
-// event.GrantEndFailed, naming the user and carrying no cause, and leaves the sign-in ended, with the
-// grants left as they stand until the next end selecting them. What did end was reported by EndSignIn
-// as it ended. The event goes to the sink on the events lane, as a failed delivery's does, so a sink
-// that blocks never holds the end.
+// It has no error to return, the sign-in has already ended, and nothing retries an observer, so it writes
+// both stores whatever became of the other, and a failure is logged and reported as event.GrantEndFailed,
+// naming the user and carrying no cause, and leaves the sign-in ended, with the grants left as they stand
+// until the next end selecting them. What did end was reported by EndSignIn as it ended. The event goes to
+// the sink on the events lane, as a failed delivery's does, so a sink that blocks never holds the end.
+//
+// The report cannot tell that it is redundant. A logout has ended the grants before it deletes the session
+// that sends this report, so a store failing on this second end reports event.GrantEndFailed although
+// nothing outlived the sign-in. That false alarm is accepted, as the alternative is to stay silent about
+// one that is real.
 func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport) {
 	sel, ok := selectorOf(r)
 	if !ok {
@@ -140,10 +163,12 @@ func (p *Provider) SignInsEnded(ctx context.Context, r session.EndReport) {
 }
 
 // logAndReportEndFailure logs an end the provider could not carry through, and reports it off the
-// calling path, so that no sink holds the end. The event carries the user and nothing of err.
+// calling path, so that no sink holds the end. The event carries the user and nothing of err. The log
+// names the family, which is all there is to find a sign-in by when its end named no user, and which the
+// event has no field for.
 func (p *Provider) logAndReportEndFailure(ctx context.Context, r session.EndReport, err error) {
 	p.cfg.logger.LogAttrs(ctx, slog.LevelError, "oidcprovider: an ended sign-in's grants could not be ended",
-		append(diag.Failure("end_sign_ins", err), slog.Int("cause", int(r.Cause)))...)
+		append(diag.Failure("end_sign_ins", err), slog.Int("cause", int(r.Cause)), slog.String("family", r.Family.String()))...)
 
 	if !p.watched(ctx) {
 		return
