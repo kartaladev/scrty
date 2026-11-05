@@ -2,6 +2,8 @@ package httpsec_test
 
 import (
 	"context"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ import (
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token"
 )
 
 // throttledRecord is what the record of a throttled sign-in says.
@@ -381,6 +384,48 @@ func (a cookieJudgedPerRequest) Intercept(ex *httpsec.Exchange, next httpsec.Nex
 	})
 }
 
+// signedTokenPrefix sets a signed bearer's token apart from the session it names, as a real token's
+// value is apart from its jti, so that a row can tell which of the two was recorded.
+const signedTokenPrefix = "signed."
+
+// verifiedSignedBearer is a signed bearer on f's sessions, whose verifier accepts any token made of
+// signedTokenPrefix and a session identifier, for u-1, confirming jkt when it is not empty.
+func verifiedSignedBearer(t *testing.T, f *signalsFixture, jkt string, opts ...httpsec.BearerTokenOption) httpsec.Option {
+	t.Helper()
+
+	verifier := NewMockVerifier(gomock.NewController(t))
+	verifier.EXPECT().Verify(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(
+		func(_ context.Context, presented string) (*token.Claims, error) {
+			return token.NewClaimsWithConfirmation("u-1", strings.TrimPrefix(presented, signedTokenPrefix),
+				token.Confirmation{JKT: jkt}), nil
+		})
+
+	return httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: verifier, Sessions: f.sessions, Users: f.users}, opts...)
+}
+
+// cookieAskedAfterTheBearer is a consumer's cookie authenticator above the bearer. When what is below it
+// refuses, it asks the chain's per-request phase about the sign-in on the exchange and answers with that
+// phase's refusal, so that a throttle reaches the stream's cross-site rule with the exchange as the
+// bearer's refusal left it. That rule is the one place a recorded credential shows from outside the
+// package: an exchange holding the Authorization header's credential is judged as a bearer, and
+// allowed from a wildcard's origin, and one holding none as a cookie, and refused.
+type cookieAskedAfterTheBearer struct{ consumerSessionCookie }
+
+func (a cookieAskedAfterTheBearer) Intercept(ex *httpsec.Exchange, next httpsec.Next) error {
+	return a.consumerSessionCookie.Intercept(ex, func(ex *httpsec.Exchange) error {
+		err := next(ex)
+		if err == nil {
+			return nil
+		}
+
+		if throttle := ex.EvaluatePerRequest(ex.Session, ex.Authentication.Principal); throttle != nil {
+			return throttle
+		}
+
+		return err
+	})
+}
+
 // TestSessionSignals_Caps_ThrottledCookie is a browser's own path: EventSource can send nothing but a
 // cookie, and it is a consumer's authenticator that reads it.
 func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
@@ -393,8 +438,24 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 		cors *httpsec.CORSPolicy
 		// csrf turns the chain's CSRF protection on. Default: off.
 		csrf bool
-		// bearer presents the sign-in as a bearer credential and not as the consumer's cookie.
+		// bearer presents the sign-in as a session bearer's credential and not as the consumer's cookie.
 		bearer bool
+		// signed presents the sign-in as a signed bearer's token and not as the consumer's cookie.
+		signed bool
+		// bare presents a signed bearer's token with no scheme, which the bearer is told to accept.
+		bare bool
+		// dpop binds the sign-in to this key, and presents it under the DPoP scheme with a proof.
+		dpop *dpopKey
+		// cookieRecords has the consumer's cookie authenticator record what it read, as its godoc allows.
+		cookieRecords bool
+		// cookieAbove presents the consumer's cookie too, with its authenticator above the bearer
+		// (cookieAskedAfterTheBearer). presented is then what the bearer is given, the sign-in by default.
+		cookieAbove bool
+		presented   string
+		// presentedUser signs the bearer's credential in as this user, whom the user store does not know.
+		presentedUser identity.UserID
+		// deciding replaces the throttling policy of a throttled send.
+		deciding func(t *testing.T) policy.Policy
 		// observed takes the chain's log and security events. Default: neither is kept.
 		observed *crossSiteObserved
 		// change adjusts the request first.
@@ -431,8 +492,16 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 				}
 
 				if throttled {
-					opts = append(opts, httpsec.WithPolicyEngine(
-						engineOf(t, phasePolicy(t, policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))))
+					p := phasePolicy(t, policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest)
+					if tc.deciding != nil {
+						p = tc.deciding(t)
+					}
+
+					opts = append(opts, httpsec.WithPolicyEngine(engineOf(t, p)))
+				}
+
+				if tc.presentedUser != "" {
+					f.users.EXPECT().LoadByUserID(gomock.Any(), tc.presentedUser).Return(nil, identity.ErrUserNotFound).AnyTimes()
 				}
 
 				if tc.cors != nil {
@@ -443,24 +512,118 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 					opts = append(opts, httpsec.WithLogger(slog.New(&tc.observed.logs)), httpsec.EnableSecurityEvents(tc.observed.events.sink))
 				}
 
-				if !tc.bearer {
-					opts = append(opts, httpsec.RegisterInterceptor(cookieJudgedPerRequest{consumerSessionCookie{sessions: f.sessions}}, httpsec.OrderBearerToken))
+				if tc.signed {
+					var (
+						jkt     string
+						options []httpsec.BearerTokenOption
+					)
+
+					if tc.dpop != nil {
+						jkt = tc.dpop.jkt
+					}
+
+					if tc.bare {
+						options = append(options, httpsec.WithBearerAllowEmptyScheme())
+					}
+
+					opts = append(opts, verifiedSignedBearer(t, f, jkt, options...))
+				}
+
+				if tc.dpop != nil {
+					opts = append(opts, httpsec.EnableDPoP(httpsec.DPoP{PublicURL: dpopPublicURL}))
+				}
+
+				switch {
+				case tc.cookieAbove:
+					opts = append(opts, httpsec.RegisterInterceptor(cookieAskedAfterTheBearer{consumerSessionCookie{sessions: f.sessions}}, httpsec.After(httpsec.OrderCSRF)))
+				case !tc.bearer && !tc.signed:
+					opts = append(opts, httpsec.RegisterInterceptor(cookieJudgedPerRequest{consumerSessionCookie{sessions: f.sessions, record: tc.cookieRecords}}, httpsec.OrderBearerToken))
 				}
 
 				return opts
 			},
 		})
 
-		own := f.signIn(t, "u-1").ID
+		createOpts := []session.CreateOption{session.WithFirstFactor(factor.Password)}
+		if tc.dpop != nil {
+			createOpts = append(createOpts, session.WithKeyBinding(session.KeyBinding{JKT: tc.dpop.jkt}))
+		}
+
+		s, err := f.sessions.Create(t.Context(), "u-1", createOpts...)
+		require.NoError(t, err)
+
+		own := s.ID
 		credential, change := "", append([]func(*http.Request){withSignalsCookie(own)}, tc.change...)
 
-		if tc.bearer {
+		if tc.bearer || tc.signed {
 			credential, change = own, tc.change
+
+			if tc.cookieAbove {
+				change = append([]func(*http.Request){withSignalsCookie(own)}, tc.change...)
+			}
+
+			switch {
+			case tc.presentedUser != "":
+				other, err := f.sessions.Create(t.Context(), tc.presentedUser, session.WithFirstFactor(factor.Password))
+				require.NoError(t, err)
+
+				credential = other.ID
+			case tc.presented != "":
+				credential = tc.presented
+			}
+
+			if tc.signed {
+				credential = signedTokenPrefix + credential
+			}
+		}
+
+		switch {
+		case tc.dpop != nil:
+			change = append(change, func(r *http.Request) {
+				r.Header.Set("Authorization", "DPoP "+credential)
+				r.Header.Set("DPoP", tc.dpop.validProof(rand.Text()).with(map[string]any{
+					"htu": dpopPublicURL + httpsec.DefaultSessionSignalsPath,
+					"iat": f.clk.Now().Unix(),
+					"ath": tokenHash(credential),
+				}).sign(t))
+			})
+		case tc.bare:
+			change = append(change, func(r *http.Request) { r.Header.Set("Authorization", credential) })
 		}
 
 		resp, _ := f.openStream(t, credential, change...)
 
 		return f, resp
+	}
+
+	// retriesWhereItOpens makes tc assert that the throttled request is told to retry and counted, and
+	// that the same request with no throttle opens a stream.
+	retriesWhereItOpens := func(tc testCase) testCase {
+		tc.assert = func(t *testing.T, f *signalsFixture, resp *http.Response) {
+			t.Helper()
+
+			requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+			assert.Empty(t, resp.Header.Get("WWW-Authenticate"), "a retry asks for no credential")
+			assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
+			assert.Zero(t, f.chain.SessionSignalStats().ReloadFailures)
+
+			_, plain := send(t, tc, false) //nolint:bodyclose // the fixture closes it when the test ends
+			requireStreamHead(t, plain)
+		}
+
+		return tc
+	}
+
+	// refusedAsACookie makes tc assert that the request was judged by the cookie rule and refused, and
+	// that nothing is counted. Which rule judged it is what a row of the bearer's refusal is here to see.
+	refusedAsACookie := func(tc testCase) testCase {
+		tc.assert = func(t *testing.T, f *signalsFixture, resp *http.Response) {
+			t.Helper()
+
+			refused(t, f, resp)
+		}
+
+		return tc
 	}
 
 	// refusedAsUnthrottled makes tc assert that the refusal is the one the same request gets with no
@@ -490,10 +653,23 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 	}
 
 	flood := &crossSiteObserved{}
-	bearerFromWildcard := testCase{
-		bearer: true,
-		cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"*"}},
-		change: fromAnotherSite("https://evil.example"),
+	wildcard := &httpsec.CORSPolicy{AllowedOrigins: []string{"*"}}
+	dpopClient := newDPoPKey(t, elliptic.P256())
+
+	// otherwiseDeniedFirst denies the bearer's own phase with a reason of its own, and then throttles
+	// whatever asks next: a refusal with a published caller and no mark.
+	otherwiseDeniedFirst := func(t *testing.T) policy.Policy {
+		t.Helper()
+
+		var asked atomic.Int64
+
+		return policyDeciding(t, policy.PerRequest, func(*policy.Input) policy.Decision {
+			if asked.Add(1) == 1 {
+				return policy.Decision{Outcome: policy.Deny, Reason: errors.New("a policy's own refusal")}
+			}
+
+			return policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}
+		})
 	}
 
 	cases := []testCase{
@@ -554,26 +730,46 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 				assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
 			},
 		},
-		{
-			// The throttle runs before the session bearer records its credential, so the stream is judged
-			// by the stricter cookie rule, where an unthrottled one would be allowed. Recording it there, a
-			// small change in session_bearer.go, would let this stream retry. The stricter answer is the
-			// safe default, so this pins it, and that change is left for the maintainer to decide.
-			name:   "a throttled bearer stream is judged by the cookie rule, as its credential is not yet recorded",
-			bearer: bearerFromWildcard.bearer,
-			cors:   bearerFromWildcard.cors,
-			change: bearerFromWildcard.change,
-			assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
-				refused(t, f, resp)
-
-				_, plain := send(t, bearerFromWildcard, false) //nolint:bodyclose // the fixture closes it when the test ends
-				require.Equal(t, http.StatusOK, plain.StatusCode, "with no throttle the bearer rule allows it")
-				assert.Equal(t, "text/event-stream", plain.Header.Get("Content-Type"))
-			},
-		},
 		refusedAsUnthrottled(testCase{
-			name:   "a throttled bearer stream from an origin nothing trusts is refused as any other is",
+			name:   "a throttled session bearer stream from an origin nothing trusts is refused as any other is",
 			bearer: true,
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled signed bearer stream from an origin nothing trusts is refused as any other is",
+			signed: true,
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:   "a throttled cookie stream from a credentialless named origin is refused: a cookie needs credentials allowed",
+			cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example"}},
+			change: fromAnotherSite("https://app.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:          "a consumer's cookie authenticator recording a token stays a cookie",
+			cookieRecords: true,
+			cors:          wildcard,
+			change:        fromAnotherSite("https://evil.example"),
+		}),
+		refusedAsUnthrottled(testCase{
+			name:   "a signed bearer's bare token is judged by its header as a cookie, throttled or not",
+			signed: true,
+			bare:   true,
+			cors:   wildcard,
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		retriesWhereItOpens(testCase{
+			name:   "a throttled session bearer under the DPoP scheme answers as its twin does",
+			bearer: true,
+			dpop:   &dpopClient,
+			cors:   wildcard,
+			change: fromAnotherSite("https://evil.example"),
+		}),
+		retriesWhereItOpens(testCase{
+			name:   "a throttled signed bearer under the DPoP scheme answers as its twin does",
+			signed: true,
+			dpop:   &dpopClient,
+			cors:   wildcard,
 			change: fromAnotherSite("https://evil.example"),
 		}),
 		{
@@ -603,6 +799,82 @@ func TestSessionSignals_Caps_ThrottledCookie(t *testing.T) {
 				assert.Zero(t, f.chain.SessionSignalStats().Throttled)
 			},
 		},
+	}
+
+	type bearerKind struct {
+		name           string
+		bearer, signed bool
+	}
+
+	for _, kind := range []bearerKind{
+		{name: "session bearer", bearer: true},
+		{name: "signed bearer", signed: true},
+	} {
+		of := func(row testCase) testCase {
+			row.bearer, row.signed = kind.bearer, kind.signed
+
+			return row
+		}
+
+		cases = append(cases,
+			retriesWhereItOpens(of(testCase{
+				name:   "a throttled " + kind.name + " stream from a CORS wildcard's origin is told to retry",
+				cors:   wildcard,
+				change: fromAnotherSite("https://evil.example"),
+			})),
+			retriesWhereItOpens(of(testCase{
+				name:   "a throttled " + kind.name + " stream from a credentialless named origin is told to retry",
+				cors:   &httpsec.CORSPolicy{AllowedOrigins: []string{"https://app.example"}},
+				change: fromAnotherSite("https://app.example"),
+			})),
+			of(testCase{
+				name:    "a throttled " + kind.name + " stream RetryableError refuses keeps the chain's mapping",
+				signals: httpsec.SessionSignals{RetryableError: func(error) bool { return false }},
+				cors:    wildcard,
+				change:  fromAnotherSite("https://evil.example"),
+				assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+					t.Helper()
+
+					requireNoStream(t, resp, http.StatusUnauthorized)
+					assert.Zero(t, f.chain.SessionSignalStats().Throttled)
+				},
+			}),
+			of(testCase{
+				// The control of the rows below it: on this same rig, a credential that verified and was
+				// throttled is judged as a bearer.
+				name:        "a throttled " + kind.name + " beside a cookie above it is judged as a bearer",
+				cookieAbove: true,
+				cors:        wildcard,
+				change:      fromAnotherSite("https://evil.example"),
+				assert: func(t *testing.T, f *signalsFixture, resp *http.Response) {
+					t.Helper()
+
+					requireOnlyRetryResponse(t, resp, busyLeast, busyMost)
+					assert.EqualValues(t, 1, f.chain.SessionSignalStats().Throttled)
+				},
+			}),
+			refusedAsACookie(of(testCase{
+				name:        "a " + kind.name + " refused for a session that does not exist records nothing",
+				cookieAbove: true,
+				presented:   strings.Repeat("A", 43),
+				cors:        wildcard,
+				change:      fromAnotherSite("https://evil.example"),
+			})),
+			refusedAsACookie(of(testCase{
+				name:          "a " + kind.name + " refused for its user records nothing",
+				cookieAbove:   true,
+				presentedUser: "u-gone",
+				cors:          wildcard,
+				change:        fromAnotherSite("https://evil.example"),
+			})),
+			refusedAsACookie(of(testCase{
+				name:        "a " + kind.name + " denied by a policy for any other reason records nothing, though its caller is published",
+				cookieAbove: true,
+				deciding:    otherwiseDeniedFirst,
+				cors:        wildcard,
+				change:      fromAnotherSite("https://evil.example"),
+			})),
+		)
 	}
 
 	for _, tc := range cases {
@@ -1271,12 +1543,16 @@ func TestSessionSignals_Caps_ThrottleWhatTheChainSees(t *testing.T) {
 		name           string
 		method, target string
 		setup          signalsSetup
-		assert         func(t *testing.T, got error)
+		// signed presents the sign-in to a signed bearer and not a session bearer.
+		signed bool
+		assert func(t *testing.T, got error)
 	}
 
 	cases := []testCase{
 		{name: "a GET of another path", method: http.MethodGet, target: "/elsewhere", assert: theReasonItself},
 		{name: "another method on the stream's path", method: http.MethodPost, target: httpsec.DefaultSessionSignalsPath, assert: theReasonItself},
+		{name: "a signed bearer's GET of another path", method: http.MethodGet, target: "/elsewhere", signed: true, assert: theReasonItself},
+		{name: "a signed bearer's other method on the stream's path", method: http.MethodPost, target: httpsec.DefaultSessionSignalsPath, signed: true, assert: theReasonItself},
 		{
 			name: "a chain with no stream", method: http.MethodGet, target: httpsec.DefaultSessionSignalsPath,
 			setup: signalsSetup{withoutSignals: true}, assert: theReasonItself,
@@ -1300,8 +1576,9 @@ func TestSessionSignals_Caps_ThrottleWhatTheChainSees(t *testing.T) {
 			var seen atomic.Pointer[error]
 
 			setup := tc.setup
-			setup.opts = func(*signalsFixture) []httpsec.Option {
-				return []httpsec.Option{
+			setup.withoutBearer = tc.signed
+			setup.opts = func(f *signalsFixture) []httpsec.Option {
+				opts := []httpsec.Option{
 					httpsec.WithPolicyEngine(engineOf(t, phasePolicy(t,
 						policy.Decision{Outcome: policy.Deny, Reason: ratelimit.ErrThrottled}, policy.PerRequest))),
 					httpsec.RegisterInterceptor(httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
@@ -1311,11 +1588,22 @@ func TestSessionSignals_Caps_ThrottleWhatTheChainSees(t *testing.T) {
 						return err
 					}), httpsec.After(httpsec.OrderCSRF)),
 				}
+
+				if tc.signed {
+					opts = append(opts, verifiedSignedBearer(t, f, ""))
+				}
+
+				return opts
 			}
 
 			f := newSignalsFixture(t, setup)
 
-			resp := f.send(t.Context(), t, tc.method, tc.target, f.signIn(t, "u-1").ID)
+			credential := f.signIn(t, "u-1").ID
+			if tc.signed {
+				credential = signedTokenPrefix + credential
+			}
+
+			resp := f.send(t.Context(), t, tc.method, tc.target, credential)
 
 			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 

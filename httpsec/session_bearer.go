@@ -172,6 +172,8 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 	}
 
 	if err := resolver.resolve(ex, presented); err != nil {
+		ex.recordThrottledBearer(err, presented)
+
 		// Only a refusal of the reference itself is a failed guess. Once the
 		// session and its user are resolved the caller is published, so an
 		// error after that point is a policy decision about a valid session,

@@ -27,6 +27,7 @@ func signalsThrottleScenarios() []Scenario {
 		{Name: "signals: a throttled sign-in is answered 200 with only a retry, and the stream opens once it is not", Stream: signalsThrottledRetry},
 		{Name: "signals: a throttle RetryableError refuses keeps the chain's 401 and no stream type", Stream: signalsThrottleNotRetryable},
 		{Name: "signals: a throttled request from another site is refused with 403, as an unthrottled one is", Stream: signalsThrottledCrossSiteRefused},
+		{Name: "signals: a throttled bearer stream from a wildcard's origin is answered with a retry", Stream: signalsThrottledBearerFromWildcard},
 		{Name: "signals: a failing family read is answered with a retry at admission, and leaves an open stream open", Stream: signalsFamilyReadFailing},
 	}
 }
@@ -145,6 +146,45 @@ func signalsThrottledCrossSiteRefused(t *testing.T, listen func(ChainSpec) Strea
 	// The same request from its own site is still told to retry.
 	openSignals(t, srv.URL, s, "").noPlace()
 	assert.EqualValues(t, 1, chain.SessionSignalStats().Throttled)
+}
+
+// signalsThrottledBearerFromWildcard is the bearer's rule ahead of the retry: a page can send a bearer only
+// if it holds it, so a CORS wildcard's origin that an unthrottled stream opens from is told to retry
+// when throttled, and the stream opens from there once the throttle is off.
+func signalsThrottledBearerFromWildcard(t *testing.T, listen func(ChainSpec) StreamServer) {
+	const busy = 10 * time.Second
+
+	var (
+		on    atomic.Bool
+		chain *httpsec.Chain
+	)
+
+	on.Store(true)
+
+	spec := newSignalsSpec(t, httpsec.SessionSignals{BusyDelay: busy},
+		throttling(t, throttlingPolicy{on: &on}),
+		httpsec.EnableCORS(httpsec.CORSPolicy{AllowedOrigins: []string{"*"}}))
+	spec.Built = func(c *httpsec.Chain) { chain = c }
+	srv := listen(spec)
+	s := signalsSignIn(t, spec.Effects, UserID)
+
+	crossSite := func(r *http.Request) {
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		r.Header.Set("Origin", "https://app.example")
+	}
+
+	requireWithinJitter(t, busy, openSignals(t, srv.URL, s, "", crossSite).noPlace())
+
+	st := chain.SessionSignalStats()
+	assert.EqualValues(t, 1, st.Throttled)
+	assert.Zero(t, st.ReloadFailures)
+	assert.Zero(t, st.Open)
+
+	on.Store(false)
+
+	open := openSignals(t, srv.URL, s, "", crossSite)
+	open.opens()
+	open.receivesPing(chain, UserID)
 }
 
 // failingFamilyStore is a session store whose family read fails while armed. It embeds the memory store

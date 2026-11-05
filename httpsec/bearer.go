@@ -161,6 +161,8 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	// The session identifier is the token's jti, which is how a token issued at
 	// login finds the session it was issued for.
 	if err := resolver.resolve(ex, claims.ID()); err != nil {
+		ex.recordThrottledBearer(err, presented)
+
 		return err
 	}
 
