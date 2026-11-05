@@ -11,7 +11,7 @@ The security-state migration set SHALL create the tables for sessions, signing k
 
 #### Scenario: Fresh database
 - **WHEN** the security-state set is applied to an empty database
-- **THEN** the fifteen security-state tables and the set's version table exist
+- **THEN** the twenty-four security-state tables and the set's version table exist
 - **AND** no users, roles, organizations, groups or privileges table exists
 
 #### Scenario: Column types
@@ -186,3 +186,14 @@ The security-state migration set SHALL gain one new migration that adds nullable
 #### Scenario: Rollback
 - **WHEN** the new migration is rolled back
 - **THEN** the added columns are gone and the earlier migrations' schema is unchanged
+
+### Requirement: The security-state set adds the provider's tables
+The security-state migration set SHALL add one migration that creates the provider's tables: clients, pending requests, browser sessions, authorization codes, consents, grants, refresh-token lineages, opaque access tokens and client-assertion identifiers. It SHALL create an index for every lookup the stores make. Rolling it back SHALL drop exactly those tables. It SHALL apply to a database that already holds earlier migrations and their data.
+
+#### Scenario: Apply to a populated database
+- **WHEN** the migration is applied to a database with existing sessions
+- **THEN** the provider's tables exist, and the sessions are unchanged
+
+#### Scenario: Roll back
+- **WHEN** the migration is rolled back
+- **THEN** none of the provider's tables remains, and every other table is unchanged
