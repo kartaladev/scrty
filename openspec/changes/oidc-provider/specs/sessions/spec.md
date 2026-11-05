@@ -17,6 +17,25 @@ After each explicit end of sign-ins through the manager, it SHALL call every obs
 - **WHEN** the manager deletes sessions by upstream issuer `https://idp.example.com` and upstream session `x-9`
 - **THEN** the observer is told that issuer and session, with no user or family
 
+### Requirement: An end that cannot say what it ends changes nothing
+When a manager with an end observer must read a session to report an end, and that read fails for any reason other than the session being gone or expired, the manager SHALL return the failure and delete nothing. A manager with no observer SHALL NOT read for a report.
+
+#### Scenario: Read fails before a deletion
+- **WHEN** a manager with an end observer deletes session `s-1`, and reading `s-1` fails
+- **THEN** the call fails, `s-1` is still stored, and no observer is told anything
+
+#### Scenario: Read fails for the session being kept
+- **WHEN** a manager with an end observer deletes user `u-1`'s sessions except `s-1`, and reading `s-1` fails
+- **THEN** the call fails, and every session of `u-1` is still stored
+
+#### Scenario: Session already gone
+- **WHEN** a manager with an end observer deletes session `s-1`, which is no longer stored
+- **THEN** the deletion proceeds, as it would with no observer
+
+#### Scenario: A logout does not depend on the read
+- **WHEN** a manager with an end observer revokes family `f-1` by its identifier, and reading sessions fails
+- **THEN** the family is deleted and the observer is told, as revoking a family reads nothing
+
 ### Requirement: The manager accepts any number of end observers
 The manager SHALL accept any number of end observers, and a nil observer SHALL fail construction.
 

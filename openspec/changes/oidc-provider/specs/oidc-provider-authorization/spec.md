@@ -175,6 +175,21 @@ A browser already holding a valid flow cookie SHALL keep it, so that requests pa
 - **WHEN** one browser starts two authorization requests in two tabs, and completes the login page in the first tab after the second was parked
 - **THEN** the first tab's resume succeeds, and so does the second's
 
+### Requirement: A form POST with no flow cookie cannot replace the browser's cookie
+A browser does not send a `SameSite=Lax` cookie on a cross-site POST, so a form POST to the authorization or end-session endpoint with no flow cookie SHALL NOT mint one. It SHALL be answered with 303 to the same endpoint, carrying the same parameters in the query, with `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, no `Set-Cookie`, nothing parked and nothing charged to the source's throttle. A form POST that presents a flow cookie SHALL be answered directly.
+
+#### Scenario: Cross-site POST to the end-session endpoint
+- **WHEN** a page on another site submits an empty form POST to the end-session endpoint, in a browser with a request parked in another tab
+- **THEN** the response is 303 to the end-session endpoint with no `Set-Cookie`, and the parked request can still be resumed
+
+#### Scenario: Cross-site POST with a browser session
+- **WHEN** a relying party on another site sends an authorization request by form POST, in a browser with a browser session, and consent is not needed
+- **THEN** the redirected GET is answered from the browser session with a code
+
+#### Scenario: Same-site POST holding the cookie
+- **WHEN** a form POST to the authorization endpoint presents a valid flow cookie
+- **THEN** it is answered directly, with no redirect to the endpoint itself
+
 ### Requirement: The strings a request carries are bounded
 Each string a request carries SHALL be bounded, and a request past a bound SHALL be answered with `invalid_request` and nothing parked. By default `state`, `nonce`, `login_hint` and each `resource` SHALL be at most 2048 bytes, `scope` at most 4096 bytes and `id_token_hint` at most 8192 bytes, each replaceable by the consumer.
 
@@ -365,6 +380,10 @@ When a request carries `id_token_hint`, the provider SHALL accept it only if it 
 #### Scenario: Silent request with a matching hint
 - **WHEN** a request carries `prompt=none` and a hint for the browser session's user, and consent is not needed
 - **THEN** a code is issued, and the ID token carries the same `sub`
+
+#### Scenario: Keys unavailable while judging a hint
+- **WHEN** a request with a valid client and redirect URI carries a hint, and the verification keys cannot be read
+- **THEN** the browser is redirected to the redirect URI with `error=server_error` and the request's `state`, and nothing is parked
 
 #### Scenario: Access token offered as a hint
 - **WHEN** a request carries an access token this provider issued as `id_token_hint`

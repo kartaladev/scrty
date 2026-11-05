@@ -9,6 +9,10 @@ Defines how a relying party asks the provider to log the user out, and how the p
 ### Requirement: The end-session endpoint ends the browser's sign-in without asking only on a matching hint
 The end-session endpoint SHALL accept GET and form POST with `id_token_hint`, `logout_hint`, `client_id`, `post_logout_redirect_uri`, `state` and `ui_locales`. A valid hint SHALL be an ID token this provider issued, judged by its type, signature and issuer, expiry ignored, whose audience equals `client_id` when given. When a valid hint's `sid` names the sign-in of the browser's session, the provider SHALL end that sign-in as a logout does, without asking.
 
+#### Scenario: Keys unavailable while judging a logout hint
+- **WHEN** an end-session request carries a hint and a `post_logout_redirect_uri`, and the verification keys cannot be read
+- **THEN** the failure is answered at the provider, nothing ends, and the browser is not redirected to the relying party
+
 #### Scenario: Logout with a matching hint
 - **WHEN** a relying party sends the browser to the end-session endpoint with a valid hint naming the browser session's sign-in
 - **THEN** that sign-in ends, and the grants without `offline_access` from it are revoked

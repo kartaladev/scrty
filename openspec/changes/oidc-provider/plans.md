@@ -99,6 +99,12 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
 | F, after H2 | H4: logout and revocation | 11.1, 11.8, 11.2–11.4; 11.5–11.7 | `httpsec/oidc_endsession.go`, `oidc_logout_confirm.go`, `oidc_consents.go`, `logout.go`, `oidc_backchannel.go` (the RP-side upstream logout), `session_management.go`, `password_change.go`, the passkey assertion path, `csrf.go` (provider exemptions), `recovery/hold.go`, `authenticate/mfa/reset.go` | Opus (logout ordering; ports in several packages) |
 | G | X: integration | 12.6, 13.1; 14.1–14.2; 14.3 per finding | `test/oidcprovider_durable_test.go`, `test/httpsecconformance/oidcprovider_scenarios.go`, `test/cmd/conformanceop/`, `test/conformance/`, the `conformance` target in `Makefile`, and the `conformance` job and `ci-ok`'s needs in the CI workflow `split-ci-jobs` leaves | Sonnet for 12.6, 13.1, 14.1 and 14.2 (scenarios the plan lists); Opus for each 14.3 defect fix |
 | H | main session plus reviewer | 15.1–15.3 | OpenSpec artifacts | Opus whole-branch reviewer |
+| I (parallel, worktrees) | R: recovery | 16.1 | `recovery/recover_complete.go`, `recovery/hold.go`, `recovery/grants.go`, `event/event.go` (one godoc), `httpsec/recovery.go`, their tests | Opus (an ordering around spending a credential) |
+| I | B: POST bounce | 16.2 | `httpsec/oidc_authorize.go`, `oidc_endsession.go`, `httpsec/oidc_post_bounce_test.go` (new), `test/httpsecconformance/oidcprovider_scenarios.go` | Opus (a cookie boundary across endpoints) |
+| I | E: end reports | 16.3 | `session/sessions.go`, `session/end_observer.go`, their tests, `oidcprovider/end_report_read_test.go` (new), `httpsec/oidc_logout_read_test.go` (new) | Opus (a guarantee a mistake would pass tests and still break) |
+| I | K: successor key | 16.4 | `oidcprovider/options.go`, `oidcprovider/refresh.go`, their tests, `test/expirytasks_test.go`, `test/oidcprovider_durable_test.go`, `test/oidcprovider_durable_logout_test.go`, `README.md` (provider section) | Sonnet (a construction check the finding states) |
+| I | H: hint outage | 16.5 | `oidcprovider/authorize.go`, `oidcprovider/endsession.go` (tests only), their tests | Sonnet (a stated answer at a known seam) |
+| J, after I | main session plus reviewer | 16.6, 16.7 | OpenSpec artifacts | Opus whole-branch reviewer |
 
 **The status table.** `httpsec/errors.go`'s table is owned by H1. Later lanes add their sentinels in their own files and append rows inside their worktrees. The main session resolves the table merge (a few lines, stated when it happens).
 
@@ -1200,3 +1206,104 @@ Each lane owns the files listed for it. Two lanes never write one file, and lane
   - the `conformance` job, confirmed green.
 
   Each must pass.
+
+---
+
+## Task group 16: the code review of #72 (R27)
+
+Each defect is `UNREPRODUCED`. The first step of each task is its failing test, and a test that passes before the fix means the claim was wrong: stop, report it, and the main session removes that part of R27. A compile error is not a red step. Each dispatch reports the failing output it saw.
+
+**Review Focus for this group:**
+- A retried recovery after the first revocation fails: the same proofs succeed, and no attempt was charged as a refusal.
+- A cross-site POST carrying a malformed body: refused as before, with no redirect built from what could not be parsed.
+- A repeated parameter in a bounced POST, such as two `resource` values: both reach the GET, in order, as `url.Values.Encode` gives them.
+- `DeleteByUserExcept` with an empty `keep`: reads nothing, as `readForReport` already skips an empty identifier, and every session goes.
+- A caller hanging up during a hint's key read: answers its own context error, not `server_error`, as a redirect no one will follow says nothing.
+
+### Task 16.1: A recovery's two revocations
+**Files:** Modify `recovery/recover_complete.go`, `recovery/hold.go`, `recovery/grants.go`, `event/event.go`, `httpsec/recovery.go`. Test: `recovery/recover_grants_test.go` (new), `httpsec/recovery_test.go`.
+
+**Produces:** `Result.GrantsNotRevoked bool`, true only when the second revocation failed. `func (r *Recoverer) revokeGrantsFirst(ctx context.Context, user identity.UserID) error`.
+
+- [ ] Write `TestRecover_GrantRevocation`, one table on a revoker whose failure position is set per row, with an `assert` closure:
+  - fails first: the error matches `ErrDependency`'s wrap behind `errTextGrants`, no proof is spent, no record is written, and the same request then succeeds;
+  - fails second only: `Result.Session` is stored, `Result.Codes` is reissued when a saved code was spent, the notice is sent, `Result.GrantsNotRevoked` is true, and one `event.GrantRevokeFailed` names the user;
+  - succeeds both times: called twice, `GrantsNotRevoked` false, no event;
+  - `WithoutRecoveryGrantRevocation`: never called.
+- [ ] Write `TestFinish_GrantRevocation`: starting a hold calls the revoker zero times; a first failure at `Finish` leaves the record pending and the token usable, and the retry succeeds; a second failure completes as above.
+- [ ] Run `go test -race -run 'TestRecover_GrantRevocation|TestFinish_GrantRevocation' -count=1 ./recovery/` and confirm: the fail-second row fails because the recovery returned `errTextGrants`, and the fail-first row because a proof was spent.
+- [ ] In `recover`, call `revokeGrantsFirst` on the caller's `ctx` immediately before `r.spend`, only when `hold <= 0`. In `finish`, call it after `issueSession` and before `ctx = context.WithoutCancel(ctx)`. A hang-up there logs at DEBUG, as `issueSession` does.
+- [ ] In `complete`, a failure of `RevokeUserGrants` logs `msgGrantsFailed`, reports `event.GrantRevokeFailed`, sets `res.GrantsNotRevoked`, and carries on.
+- [ ] Update the godoc of `WithGrantRevoker`, `Result` and `event.GrantRevokeFailed`, which today names only a passkey clone. In `httpsec/recovery.go`, keep the existing response and record the flag where the chain reports the recovery. Add a test there that the chain's answer is the recovery's success.
+- [ ] Verify: `go test -race -count=1 ./recovery/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint run ./recovery/... ./httpsec/...` showing `0 issues.`
+
+### Task 16.2: A POST with no flow cookie becomes a GET
+**Files:** Modify `httpsec/oidc_authorize.go`, `httpsec/oidc_endsession.go`. Test: `httpsec/oidc_post_bounce_test.go`, `test/httpsecconformance/oidcprovider_scenarios.go`.
+
+**Produces:** `func bounceOIDCPost(ex *Exchange, params url.Values) error`, in `oidc_authorize.go`, which writes the 303.
+
+- [ ] Write `TestOIDCFormPost_NoFlowCookie`, one table across both endpoints, with an `assert` closure:
+  - an empty POST to end-session with no cookie: 303, `Location` is the endpoint's path with no query, no `Set-Cookie`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`;
+  - a POST to authorize with two `resource` values, a `state` of `a&b=c #d` and an `id_token_hint`: `Location`'s query parses back to the same `url.Values`;
+  - a POST holding a valid flow cookie: no bounce, answered as today;
+  - a GET with no cookie: not bounced, and sets the cookie as today;
+  - a malformed body: refused as today, with no `Location`;
+  - nothing parked, and nothing charged, shown by `throttle`'s limit not moving over repeated bounces.
+- [ ] Write `TestOIDCFormPost_ParkedRequestSurvives`: park a request holding cookie `c`, POST empty to end-session with no cookie, and assert no `Set-Cookie` and that resuming with `c` succeeds.
+- [ ] Run `go test -race -run 'TestOIDCFormPost' -count=1 ./httpsec/` and confirm the failures show a `Set-Cookie` and a 303 to the login page, not a compile error.
+- [ ] In both handlers, after the throttle's `admit` and `readOIDCAuthorizeParams`, and before the provider is called: when the method is POST and the flow cookie is absent, `return bounceOIDCPost(ex, params)`.
+- [ ] Add the scenario to `test/httpsecconformance/oidcprovider_scenarios.go`, so net/http, gin and fiber all assert it. Verify from `test/`: `go test -race -run 'TestConformance(NetHTTP|Gin|Fiber)' -count=1 .`
+- [ ] Run `make conformance`, and confirm `oidcc-ensure-post-request-succeeds` passes and no new result appears. A failure stops the task, and goes back to the main session, as R27 says.
+- [ ] Browser check: serve a page on a second host that form-posts to the provider, in a real browser. Confirm the POST carries no flow cookie, and the redirected GET does. Report the browser and version, and the main session records it in R27. A browser withholding the cookie stops the task.
+- [ ] Verify: `go test -race -count=1 ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint run ./httpsec/...` showing `0 issues.`
+
+### Task 16.3: An end that cannot read its report
+**Files:** Modify `session/end_observer.go`, `session/sessions.go`. Test: `session/end_observer_test.go`, `oidcprovider/end_report_read_test.go`, `httpsec/oidc_logout_read_test.go`.
+
+**Produces:** `func (m *Sessions) readForReport(ctx context.Context, id string) (*Session, error)`, which answers nil and no error when there is no observer, the identifier is empty, or the session is gone or expired.
+
+- [ ] Write `TestSessions_EndReportRead`, one table over a store whose `Load` fails, with an `assert` closure:
+  - `Delete` with an observer: errors, the session is still stored, and no observer is called;
+  - `DeleteByUserExcept` with an observer: errors, and every session of the user is still stored;
+  - either with no observer: proceeds, and `Load` is not called;
+  - `Delete` with `ErrNotFound` from `Load`: proceeds;
+  - `DeleteByUserExcept` with an empty `keep`: proceeds with no read;
+  - `RevokeFamily` while `Load` fails: the family goes and the observer is told.
+- [ ] Write `TestProvider_FailedEndReportRead` in `oidcprovider`: over a real manager wired with `SignInsEnded`, a failed read leaves the deleted sign-in's grants and the kept sign-in's grants live, and sends no logout token.
+- [ ] Write `TestOIDCLogout_CompletesWhileSessionReadsFail` in `httpsec`: the chain's logout and end-session both end the sign-in with a store whose `Load` fails after the bearer has admitted the request.
+- [ ] Run them with `go test -race -run 'TestSessions_EndReportRead' -count=1 ./session/`, and confirm the `Delete` row fails because the session was deleted.
+- [ ] Change `readForReport` and its two callers. The failure comes back through `storeFailed`, with text naming the read. Point `Delete`'s godoc at `RevokeFamily` for a logout.
+- [ ] Verify: `go test -race -count=1 ./session/ ./oidcprovider/ ./httpsec/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.` The main session tells `session-signal` when this merges (16.7).
+
+### Task 16.4: A durable store needs a successor key
+**Files:** Modify `oidcprovider/options.go`, `oidcprovider/refresh.go`, `test/expirytasks_test.go`, `test/oidcprovider_durable_test.go`, `test/oidcprovider_durable_logout_test.go`, `README.md`. Test: the file holding `oidcprovider`'s construction table.
+
+- [ ] Add rows to that table, each with an `assert` closure:
+  - `WithRefreshTokenStore` with no key: `New` fails matching `ErrConfig`, and the text names `WithRefreshSuccessorKey` and `WithRefreshSuccessorWindow(0)`, in both option orders;
+  - with a 32-byte key: builds;
+  - with `WithRefreshSuccessorWindow(0)` and no key: builds;
+  - memory stores with no options: builds, and draws its own key.
+- [ ] Run `go test -race -run 'TestNew|Construction' -count=1 ./oidcprovider/`, and confirm the first row fails because `New` returned no error.
+- [ ] Add the check beside the existing successor checks in `oidcprovider/options.go`. It reads `c.lineageSet`, `c.successorKeySet` and `c.successorWindow`.
+- [ ] Give the three durable test files a key, and the README's provider wiring a line showing one, loaded from configuration. Update the godoc of `WithRefreshSuccessorKey`, saying the key serves this purpose alone and removing "Nothing is refused", and of `WithRefreshTokenStore`.
+- [ ] Verify: `go test -race -count=1 ./oidcprovider/`; from `test/`, `go test -race -count=1 -p 2 -timeout 45m .` on the default image and with `SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`; `go vet`, `gofmt -l`, and `golangci-lint` showing `0 issues.`
+
+### Task 16.5: A key outage judging a hint
+**Files:** Modify `oidcprovider/authorize.go`. Test: `oidcprovider/authorize_test.go`, `oidcprovider/endsession_test.go`.
+
+- [ ] Write `TestAuthorize_HintKeysUnavailable`, one table over a key source that fails, with an `assert` closure:
+  - a valid client and redirect URI with a `state`: `Location` is the redirect URI with `error=server_error` and that `state`, nothing is parked, and the log holds `error_type` and no key text;
+  - the same with `prompt=none`: the same answer;
+  - an unknown client: `ErrInvalidAuthorization`, with no redirect;
+  - the caller's context ended during the read: its own context error, with no redirect.
+- [ ] Write `TestEndSession_HintKeysUnavailable`: with a `post_logout_redirect_uri`, the answer is an error matching `ErrDependency`, `Location` is empty, and nothing ends.
+- [ ] Run `go test -race -run 'HintKeysUnavailable' -count=1 ./oidcprovider/`, and confirm the first row fails because `Authorize` returned the error. The end-session test pins today's behaviour, so invert it temporarily to see it notice, and report that.
+- [ ] In `validate`, when `readRequest` fails with an error matching `ErrDependency`, log only the type, as `Authorize` does, and return `&redirectRefusal{code: codeServerError, redirectURI: redirectURI, state: reading.reflectableState()}`. A failure of `validateTarget` is untouched.
+- [ ] Verify: `go test -race -count=1 ./oidcprovider/`, `go vet`, `gofmt -l`, `golangci-lint` showing `0 issues.`
+
+### Task 16.6: Whole-branch review
+- [ ] A fresh Opus reviewer checks the branch diff against the requirements 16.1 to 16.5 add or change, and whatever a change in `session` or the recovery order reaches: the passkey paths calling `DeleteByUserExcept`, and held recoveries. It reports `REPRODUCED` or `UNREPRODUCED` and edits nothing. Findings go to fresh dispatches of the owning lanes. Verify: a re-review reports nothing open.
+
+### Task 16.7: The final gate again
+- [ ] The main session runs `make check`, and the `test` module under `-race` on PostgreSQL 15 and 18. It pushes, and confirms the `conformance` job and every other job are green and that CodeQL reports no new alert on #72.
+- [ ] Tell `session-signal` about the new `sessions` requirement and the `readForReport` signature, as its rebase carries both.

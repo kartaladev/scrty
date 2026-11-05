@@ -250,6 +250,14 @@ A refresh token SHALL carry at least 128 bits, from a cryptographically secure s
 - **WHEN** `r1` is presented again within the same-successor window to a provider whose derivation key differs from the one that derived its successor
 - **THEN** it receives tokens with a new successor, and the grant is not revoked
 
+#### Scenario: A durable store without a derivation key
+- **WHEN** a provider is built with a durable refresh-token store, no derivation key, and the same-successor window left on
+- **THEN** building fails with a configuration error naming the derivation key and the window
+
+#### Scenario: A durable store with the window off
+- **WHEN** a provider is built with a durable refresh-token store, no derivation key, and the same-successor window set to zero
+- **THEN** it builds, and no re-presentation answers the same successor
+
 #### Scenario: Consumer widens the grace window
 - **WHEN** the consumer sets a client's grace window to 2 minutes, and `r1` is presented again 90 seconds after its rotation
 - **THEN** it receives tokens
