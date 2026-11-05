@@ -24,6 +24,10 @@ import (
 // The table is fixed: no option names it, and the result is a type only scrty's own
 // modules can build. A failure returns the zero value, which the provider refuses.
 //
+// A durable store outlives a restart, so oidcprovider.New refuses it unless it is given
+// oidcprovider.WithRefreshSuccessorKey, the same on every replica, or
+// oidcprovider.WithRefreshSuccessorWindow(0), which derives no successor.
+//
 // It honours WithTxResolver, WithClock (default clock.System()) and WithIDGenerator
 // (default id.NewV7Generator), and refuses any other option. A nil c, typed nil
 // included, is a configuration error, as there is no unsealed variant.

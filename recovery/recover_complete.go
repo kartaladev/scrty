@@ -204,7 +204,9 @@ type issuedSession struct {
 // Everything from the first spend on runs detached from ctx's cancellation,
 // so a client that hangs up cannot leave a recovery half done. The issuer runs
 // before that, on ctx itself, so a client that hangs up while it issues spends
-// nothing. So does the first revocation when there is no MFA proof; with one it
+// nothing. So does the first revocation when there is no MFA proof, even if the
+// revoker succeeds through the hang-up: the recovery returns ctx's error, and
+// the grants it ended stay ended. With one it
 // follows the verification, so it runs detached too.
 //
 // A refusal (ErrRefused) is reported as event.RecoveryRefused

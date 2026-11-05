@@ -112,6 +112,10 @@ type revocationScript struct {
 	// hangUpAt holds the calls that find the caller gone: the caller's context
 	// is cancelled during the call, which answers that context's error.
 	hangUpAt map[int]bool
+	// hangUpAndSucceedAt holds the calls during which the caller's context is
+	// cancelled and which succeed regardless, as a revoker whose write is
+	// detached from the caller does.
+	hangUpAndSucceedAt map[int]bool
 }
 
 // newRevocationWorld builds a recoverer over a scripted revoker. cancel is what
@@ -139,6 +143,12 @@ func newRevocationWorld(t *testing.T, script revocationScript, cancel context.Ca
 				cancel()
 
 				return ctx.Err()
+			}
+
+			if script.hangUpAndSucceedAt[call] {
+				cancel()
+
+				return nil
 			}
 
 			if script.failAfterEnd != nil && !seen.priorLoads {
@@ -355,6 +365,27 @@ func TestRecover_GrantRevocation(t *testing.T) {
 				logs := w.e.logs.String()
 				assert.Contains(t, logs, grantsFailedDebug)
 				assert.NotContains(t, logs, grantsFailedError)
+			},
+		},
+		{
+			name:   "a caller hanging up during a first revocation that succeeds spends nothing, and the same proofs then succeed",
+			script: revocationScript{hangUpAndSucceedAt: map[int]bool{1: true}},
+			assert: func(ctx context.Context, t *testing.T, w *revocationWorld, req recovery.Request, res *recovery.Result, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, recovery.ErrDependency, "a hang-up is no outage")
+				assert.Nil(t, res)
+				// ctx is the case's own, which the hang-up ended.
+				live := context.WithoutCancel(ctx)
+				w.assertNothingHappened(live, t)
+				assert.Equal(t, 1, w.calls())
+				assert.Empty(t, w.own.all(), "a hang-up is reported as nothing")
+
+				retried, err := w.r.Recover(live, req)
+				require.NoError(t, err, "the same proofs succeed")
+				require.NotNil(t, retried.Session)
+				assert.Equal(t, 3, w.calls())
 			},
 		},
 		{

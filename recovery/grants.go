@@ -54,8 +54,10 @@ type GrantRevoker interface {
 // sent, nothing is counted against the user, and the same proofs succeed when
 // presented again. The cost is that it is not free of effect: a proof holder
 // who then loses a race to spend, or whose spend fails, has still ended the
-// grants. Only someone holding valid proofs reaches it, and ending them is what
-// they came to do.
+// grants, and so has one whose client hung up during a revocation that
+// succeeded: with no MFA proof the recovery then returns the context's error,
+// spending nothing, and the same proofs succeed on a retry. Only someone
+// holding valid proofs reaches it, and ending them is what they came to do.
 //
 // An MFA proof changes that order, as nothing but its verification can judge its
 // code and verifying spends it. It is verified before the first call, so a wrong
@@ -73,7 +75,9 @@ type GrantRevoker interface {
 //
 // A held recovery revokes nothing when it starts, as the real user may yet
 // cancel it, and takes the same two steps at its finish, where a first failure
-// leaves the record pending and the completion token usable.
+// leaves the record pending and the completion token usable. A finish that then
+// loses the conditional write to the real user's cancel has already ended the
+// grants by its first revocation, which runs before that write.
 //
 // A nil revoker, typed nil included, is a configuration error.
 func WithGrantRevoker(g GrantRevoker) Option {

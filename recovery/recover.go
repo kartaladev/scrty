@@ -595,7 +595,9 @@ func (r *Recoverer) spend(ctx context.Context, v *verified) error {
 //
 // Once the MFA proof is spent the rule of spend applies, so the revocation runs
 // detached from the caller's cancellation. With no MFA proof nothing is spent
-// yet, so it runs on ctx, and a client that hangs up during it spends nothing.
+// yet, so it runs on ctx, and a client that hangs up during it spends nothing,
+// even when the revoker succeeds regardless: the recovery then returns ctx's
+// error, and the grants it ended stay ended.
 func (r *Recoverer) revokeThenSpend(ctx context.Context, v *verified) error {
 	detached := context.WithoutCancel(ctx)
 
@@ -609,6 +611,16 @@ func (r *Recoverer) revokeThenSpend(ctx context.Context, v *verified) error {
 
 	if err := r.revokeGrantsFirst(ctx, v.user); err != nil {
 		return err
+	}
+
+	// A revoker whose write is detached from the caller, as a provider's is,
+	// succeeds even when the client hung up during it. With no proof spent yet
+	// the hang-up must still spend nothing, so it ends the recovery here. The
+	// grants it ended stay ended, which the revoker's godoc states as its cost.
+	if v.mfa == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	return r.spendCodes(detached, v)

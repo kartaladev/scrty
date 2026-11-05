@@ -310,7 +310,8 @@ func (r *Recoverer) cancelURL(token string) string {
 // issuer (WithCredentialIssuer); the user's application grants are revoked
 // (WithGrantRevoker); the record is completed by one conditional
 // write, and losing it, to a racing cancel or finish, is ErrRefused, with the
-// credential discarded; the token is consumed; and the completion sequence
+// credential discarded, though a finish that lost to the real user's cancel has
+// already ended the grants, as that revocation runs before the write; the token is consumed; and the completion sequence
 // runs from the reset on, exactly as Recover's does, revoking the grants again
 // and storing the session last. Starting the hold revoked nothing.
 //

@@ -136,6 +136,10 @@
 // holders from each other: a thief staying inside it goes undetected, and one missing it once diverges
 // from the victim, which reveals both.
 //
+// A durable [RefreshTokenStore] outlives a restart, so [New] refuses one unless it is given
+// [WithRefreshSuccessorKey], the same on every replica, or [WithRefreshSuccessorWindow] of 0, which
+// derives no successor. The default memory store needs neither.
+//
 // A superseded token presented later is reuse, which revokes the whole grant and reports nothing to
 // the presenter but invalid_grant. So is a token whose successor was knocked out, or has moved on with
 // no same answer to give. A store failure while marking the revocation is a dependency failure instead,
