@@ -322,6 +322,17 @@ func TestSessionListAcrossReplicas(t *testing.T) {
 	t.Run("pgx", func(t *testing.T) { storetest.RunSessionListAcrossReplicas(t, h) })
 }
 
+func TestSessionFamilyRead(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyRead(t, h) })
+}
+
 func TestSessionSupersessionLockOrder(t *testing.T) {
 	t.Parallel()
 

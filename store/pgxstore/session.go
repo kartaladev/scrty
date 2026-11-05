@@ -404,8 +404,21 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 // which is never stored, and neither sealed token: the listing reads neither
 // column. A row that will not decode fails the whole call.
 func (s *sessionStore) ListByUser(ctx context.Context, user identity.UserID, now time.Time) ([]*session.Session, error) {
-	const op = "list user's sessions"
+	return s.list(ctx, "list user's sessions", pgschema.SessionListByUser, user, now)
+}
 
+// ListByFamily is ListByUser narrowed to family, as session.FamilyReader states
+// it, in one query. A row of the family that will not decode fails the call,
+// and a row of another family is never read. The sealing store NewSessionStore
+// wraps this one in answers the nil family before asking here.
+func (s *sessionStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	return s.list(ctx, "list sign-in's sessions", pgschema.SessionListByFamily, user, now, uuidArg(family))
+}
+
+// list runs a listing statement, whose $1 is user and $2 now, and whose further
+// parameters are args. A reference one PostgreSQL text cannot hold matches
+// nothing.
+func (s *sessionStore) list(ctx context.Context, op, statement string, user identity.UserID, now time.Time, args ...any) ([]*session.Session, error) {
 	if !storekit.Storable(string(user)) {
 		return []*session.Session{}, nil
 	}
@@ -413,7 +426,7 @@ func (s *sessionStore) ListByUser(ctx context.Context, user identity.UserID, now
 	if err != nil {
 		return nil, failed(op, err)
 	}
-	rows, err := q.Query(ctx, pgschema.SessionListByUser, string(user), storekit.Time(now))
+	rows, err := q.Query(ctx, statement, append([]any{string(user), storekit.Time(now)}, args...)...)
 	if err != nil {
 		return nil, failed(op, err)
 	}
@@ -784,7 +797,10 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 	return nil
 }
 
-var _ session.Store = (*sessionStore)(nil)
+var (
+	_ session.Store        = (*sessionStore)(nil)
+	_ session.FamilyReader = (*sessionStore)(nil)
+)
 
 // SuccessorPresented reports whether the current successor of the session
 // with this identifier was used, in one read that writes nothing: true when

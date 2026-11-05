@@ -38,6 +38,30 @@ const brokenVar = "PGXSTORE_BROKEN"
 // or through the pool.
 var brokenVariants = []storefix.BrokenVariant{
 	{
+		Name: "session-family-read-answers-nothing",
+		Run: func(t *testing.T) {
+			db := migrated(t)
+			c := storefix.TestCipher(t)
+			t.Run("pgx", func(t *testing.T) {
+				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+					return storefix.FamilyReadAnswersNothingStore{Store: newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(clk))}
+				})
+			})
+		},
+		FailsCase: "a family read agrees with the listing across a renewal, a strict rotation and an end",
+	},
+	{
+		Name: "session-family-read-lists",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+				return storefix.FamilyReadListsStore{Store: newSessionStore(t, pool, c, opts...)}
+			})
+			t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyRead(t, h) })
+		},
+		FailsCase: "a row of another family that will not decode fails only its own family's read",
+	},
+	{
 		Name: "session-save-upserts",
 		Run: func(t *testing.T) {
 			db := migrated(t)

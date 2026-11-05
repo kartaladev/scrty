@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,16 +23,17 @@ import (
 // signInStateFixture holds a sign-in's ordinary traffic apart from the read
 // under test. traffic renews and ends through the real store; reader, the
 // manager the read goes through, sees it through a mocked store expecting only
-// ListByUser, so a read that reached Load, MarkPresented, DeleteFamily or any
-// other store call fails the case.
+// the one read its mode offers, ListByUser or ListByFamily, so a read that
+// reached Load, MarkPresented, DeleteFamily or any other store call fails the
+// case.
 type signInStateFixture struct {
 	clk     *clockwork.FakeClock
 	traffic *session.Sessions
 	inner   *session.MemoryStore
 
-	// through is the store reader's listing is served by.
+	// through is the store reader's read is served by.
 	through session.Store
-	// answer, when set by arrange, replaces what through would list.
+	// answer, when set by arrange, replaces what through would answer.
 	answer func(ctx context.Context) ([]*session.Session, error)
 	// retired is the store under the key the fixture's sessions were not sealed
 	// with, when the case seals. It is nil otherwise.
@@ -401,6 +403,15 @@ func TestSessions_SignInState(t *testing.T) {
 			assert: notFound,
 		},
 		{
+			name: "a store answering only another family's session is not believed",
+			arrange: func(_ context.Context, _ *testing.T, f *signInStateFixture) query {
+				f.answer = listing(head(user, id.MustParse("0192d2a0-0000-7000-8000-00000000beef"), 0, time.Hour))
+
+				return query{user, unknownFamily}
+			},
+			assert: notFound,
+		},
+		{
 			name: "a nil in a store's listing is passed over",
 			arrange: func(_ context.Context, _ *testing.T, f *signInStateFixture) query {
 				f.answer = listing(nil)
@@ -628,61 +639,230 @@ func TestSessions_SignInState(t *testing.T) {
 		},
 	}
 
+	// Every row runs over each way a store can answer: its listing, the default,
+	// and its family read. The rows do not know which, so the answers are the
+	// same or a row fails. A mode expects only its own read, so reaching the
+	// other fails the row too.
+	modes := []struct {
+		name string
+		// reader returns the store the read goes through, whose one expected
+		// call is answered by the fixture.
+		reader func(t *testing.T, ctrl *gomock.Controller, f *signInStateFixture, q *query) session.Store
+	}{
+		{
+			name: "over a store's listing",
+			reader: func(t *testing.T, ctrl *gomock.Controller, f *signInStateFixture, _ *query) session.Store {
+				t.Helper()
+
+				store := NewMockStore(ctrl)
+				store.EXPECT().ListByUser(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+					func(ctx context.Context, u identity.UserID, now time.Time) ([]*session.Session, error) {
+						f.listings.Add(1)
+						assert.True(t, now.Equal(f.clk.Now()), "the listing must be judged at the manager's clock")
+						if f.answer != nil {
+							return f.answer(ctx)
+						}
+
+						return f.through.ListByUser(ctx, u, now)
+					}).AnyTimes()
+
+				return store
+			},
+		},
+		{
+			name: "over a store's family read",
+			reader: func(t *testing.T, ctrl *gomock.Controller, f *signInStateFixture, q *query) session.Store {
+				t.Helper()
+
+				family := NewMockFamilyReader(ctrl)
+				family.EXPECT().ListByFamily(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+					func(ctx context.Context, u identity.UserID, asked id.ID, now time.Time) ([]*session.Session, error) {
+						f.listings.Add(1)
+						assert.True(t, now.Equal(f.clk.Now()), "the family read must be judged at the manager's clock")
+						assert.Equal(t, q.user, u, "the family read must ask for the user being read")
+						assert.Equal(t, q.family, asked, "the family read must ask for the family being read")
+						if f.answer != nil {
+							return f.answer(ctx)
+						}
+
+						through, ok := f.through.(session.FamilyReader)
+						require.True(t, ok, "this repository's stores all offer the family read")
+
+						return through.ListByFamily(ctx, u, asked, now)
+					}).AnyTimes()
+
+				return struct {
+					*MockStore
+					*MockFamilyReader
+				}{NewMockStore(ctrl), family}
+			},
+		},
+	}
+
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+
+					f := &signInStateFixture{clk: clockwork.NewFakeClockAt(createdAt)}
+					f.inner = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))
+
+					ctrl := gomock.NewController(t)
+					write, read := session.Store(f.inner), session.Store(f.inner)
+					if tc.sealed {
+						write = must.Must(session.NewEncryptedStore(f.inner, fakeCipher{key: 0x2a}))
+						read = must.Must(session.NewEncryptedStore(f.inner, NewMockCipher(ctrl)))
+						f.retired = must.Must(session.NewEncryptedStore(f.inner, fakeCipher{key: 0x5c}))
+					}
+					f.through = read
+
+					f.traffic = managerFor(t, append([]session.Option{session.WithStore(write), session.WithClock(f.clk)}, tc.opts...)...)
+
+					var q query
+					store := mode.reader(t, ctrl, f, &q)
+
+					var ends []session.EndReport
+					var reuses []session.ReuseReport
+					reader := managerFor(t, append([]session.Option{
+						session.WithStore(store),
+						session.WithClock(f.clk),
+						session.WithEndObserver(session.EndObserverFunc(func(_ context.Context, r session.EndReport) { ends = append(ends, r) })),
+						session.WithReuseObserver(func(_ context.Context, r session.ReuseReport) { reuses = append(reuses, r) }),
+					}, tc.opts...)...)
+
+					q = tc.arrange(t.Context(), t, f)
+
+					ctx := t.Context()
+					if tc.ctx != nil {
+						ctx = tc.ctx(ctx)
+					}
+
+					before := f.snapshot(t.Context())
+					got, err := reader.SignInState(ctx, q.user, q.family)
+					after := f.snapshot(t.Context())
+
+					assert.Equal(t, before, after, "the read changed what the store holds")
+					assert.Empty(t, ends, "the read ended something")
+					assert.Empty(t, reuses, "the read reported reuse")
+
+					tc.assert(t, f, got, err)
+				})
+			}
+		})
+	}
+}
+
+// oneUnreadableRowStore is a consumer's own store holding a row it cannot
+// decode, in unreadable: a listing fails on it, as the Store contract asks,
+// whichever of the user's sign-ins was being looked for. It offers no family
+// read.
+type oneUnreadableRowStore struct {
+	session.Store
+
+	unreadable id.ID
+}
+
+func (s oneUnreadableRowStore) ListByUser(context.Context, identity.UserID, time.Time) ([]*session.Session, error) {
+	return nil, errStoreQuotes
+}
+
+// familyReadingStore is the same store offering the family read: only a read of
+// the family holding the row fails on it.
+type familyReadingStore struct{ oneUnreadableRowStore }
+
+func (s familyReadingStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	if family == s.unreadable {
+		return nil, errStoreQuotes
+	}
+
+	listed, err := s.Store.ListByUser(ctx, user, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.DeleteFunc(listed, func(l *session.Session) bool { return l.FamilyID != family }), nil
+}
+
+// TestSessions_SignInState_ConsumerStore pins what a consumer's own store gets:
+// one with no family read keeps working by listing, and keeps the limit that
+// comes with it; one offering the read loses the limit for its other sign-ins.
+// The sealing decorator gives the same answers over either.
+func TestSessions_SignInState_ConsumerStore(t *testing.T) {
+	t.Parallel()
+
+	const user = identity.UserID("consumer-user")
+
+	type wrap = func(t *testing.T, s session.Store) session.Store
+
+	plain := func(_ *testing.T, s session.Store) session.Store { return s }
+	sealed := func(t *testing.T, s session.Store) session.Store {
+		t.Helper()
+
+		return must.Must(session.NewEncryptedStore(s, fakeCipher{key: 0x2a}))
+	}
+
+	unavailable := func(t *testing.T, got session.SignInState, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, session.ErrListUnavailable)
+		assert.NotErrorIs(t, err, session.ErrNotFound, "an unreadable row must not read as a sign-in that ended")
+		assert.NotContains(t, err.Error(), "alice@example.com", "the store's own words reached the error")
+		assert.Zero(t, got)
+	}
+	answered := func(t *testing.T, got session.SignInState, err error) {
+		t.Helper()
+
+		require.NoError(t, err, "a row of another sign-in must not fail this one")
+		assert.False(t, got.IdleDeadline.IsZero())
+	}
+
+	type testCase struct {
+		name string
+		wrap wrap
+		// familyRead is whether the consumer's store offers the read.
+		familyRead bool
+		// readUnreadable reads the sign-in holding the row, not its neighbour.
+		readUnreadable bool
+		assert         func(t *testing.T, got session.SignInState, err error)
+	}
+
+	cases := []testCase{
+		{name: "with a family read, another sign-in's unreadable row fails nothing", wrap: plain, familyRead: true, assert: answered},
+		{name: "with a family read, the sign-in holding the row fails", wrap: plain, familyRead: true, readUnreadable: true, assert: unavailable},
+		{name: "without one, the default lists, and the row fails every sign-in", wrap: plain, assert: unavailable},
+		{name: "without one, the sign-in holding the row fails too", wrap: plain, readUnreadable: true, assert: unavailable},
+		{name: "sealed, with a family read, another sign-in's unreadable row fails nothing", wrap: sealed, familyRead: true, assert: answered},
+		{name: "sealed, with a family read, the sign-in holding the row fails", wrap: sealed, familyRead: true, readUnreadable: true, assert: unavailable},
+		{name: "sealed, without one, the decorator lists, and the row fails every sign-in", wrap: sealed, assert: unavailable},
+	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			f := &signInStateFixture{clk: clockwork.NewFakeClockAt(createdAt)}
-			f.inner = must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk)))
+			clk := clockwork.NewFakeClockAt(createdAt)
+			memory := must.Must(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
+			traffic := managerFor(t, session.WithStore(memory), session.WithClock(clk))
+			healthy, err := traffic.Create(t.Context(), user)
+			require.NoError(t, err)
+			holding, err := traffic.Create(t.Context(), user)
+			require.NoError(t, err)
 
-			ctrl := gomock.NewController(t)
-			write, read := session.Store(f.inner), session.Store(f.inner)
-			if tc.sealed {
-				write = must.Must(session.NewEncryptedStore(f.inner, fakeCipher{key: 0x2a}))
-				read = must.Must(session.NewEncryptedStore(f.inner, NewMockCipher(ctrl)))
-				f.retired = must.Must(session.NewEncryptedStore(f.inner, fakeCipher{key: 0x5c}))
+			var store session.Store = oneUnreadableRowStore{Store: memory, unreadable: holding.FamilyID}
+			if tc.familyRead {
+				store = familyReadingStore{oneUnreadableRowStore{Store: memory, unreadable: holding.FamilyID}}
 			}
-			f.through = read
+			reader := managerFor(t, session.WithStore(tc.wrap(t, store)), session.WithClock(clk))
 
-			f.traffic = managerFor(t, append([]session.Option{session.WithStore(write), session.WithClock(f.clk)}, tc.opts...)...)
-
-			store := NewMockStore(ctrl)
-			store.EXPECT().ListByUser(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-				func(ctx context.Context, u identity.UserID, now time.Time) ([]*session.Session, error) {
-					f.listings.Add(1)
-					assert.True(t, now.Equal(f.clk.Now()), "the listing must be judged at the manager's clock")
-					if f.answer != nil {
-						return f.answer(ctx)
-					}
-
-					return f.through.ListByUser(ctx, u, now)
-				}).AnyTimes()
-
-			var ends []session.EndReport
-			var reuses []session.ReuseReport
-			reader := managerFor(t, append([]session.Option{
-				session.WithStore(store),
-				session.WithClock(f.clk),
-				session.WithEndObserver(session.EndObserverFunc(func(_ context.Context, r session.EndReport) { ends = append(ends, r) })),
-				session.WithReuseObserver(func(_ context.Context, r session.ReuseReport) { reuses = append(reuses, r) }),
-			}, tc.opts...)...)
-
-			q := tc.arrange(t.Context(), t, f)
-
-			ctx := t.Context()
-			if tc.ctx != nil {
-				ctx = tc.ctx(ctx)
+			family := healthy.FamilyID
+			if tc.readUnreadable {
+				family = holding.FamilyID
 			}
-
-			before := f.snapshot(t.Context())
-			got, err := reader.SignInState(ctx, q.user, q.family)
-			after := f.snapshot(t.Context())
-
-			assert.Equal(t, before, after, "the read changed what the store holds")
-			assert.Empty(t, ends, "the read ended something")
-			assert.Empty(t, reuses, "the read reported reuse")
-
-			tc.assert(t, f, got, err)
+			got, err := reader.SignInState(t.Context(), user, family)
+			tc.assert(t, got, err)
 		})
 	}
 }

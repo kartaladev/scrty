@@ -173,6 +173,31 @@ var portableVariants = []brokenVariant{
 		"listing carries a sign-in's deadlines, authentication time and upstream identifiers"),
 	sessionVariant(sessionListIncludesStrict,
 		"listing follows a family through a strict rotation, inside and past its window"),
+	sessionVariant(sessionFamilyReadAnswersNothing, "a family read agrees with the listing across a renewal, a strict rotation and an end"),
+	sessionVariant(sessionFamilyReadAnswersPredecessor, "a family read agrees with the listing across a renewal, a strict rotation and an end"),
+	sessionVariant(sessionFamilyReadIncludesSuperseded, "a family read agrees with the listing across a renewal, a strict rotation and an end"),
+	sessionVariant(sessionFamilyReadIncludesStrict, "a family read agrees with the listing across a renewal, a strict rotation and an end"),
+	sessionVariant(sessionFamilyReadIncludesExpired,
+		"a family read judges expiry by the time the caller passes, not the store's clock"),
+	sessionVariant(sessionFamilyReadUsesStoreClock,
+		"a family read judges expiry by the time the caller passes, not the store's clock"),
+	sessionVariant(sessionFamilyReadIgnoresUser, "a family read returns only that family, of that user, matching the reference exactly"),
+	sessionVariant(sessionFamilyReadFoldsCase, "a family read returns only that family, of that user, matching the reference exactly"),
+	sessionVariant(sessionFamilyReadIgnoresFamily, "a family read returns only that family, of that user, matching the reference exactly"),
+	sessionVariant(sessionFamilyReadNilListsAll, "a family read returns only that family, of that user, matching the reference exactly"),
+	sessionVariant(sessionFamilyReadOmitsState,
+		"a family read carries a sign-in's deadlines, authentication time and upstream identifiers"),
+	sessionVariant(sessionFamilyReadSharesRecord, "a session a family read answers is the caller's own copy"),
+	{
+		// The family read is optional: a store offering none passes the suite.
+		name: "session-without-a-family-read",
+		run: func(t *testing.T) {
+			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+				t.Helper()
+				return struct{ session.Store }{newSessionStore(sessionConforming, clk)}
+			})
+		},
+	},
 	sessionVariant(sessionSaveWritesMetadata, "a save keeps the sign-in metadata and the CSRF token"),
 	sessionVariant(sessionSaveWritesCSRFToken, "a save keeps the sign-in metadata and the CSRF token"),
 	sessionVariant(sessionSupersedeDropsSignInState,

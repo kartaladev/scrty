@@ -323,6 +323,17 @@ func TestSessionListAcrossReplicas(t *testing.T) {
 	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionListAcrossReplicas(t, h) })
 }
 
+func TestSessionFamilyRead(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionFamilyRead(t, h) })
+}
+
 func TestSessionSupersessionLockOrder(t *testing.T) {
 	t.Parallel()
 

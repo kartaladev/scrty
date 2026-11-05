@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -138,6 +139,30 @@ func (s SaveUpsertsStore) Save(ctx context.Context, sess *session.Session) error
 		return s.Create(ctx, sess)
 	}
 	return err
+}
+
+// FamilyReadAnswersNothingStore carries a family read that disagrees with its
+// listing, as a query on the wrong column would: it answers no session at all.
+type FamilyReadAnswersNothingStore struct{ session.Store }
+
+// ListByFamily answers nothing, whatever is stored.
+func (FamilyReadAnswersNothingStore) ListByFamily(context.Context, identity.UserID, id.ID, time.Time) ([]*session.Session, error) {
+	return []*session.Session{}, nil
+}
+
+// FamilyReadListsStore answers a family read through its listing, which agrees
+// with the listing and so does what the family read exists not to do: another
+// family's row that will not decode fails it.
+type FamilyReadListsStore struct{ session.Store }
+
+// ListByFamily lists the user and keeps the family's sessions.
+func (s FamilyReadListsStore) ListByFamily(ctx context.Context, user identity.UserID, family id.ID, now time.Time) ([]*session.Session, error) {
+	listed, err := s.ListByUser(ctx, user, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.DeleteFunc(listed, func(l *session.Session) bool { return l.FamilyID != family }), nil
 }
 
 // EnrolmentBegun is when every MFA enrolment here was begun.
